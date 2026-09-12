@@ -1,0 +1,22 @@
+[package]
+name = "em-pipeline"
+description = "EntropyMate 流水线：P0 Ingest / P2 CfAst / P3 Prepare / P4 AnnotatePre / P5 Synthesize / P6 AnnotatePost / P7 Resolve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+em-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+em-adapter-fs = { workspace = true }
+em-adapter-parser = { workspace = true }
+em-adapter-fkb = { workspace = true }
+em-adapter-sqlite = { workspace = true }

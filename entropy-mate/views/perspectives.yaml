@@ -1,0 +1,106 @@
+# 视角注册表
+#
+# 顶部「两级筛选器」的一级选项，以及「点击节点切换视角」的映射规则。
+#
+# 两类视角语义完全不同，不可混用：
+#   mode: object    —— 对象类。**只渲染当前这一个对象**的链路子图，
+#                      其它对象的链路边直接不画（不是变暗），
+#                      靠 hidden 计数 + unresolved 记账 + 可切换来守住诚实性。
+#   mode: aggregate —— 聚合类。**不是单链路**，而是聚合概览（聚类框 / 矩阵）。
+#
+# node_views 里**没有**列出的节点种类不会切换顶部筛选器，
+# 只打开右侧 Inspector —— 例如 ConfigKey / KeyPattern / Component /
+# SecretLocation 这类资产/结构节点没有"单链路"语义。
+
+perspectives:
+  # ---------------- 对象类视角（单链路）----------------
+  - id: route
+    label: 路由视角
+    mode: object
+    node_kind: HttpContract
+    layout: radial
+    depth: 2
+    description: 以一个 HTTP 契约为中心，看它被谁处理、被谁调用、读写了哪些表
+
+  - id: table
+    label: 表视角
+    mode: object
+    node_kind: Table
+    layout: radial
+    depth: 2
+    description: 以一张表为中心的入边汇聚：谁在读写它、PII 与关键度
+
+  - id: external_system
+    label: 外部系统
+    mode: object
+    node_kind: ExternalSystem
+    layout: radial
+    depth: 2
+    description: 事件 / 队列 / 缓存等进程外中介：谁触发、谁监听、谁派发
+
+  - id: schedule
+    label: 计划任务
+    mode: object
+    node_kind: Schedule
+    layout: radial
+    depth: 2
+    description: 定时任务的执行链路（当前流水线尚未产出 Schedule 节点）
+
+  - id: page
+    label: 页面视角
+    mode: object
+    node_kind: Page
+    layout: radial
+    depth: 2
+    description: 前端页面发起的调用链（当前流水线尚未产出 Page 节点）
+
+  - id: topic
+    label: 消息 Topic
+    mode: object
+    node_kind: Topic
+    layout: radial
+    depth: 2
+    description: 消息 topic 的生产与消费（当前流水线尚未产出 Topic 节点）
+
+  # ---------------- 聚合类视角（概览）----------------
+  - id: domain
+    label: 领域聚合
+    mode: aggregate
+    layout: compound
+    group_by: { property: domain }
+    description: 按业务领域分框概览（图里还没有 domain 属性时给出诚实提示）
+
+  - id: deploy_unit
+    label: 部署单元
+    mode: aggregate
+    layout: compound
+    group_by: sub_project
+    description: 按子工程（部署单元）分框概览
+
+  - id: platform
+    label: 多端对比
+    mode: aggregate
+    layout: matrix
+    row_from: sub_project
+    col_from: node_kind
+    description: 子工程 × 节点种类的矩阵：谁产出了哪类资产
+
+  - id: er
+    label: 表关系 / ER
+    mode: aggregate
+    layout: er
+    group_by: node_kind
+    description: 表与表之间的正交关系视图
+
+# 点击节点时切换到哪个视角。
+# 只有"在顶部筛选器中有对应视角"的种类才列在这里。
+node_views:
+  HttpContract: route
+  Table: table
+  ExternalSystem: external_system
+  Schedule: schedule
+  Page: page
+  Topic: topic
+  Domain: domain
+  DeployUnit: deploy_unit
+  Platform: platform

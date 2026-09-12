@@ -1,0 +1,13 @@
+[package]
+name = "em-adapter-views"
+description = "视角注册表适配器：装载 views/*.yaml 声明的分析视角"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+em-domain = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

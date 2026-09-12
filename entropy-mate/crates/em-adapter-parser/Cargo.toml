@@ -1,0 +1,15 @@
+[package]
+name = "em-adapter-parser"
+description = "tree-sitter 解析适配器（当前支持 PHP）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+em-domain = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-language = { workspace = true }
+tree-sitter-php = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }

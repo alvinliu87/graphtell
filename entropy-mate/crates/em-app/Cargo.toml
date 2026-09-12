@@ -1,0 +1,32 @@
+[package]
+name = "em-app"
+description = "EntropyMate 组装根与 CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+em-domain = { workspace = true }
+em-application = { workspace = true }
+em-pipeline = { workspace = true }
+em-adapter-fs = { workspace = true }
+em-adapter-parser = { workspace = true }
+em-adapter-fkb = { workspace = true }
+em-adapter-views = { workspace = true }
+em-adapter-sqlite = { workspace = true }
+em-adapter-http = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+
+[[bin]]
+name = "entropy-mate"
+path = "src/main.rs"
+
+[lib]
+name = "em_app"
+path = "src/lib.rs"

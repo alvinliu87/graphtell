@@ -1,0 +1,55 @@
+# ===== 排除的大目录（样本 / 参考 / 第三方副本）=====
+分析样本/
+参考/
+codebase-memory-mcp-main/
+codebase-memory-mcp-main.zip
+CRMEB-master/
+CRMEB-master.zip
+
+# 本地临时/辅助脚本
+*.local.sh
+.local/
+.codebuddy/
+
+# VSCode / CodeBuddy 本地配置（保留共享 settings.json）
+.vscode/*
+!.vscode/settings.json
+
+# ===== Rust 构建产物（注意不加前导斜杠，覆盖任意层级）=====
+**/target/
+# 含二进制的 workspace 应用建议提交 Cargo.lock，此处不忽略
+
+# ===== 前端 / Tauri 构建产物 =====
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+**/src-tauri/gen/
+.vite/
+.turbo/
+
+# ===== 运行时数据 / 缓存 / 生成物 =====
+**/data/
+**/fkb/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# ===== Python（脚本/工具）=====
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ===== 本地环境变量 / 密钥（保留 .env.example）=====
+.env
+.env.*
+!.env.example
+
+# ===== 杂项 =====
+*.log
+*.pdb
+.DS_Store
+*.swp

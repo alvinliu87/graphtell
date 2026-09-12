@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "EntropyMate 桌面端默认权限：仅访问本机后端与用户选中的路径",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:app:default",
+    "core:event:default",
+    "core:window:default",
+    "core:webview:allow-webview-window"
+  ]
+}

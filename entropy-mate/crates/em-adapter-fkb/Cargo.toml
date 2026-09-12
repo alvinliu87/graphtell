@@ -1,0 +1,15 @@
+[package]
+name = "em-adapter-fkb"
+description = "FKB YAML 知识库适配器：装载、校验、索引"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+em-domain = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
