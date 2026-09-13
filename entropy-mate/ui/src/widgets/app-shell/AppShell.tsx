@@ -1,9 +1,12 @@
-import { Badge, Layout, Menu, Space, Tag, Tooltip, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import { Badge, Button, Layout, Menu, Space, Tag, Tooltip, Typography } from 'antd';
 import {
   ApartmentOutlined,
   DatabaseOutlined,
   DeploymentUnitOutlined,
   FundProjectionScreenOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -17,6 +20,18 @@ export function AppShell() {
   const location = useLocation();
   const { projectId } = useParams();
   const { health } = useHealth();
+
+  // 左侧栏是否收起：图视图路由默认收起（进入即最大化，让出横向空间给图），
+  // 其余路由默认展开。仅在 pathname 变化时按路由重置；页面内的手动折叠/展开在路由内持续有效。
+  // 同时保留 lg 断点的响应式自动收起。
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    /^\/projects\/\d+\/graph$/.test(location.pathname),
+  );
+  const toggleSider = () => setCollapsed((c) => !c);
+  useEffect(() => {
+    const isGraph = /^\/projects\/\d+\/graph$/.test(location.pathname);
+    setCollapsed(isGraph);
+  }, [location.pathname]);
 
   const withProject = (path: string) => (projectId ? `/projects/${projectId}${path}` : '/');
 
@@ -36,11 +51,20 @@ export function AppShell() {
       <Sider
         theme="light"
         width={216}
-        style={{ borderRight: '1px solid #eef0f4', paddingTop: 8 }}
-        breakpoint="lg"
+        collapsed={collapsed}
         collapsedWidth={64}
+        breakpoint="lg"
+        onBreakpoint={(broken) => setCollapsed(broken)}
+        style={{ borderRight: '1px solid #eef0f4', paddingTop: 8 }}
       >
-        <div style={{ padding: '10px 20px 18px', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div
+          style={{
+            padding: collapsed ? '10px 17px 18px' : '10px 20px 18px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
           <div
             style={{
               width: 30,
@@ -55,10 +79,12 @@ export function AppShell() {
           >
             EM
           </div>
-          <div>
-            <div style={{ fontWeight: 700, letterSpacing: '-0.02em' }}>EntropyMate</div>
-            <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)' }}>代码库图化分析</div>
-          </div>
+          {!collapsed && (
+            <div>
+              <div style={{ fontWeight: 700, letterSpacing: '-0.02em' }}>EntropyMate</div>
+              <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)' }}>代码库图化分析</div>
+            </div>
+          )}
         </div>
         <Menu
           mode="inline"
@@ -80,9 +106,17 @@ export function AppShell() {
             height: 56,
           }}
         >
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {projectId ? `当前工程 #${projectId}` : '选择或创建一个工程开始分析'}
-          </Typography.Text>
+          <Space size={12}>
+            <Button
+              type="text"
+              aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={toggleSider}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              {projectId ? `当前工程 #${projectId}` : '选择或创建一个工程开始分析'}
+            </Typography.Text>
+          </Space>
           <Space size={10}>
             {health ? (
               <>

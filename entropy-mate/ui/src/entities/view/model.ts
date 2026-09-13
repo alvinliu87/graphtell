@@ -19,6 +19,8 @@ export interface SourceLocation {
   line: number;
   symbol: string | null;
   note: string | null;
+  /** 该位置对应的源码片段（如调用语句），后端提供时显示在位置下方便于核对。 */
+  snippet?: string | null;
 }
 
 export interface NodeView {

@@ -2,6 +2,19 @@ import { Segmented, Select, Space, Tag, Tooltip } from 'antd';
 import type { Candidate, LayoutMode, Perspective } from '@/entities/view';
 import { truncate } from '@/shared/lib/format';
 
+/** 布局算法可读名（用于「跟随视角默认」选项的说明）。 */
+const LAYOUT_LABELS: Record<string, string> = {
+  radial: '径向（环=跳数）',
+  layered: '分层调用链',
+  spine: 'Spine 取证',
+  compound: '聚类框',
+  matrix: '矩阵',
+  er: 'ER 正交',
+};
+
+/** 「跟随视角默认」在 Select 里的哨兵值（不是合法 LayoutMode）。 */
+const AUTO = '__auto__' as const;
+
 export interface BreadcrumbItem {
   perspective: string;
   label: string;
@@ -40,7 +53,8 @@ export function PerspectivePicker({
   onNodeChange: (id: number) => void;
   onSearch?: (input: string) => void;
   layout: LayoutMode | null;
-  onLayoutChange: (m: LayoutMode) => void;
+  /** 传 `null` 表示"跟随视角默认"，即清掉 URL 里的 `m` 覆盖。 */
+  onLayoutChange: (m: LayoutMode | null) => void;
   trail: BreadcrumbItem[];
   onTrailClick: (index: number) => void;
   loading?: boolean;
@@ -102,10 +116,14 @@ export function PerspectivePicker({
           <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>布局</span>
           <Select
             size="small"
-            style={{ width: 130 }}
-            value={layout ?? current?.layout ?? 'radial'}
-            onChange={(v: LayoutMode) => onLayoutChange(v)}
+            style={{ width: 168 }}
+            value={(layout ?? AUTO) as string}
+            onChange={(v: string) => onLayoutChange(v === AUTO ? null : (v as LayoutMode))}
             options={[
+              {
+                value: AUTO,
+                label: `跟随视角默认（${LAYOUT_LABELS[current?.layout ?? 'radial'] ?? current?.layout ?? 'radial'}）`,
+              },
               { value: 'radial', label: '径向（环=跳数）' },
               { value: 'layered', label: '分层调用链' },
               { value: 'spine', label: 'Spine 取证' },

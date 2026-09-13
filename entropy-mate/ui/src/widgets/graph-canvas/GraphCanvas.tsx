@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { EdgeView, LayoutMode, NodeView, SourceLocation } from '@/entities/view';
 import { edgeColor, nodeColor } from '@/entities/graph';
@@ -13,6 +13,11 @@ import { layoutOf, type LayoutInput, type LayoutResult } from './layout/types';
  * 悬浮详情卡始终给出完整信息。
  */
 const EDGE_LABEL_LIMIT = 40;
+// 悬浮聚焦时非聚焦元素的淡出深度：随边数连续变化（边越少压得越浅，边越多压得越深），避免稀疏图像"全图消失"。
+const DIM_OPACITY_MIN = 0.12; // 稠密图最深
+const DIM_OPACITY_MAX = 0.4; // 稀疏图最浅
+const DIM_EDGE_LOW = 4; // 边数低于此取最浅
+const DIM_EDGE_HIGH = 40; // 边数高于此取最深
 
 /**
  * 边的稳定唯一键。
@@ -101,7 +106,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     originId,
     selectedId,
     width = 1040,
-    height = 620,
+    height = 720,
     onNodeClick,
     onNodeContextMenu,
     onEdgeClick,
@@ -113,6 +118,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const [pointer, setPointer] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number } | null>(null);
+
+  // 用真实容器宽度喂给布局，避免"按 1040 设计、再被窄列整体缩小"导致的拥挤。
+  // 首帧用默认 width，挂载后 ResizeObserver 量出真实宽度并触发一次重排（无感）。
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
+  const renderW = measuredWidth ?? width;
 
   const layout: LayoutResult | null = useMemo(() => {
     if (!center && !clusters?.length && !matrix) return null;
@@ -127,11 +138,31 @@ export function GraphCanvas(props: GraphCanvasProps) {
         members: c.members.map((m) => ({ ...m })),
       })),
       matrix,
-      width,
+      width: renderW,
       height,
     };
     return layoutOf(mode)(input);
-  }, [mode, center, rings, edges, clusters, matrix, width, height]);
+  }, [mode, center, rings, edges, clusters, matrix, renderW, height]);
+
+  // 节点尺寸表：箭头回退量 / 选中描边要按节点实际形状（矩形药丸需按半宽，而非固定 12px）。
+  const nodeRectById = useMemo(() => {
+    const m = new Map<number, { shape: 'circle' | 'rect'; w: number; h: number }>();
+    layout?.nodes.forEach((n) => m.set(n.id, { shape: n.shape, w: n.w ?? 120, h: n.h ?? 26 }));
+    return m;
+  }, [layout]);
+
+  // 依赖 loading / layout：loading 与空态返回的是不带 ref 的占位 div，
+  // 只有真正挂载图表容器（带 ref 的 div）后这里才观察得到真实宽度。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) setMeasuredWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [loading, layout]);
 
   // 按端点建索引：合成边 id 不唯一，按 id 查会永远只命中第一条（表现为"所有边都显示成同一种类"）。
   // **必须在所有提前返回之前声明**，否则 loading 时它不执行、数据返回后多出一个 Hook，
@@ -142,6 +173,65 @@ export function GraphCanvas(props: GraphCanvasProps) {
     for (const e of edges) m.set(`${e.from}->${e.to}`, e);
     return m;
   }, [edges]);
+
+  // 聚焦：悬浮 node / edge 时，保留"目标 + 其直连邻居"全亮，其余淡出成鬼影（仍留结构轮廓）。
+  // 必须放在提前 return 之前，否则 loading→数据 两次渲染 Hook 数量不一致会白屏。
+  // 各视角一致：悬浮永远聚焦；淡出深度随边数自适应（稀疏图只轻微压暗、不整页消失）。
+  const focus = useMemo(() => {
+    const nodes = new Set<number>();
+    const edgeKeys = new Set<string>();
+    if (hover != null) {
+      nodes.add(hover);
+      for (const e of edges) {
+        if (e.from === hover) {
+          nodes.add(e.to);
+          edgeKeys.add(edgeKey(e));
+        } else if (e.to === hover) {
+          nodes.add(e.from);
+          edgeKeys.add(edgeKey(e));
+        }
+      }
+    }
+    if (hoverEdge != null) {
+      const ev = edges.find((x) => edgeKey(x) === hoverEdge);
+      if (ev) {
+        nodes.add(ev.from);
+        nodes.add(ev.to);
+      }
+      edgeKeys.add(hoverEdge);
+    }
+    return { nodes, edgeKeys, hasFocus: hover != null || hoverEdge != null };
+  }, [hover, hoverEdge, edges]);
+  // 悬浮聚焦：始终在悬浮 node / edge 时保留"目标 + 直连邻居"全亮、其余淡出（各视角一致）。
+  // 淡出深度随边数连续插值：4 条边≈0.4（轻微强调），40 条边≈0.12（深度压暗），中间线性过渡。
+  const focusing = focus.hasFocus;
+  const dimT = Math.min(1, Math.max(0, (edges.length - DIM_EDGE_LOW) / (DIM_EDGE_HIGH - DIM_EDGE_LOW)));
+  const dimOpacity = DIM_OPACITY_MAX - (DIM_OPACITY_MAX - DIM_OPACITY_MIN) * dimT;
+
+  // 滚轮缩放必须用原生非 passive 监听器：React 合成 onWheel 在根上被注册为 passive，
+  // 调用 preventDefault 无效，会导致页面被一起滚动。这里用回调 ref，在 svg 真正挂载时挂上监听
+  // （loading / 空态提前返回期间 svg 不存在，回调 ref 会在挂载后自动重新触发），并显式 passive:false。
+  // 必须放在提前 return 之前，否则 loading→数据 两次渲染的 Hook 数量不一致会白屏。
+  const svgWheelRef = useCallback(
+    (el: SVGSVGElement | null) => {
+      if (!el) return;
+      const onWheel = (e: WheelEvent) => {
+        e.preventDefault();
+        const factor = e.deltaY > 0 ? 0.9 : 1.1;
+        // 以光标为锚点缩放：保持光标下的世界坐标点不动（viewBox 与渲染 1:1）。
+        const rect = el.getBoundingClientRect();
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+        setTransform((t) => {
+          const k = Math.max(0.25, Math.min(3, t.k * factor));
+          const ratio = k / t.k;
+          return { k, x: cx - ratio * (cx - t.x), y: cy - ratio * (cy - t.y) };
+        });
+      };
+      el.addEventListener('wheel', onWheel, { passive: false });
+    },
+    [setTransform],
+  );
 
   if (loading) {
     return (
@@ -175,17 +265,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
     ...(layout.cells ?? []).map((c) => c.value),
   );
 
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 0.9 : 1.1;
-    setTransform((t) => ({ ...t, k: Math.max(0.25, Math.min(3, t.k * factor)) }));
-  };
+
 
   const hoveredNode = hover != null ? nodeById.get(hover) ?? null : null;
   const hoveredEdge = hoverEdge != null ? edges.find((x) => edgeKey(x) === hoverEdge) ?? null : null;
 
   return (
     <div
+      ref={containerRef}
       style={{
         border: '1px solid #eef0f4',
         borderRadius: 14,
@@ -206,7 +293,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         width="100%"
         height={Math.min(height, layout.height)}
         viewBox={`0 0 ${layout.width} ${Math.min(height, layout.height)}`}
-        onWheel={onWheel}
+        ref={svgWheelRef}
         onMouseDown={(e) => {
           drag.current = { x: e.clientX, y: e.clientY };
         }}
@@ -222,6 +309,23 @@ export function GraphCanvas(props: GraphCanvasProps) {
         style={{ cursor: 'grab', display: 'block' }}
       >
         <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
+          {/* 同心环引导线：显式标出"环 = 跳数"，仅视觉参照，不参与命中 */}
+          {layout.guides?.map((g, i) => (
+            <g key={`guide${i}`}>
+              <circle cx={g.cx} cy={g.cy} r={g.r} fill="none" stroke="#e6ebf3" strokeWidth={1} />
+              <text
+                x={g.cx}
+                y={g.cy - g.r - 6}
+                fontSize={10}
+                fill="#aab4c5"
+                textAnchor="middle"
+                style={{ pointerEvents: 'none', userSelect: 'none' }}
+              >
+                {g.label}
+              </text>
+            </g>
+          ))}
+
           {/* 聚类框 */}
           {layout.groups?.map((g) => (
             <g key={g.key}>
@@ -298,13 +402,30 @@ export function GraphCanvas(props: GraphCanvasProps) {
           {/* 边 */}
           {layout.edges.map((e) => {
             const view = edgeByPair.get(`${e.from}->${e.to}`) ?? edges.find((x) => x.id === e.id);
-            // 悬浮只做"正向强调"（加粗），不再把其它边 / 节点变淡
-            const active =
-              (hover !== null && (e.from === hover || e.to === hover)) || hoverEdge === edgeKey(e);
+            // 聚焦：悬浮时保留"目标边 + 其两端 node"全亮，其余按密度压暗。
+            const inFocus = focus.edgeKeys.has(edgeKey(e));
+            const dim = focusing && !inFocus;
+            const active = inFocus;
             const d = e.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]},${p[1]}`).join(' ');
             const mid = e.points[Math.floor(e.points.length / 2)] ?? [0, 0];
+            // 方向箭头：沿末段方向在终点前回退若干 px 画小三角，避免被节点盖住。
+            // 矩形药丸按半宽回退，圆形按固定量回退。
+            const _pts = e.points;
+            const _p1 = _pts[_pts.length - 1];
+            const _p0 = _pts[_pts.length - 2] ?? _pts[0];
+            const _ang = Math.atan2(_p1[1] - _p0[1], _p1[0] - _p0[0]);
+            const _toRect = nodeRectById.get(e.to);
+            const _off = _toRect && _toRect.shape === 'rect' ? _toRect.w / 2 + 6 : 12;
+            const _tipx = _p1[0] - _off * Math.cos(_ang);
+            const _tipy = _p1[1] - _off * Math.sin(_ang);
+            const _a = 6;
+            const _s = 0.42;
+            const _ax1 = _tipx - _a * Math.cos(_ang - _s);
+            const _ay1 = _tipy - _a * Math.sin(_ang - _s);
+            const _ax2 = _tipx - _a * Math.cos(_ang + _s);
+            const _ay2 = _tipy - _a * Math.sin(_ang + _s);
             return (
-              <g key={edgeKey(e)}>
+              <g key={edgeKey(e)} style={{ opacity: dim ? dimOpacity : 1, transition: 'opacity 140ms' }}>
                 {/* 加宽的透明命中区，便于悬浮细边 */}
                 <path
                   d={d}
@@ -323,12 +444,20 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   strokeWidth={active ? 2.6 : 1.2}
                   strokeOpacity={active ? 1 : 0.8}
                   strokeDasharray={view?.resolved ? undefined : '5 4'}
+                  style={{ pointerEvents: 'none', transition: 'stroke-width 140ms ease, stroke-opacity 140ms ease' }}
+                />
+                {/* 方向箭头：点明有向依赖的流向（consumer→table / handler→config…）。
+                    折叠的"经 N 跳"边同样画箭头——方向仍成立，非直连已由虚线 + 注解表达。 */}
+                <polygon
+                  points={`${_tipx},${_tipy} ${_ax1},${_ay1} ${_ax2},${_ay2}`}
+                  fill={edgeColor(view?.kind ?? '')}
+                  fillOpacity={active ? 1 : 0.7}
                   style={{ pointerEvents: 'none' }}
                 />
                 {/* 边的类型：语义边种类（`ReadsConfig` / `MapsTo`…）就是这个图的"谓语"，
                     标出来才读得懂。但边一多就会糊成一片，所以：
                     边数超过阈值时只标"悬浮/选中"的那条；放大后恢复全标。 */}
-                {view && showEdgeLabels && (edges.length <= EDGE_LABEL_LIMIT || active || transform.k >= 1.15) ? (
+                {view && showEdgeLabels && !dim && (edges.length <= EDGE_LABEL_LIMIT || active || transform.k >= 1.15) ? (
                   <text
                     x={mid[0]}
                     y={mid[1] - 4}
@@ -356,15 +485,19 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const meta = nodeById.get(n.id);
             const isCenter = center?.id === n.id;
             const isOrigin = originId != null && originId === n.id;
-            const r = n.shape === 'rect' ? 0 : isCenter ? 15 : 7;
             const w = n.w ?? 120;
             const h = n.h ?? 26;
             const fill = nodeColor(n.kind);
+            // 节点统一为 rect 药丸，文字内嵌于框内，无需外伸标签。
             return (
               <g
                 key={n.id}
                 transform={`translate(${n.x},${n.y})`}
-                style={{ cursor: meta?.own_view ? 'pointer' : 'default' }}
+                style={{
+                  cursor: meta?.own_view ? 'pointer' : 'default',
+                  opacity: focusing && !focus.nodes.has(n.id) ? dimOpacity : 1,
+                  transition: 'opacity 140ms',
+                }}
                 onMouseEnter={() => setHover(n.id)}
                 onMouseLeave={() => setHover(null)}
                 onClick={() => onNodeClick?.(n.id, n.kind, meta?.own_view ?? null)}
@@ -373,29 +506,21 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   onNodeContextMenu?.(n.id, n.kind, e);
                 }}
               >
-                {n.shape === 'rect' ? (
-                  <rect
-                    x={-w / 2}
-                    y={-h / 2}
-                    width={w}
-                    height={h}
-                    rx={6}
-                    fill="#fff"
-                    stroke={fill}
-                    strokeWidth={1.4}
-                  />
-                ) : (
-                  <circle
-                    r={r}
-                    fill={fill}
-                    stroke={isCenter || isOrigin ? '#0f172a' : '#fff'}
-                    strokeWidth={isCenter || isOrigin ? 2.5 : 1.4}
-                  />
-                )}
+                <rect
+                  x={-w / 2}
+                  y={-h / 2}
+                  width={w}
+                  height={h}
+                  rx={6}
+                  fill="#fff"
+                  stroke={fill}
+                  strokeWidth={1.4}
+                  style={{ transition: 'stroke-width 140ms ease' }}
+                />
                 {isOrigin ? (
                   <text
                     x={0}
-                    y={-r - 8}
+                    y={-h / 2 - 8}
                     fontSize={10}
                     textAnchor="middle"
                     fill="#ef4444"
@@ -411,12 +536,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     : `${n.kind} · ${n.name}`}
                 </title>
                 <text
-                  x={n.shape === 'rect' ? 0 : r + 6}
-                  y={n.shape === 'rect' ? 4 : 4}
+                  x={0}
+                  y={4}
                   fontSize={isCenter ? 13 : 11}
                   fontWeight={isCenter ? 700 : 400}
                   fill={isCenter ? '#0f172a' : '#475569'}
-                  textAnchor={n.shape === 'rect' ? 'middle' : 'start'}
+                  textAnchor="middle"
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 >
                   {/* 种类徽标（用节点配色高亮）：
@@ -429,12 +554,21 @@ export function GraphCanvas(props: GraphCanvasProps) {
                       <tspan fill="#94a3b8" fontWeight={400}>
                         {' · '}
                       </tspan>
-                      <tspan>{truncate(n.name, n.shape === 'rect' ? 18 : 22)}</tspan>
+                      <tspan>{truncate(n.name, 26)}</tspan>
                     </>
                   ) : null}
                 </text>
                 {selectedId === n.id ? (
-                  <circle r={r + 6} fill="none" stroke="#3d7eff" strokeWidth={1.6} />
+                  <rect
+                    x={-w / 2 - 3}
+                    y={-h / 2 - 3}
+                    width={w + 6}
+                    height={h + 6}
+                    rx={8}
+                    fill="none"
+                    stroke="#3d7eff"
+                    strokeWidth={1.6}
+                  />
                 ) : null}
               </g>
             );
@@ -447,7 +581,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         <div
           style={{
             position: 'absolute',
-            left: Math.min(pointer.x + 16, Math.max(8, width - 268)),
+            left: Math.min(pointer.x + 16, Math.max(8, renderW - 268)),
             top: Math.min(pointer.y + 16, Math.max(8, height - 170)),
             width: 252,
             padding: '10px 12px',
@@ -508,7 +642,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         <div
           style={{
             position: 'absolute',
-            left: Math.min(pointer.x + 16, Math.max(8, width - 268)),
+            left: Math.min(pointer.x + 16, Math.max(8, renderW - 268)),
             top: Math.min(pointer.y + 16, Math.max(8, height - 150)),
             width: 252,
             padding: '10px 12px',

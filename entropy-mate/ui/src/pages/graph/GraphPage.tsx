@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Col, Row, Space, Statistic, Switch, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Drawer, Row, Space, Statistic, Switch, Table, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useProject } from '@/entities/project';
@@ -55,6 +55,8 @@ export function GraphPage() {
   const [expandingId, setExpandingId] = useState<number | null>(null);
   const [inspectNode, setInspectNode] = useState<number | null>(state.i);
   const [inspectEdge, setInspectEdge] = useState<number | null>(state.e);
+  /** 右侧"结论/导航"面板：默认收起为抽屉浮层，不占用图的横向空间。 */
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const lastPushed = useRef<string>('');
 
   const current = perspectives.find((p) => p.id === state.p) ?? null;
@@ -315,6 +317,9 @@ export function GraphPage() {
           </Typography.Text>
           <Switch size="small" checked={showEdgeLabels} onChange={setShowEdgeLabels} />
           <Typography.Text type="secondary">标注边的类型</Typography.Text>
+          <Button size="small" type="primary" ghost onClick={() => setDrawerOpen(true)}>
+            结论 / 导航面板
+          </Button>
           {Object.keys(expanded).length > 0 && (
             <Button size="small" onClick={() => setExpanded({})}>
               收起已展开的调用（{Object.keys(expanded).length}）
@@ -331,7 +336,7 @@ export function GraphPage() {
       ) : null}
 
       <Row gutter={[16, 16]}>
-        <Col xs={24} xl={16}>
+        <Col xs={24} xl={24}>
           <GraphCanvas
             mode={layoutMode}
             center={merged.center}
@@ -390,86 +395,93 @@ export function GraphPage() {
             </Card>
           ) : null}
         </Col>
+      </Row>
 
-        <Col xs={24} xl={8}>
-          <Card variant="borderless" style={{ borderRadius: 14 }} title="结论">
-            {view ? (
-              <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                <Row gutter={12}>
-                  <Col span={12}>
-                    <Statistic title="入边" value={fmt(view.conclusions['入边'])} />
-                  </Col>
-                  <Col span={12}>
-                    <Statistic title="出边" value={fmt(view.conclusions['出边'])} />
-                  </Col>
-                </Row>
-                <Space size={6} wrap>
-                  {Array.from(new Set(asArray(view.conclusions['标注']))).map((a) => (
-                    <Tag key={a} color="volcano">
-                      {a}
+      <Drawer
+        title="结论与导航"
+        placement="right"
+        width={360}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        styles={{ body: { padding: 16 } }}
+      >
+        <Card variant="borderless" style={{ borderRadius: 14 }} title="结论">
+          {view ? (
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              <Row gutter={12}>
+                <Col span={12}>
+                  <Statistic title="入边" value={fmt(view.conclusions['入边'])} />
+                </Col>
+                <Col span={12}>
+                  <Statistic title="出边" value={fmt(view.conclusions['出边'])} />
+                </Col>
+              </Row>
+              <Space size={6} wrap>
+                {Array.from(new Set(asArray(view.conclusions['标注']))).map((a) => (
+                  <Tag key={a} color="volcano">
+                    {a}
+                  </Tag>
+                ))}
+              </Space>
+              {view.conclusions['schema 列数'] !== undefined ? (
+                <Typography.Text type="secondary">
+                  schema 列数：{String(view.conclusions['schema 列数'])}
+                </Typography.Text>
+              ) : null}
+              {view.conclusions['路由表登记'] ? (
+                <Typography.Text type="secondary">
+                  路由表登记 handler：{String(view.conclusions['路由表登记'])}
+                </Typography.Text>
+              ) : null}
+            </Space>
+          ) : aggView ? (
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Statistic title="分组数" value={aggView.clusters.length} />
+              {aggView.matrix ? (
+                <Typography.Text type="secondary">
+                  共 {formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0))} 个单元格取值
+                </Typography.Text>
+              ) : null}
+            </Space>
+          ) : (
+            <Typography.Text type="secondary">选择一个对象后显示结论</Typography.Text>
+          )}
+        </Card>
+
+        <Card
+          variant="borderless"
+          style={{ borderRadius: 14, marginTop: 16 }}
+          size="small"
+          title="环上节点"
+        >
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            {(view?.rings ?? []).map((ring, i) => (
+              <div key={i}>
+                <Typography.Text strong style={{ fontSize: 12 }}>
+                  环 {i + 1}（{ring.length}）
+                </Typography.Text>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                  {ring.slice(0, 12).map((n) => (
+                    <Tag
+                      key={n.id}
+                      color={n.has_own_view ? 'blue' : 'default'}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => handleNodeClick(n.id, n.kind, n.own_view)}
+                    >
+                      {n.name.slice(0, 24)}
                     </Tag>
                   ))}
-                </Space>
-                {view.conclusions['schema 列数'] !== undefined ? (
-                  <Typography.Text type="secondary">
-                    schema 列数：{String(view.conclusions['schema 列数'])}
-                  </Typography.Text>
-                ) : null}
-                {view.conclusions['路由表登记'] ? (
-                  <Typography.Text type="secondary">
-                    路由表登记 handler：{String(view.conclusions['路由表登记'])}
-                  </Typography.Text>
-                ) : null}
-              </Space>
-            ) : aggView ? (
-              <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                <Statistic title="分组数" value={aggView.clusters.length} />
-                {aggView.matrix ? (
-                  <Typography.Text type="secondary">
-                    共 {formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0))} 个单元格取值
-                  </Typography.Text>
-                ) : null}
-              </Space>
-            ) : (
-              <Typography.Text type="secondary">选择一个对象后显示结论</Typography.Text>
-            )}
-          </Card>
-
-          <Card
-            variant="borderless"
-            style={{ borderRadius: 14, marginTop: 16 }}
-            size="small"
-            title="环上节点"
-          >
-            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-              {(view?.rings ?? []).map((ring, i) => (
-                <div key={i}>
-                  <Typography.Text strong style={{ fontSize: 12 }}>
-                    环 {i + 1}（{ring.length}）
-                  </Typography.Text>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-                    {ring.slice(0, 12).map((n) => (
-                      <Tag
-                        key={n.id}
-                        color={n.has_own_view ? 'blue' : 'default'}
-                        style={{ cursor: 'pointer' }}
-                        onClick={() => handleNodeClick(n.id, n.kind, n.own_view)}
-                      >
-                        {n.name.slice(0, 24)}
-                      </Tag>
-                    ))}
-                    {ring.length > 12 ? <Tag>+{ring.length - 12}</Tag> : null}
-                  </div>
+                  {ring.length > 12 ? <Tag>+{ring.length - 12}</Tag> : null}
                 </div>
-              ))}
-            </Space>
-          </Card>
+              </div>
+            ))}
+          </Space>
+        </Card>
 
-          <div style={{ marginTop: 16 }}>
-            <PipelineProgress run={run} indexing={project?.status === 'indexing'} />
-          </div>
-        </Col>
-      </Row>
+        <div style={{ marginTop: 16 }}>
+          <PipelineProgress run={run} indexing={project?.status === 'indexing'} />
+        </div>
+      </Drawer>
 
       <Inspector
         nodeId={inspectNode}

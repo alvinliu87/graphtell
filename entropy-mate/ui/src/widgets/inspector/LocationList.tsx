@@ -1,5 +1,6 @@
+import { Fragment } from 'react';
 import { Button, Dropdown, Space, Tag, Tooltip, Typography } from 'antd';
-import { CopyOutlined, ExportOutlined } from '@ant-design/icons';
+import { CopyOutlined, DownOutlined, ExportOutlined } from '@ant-design/icons';
 import type { SourceLocation } from '@/entities/view';
 import {
   copyPath,
@@ -22,11 +23,14 @@ export function LocationList({
   kind,
   projectRoot,
   emptyHint = '该节点没有可用的源码位置（可能是纯语义合成对象）',
+  ordered = false,
 }: {
   locations: SourceLocation[];
   kind?: string;
   projectRoot?: string;
   emptyHint?: string;
+  /** 相邻位置之间显示"从上往下"箭头，用于边证据链等有序场景。 */
+  ordered?: boolean;
 }) {
   if (locations.length === 0) {
     return <Typography.Text type="secondary">{emptyHint}</Typography.Text>;
@@ -48,43 +52,66 @@ export function LocationList({
           onClick: () => void openInIde(t, loc, projectRoot),
         }));
         return (
-          <div
-            key={`${loc.file}:${loc.line}:${i}`}
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: 10,
-              padding: '8px 10px',
-              borderRadius: 8,
-              background: '#f8fafc',
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, wordBreak: 'break-all' }}>
-                {loc.file}:{loc.line}
+          <Fragment key={`${loc.file}:${loc.line}:${i}`}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: 10,
+                padding: '8px 10px',
+                borderRadius: 8,
+                background: '#f8fafc',
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, wordBreak: 'break-all' }}>
+                  {loc.file}:{loc.line}
+                </div>
+                <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>
+                  {loc.note ?? (loc.symbol ? `符号 ${loc.symbol}` : '')}
+                  {loc.symbol ? ` · ${driftHint(loc)}` : ''}
+                </div>
+                {loc.snippet ? (
+                  <pre
+                    style={{
+                      margin: '6px 0 0',
+                      padding: '6px 8px',
+                      fontSize: 11,
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                      background: '#f1f5f9',
+                      borderRadius: 6,
+                      color: '#334155',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {loc.snippet}
+                  </pre>
+                ) : null}
               </div>
-              <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>
-                {loc.note ?? (loc.symbol ? `符号 ${loc.symbol}` : '')}
-                {loc.symbol ? ` · ${driftHint(loc)}` : ''}
-              </div>
-            </div>
-            <Space size={4}>
-              <Dropdown menu={{ items }} trigger={['click']}>
-                <Tooltip title="在 IDE 中打开（失败会自动复制路径）">
-                  <Button size="small" type="text" icon={<ExportOutlined />} />
+              <Space size={4}>
+                <Dropdown menu={{ items }} trigger={['click']}>
+                  <Tooltip title="在 IDE 中打开（失败会自动复制路径）">
+                    <Button size="small" type="text" icon={<ExportOutlined />} />
+                  </Tooltip>
+                </Dropdown>
+                <Tooltip title="复制 path:line（无 IDE 场景的兜底）">
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<CopyOutlined />}
+                    onClick={() => void copyPath(loc, projectRoot)}
+                  />
                 </Tooltip>
-              </Dropdown>
-              <Tooltip title="复制 path:line（无 IDE 场景的兜底）">
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<CopyOutlined />}
-                  onClick={() => void copyPath(loc, projectRoot)}
-                />
-              </Tooltip>
-            </Space>
-          </div>
+              </Space>
+            </div>
+            {ordered && i < locations.length - 1 ? (
+              <div style={{ display: 'flex', justifyContent: 'center', color: '#94a3b8', padding: '2px 0' }}>
+                <DownOutlined />
+              </div>
+            ) : null}
+          </Fragment>
         );
       })}
       <Button

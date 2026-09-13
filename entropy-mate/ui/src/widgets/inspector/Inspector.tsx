@@ -198,6 +198,7 @@ function EdgePanel({
 
       <LocationList
         locations={shown}
+        ordered
         projectRoot={projectRoot}
         emptyHint="这条边没有可跳转的证据位置（可能来自权威源推断）"
       />

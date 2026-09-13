@@ -24,7 +24,8 @@ perspectives:
     label: 路由视角
     mode: object
     node_kind: HttpContract
-    layout: radial
+    # 路由是"一条 HTTP 入口的调用流"，自顶向下的层 = 跳数，比径向更能体现调用顺序与流向。
+    layout: layered
     depth: 2
     collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
     description: 以一个 HTTP 契约为中心，看它被谁处理、被谁调用、读写了哪些表
@@ -51,7 +52,8 @@ perspectives:
     label: 计划任务
     mode: object
     node_kind: Schedule
-    layout: radial
+    # 定时任务是"一条执行链路"，自顶向下的层 = 跳数，比径向更能体现执行流向。
+    layout: layered
     depth: 2
     description: 定时任务的执行链路（当前流水线尚未产出 Schedule 节点）
 
