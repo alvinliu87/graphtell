@@ -103,6 +103,10 @@ pub struct GraphWorkspace {
     /// `StoreOrder → crmeb\basic\BaseModel → think\Model`，
     /// 而 `think\Model` 在 vendor 里（P0 已排除），图上没有这条边。
     supertypes: HashMap<String, Vec<String>>,
+    /// 方法参数类型：`方法 FQN → [(变量名, 类型 FQN)]`，供 P7 解析 `$var->method()`。
+    param_types: HashMap<String, Vec<(String, String)>>,
+    /// 类属性类型：`类 FQN → {属性名 → 类型 FQN}`（来自构造器注入 `$this->p = $param`）。
+    prop_types: HashMap<String, HashMap<String, String>>,
     /// 子工程事实（app_root 等），键为 sub_project_id。
     pub facts: BTreeMap<i64, BTreeMap<String, Value>>,
     pub diagnostics: Vec<Diagnostic>,
@@ -135,6 +139,8 @@ impl GraphWorkspace {
             out_edges: HashMap::new(),
             by_short: HashMap::new(),
             supertypes: HashMap::new(),
+            param_types: HashMap::new(),
+            prop_types: HashMap::new(),
             table_prefixes: Vec::new(),
             facts: BTreeMap::new(),
             diagnostics: Vec::new(),
@@ -144,6 +150,38 @@ impl GraphWorkspace {
 
     pub fn project_id(&self) -> ProjectId {
         self.project_id
+    }
+
+    /// 记录一个参数的类型：`方法 FQN → (变量名, 类型 FQN)`。
+    pub fn add_param_type(&mut self, owner_fqn: &str, var: &str, type_fqn: &str) {
+        let entry = self.param_types.entry(owner_fqn.to_string()).or_default();
+        if !entry.iter().any(|(v, _)| v == var) {
+            entry.push((var.to_string(), type_fqn.to_string()));
+        }
+    }
+
+    /// 查某方法内某变量的类型（供 `$var->method()` 解析）。
+    pub fn param_type(&self, owner_fqn: &str, var: &str) -> Option<&str> {
+        self.param_types
+            .get(owner_fqn)
+            .and_then(|list| list.iter().find(|(v, _)| v == var))
+            .map(|(_, t)| t.as_str())
+    }
+
+    /// 记录一个类的属性类型（来自构造器注入 `$this->p = $param`）。
+    pub fn set_prop_type(&mut self, class_fqn: &str, prop: &str, type_fqn: &str) {
+        self.prop_types
+            .entry(class_fqn.to_string())
+            .or_default()
+            .insert(prop.to_string(), type_fqn.to_string());
+    }
+
+    /// 查某类属性的类型（供 `$this->prop->method()` 解析）。
+    pub fn prop_type(&self, class_fqn: &str, prop: &str) -> Option<&str> {
+        self.prop_types
+            .get(class_fqn)
+            .and_then(|m| m.get(prop))
+            .map(|s| s.as_str())
     }
 
     // ------------------------------------------------------------ 节点
@@ -490,6 +528,11 @@ impl GraphWorkspace {
             .entry(child_fqn.to_string())
             .or_default()
             .push(base.to_string());
+    }
+
+    /// 直接父类型名列表（`子 FQN → [父 FQN]`）。
+    pub fn parents_of(&self, fqn: &str) -> Vec<String> {
+        self.supertypes.get(fqn).cloned().unwrap_or_default()
     }
 
     /// `child` 是否（传递地）继承/实现了与 `base` 同名的类型。

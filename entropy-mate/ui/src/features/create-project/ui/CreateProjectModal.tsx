@@ -62,7 +62,7 @@ export function CreateProjectModal({
           rules={[{ required: true, message: '请输入绝对路径' }]}
           extra="将自动识别其中的子工程（composer.json / package.json / pom.xml 等）"
         >
-          <Input placeholder="例如：/home/alvin/entropy-mate/分析样本/CRMEB-master" />
+          <Input placeholder="例如：/home/alvin/entropy-mate/samples/CRMEB-master" />
         </Form.Item>
         <Form.Item name="description" label="描述">
           <Input.TextArea rows={2} placeholder="可选" />

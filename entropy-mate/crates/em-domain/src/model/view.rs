@@ -59,6 +59,9 @@ pub struct PerspectiveSpec {
     /// 链路展开的跳数。
     pub depth: u32,
     pub description: Option<String>,
+    /// 对象视角默认折叠（透传）的语法节点种类；折叠后只展示语义节点与它们之间的依赖边。
+    #[serde(default)]
+    pub collapsed_kinds: Vec<String>,
 }
 
 impl Default for PerspectiveSpec {
@@ -74,6 +77,7 @@ impl Default for PerspectiveSpec {
             col_from: None,
             depth: 2,
             description: None,
+            collapsed_kinds: Vec::new(),
         }
     }
 }
@@ -133,6 +137,9 @@ pub struct SourceLocation {
 pub struct NodeView {
     pub id: NodeId,
     pub kind: String,
+    /// 语义节点的**类别**（如 `ExternalSystem`）；第一类语义节点等同于 `kind`，语法节点为 `None`。
+    #[serde(default)]
+    pub category: Option<String>,
     pub name: String,
     pub fqn: Option<String>,
     /// 距中心的跳数（0 = 中心）。
@@ -140,6 +147,10 @@ pub struct NodeView {
     pub sub_project_id: Option<SubProjectId>,
     /// 该节点是否有对应视角（决定"点击即切"是否可用）。
     pub has_own_view: bool,
+    /// 该节点对应的**视角 id**（`node_views` 映射结果）。
+    /// 点击时一级视角切到它、二级对象设为该节点；无对应视角时为 `null`。
+    #[serde(default)]
+    pub own_view: Option<String>,
     /// 跳转用的定义位置；合成节点会有**多个**。
     pub locations: Vec<SourceLocation>,
     /// 标注摘要（pii / auth.public / data.criticality …）。
@@ -160,6 +171,21 @@ pub struct EdgeView {
     pub confidence: f32,
     /// 虚线边经过的跳数（`via: 3 hops`）。
     pub hops: Option<u32>,
+    /// 这条边**折叠掉的中间节点**（按"从起点到终点"排序）。
+    ///
+    /// 折叠视图里语义节点之间是"提拉"出来的直接边，中间其实经过了若干语法节点；
+    /// 这里如实记录它们，前端才能在边上标 `via N 跳`、点击展开完整调用链 ——
+    /// 不能让"看起来直连"骗人。为空表示图上确实是直接边。
+    #[serde(default)]
+    pub via: Vec<ViaNode>,
+}
+
+/// 边上被折叠掉的中间节点（调用链的一环）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViaNode {
+    pub id: NodeId,
+    pub kind: String,
+    pub name: String,
 }
 
 /// 被刻意隐藏的部分 —— 诚实性守门。

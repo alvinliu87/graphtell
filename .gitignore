@@ -1,6 +1,6 @@
-# ===== 排除的大目录（样本 / 参考 / 第三方副本）=====
-分析样本/
-参考/
+# ===== 排除的大目录（samples / references / 第三方副本）=====
+samples/
+references/
 codebase-memory-mcp-main/
 codebase-memory-mcp-main.zip
 CRMEB-master/

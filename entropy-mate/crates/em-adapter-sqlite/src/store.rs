@@ -349,13 +349,15 @@ impl GraphSink for SqliteStore {
 
         if delta.reset_project {
             if let Some(pid) = delta.project_id {
+                // 顺序重要：注解要**先于** nodes 删除 —— 它靠 `node_id IN (SELECT id FROM nodes …)`
+                // 定位，若 nodes 已被清空，子查询为空，注解就永远删不掉，每次重跑都会叠加一层。
                 for sql in [
+                    "DELETE FROM node_annotations WHERE node_id IN (SELECT id FROM nodes WHERE project_id = ?1)",
                     "DELETE FROM nodes WHERE project_id = ?1",
                     "DELETE FROM edges WHERE project_id = ?1",
                     "DELETE FROM aliases WHERE project_id = ?1",
                     "DELETE FROM symbol_tables WHERE project_id = ?1",
                     "DELETE FROM diagnostics WHERE project_id = ?1",
-                    "DELETE FROM node_annotations WHERE node_id IN (SELECT id FROM nodes WHERE project_id = ?1)",
                 ] {
                     tx.execute(sql, params![pid.get()]).map_err(DomainError::infra)?;
                 }
@@ -575,7 +577,13 @@ impl GraphQuery for SqliteStore {
         );
         let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(filter.project_id.get())];
         if let Some(kind) = &filter.kind {
-            sql.push_str(" AND kind = ?2");
+            // 同时匹配 `kind` 与 `properties.category`：
+            // 外部系统子类型（Cache / Event / Queue）的 kind 是具体名，但 category 是 `ExternalSystem`，
+            // 因此 `node_kind: ExternalSystem` 的视角仍能筛到它们。
+            let p = binds.len() + 1;
+            sql.push_str(&format!(
+                " AND (kind = ?{p} OR json_extract(properties, '$.category') = ?{p})"
+            ));
             binds.push(Box::new(kind.to_string()));
         }
         if let Some(name) = &filter.name_contains {
@@ -681,11 +689,27 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?
             .collect::<std::result::Result<BTreeMap<_, _>, _>>()
             .map_err(DomainError::infra)?;
+        // 按 `properties.category` 统计（`ExternalSystem` 下辖 Cache / Event / Queue）。
+        let mut stmt_cat = conn
+            .prepare(
+                "SELECT json_extract(properties, '$.category'), COUNT(*) FROM nodes \
+                 WHERE project_id = ?1 AND json_extract(properties, '$.category') IS NOT NULL \
+                 GROUP BY json_extract(properties, '$.category')",
+            )
+            .map_err(DomainError::infra)?;
+        let by_category = stmt_cat
+            .query_map(params![project_id.get()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })
+            .map_err(DomainError::infra)?
+            .collect::<std::result::Result<BTreeMap<_, _>, _>>()
+            .map_err(DomainError::infra)?;
         Ok(GraphStats {
             nodes: nodes as u64,
             edges: edges as u64,
             annotations: annotations as u64,
             by_kind,
+            by_category,
         })
     }
 

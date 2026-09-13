@@ -17,7 +17,7 @@ fn sample_root() -> Option<PathBuf> {
         }
     }
     let candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../分析样本/CRMEB-master");
+        .join("../../samples/CRMEB-master");
     if candidate.is_dir() {
         return Some(candidate.canonicalize().unwrap_or(candidate));
     }

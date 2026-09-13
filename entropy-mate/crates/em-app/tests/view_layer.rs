@@ -1,6 +1,6 @@
 //! em-app 视角层集成测试（组装根 → 建图 → 视角切片）。
 //!
-//! 以真实的 `分析样本/CRMEB-master` 为原料，经由 `Container` 装配全部适配器，
+//! 以真实的 `samples/CRMEB-master` 为原料，经由 `Container` 装配全部适配器，
 //! 跑一遍完整建图，再用 `ViewService` 验证一/二级筛选器与各视角切片。
 //! 样本缺失时整组跳过（可用 `ENTROPY_MATE_SAMPLE_DIR` 指定）。
 
@@ -12,7 +12,7 @@ use em_application::{PipelineService, ProjectService, ViewService};
 use em_domain::model::NewProject;
 use em_domain::port::{NoopObserver, Persistence, SystemClock};
 
-/// 在 `CARGO_MANIFEST_DIR` 向上查找 `分析样本/CRMEB-master`。
+/// 在 `CARGO_MANIFEST_DIR` 向上查找 `samples/CRMEB-master`。
 fn find_sample() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("ENTROPY_MATE_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -22,7 +22,7 @@ fn find_sample() -> Option<PathBuf> {
     }
     let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for _ in 0..6 {
-        let cand = cur.join("分析样本/CRMEB-master");
+        let cand = cur.join("samples/CRMEB-master");
         if cand.is_dir() {
             return Some(cand);
         }
@@ -113,7 +113,7 @@ fn first_object_target(
             continue;
         }
         let id = p["id"].as_str()?.to_string();
-        if let Ok(cands) = views.candidates(pid, &id, 50) {
+        if let Ok(cands) = views.candidates(pid, &id, 50, None) {
             if let Some(c) = cands.first() {
                 return Some((id, c.id));
             }
@@ -209,7 +209,7 @@ fn object_view_chain_and_hidden() {
         return;
     };
     let ov = views
-        .object_view(b.project_id, &pid, nid, Some(2))
+        .object_view(b.project_id, &pid, nid, Some(2), None)
         .expect("object_view");
     assert_eq!(ov.perspective, pid);
     assert_eq!(ov.center.id, nid);
@@ -217,6 +217,128 @@ fn object_view_chain_and_hidden() {
     assert_eq!(ov.center.ring, 0, "中心节点应在 0 环");
     assert!(!ov.hidden.note.is_empty(), "必须给出省略说明（诚实性）");
     assert!(!ov.candidates.is_empty(), "应回带二级筛选候选");
+}
+
+#[test]
+fn object_view_default_is_semantic_only() {
+    // 折叠（默认）视图必须「只显示对人类有意义的语义节点 / 语义边」：
+    // * 不出现 Method / CallSite / Class 等语法节点与 Calls / HasCallSite 等语法边；
+    // * 不出现指向不可见节点的悬空边；
+    // * 二级候选按"价值"降序（前端默认打开价值最高的那个）。
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let Some((pid, _)) = first_object_target(&views, b.project_id) else {
+        eprintln!("没有可用的对象类视角候选，跳过");
+        return;
+    };
+    // 取价值最高的候选（`candidates` 已按语义依赖价值降序）。
+    let cands = views
+        .candidates(b.project_id, &pid, 5, None)
+        .expect("candidates");
+    let Some(top) = cands.first() else {
+        eprintln!("该视角没有候选，跳过");
+        return;
+    };
+    assert!(
+        top.badge.as_deref().unwrap_or("").contains("语义依赖"),
+        "候选 badge 应带价值（语义依赖数），实际 {:?}",
+        top.badge
+    );
+
+    let ov = views
+        .object_view(b.project_id, &pid, top.id, Some(2), None)
+        .expect("object_view");
+
+    // 语义节点 = 第一类语义 kind，或带 `category`（外部系统子类型 Cache / Event / Queue…）。
+    let is_semantic = |n: &em_domain::model::NodeView| {
+        em_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some()
+    };
+    assert!(is_semantic(&ov.center), "中心应是语义节点，实际 {}", ov.center.kind);
+    let mut visible = std::collections::HashSet::new();
+    visible.insert(ov.center.id.get());
+    for n in ov.rings.iter().flatten() {
+        visible.insert(n.id.get());
+        assert!(
+            is_semantic(n),
+            "默认视图不应出现语法节点：{} ({})",
+            n.name,
+            n.kind
+        );
+    }
+    for e in &ov.edges {
+        assert!(
+            em_domain::model::EdgeKind(e.kind.clone()).is_semantic(),
+            "默认视图不应出现语法边：{}",
+            e.kind
+        );
+        assert!(
+            visible.contains(&e.from.get()) && visible.contains(&e.to.get()),
+            "不应有悬空边：{} {} -> {}",
+            e.kind,
+            e.from.get(),
+            e.to.get()
+        );
+    }
+}
+
+#[test]
+fn object_view_resource_center_shows_its_users() {
+    // 资源类中心（Table / ConfigKey / Cache…）的关系方向是**反向**的：
+    // 语义边由使用者指向资源，所以视图必须回答"谁在用它"，而不是给出一张空图。
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let cands = views
+        .candidates(b.project_id, "table", 1, None)
+        .expect("candidates");
+    let Some(top) = cands.first() else {
+        eprintln!("表视角没有候选，跳过");
+        return;
+    };
+    let ov = views
+        .object_view(b.project_id, "table", top.id, Some(2), None)
+        .expect("object_view");
+
+    assert_eq!(ov.center.kind, "Table", "表视角中心应是 Table");
+    assert_eq!(
+        ov.center.own_view.as_deref(),
+        Some("table"),
+        "中心应带回自己的视角 id（供「点击即切」使用）"
+    );
+    assert!(
+        ov.rings.iter().flatten().count() > 0,
+        "表视角应给出使用者（谁在读写这张表），而不是空图"
+    );
+    let mut visible = std::collections::HashSet::new();
+    visible.insert(ov.center.id.get());
+    for n in ov.rings.iter().flatten() {
+        visible.insert(n.id.get());
+        assert!(
+            em_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some(),
+            "默认视图不应出现语法节点：{} ({})",
+            n.name,
+            n.kind
+        );
+    }
+    for e in &ov.edges {
+        assert!(
+            em_domain::model::EdgeKind(e.kind.clone()).is_semantic(),
+            "默认视图不应出现语法边：{}",
+            e.kind
+        );
+        assert!(
+            visible.contains(&e.from.get()) && visible.contains(&e.to.get()),
+            "不应有悬空边：{} {} -> {}",
+            e.kind,
+            e.from.get(),
+            e.to.get()
+        );
+    }
 }
 
 #[test]
@@ -249,8 +371,10 @@ fn edge_evidence_verifies_chain() {
         eprintln!("无对象节点，跳过 edge 断言");
         return;
     };
+    // 折叠视图会把语义边"提拉"为合成边（无独立 id），而本测试验证的是**真实链路边**的证据，
+    // 因此显式 expand=true 取非折叠视图。
     let ov = views
-        .object_view(b.project_id, &pid, nid, Some(1))
+        .object_view(b.project_id, &pid, nid, Some(1), Some(true))
         .expect("object_view");
     let Some(e) = ov.edges.first() else {
         eprintln!("中心节点没有链路边，跳过 edge_evidence 断言");

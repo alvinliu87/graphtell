@@ -308,15 +308,32 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
         .map(|n| text(n, ctx.src))
         .unwrap_or_default();
     let fqn = format!("{}::{}", class_fqn, name);
+    // 参数：记录「名称 + 类型」，供 P7 按"变量类型"解析实例调用（`$services->appAuth()`）。
     let params = node
         .child_by_field_name("parameters")
         .map(|p| {
             p.named_children(&mut p.walk())
                 .filter(|c| c.kind() == "simple_parameter")
-                .filter_map(|c| c.child_by_field_name("name").map(|n| text(n, ctx.src)))
+                .filter_map(|c| {
+                    let name = c.child_by_field_name("name").map(|n| text(n, ctx.src))?;
+                    let ty = c
+                        .child_by_field_name("type")
+                        .map(|t| text(t, ctx.src))
+                        .filter(|t| !t.is_empty());
+                    Some(json!({ "name": name, "type": ty }))
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+
+    // 构造器注入：`$this->services = $services;` → 属性 services 的类型 = 参数 services 的类型。
+    let mut this_assigns: Vec<serde_json::Value> = Vec::new();
+    // `return X::class;` → 供给 P7 建「所属类 → X」的声明式联系（如 Dao::setModel() → Model）。
+    let mut returns_class: Vec<serde_json::Value> = Vec::new();
+    if let Some(body) = node.child_by_field_name("body") {
+        collect_this_assigns(body, ctx, &mut this_assigns);
+        collect_return_classes(body, ctx, &mut returns_class);
+    }
 
     ctx.facts.declarations.push(Declaration {
         kind: NodeKind(NodeKind::METHOD.to_string()),
@@ -329,11 +346,63 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
             "static": has_modifier(node, "static_modifier"),
             "abstract": has_modifier(node, "abstract_modifier"),
             "parameters": params,
+            "this_assigns": this_assigns,
+            "returns_class": returns_class,
         }),
     });
 
     if let Some(body) = node.child_by_field_name("body") {
         collect_call_sites(body, ctx, &fqn);
+    }
+}
+
+/// 收集 `$this->prop = $var;` 形式的属性赋值（构造器注入常见写法）。
+///
+/// ThinkPHP 的控制器/服务常写成 `__construct(LoginServices $services) { $this->services = $services; }`，
+/// 这里把「属性 → 局部变量」记下来；类型由 P7 结合参数类型推断。
+fn collect_this_assigns(node: Node, ctx: &Ctx, out: &mut Vec<serde_json::Value>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "assignment_expression" {
+            if let (Some(l), Some(r)) = (
+                child.child_by_field_name("left"),
+                child.child_by_field_name("right"),
+            ) {
+                let lt = text(l, ctx.src).trim().to_string();
+                let rt = text(r, ctx.src).trim().to_string();
+                if lt.starts_with("$this->")
+                    && rt.starts_with('$')
+                    && !rt.contains("->")
+                    && !rt.contains('[')
+                {
+                    let prop = lt.trim_start_matches("$this->").to_string();
+                    let var = rt.trim_start_matches('$').to_string();
+                    if !prop.is_empty() && !var.is_empty() {
+                        out.push(json!({ "prop": prop, "var": var }));
+                    }
+                }
+            }
+        }
+        collect_this_assigns(child, ctx, out);
+    }
+}
+
+/// 收集 `return X::class;` 中引用的类名（原文，可能带命名空间前缀）。
+fn collect_return_classes(node: Node, ctx: &Ctx, out: &mut Vec<serde_json::Value>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "return_statement" {
+            if let Some(expr) = child.named_child(0) {
+                let t = text(expr, ctx.src).trim().to_string();
+                if let Some(cls) = t.strip_suffix("::class") {
+                    let cls = cls.trim().trim_start_matches('\\');
+                    if !cls.is_empty() && !cls.contains('$') && !cls.contains("->") {
+                        out.push(json!(cls));
+                    }
+                }
+            }
+        }
+        collect_return_classes(child, ctx, out);
     }
 }
 

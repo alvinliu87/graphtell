@@ -1,4 +1,4 @@
-import { Alert, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Row, Space, Statistic, Switch, Table, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useProject } from '@/entities/project';
@@ -8,9 +8,11 @@ import {
   usePerspectives,
   viewApi,
   type Candidate,
+  type EdgeView,
   type LayoutMode,
+  type SourceLocation,
 } from '@/entities/view';
-import { GraphCanvas, type CanvasCluster, type CanvasMatrix } from '@/widgets/graph-canvas';
+import { GraphCanvas, type CanvasCluster, type CanvasNode, type CanvasMatrix } from '@/widgets/graph-canvas';
 import { Inspector } from '@/widgets/inspector';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { PipelineProgress } from '@/widgets/pipeline-progress';
@@ -43,6 +45,14 @@ export function GraphPage() {
   /** 上一个中心，切视角后保留为邻居并标记 `from`。 */
   const [origin, setOrigin] = useState<{ id: number; name: string } | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidateSearch, setCandidateSearch] = useState('');
+  /** 是否展开全部语法节点（默认折叠，只显示语义节点与依赖边）。 */
+  const [expandSyntax, setExpandSyntax] = useState(false);
+  /** 是否在图上标注边的类型（`ReadsConfig` / `MapsTo`…）。边过多时组件会自动退化为按需标注。 */
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
+  /** 折叠模式下，点击节点后按需展开显示的语法子图（按节点 id 归集）。 */
+  const [expanded, setExpanded] = useState<Record<number, { nodes: CanvasNode[]; edges: EdgeView[] }>>({});
+  const [expandingId, setExpandingId] = useState<number | null>(null);
   const [inspectNode, setInspectNode] = useState<number | null>(state.i);
   const [inspectEdge, setInspectEdge] = useState<number | null>(state.e);
   const lastPushed = useRef<string>('');
@@ -79,32 +89,42 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [perspectives, candidates]);
 
-  // 载入二级候选
+  // 载入二级候选（带防抖的服务端搜索）
   useEffect(() => {
     if (!state.p || isAggregate) {
       setCandidates([]);
       return;
     }
+    const perspective = state.p;
     let alive = true;
-    void viewApi.candidates(id, state.p, 400).then((list) => {
-      if (alive) setCandidates(list);
-    });
+    const timer = setTimeout(() => {
+      void viewApi.candidates(id, perspective, 300, candidateSearch).then((list) => {
+        if (alive) setCandidates(list);
+      });
+    }, 150);
     return () => {
       alive = false;
+      clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.p, isAggregate, id]);
+  }, [state.p, isAggregate, id, candidateSearch]);
 
-  // 对象视角：中心为空时取第一个候选
+  // 对象视角：中心为空且未在搜索时取第一个候选
   useEffect(() => {
-    if (isAggregate || candidates.length === 0) return;
+    if (isAggregate || candidates.length === 0 || candidateSearch !== '') return;
     if (state.n === null || !candidates.some((c) => c.id === state.n)) {
       setState((s) => ({ ...s, n: candidates[0].id }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidates, isAggregate]);
+  }, [candidates, isAggregate, candidateSearch]);
 
-  const { view, loading } = useObjectView(id, state.p ?? undefined, state.n ?? undefined, state.d);
+  const { view, loading } = useObjectView(
+    id,
+    state.p ?? undefined,
+    state.n ?? undefined,
+    state.d,
+    expandSyntax,
+  );
   const { view: aggView, loading: aggLoading } = useAggregateView(
     id,
     isAggregate ? (state.p ?? undefined) : undefined,
@@ -123,31 +143,67 @@ export function GraphPage() {
     [perspectives],
   );
 
-  /** 点到有视角的节点 → 切换一级 + 二级；没有视角的节点 → 只开 Inspector。 */
+  /** 折叠模式下点击语义节点 → 拉取其局部语法调用子图并就地展开（再次点击收起）。 */
+  const toggleExpand = useCallback(
+    (nodeId: number) => {
+      if (expanded[nodeId]) {
+        setExpanded((prev) => {
+          const nxt = { ...prev };
+          delete nxt[nodeId];
+          return nxt;
+        });
+        return;
+      }
+      setExpandingId(nodeId);
+      void viewApi
+        .object(id, state.p ?? 'route', nodeId, 1, true)
+        .then((ov) => {
+          setExpanded((prev) => ({
+            ...prev,
+            [nodeId]: {
+              nodes: [ov.center, ...ov.rings.flat()].map(toCanvas),
+              edges: ov.edges,
+            },
+          }));
+        })
+        .catch(() => {})
+        .finally(() => setExpandingId((cur) => (cur === nodeId ? null : cur)));
+    },
+    [expanded, id, state.p],
+  );
+
+  /**
+   * 点击节点：
+   * * 该节点**有对应视角** → **一级视角切到它、二级对象设为该节点**（"点击即切"）；
+   * * 没有对应视角 → 折叠模式下就地展开调用链，并只打开 Inspector。
+   */
   const handleNodeClick = useCallback(
-    (nodeId: number, kind: string, hasOwnView: boolean) => {
-      if (!hasOwnView) {
-        // `ConfigKey` / `KeyPattern` / `Component` / `SecretLocation` 等：
-        // 不切顶部筛选器，只打开 Inspector
+    (nodeId: number, _kind: string, ownView: string | null) => {
+      if (!ownView) {
+        // `ConfigKey` 等语义资产没有"单链路"视角：不切顶部筛选器，只打开 Inspector；
+        // 折叠模式下顺带就地展开其语法调用链
+        if (!expandSyntax) toggleExpand(nodeId);
         setInspectNode(nodeId);
         setInspectEdge(null);
         setState((s) => ({ ...s, i: nodeId, e: null }));
         return;
       }
-      const target = nodeId;
-      if (state.n !== null && state.n !== target) {
+      if (state.n !== null && state.n !== nodeId) {
         const center = view?.center;
         if (center) setOrigin({ id: center.id, name: center.name });
       }
       const nodeName =
-        view?.rings.flat().find((n) => n.id === target)?.name ??
-        (view?.center.id === target ? view.center.name : `#${target}`);
-      pushTrail(state.p ?? '', target, nodeName);
-      setState((s) => ({ ...s, n: target, i: null, e: null }));
+        view?.rings.flat().find((n) => n.id === nodeId)?.name ??
+        (view?.center.id === nodeId ? view.center.name : `#${nodeId}`);
+      pushTrail(ownView, nodeId, nodeName);
+      // 关键：**一级视角也要切**。只设 `n` 的话该节点不属于当前视角的候选，
+      // 会被 `reconcileViewState` 清空，导航实际失效。
+      setState((s) => ({ ...s, p: ownView, n: nodeId, i: null, e: null }));
       setInspectNode(null);
       setInspectEdge(null);
+      setExpanded({});
     },
-    [state.p, state.n, view, pushTrail],
+    [state.n, view, pushTrail, expandSyntax, toggleExpand],
   );
 
   const handleEdgeClick = useCallback((edge: { id: number }) => {
@@ -167,6 +223,29 @@ export function GraphPage() {
     },
     [trail],
   );
+
+  // 折叠模式下，把"按需展开的语法子图"合并进当前语义图（按锚点环号偏移，避免重排）。
+  const merged = useMemo(() => {
+    if (!view) return { center: null as CanvasNode | null, rings: [] as CanvasNode[][], edges: [] as EdgeView[] };
+    const base: CanvasNode[] = [view.center, ...view.rings.flat()].map(toCanvas);
+    const ringOf = new Map(base.map((n) => [n.id, n.ring]));
+    const nodes: CanvasNode[] = [...base];
+    const edges: EdgeView[] = [...view.edges];
+    const seen = new Set(nodes.map((n) => n.id));
+    for (const [anchorId, ctx] of Object.entries(expanded)) {
+      const anchorRing = ringOf.get(Number(anchorId)) ?? 0;
+      for (const n of ctx.nodes) {
+        if (seen.has(n.id)) continue;
+        seen.add(n.id);
+        nodes.push({ ...n, ring: anchorRing + n.ring });
+      }
+      for (const e of ctx.edges) edges.push(e);
+    }
+    const maxRing = nodes.reduce((m, n) => Math.max(m, n.ring), 0);
+    const rings: CanvasNode[][] = Array.from({ length: maxRing + 1 }, () => []);
+    for (const n of nodes) if (n.ring > 0) rings[n.ring].push(n);
+    return { center: toCanvas(view.center), rings, edges };
+  }, [view, expanded]);
 
   // 首次进入时把当前位置压入面包屑
   useEffect(() => {
@@ -211,6 +290,7 @@ export function GraphPage() {
           perspective={state.p}
           onPerspectiveChange={(p) => {
             pushTrail(p, null, '');
+            setCandidateSearch('');
             setState((s) => ({ ...s, p, n: null, i: null, e: null }));
             setOrigin(null);
           }}
@@ -221,12 +301,29 @@ export function GraphPage() {
             pushTrail(state.p ?? '', n, name);
             setState((s) => ({ ...s, n, i: null, e: null }));
           }}
+          onSearch={setCandidateSearch}
           layout={state.m}
           onLayoutChange={(m) => setState((s) => ({ ...s, m }))}
           trail={trail}
           onTrailClick={onTrailClick}
           loading={loading && candidates.length === 0}
         />
+        <Space style={{ marginTop: 10 }} align="center" wrap>
+          <Switch size="small" checked={expandSyntax} onChange={setExpandSyntax} />
+          <Typography.Text type="secondary">
+            展开全部语法节点（Method / CallSite 等）
+          </Typography.Text>
+          <Switch size="small" checked={showEdgeLabels} onChange={setShowEdgeLabels} />
+          <Typography.Text type="secondary">标注边的类型</Typography.Text>
+          {Object.keys(expanded).length > 0 && (
+            <Button size="small" onClick={() => setExpanded({})}>
+              收起已展开的调用（{Object.keys(expanded).length}）
+            </Button>
+          )}
+          <Typography.Text type="secondary">
+            默认只显示语义节点；点击任意节点可就地展开它的调用链。
+          </Typography.Text>
+        </Space>
       </Card>
 
       {isAggregate && aggView?.notice ? (
@@ -237,12 +334,12 @@ export function GraphPage() {
         <Col xs={24} xl={16}>
           <GraphCanvas
             mode={layoutMode}
-            center={view?.center ? toCanvas(view.center) : null}
-            rings={(view?.rings ?? []).map((r) => r.map(toCanvas))}
-            edges={view?.edges ?? []}
+            center={merged.center}
+            rings={merged.rings}
+            edges={merged.edges}
             clusters={isAggregate ? clusters : undefined}
             matrix={isAggregate ? matrix : undefined}
-            loading={loading || aggLoading}
+            loading={loading || aggLoading || expandingId !== null}
             originId={origin?.id ?? null}
             selectedId={state.n}
             onNodeClick={handleNodeClick}
@@ -252,6 +349,7 @@ export function GraphPage() {
               setState((s) => ({ ...s, i: nodeId, e: null }));
             }}
             onEdgeClick={handleEdgeClick}
+            showEdgeLabels={showEdgeLabels}
           />
 
           {/* 诚实性守门：省略了什么、为什么省略 */}
@@ -306,7 +404,7 @@ export function GraphPage() {
                   </Col>
                 </Row>
                 <Space size={6} wrap>
-                  {asArray(view.conclusions['标注']).map((a) => (
+                  {Array.from(new Set(asArray(view.conclusions['标注']))).map((a) => (
                     <Tag key={a} color="volcano">
                       {a}
                     </Tag>
@@ -355,7 +453,7 @@ export function GraphPage() {
                         key={n.id}
                         color={n.has_own_view ? 'blue' : 'default'}
                         style={{ cursor: 'pointer' }}
-                        onClick={() => handleNodeClick(n.id, n.kind, n.has_own_view)}
+                        onClick={() => handleNodeClick(n.id, n.kind, n.own_view)}
                       >
                         {n.name.slice(0, 24)}
                       </Tag>
@@ -387,8 +485,31 @@ export function GraphPage() {
   );
 }
 
-function toCanvas(n: { id: number; kind: string; name: string; ring: number }) {
-  return { id: n.id, kind: n.kind, name: n.name, ring: n.ring };
+function toCanvas(n: {
+  id: number;
+  kind: string;
+  name: string;
+  ring: number;
+  category?: string | null;
+  own_view?: string | null;
+  /** 悬浮卡片要显示的信息；缺失时用空值兜底。 */
+  fqn?: string | null;
+  locations?: SourceLocation[];
+  annotations?: string[];
+  metrics?: { fan_in?: number; fan_out?: number } | null;
+}) {
+  return {
+    id: n.id,
+    kind: n.kind,
+    category: n.category ?? null,
+    own_view: n.own_view ?? null,
+    name: n.name,
+    ring: n.ring,
+    fqn: n.fqn ?? null,
+    locations: n.locations ?? [],
+    annotations: n.annotations ?? [],
+    metrics: n.metrics ?? null,
+  };
 }
 
 function fmt(v: unknown): string {

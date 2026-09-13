@@ -84,7 +84,11 @@ export const NODE_COLORS: Record<string, string> = {
   HttpContract: '#ef4444',
   ConfigKey: '#8b5cf6',
   I18nKey: '#eab308',
+  // "外部系统"是**类别**：子类型已提升为种类（Cache / Event / Queue…），同色。
   ExternalSystem: '#f97316',
+  Cache: '#f97316',
+  Event: '#f97316',
+  Queue: '#f97316',
   Unknown: '#9ca3af',
 };
 

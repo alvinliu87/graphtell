@@ -5,8 +5,8 @@
 
 use em_domain::model::{
     Action, AliasEntry, AnnotateTarget, AnnotationChannel, EdgeKind, FactValue, IdentityKey,
-    Language, MergeStrategy, NewAnnotation, NewEdge, NodeId, Phase, Predicate, ResolveTier, Rule,
-    Selector, Severity, SubkindSource, SynthesizedKind,
+    Language, MergeStrategy, NewAnnotation, NewEdge, NodeId, NodeKind, Phase, Predicate,
+    ResolveTier, Rule, Selector, Severity, SubkindSource, SynthesizedKind,
 };
 use serde_json::{json, Value};
 
@@ -575,11 +575,15 @@ fn exec_synthesize(
         return matched;
     };
 
-    let kind = s.node.clone();
-    let mut props = json!({});
-    if let Some(subtype) = &s.subtype {
-        props["subtype"] = json!(subtype);
-    }
+    // 子类型提升为"种类"：`node: ExternalSystem, subtype: Cache` → kind = `Cache`；
+    // 同时把伞形名（`ExternalSystem`）记入 `category`，供视角按**类别**分组 / 筛选。
+    // 这样每个语义节点都有**具体种类**（Table / ConfigKey / Cache / Event / Queue…），
+    // 命名粒度一致，不再出现"有的具体、有的笼统"。
+    let kind = match &s.subtype {
+        Some(sub) if !sub.is_empty() => NodeKind(sub.clone()),
+        _ => s.node.clone(),
+    };
+    let mut props = json!({ "category": s.node.as_str() });
 
     let mut new_node = crate::workspace::synthesized_node(
         ctx.project.id,

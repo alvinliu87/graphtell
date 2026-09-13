@@ -110,6 +110,9 @@ pub struct GraphStats {
     pub edges: u64,
     pub annotations: u64,
     pub by_kind: std::collections::BTreeMap<String, u64>,
+    /// 按 `properties.category` 统计（如 `ExternalSystem` 下辖 Cache / Event / Queue）。
+    #[serde(default)]
+    pub by_category: std::collections::BTreeMap<String, u64>,
 }
 
 /// 图查询端口。

@@ -367,8 +367,11 @@ pub struct FanInThresholds {
 #[serde(default)]
 pub struct SynthesizeAction {
     /// 节点种类（开放字符串，如 `Table` / `HttpContract` / `ExternalSystem`）。
+    ///
+    /// 若同时给了 `subtype`，则**子类型提升为 kind**（`kind = subtype`），
+    /// 而此处的 `node` 记为节点的 `category`（伞形名，如 `ExternalSystem`）。
     pub node: NodeKind,
-    /// `ExternalSystem` 的子类型（Event / Queue / Cache），可选。
+    /// 子类型（`Event` / `Queue` / `Cache`…），可选；给了就作为最终 kind。
     pub subtype: Option<String>,
     pub identity: IdentitySpec,
     pub fields: Vec<FieldSpec>,
@@ -677,4 +680,9 @@ pub enum ResolveStrategy {
     Accessor,
     /// `Route::post('p','Login/appleLogin')`：handler 模式解析。
     Handler,
+    /// `$services->appAuth()`：按变量类型解析实例方法调用。
+    ///
+    /// 类型来源：方法参数类型提示（ThinkPHP 控制器 DI 约定）与构造器属性注入
+    /// （`__construct(T $x){ $this->p = $x; }`），由 P2 记录、本策略消费。
+    VariableType,
 }

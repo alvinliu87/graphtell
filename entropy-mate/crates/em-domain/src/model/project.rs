@@ -42,6 +42,7 @@ pub struct ProjectPatch {
 
 /// 工程级配置。全部可覆盖，杜绝硬编码。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProjectConfig {
     /// 额外的目录排除 glob（在语言默认排除规则之上叠加）。
     pub exclude_globs: Vec<String>,

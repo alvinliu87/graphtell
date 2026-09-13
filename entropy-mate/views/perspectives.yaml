@@ -8,6 +8,12 @@
 #                      靠 hidden 计数 + unresolved 记账 + 可切换来守住诚实性。
 #   mode: aggregate —— 聚合类。**不是单链路**，而是聚合概览（聚类框 / 矩阵）。
 #
+# 对象类视角**默认折叠**：只渲染"语义节点"（Table / HttpContract / ConfigKey /
+# I18nKey / ExternalSystem）与"语义边"（HandledBy / CallsHttp / Triggers /
+# PublishesTo / ReadsDb / WritesDb / MapsTo / ReadsConfig / ReadsCache / ResolvesTo），
+# 判定权威来自 `em-domain/src/model/kinds.rs`；语法节点（Method / CallSite / Class…）
+# 折叠起来，前端点击可展开查看调用链。
+#
 # node_views 里**没有**列出的节点种类不会切换顶部筛选器，
 # 只打开右侧 Inspector —— 例如 ConfigKey / KeyPattern / Component /
 # SecretLocation 这类资产/结构节点没有"单链路"语义。
@@ -20,6 +26,7 @@ perspectives:
     node_kind: HttpContract
     layout: radial
     depth: 2
+    collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
     description: 以一个 HTTP 契约为中心，看它被谁处理、被谁调用、读写了哪些表
 
   - id: table
@@ -33,6 +40,8 @@ perspectives:
   - id: external_system
     label: 外部系统
     mode: object
+    # `ExternalSystem` 是**类别**（写在 properties.category）：其下子类型已提升为种类
+    # （Event / Queue / Cache…）。这里按类别筛选，节点自身仍显示具体种类。
     node_kind: ExternalSystem
     layout: radial
     depth: 2
@@ -97,7 +106,10 @@ perspectives:
 node_views:
   HttpContract: route
   Table: table
-  ExternalSystem: external_system
+  # 外部系统是**类别**：子类型已提升为种类（Cache / Event / Queue…），都切到"外部系统"视角。
+  Cache: external_system
+  Event: external_system
+  Queue: external_system
   Schedule: schedule
   Page: page
   Topic: topic

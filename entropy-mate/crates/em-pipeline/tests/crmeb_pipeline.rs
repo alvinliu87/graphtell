@@ -1,4 +1,4 @@
-//! 以 `分析样本/CRMEB-master` 为材料的建图集成测试。
+//! 以 `samples/CRMEB-master` 为材料的建图集成测试。
 //!
 //! 这些用例验证的是**端到端结论**，而不是某个函数的返回值：
 //! 子工程是否被正确识别、依赖目录是否被排除、`AppRoot` 是否按 FKB 解析、
@@ -7,12 +7,24 @@
 mod common;
 
 use em_domain::model::{NodeKind, ProjectId, SubProjectId};
-use em_domain::port::{DiagnosticSink, GraphQuery, NodeFilter, ProjectReader, SymbolTableReader};
+use em_domain::port::{
+    DiagnosticSink, GraphQuery, NodeFilter, ParserRegistry, ProjectReader, SymbolTableReader,
+};
 
 use serde_json::Value;
 
 fn built() -> Option<std::sync::Arc<common::Built>> {
     common::graph()
+}
+
+/// 语义节点判定（与视图一致）：第一类语义 kind，或带 `category`（外部系统子类型 Cache / Event / Queue…）。
+fn is_semantic_node(n: &em_domain::model::Node) -> bool {
+    NodeKind(n.kind.to_string()).is_semantic()
+        || n.properties
+            .get("category")
+            .and_then(|v| v.as_str())
+            .map(NodeKind::is_semantic_category)
+            .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- P0 Ingest
@@ -384,11 +396,17 @@ fn synthesize_creates_event_mediator_nodes() {
         })
         .expect("查询可读");
     assert!(!events.is_empty(), "应从 app/event.php 合成事件中介节点");
+    // "外部系统"现在是**类别**：事件节点的种类直接是 `Event`，category 为 `ExternalSystem`。
     assert!(
-        events
-            .iter()
-            .any(|n| n.properties.get("subtype").and_then(|v| v.as_str()) == Some("Event")),
-        "事件节点应带 subtype=Event"
+        events.iter().all(|n| {
+            n.properties.get("category").and_then(|v| v.as_str())
+                == Some(NodeKind::EXTERNAL_CATEGORY)
+        }),
+        "外部系统节点应带 category=ExternalSystem"
+    );
+    assert!(
+        events.iter().any(|n| n.kind.as_str() == "Event"),
+        "事件中介节点的种类应为 `Event`（子类型已提升为种类）"
     );
 }
 
@@ -499,6 +517,381 @@ fn resolve_links_routes_to_controllers() {
 }
 
 #[test]
+fn fkb_resolves_apple_login_chain_to_semantics() {
+    // 端到端验证「FKB 语义解析」把整条链路连起来：
+    //   ① 类型化参数 → 实例方法调用（`$services->appAuth()`）
+    //   ② 构造器注入的属性类型（`$this->dao`）
+    //   ③ `Dao::setModel() → Model → Table`（`WechatUserDao → WechatUser → wechat_user`）
+    // 断言：从 apple_login 正向能走到 ExternalSystem(Cache) / Table(wechat_user) / ConfigKey。
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let contracts = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind(NodeKind::HTTP_CONTRACT.to_string())),
+            name_contains: Some("apple_login".to_string()),
+            limit: Some(5),
+            offset: Some(0),
+        })
+        .expect("查询可读");
+    let Some(center) = contracts.first().cloned() else {
+        eprintln!("未找到 apple_login 契约，跳过");
+        return;
+    };
+
+    use em_domain::port::EdgeDirection;
+    let chain = [
+        "HandledBy",
+        "Calls",
+        "HasCallSite",
+        "ReadsCache",
+        "ReadsConfig",
+        "ReadsDb",
+        "WritesDb",
+        "MapsTo",
+        "Triggers",
+        "PublishesTo",
+        "CallsHttp",
+        "ResolvesTo",
+    ];
+
+    // 遍历规则与视图一致：语义节点是**终点**；方法节点额外跳到"声明类"，
+    // 让类级语义边（Dao→Model、Model→Table）浮现。
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    seen.insert(center.id.get());
+    queue.push_back(center.id);
+    let mut semantic: Vec<(String, String)> = Vec::new();
+    let mut sem_ids = std::collections::HashSet::new();
+    while let Some(id) = queue.pop_front() {
+        let Some(node) = b.store.get_node(id).ok().flatten() else {
+            continue;
+        };
+        let is_semantic = is_semantic_node(&node);
+        if id != center.id && is_semantic {
+            continue; // 语义节点不再向外穿透
+        }
+        if node.kind.as_str() == NodeKind::METHOD {
+            for e in b
+                .store
+                .edges_of(id, EdgeDirection::Incoming)
+                .unwrap_or_default()
+            {
+                if e.kind.as_str() == "Declares" && seen.insert(e.from_id.get()) {
+                    queue.push_back(e.from_id);
+                }
+            }
+        }
+        for e in b
+            .store
+            .edges_of(id, EdgeDirection::Outgoing)
+            .unwrap_or_default()
+        {
+            if !chain.contains(&e.kind.as_str()) {
+                continue;
+            }
+            if let Ok(Some(n)) = b.store.get_node(e.to_id) {
+                if is_semantic_node(&n) && sem_ids.insert(n.id.get()) {
+                    semantic.push((n.kind.to_string(), n.name.to_string()));
+                }
+            }
+            if seen.insert(e.to_id.get()) {
+                queue.push_back(e.to_id);
+            }
+        }
+    }
+    eprintln!("apple_login 的语义终点：{semantic:?}");
+
+    assert!(
+        semantic
+            .iter()
+            .any(|(k, _)| matches!(k.as_str(), "Cache" | "Event" | "Queue")),
+        "应到达外部系统（其种类为 Cache / Event / Queue），实际 {semantic:?}"
+    );
+    assert!(
+        semantic.iter().any(|(k, n)| k == "Cache" && n == "Cache"),
+        "应到达种类为 `Cache` 的节点（CacheService → think\\facade\\Cache），实际 {semantic:?}"
+    );
+    assert!(
+        semantic
+            .iter()
+            .filter(|(k, _)| k == NodeKind::CONFIG_KEY)
+            .count()
+            >= 1,
+        "应到达至少一个 ConfigKey（sys_config 等），实际 {semantic:?}"
+    );
+    assert!(
+        semantic
+            .iter()
+            .any(|(k, n)| k == NodeKind::TABLE && n == "wechat_user"),
+        "应到达业务表 wechat_user（链路 WechatUserDao --ResolvesTo--> WechatUser \
+         --MapsTo--> wechat_user），实际 {semantic:?}"
+    );
+
+    // ① 类型化参数：handler 应有一条 Calls 边指向 `WechatServices::appAuth`。
+    let handler = b
+        .store
+        .edges_of(center.id, EdgeDirection::Outgoing)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|e| e.kind.as_str() == "HandledBy")
+        .map(|e| e.to_id)
+        .expect("apple_login 应有 HandledBy handler");
+    let to_app_auth = b
+        .store
+        .edges_of(handler, EdgeDirection::Outgoing)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.kind.as_str() == "Calls")
+        .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
+        .any(|n| n.fqn.as_deref().unwrap_or("").contains("WechatServices::appAuth"));
+    assert!(
+        to_app_auth,
+        "handler 应调用 WechatServices::appAuth（类型化参数 `WechatServices $services` 解析）"
+    );
+
+    // ③ Dao → Model：`WechatUserDao::setModel()` 返回 `WechatUser::class` → ResolvesTo 边。
+    let daos = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind(NodeKind::CLASS.to_string())),
+            name_contains: Some("WechatUserDao".to_string()),
+            limit: Some(5),
+            offset: Some(0),
+        })
+        .expect("查询可读");
+    if let Some(dao) = daos.iter().find(|n| n.name == "WechatUserDao") {
+        let to_model = b
+            .store
+            .edges_of(dao.id, EdgeDirection::Outgoing)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.kind.as_str() == "ResolvesTo")
+            .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
+            .any(|n| n.name == "WechatUser");
+        assert!(
+            to_model,
+            "WechatUserDao 应有一条 ResolvesTo 边指向 WechatUser（setModel 返回 User::class）"
+        );
+    } else {
+        eprintln!("未找到 WechatUserDao 类，跳过 Dao→Model 断言");
+    }
+}
+
+/// 专门验证 `samples/CRMEB-master/crmeb/app/api/route/v1.php` 里的这条路由：
+///
+/// ```php
+/// Route::post('apple_login', 'v1.LoginController/appleLogin')->name('appleLogin');
+/// ```
+///
+/// 链路应为：
+/// `POST /apple_login`(HttpContract)
+///   ─HandledBy→ `LoginController::appleLogin`
+///   ─Calls→ `WechatServices::appAuth`            （类型化参数 `WechatServices $services`）
+///   ─Calls→ `CacheService::get` ─ReadsCache→ `Cache`（种类 `Cache`，类别 `ExternalSystem`）
+///   ─Calls→ `WechatUserDao` ─ResolvesTo→ `WechatUser` ─MapsTo→ `wechat_user`(Table)
+/// 并读到 `ConfigKey`（sys_config）。
+#[test]
+fn apple_login_route_chain_from_v1_php() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    use em_domain::port::EdgeDirection;
+
+    let find_nodes = |kind: &str, name_contains: &str| -> Vec<em_domain::model::Node> {
+        b.store
+            .query_nodes(&NodeFilter {
+                project_id: b.project.id,
+                kind: Some(NodeKind(kind.to_string())),
+                name_contains: Some(name_contains.to_string()),
+                limit: Some(50),
+                offset: Some(0),
+            })
+            .expect("查询可读")
+    };
+    let node_of = |id: em_domain::model::NodeId| -> Option<em_domain::model::Node> {
+        b.store.get_node(id).ok().flatten()
+    };
+    let out_edges = |id: em_domain::model::NodeId| -> Vec<em_domain::model::Edge> {
+        b.store
+            .edges_of(id, EdgeDirection::Outgoing)
+            .unwrap_or_default()
+    };
+
+    // ---- 1) 契约节点：必须来自 route/v1.php 的第 31 行 ----
+    let contracts = find_nodes(NodeKind::HTTP_CONTRACT, "apple_login");
+    let contract = contracts
+        .iter()
+        .find(|n| n.name == "POST /apple_login")
+        .expect("应存在 `POST /apple_login` 契约");
+    let props = &contract.properties;
+    assert_eq!(
+        props.get("handler").and_then(|v| v.as_str()),
+        Some("v1.LoginController/appleLogin"),
+        "handler 字段应保留路由文件里的原样写法"
+    );
+    assert_eq!(
+        props.get("raw_path").and_then(|v| v.as_str()),
+        Some("apple_login"),
+        "raw_path 应为路由里的 'apple_login'"
+    );
+    let loc = props
+        .get("locations")
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .cloned()
+        .expect("契约应带来源位置");
+    let loc_file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("");
+    let loc_line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+    assert!(
+        loc_file.ends_with("app/api/route/v1.php"),
+        "契约应来自 app/api/route/v1.php，实际 {loc_file}"
+    );
+    assert_eq!(loc_line, 31, "契约应定位到 v1.php 第 31 行的 Route::post");
+
+    // ---- 2) HandledBy → LoginController::appleLogin ----
+    let handler = out_edges(contract.id)
+        .into_iter()
+        .find(|e| e.kind.as_str() == "HandledBy")
+        .map(|e| e.to_id)
+        .expect("路由应由 handler 处理（HandledBy）");
+    let handler_node = node_of(handler).expect("handler 节点存在");
+    assert_eq!(
+        handler_node.fqn.as_deref(),
+        Some("app\\api\\controller\\v1\\LoginController::appleLogin"),
+        "应解析到 v1\\LoginController::appleLogin"
+    );
+
+    // ---- 3) 类型化参数：handler ─Calls→ WechatServices::appAuth ----
+    let calls_app_auth = out_edges(handler)
+        .into_iter()
+        .filter(|e| e.kind.as_str() == "Calls")
+        .filter_map(|e| node_of(e.to_id))
+        .any(|n| {
+            n.fqn
+                .as_deref()
+                .unwrap_or("")
+                .contains("WechatServices::appAuth")
+        });
+    assert!(
+        calls_app_auth,
+        "appleLogin 应调用 WechatServices::appAuth（参数 `WechatServices $services` 的类型解析）"
+    );
+
+    // ---- 4) 正向链路到达语义节点（语义节点为终点）----
+    let chain = [
+        "HandledBy",
+        "Calls",
+        "HasCallSite",
+        "ReadsCache",
+        "ReadsConfig",
+        "ReadsDb",
+        "WritesDb",
+        "MapsTo",
+        "Triggers",
+        "PublishesTo",
+        "CallsHttp",
+        "ResolvesTo",
+    ];
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    seen.insert(contract.id.get());
+    queue.push_back(contract.id);
+    let mut semantic: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    while let Some(id) = queue.pop_front() {
+        let Some(node) = node_of(id) else { continue };
+        if id != contract.id && NodeKind(node.kind.to_string()).is_semantic() {
+            continue;
+        }
+        if node.kind.as_str() == NodeKind::METHOD {
+            for e in b
+                .store
+                .edges_of(id, EdgeDirection::Incoming)
+                .unwrap_or_default()
+            {
+                if e.kind.as_str() == "Declares" && seen.insert(e.from_id.get()) {
+                    queue.push_back(e.from_id);
+                }
+            }
+        }
+        for e in out_edges(id) {
+            if !chain.contains(&e.kind.as_str()) {
+                continue;
+            }
+            if let Some(n) = node_of(e.to_id) {
+                if is_semantic_node(&n) {
+                    semantic.insert((n.kind.to_string(), n.name.to_string()));
+                }
+            }
+            if seen.insert(e.to_id.get()) {
+                queue.push_back(e.to_id);
+            }
+        }
+    }
+    eprintln!("POST /apple_login 链路语义终点：{semantic:?}");
+
+    let hit = |kind: &str, name: &str| semantic.iter().any(|(k, n)| k == kind && n == name);
+    assert!(
+        hit("Cache", "Cache"),
+        "链路应到达种类为 `Cache` 的节点（类别 ExternalSystem；CacheService::get → think\\facade\\Cache），实际 {semantic:?}"
+    );
+    assert!(
+        hit(NodeKind::TABLE, "wechat_user"),
+        "链路应到达 Table(wechat_user)，实际 {semantic:?}"
+    );
+    assert!(
+        semantic.iter().any(|(k, _)| k == NodeKind::CONFIG_KEY),
+        "链路应到达 ConfigKey（sys_config），实际 {semantic:?}"
+    );
+
+    // ---- 5) 关键语义边：Dao → Model → Table ----
+    let dao = find_nodes(NodeKind::CLASS, "WechatUserDao")
+        .into_iter()
+        .find(|n| n.name == "WechatUserDao")
+        .expect("应存在 WechatUserDao 类");
+    let model = out_edges(dao.id)
+        .into_iter()
+        .filter(|e| e.kind.as_str() == "ResolvesTo")
+        .filter_map(|e| node_of(e.to_id))
+        .find(|n| n.name == "WechatUser")
+        .expect("WechatUserDao --ResolvesTo--> WechatUser（setModel 返回 User::class）");
+    out_edges(model.id)
+        .into_iter()
+        .filter(|e| e.kind.as_str() == "MapsTo")
+        .filter_map(|e| node_of(e.to_id))
+        .find(|n| n.name == "wechat_user" && n.kind.as_str() == NodeKind::TABLE)
+        .expect("WechatUser --MapsTo--> wechat_user（Table）");
+
+    // ---- 6) 关键语义边：CacheService 读到 Cache（FKB facade 规则）----
+    let cache_read = find_nodes(NodeKind::CLASS, "CacheService")
+        .into_iter()
+        .flat_map(|svc| {
+            out_edges(svc.id)
+                .into_iter()
+                .filter(|e| e.kind.as_str() == "Declares")
+                .map(|e| e.to_id)
+                .collect::<Vec<_>>()
+        })
+        .any(|m| {
+            out_edges(m).into_iter().any(|e| {
+                e.kind.as_str() == "ReadsCache"
+                    && node_of(e.to_id)
+                        .map(|n| n.kind.as_str() == "Cache")
+                        .unwrap_or(false)
+            })
+        });
+    assert!(
+        cache_read,
+        "CacheService 的某个方法应有一条 ReadsCache 边指向种类为 `Cache` 的节点"
+    );
+}
+
+#[test]
 fn resolve_creates_event_trigger_edges() {
     let Some(b) = built() else {
         eprintln!("{}", common::skip_reason());
@@ -592,4 +985,119 @@ fn project_and_sub_project_ids_are_consistent() {
     let subs = b.store.list_sub_projects(b.project.id).expect("可读");
     assert!(subs.iter().all(|s| s.project_id == b.project.id));
     assert!(subs.iter().any(|s| s.id == SubProjectId(1)));
+}
+
+// ---------------------------------------------------------------- v1.php 专项
+
+/// v1.php 的路由是否进了图：文件被扫描 + 其贡献的 HttpContract 节点存在。
+#[test]
+fn v1_php_routes_are_in_graph() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+
+    // 1) v1.php 是否被扫描进图
+    let files = b.store.list_files(b.project.id, None).expect("可读");
+    assert!(
+        files
+            .iter()
+            .any(|f| f.path.ends_with("crmeb/app/api/route/v1.php")),
+        "v1.php 应被扫描进图"
+    );
+
+    // 2) 哪些 HttpContract 节点来自 v1.php
+    let contracts = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind(NodeKind::HTTP_CONTRACT.to_string())),
+            name_contains: None,
+            limit: Some(5000),
+            offset: Some(0),
+        })
+        .expect("可读");
+
+    let mut from_v1: Vec<String> = contracts
+        .iter()
+        .filter(|c| {
+            c.properties
+                .get("locations")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter().any(|l| {
+                        l.get("file")
+                            .and_then(|f| f.as_str())
+                            .unwrap_or("")
+                            .ends_with("route/v1.php")
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .filter_map(|c| c.identity.as_ref().map(|i| i.value.clone()))
+        .collect();
+    from_v1.sort();
+    eprintln!("v1.php 贡献的 HttpContract 数量 = {}", from_v1.len());
+    for id in from_v1.iter().take(30) {
+        eprintln!("  {id}");
+    }
+    assert!(!from_v1.is_empty(), "v1.php 应至少贡献若干路由契约");
+    for must in [
+        "POST /apple_login",
+        "ANY /wechat/serve",
+        "GET /admin/order/statistics",
+        "POST /login",
+        "GET /pay/config",
+    ] {
+        assert!(from_v1.iter().any(|x| x == must), "缺少预期路由 {must}");
+    }
+}
+
+/// 直接看 v1.php 的解析产物（原始调用点），不经过整张图。
+#[test]
+fn v1_php_parse_result() {
+    let Some(root) = common::sample_root() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let path = root.join("crmeb/app/api/route/v1.php");
+    let src = std::fs::read_to_string(&path).expect("读 v1.php");
+    let reg = em_adapter_parser::DefaultParserRegistry::new();
+    let parser = reg
+        .parser_for(&em_domain::model::Language::new(
+            em_domain::model::Language::PHP,
+        ))
+        .expect("php 解析器");
+    let facts = parser.parse(path.to_str().unwrap(), &src).expect("解析");
+
+    eprintln!(
+        "declarations={} imports={} call_sites={} inheritances={} config_entries={}",
+        facts.declarations.len(),
+        facts.imports.len(),
+        facts.call_sites.len(),
+        facts.inheritances.len(),
+        facts.config_entries.len()
+    );
+
+    let route_calls: Vec<_> = facts
+        .call_sites
+        .iter()
+        .filter(|c| c.receiver.as_deref() == Some("Route"))
+        .collect();
+    eprintln!("Route:: 调用点数量 = {}", route_calls.len());
+    for c in route_calls.iter().take(30) {
+        let args: Vec<String> = c
+            .args
+            .iter()
+            .map(|a| match a {
+                em_domain::model::FactValue::String(s) => s.clone(),
+                _ => "?".to_string(),
+            })
+            .collect();
+        eprintln!(
+            "  {}  args={:?}  @{}:{}",
+            c.callee_text, args, c.owner_fqn, c.span.start_line
+        );
+    }
+    assert!(!route_calls.is_empty(), "v1.php 应解析出 Route 调用点");
 }

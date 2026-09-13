@@ -17,12 +17,21 @@ import { LocationBadge, LocationList } from './LocationList';
 export function Inspector({
   nodeId,
   edgeId,
+  edgeView,
+  nodeNameOf,
   projectRoot,
   onClose,
   onJumpToReference,
 }: {
   nodeId: number | null;
   edgeId: number | null;
+  /**
+   * 点击的那条边本身。折叠视图里的"直连"其实是提拉出来的，
+   * 中间节点只存在于当次视图结果中（按 id 重查拿不到），所以要把它带进来。
+   */
+  edgeView?: EdgeView | null;
+  /** 端点 id → 名字；用于把折叠链首尾两个语义节点也标出名字。 */
+  nodeNameOf?: (id: number) => string;
   projectRoot?: string;
   onClose: () => void;
   onJumpToReference?: (nodeId: number) => void;
@@ -44,7 +53,14 @@ export function Inspector({
           onJumpToReference={onJumpToReference}
         />
       ) : null}
-      {edgeId !== null ? <EdgePanel edgeId={edgeId} projectRoot={projectRoot} /> : null}
+      {edgeId !== null ? (
+        <EdgePanel
+          edgeId={edgeId}
+          edgeView={edgeView}
+          nodeNameOf={nodeNameOf}
+          projectRoot={projectRoot}
+        />
+      ) : null}
     </Drawer>
   );
 }
@@ -104,7 +120,17 @@ function NodePanel({
   );
 }
 
-function EdgePanel({ edgeId, projectRoot }: { edgeId: number; projectRoot?: string }) {
+function EdgePanel({
+  edgeId,
+  edgeView,
+  nodeNameOf,
+  projectRoot,
+}: {
+  edgeId: number;
+  edgeView?: EdgeView | null;
+  nodeNameOf?: (id: number) => string;
+  projectRoot?: string;
+}) {
   const { data, loading } = useAsync<EdgeEvidence | null>(
     () => viewApi.edgeEvidence(edgeId),
     [edgeId],
@@ -115,7 +141,27 @@ function EdgePanel({ edgeId, projectRoot }: { edgeId: number; projectRoot?: stri
     setHops([]);
   }, [edgeId]);
 
+  // 这条边折叠掉的中间节点（只有点击时的视图结果里才有）
+  const via = edgeView?.via ?? [];
+
   if (loading) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+  // 负数 id = 折叠视图汇总出的合成边（没有对应的单条原始边），查证据注定查不到，
+  // 与其显示"未找到该边"让人以为坏了，不如直说它是什么 —— 但调用链照样能给。
+  if (edgeId < 0) {
+    return (
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Alert
+          type="info"
+          showIcon
+          message="合成边（折叠汇总）"
+          description="这条边是把多条调用链汇总后提拉出的语义边，图里没有与它一一对应的原始边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到原始调用。"
+        />
+        {via.length > 0 && edgeView ? (
+          <CollapsedChain edge={edgeView} via={via} nodeNameOf={nodeNameOf} />
+        ) : null}
+      </Space>
+    );
+  }
   if (!data) return <Empty description="未找到该边" />;
 
   const unresolved = !data.edge.resolved;

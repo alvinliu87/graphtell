@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use em_domain::model::{
     Declaration, EdgeKind, FactValue, NewEdge, NewNode, NodeId, NodeKind, Phase, ProjectId,
-    Severity, SourceFile, Span, SyntaxFacts,
+    ResolveAs, Severity, SourceFile, Span, SyntaxFacts,
 };
 use em_domain::port::{FileSystem, ParserRegistry};
 use tracing::{debug, warn};
@@ -201,6 +201,69 @@ fn build_file(
                 ctx.ws.record_property(owner, &d.name, property_value(d));
             }
         }
+        if d.kind.as_str() == NodeKind::METHOD {
+            // 参数类型：`__construct(LoginServices $services)` → 变量 services : LoginServices。
+            // 供 P7 解析 `$services->appAuth()`（按变量类型）。
+            if let Some(params) = d.extra.get("parameters").and_then(|v| v.as_array()) {
+                for p in params {
+                    let (Some(var), Some(ty)) = (
+                        p.get("name").and_then(|v| v.as_str()),
+                        p.get("type").and_then(|v| v.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    if is_builtin_type(ty) {
+                        continue;
+                    }
+                    let fqn = resolve_type(
+                        facts.namespace.as_deref(),
+                        &imports,
+                        ty.trim_start_matches('?'),
+                    );
+                    // 变量名统一去掉 `$` 前缀，便于按 `$var` 查表。
+                    ctx.ws
+                        .add_param_type(&d.fqn, var.trim_start_matches('$'), &fqn);
+                }
+            }
+            // 构造器注入：`$this->services = $services` → 属性 services 的类型 = 参数 services 的类型。
+            if let Some(assigns) = d.extra.get("this_assigns").and_then(|v| v.as_array()) {
+                let Some(class_fqn) = d.parent_fqn.as_deref() else {
+                    continue;
+                };
+                for a in assigns {
+                    let (Some(prop), Some(var)) = (
+                        a.get("prop").and_then(|v| v.as_str()),
+                        a.get("var").and_then(|v| v.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    if let Some(ty) = ctx.ws.param_type(&d.fqn, var) {
+                        let ty = ty.to_string();
+                        ctx.ws.set_prop_type(class_fqn, prop, &ty);
+                    }
+                }
+            }
+            // `return X::class;` → 声明式联系：所属类 → X（如 `Dao::setModel()` → Model）。
+            // 跨文件引用交给 P7 统一解析（此时目标类可能尚未建节点）。
+            if let Some(list) = d.extra.get("returns_class").and_then(|v| v.as_array()) {
+                if let Some(owner_id) = d.parent_fqn.as_ref().and_then(|p| local.get(p).copied()) {
+                    for c in list {
+                        let Some(name) = c.as_str() else { continue };
+                        let fqn = resolve_type(facts.namespace.as_deref(), &imports, name);
+                        ctx.ws.pending_links.push(crate::workspace::PendingLink {
+                            from: owner_id,
+                            kind: EdgeKind(EdgeKind::RESOLVES_TO.to_string()),
+                            raw: fqn,
+                            resolve: ResolveAs::ClassConst,
+                            confidence: 0.85,
+                            sub: file.sub_project_id,
+                            file: file.path.clone(),
+                            line: d.span.start_line,
+                        });
+                    }
+                }
+            }
+        }
         let owner = d
             .parent_fqn
             .as_ref()
@@ -377,4 +440,31 @@ pub fn resolve_type(ns: Option<&str>, imports: &HashMap<String, String>, name: &
         Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, raw),
         _ => raw.to_string(),
     }
+}
+
+/// 是否为语言内建类型（`int` / `string` / `array`…），不是类名，跳过后不参与类型推断。
+fn is_builtin_type(t: &str) -> bool {
+    matches!(
+        t.trim_start_matches('?').trim().to_ascii_lowercase().as_str(),
+        "int"
+            | "integer"
+            | "string"
+            | "bool"
+            | "boolean"
+            | "float"
+            | "double"
+            | "array"
+            | "void"
+            | "mixed"
+            | "object"
+            | "callable"
+            | "iterable"
+            | "null"
+            | "false"
+            | "true"
+            | "self"
+            | "static"
+            | "parent"
+            | "never"
+    )
 }

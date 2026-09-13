@@ -1,15 +1,44 @@
 import { useMemo, useRef, useState } from 'react';
-import { Empty, Spin, Tooltip } from 'antd';
+import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { EdgeView, LayoutMode, NodeView, SourceLocation } from '@/entities/view';
 import { edgeColor, nodeColor } from '@/entities/graph';
 import { truncate } from '@/shared/lib/format';
 import { layoutOf, type LayoutInput, type LayoutResult } from './layout/types';
 
+/**
+ * 超过这个边数就只在"悬浮 / 选中"时标注边类型。
+ *
+ * 边类型是语义图的"谓语"（`ReadsConfig` / `MapsTo` / `ReadsCache`…），标出来才读得懂；
+ * 但共享资源视图可能有上百条边，全部标注会糊成一片 —— 所以边多时退化成"按需标注"，
+ * 悬浮详情卡始终给出完整信息。
+ */
+const EDGE_LABEL_LIMIT = 40;
+
+/**
+ * 边的稳定唯一键。
+ *
+ * 折叠视图里存在"合成边"（提拉 / 反向汇总得到，没有真实行），只靠 `id` 会撞键；
+ * 同一对端点也可能有多条不同种类的边，所以带上端点一起构成键。
+ */
+const edgeKey = (e: { id: number; from: number; to: number }) => `${e.id}:${e.from}->${e.to}`;
+
 export interface CanvasNode {
   id: number;
   kind: string;
+  /** 语义节点的类别（如 ExternalSystem）；语法节点为 null。 */
+  category?: string | null;
+  /** 该节点对应的视角 id（点击即切）；无则为 null。 */
+  own_view?: string | null;
   name: string;
   ring: number;
+  /**
+   * 以下为悬浮卡片的补充信息，**全部可选**：调用方可能只给出最小画布节点，
+   * 卡片必须能容忍它们缺失（曾经这里按 `NodeView` 强转后直接 `.length`，一悬浮就崩）。
+   */
+  fqn?: string | null;
+  locations?: SourceLocation[];
+  annotations?: string[];
+  metrics?: { fan_in?: number; fan_out?: number } | null;
 }
 
 export interface CanvasCluster {
@@ -39,12 +68,14 @@ export interface GraphCanvasProps {
   hoverEnabled?: boolean;
   width?: number;
   height?: number;
-  /** 单击节点：仅当该节点有对应视角时才会切视角。 */
-  onNodeClick?: (id: number, kind: string, hasOwnView: boolean) => void;
+  /** 单击节点：`ownView` 为对应视角 id 时，一级视角切到它、二级对象设为该节点。 */
+  onNodeClick?: (id: number, kind: string, ownView: string | null) => void;
   /** 右键 / 详情图标：打开 Inspector 或跳转，不切视角。 */
   onNodeContextMenu?: (id: number, kind: string, event: React.MouseEvent) => void;
   onEdgeClick?: (edge: EdgeView) => void;
   locationsOf?: (id: number) => SourceLocation[];
+  /** 是否在边上标注边的类型（如 `ReadsConfig`）。默认开启，边过多或缩小时自动隐藏。 */
+  showEdgeLabels?: boolean;
 }
 
 /**
@@ -74,9 +105,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
     onNodeClick,
     onNodeContextMenu,
     onEdgeClick,
+    showEdgeLabels = true,
   } = props;
 
   const [hover, setHover] = useState<number | null>(null);
+  const [hoverEdge, setHoverEdge] = useState<string | null>(null);
+  const [pointer, setPointer] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number } | null>(null);
 
@@ -99,10 +133,24 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return layoutOf(mode)(input);
   }, [mode, center, rings, edges, clusters, matrix, width, height]);
 
+  // 按端点建索引：合成边 id 不唯一，按 id 查会永远只命中第一条（表现为"所有边都显示成同一种类"）。
+  // **必须在所有提前返回之前声明**，否则 loading 时它不执行、数据返回后多出一个 Hook，
+  // 会直接触发 "Rendered more hooks than during the previous render" 白屏
+  // （`GraphCanvas.test.tsx` 就是守这个用例的）。
+  const edgeByPair = useMemo(() => {
+    const m = new Map<string, EdgeView>();
+    for (const e of edges) m.set(`${e.from}->${e.to}`, e);
+    return m;
+  }, [edges]);
+
   if (loading) {
     return (
       <div style={{ height, display: 'grid', placeItems: 'center' }}>
-        <Spin tip="加载视图…" />
+        {/* `tip` 只在 nest / fullscreen 模式下生效，这里用文字并列避免 antd 告警 */}
+        <Space direction="vertical" align="center" size={8}>
+          <Spin />
+          <Typography.Text type="secondary">加载视图…</Typography.Text>
+        </Space>
       </div>
     );
   }
@@ -114,10 +162,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
     );
   }
 
-  const nodeById = new Map<number, NodeView>();
-  const allNodes: NodeView[] = [];
-  if (center) allNodes.push(center as NodeView);
-  rings.flat().forEach((n) => allNodes.push(n as NodeView));
+  // 就用 `CanvasNode` 的真实类型：早先这里 `as NodeView` 谎报了字段，
+  // 于是悬浮卡片访问 `locations.length` 时数据在、类型在、运行时没有 —— 直接崩。
+  const nodeById = new Map<number, CanvasNode>();
+  const allNodes: CanvasNode[] = [];
+  if (center) allNodes.push(center);
+  rings.flat().forEach((n) => allNodes.push(n));
   allNodes.forEach((n) => nodeById.set(n.id, n));
 
   const maxCell = Math.max(
@@ -131,6 +181,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
     setTransform((t) => ({ ...t, k: Math.max(0.25, Math.min(3, t.k * factor)) }));
   };
 
+  const hoveredNode = hover != null ? nodeById.get(hover) ?? null : null;
+  const hoveredEdge = hoverEdge != null ? edges.find((x) => edgeKey(x) === hoverEdge) ?? null : null;
+
   return (
     <div
       style={{
@@ -138,6 +191,15 @@ export function GraphCanvas(props: GraphCanvasProps) {
         borderRadius: 14,
         background: 'linear-gradient(180deg,#fbfcfe,#f4f6fa)',
         overflow: 'hidden',
+        position: 'relative',
+      }}
+      onMouseMove={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        setPointer({ x: e.clientX - r.left, y: e.clientY - r.top });
+      }}
+      onMouseLeave={() => {
+        setHover(null);
+        setHoverEdge(null);
       }}
     >
       <svg
@@ -235,22 +297,57 @@ export function GraphCanvas(props: GraphCanvasProps) {
 
           {/* 边 */}
           {layout.edges.map((e) => {
-            const view = edges.find((x) => x.id === e.id);
-            const dim = hover !== null && e.from !== hover && e.to !== hover;
-            const active = hover !== null && (e.from === hover || e.to === hover);
+            const view = edgeByPair.get(`${e.from}->${e.to}`) ?? edges.find((x) => x.id === e.id);
+            // 悬浮只做"正向强调"（加粗），不再把其它边 / 节点变淡
+            const active =
+              (hover !== null && (e.from === hover || e.to === hover)) || hoverEdge === edgeKey(e);
             const d = e.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]},${p[1]}`).join(' ');
+            const mid = e.points[Math.floor(e.points.length / 2)] ?? [0, 0];
             return (
-              <path
-                key={e.id}
-                d={d}
-                fill="none"
-                stroke={edgeColor(view?.kind ?? '')}
-                strokeWidth={active ? 2.4 : 1.2}
-                strokeOpacity={dim ? 0.18 : 0.8}
-                strokeDasharray={view?.resolved ? undefined : '5 4'}
-                style={{ cursor: 'pointer' }}
-                onClick={() => view && onEdgeClick?.(view)}
-              />
+              <g key={edgeKey(e)}>
+                {/* 加宽的透明命中区，便于悬浮细边 */}
+                <path
+                  d={d}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={12}
+                  style={{ cursor: 'pointer' }}
+                  onMouseEnter={() => setHoverEdge(edgeKey(e))}
+                  onMouseLeave={() => setHoverEdge(null)}
+                  onClick={() => view && onEdgeClick?.(view)}
+                />
+                <path
+                  d={d}
+                  fill="none"
+                  stroke={edgeColor(view?.kind ?? '')}
+                  strokeWidth={active ? 2.6 : 1.2}
+                  strokeOpacity={active ? 1 : 0.8}
+                  strokeDasharray={view?.resolved ? undefined : '5 4'}
+                  style={{ pointerEvents: 'none' }}
+                />
+                {/* 边的类型：语义边种类（`ReadsConfig` / `MapsTo`…）就是这个图的"谓语"，
+                    标出来才读得懂。但边一多就会糊成一片，所以：
+                    边数超过阈值时只标"悬浮/选中"的那条；放大后恢复全标。 */}
+                {view && showEdgeLabels && (edges.length <= EDGE_LABEL_LIMIT || active || transform.k >= 1.15) ? (
+                  <text
+                    x={mid[0]}
+                    y={mid[1] - 4}
+                    fontSize={10}
+                    textAnchor="middle"
+                    stroke="#ffffff"
+                    strokeWidth={3}
+                    paintOrder="stroke"
+                    style={{ pointerEvents: 'none', userSelect: 'none' }}
+                  >
+                    {/* 边种类 */}
+                    <tspan fill={edgeColor(view.kind)}>{view.kind}</tspan>
+                    {/* 折叠提示：这条"直连"其实跨了 N 个语法节点，必须标出来，不能让它看起来是真的直连 */}
+                    {view.hops ? (
+                      <tspan fill="#94a3b8"> ·经 {view.hops} 跳</tspan>
+                    ) : null}
+                  </text>
+                ) : null}
+              </g>
             );
           })}
 
@@ -259,7 +356,6 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const meta = nodeById.get(n.id);
             const isCenter = center?.id === n.id;
             const isOrigin = originId != null && originId === n.id;
-            const dim = hover !== null && hover !== n.id;
             const r = n.shape === 'rect' ? 0 : isCenter ? 15 : 7;
             const w = n.w ?? 120;
             const h = n.h ?? 26;
@@ -268,11 +364,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
               <g
                 key={n.id}
                 transform={`translate(${n.x},${n.y})`}
-                opacity={dim ? 0.32 : 1}
-                style={{ cursor: (meta?.has_own_view ?? false) ? 'pointer' : 'default' }}
+                style={{ cursor: meta?.own_view ? 'pointer' : 'default' }}
                 onMouseEnter={() => setHover(n.id)}
                 onMouseLeave={() => setHover(null)}
-                onClick={() => onNodeClick?.(n.id, n.kind, meta?.has_own_view ?? false)}
+                onClick={() => onNodeClick?.(n.id, n.kind, meta?.own_view ?? null)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   onNodeContextMenu?.(n.id, n.kind, e);
@@ -309,6 +404,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     from
                   </text>
                 ) : null}
+                {/* 原生 tooltip：种类 / 类别 / 名称 —— 便于分辨同名或含义不明的节点 */}
+                <title>
+                  {meta?.category && meta.category !== n.kind
+                    ? `${n.kind}（类别 ${meta.category}）· ${n.name}`
+                    : `${n.kind} · ${n.name}`}
+                </title>
                 <text
                   x={n.shape === 'rect' ? 0 : r + 6}
                   y={n.shape === 'rect' ? 4 : 4}
@@ -318,7 +419,19 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   textAnchor={n.shape === 'rect' ? 'middle' : 'start'}
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 >
-                  {truncate(n.name, n.shape === 'rect' ? 22 : 26)}
+                  {/* 种类徽标（用节点配色高亮）：
+                      让 `wechat_user` 看得出是 Table，也让 `Table(cache)` 与 `Cache` 可分辨 */}
+                  <tspan fill={fill} fontWeight={600}>
+                    {n.kind}
+                  </tspan>
+                  {n.name && n.name !== n.kind ? (
+                    <>
+                      <tspan fill="#94a3b8" fontWeight={400}>
+                        {' · '}
+                      </tspan>
+                      <tspan>{truncate(n.name, n.shape === 'rect' ? 18 : 22)}</tspan>
+                    </>
+                  ) : null}
                 </text>
                 {selectedId === n.id ? (
                   <circle r={r + 6} fill="none" stroke="#3d7eff" strokeWidth={1.6} />
@@ -328,6 +441,113 @@ export function GraphCanvas(props: GraphCanvasProps) {
           })}
         </g>
       </svg>
+
+      {/* 悬浮详情卡：取代"其它节点 / 边变淡"的旧行为 —— 悬浮即给出可读属性 */}
+      {hoveredNode ? (
+        <div
+          style={{
+            position: 'absolute',
+            left: Math.min(pointer.x + 16, Math.max(8, width - 268)),
+            top: Math.min(pointer.y + 16, Math.max(8, height - 170)),
+            width: 252,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: 'rgba(255,255,255,0.98)',
+            border: '1px solid #e2e8f0',
+            boxShadow: '0 8px 24px rgba(15,23,42,0.12)',
+            fontSize: 12,
+            lineHeight: 1.65,
+            pointerEvents: 'none',
+            zIndex: 5,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: nodeColor(hoveredNode.kind),
+              }}
+            />
+            <b>{hoveredNode.kind}</b>
+            {hoveredNode.category && hoveredNode.category !== hoveredNode.kind ? (
+              <span style={{ color: '#94a3b8' }}>类别 {hoveredNode.category}</span>
+            ) : null}
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, marginTop: 2, wordBreak: 'break-all' }}>
+            {hoveredNode.name}
+          </div>
+          {hoveredNode.fqn ? (
+            <div style={{ color: '#64748b', wordBreak: 'break-all' }}>{hoveredNode.fqn}</div>
+          ) : null}
+          <div style={{ color: '#64748b' }}>
+            入边 {hoveredNode.metrics?.fan_in ?? 0} · 出边 {hoveredNode.metrics?.fan_out ?? 0} ·{' '}
+            位置 {hoveredNode.locations?.length ?? 0}
+          </div>
+          {hoveredNode.annotations && hoveredNode.annotations.length > 0 ? (
+            <div style={{ marginTop: 4 }}>
+              {hoveredNode.annotations.slice(0, 4).map((a) => (
+                <Tag key={a} style={{ marginBottom: 2 }} color="blue">
+                  {a}
+                </Tag>
+              ))}
+            </div>
+          ) : null}
+          <div
+            style={{ marginTop: 6, color: hoveredNode.own_view ? '#1677ff' : '#94a3b8' }}
+          >
+            {hoveredNode.own_view
+              ? `单击 → 一级切到「${hoveredNode.own_view}」视角，二级为「${hoveredNode.name}」`
+              : '单击展开调用链 · 右键看位置'}
+          </div>
+        </div>
+      ) : null}
+
+      {hoveredEdge ? (
+        <div
+          style={{
+            position: 'absolute',
+            left: Math.min(pointer.x + 16, Math.max(8, width - 268)),
+            top: Math.min(pointer.y + 16, Math.max(8, height - 150)),
+            width: 252,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: 'rgba(255,255,255,0.98)',
+            border: '1px solid #e2e8f0',
+            boxShadow: '0 8px 24px rgba(15,23,42,0.12)',
+            fontSize: 12,
+            lineHeight: 1.65,
+            pointerEvents: 'none',
+            zIndex: 5,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: edgeColor(hoveredEdge.kind),
+              }}
+            />
+            <b>{hoveredEdge.kind}</b>
+            <span style={{ color: hoveredEdge.resolved ? '#16a34a' : '#f59e0b' }}>
+              {hoveredEdge.resolved ? '已解析' : '待验证'}
+            </span>
+          </div>
+          <div style={{ marginTop: 2, wordBreak: 'break-all' }}>
+            {nodeById.get(hoveredEdge.from)?.name ?? `#${hoveredEdge.from}`}
+            {' → '}
+            {nodeById.get(hoveredEdge.to)?.name ?? `#${hoveredEdge.to}`}
+          </div>
+          <div style={{ color: '#64748b' }}>
+            置信度 {hoveredEdge.confidence.toFixed(2)}
+            {hoveredEdge.hops != null ? ` · 途经 ${hoveredEdge.hops} 跳` : ''}
+          </div>
+          <div style={{ marginTop: 6, color: '#94a3b8' }}>单击查看证据链</div>
+        </div>
+      ) : null}
 
       <div
         style={{

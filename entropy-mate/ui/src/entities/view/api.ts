@@ -8,7 +8,7 @@ import type {
   Perspective,
 } from './model';
 
-const qs = (params: Record<string, string | number | undefined>) => {
+const qs = (params: Record<string, string | number | boolean | undefined>) => {
   const usp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== '') usp.set(k, String(v));
@@ -21,13 +21,13 @@ const qs = (params: Record<string, string | number | undefined>) => {
 export const viewApi = {
   perspectives: (projectId: number) =>
     http.get<Perspective[]>(`/api/projects/${projectId}/perspectives`),
-  candidates: (projectId: number, perspective: string, limit = 300) =>
+  candidates: (projectId: number, perspective: string, limit = 300, search?: string) =>
     http.get<Candidate[]>(
-      `/api/projects/${projectId}/view/${perspective}/candidates${qs({ limit })}`,
+      `/api/projects/${projectId}/view/${perspective}/candidates${qs({ limit, name_contains: search })}`,
     ),
-  object: (projectId: number, perspective: string, node: number, depth?: number) =>
+  object: (projectId: number, perspective: string, node: number, depth?: number, expand?: boolean) =>
     http.get<ObjectView>(
-      `/api/projects/${projectId}/view/${perspective}${qs({ node, depth })}`,
+      `/api/projects/${projectId}/view/${perspective}${qs({ node, depth, expand })}`,
     ),
   aggregate: (projectId: number, perspective: string, limit = 12) =>
     http.get<AggregateView>(

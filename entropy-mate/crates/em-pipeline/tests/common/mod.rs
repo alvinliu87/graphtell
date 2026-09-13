@@ -2,10 +2,10 @@
 //!
 //! # 样本从哪来
 //!
-//! 测试以 `分析样本/CRMEB-master` 为材料。为了在没带样本的机器上也能跑 CI，
+//! 测试以 `samples/CRMEB-master` 为材料。为了在没带样本的机器上也能跑 CI，
 //! 样本缺失时测试**跳过**而不是失败：
 //! * 环境变量 `ENTROPY_MATE_SAMPLE_DIR` 显式指定，或
-//! * 仓库内的相对路径 `分析样本/CRMEB-master`
+//! * 仓库内的相对路径 `samples/CRMEB-master`
 
 #![allow(dead_code)]
 
@@ -26,7 +26,7 @@ pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
 /// 定位 CRMEB 样本根目录。
 ///
-/// 从 `CARGO_MANIFEST_DIR` 向上逐层查找 `分析样本/CRMEB-master`，
+/// 从 `CARGO_MANIFEST_DIR` 向上逐层查找 `samples/CRMEB-master`，
 /// 兼容「仓库根即工作区」与「工作区嵌套在子目录」两种布局。
 pub fn sample_root() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("ENTROPY_MATE_SAMPLE_DIR") {
@@ -37,7 +37,7 @@ pub fn sample_root() -> Option<PathBuf> {
     }
     let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for _ in 0..6 {
-        let candidate = cur.join("分析样本/CRMEB-master");
+        let candidate = cur.join("samples/CRMEB-master");
         if candidate.is_dir() {
             return Some(candidate.canonicalize().unwrap_or(candidate));
         }

@@ -25,6 +25,7 @@ export function PerspectivePicker({
   candidates,
   node,
   onNodeChange,
+  onSearch,
   layout,
   onLayoutChange,
   trail,
@@ -37,6 +38,7 @@ export function PerspectivePicker({
   candidates: Candidate[];
   node: number | null;
   onNodeChange: (id: number) => void;
+  onSearch?: (input: string) => void;
   layout: LayoutMode | null;
   onLayoutChange: (m: LayoutMode) => void;
   trail: BreadcrumbItem[];
@@ -88,9 +90,8 @@ export function PerspectivePicker({
             value={node ?? undefined}
             loading={loading}
             onChange={(v: number) => onNodeChange(v)}
-            filterOption={(input, option) =>
-              String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-            }
+            filterOption={false}
+            onSearch={onSearch}
             options={candidates.map((c) => ({
               value: c.id,
               label: `${c.name}${c.badge ? ` · ${c.badge}` : ''}`,

@@ -75,6 +75,35 @@ declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点�
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新种类",
 }
 
+impl NodeKind {
+    /// **第一类**合成（语义）节点：自身即语义、各带独立 identity 与视角的领域资产。
+    ///
+    /// 折叠视图默认**只**展示语义节点；其余（File / Class / Method / Function / CallSite…）
+    /// 都只是实现细节，属于"点击展开才看的语法链路"。
+    pub const SYNTHESIZED: &'static [&'static str] = &[
+        Self::TABLE,
+        Self::HTTP_CONTRACT,
+        Self::CONFIG_KEY,
+        Self::I18N_KEY,
+    ];
+
+    /// 进程外中介的**类别**名（写在 `properties.category`）。
+    ///
+    /// `Event` / `Queue` / `Cache` 等各自是独立的**种类**（kind），但同属这个类别——
+    /// "外部系统"视角据此分组，不再把它们笼统地叫 `ExternalSystem`。
+    pub const EXTERNAL_CATEGORY: &'static str = "ExternalSystem";
+
+    /// 是否为"第一类"语义节点（kind 自身即语义）。
+    pub fn is_semantic(&self) -> bool {
+        Self::SYNTHESIZED.iter().any(|k| self.0 == *k)
+    }
+
+    /// 该 `category` 是否属于语义节点（目前只有"外部系统"这一类会用到）。
+    pub fn is_semantic_category(category: &str) -> bool {
+        category == Self::EXTERNAL_CATEGORY
+    }
+}
+
 declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
     CONTAINS      = "Contains"      => "包包含系",
     DECLARES      = "Declares"      => "声明",
@@ -95,6 +124,30 @@ declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
     READS_CONFIG  = "ReadsConfig"   => "读配置",
     RESOLVES_TO   = "ResolvesTo"    => "动态解析结果",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新边种类",
+}
+
+impl EdgeKind {
+    /// 语义边：Synthesize / Resolve 建立的业务依赖（读库 / 读配置 / 缓存 / 事件 / 跨服务…）。
+    ///
+    /// 折叠视图默认只展示这些；其余（Contains / Declares / Calls / HasCallSite…）
+    /// 是实现结构，属于语法链路。
+    pub const SEMANTIC: &'static [&'static str] = &[
+        Self::HANDLED_BY,
+        Self::CALLS_HTTP,
+        Self::TRIGGERS,
+        Self::PUBLISHES_TO,
+        Self::READS_DB,
+        Self::WRITES_DB,
+        Self::MAPS_TO,
+        Self::READS_CONFIG,
+        Self::RESOLVES_TO,
+        "ReadsCache",
+    ];
+
+    /// 是否为"对人类有意义的语义边"。
+    pub fn is_semantic(&self) -> bool {
+        Self::SEMANTIC.iter().any(|k| self.0 == *k)
+    }
 }
 
 declare_open_kind! { Phase => "流水线阶段";

@@ -25,13 +25,20 @@ use tracing::info;
 
 use crate::context::PipelineContext;
 use crate::engine::callee_matches;
+use crate::workspace::CallRecord;
 
 /// 一次动态解析请求（去重后参与不动点迭代）。
 #[derive(Debug, Clone)]
 struct Locator {
     owner: NodeId,
+    /// 所属方法的 FQN（供按"变量类型"解析时查参数 / 属性类型）。
+    owner_fqn: String,
     strategy: ResolveStrategy,
     raw: String,
+    /// 变量类型策略用：接收者（`$services` / `$this->services`）。
+    receiver: Option<String>,
+    /// 变量类型策略用：方法名。
+    method: Option<String>,
     file: String,
     line: u32,
 }
@@ -42,6 +49,10 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
 
     // ① 先解析 P5 遗留的待定链接（路由 handler 等）
     resolve_pending_links(ctx, &phase);
+
+    // ①.5 通用调用解析：建立 `Calls` 边，把「路由 → handler → 服务方法 → 语义节点」
+    //      的调用链真正连通（否则语义边孤立在被调方法上，视图只能靠结构边绕路）。
+    resolve_calls(ctx, &phase);
 
     // ② 收集 FKB 声明的动态调用
     let resolvers: Vec<(String, ResolveStrategy)> = ctx
@@ -63,6 +74,31 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
             {
                 continue;
             }
+            // 变量类型：按「所属方法 + 接收者 + 方法」建定位点，不依赖参数。
+            if *strategy == ResolveStrategy::VariableType {
+                let (Some(recv), Some(method)) =
+                    (call.receiver.as_deref(), call.method.as_deref())
+                else {
+                    continue;
+                };
+                if !recv.starts_with('$') || method.is_empty() {
+                    continue;
+                }
+                let raw = format!("{}::{recv}::{method}", call.owner_fqn);
+                if keys.insert(format!("{strategy:?}:{raw}")) {
+                    uniques.push(Locator {
+                        owner: call.owner,
+                        owner_fqn: call.owner_fqn.clone(),
+                        strategy: *strategy,
+                        raw,
+                        receiver: Some(recv.to_string()),
+                        method: Some(method.to_string()),
+                        file: call.file.clone(),
+                        line: call.span.start_line,
+                    });
+                }
+                continue;
+            }
             let raw = call.args.first().map(fact_to_string).unwrap_or_default();
             if raw.is_empty() || raw.len() > 256 {
                 continue;
@@ -71,8 +107,11 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
             if keys.insert(key) {
                 uniques.push(Locator {
                     owner: call.owner,
+                    owner_fqn: call.owner_fqn.clone(),
                     strategy: *strategy,
                     raw,
+                    receiver: call.receiver.clone(),
+                    method: call.method.clone(),
                     file: call.file.clone(),
                     line: call.span.start_line,
                 });
@@ -121,7 +160,51 @@ fn resolve_once(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
         ResolveStrategy::Facade => resolve_facade(ctx, loc),
         ResolveStrategy::Accessor => resolve_accessor(ctx, loc),
         ResolveStrategy::Handler => resolve_handler(ctx, loc),
+        ResolveStrategy::VariableType => resolve_variable_type(ctx, loc),
     }
+}
+
+/// 变量类型解析：`$svc->method()` / `$this->prop->method()` → `Type::method`。
+///
+/// 类型来源（由 P2 记录）：
+/// * `$var` —— 所在方法的**参数类型提示**（ThinkPHP 控制器/服务常见 DI 写法）；
+/// * `$this->prop` —— 构造器注入（`__construct(T $x){ $this->p = $x; }`）。
+///
+/// 找不到类型就返回 unknown —— **宁可缺边，不可错边**。
+fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
+    let Some(recv) = loc.receiver.as_deref() else {
+        return Resolution::unknown("无接收者".to_string());
+    };
+    let method = loc.method.as_deref().unwrap_or("");
+    if method.is_empty() {
+        return Resolution::unknown("无方法名".to_string());
+    }
+    let type_fqn = receiver_type_fqn(ctx, &loc.owner_fqn, recv);
+    let Some(type_fqn) = type_fqn else {
+        return Resolution::unknown(format!("接收者 {recv} 的类型未知"));
+    };
+
+    // 目标方法：先本类，再沿继承链回溯（方法常继承自基类）。
+    let mut stack = vec![type_fqn.clone()];
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut steps = 0;
+    while let Some(t) = stack.pop() {
+        steps += 1;
+        if steps > 50 || !visited.insert(t.clone()) {
+            continue;
+        }
+        if let Some(id) = ctx.ws.find_by_name(&format!("{t}::{method}")) {
+            return Resolution::resolved(
+                ResolveTier::Convention,
+                id,
+                format!("按变量类型解析 {t}::{method}"),
+            );
+        }
+        for parent in ctx.ws.parents_of(&t) {
+            stack.push(parent);
+        }
+    }
+    Resolution::unknown(format!("{type_fqn}::{method} 未找到"))
 }
 
 /// 容器解析：L1 字面 → L2 注册表 → L4 约定 → L6 与类全集求交。
@@ -324,6 +407,8 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
     let kind = match loc.strategy {
         ResolveStrategy::Event => EdgeKind(EdgeKind::TRIGGERS.to_string()),
         ResolveStrategy::Handler => EdgeKind(EdgeKind::HANDLED_BY.to_string()),
+        // 实例方法调用：调用者 → 目标方法，是一条真正的「调用」边。
+        ResolveStrategy::VariableType => EdgeKind(EdgeKind::CALLS.to_string()),
         _ => EdgeKind(EdgeKind::RESOLVES_TO.to_string()),
     };
     for target in &res.candidates {
@@ -340,7 +425,12 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
             }),
         });
     }
-    if res.candidates.is_empty() && loc.strategy != ResolveStrategy::Facade {
+    if res.candidates.is_empty()
+        && !matches!(
+            loc.strategy,
+            ResolveStrategy::Facade | ResolveStrategy::VariableType
+        )
+    {
         ctx.ws.diagnose(
             phase,
             "UnresolvedLink",
@@ -403,4 +493,130 @@ fn fact_to_string(v: &FactValue) -> String {
         FactValue::String(s) | FactValue::ClassConst(s) => s.clone(),
         other => format!("{other:?}"),
     }
+}
+
+/// 通用调用解析：为可静态确定的调用建立 `Calls` 边（调用者方法 → 目标方法 / 函数）。
+///
+/// 为什么必须做：`ReadsConfig` / `ReadsCache` / `MapsTo` 等语义边挂在**被调方法的节点**上，
+/// 若调用者与被调者之间没有边，整条「路由 → 缓存 / 配置 / 表」的链路在图上就是断的，
+/// 视图只能靠 `Declares`/`HasCallSite` 之类的结构边绕路，最终把无关节点全拉进来。
+///
+/// 只解析能静态确定的调用，避免误连：
+/// * `Class::method`（静态 / 门面调用）：receiver 是类名 → 解析类短名后拼 `Fqn::method`；
+/// * 自由函数 `foo()`（排除 `new Foo`）→ 按名 / 短名解析；
+/// * 变量接收者（`$this->x`、`$obj->y`）需要类型推断，**不解析**（宁可缺边，不可错边）。
+fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
+    let calls = ctx.ws.calls.clone();
+    let mut seen: HashSet<(i64, i64)> = HashSet::new();
+    let mut added = 0usize;
+    for call in &calls {
+        if let Some(target) = resolve_call_target(ctx, call) {
+            if target != call.owner && seen.insert((call.owner.get(), target.get())) {
+                ctx.ws.add_edge(NewEdge {
+                    project_id: ctx.project.id,
+                    kind: EdgeKind(EdgeKind::CALLS.to_string()),
+                    from_id: call.owner,
+                    to_id: target,
+                    phase: phase.clone(),
+                    confidence: 0.7,
+                    properties: serde_json::json!({ "callee": call.callee }),
+                });
+                added += 1;
+            }
+        }
+        // 调用者 → **接收者类型类**：让类级语义边（`Dao → Model`、`Model → Table`）沿调用链浮现。
+        // 例：`$this->dao->value()` 解析到的是继承来的 `BaseDao::value`（声明类没有 Model 链接），
+        // 但接收者类型 `WechatUserDao` 才是 `setModel()` 指向 Model 的那一层。
+        if let Some(recv) = call.receiver.as_deref() {
+            if let Some(type_fqn) = receiver_type_fqn(ctx, &call.owner_fqn, recv) {
+                let cid = ctx.ws.find_by_name(&type_fqn).or_else(|| {
+                    ctx.ws
+                        .resolve_short_name(&type_fqn)
+                        .and_then(|f| ctx.ws.find_by_name(&f))
+                });
+                if let Some(cid) = cid {
+                    if cid != call.owner && seen.insert((call.owner.get(), cid.get())) {
+                        ctx.ws.add_edge(NewEdge {
+                            project_id: ctx.project.id,
+                            kind: EdgeKind(EdgeKind::CALLS.to_string()),
+                            from_id: call.owner,
+                            to_id: cid,
+                            phase: phase.clone(),
+                            confidence: 0.7,
+                            properties: serde_json::json!({
+                                "via": "receiver_type",
+                                "callee": call.callee,
+                            }),
+                        });
+                        added += 1;
+                    }
+                }
+            }
+        }
+    }
+    info!("P7 调用链解析：{} 条 Calls 边", added);
+}
+
+/// 解析调用接收者的类型 FQN：
+/// * `$this->prop` → 属性类型（沿继承链回溯，`WechatServices` 找不到就看父类）；
+/// * `$var` → 所在方法的参数类型。
+fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Option<String> {
+    if let Some(prop) = recv.strip_prefix("$this->") {
+        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        let mut cur = Some(class_fqn.to_string());
+        let mut visited: HashSet<String> = HashSet::new();
+        while let Some(c) = cur {
+            if !visited.insert(c.clone()) {
+                break;
+            }
+            if let Some(ty) = ctx.ws.prop_type(&c, prop) {
+                return Some(ty.to_string());
+            }
+            cur = ctx.ws.parents_of(&c).into_iter().next();
+        }
+        None
+    } else if recv.starts_with('$') {
+        let var = recv.trim_start_matches('$');
+        ctx.ws.param_type(owner_fqn, var).map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+fn resolve_call_target(ctx: &PipelineContext, call: &CallRecord) -> Option<NodeId> {
+    // 1) `Class::method`（静态 / 门面）：receiver 是类名（非变量）
+    if let Some(recv) = &call.receiver {
+        if !recv.starts_with('$') {
+            let m = call.method.as_deref().unwrap_or("");
+            if m.is_empty() {
+                return None;
+            }
+            let recv = recv.trim_start_matches('\\');
+            if let Some(id) = ctx.ws.find_by_name(&format!("{recv}::{m}")) {
+                return Some(id);
+            }
+            if let Some(fqn) = ctx.ws.resolve_short_name(recv) {
+                if let Some(id) = ctx.ws.find_by_name(&format!("{fqn}::{m}")) {
+                    return Some(id);
+                }
+                // 方法不在图内（框架方法如 `User::where`）→ 连到**类本身**，
+                // 从而让 Model --MapsTo--> Table 这类"类级语义边"能沿调用链浮现。
+                if let Some(id) = ctx.ws.find_by_name(&fqn) {
+                    return Some(id);
+                }
+            }
+        }
+        return None;
+    }
+    // 2) 自由函数 `foo()`（排除 `new Foo`）
+    let callee = call.callee.trim();
+    if callee.is_empty() || callee.starts_with("new ") {
+        return None;
+    }
+    if let Some(id) = ctx.ws.find_by_name(callee) {
+        return Some(id);
+    }
+    ctx.ws
+        .resolve_short_name(callee)
+        .and_then(|f| ctx.ws.find_by_name(&f))
 }

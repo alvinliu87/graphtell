@@ -24,15 +24,26 @@ export interface SourceLocation {
 export interface NodeView {
   id: number;
   kind: string;
+  /** 语义节点的类别（如 ExternalSystem）；第一类语义节点等于 kind，语法节点为 null。 */
+  category: string | null;
   name: string;
   fqn: string | null;
   ring: number;
   sub_project_id: number | null;
   /** 该节点种类是否有对应视角 —— 决定"单击是否切视角"。 */
   has_own_view: boolean;
+  /** 该节点对应的视角 id；单击时一级切到它、二级设为该节点。 */
+  own_view: string | null;
   locations: SourceLocation[];
   annotations: string[];
   metrics: { fan_in?: number; fan_out?: number } | null;
+}
+
+/** 边上被折叠掉的中间节点（调用链的一环）。 */
+export interface ViaNode {
+  id: number;
+  kind: string;
+  name: string;
 }
 
 export interface EdgeView {
@@ -44,6 +55,11 @@ export interface EdgeView {
   resolved: boolean;
   confidence: number;
   hops: number | null;
+  /**
+   * 这条边折叠掉的中间节点（从起点到终点排序）。
+   * 折叠视图里语义节点看似直连，实际是"提拉"过的 —— 这里如实记录中间经过的语法节点。
+   */
+  via?: ViaNode[];
 }
 
 export interface HiddenInfo {
