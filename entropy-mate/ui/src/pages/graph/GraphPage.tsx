@@ -1,4 +1,20 @@
-import { Alert, Button, Card, Col, Drawer, Input, Row, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from 'antd';
+import {
+  Alert,
+  Button,
+  Card,
+  Col,
+  Drawer,
+  Input,
+  InputNumber,
+  Row,
+  Space,
+  Statistic,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useProject } from '@/entities/project';
@@ -64,6 +80,8 @@ export function GraphPage() {
   /** 折叠模式下，点击节点后按需展开显示的语法子图（按节点 id 归集）。 */
   const [expanded, setExpanded] = useState<Record<number, { nodes: CanvasNode[]; edges: EdgeView[] }>>({});
   const [expandingId, setExpandingId] = useState<number | null>(null);
+  /** 就地展开调用链时的跳数：默认 2（多跳），封顶 4 以免节点爆炸；只影响折叠模式下点击节点展开的子图，不动主图中心跳数。 */
+  const [expandDepth, setExpandDepth] = useState(2);
   const [inspectNode, setInspectNode] = useState<number | null>(state.i);
   const [inspectEdge, setInspectEdge] = useState<number | null>(state.e);
   /** 点击的那条边本身。合成边的折叠链（`via`）只存在于当次视图结果里，按 id 重查拿不到，
@@ -180,7 +198,7 @@ export function GraphPage() {
       }
       setExpandingId(nodeId);
       void viewApi
-        .object(id, state.p ?? 'route', nodeId, 1, true)
+        .object(id, state.p ?? 'route', nodeId, expandDepth, true)
         .then((ov) => {
           setExpanded((prev) => ({
             ...prev,
@@ -193,7 +211,7 @@ export function GraphPage() {
         .catch(() => {})
         .finally(() => setExpandingId((cur) => (cur === nodeId ? null : cur)));
     },
-    [expanded, id, state.p],
+    [expanded, id, state.p, expandDepth],
   );
 
   /**
@@ -373,6 +391,19 @@ export function GraphPage() {
             <Space size={6} align="center">
               <Switch size="small" checked={expandSyntax} onChange={setExpandSyntax} />
               <Typography.Text type="secondary">展开语法</Typography.Text>
+            </Space>
+          </Tooltip>
+          <Tooltip title="就地展开调用链时向下钻取的跳数（多跳展开，而非仅相邻一环）；只影响折叠模式下点击节点的子图">
+            <Space size={6} align="center">
+              <Typography.Text type="secondary">展开跳数</Typography.Text>
+              <InputNumber
+                size="small"
+                min={1}
+                max={4}
+                value={expandDepth}
+                onChange={(v) => setExpandDepth(typeof v === 'number' && v >= 1 ? v : 1)}
+                style={{ width: 64 }}
+              />
             </Space>
           </Tooltip>
           <Tooltip title="在边上标注 ReadsConfig / MapsTo 等类型">
