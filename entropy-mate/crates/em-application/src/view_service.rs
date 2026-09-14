@@ -212,12 +212,39 @@ impl ViewService {
         let mut kind_of: HashMap<i64, String> = HashMap::new();
         let mut name_of: HashMap<i64, String> = HashMap::new();
         let mut semantic_of: HashMap<i64, bool> = HashMap::new();
+        // 事件 / 队列 / 缓存等中介节点：其直接生产方（`Triggers` 入边）与消费方
+        // （`HandledBy` / `PublishesTo` 出边）通常不是第一类语义节点（而是
+        // `event('x')` 调用点或被 `listener` 标注的类），但正是该视角关心的对象。
+        // 反向模式原本只画语义「使用者」，会把它们漏掉、让中介节点看起来孤立。
+        // 这里在发现阶段前先把它们种入第 1 环并强制可见。
+        let mut force_visible: HashSet<i64> = HashSet::new();
         // 反向模式：从中心走到该节点途中遇到的**语义边种类**（即"资源被怎样访问"）。
         let mut path_kind: HashMap<i64, String> = HashMap::new();
         kind_of.insert(center_id.get(), center_node.kind.to_string());
         name_of.insert(center_id.get(), center_node.name.clone());
         semantic_of.insert(center_id.get(), node_is_semantic(&center_node));
         ring_of.insert(center_id.get(), 0);
+        if matches!(center_node.kind.as_str(), "Event" | "Queue" | "Topic") {
+            if let Ok(edges) = self.store.edges_of(center_id, EdgeDirection::Both) {
+                for e in edges {
+                    if !matches!(e.kind.as_str(), "Triggers" | "HandledBy" | "PublishesTo") {
+                        continue;
+                    }
+                    let other =
+                        if e.from_id.get() == center_id.get() { e.to_id.get() } else { e.from_id.get() };
+                    if other == center_id.get() {
+                        continue;
+                    }
+                    path_kind.entry(other).or_insert(e.kind.to_string());
+                    if !ring_of.contains_key(&other) {
+                        ring_of.insert(other, 1);
+                        parent_of.insert(other, center_id.get());
+                        semantic_of.insert(other, false);
+                    }
+                    force_visible.insert(other);
+                }
+            }
+        }
         let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
         queue.push_back((center_id, 0));
         let library_check = !library_subs.is_empty();
@@ -357,7 +384,7 @@ impl ViewService {
             if !collapse {
                 return true;
             }
-            semantic_of.get(&id).copied().unwrap_or(false)
+            semantic_of.get(&id).copied().unwrap_or(false) || force_visible.contains(&id)
         };
 
         let visible_nodes: Vec<i64> = ring_of.keys().copied().filter(|&id| is_visible(id)).collect();
@@ -530,6 +557,16 @@ impl ViewService {
                         *id != center_id.get() && semantic_of.get(id).copied().unwrap_or(false)
                     })
                     .collect();
+                // 事件 / 队列 / 缓存等中介节点的直接生产/消费方已在发现阶段前种入
+                // 第 1 环并 `force_visible`，这里把它们也作为「用户」画出（其 `path_kind`
+                // 即 `Triggers` / `HandledBy` / `PublishesTo`）。
+                if matches!(center_node.kind.as_str(), "Event" | "Queue" | "Topic") {
+                    for id in ring_of.keys().copied() {
+                        if force_visible.contains(&id) && !users.contains(&id) {
+                            users.push(id);
+                        }
+                    }
+                }
                 users.sort_by_key(|id| ring_of.get(id).copied().unwrap_or(0));
                 for id in users.iter().take(MAX_USERS) {
                     let kind = path_kind

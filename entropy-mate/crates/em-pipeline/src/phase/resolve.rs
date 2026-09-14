@@ -39,6 +39,8 @@ struct Locator {
     receiver: Option<String>,
     /// 变量类型策略用：方法名。
     method: Option<String>,
+    /// `EventListen` 策略用：监听器类（arg1，如 `OrderListener::class`）。
+    consumer: Option<String>,
     file: String,
     line: u32,
 }
@@ -93,6 +95,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                         raw,
                         receiver: Some(recv.to_string()),
                         method: Some(method.to_string()),
+                        consumer: None,
                         file: call.file.clone(),
                         line: call.span.start_line,
                     });
@@ -103,6 +106,12 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
             if raw.is_empty() || raw.len() > 256 {
                 continue;
             }
+            // `EventListen` 需要 arg1（监听器类）作为边的另一端。
+            let consumer = if *strategy == ResolveStrategy::EventListen {
+                call.args.get(1).map(fact_to_string)
+            } else {
+                None
+            };
             let key = format!("{strategy:?}:{raw}");
             if keys.insert(key) {
                 uniques.push(Locator {
@@ -112,6 +121,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                     raw,
                     receiver: call.receiver.clone(),
                     method: call.method.clone(),
+                    consumer,
                     file: call.file.clone(),
                     line: call.span.start_line,
                 });
@@ -157,6 +167,7 @@ fn resolve_once(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     match loc.strategy {
         ResolveStrategy::Container => resolve_container(ctx, loc),
         ResolveStrategy::Event => resolve_event(ctx, loc),
+        ResolveStrategy::EventListen => resolve_event_listen(ctx, loc),
         ResolveStrategy::Facade => resolve_facade(ctx, loc),
         ResolveStrategy::Accessor => resolve_accessor(ctx, loc),
         ResolveStrategy::Handler => resolve_handler(ctx, loc),
@@ -284,6 +295,41 @@ fn resolve_event(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     }
 }
 
+/// 运行时事件监听注册：`Event::listen('x', Listener::class)` / `Event::subscribe(Listener::class)`。
+///
+/// arg0（事件名）复用 `event_name` 别名索引解析到事件节点（与 `event('x')` 同一套），
+/// 解析结果在 `apply_resolution` 里用于把 `HandledBy` 边从事件节点指向 arg1 监听器类。
+fn resolve_event_listen(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
+    match ctx.ws.find_by_alias("event_name", &loc.raw, None) {
+        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("事件别名 {}", loc.raw)),
+        None => {
+            ctx.ws.diagnose(
+                &Phase(Phase::RESOLVE.to_string()),
+                "EventListenUnresolved",
+                Severity::Warning,
+                format!(
+                    "Event::listen('{}', …) 未找到对应事件节点 —— 该事件未在 event.php 注册，\
+                     监听器仍可经 `listener` 标注识别，但无法精确挂到具体事件",
+                    loc.raw
+                ),
+                Some(format!("{}:{}", loc.file, loc.line)),
+            );
+            Resolution::unknown(format!("事件 {} 未注册", loc.raw))
+        }
+    }
+}
+
+/// 把 `Foo::class` / `\App\X` 这类字面解析成图内的类节点。
+fn resolve_class_node(ctx: &PipelineContext, raw: &str) -> Option<NodeId> {
+    let mut s = raw.trim_start_matches('\\').to_string();
+    if let Some(stripped) = s.strip_suffix("::class") {
+        s = stripped.to_string();
+    }
+    ctx.ws
+        .find_by_name(&s)
+        .or_else(|| ctx.ws.resolve_short_name(&s).and_then(|f| ctx.ws.find_by_name(&f)))
+}
+
 /// Facade：查 P3 装载的 FacadeMap。
 fn resolve_facade(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     let receiver = loc.raw.trim_start_matches('\\');
@@ -404,6 +450,49 @@ fn route_app_segment(file: &str) -> String {
 }
 
 fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, phase: &Phase) {
+    // 运行时事件监听注册：把 arg0 解析出的事件节点，用 `HandledBy` 边指向 arg1 监听器类。
+    // 注意：这不是"触发"，故不走默认的 owner→target（Triggers）边。
+    if loc.strategy == ResolveStrategy::EventListen {
+        if let Some(event_id) = res.candidates.first() {
+            match loc.consumer.as_deref() {
+                Some(consumer) => {
+                    if let Some(listener_id) = resolve_class_node(ctx, consumer) {
+                        ctx.ws.add_edge(NewEdge {
+                            project_id: ctx.project.id,
+                            kind: EdgeKind(EdgeKind::HANDLED_BY.to_string()),
+                            from_id: *event_id,
+                            to_id: listener_id,
+                            phase: phase.clone(),
+                            confidence: res.confidence,
+                            properties: serde_json::json!({
+                                "tier": format!("{:?}", res.tier),
+                                "evidence": res.evidence,
+                                "via": "Event::listen/subscribe 运行时注册",
+                            }),
+                        });
+                    } else {
+                        ctx.ws.diagnose(
+                            phase,
+                            "EventListenTargetMissing",
+                            Severity::Warning,
+                            format!("Event::listen 监听器 {} 不在图内", consumer),
+                            Some(format!("{}:{}", loc.file, loc.line)),
+                        );
+                    }
+                }
+                None => {
+                    ctx.ws.diagnose(
+                        phase,
+                        "EventListenNoConsumer",
+                        Severity::Info,
+                        format!("Event::listen('{}') 缺少监听器参数", loc.raw),
+                        Some(format!("{}:{}", loc.file, loc.line)),
+                    );
+                }
+            }
+        }
+        return;
+    }
     let kind = match loc.strategy {
         ResolveStrategy::Event => EdgeKind(EdgeKind::TRIGGERS.to_string()),
         ResolveStrategy::Handler => EdgeKind(EdgeKind::HANDLED_BY.to_string()),

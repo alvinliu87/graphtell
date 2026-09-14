@@ -1,5 +1,6 @@
 //! 路由与处理器。
 
+use std::fs;
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -19,8 +20,8 @@ use em_domain::model::{NodeId, ProjectId, SubProjectId};
 use em_domain::port::{EdgeDirection, ParserRegistry, Persistence, ViewRegistryProvider};
 
 use crate::dto::{
-    ApiResponse, CreateProjectRequest, HealthDto, ProjectDto, RunAcceptedDto, RunStatusDto,
-    SubProjectDto, UpdateProjectRequest,
+    ApiResponse, CreateProjectRequest, DirEntryDto, HealthDto, ProjectDto, RunAcceptedDto,
+    RunStatusDto, SubProjectDto, UpdateProjectRequest,
 };
 
 /// 所有处理器共享的状态（组装根注入）。
@@ -79,6 +80,8 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/projects/{id}/stats", get(stats))
         .route("/api/projects/{id}/nodes", get(query_nodes))
         .route("/api/projects/{id}/diagnostics", get(diagnostics))
+        // 文件系统浏览（供目录选择器使用，WSL 下可访问 /mnt/c 等挂载路径）
+        .route("/api/fs/browse", get(browse_fs))
         .route("/api/nodes/{id}", get(get_node))
         .route("/api/nodes/{id}/annotations", get(node_annotations))
         .route("/api/nodes/{id}/neighbors", get(neighbors))
@@ -443,6 +446,57 @@ async fn edge_evidence(
     match state.views.edge_evidence(id) {
         Ok(v) => Json(ApiResponse::success(v)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BrowseQuery {
+    pub path: Option<String>,
+}
+
+/// 浏览目录：返回该路径下的子目录列表（供前端目录选择器）。
+///
+/// 后端进程运行在宿主系统（含 WSL），因此天然支持 `/mnt/c` 等挂载路径。
+/// 路径为空时回退到 `/home`（若存在）或 `/`。
+async fn browse_fs(State(_state): State<Shared>, Query(q): Query<BrowseQuery>) -> Json<ApiResponse<Vec<DirEntryDto>>> {
+    let raw = q.path.filter(|s| !s.trim().is_empty());
+    let candidate = raw.unwrap_or_else(|| {
+        if std::path::Path::new("/home").is_dir() {
+            "/home".to_string()
+        } else {
+            "/".to_string()
+        }
+    });
+    let path = std::path::Path::new(&candidate);
+    match fs::read_dir(path) {
+        Ok(rd) => {
+            let mut dirs: Vec<DirEntryDto> = Vec::new();
+            for entry in rd.flatten() {
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if !meta.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let full = entry.path().to_string_lossy().to_string();
+                dirs.push(DirEntryDto {
+                    name,
+                    path: full,
+                    is_dir: true,
+                });
+            }
+            dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            Json(ApiResponse::success(dirs))
+        }
+        Err(e) => Json(ApiResponse::failure(format!(
+            "无法读取目录「{}」: {}",
+            candidate, e
+        ))),
     }
 }
 

@@ -683,6 +683,9 @@ pub enum ResolveStrategy {
     Container,
     /// `event('x')`：查 L3 别名索引。
     Event,
+    /// `Event::listen('x', Listener::class)` / `Event::subscribe(Listener::class)`：
+    /// arg0 解析为事件节点（L3 别名），再把 `HandledBy` 边从事件节点指向 arg1 监听器类。
+    EventListen,
     /// `think\facade\Cache::get()`：查 L3 FacadeMap。
     Facade,
     /// `$order->status_text`：复合键 accessor 别名。

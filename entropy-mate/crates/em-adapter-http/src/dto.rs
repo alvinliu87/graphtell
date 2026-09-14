@@ -144,6 +144,14 @@ pub struct RunAcceptedDto {
     pub accepted: bool,
 }
 
+/// 目录浏览条目（供前端目录选择器使用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DirEntryDto {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
 /// 状态字面量。
 pub fn status_of(s: &ProjectStatus) -> &'static str {
     match s {
