@@ -575,15 +575,15 @@ fn exec_synthesize(
         return matched;
     };
 
-    // 子类型提升为"种类"：`node: ExternalSystem, subtype: Cache` → kind = `Cache`；
-    // 同时把伞形名（`ExternalSystem`）记入 `category`，供视角按**类别**分组 / 筛选。
-    // 这样每个语义节点都有**具体种类**（Table / ConfigKey / Cache / Event / Queue…），
-    // 命名粒度一致，不再出现"有的具体、有的笼统"。
+    // 子类型提升为"种类"：`node: ExternalSystem, subtype: Cache` → kind = `Cache`。
+    // 不再写 `ExternalSystem` 伞类别：每个语义节点都以其**具体种类**（Event / Queue /
+    // Cache / Topic / Table / ConfigKey…）作为 kind，视角直接按 kind 切换；`category`
+    // 仅保留为"等于 kind"的冗余标签（第一类语义节点本就等同于 kind）。
     let kind = match &s.subtype {
         Some(sub) if !sub.is_empty() => NodeKind(sub.clone()),
         _ => s.node.clone(),
     };
-    let mut props = json!({ "category": s.node.as_str() });
+    let mut props = json!({ "category": kind.as_str() });
 
     let mut new_node = crate::workspace::synthesized_node(
         ctx.project.id,

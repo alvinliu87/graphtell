@@ -71,7 +71,12 @@ declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点�
     HTTP_CONTRACT = "HttpContract" => "HTTP 契约桥（前后端汇聚点）",
     CONFIG_KEY = "ConfigKey"   => "配置键",
     I18N_KEY   = "I18nKey"     => "国际化键",
-    EXTERNAL_SYSTEM = "ExternalSystem" => "外部系统：Event / Queue / Cache / Http 等",
+    // 进程外中介：原本挂在 `ExternalSystem` 类别伞下，现各自是独立种类（kind），
+    // 命名粒度与 Table / ConfigKey 一致，视角也直接按种类切换。
+    EVENT      = "Event"       => "事件总线节点（进程外中介）",
+    QUEUE      = "Queue"       => "消息队列节点（进程外中介）",
+    CACHE      = "Cache"       => "缓存节点（进程外中介）",
+    TOPIC      = "Topic"       => "消息主题节点（进程外中介）",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新种类",
 }
 
@@ -80,27 +85,23 @@ impl NodeKind {
     ///
     /// 折叠视图默认**只**展示语义节点；其余（File / Class / Method / Function / CallSite…）
     /// 都只是实现细节，属于"点击展开才看的语法链路"。
+    ///
+    /// `Event` / `Queue` / `Cache` / `Topic` 这类进程外中介与 Table / ConfigKey 同级，
+    /// 不再笼统地挂在 `ExternalSystem` 类别伞下——每个语义节点都以具体种类作为 kind。
     pub const SYNTHESIZED: &'static [&'static str] = &[
         Self::TABLE,
         Self::HTTP_CONTRACT,
         Self::CONFIG_KEY,
         Self::I18N_KEY,
+        Self::EVENT,
+        Self::QUEUE,
+        Self::CACHE,
+        Self::TOPIC,
     ];
-
-    /// 进程外中介的**类别**名（写在 `properties.category`）。
-    ///
-    /// `Event` / `Queue` / `Cache` 等各自是独立的**种类**（kind），但同属这个类别——
-    /// "外部系统"视角据此分组，不再把它们笼统地叫 `ExternalSystem`。
-    pub const EXTERNAL_CATEGORY: &'static str = "ExternalSystem";
 
     /// 是否为"第一类"语义节点（kind 自身即语义）。
     pub fn is_semantic(&self) -> bool {
         Self::SYNTHESIZED.iter().any(|k| self.0 == *k)
-    }
-
-    /// 该 `category` 是否属于语义节点（目前只有"外部系统"这一类会用到）。
-    pub fn is_semantic_category(category: &str) -> bool {
-        category == Self::EXTERNAL_CATEGORY
     }
 }
 

@@ -578,8 +578,8 @@ impl GraphQuery for SqliteStore {
         let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(filter.project_id.get())];
         if let Some(kind) = &filter.kind {
             // 同时匹配 `kind` 与 `properties.category`：
-            // 外部系统子类型（Cache / Event / Queue）的 kind 是具体名，但 category 是 `ExternalSystem`，
-            // 因此 `node_kind: ExternalSystem` 的视角仍能筛到它们。
+            // 同时匹配 `kind` 与 `properties.category`（`category` 目前与 `kind` 一致，
+            // 此兜底保留以兼容任何以 category 分组的查询）。
             let p = binds.len() + 1;
             sql.push_str(&format!(
                 " AND (kind = ?{p} OR json_extract(properties, '$.category') = ?{p})"
@@ -689,7 +689,7 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?
             .collect::<std::result::Result<BTreeMap<_, _>, _>>()
             .map_err(DomainError::infra)?;
-        // 按 `properties.category` 统计（`ExternalSystem` 下辖 Cache / Event / Queue）。
+        // 按 `properties.category` 统计（`category` 目前与 `kind` 一致）。
         let mut stmt_cat = conn
             .prepare(
                 "SELECT json_extract(properties, '$.category'), COUNT(*) FROM nodes \

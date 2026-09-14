@@ -375,10 +375,10 @@ pub struct FanInThresholds {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SynthesizeAction {
-    /// 节点种类（开放字符串，如 `Table` / `HttpContract` / `ExternalSystem`）。
+    /// 节点种类（开放字符串，如 `Table` / `HttpContract` / `Event` / `Queue` / `Cache` / `Topic`）。
     ///
-    /// 若同时给了 `subtype`，则**子类型提升为 kind**（`kind = subtype`），
-    /// 而此处的 `node` 记为节点的 `category`（伞形名，如 `ExternalSystem`）。
+    /// 若同时给了 `subtype`，则**子类型提升为 kind**（`kind = subtype`）；
+    /// 此时 `category` 仍记为最终 kind（第一类语义节点等同于 kind）。
     pub node: NodeKind,
     /// 子类型（`Event` / `Queue` / `Cache`…），可选；给了就作为最终 kind。
     pub subtype: Option<String>,

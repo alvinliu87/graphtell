@@ -39,8 +39,7 @@ impl ViewService {
         for spec in &self.views.registry().perspectives {
             let available = match (&spec.mode, &spec.node_kind) {
                 (em_domain::model::ViewMode::Object, Some(kind)) => {
-                    // 先按 kind 数；为 0 时回退到 category
-                    // （如 `ExternalSystem` 不是 kind，而是 Cache / Event / Queue 的 category）。
+                    // 先按 kind 数；为 0 时回退到 category（兼容以 category 分组的视角）。
                     let n = stats.by_kind.get(kind).copied().unwrap_or(0);
                     if n > 0 {
                         n
@@ -183,7 +182,7 @@ impl ViewService {
             .ok_or_else(|| DomainError::NotFound(format!("节点 {center_id}")))?;
         let depth = depth.unwrap_or(spec.depth).clamp(1, 6);
         // 默认折叠：只展示"对人类有意义的语义节点"（Table / HttpContract / ConfigKey /
-        // I18nKey / ExternalSystem）与语义边；语法节点（Method / CallSite / Class…）属于实现细节，
+        // I18nKey / Event / Queue / Cache / Topic）与语义边；语法节点（Method / CallSite / Class…）属于实现细节，
         // 折叠起来、点击可展开（`expand = Some(true)` 展开全部语法节点）。
         let collapse = !expand.unwrap_or(false);
         // 第三方 / 库子工程（role == "library"）节点作为终点，不向外展开。
@@ -204,7 +203,7 @@ impl ViewService {
         //       **语义节点是终点**：展示但不再向外穿透——否则会经由事件 / 监听器 / 共享配置
         //       把整库都拉进来（实测可把一个路由的可达集从 ~350 膨胀到 ~2 万）。
         // **资源类中心**（Table / ConfigKey / Cache / Event…）的关系方向是反向的：
-        // 语义边由"使用者"指向资源（`X --MapsTo--> 表`、`X --ReadsConfig--> 配置键`），
+        // 语义边由"使用者"指向资源（`X --ReadsDb/WritesDb--> 表`、`X --ReadsConfig--> 配置键`），
         // 所以要回答"谁在用它"必须沿**入边回溯调用链**；路由（HttpContract）才是正向展开依赖。
         let reverse = collapse && center_node.kind.as_str() != NodeKind::HTTP_CONTRACT;
         let chain_depth = if collapse { 12 } else { depth };
@@ -307,11 +306,28 @@ impl ViewService {
                 if ring_of.contains_key(&other.get()) {
                     continue;
                 }
-                // 记录"资源被怎样访问"：优先沿用**更靠近中心**的语义边种类
-                // （否则回溯到路由时会把手边的 `HandledBy` 当成资源的访问方式）。
-                let inherited = path_kind.get(&id.get()).cloned().unwrap_or_default();
-                let pk = if !inherited.is_empty() {
-                    inherited
+                // 记录"资源被怎样访问"：用访问方式标签的**优先级**而非"先到先得"，
+                // 否则 `Model→Table` 的 `MapsTo`（结构映射）会盖过真正的读/写访问。
+                //
+                // 优先级：ReadsDb/WritesDb(3) > ReadsConfig/ReadsCache/PublishesTo/Triggers(2)
+                //         > MapsTo(1) > 其它(0)。
+                // 关键：`MapsTo` 的语义是「Model → Table」的**结构映射**（如 `StoreCategory` 模型
+                // 对应 `store_category` 表），它**不是**"路由如何访问这张表"的标签；真正的读/写
+                // 访问应以 `ReadsDb`/`WritesDb`（由 DAO/方法到表）为准，必须压过 `MapsTo`。
+                let access_rank = |k: &str| -> u8 {
+                    match k {
+                        "ReadsDb" | "WritesDb" => 3,
+                        "ReadsConfig" | "ReadsCache" | "PublishesTo" | "Triggers" => 2,
+                        "MapsTo" => 1,
+                        _ => 0,
+                    }
+                };
+                let inherited_rank = path_kind.get(&id.get()).map(|k| access_rank(k)).unwrap_or(0);
+                let new_rank = access_rank(e.kind.as_str());
+                let pk = if new_rank > inherited_rank {
+                    e.kind.to_string()
+                } else if inherited_rank > 0 {
+                    path_kind.get(&id.get()).cloned().unwrap()
                 } else if is_semantic_edge(e.kind.as_str()) {
                     e.kind.to_string()
                 } else {
@@ -404,7 +420,24 @@ impl ViewService {
                 (Some(a), Some(b)) if a > b => (to, from),
                 _ => (from, to),
             };
-            let key = (kind.to_string(), f, t);
+            // 修正浮动/汇总边的标签：`MapsTo` 的语义是「Model → Table」的**结构映射**，
+            // 不应充当"路由访问表"的标签。反向（资源视角）下 `src == 0` 的浮动边是把调用链
+            // 回溯合成的"谁在访问这张表"，其真实语义是读/写库 —— 按 HTTP 动词启发区分读/写。
+            let mut kind = kind.to_string();
+            if kind == "MapsTo" && src == 0 {
+                let table_at_to = kind_of.get(&t).map(|s| s.as_str()) == Some("Table");
+                let table_at_from = kind_of.get(&f).map(|s| s.as_str()) == Some("Table");
+                if table_at_to || table_at_from {
+                    let route_end = if table_at_to { f } else { t };
+                    let route_name = name_of.get(&route_end).cloned().unwrap_or_default();
+                    kind = if is_write_http_method(&route_name) {
+                        "WritesDb".to_string()
+                    } else {
+                        "ReadsDb".to_string()
+                    };
+                }
+            }
+            let key = (kind.clone(), f, t);
             if !seen.insert(key.clone()) {
                 return;
             }
@@ -426,10 +459,10 @@ impl ViewService {
             };
             out.push(EdgeView {
                 id: src,
-                kind: kind.to_string(),
+                kind: kind.clone(),
                 from: NodeId(f),
                 to: NodeId(t),
-                resolved: agg_rank(kind) > 0,
+                resolved: agg_rank(kind.as_str()) > 0,
                 confidence: 0.8,
                 hops,
                 via,
@@ -485,7 +518,7 @@ impl ViewService {
 
             if reverse {
                 // 反向：把"谁在用这个资源"直接画成 `使用者 --语义边--> 资源`。
-                // 语义边种类取回溯途中记录的那一条（如 MapsTo / ReadsDb / ReadsConfig / ReadsCache）。
+                // 语义边种类取回溯途中记录的访问方式标签（优先 ReadsDb/WritesDb，其次 ReadsConfig/ReadsCache，MapsTo 仅作结构兜底）。
                 //
                 // 共享资源（如 Cache）可能有上千个使用者：按环序取前 N 个画出来，
                 // 其余计入 `hidden` —— 保证图可读，同时诚实记账。
@@ -504,7 +537,15 @@ impl ViewService {
                         .cloned()
                         .filter(|k| !k.is_empty())
                         .unwrap_or_else(|| "Reads".to_string());
-                    let via = chain_to(*id, center_id.get());
+                    let mut via = chain_to(*id, center_id.get());
+                    // reverse 模式下 *id 本身是语义节点，最终会成为提拉边的端点
+                    // （端点已由 EdgeView.from/.to 渲染）；但 chain_to 会把 *id 一并收进
+                    // via 的末节点，导致抽屉里的折叠链出现「端点既在 via 又在首尾」的闭环
+                    // （如 GET /products 同时出现在首尾、store_category 反而被埋进中间）。
+                    // 去掉末节点即可让端点只由 from/to 表达。
+                    if via.last().map(|v| v.id.get()) == Some(*id) {
+                        via.pop();
+                    }
                     push_edge(*id, center_id.get(), &kind, 0, via, &mut shown_keys, &mut shown_edges);
                 }
                 for id in users.iter().skip(MAX_USERS) {
@@ -1235,18 +1276,26 @@ fn is_chain_edge(kind: &str) -> bool {
     )
 }
 
-/// 语义节点判定：第一类语义 kind，或带 `category`（外部系统子类型 `Cache` / `Event` / `Queue`…）。
+/// 语义节点判定：第一类语义 kind（`kinds.rs` 的 `SYNTHESIZED`：`Table` / `HttpContract` /
+/// `ConfigKey` / `I18nKey` / `Event` / `Queue` / `Cache` / `Topic`…）。
+/// `Event` / `Queue` / `Cache` / `Topic` 现在是具体种类，不再依赖 `category` 伞。
 /// 分类权威来自 `kinds.rs`。
 fn node_is_semantic(n: &em_domain::model::Node) -> bool {
     NodeKind(n.kind.to_string()).is_semantic()
-        || n.properties
-            .get("category")
-            .and_then(|v| v.as_str())
-            .map(NodeKind::is_semantic_category)
-            .unwrap_or(false)
 }
 
 /// 语义边判定（权威来源：`kinds.rs` 的语义边集合）。
 fn is_semantic_edge(kind: &str) -> bool {
     EdgeKind(kind.to_string()).is_semantic()
+}
+
+/// 按 HTTP 契约名（如 `POST /product`、`GET /products`）首词判定读/写，
+/// 作为"路由访问表"是读库还是写库的启发式。
+///
+/// 静态分析无法总判定某条调用链最终执行的是 `SELECT` 还是 `INSERT/UPDATE/DELETE`；
+/// 这里用温水动词兜底：写类动词（`POST`/`PUT`/`DELETE`/`PATCH`）判为写库（`WritesDb`），
+/// 其余（含 `GET`/`HEAD`/`OPTIONS` 与未知）判为读库（`ReadsDb`）。
+fn is_write_http_method(route_name: &str) -> bool {
+    let verb = route_name.split_whitespace().next().unwrap_or("").to_uppercase();
+    matches!(verb.as_str(), "POST" | "PUT" | "DELETE" | "PATCH")
 }

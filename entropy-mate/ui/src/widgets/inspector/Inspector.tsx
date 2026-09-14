@@ -1,5 +1,5 @@
-import { Alert, Descriptions, Drawer, Empty, Space, Tag, Typography } from 'antd';
-import { Fragment, useEffect, useState } from 'react';
+import { Alert, Button, Collapse, Descriptions, Drawer, Empty, Space, Tag, Typography } from 'antd';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { DownOutlined } from '@ant-design/icons';
 import type { EdgeEvidence, EdgeView, NodeLocations, SourceLocation, ViaNode } from '@/entities/view';
 import { viewApi } from '@/entities/view';
@@ -63,6 +63,7 @@ export function Inspector({
           edgeView={edgeView}
           nodeNameOf={nodeNameOf}
           projectRoot={projectRoot}
+          onNodeClick={onJumpToReference}
         />
       ) : null}
     </Drawer>
@@ -129,11 +130,13 @@ function EdgePanel({
   edgeView,
   nodeNameOf,
   projectRoot,
+  onNodeClick,
 }: {
   edgeId: number;
   edgeView?: EdgeView | null;
   nodeNameOf?: (id: number) => string;
   projectRoot?: string;
+  onNodeClick?: (id: number) => void;
 }) {
   const { data, loading } = useAsync<EdgeEvidence | null>(
     () => viewApi.edgeEvidence(edgeId),
@@ -160,7 +163,14 @@ function EdgePanel({
           }
         />
         {via.length > 0 && edgeView ? (
-          <CollapsedChain edge={edgeView} via={via} nodeNameOf={nodeNameOf} projectRoot={projectRoot} />
+          <CollapsedChain
+            edge={edgeView}
+            via={via}
+            paths={[via]}
+            nodeNameOf={nodeNameOf}
+            projectRoot={projectRoot}
+            onNodeClick={onNodeClick}
+          />
         ) : null}
       </Space>
     );
@@ -190,7 +200,14 @@ function EdgePanel({
       </Descriptions>
 
       {via.length > 0 ? (
-        <CollapsedChain edge={edge} via={via} nodeNameOf={nodeNameOf} projectRoot={projectRoot} />
+        <CollapsedChain
+          edge={edge}
+          via={via}
+          paths={[via]}
+          nodeNameOf={nodeNameOf}
+          projectRoot={projectRoot}
+          onNodeClick={onNodeClick}
+        />
       ) : null}
 
       {data?.reason ? <Alert type="warning" showIcon message={data.reason} /> : null}
@@ -248,23 +265,36 @@ function EdgePanel({
 function CollapsedChain({
   edge,
   via,
+  paths,
   nodeNameOf,
   projectRoot,
+  onNodeClick,
 }: {
   edge: EdgeView;
-  via: ViaNode[];
+  /** 兼容旧调用：单条路径。 */
+  via?: ViaNode[];
+  /** 多条路径（优先）；缺省用 `via` 包成单条。路由到表常有多条调用路径（如直查 `value` 与主列表 `getGoodsList`），用此字段呈现分叉。 */
+  paths?: ViaNode[][];
   nodeNameOf?: (id: number) => string;
   projectRoot?: string;
+  /** 点击某跳的节点名 → 在主图中以该节点为中心重绘。 */
+  onNodeClick?: (id: number) => void;
 }) {
   const name = (id: number) => nodeNameOf?.(id) ?? `#${id}`;
+  const pathList = paths && paths.length > 0 ? paths : via ? [via] : [];
+
+  // 所有路径上的节点都要取位置（含起止），避免第一跳"调用处"断头。
+  const allIds = useMemo(() => {
+    const s = new Set<number>([edge.from, edge.to]);
+    pathList.forEach((p) => p.forEach((v) => s.add(v.id)));
+    return [...s];
+  }, [pathList, edge.from, edge.to]);
 
   const [locs, setLocs] = useState<Record<number, SourceLocation[]>>({});
   useEffect(() => {
     let alive = true;
-    // 起止两跳也要取位置：链路第一跳就是"调用处本身"，不能只在中间节点断头。
-    const ids = [edge.from, edge.to, ...via.map((v) => v.id)];
     void Promise.all(
-      ids.map((id) =>
+      allIds.map((id) =>
         viewApi
           .nodeLocations(id)
           .then((r) => [id, r.locations] as const)
@@ -276,34 +306,34 @@ function CollapsedChain({
     return () => {
       alive = false;
     };
-  }, [via, edge.from, edge.to]);
+  }, [allIds]);
 
-  const steps: Array<{
+  type Step = {
     key: string;
+    id: number;
     kind: string | null;
     name: string;
     role: string | null;
     locations: SourceLocation[];
     callSite: SourceLocation | null;
-  }> = [
-    { key: `from-${edge.from}`, kind: null, name: name(edge.from), role: '起点', locations: locs[edge.from] ?? [], callSite: null },
-    ...via.map((v) => ({
-      key: `via-${v.id}`,
-      kind: v.kind,
-      name: v.name,
-      role: null,
-      locations: locs[v.id] ?? [],
-      callSite: v.call_site ?? null,
-    })),
-    { key: `to-${edge.to}`, kind: null, name: name(edge.to), role: '终点', locations: locs[edge.to] ?? [], callSite: edge.to_call_site ?? null },
-  ];
+  };
 
-  return (
-    <div>
-      <Typography.Text strong style={{ fontSize: 13 }}>
-        折叠掉的调用链（起止各 1 个 + 中间 {via.length} 跳）
-      </Typography.Text>
-      <div style={{ marginTop: 8 }}>
+  const renderPath = (p: ViaNode[]) => {
+    const steps: Step[] = [
+      { key: `from-${edge.from}`, id: edge.from, kind: null, name: name(edge.from), role: '起点', locations: locs[edge.from] ?? [], callSite: null },
+      ...p.map((v) => ({
+        key: `via-${v.id}`,
+        id: v.id,
+        kind: v.kind,
+        name: v.name,
+        role: null as string | null,
+        locations: locs[v.id] ?? [],
+        callSite: v.call_site ?? null,
+      })),
+      { key: `to-${edge.to}`, id: edge.to, kind: null, name: name(edge.to), role: '终点', locations: locs[edge.to] ?? [], callSite: edge.to_call_site ?? null },
+    ];
+    return (
+      <div>
         {steps.map((s, i) => (
           <Fragment key={s.key}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
@@ -313,7 +343,22 @@ function CollapsedChain({
               >
                 {s.kind ?? s.role}
               </Tag>
-              <span style={{ fontSize: 13, wordBreak: 'break-all' }}>{s.name}</span>
+              <Button
+                type="link"
+                size="small"
+                style={{
+                  padding: 0,
+                  height: 'auto',
+                  fontSize: 13,
+                  wordBreak: 'break-all',
+                  textAlign: 'left',
+                  whiteSpace: 'normal',
+                }}
+                onClick={() => onNodeClick?.(s.id)}
+                title="在主图中以该节点为中心重绘"
+              >
+                {s.name}
+              </Button>
             </div>
             {s.locations.length > 0 ? (
               <div style={{ marginTop: 4 }}>
@@ -348,6 +393,34 @@ function CollapsedChain({
             ) : null}
           </Fragment>
         ))}
+      </div>
+    );
+  };
+
+  if (pathList.length === 0) return null;
+
+  return (
+    <div>
+      <Typography.Text strong style={{ fontSize: 13 }}>
+        折叠掉的调用链
+        {pathList.length > 1
+          ? `（${pathList.length} 条路径）`
+          : `（起止各 1 个 + 中间 ${pathList[0].length} 跳）`}
+      </Typography.Text>
+      <div style={{ marginTop: 8 }}>
+        {pathList.length === 1 ? (
+          renderPath(pathList[0])
+        ) : (
+          <Collapse
+            defaultActiveKey={['0']}
+            size="small"
+            items={pathList.map((p, idx) => ({
+              key: String(idx),
+              label: `路径 ${idx + 1}`,
+              children: renderPath(p),
+            }))}
+          />
+        )}
       </div>
     </div>
   );

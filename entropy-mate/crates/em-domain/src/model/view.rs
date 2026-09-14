@@ -137,7 +137,7 @@ pub struct SourceLocation {
 pub struct NodeView {
     pub id: NodeId,
     pub kind: String,
-    /// 语义节点的**类别**（如 `ExternalSystem`）；第一类语义节点等同于 `kind`，语法节点为 `None`。
+    /// 语义节点的**类别**（目前与 `kind` 一致）；第一类语义节点等同于 `kind`，语法节点为 `None`。
     #[serde(default)]
     pub category: Option<String>,
     pub name: String,

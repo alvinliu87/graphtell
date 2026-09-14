@@ -30,7 +30,7 @@ const edgeKey = (e: { id: number; from: number; to: number }) => `${e.id}:${e.fr
 export interface CanvasNode {
   id: number;
   kind: string;
-  /** 语义节点的类别（如 ExternalSystem）；语法节点为 null。 */
+  /** 语义节点的类别（目前与 kind 一致）；语法节点为 null。 */
   category?: string | null;
   /** 该节点对应的视角 id（点击即切）；无则为 null。 */
   own_view?: string | null;

@@ -84,11 +84,11 @@ export const NODE_COLORS: Record<string, string> = {
   HttpContract: '#ef4444',
   ConfigKey: '#8b5cf6',
   I18nKey: '#eab308',
-  // "外部系统"是**类别**：子类型已提升为种类（Cache / Event / Queue…），同色。
-  ExternalSystem: '#f97316',
+  // 进程外中介（Event / Queue / Cache / Topic）同色族，便于一眼识别。
   Cache: '#f97316',
   Event: '#f97316',
   Queue: '#f97316',
+  Topic: '#f97316',
   Unknown: '#9ca3af',
 };
 
@@ -105,7 +105,7 @@ export const EDGE_COLORS: Record<string, string> = {
   HasCallSite: '#e2e8f0',
   ReadsDb: '#f59e0b',
   WritesDb: '#f97316',
-  MapsTo: '#fbbf24',
+  MapsTo: '#64748b', // 结构映射（Model→Table），移出"读/写库"暖色族，改为中性石板色
   ReadsConfig: '#a78bfa',
   HandledBy: '#ef4444',
   CallsHttp: '#22c55e',

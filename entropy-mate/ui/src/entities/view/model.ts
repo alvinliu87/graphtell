@@ -26,7 +26,7 @@ export interface SourceLocation {
 export interface NodeView {
   id: number;
   kind: string;
-  /** 语义节点的类别（如 ExternalSystem）；第一类语义节点等于 kind，语法节点为 null。 */
+  /** 语义节点的类别（目前与 kind 一致）；第一类语义节点等于 kind，语法节点为 null。 */
   category: string | null;
   name: string;
   fqn: string | null;

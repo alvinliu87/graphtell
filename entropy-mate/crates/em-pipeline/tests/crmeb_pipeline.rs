@@ -17,14 +17,9 @@ fn built() -> Option<std::sync::Arc<common::Built>> {
     common::graph()
 }
 
-/// 语义节点判定（与视图一致）：第一类语义 kind，或带 `category`（外部系统子类型 Cache / Event / Queue…）。
+/// 语义节点判定（与视图一致）：第一类语义 kind（`kinds.rs` 的 `SYNTHESIZED`）。
 fn is_semantic_node(n: &em_domain::model::Node) -> bool {
     NodeKind(n.kind.to_string()).is_semantic()
-        || n.properties
-            .get("category")
-            .and_then(|v| v.as_str())
-            .map(NodeKind::is_semantic_category)
-            .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- P0 Ingest
@@ -389,24 +384,23 @@ fn synthesize_creates_event_mediator_nodes() {
         .store
         .query_nodes(&NodeFilter {
             project_id: b.project.id,
-            kind: Some(NodeKind(NodeKind::EXTERNAL_SYSTEM.to_string())),
+            kind: Some(NodeKind(NodeKind::EVENT.to_string())),
             name_contains: None,
             limit: Some(100),
             offset: Some(0),
         })
         .expect("查询可读");
     assert!(!events.is_empty(), "应从 app/event.php 合成事件中介节点");
-    // "外部系统"现在是**类别**：事件节点的种类直接是 `Event`，category 为 `ExternalSystem`。
+    // 事件节点的种类直接是 `Event`（不再笼统叫 `ExternalSystem`）；`category` 仅等于 kind。
     assert!(
-        events.iter().all(|n| {
-            n.properties.get("category").and_then(|v| v.as_str())
-                == Some(NodeKind::EXTERNAL_CATEGORY)
-        }),
-        "外部系统节点应带 category=ExternalSystem"
+        events.iter().all(|n| n.kind.as_str() == "Event"),
+        "事件中介节点的种类应为 `Event`（子类型已提升为种类）"
     );
     assert!(
-        events.iter().any(|n| n.kind.as_str() == "Event"),
-        "事件中介节点的种类应为 `Event`（子类型已提升为种类）"
+        events
+            .iter()
+            .all(|n| n.properties.get("category").and_then(|v| v.as_str()) == Some("Event")),
+        "事件节点的 category 应等于其 kind（Event），不再有 ExternalSystem 伞"
     );
 }
 
@@ -522,7 +516,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
     //   ① 类型化参数 → 实例方法调用（`$services->appAuth()`）
     //   ② 构造器注入的属性类型（`$this->dao`）
     //   ③ `Dao::setModel() → Model → Table`（`WechatUserDao → WechatUser → wechat_user`）
-    // 断言：从 apple_login 正向能走到 ExternalSystem(Cache) / Table(wechat_user) / ConfigKey。
+    // 断言：从 apple_login 正向能走到 Cache / Table(wechat_user) / ConfigKey。
     let Some(b) = built() else {
         eprintln!("{}", common::skip_reason());
         return;
@@ -692,7 +686,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
 /// `POST /apple_login`(HttpContract)
 ///   ─HandledBy→ `LoginController::appleLogin`
 ///   ─Calls→ `WechatServices::appAuth`            （类型化参数 `WechatServices $services`）
-///   ─Calls→ `CacheService::get` ─ReadsCache→ `Cache`（种类 `Cache`，类别 `ExternalSystem`）
+///   ─Calls→ `CacheService::get` ─ReadsCache→ `Cache`（种类 `Cache`）
 ///   ─Calls→ `WechatUserDao` ─ResolvesTo→ `WechatUser` ─MapsTo→ `wechat_user`(Table)
 /// 并读到 `ConfigKey`（sys_config）。
 #[test]
@@ -838,7 +832,7 @@ fn apple_login_route_chain_from_v1_php() {
     let hit = |kind: &str, name: &str| semantic.iter().any(|(k, n)| k == kind && n == name);
     assert!(
         hit("Cache", "Cache"),
-        "链路应到达种类为 `Cache` 的节点（类别 ExternalSystem；CacheService::get → think\\facade\\Cache），实际 {semantic:?}"
+        "链路应到达种类为 `Cache` 的节点（CacheService::get → think\\facade\\Cache），实际 {semantic:?}"
     );
     assert!(
         hit(NodeKind::TABLE, "wechat_user"),
@@ -957,7 +951,7 @@ fn resolve_creates_event_trigger_edges() {
         .store
         .query_nodes(&NodeFilter {
             project_id: b.project.id,
-            kind: Some(NodeKind(NodeKind::EXTERNAL_SYSTEM.to_string())),
+            kind: Some(NodeKind(NodeKind::EVENT.to_string())),
             name_contains: None,
             limit: Some(100),
             offset: Some(0),

@@ -9,10 +9,13 @@
 #   mode: aggregate —— 聚合类。**不是单链路**，而是聚合概览（聚类框 / 矩阵）。
 #
 # 对象类视角**默认折叠**：只渲染"语义节点"（Table / HttpContract / ConfigKey /
-# I18nKey / ExternalSystem）与"语义边"（HandledBy / CallsHttp / Triggers /
-# PublishesTo / ReadsDb / WritesDb / MapsTo / ReadsConfig / ReadsCache / ResolvesTo），
-# 判定权威来自 `em-domain/src/model/kinds.rs`；语法节点（Method / CallSite / Class…）
-# 折叠起来，前端点击可展开查看调用链。
+# I18nKey / Event / Queue / Cache / Topic / Schedule…）与"语义边"（HandledBy /
+# CallsHttp / Triggers / PublishesTo / ReadsDb / WritesDb / MapsTo / ReadsConfig /
+# ReadsCache / ResolvesTo），判定权威来自 `em-domain/src/model/kinds.rs`；语法节点
+# （Method / CallSite / Class…）折叠起来，前端点击可展开查看调用链。
+#
+# 进程外中介（Event / Queue / Cache / Topic）各自是独立种类，视角**直接按种类**
+# 显示（事件 / 队列 / 缓存 / 消息 Topic），不再有笼统的"外部系统"伞。
 #
 # node_views 里**没有**列出的节点种类不会切换顶部筛选器，
 # 只打开右侧 Inspector —— 例如 ConfigKey / KeyPattern / Component /
@@ -38,15 +41,29 @@ perspectives:
     depth: 2
     description: 以一张表为中心的入边汇聚：谁在读写它、PII 与关键度
 
-  - id: external_system
-    label: 外部系统
+  - id: event
+    label: 事件视角
     mode: object
-    # `ExternalSystem` 是**类别**（写在 properties.category）：其下子类型已提升为种类
-    # （Event / Queue / Cache…）。这里按类别筛选，节点自身仍显示具体种类。
-    node_kind: ExternalSystem
+    node_kind: Event
     layout: radial
     depth: 2
-    description: 事件 / 队列 / 缓存等进程外中介：谁触发、谁监听、谁派发
+    description: 事件总线：谁发布、谁监听（节点种类 Event）
+
+  - id: queue
+    label: 队列视角
+    mode: object
+    node_kind: Queue
+    layout: radial
+    depth: 2
+    description: 消息队列：谁投递、谁消费（节点种类 Queue）
+
+  - id: cache
+    label: 缓存视角
+    mode: object
+    node_kind: Cache
+    layout: radial
+    depth: 2
+    description: 缓存：谁读、谁写（节点种类 Cache）
 
   - id: schedule
     label: 计划任务
@@ -57,64 +74,61 @@ perspectives:
     depth: 2
     description: 定时任务的执行链路（当前流水线尚未产出 Schedule 节点）
 
-  - id: page
-    label: 页面视角
-    mode: object
-    node_kind: Page
-    layout: radial
-    depth: 2
-    description: 前端页面发起的调用链（当前流水线尚未产出 Page 节点）
-
   - id: topic
     label: 消息 Topic
     mode: object
     node_kind: Topic
     layout: radial
     depth: 2
-    description: 消息 topic 的生产与消费（当前流水线尚未产出 Topic 节点）
+    description: 消息 topic 的生产与消费（节点种类 Topic）
 
-  # ---------------- 聚合类视角（概览）----------------
-  - id: domain
-    label: 领域聚合
-    mode: aggregate
-    layout: compound
-    group_by: { property: domain }
-    description: 按业务领域分框概览（图里还没有 domain 属性时给出诚实提示）
-
-  - id: deploy_unit
-    label: 部署单元
-    mode: aggregate
-    layout: compound
-    group_by: sub_project
-    description: 按子工程（部署单元）分框概览
-
-  - id: platform
-    label: 多端对比
-    mode: aggregate
-    layout: matrix
-    row_from: sub_project
-    col_from: node_kind
-    description: 子工程 × 节点种类的矩阵：谁产出了哪类资产
-
-  - id: er
-    label: 表关系 / ER
-    mode: aggregate
-    layout: er
-    group_by: node_kind
-    description: 表与表之间的正交关系视图
+  # ---------------- 以下视角 MVP 暂不实现，先注释 ----------------
+  # - id: page
+  #   label: 页面视角
+  #   mode: object
+  #   node_kind: Page
+  #   layout: radial
+  #   depth: 2
+  #   description: 前端页面发起的调用链（当前流水线尚未产出 Page 节点）
+  #
+  # - id: domain
+  #   label: 领域聚合
+  #   mode: aggregate
+  #   layout: compound
+  #   group_by: { property: domain }
+  #   description: 按业务领域分框概览（图里还没有 domain 属性时给出诚实提示）
+  #
+  # - id: deploy_unit
+  #   label: 部署单元
+  #   mode: aggregate
+  #   layout: compound
+  #   group_by: sub_project
+  #   description: 按子工程（部署单元）分框概览
+  #
+  # - id: platform
+  #   label: 多端对比
+  #   mode: aggregate
+  #   layout: matrix
+  #   row_from: sub_project
+  #   col_from: node_kind
+  #   description: 子工程 × 节点种类的矩阵：谁产出了哪类资产
+  #
+  # - id: er
+  #   label: 表关系 / ER
+  #   mode: aggregate
+  #   layout: er
+  #   group_by: node_kind
+  #   description: 表与表之间的正交关系视图
 
 # 点击节点时切换到哪个视角。
 # 只有"在顶部筛选器中有对应视角"的种类才列在这里。
 node_views:
   HttpContract: route
   Table: table
-  # 外部系统是**类别**：子类型已提升为种类（Cache / Event / Queue…），都切到"外部系统"视角。
-  Cache: external_system
-  Event: external_system
-  Queue: external_system
+  # 进程外中介各自是独立种类，直接切到对应具体视角（不再有"外部系统"伞）。
+  Cache: cache
+  Event: event
+  Queue: queue
   Schedule: schedule
-  Page: page
   Topic: topic
-  Domain: domain
-  DeployUnit: deploy_unit
-  Platform: platform
+  # MVP 暂不支持：Page / Domain / DeployUnit / Platform 不入映射。

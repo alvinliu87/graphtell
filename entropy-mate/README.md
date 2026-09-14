@@ -103,7 +103,7 @@ ui/src
 | **P2 CfAst** | 语言无关地把 `SyntaxFacts` 落成节点 | `Class` / `Interface` / `Trait` / `Enum` / `Method` / `Function` / `Property` / `Const` / `Namespace` / **`CallSite`**；`imports` 表（短名→FQN）；`by_name` 索引；继承/实现/trait 边 |
 | **P3 Prepare** | 按 FKB 识别框架、解析 `AppRoot`、装载权威源 | `app_root`、容器绑定、事件表、`schema`、`config_keys`、`i18n`、`facade_map`、`route_list`、`nginx` |
 | **P4 AnnotatePre** | 选择器作用在**源码**上 | Taint（`source` / `sanitizer` / `sink`）、`listener` 等标签 |
-| **P5 Synthesize** | 按 `identity` **幂等合成**语义节点 | `Table` / `HttpContract` / `ConfigKey` / `I18nKey` / `ExternalSystem(Event\|Queue)` + `HandledBy` 等边 |
+| **P5 Synthesize** | 按 `identity` **幂等合成**语义节点 | `Table` / `HttpContract` / `ConfigKey` / `I18nKey` / `Event` / `Queue` / `Cache` / `Topic` + `HandledBy` 等边 |
 | **P6 AnnotatePost** | 选择器作用在**图节点**上 | `pii.phone`、`data.criticality`、`config.storage`、`auth.public`、`entrypoint.login`、`i18n.missing_locale`；注册 `by_alias` |
 | **P7 Resolve** | 漏斗式解析（L1 字面 → L2 注册表 → L3 别名 → L4 约定 → L6 与全集求交）+ **不动点迭代** | 动态边：`ResolvesTo` / `Triggers` / `HandledBy` |
 
@@ -172,7 +172,7 @@ identity:
 
 | | 对象类视角 | 聚合类视角 |
 | --- | --- | --- |
-| 例子 | 路由 / 表 / Schedule / ExternalSystem / Page / Topic | Domain / DeployUnit / Platform |
+| 例子 | 路由 / 表 / Schedule / Event / Queue / Cache / Topic | Domain / DeployUnit / Platform |
 | 语义 | **单链路**：中心 + 同心环 | **聚合概览**：聚类框 / 矩阵，不是单链路 |
 | 二级筛选器 | 有 | 无 |
 
@@ -193,7 +193,7 @@ identity:
 
 | 节点 | 单击行为 |
 | --- | --- |
-| `HttpContract` / `Table` / `Schedule` / `ExternalSystem` / `Page` / `Topic` | 切到对应**对象视角**，二级同步为该节点 |
+| `HttpContract` / `Table` / `Schedule` / `Event` / `Queue` / `Cache` / `Topic` | 切到对应**对象视角**，二级同步为该节点 |
 | `Domain` / `DeployUnit` / `Platform` | 切到**聚合视角**（框 + 计数 / 矩阵） |
 | `ConfigKey` / `KeyPattern` / `Component` / `SecretLocation` | **不切**顶部筛选器，只开右侧 Inspector |
 
@@ -231,7 +231,7 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 | AnnotatePost | 0 | 0 | 1 866 | 0.06s |
 | Resolve | 0 | 234 | 0 | 0.13s |
 
-产出：`Class` 1011、`Method` 6620、`CallSite` 47354、**`HttpContract` 1227**、**`Table` 156**、**`ExternalSystem(Event)` 45**、`ConfigKey` 227；
+产出：`Class` 1011、`Method` 6620、`CallSite` 47354、**`HttpContract` 1227**、**`Table` 156`、`Event` 45、`ConfigKey` 227；
 标注含 `pii.phone`（19 张表，含通过 `user_phone` 变体列名识别出的 `store_order`）、`data.criticality`、`config.storage:Database`、`entrypoint.login`（10 个端点，含 `POST /apple_login`）。
 
 ---
