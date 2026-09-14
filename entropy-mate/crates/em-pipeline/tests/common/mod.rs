@@ -16,7 +16,7 @@ use em_adapter_fkb::YamlKnowledgeBase;
 use em_adapter_fs::{StdFileSystem, WalkDirScanner};
 use em_adapter_parser::DefaultParserRegistry;
 use em_adapter_sqlite::SqliteStore;
-use em_domain::model::Project;
+use em_domain::model::{Project, ProjectConfig};
 use em_domain::port::{
     FileScanner, FileSystem, GraphSink, KnowledgeProvider, ParserRegistry, ProjectWriter,
 };
@@ -110,7 +110,14 @@ pub fn graph() -> Option<Arc<Built>> {
                     name: "CRMEB".into(),
                     root_path: root,
                     description: None,
-                    config: None,
+                    // CRMEB 的表前缀为 `eb_`，在此显式声明（不再依赖通用默认值）。
+                    // 通用层 `ProjectConfig::default()` 已不再内置任何前缀，
+                    // 前缀改由 P3 从 `config/database.php` 自动探测，
+                    // 或像这里一样由工程配置给出。
+                    config: Some(ProjectConfig {
+                        table_prefixes: vec!["eb_".into()],
+                        ..Default::default()
+                    }),
                 })
                 .ok()?;
             let infra = TestInfra::new(Arc::clone(&store));

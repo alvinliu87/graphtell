@@ -379,6 +379,7 @@ impl ViewService {
                     id: NodeId(cur),
                     kind: kind_of.get(&cur).cloned().unwrap_or_default(),
                     name: name_of.get(&cur).cloned().unwrap_or_default(),
+                    call_site: None,
                 });
                 match parent_of.get(&cur) {
                     Some(p) => cur = *p,
@@ -411,6 +412,13 @@ impl ViewService {
             if f != from {
                 via.reverse();
             }
+            // 给每一跳补上"调用处"：prev(起点/上一跳) → 本跳 的 CallSite 位置。
+            let mut prev = f;
+            for v in via.iter_mut() {
+                v.call_site = self.call_site_between(prev, v.id.get());
+                prev = v.id.get();
+            }
+            let to_call_site = self.call_site_between(prev, t);
             let hops = if via.is_empty() {
                 None
             } else {
@@ -425,6 +433,7 @@ impl ViewService {
                 confidence: 0.8,
                 hops,
                 via,
+                to_call_site,
             });
         };
 
@@ -984,7 +993,98 @@ impl ViewService {
             resolved,
             confidence: e.confidence,
             hops,
+            to_call_site: None,
         }
+    }
+
+    /// 单个节点的"定义位置"（无 file/span 时返回 None）。
+    fn node_source_location(&self, id: NodeId) -> Option<SourceLocation> {
+        let node = self.store.get_node(id).ok()??;
+        let file_id = node.file_id?;
+        let path = self.file_path(file_id)?;
+        Some(SourceLocation {
+            file: path,
+            line: node.span.start_line,
+            symbol: node.fqn.clone(),
+            note: None,
+        })
+    }
+
+    fn node_kind(&self, id: i64) -> String {
+        self.store
+            .get_node(NodeId(id))
+            .ok()
+            .flatten()
+            .map(|n| n.kind.to_string())
+            .unwrap_or_default()
+    }
+
+    /// 两个节点之间"调用处"的位置。
+    ///
+    /// **精确路径**：`from --Calls--> to` 这条边在解析阶段就显式记录了对应的 `CallSite` 节点 id
+    /// （见 `resolve_calls`），直接取它即可，无需任何启发式。仅当这条精确边不存在（例如
+    /// `route → handler`、`method → table` 这类语义边，而非 `Calls` 边）时，才回退到
+    /// `HasCallSite` 调用点按被调名匹配。
+    fn call_site_between(&self, from: i64, to: i64) -> Option<SourceLocation> {
+        // 1) 精确：直接读 `from → to` 的 Calls 边上记录的 CallSite 节点 id
+        if let Some(outs) = self.store.edges_of(NodeId(from), EdgeDirection::Outgoing).ok() {
+            for e in &outs {
+                if e.kind.as_str() != "Calls" || e.to_id.get() != to {
+                    continue;
+                }
+                if let Some(cs_id) = e
+                    .properties
+                    .get("call_site")
+                    .and_then(|v| v.as_i64())
+                {
+                    if let Some(loc) = self.node_source_location(NodeId(cs_id)) {
+                        return Some(loc);
+                    }
+                }
+            }
+        }
+        // 2) 回退：from 的 HasCallSite 调用点里，被调名与 to 匹配的那一个
+        let to_name = self.short_name_of(to);
+        if to_name.is_empty() {
+            return None;
+        }
+        for e in self.store.edges_of(NodeId(from), EdgeDirection::Outgoing).ok()? {
+            if e.kind.as_str() != "HasCallSite" {
+                continue;
+            }
+            let cs = e.to_id.get();
+            if self.node_kind(cs) != "CallSite" {
+                continue;
+            }
+            if let Some(cs_node) = self.store.get_node(NodeId(cs)).ok().flatten() {
+                if let Some(fqn) = &cs_node.fqn {
+                    // fqn 形如 "Owner::callee:line" / "Owner->callee:line" / "new Klass"
+                    let callee = fqn.split('#').nth(1).unwrap_or("");
+                    let callee_method = callee.split([':', '-', '>']).next().unwrap_or("").trim();
+                    let callee_method = callee_method.strip_prefix("new ").unwrap_or(callee_method);
+                    if !callee_method.is_empty() && self.short_name_str(callee_method) == to_name {
+                        return self.node_source_location(NodeId(cs));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 取节点名（方法名 / 类名）的"短名"：去掉命名空间与前缀，仅保留最后一段。
+    fn short_name_of(&self, id: i64) -> String {
+        if let Some(n) = self.store.get_node(NodeId(id)).ok().flatten() {
+            let raw = n.fqn.as_deref().filter(|s| !s.is_empty()).unwrap_or(&n.name);
+            return self.short_name_str(raw);
+        }
+        String::new()
+    }
+
+    /// 从 "App\X\Foo::bar" / "obj->bar" / "new Foo" 中提取 "bar" / "Foo"。
+    fn short_name_str(&self, s: &str) -> String {
+        let s = s.rsplit("::").next().unwrap_or(s);
+        let s = s.rsplitn(2, "->").next().unwrap_or(s);
+        s.strip_prefix("new ").unwrap_or(s).trim().to_string()
     }
 
     fn build_node_view(&self, id: NodeId, ring: u32) -> Result<Option<NodeView>> {

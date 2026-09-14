@@ -2,7 +2,7 @@
 
 use em_domain::model::{FactValue, NodeId, ResolveAs, ValueSource};
 
-use crate::normalize::{apply_normalize, apply_transform};
+use crate::normalize::{apply_normalize, apply_table_prefix_steps, apply_transform};
 use crate::workspace::{CallRecord, ConfigRecord, GraphWorkspace, InheritRecord};
 
 /// 规则匹配时的上下文。
@@ -81,7 +81,8 @@ impl<'a> Evaluator<'a> {
             s = apply_transform(&s, t);
         }
         if let Some(steps) = &src.normalize {
-            s = apply_normalize(&s, steps);
+            let resolved = apply_table_prefix_steps(steps, self.ws.table_prefixes());
+            s = apply_normalize(&s, &resolved);
         }
         Some(s)
     }

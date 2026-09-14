@@ -1,4 +1,4 @@
-import { Segmented, Select, Space, Tag, Tooltip } from 'antd';
+import { Select, Space, Tag, Tooltip } from 'antd';
 import type { Candidate, LayoutMode, Perspective } from '@/entities/view';
 import { truncate } from '@/shared/lib/format';
 
@@ -39,6 +39,7 @@ export function PerspectivePicker({
   node,
   onNodeChange,
   onSearch,
+  onDropdownVisibleChange,
   layout,
   onLayoutChange,
   trail,
@@ -52,6 +53,8 @@ export function PerspectivePicker({
   node: number | null;
   onNodeChange: (id: number) => void;
   onSearch?: (input: string) => void;
+  /** 二级对象下拉展开/收起时回调，供上层做"按需加载候选"。 */
+  onDropdownVisibleChange?: (open: boolean) => void;
   layout: LayoutMode | null;
   /** 传 `null` 表示"跟随视角默认"，即清掉 URL 里的 `m` 覆盖。 */
   onLayoutChange: (m: LayoutMode | null) => void;
@@ -64,10 +67,10 @@ export function PerspectivePicker({
 
   return (
     <Space direction="vertical" size={10} style={{ width: '100%' }}>
-      {/* 一级：视角 */}
-      <Space size={10} wrap>
-        <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', width: 52 }}>一级 · 视角</span>
-        <Segmented
+      {/* 一行：一级视角（下拉）+ 二级对象 + 布局，紧凑成一行，减少竖向占用 */}
+      <Space size={10} wrap align="center">
+        <Select
+          style={{ width: 200 }}
           value={perspective ?? undefined}
           onChange={(v) => onPerspectiveChange(String(v))}
           options={perspectives.map((p) => ({
@@ -84,28 +87,19 @@ export function PerspectivePicker({
             ),
           }))}
         />
-        {current ? (
-          <Tag color={isAggregate ? 'purple' : 'blue'}>
-            {isAggregate ? '聚合概览（非单链路）' : '单链路子图'}
-          </Tag>
-        ) : null}
-      </Space>
-
-      {/* 二级：对象 */}
-      <Space size={10} wrap>
-        <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', width: 52 }}>二级 · 对象</span>
         {isAggregate ? (
-          <Tag>聚合视角没有"单个对象"，展示的是分组与计数</Tag>
+          <Tag>聚合视角没有"单个对象"</Tag>
         ) : (
           <Select
             showSearch
-            style={{ width: 420 }}
+            style={{ width: 360 }}
             placeholder={loading ? '加载候选…' : '选择一个对象'}
             value={node ?? undefined}
             loading={loading}
             onChange={(v: number) => onNodeChange(v)}
             filterOption={false}
             onSearch={onSearch}
+            onDropdownVisibleChange={onDropdownVisibleChange}
             options={candidates.map((c) => ({
               value: c.id,
               label: `${c.name}${c.badge ? ` · ${c.badge}` : ''}`,
@@ -133,6 +127,11 @@ export function PerspectivePicker({
             ]}
           />
         </Space>
+        {current ? (
+          <Tag color={isAggregate ? 'purple' : 'blue'}>
+            {isAggregate ? '聚合概览' : '单链路'}
+          </Tag>
+        ) : null}
       </Space>
 
       {/* 面包屑：可回退到任意一步 */}

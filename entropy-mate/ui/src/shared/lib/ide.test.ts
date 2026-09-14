@@ -10,20 +10,27 @@ const loc = (file: string, line: number, symbol: string | null): SourceLocation 
 });
 
 describe('ideUrl', () => {
-  it('vscode 绝对路径', () => {
-    expect(ideUrl('vscode', loc('/a/b.php', 10, null))).toBe('vscode://file//a/b.php:10');
+  it('vscode 绝对路径不应带双重斜杠', () => {
+    expect(ideUrl('vscode', loc('/a/b.php', 10, null))).toBe('vscode://file/a/b.php:10');
   });
 
   it('vscode 相对路径拼接工程根', () => {
     expect(ideUrl('vscode', loc('src/x.php', 3, null), '/root')).toBe(
-      'vscode://file//root/src/x.php:3',
+      'vscode://file/root/src/x.php:3',
     );
   });
 
-  it('JetBrains 系追加符号', () => {
+  it('cursor 相对路径拼接工程根并去掉前导斜杠', () => {
+    expect(ideUrl('cursor', loc('src/x.php', 5, null), '/root')).toBe(
+      'cursor://file/root/src/x.php:5',
+    );
+  });
+
+  it('JetBrains 系追加符号并保留前导斜杠', () => {
     const u = ideUrl('phpstorm', loc('/a/b.php', 10, 'Order'), '/root');
     expect(u).toContain('phpstorm');
     expect(u).toContain('Order');
+    expect(u).toContain('path=%2Fa%2Fb.php');
   });
 });
 

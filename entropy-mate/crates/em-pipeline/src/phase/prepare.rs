@@ -38,7 +38,20 @@ pub fn run(
         let mut facts = serde_json::Map::new();
         for id in &frameworks {
             let Some(fk) = kb.by_id(id) else { continue };
-            apply_root_rules(ctx, fk, sub, &mut facts, &phase);
+            apply_root_rules(ctx, fk, sub, &mut facts, &phase, fs, parsers);
+            // 自动探测表前缀：FKB 的 `db_prefix` root_rule 从工程配置读出，
+            // 并入工程显式配置的前缀（去重），供 P3 装载与 P5 归一化使用。
+            if let Some(v) = facts
+                .get("db_prefix")
+                .and_then(|v| v.get("value"))
+                .and_then(|v| v.as_str())
+            {
+                let mut prefixes = ctx.ws.table_prefixes().to_vec();
+                if !prefixes.iter().any(|p| p == v) {
+                    prefixes.push(v.to_string());
+                }
+                ctx.ws.set_table_prefixes(prefixes);
+            }
         }
         for id in &frameworks {
             let Some(fk) = kb.by_id(id) else { continue };
@@ -149,6 +162,8 @@ fn apply_root_rules(
     sub: &em_domain::model::SubProject,
     facts: &mut serde_json::Map<String, Value>,
     phase: &Phase,
+    fs: &dyn FileSystem,
+    parsers: &dyn ParserRegistry,
 ) {
     for rule in &fk.root_rules {
         let resolved = match &rule.source {
@@ -163,6 +178,9 @@ fn apply_root_rules(
                 } else {
                     None
                 }
+            }
+            em_domain::model::RootSource::ManifestPhp { manifest, pointer } => {
+                resolve_manifest_php(sub, &ctx.project.root_path, manifest, pointer, fs, parsers)
             }
         };
 
@@ -238,6 +256,56 @@ fn resolve_manifest_pointer(
         chosen.0.clone(),
         format!("{} {} (map_dir={}/)", path.display(), pointer, chosen.0),
     ))
+}
+
+/// 从 PHP 配置文件（如 ThinkPHP 的 `config/database.php`）按点分指针读取值。
+///
+/// 复用 PHP 解析器把 `return [...]` 展平成 `config_entries`，再按 `key_path`
+/// 精确匹配 `pointer`（如 `connections.mysql.prefix`）。配置值若是
+/// `env('KEY', 'default')` 这类无法静态求值的写法（解析器记为 `Unknown`），
+/// 再用轻量正则提取其字面默认值作为兜底。
+fn resolve_manifest_php(
+    sub: &em_domain::model::SubProject,
+    project_root: &Path,
+    manifest: &str,
+    pointer: &str,
+    fs: &dyn FileSystem,
+    parsers: &dyn ParserRegistry,
+) -> Option<(String, String)> {
+    let abs = sub.root_path.join(manifest);
+    let abs = if abs.exists() { abs } else { project_root.join(manifest) };
+    if !abs.exists() {
+        return None;
+    }
+    let text = fs.read_to_string(&abs).ok()?;
+    let parser = parsers.parser_for(&Language::new(Language::PHP))?;
+    let rel = abs.to_string_lossy().replace('\\', "/");
+    if let Ok(facts) = parser.parse(&rel, &text) {
+        for entry in &facts.config_entries {
+            if entry.key_path == pointer {
+                if let Some(s) = entry.value.as_str() {
+                    return Some((s.to_string(), format!("php config: {}", abs.display())));
+                }
+            }
+        }
+    }
+    // 兜底：值可能是 `env('KEY', 'default')` → 从源文本提取叶子键对应的默认值。
+    let leaf = pointer.rsplit('.').next().unwrap_or(pointer);
+    extract_prefix_via_regex(&text, leaf).map(|s| {
+        (s, format!("php config (env default): {}", abs.display()))
+    })
+}
+
+/// 轻量兜底：从 `config/database.php` 源文本提取 `<leaf> => 'x'` 或
+/// `<leaf> => env('K', 'x')` 中的字面默认值。仅用于解析器无法静态求值的场景。
+fn extract_prefix_via_regex(text: &str, leaf: &str) -> Option<String> {
+    let escaped = regex::escape(leaf);
+    let re = regex::Regex::new(&format!(
+        r#"(?i)(?:['"]){escaped}(?:['"])\s*=>\s*(?:env\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]*)['"]\s*\)|['"]([^'"]*)['"])"#
+    ))
+    .ok()?;
+    re.captures(text)
+        .and_then(|c| c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()))
 }
 
 // ---------------------------------------------------------------- 装载器
@@ -433,10 +501,19 @@ fn load_schema(
     project_root: &Path,
     _phase: &Phase,
 ) {
-    let prefixes: Vec<String> = params
+    // 表前缀以工程探测到的为准（P3 从 config/database.php 自动读出并写入
+    // `workspace.table_prefixes`）；YAML 仍可经 `params.prefixes` 追加额外前缀。
+    let mut prefixes: Vec<String> = ctx.ws.table_prefixes().to_vec();
+    if let Some(extra) = params
         .get("prefixes")
-        .and_then(|p| serde_json::from_value(p.clone()).ok())
-        .unwrap_or_default();
+        .and_then(|p| serde_json::from_value::<Vec<String>>(p.clone()).ok())
+    {
+        for x in extra {
+            if !prefixes.contains(&x) {
+                prefixes.push(x);
+            }
+        }
+    }
 
     // ① 从 SQL 安装脚本解析表结构
     for (path, text) in scan_text_files(project_root, &["sql"]) {
@@ -803,4 +880,105 @@ fn dedup_rules(rules: Vec<Rule>) -> Vec<Rule> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use em_adapter_fs::StdFileSystem;
+    use em_adapter_parser::DefaultParserRegistry;
+    use em_domain::model::{Language, ProjectId, SubProject, SubProjectId};
+
+    fn make_sub(root: PathBuf) -> SubProject {
+        SubProject {
+            id: SubProjectId::new(1),
+            project_id: ProjectId::new(1),
+            name: "test".into(),
+            root_path: root,
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "composer.json".into(),
+            frameworks: vec!["thinkphp6".into()],
+            facts: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn detects_table_prefix_from_php_config() {
+        let dir = std::env::temp_dir().join(format!("em_test_prefix_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("config"));
+        std::fs::write(
+            dir.join("config/database.php"),
+            "<?php\nreturn [\n    'default' => 'mysql',\n    'connections' => [\n        'mysql' => [\n            'prefix' => 'eb_',\n        ],\n    ],\n];",
+        )
+        .unwrap();
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let got = super::resolve_manifest_php(
+            &sub,
+            &dir,
+            "config/database.php",
+            "connections.mysql.prefix",
+            &fs,
+            &parsers,
+        );
+        assert_eq!(
+            got,
+            Some((
+                "eb_".to_string(),
+                format!("php config: {}", dir.join("config/database.php").display())
+            )),
+            "应从 config/database.php 的 connections.mysql.prefix 读出表前缀"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_prefix_when_config_missing() {
+        let dir = std::env::temp_dir().join(format!("em_test_noprefix_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let got = super::resolve_manifest_php(
+            &sub,
+            &dir,
+            "config/database.php",
+            "connections.mysql.prefix",
+            &fs,
+            &parsers,
+        );
+        assert!(got.is_none(), "配置文件缺失时不应探测到前缀");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detects_prefix_from_env_default() {
+        let dir = std::env::temp_dir().join(format!("em_test_envprefix_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("config"));
+        std::fs::write(
+            dir.join("config/database.php"),
+            "<?php\nreturn [\n    'connections' => [\n        'mysql' => [\n            'prefix' => env('DB_PREFIX', 'eb_'),\n        ],\n    ],\n];",
+        )
+        .unwrap();
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let got = super::resolve_manifest_php(
+            &sub,
+            &dir,
+            "config/database.php",
+            "connections.mysql.prefix",
+            &fs,
+            &parsers,
+        );
+        assert_eq!(
+            got.map(|(v, _)| v),
+            Some("eb_".to_string()),
+            "应从 env('DB_PREFIX', 'eb_') 的默认值读出表前缀"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

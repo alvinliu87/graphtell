@@ -46,6 +46,8 @@ export interface ViaNode {
   id: number;
   kind: string;
   name: string;
+  /** 本跳的"调用处"（上一跳调用本节点的 CallSite 位置）。起点不携带。 */
+  call_site?: SourceLocation | null;
 }
 
 export interface EdgeView {
@@ -62,6 +64,8 @@ export interface EdgeView {
    * 折叠视图里语义节点看似直连，实际是"提拉"过的 —— 这里如实记录中间经过的语法节点。
    */
   via?: ViaNode[];
+  /** 终点这跳的"调用处"（即 via 最后一跳 → to 的 CallSite 位置）。 */
+  to_call_site?: SourceLocation | null;
 }
 
 export interface HiddenInfo {

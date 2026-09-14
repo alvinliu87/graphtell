@@ -178,6 +178,10 @@ pub struct EdgeView {
     /// 不能让"看起来直连"骗人。为空表示图上确实是直接边。
     #[serde(default)]
     pub via: Vec<ViaNode>,
+    /// 终点被"调用处"的位置（即 `via 最后一跳 → to` 这一跳的 CallSite）。
+    /// 与每个 `ViaNode.call_site` 一起，让折叠链既显示"定义处"也显示"调用处"。
+    #[serde(default)]
+    pub to_call_site: Option<SourceLocation>,
 }
 
 /// 边上被折叠掉的中间节点（调用链的一环）。
@@ -186,6 +190,10 @@ pub struct ViaNode {
     pub id: NodeId,
     pub kind: String,
     pub name: String,
+    /// 本跳被"调用处"的位置（即上一跳调用本节点的 CallSite）。
+    /// 起点（`from`）不携带此项；其余每一跳都有"谁调了我"的位置。
+    #[serde(default)]
+    pub call_site: Option<SourceLocation>,
 }
 
 /// 被刻意隐藏的部分 —— 诚实性守门。

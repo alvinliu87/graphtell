@@ -892,6 +892,62 @@ fn apple_login_route_chain_from_v1_php() {
 }
 
 #[test]
+fn calls_edge_records_call_site_node() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let node_of = |id: em_domain::model::NodeId| -> Option<em_domain::model::Node> {
+        b.store.get_node(id).ok().flatten()
+    };
+    let out_edges = |id: em_domain::model::NodeId| -> Vec<em_domain::model::Edge> {
+        b.store
+            .edges_of(id, em_domain::port::EdgeDirection::Outgoing)
+            .unwrap_or_default()
+    };
+
+    // 找一条带 call_site 的 Calls 边，验证"调用处"被精确记录在边上（而非靠名字猜）
+    let mut found: Option<em_domain::model::Edge> = None;
+    for n in b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind("Method".to_string())),
+            name_contains: None,
+            limit: Some(2000),
+            offset: Some(0),
+        })
+        .expect("方法查询可读")
+    {
+        for e in out_edges(n.id) {
+            if e.kind.as_str() == "Calls" && e.properties.get("call_site").is_some() {
+                found = Some(e);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let e = found.expect("应至少存在一条记录 call_site 的 Calls 边");
+    let cs_id = e
+        .properties
+        .get("call_site")
+        .and_then(|v| v.as_i64())
+        .expect("call_site 应为整数节点 id");
+    let cs = node_of(em_domain::model::NodeId(cs_id)).expect("call_site 指向的节点应存在");
+    assert_eq!(
+        cs.kind.as_str(),
+        "CallSite",
+        "call_site 应精确指向 CallSite 节点（100% 精确，无需启发式）"
+    );
+    assert!(
+        cs.file_id.is_some(),
+        "CallSite 应带有源文件位置（文件 + 行）"
+    );
+}
+
+#[test]
 fn resolve_creates_event_trigger_edges() {
     let Some(b) = built() else {
         eprintln!("{}", common::skip_reason());

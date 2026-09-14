@@ -3,13 +3,15 @@ import { Button, Dropdown, Space, Tag, Tooltip, Typography } from 'antd';
 import { CopyOutlined, DownOutlined, ExportOutlined } from '@ant-design/icons';
 import type { SourceLocation } from '@/entities/view';
 import {
+  copyAllLocations,
   copyPath,
-  copyReference,
   driftHint,
   IDE_LABEL,
   IdeTarget,
   isSensitive,
   openInIde,
+  preferredIde,
+  setPreferredIde,
 } from '@/shared/lib/ide';
 
 /**
@@ -24,6 +26,7 @@ export function LocationList({
   projectRoot,
   emptyHint = '该节点没有可用的源码位置（可能是纯语义合成对象）',
   ordered = false,
+  showCopyAll = true,
 }: {
   locations: SourceLocation[];
   kind?: string;
@@ -31,6 +34,8 @@ export function LocationList({
   emptyHint?: string;
   /** 相邻位置之间显示"从上往下"箭头，用于边证据链等有序场景。 */
   ordered?: boolean;
+  /** 是否在底部提供"复制全部位置"；逐跳链路里每跳只放一个位置，不必重复这个按钮。 */
+  showCopyAll?: boolean;
 }) {
   if (locations.length === 0) {
     return <Typography.Text type="secondary">{emptyHint}</Typography.Text>;
@@ -49,7 +54,10 @@ export function LocationList({
         const items = (Object.keys(IDE_LABEL) as IdeTarget[]).map((t) => ({
           key: t,
           label: IDE_LABEL[t],
-          onClick: () => void openInIde(t, loc, projectRoot),
+          onClick: () => {
+            setPreferredIde(t);
+            void openInIde(t, loc, projectRoot);
+          },
         }));
         return (
           <Fragment key={`${loc.file}:${loc.line}:${i}`}>
@@ -65,9 +73,13 @@ export function LocationList({
               }}
             >
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, wordBreak: 'break-all' }}>
+                <Typography.Link
+                  onClick={() => void openInIde(preferredIde(), loc, projectRoot)}
+                  title={`在 IDE 中打开（${IDE_LABEL[preferredIde()]}；右上角图标可换 IDE）`}
+                  style={{ fontSize: 12, fontWeight: 600, wordBreak: 'break-all', display: 'inline-block' }}
+                >
                   {loc.file}:{loc.line}
-                </div>
+                </Typography.Link>
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>
                   {loc.note ?? (loc.symbol ? `符号 ${loc.symbol}` : '')}
                   {loc.symbol ? ` · ${driftHint(loc)}` : ''}
@@ -96,7 +108,7 @@ export function LocationList({
                     <Button size="small" type="text" icon={<ExportOutlined />} />
                   </Tooltip>
                 </Dropdown>
-                <Tooltip title="复制 path:line（无 IDE 场景的兜底）">
+                <Tooltip title="复制绝对 path:line（无 IDE 场景的兜底）">
                   <Button
                     size="small"
                     type="text"
@@ -114,18 +126,17 @@ export function LocationList({
           </Fragment>
         );
       })}
-      <Button
-        size="small"
-        block
-        onClick={() =>
-          void copyReference(
-            locations[0],
-            `${locations.length} 处共现位置`,
-          )
-        }
-      >
-        复制全部位置（报告内嵌 path:line）
-      </Button>
+      {showCopyAll ? (
+        <Button
+          size="small"
+          block
+          onClick={() =>
+            void copyAllLocations(locations, projectRoot, `${locations.length} 处共现位置`)
+          }
+        >
+          复制全部位置（绝对路径）
+        </Button>
+      ) : null}
     </Space>
   );
 }

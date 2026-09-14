@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Col, Drawer, Row, Space, Statistic, Switch, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Drawer, Input, Row, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useProject } from '@/entities/project';
@@ -44,8 +44,19 @@ export function GraphPage() {
   const [trail, setTrail] = useState<BreadcrumbItem[]>([]);
   /** 上一个中心，切视角后保留为邻居并标记 `from`。 */
   const [origin, setOrigin] = useState<{ id: number; name: string } | null>(null);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  /** 候选列表连同它所属的视角一起存：切视角后必须立刻失效，
+   *  否则会拿上一视角的列表来填空默认值 / 判断"节点是否存在"。 */
+  const [candidateBundle, setCandidateBundle] = useState<{ p: string; list: Candidate[] }>({
+    p: '',
+    list: [],
+  });
+  /** 只有"属于当前视角"的候选才生效；切换视角的瞬间派生为空，等新视角候选到达后才有值。 */
+  const candidates = candidateBundle.p === state.p ? candidateBundle.list : [];
   const [candidateSearch, setCandidateSearch] = useState('');
+  /** 二级对象下拉是否展开：候选只在展开时才去后端取（按需加载）。
+   *  后端 candidates 在无搜索词时会做全量打分（5000 节点 × 每节点 BFS），很慢，
+   *  所以已选中节点且未展开下拉时绝不预取，避免每次切视角都白打一次慢查询。 */
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   /** 是否展开全部语法节点（默认折叠，只显示语义节点与依赖边）。 */
   const [expandSyntax, setExpandSyntax] = useState(false);
   /** 是否在图上标注边的类型（`ReadsConfig` / `MapsTo`…）。边过多时组件会自动退化为按需标注。 */
@@ -55,12 +66,20 @@ export function GraphPage() {
   const [expandingId, setExpandingId] = useState<number | null>(null);
   const [inspectNode, setInspectNode] = useState<number | null>(state.i);
   const [inspectEdge, setInspectEdge] = useState<number | null>(state.e);
+  /** 点击的那条边本身。合成边的折叠链（`via`）只存在于当次视图结果里，按 id 重查拿不到，
+   *  所以必须点击时随身带入 Inspector，否则"途经 N 跳"就会变成一句空话。 */
+  const [inspectEdgeView, setInspectEdgeView] = useState<EdgeView | null>(null);
   /** 右侧"结论/导航"面板：默认收起为抽屉浮层，不占用图的横向空间。 */
   const [drawerOpen, setDrawerOpen] = useState(false);
   const lastPushed = useRef<string>('');
 
   const current = perspectives.find((p) => p.id === state.p) ?? null;
   const isAggregate = current?.mode === 'aggregate';
+
+  // 边面板关闭时同步丢弃随身边对象，避免下次打开残留上一条边的折叠链。
+  useEffect(() => {
+    if (inspectEdge === null) setInspectEdgeView(null);
+  }, [inspectEdge]);
 
   // ---------------------------------------------------------- URL 同步
   // URL → state（前进 / 后退 / 外部链接）
@@ -85,23 +104,25 @@ export function GraphPage() {
     const fixed = reconcileViewState(
       state,
       perspectives.map((p) => ({ id: p.id, mode: p.mode, available: p.available })),
-      candidates,
     );
     if (!sameViewState(fixed, state)) setState(fixed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [perspectives, candidates]);
+  }, [perspectives]);
 
-  // 载入二级候选（带防抖的服务端搜索）
+  // 载入二级候选（带防抖的服务端搜索）。按需加载：已持有当前视角的候选则跳过；
+  // 已经选中节点、且下拉未展开时也不预取——把那次昂贵的全量打分推迟到用户真正要选对象时。
   useEffect(() => {
     if (!state.p || isAggregate) {
-      setCandidates([]);
+      setCandidateBundle({ p: state.p ?? '', list: [] });
       return;
     }
+    if (candidateBundle.p === state.p) return;
+    if (state.n !== null && !dropdownOpen) return;
     const perspective = state.p;
     let alive = true;
     const timer = setTimeout(() => {
       void viewApi.candidates(id, perspective, 300, candidateSearch).then((list) => {
-        if (alive) setCandidates(list);
+        if (alive) setCandidateBundle({ p: perspective, list });
       });
     }, 150);
     return () => {
@@ -109,18 +130,19 @@ export function GraphPage() {
       clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.p, isAggregate, id, candidateSearch]);
+  }, [state.p, isAggregate, id, candidateSearch, dropdownOpen, state.n, candidateBundle.p]);
 
-  // 对象视角：中心为空且未在搜索时取第一个候选
+  // 对象视角：只在「完全没指定中心」时取第一个候选作为默认值。
+  // 已经明确导航到某个节点时**绝不覆盖**——候选列表有上限（300）且可能被过滤，
+  // 拿它当"节点是否存在"的判据会把刚点进来的节点误判为不存在、静默换成第一个候选。
   useEffect(() => {
-    if (isAggregate || candidates.length === 0 || candidateSearch !== '') return;
-    if (state.n === null || !candidates.some((c) => c.id === state.n)) {
-      setState((s) => ({ ...s, n: candidates[0].id }));
-    }
+    if (isAggregate || state.n !== null) return;
+    if (candidates.length === 0 || candidateSearch !== '') return;
+    setState((s) => ({ ...s, n: candidates[0].id }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidates, isAggregate, candidateSearch]);
+  }, [candidates, isAggregate, candidateSearch, state.n]);
 
-  const { view, loading } = useObjectView(
+  const { view, loading, error: objectError } = useObjectView(
     id,
     state.p ?? undefined,
     state.n ?? undefined,
@@ -208,8 +230,9 @@ export function GraphPage() {
     [state.n, view, pushTrail, expandSyntax, toggleExpand],
   );
 
-  const handleEdgeClick = useCallback((edge: { id: number }) => {
+  const handleEdgeClick = useCallback((edge: EdgeView) => {
     setInspectEdge(edge.id);
+    setInspectEdgeView(edge);
     setInspectNode(null);
   }, []);
 
@@ -249,6 +272,20 @@ export function GraphPage() {
     return { center: toCanvas(view.center), rings, edges };
   }, [view, expanded]);
 
+  /** 端点 id → 名字：折叠链要把首尾两个语义节点也标出名字。 */
+  const nodeNameOf = useCallback(
+    (nid: number) => {
+      const c = merged.center;
+      if (c && c.id === nid) return c.name;
+      for (const ring of merged.rings) {
+        const hit = ring.find((n) => n.id === nid);
+        if (hit) return hit.name;
+      }
+      return `#${nid}`;
+    },
+    [merged],
+  );
+
   // 首次进入时把当前位置压入面包屑
   useEffect(() => {
     if (!state.p || trail.length > 0) return;
@@ -272,7 +309,27 @@ export function GraphPage() {
     : undefined;
 
   const layoutMode: LayoutMode = state.m ?? current?.layout ?? 'radial';
-  const projectRoot = project?.root_path ?? undefined;
+  // 后端分析的工程根（如 Linux 容器路径）可能和本地开发机路径不一致，
+  // 这里允许用户本地覆盖，只影响 IDE 跳转和复制，不改后端数据。
+  const rootStorageKey = `em.projectRootOverride.${id}`;
+  const [localRoot, setLocalRoot] = useState<string>(() => {
+    try {
+      return localStorage.getItem(rootStorageKey) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const updateLocalRoot = (value: string) => {
+    const trimmed = value.trim();
+    setLocalRoot(trimmed);
+    try {
+      if (trimmed) localStorage.setItem(rootStorageKey, trimmed);
+      else localStorage.removeItem(rootStorageKey);
+    } catch {
+      /* ignore */
+    }
+  };
+  const projectRoot = localRoot.trim() || project?.root_path || undefined;
 
   if (projectId === undefined || Number.isNaN(id)) {
     return <Alert type="error" message="缺少工程 ID" />;
@@ -286,7 +343,7 @@ export function GraphPage() {
         extra={<RunPipelineButton projectId={id} onStarted={() => void reloadProject()} />}
       />
 
-      <Card variant="borderless" style={{ borderRadius: 14, marginBottom: 16 }}>
+      <Card variant="borderless" style={{ borderRadius: 14, marginBottom: 12 }}>
         <PerspectivePicker
           perspectives={perspectives}
           perspective={state.p}
@@ -304,35 +361,77 @@ export function GraphPage() {
             setState((s) => ({ ...s, n, i: null, e: null }));
           }}
           onSearch={setCandidateSearch}
+          onDropdownVisibleChange={setDropdownOpen}
           layout={state.m}
           onLayoutChange={(m) => setState((s) => ({ ...s, m }))}
           trail={trail}
           onTrailClick={onTrailClick}
           loading={loading && candidates.length === 0}
         />
-        <Space style={{ marginTop: 10 }} align="center" wrap>
-          <Switch size="small" checked={expandSyntax} onChange={setExpandSyntax} />
-          <Typography.Text type="secondary">
-            展开全部语法节点（Method / CallSite 等）
-          </Typography.Text>
-          <Switch size="small" checked={showEdgeLabels} onChange={setShowEdgeLabels} />
-          <Typography.Text type="secondary">标注边的类型</Typography.Text>
+        <Space style={{ marginTop: 8 }} align="center" wrap>
+          <Tooltip title="展开 Method / CallSite 等语法节点；默认只显示语义节点，点击节点可就地展开其调用链">
+            <Space size={6} align="center">
+              <Switch size="small" checked={expandSyntax} onChange={setExpandSyntax} />
+              <Typography.Text type="secondary">展开语法</Typography.Text>
+            </Space>
+          </Tooltip>
+          <Tooltip title="在边上标注 ReadsConfig / MapsTo 等类型">
+            <Space size={6} align="center">
+              <Switch size="small" checked={showEdgeLabels} onChange={setShowEdgeLabels} />
+              <Typography.Text type="secondary">边类型</Typography.Text>
+            </Space>
+          </Tooltip>
           <Button size="small" type="primary" ghost onClick={() => setDrawerOpen(true)}>
-            结论 / 导航面板
+            结论 / 导航
           </Button>
           {Object.keys(expanded).length > 0 && (
             <Button size="small" onClick={() => setExpanded({})}>
-              收起已展开的调用（{Object.keys(expanded).length}）
+              收起调用（{Object.keys(expanded).length}）
             </Button>
           )}
-          <Typography.Text type="secondary">
-            默认只显示语义节点；点击任意节点可就地展开它的调用链。
-          </Typography.Text>
+        </Space>
+        <Space style={{ marginTop: 8 }} align="center" wrap>
+          <Tooltip title="若后端分析路径与本地不一致（如 Linux/WSL 分析、Windows 本地开发），填写本地绝对路径；留空则使用后端路径">
+            <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+              本地工程根目录
+            </Typography.Text>
+          </Tooltip>
+          <Input
+            size="small"
+            style={{ width: 420 }}
+            placeholder={project?.root_path ?? '本地绝对路径，例如 C:/Users/.../CRMEB-master'}
+            value={localRoot}
+            onChange={(e) => updateLocalRoot(e.target.value)}
+          />
+          {localRoot ? (
+            <Button size="small" type="link" onClick={() => updateLocalRoot('')}>
+              使用后端路径
+            </Button>
+          ) : null}
         </Space>
       </Card>
 
       {isAggregate && aggView?.notice ? (
         <Alert type="info" showIcon style={{ marginBottom: 16 }} message={aggView.notice} />
+      ) : null}
+
+      {/* 诚实性守门：这个对象在当前视角下取不到时，如实告知并给一条出路，
+          而不是悄悄把中心换成第一个候选（那等于展示一张无关的图）。 */}
+      {!isAggregate && state.n !== null && !loading && objectError ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`对象 #${state.n} 在「${current?.label ?? state.p}」视角下取不到链路`}
+          description={`可能已被删除、或不属于该视角（${errText(objectError)}）。请在左侧一级视角重新选择。`}
+          action={
+            candidates.length > 0 ? (
+              <Button size="small" onClick={() => setState((s) => ({ ...s, n: candidates[0].id }))}>
+                换第一个对象
+              </Button>
+            ) : null
+          }
+        />
       ) : null}
 
       <Row gutter={[16, 16]}>
@@ -486,6 +585,8 @@ export function GraphPage() {
       <Inspector
         nodeId={inspectNode}
         edgeId={inspectEdge}
+        edgeView={inspectEdgeView}
+        nodeNameOf={nodeNameOf}
         projectRoot={projectRoot}
         onClose={() => {
           setInspectNode(null);
@@ -530,4 +631,10 @@ function fmt(v: unknown): string {
 
 function asArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map(String) : [];
+}
+
+function errText(e: unknown): string {
+  if (typeof e === 'string') return e;
+  if (e instanceof Error) return e.message;
+  return '请求失败';
 }

@@ -11,7 +11,7 @@ use em_domain::model::{
 use serde_json::{json, Value};
 
 use crate::eval::{Evaluator, MatchCtx};
-use crate::normalize::apply_normalize;
+use crate::normalize::{apply_normalize, apply_table_prefix_steps};
 use crate::workspace::{CallRecord, ConfigRecord, GraphWorkspace, InheritRecord};
 use crate::context::PipelineContext;
 
@@ -786,6 +786,7 @@ fn compute_identity(
     spec: &em_domain::model::IdentitySpec,
 ) -> Option<IdentityKey> {
     let kind = spec.kind.clone();
+    let prefixes = ev.ws().table_prefixes();
     if kind.as_str() == SynthesizedKind::CONTRACT_ID {
         let method = spec
             .method
@@ -793,11 +794,11 @@ fn compute_identity(
             .and_then(|s| ev.string(s))
             .unwrap_or_else(|| "GET".to_string());
         let path = spec.path.as_ref().and_then(|s| ev.string(s))?;
-        let path = apply_normalize(&path, &spec.normalize);
+        let path = apply_normalize(&path, &apply_table_prefix_steps(&spec.normalize, prefixes));
         return Some(IdentityKey::contract(&method, &path));
     }
     let raw = spec.value.as_ref().and_then(|s| ev.string(s))?;
-    let value = apply_normalize(&raw, &spec.normalize);
+    let value = apply_normalize(&raw, &apply_table_prefix_steps(&spec.normalize, prefixes));
     if value.is_empty() {
         return None;
     }

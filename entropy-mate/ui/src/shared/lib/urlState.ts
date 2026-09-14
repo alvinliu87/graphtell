@@ -64,13 +64,18 @@ export function sameViewState(a: ViewState, b: ViewState): boolean {
 }
 
 /**
- * 修正现场：URL 可能是手写的、过期的（比如节点被重建后 id 变了）。
- * 这里只做"能修就修，修不了就退回默认"，绝不静默展示一张无关的图。
+ * 修正现场：URL 可能是手写的、过期的（比如视角被删了）。
+ * 这里只做"能修就修"，**绝不静默把用户换到一张无关的图上**。
+ *
+ * 特别注意：**不用候选列表判断某个节点是否存在**。候选列表是给二级选择器用的
+ * （有 `limit` 上限且可能被后端过滤），拿它当存在性判据，会把刚点进来的、
+ * 恰好排在前 N 之外的节点误判为"已删除"，再被页面自动替换成第一个候选——
+ * 那恰恰就是"静默展示一张无关的图"。节点是否真的可用，由 `/view/{p}?node=`
+ * 的响应来回答；取不到就在页面上如实报错，让用户重新选。
  */
 export function reconcileViewState(
   state: ViewState,
   perspectives: Array<{ id: string; mode: 'object' | 'aggregate'; available: number; depth?: number }>,
-  candidates: Array<{ id: number }>,
 ): ViewState {
   const exists = state.p ? perspectives.find((x) => x.id === state.p) : undefined;
   if (!exists) {
@@ -79,10 +84,6 @@ export function reconcileViewState(
   }
   if (exists.mode === 'aggregate') {
     // 聚合视角没有"单个对象"
-    return { ...state, n: null };
-  }
-  if (state.n !== null && !candidates.some((c) => c.id === state.n)) {
-    // 中心对象已不存在：清掉，由页面自动选第一个候选
     return { ...state, n: null };
   }
   return state;

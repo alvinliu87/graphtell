@@ -38,26 +38,22 @@ describe('reconcileViewState', () => {
     { id: 'table', mode: 'object' as const, available: 5, depth: 2 },
     { id: 'platform', mode: 'aggregate' as const, available: 3, depth: 2 },
   ];
-  const candidates = [{ id: 9 }];
-
   it('视角无效时退回第一个有数据的视角', () => {
-    const r = reconcileViewState({ ...EMPTY_STATE, p: null }, perspectives, candidates);
+    const r = reconcileViewState({ ...EMPTY_STATE, p: null }, perspectives);
     expect(r.p).toBe('table');
   });
 
   it('聚合视角清掉中心对象', () => {
-    const r = reconcileViewState({ ...EMPTY_STATE, p: 'platform', n: 5 }, perspectives, candidates);
+    const r = reconcileViewState({ ...EMPTY_STATE, p: 'platform', n: 5 }, perspectives);
     expect(r.p).toBe('platform');
     expect(r.n).toBeNull();
   });
 
-  it('中心对象不存在时清掉 n', () => {
-    const r = reconcileViewState({ ...EMPTY_STATE, p: 'table', n: 123 }, perspectives, candidates);
-    expect(r.n).toBeNull();
-  });
-
-  it('中心对象存在时保留', () => {
-    const r = reconcileViewState({ ...EMPTY_STATE, p: 'table', n: 9 }, perspectives, candidates);
-    expect(r.n).toBe(9);
+  // 候选列表带 limit 上限、还可能被后端过滤，它不是"节点是否存在"的判据：
+  // 用它会把刚导航进来的、排在前 N 之外的节点误判为不存在，再被静默换成第一个候选。
+  it('节点不在候选列表里也保留 n（候选不是存在性判据）', () => {
+    const r = reconcileViewState({ ...EMPTY_STATE, p: 'table', n: 123 }, perspectives);
+    expect(r.p).toBe('table');
+    expect(r.n).toBe(123);
   });
 });

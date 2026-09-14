@@ -519,7 +519,12 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
                     to_id: target,
                     phase: phase.clone(),
                     confidence: 0.7,
-                    properties: serde_json::json!({ "callee": call.callee }),
+                    properties: serde_json::json!({
+                        "callee": call.callee,
+                        // 精确记录这次调用对应的 CallSite 节点 id，视图层据此直接取到"调用处"，
+                        // 无需再用被调名做启发式匹配。
+                        "call_site": call.node.get(),
+                    }),
                 });
                 added += 1;
             }
@@ -546,6 +551,7 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
                             properties: serde_json::json!({
                                 "via": "receiver_type",
                                 "callee": call.callee,
+                                "call_site": call.node.get(),
                             }),
                         });
                         added += 1;

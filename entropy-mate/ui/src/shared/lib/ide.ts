@@ -25,14 +25,17 @@ export const IDE_LABEL: Record<IdeTarget, string> = {
 
 /** 构造 IDE URL（只用相对路径 + 行号，不暴露任何值）。 */
 export function ideUrl(target: IdeTarget, loc: SourceLocation, projectRoot?: string): string {
-  const file = absolutePath(loc.file, projectRoot);
+  const raw = absolutePath(loc.file, projectRoot);
+  // scheme URL 里统一用正斜杠；Windows 反斜杠会被编码或误解。
+  const file = raw.replace(/\\/g, '/');
   switch (target) {
     case 'vscode':
-      return `vscode://file/${file}:${loc.line}`;
     case 'vscode-insiders':
-      return `vscode-insiders://file/${file}:${loc.line}`;
     case 'cursor':
-      return `cursor://file/${file}:${loc.line}`;
+      // vscode URL: vscode://file/<path>，path 本身不能再带前导 '/'，否则成 'vscode://file//home/...'
+      // 会被系统/IDE 解释为 UNC 路径 \\home\...，导致"Path does not exist"。
+      const clean = file.startsWith('/') ? file.slice(1) : file;
+      return `${target}://file/${clean}:${loc.line}`;
     default:
       // JetBrains 系：?line= 支持行号，symbol 追加在后面便于人工核对
       const symbol = loc.symbol ? `#${encodeURIComponent(loc.symbol)}` : '';
@@ -44,8 +47,30 @@ export function ideUrl(target: IdeTarget, loc: SourceLocation, projectRoot?: str
 
 function absolutePath(file: string, projectRoot?: string): string {
   if (file.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(file)) return file;
-  if (projectRoot) return `${projectRoot.replace(/\/$/, '')}/${file}`;
+  if (projectRoot) return `${projectRoot.replace(/[\\/]$/, '')}/${file}`;
   return `/${file}`;
+}
+
+const IDE_STORAGE_KEY = 'em.preferredIde';
+
+/** 用户偏好的 IDE（持久化在 localStorage，默认 VS Code）。点路径跳转时用它。 */
+export function preferredIde(): IdeTarget {
+  try {
+    const saved = localStorage.getItem(IDE_STORAGE_KEY);
+    if (saved && saved in IDE_LABEL) return saved as IdeTarget;
+  } catch {
+    /* localStorage 不可用（隐私模式 / SSR）时静默降级 */
+  }
+  return 'vscode';
+}
+
+/** 记住用户最近选择的 IDE，下次直接用它。 */
+export function setPreferredIde(target: IdeTarget): void {
+  try {
+    localStorage.setItem(IDE_STORAGE_KEY, target);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** 打开（失败时自动降级为复制路径）。 */
@@ -68,9 +93,12 @@ export async function openInIde(
   }
 }
 
-/** fallback：复制 `path:line`，任何环境都能用。 */
+/** fallback：复制绝对 `path:line`，任何环境都能用（便于粘到终端 / go-to-file）。
+ * 注意：不附加 symbol，因为用户复制后通常是 Ctrl+P / go-to-file 直接定位文件，
+ * 括号里的符号会污染路径，导致 IDE 找不到。 */
 export async function copyPath(loc: SourceLocation, projectRoot?: string): Promise<void> {
-  const text = `${loc.file}:${loc.line}${loc.symbol ? ` (${loc.symbol})` : ''}`;
+  const file = absolutePath(loc.file, projectRoot);
+  const text = `${file}:${loc.line}`;
   try {
     await navigator.clipboard.writeText(text);
     message.success(`已复制 ${text}`);
@@ -79,15 +107,22 @@ export async function copyPath(loc: SourceLocation, projectRoot?: string): Promi
   }
 }
 
-/** 复制完整可粘贴的引用（供 issue / 报告内嵌）。 */
-export async function copyReference(
-  loc: SourceLocation,
+/** 一次性复制所有位置（绝对路径，每行一个），便于粘到终端 / IDE 的 go-to-file。
+ * 不附加 symbol，理由同上。 */
+export async function copyAllLocations(
+  locations: SourceLocation[],
+  projectRoot?: string,
   extra?: string,
 ): Promise<void> {
-  const text = `${loc.file}:${loc.line}${extra ? ` — ${extra}` : ''}`;
+  const lines = locations.map((loc) => {
+    const file = absolutePath(loc.file, projectRoot);
+    return `${file}:${loc.line}`;
+  });
+  if (extra) lines.push(`— ${extra}`);
+  const text = lines.join('\n');
   try {
     await navigator.clipboard.writeText(text);
-    message.success(`已复制：${text}`);
+    message.success(`已复制 ${locations.length} 处位置（绝对路径）`);
   } catch {
     message.info(text);
   }

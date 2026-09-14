@@ -49,6 +49,25 @@ pub fn apply_transform(input: &str, t: &TransformSpec) -> String {
     s
 }
 
+/// 规则里写空的 `strip_prefix: []` 表示「使用当前工程探测到的表前缀」。
+///
+/// 这样通用框架 FKB 不写死具体前缀（如 CRMEB 的 `eb_`），前缀由 P3 从
+/// `config/database.php` 自动探测后填入 `workspace.table_prefixes`，再回退到这里。
+pub fn apply_table_prefix_steps(
+    steps: &[NormalizeStep],
+    table_prefixes: &[String],
+) -> Vec<NormalizeStep> {
+    steps
+        .iter()
+        .map(|s| match s {
+            NormalizeStep::StripPrefix(p) if p.is_empty() => {
+                NormalizeStep::StripPrefix(table_prefixes.to_vec())
+            }
+            other => other.clone(),
+        })
+        .collect()
+}
+
 /// 反复剥离前缀（应对 `eb_eb_store_order` 这类二次前缀）。
 pub fn strip_prefixes(s: &str, prefixes: &[String]) -> String {
     let mut s = s.to_string();

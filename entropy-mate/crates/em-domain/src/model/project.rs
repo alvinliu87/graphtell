@@ -49,6 +49,10 @@ pub struct ProjectConfig {
     /// i18n 覆盖检查要求的 locale 列表。
     pub required_locales: Vec<String>,
     /// 数据库表前缀（用于 identity 归一化，如 `eb_`）。
+    ///
+    /// 默认空：前缀应在工程配置里显式给出，或在 P3 由 FKB 从框架配置
+    /// （如 ThinkPHP 的 `config/database.php`）自动探测。绝不内置任何
+    /// 项目特定的默认值（CRMEB 的 `eb_` 不应泄漏到通用层）。
     pub table_prefixes: Vec<String>,
     /// 是否启用全阶段流水线（关闭则只跑 Ingest + CfAst）。
     pub full_pipeline: bool,
@@ -59,7 +63,7 @@ impl Default for ProjectConfig {
         Self {
             exclude_globs: Vec::new(),
             required_locales: vec!["zh-cn".into(), "en-us".into()],
-            table_prefixes: vec!["eb_".into()],
+            table_prefixes: Vec::new(),
             full_pipeline: true,
         }
     }

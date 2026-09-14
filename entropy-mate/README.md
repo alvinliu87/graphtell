@@ -121,8 +121,13 @@ ui/src
 identity:
   kind: Fqn
   value: { arg: 0 }
-  normalize: [ { strip_prefix: ["eb_"] }, singularize, { strip_prefix: ["eb_"] } ]
+  normalize: [ { strip_prefix: [] }, singularize, { strip_prefix: [] } ]
 ```
+
+`strip_prefix: []`（空列表）表示「使用当前工程探测到的表前缀」，而非写死某个具体前缀。
+前缀在 P3 由 FKB 的 `db_prefix` root_rule 从框架配置（如 ThinkPHP 的 `config/database.php`
+的 `connections.mysql.prefix`，支持 `env('KEY', 'default')` 默认值）自动读出，或来自工程配置
+`ProjectConfig.table_prefixes`；通用层 `ProjectConfig::default()` 不再内置任何项目特定前缀。
 
 归一化让 `store_order` / `eb_store_order` / `store_orders` 收敛到一个节点；否则 fan_in 会从 200 变成 67+66+67，影响面分析与死表检测全部失真。
 

@@ -92,6 +92,15 @@ pub enum RootSource {
     },
     /// 直接探测目录是否存在。
     DirectoryExists { path: String },
+    /// 从 PHP 配置文件（如 ThinkPHP 的 `config/database.php`）按点分指针取值。
+    ///
+    /// 用于自动探测工程级配置（如表前缀），避免把项目特定约定写死在 FKB。
+    ManifestPhp {
+        /// 相对工程根的路径，如 `config/database.php`。
+        manifest: String,
+        /// 点分路径，如 `connections.mysql.prefix`。
+        pointer: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
