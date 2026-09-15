@@ -77,12 +77,15 @@ export function GraphPage() {
     p: '',
     list: [],
   });
+  /** 当前视角的候选是否已从后端返回：用于判断"未选节点"时是「还在加载」还是「确实没有任何候选」。 */
+  const [candidatesLoaded, setCandidatesLoaded] = useState(false);
   /** 只有"属于当前视角"的候选才生效；切换视角的瞬间派生为空，等新视角候选到达后才有值。 */
   const candidates = candidateBundle.p === state.p ? candidateBundle.list : [];
   const [candidateSearch, setCandidateSearch] = useState('');
   /** 二级对象下拉是否展开：候选只在展开时才去后端取（按需加载）。
-   *  后端 candidates 在无搜索词时会做全量打分（5000 节点 × 每节点 BFS），很慢，
-   *  所以已选中节点且未展开下拉时绝不预取，避免每次切视角都白打一次慢查询。 */
+   *  后端 candidates 在无搜索词时会取全量候选做"语义依赖价值"排序，但已改为整图预加载后
+   *  在内存里跑 BFS（不再逐节点查库），很快；有搜索词时直接按名称返回、不打分。
+   *  这里仍按需加载：已选中节点且未展开下拉时绝不预取，避免每次切视角都无谓打一次。 */
   const [dropdownOpen, setDropdownOpen] = useState(false);
   /** 是否展开全部语法节点（默认折叠，只显示语义节点与依赖边）。 */
   const [expandSyntax, setExpandSyntax] = useState(false);
@@ -104,6 +107,10 @@ export function GraphPage() {
 
   const current = perspectives.find((p) => p.id === state.p) ?? null;
   const isAggregate = current?.mode === 'aggregate';
+  /** 未选节点、且候选尚未就绪 / 即将自动选中第一个时：图区应显示 spinner 而非空态，
+   *  否则首屏与切视角会先闪一下「该视角下暂无可展示的对象」。 */
+  const pendingAutoSelect =
+    !isAggregate && state.n === null && (candidates.length > 0 || !candidatesLoaded);
 
   // 图的语义内容标识：仅「切换视角 / 选中对象 / 切聚合视图 / 展开语法」这类导航动作会改变它，
   // 用于触发 GraphCanvas 重新 fit。单节点就地展开、悬浮、手动缩放平移不计入。
@@ -151,17 +158,36 @@ export function GraphPage() {
   useEffect(() => {
     if (!state.p || isAggregate) {
       setCandidateBundle({ p: state.p ?? '', list: [] });
+      setCandidatesLoaded(false);
       return;
     }
     if (candidateBundle.p === state.p) return;
     if (state.n !== null && !dropdownOpen) return;
     const perspective = state.p;
     let alive = true;
-    const timer = setTimeout(() => {
-      void viewApi.candidates(id, perspective, 300, candidateSearch).then((list) => {
-        if (alive) setCandidateBundle({ p: perspective, list });
-      });
-    }, 150);
+    setCandidatesLoaded(false);
+    const start = () => {
+      void viewApi
+        .candidates(id, perspective, 300, candidateSearch)
+        .then((list) => {
+          if (alive) {
+            setCandidateBundle({ p: perspective, list });
+            setCandidatesLoaded(true);
+          }
+        })
+        .catch(() => {
+          if (alive) setCandidatesLoaded(true);
+        });
+    };
+    // 还没选节点时，候选要用来「自动选中第一个对象」——尽快拿到，不要防抖；
+    // 仅当用户主动展开下拉时才防抖，避免每次切视角都无谓打一次。
+    if (state.n === null) {
+      start();
+      return () => {
+        alive = false;
+      };
+    }
+    const timer = setTimeout(start, 150);
     return () => {
       alive = false;
       clearTimeout(timer);
@@ -539,7 +565,7 @@ export function GraphPage() {
             edges={merged.edges}
             clusters={isAggregate ? clusters : undefined}
             matrix={isAggregate ? matrix : undefined}
-            loading={loading || aggLoading || expandingId !== null}
+            loading={loading || aggLoading || expandingId !== null || pendingAutoSelect}
             originId={origin?.id ?? null}
             selectedId={state.n}
             onNodeClick={handleNodeClick}

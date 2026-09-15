@@ -134,6 +134,13 @@ pub trait GraphQuery: Send + Sync {
     fn edges_outgoing(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>>;
     /// 批量取「入边」：返回 `to_id -> 边列表`，内部按 `to_id IN (...)` 分块查询。
     fn edges_incoming(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>>;
+    /// 链式边邻接（仅 `from_id, to_id`，已过滤为调用链边），供候选打分 BFS 在内存里跑。
+    /// 返回 `(outgoing: from_id -> [to_id], incoming: to_id -> [from_id])`，
+    /// 一次性取整个工程的链边，避免逐节点查库、也避开完整 `Edge`（含 `properties` JSON）的沉重传输。
+    fn chain_adjacency(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<(HashMap<i64, Vec<i64>>, HashMap<i64, Vec<i64>>)>;
     fn annotations_of(&self, node: crate::model::NodeId) -> Result<Vec<Annotation>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
     /// 按主键取边（供"边证据链"查询）。

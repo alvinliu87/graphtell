@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use em_domain::error::{DomainError, Result};
 use em_domain::model::{
-    AggregateView, Candidate, Cluster, EdgeEvidence, EdgeKind, EdgeView, GroupBy, HiddenInfo,
-    MatrixView, NodeId, NodeKind, NodeLocations, NodeView, ObjectView, PerspectiveSpec, ProjectId,
-    SourceLocation, UnresolvedInfo, ViewRegistry, ViaNode,
+    graph::NodeSummary, AggregateView, Candidate, Cluster, EdgeEvidence, EdgeKind, EdgeView,
+    GroupBy, HiddenInfo, MatrixView, NodeId, NodeKind, NodeLocations, NodeView, ObjectView,
+    PerspectiveSpec, ProjectId, SourceLocation, UnresolvedInfo, ViewRegistry, ViaNode,
 };
 use em_domain::port::{EdgeDirection, NodeFilter, Persistence, ViewRegistryProvider};
 use serde_json::{json, Value};
@@ -78,27 +78,40 @@ impl ViewService {
         let Some(kind) = &spec.node_kind else {
             return Ok(Vec::new());
         };
-        // 无搜索词时取全量候选参与"价值排序"（要选出全局最高价值的对象），
-        // 有搜索词时只按名称过滤、不做昂贵打分。
-        let scoring = name_contains.is_none();
         let nodes = self.store.query_nodes(&NodeFilter {
             project_id,
             kind: Some(em_domain::model::NodeKind(kind.clone())),
             name_contains: name_contains.map(|s| s.to_string()),
-            limit: Some(if scoring { 5000 } else { limit }),
+            // 无搜索词时多取一些参与"价值排序"（要选出全局最高价值的对象）；
+            // 有搜索词时只按名称过滤、不做昂贵打分。
+            limit: Some(if name_contains.is_none() { 5000 } else { limit }),
             offset: Some(0),
         })?;
-        // 候选按"语义依赖价值"降序：值越高越值得作为默认打开的对象，
-        // 前端据此默认打开第一个（价值最高）的对象。
+
+        // 有搜索词：直接按名称命中，不做全量打分（下拉按需搜索，求快）。
+        if name_contains.is_some() {
+            return Ok(nodes
+                .into_iter()
+                .map(|n| Candidate {
+                    id: n.id,
+                    name: n.name,
+                    badge: None,
+                })
+                .collect());
+        }
+
+        // 无搜索词：按"语义依赖价值"降序，选出默认打开的对象。
+        // 一次性预加载整图概要 + 链边邻接（`chain_adjacency` 只取整数邻接、不含 `properties`），
+        // 全部 BFS 在内存里跑，避免逐节点查库、也避开拉取整张边表的沉重传输
+        // （原先是 5000 节点 × 每节点多次 `edges_of` / `get_node` 往返，很慢）。
+        let summary = self.store.nodes_summary(project_id)?;
+        let (out, inc) = self.store.chain_adjacency(project_id)?;
+
         let mut scored: Vec<(usize, Candidate)> = nodes
             .into_iter()
             .map(|n| {
-                let fan = self
-                    .store
-                    .edges_of(n.id, EdgeDirection::Incoming)
-                    .map(|e| e.len())
-                    .unwrap_or(0);
-                let value = self.semantic_value(n.id);
+                let fan = inc.get(&n.id.get()).map(|e| e.len()).unwrap_or(0);
+                let value = self.semantic_value(n.id, &summary, &out, &inc);
                 (
                     value,
                     Candidate {
@@ -114,21 +127,29 @@ impl ViewService {
         Ok(scored.into_iter().map(|(_, c)| c).collect())
     }
 
-    /// 候选对象的"价值"：其调用链可达的语义节点数（表 / 配置 / 缓存 / 事件…）。
+    /// 候选对象的"价值"：其调用链（chain 边）可达的语义节点数（表 / 配置 / 缓存 / 事件…）。
     /// 值越高，承载的业务依赖越丰富，越适合作为默认打开的对象。
-    fn semantic_value(&self, center: NodeId) -> usize {
+    /// 全部在内存里完成：`summary` 提供节点语义性、`out`/`inc` 为链边整数邻接，不再回查数据库。
+    fn semantic_value(
+        &self,
+        center: NodeId,
+        summary: &HashMap<i64, NodeSummary>,
+        out: &HashMap<i64, Vec<i64>>,
+        inc: &HashMap<i64, Vec<i64>>,
+    ) -> usize {
         const MAX_DEPTH: u32 = 3;
         const MAX_NODES: usize = 400;
         let mut seen: HashSet<i64> = HashSet::new();
         seen.insert(center.get());
         let mut semantic: HashSet<i64> = HashSet::new();
-        let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
-        queue.push_back((center, 0));
-        // 与视图一致：把"中心的入向链邻居"也作为第 1 环（表 / 外部系统视角需要）
-        if let Ok(incoming) = self.store.edges_of(center, EdgeDirection::Incoming) {
-            for e in incoming {
-                if is_chain_edge(e.kind.as_str()) && seen.insert(e.from_id.get()) {
-                    queue.push_back((e.from_id, 1));
+        let mut queue: VecDeque<(i64, u32)> = VecDeque::new();
+        queue.push_back((center.get(), 0));
+        // 与视图一致：把"中心的入向链邻居"也作为第 1 环（表 / 外部系统视角需要）。
+        // `inc` 已只含链边，无需再判 `is_chain_edge`。
+        if let Some(incoming) = inc.get(&center.get()) {
+            for &from in incoming {
+                if seen.insert(from) {
+                    queue.push_back((from, 1));
                 }
             }
         }
@@ -136,25 +157,17 @@ impl ViewService {
             if r >= MAX_DEPTH || seen.len() >= MAX_NODES {
                 continue;
             }
-            let Ok(edges) = self.store.edges_of(id, EdgeDirection::Outgoing) else {
+            let Some(edges) = out.get(&id) else {
                 continue;
             };
-            for e in edges {
-                if !is_chain_edge(e.kind.as_str()) {
-                    continue;
+            // `out` 已只含链边，直接遍历目标即可。
+            for &to in edges {
+                if let Some(s) = summary.get(&to) {
+                    if NodeKind(s.kind.clone()).is_semantic() {
+                        semantic.insert(to);
+                    }
                 }
-                let to = e.to_id;
-                let is_sem = self
-                    .store
-                    .get_node(to)
-                    .ok()
-                    .flatten()
-                    .map(|n| node_is_semantic(&n))
-                    .unwrap_or(false);
-                if is_sem {
-                    semantic.insert(to.get());
-                }
-                if seen.insert(to.get()) {
+                if seen.insert(to) {
                     queue.push_back((to, r + 1));
                 }
             }
@@ -1445,22 +1458,9 @@ fn split_file_line(s: &str) -> (String, u32) {
 // ---------------------------------------------------------------- 语义 / 调用链判定
 
 /// 调用链边：折叠视图沿这些边做"正向发现"，把语法节点当透传。
+/// 权威定义在 `em_domain::model::kinds::is_chain_edge`。
 fn is_chain_edge(kind: &str) -> bool {
-    matches!(
-        kind,
-        "HandledBy"
-            | "Calls"
-            | "HasCallSite"
-            | "ReadsConfig"
-            | "ReadsCache"
-            | "ReadsDb"
-            | "WritesDb"
-            | "MapsTo"
-            | "Triggers"
-            | "PublishesTo"
-            | "CallsHttp"
-            | "ResolvesTo"
-    )
+    em_domain::model::kinds::is_chain_edge(kind)
 }
 
 /// 语义节点判定：第一类语义 kind（`kinds.rs` 的 `SYNTHESIZED`：`Table` / `HttpContract` /

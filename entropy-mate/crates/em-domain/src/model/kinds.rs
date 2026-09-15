@@ -153,6 +153,26 @@ impl EdgeKind {
     }
 }
 
+/// 调用链边：折叠视图沿这些边做"正向发现"，把语法节点当透传。
+/// 与 `em_application::view_service::is_chain_edge` 同义，集中在此作为唯一权威来源。
+pub fn is_chain_edge(kind: &str) -> bool {
+    matches!(
+        kind,
+        "HandledBy"
+            | "Calls"
+            | "HasCallSite"
+            | "ReadsConfig"
+            | "ReadsCache"
+            | "ReadsDb"
+            | "WritesDb"
+            | "MapsTo"
+            | "Triggers"
+            | "PublishesTo"
+            | "CallsHttp"
+            | "ResolvesTo"
+    )
+}
+
 declare_open_kind! { Phase => "流水线阶段";
     INGEST        = "Ingest"        => "P0 摄取：识别子工程与待分析文件",
     CF_AST        = "CfAst"         => "P2 语法级建图",

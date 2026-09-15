@@ -719,6 +719,34 @@ impl GraphQuery for SqliteStore {
         Ok(inc)
     }
 
+    fn chain_adjacency(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<(HashMap<i64, Vec<i64>>, HashMap<i64, Vec<i64>>)> {
+        let conn = self.conn.lock().unwrap();
+        // 只取链边的整数邻接，不含 `properties` 等重列；一次取全工程，内存里分桶。
+        let mut stmt = conn
+            .prepare("SELECT from_id, to_id, kind FROM edges WHERE project_id = ?1")
+            .map_err(DomainError::infra)?;
+        let rows = stmt
+            .query_map(params![project_id.get()], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
+            })
+            .map_err(DomainError::infra)?;
+        let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+        let mut inc: HashMap<i64, Vec<i64>> = HashMap::new();
+        for r in rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)?
+        {
+            if em_domain::model::kinds::is_chain_edge(&r.2) {
+                out.entry(r.0).or_default().push(r.1);
+                inc.entry(r.1).or_default().push(r.0);
+            }
+        }
+        Ok((out, inc))
+    }
+
     fn annotations_of(&self, node: NodeId) -> Result<Vec<Annotation>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
