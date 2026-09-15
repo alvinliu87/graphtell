@@ -79,13 +79,11 @@ export function LocationList({
               }}
             >
               <div style={{ minWidth: 0 }}>
-                <Typography.Link
-                  onClick={() => void openInIde(preferredIde(), loc, projectRoot, wslDistro)}
-                  title={t('在 IDE 中打开（') + IDE_LABEL[preferredIde()] + t('；右上角图标可换 IDE）')}
+                <Typography.Text
                   style={{ fontSize: 12, fontWeight: 600, wordBreak: 'break-all', display: 'inline-block' }}
                 >
                   {loc.file}:{loc.line}
-                </Typography.Link>
+                </Typography.Text>
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>
                   {loc.note ?? (loc.symbol ? t('符号 ') + loc.symbol : '')}
                   {loc.symbol ? ' · ' + t(driftHint(loc)) : ''}
@@ -109,17 +107,19 @@ export function LocationList({
                 ) : null}
               </div>
               <Space size={4}>
+                {/*
                 <Dropdown menu={{ items }} trigger={['click']}>
                   <Tooltip title={t('在 IDE 中打开（失败会自动复制路径）')}>
                     <Button size="small" type="text" icon={<ExportOutlined />} />
                   </Tooltip>
                 </Dropdown>
-                <Tooltip title={t('复制绝对 path:line（无 IDE 场景的兜底）')}>
+                */}
+                <Tooltip title={t('复制绝对 path:line')}>
                   <Button
                     size="small"
                     type="text"
                     icon={<CopyOutlined />}
-                    onClick={() => void copyPath(loc, projectRoot, wslDistro)}
+                    onClick={() => void copyPath(loc, projectRoot)}
                   />
                 </Tooltip>
               </Space>
@@ -137,7 +137,7 @@ export function LocationList({
           size="small"
           block
           onClick={() =>
-            void copyAllLocations(locations, projectRoot, `${locations.length}${t(' 处共现位置')}`, wslDistro)
+            void copyAllLocations(locations, projectRoot, `${locations.length}${t(' 处共现位置')}`)
           }
         >
           {t('复制全部位置（绝对路径）')}

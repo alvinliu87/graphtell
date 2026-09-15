@@ -227,22 +227,20 @@ export async function openInIde(
     window.setTimeout(() => iframe.remove(), 1500);
     message.success(t('已请求 ') + IDE_LABEL[target] + t(' 打开 ') + `${loc.file}:${loc.line}`);
   } catch {
-    await copyPath(loc, projectRoot, wslDistro);
+    await copyPath(loc, projectRoot);
   }
 }
 
 /** fallback：复制绝对 `path:line`，任何环境都能用（便于粘到终端 / go-to-file）。
+ * 不带 WSL / 远程前缀——复制的就是仓库内的真实相对路径拼上本地根，用户自行决定怎么用。
  * 注意：不附加 symbol，因为用户复制后通常是 Ctrl+P / go-to-file 直接定位文件，
  * 括号里的符号会污染路径，导致 IDE 找不到。 */
 export async function copyPath(
   loc: SourceLocation,
   projectRoot?: string,
-  wslDistro?: string,
 ): Promise<void> {
   const file = absolutePath(loc.file, projectRoot);
-  // WSL 模式：补 \\wsl$\<distro> UNC 前缀，复制后可在 Windows 终端 / 文件管理器直接打开。
-  const path = wslDistro ? `\\\\wsl$\\${wslDistro}${file.replace(/\\/g, '/')}` : file;
-  const text = `${path}:${loc.line}`;
+  const text = `${file}:${loc.line}`;
   try {
     await navigator.clipboard.writeText(text);
     message.success(t('已复制 ') + text);
@@ -252,17 +250,15 @@ export async function copyPath(
 }
 
 /** 一次性复制所有位置（绝对路径，每行一个），便于粘到终端 / IDE 的 go-to-file。
- * 不附加 symbol，理由同上。 */
+ * 不附加 symbol，理由同上；同样不带 WSL / 远程前缀。 */
 export async function copyAllLocations(
   locations: SourceLocation[],
   projectRoot?: string,
   extra?: string,
-  wslDistro?: string,
 ): Promise<void> {
   const lines = locations.map((loc) => {
     const file = absolutePath(loc.file, projectRoot);
-    const path = wslDistro ? `\\\\wsl$\\${wslDistro}${file.replace(/\\/g, '/')}` : file;
-    return `${path}:${loc.line}`;
+    return `${file}:${loc.line}`;
   });
   if (extra) lines.push(`— ${extra}`);
   const text = lines.join('\n');
