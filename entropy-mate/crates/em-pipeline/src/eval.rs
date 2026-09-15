@@ -60,6 +60,12 @@ impl<'a> Evaluator<'a> {
         self.ws
     }
 
+    /// 当前匹配上下文（供 identity 计算读取「调用点所在文件 / 行号」等环境信息，
+    /// 例如补齐 `Route::group` 的路由组前缀）。
+    pub fn ctx(&self) -> MatchCtx<'a> {
+        self.ctx
+    }
+
     /// 求值后取字符串（依次应用 resolve → transform → normalize）。
     pub fn string(&self, src: &ValueSource) -> Option<String> {
         let raw = self.raw(src)?;

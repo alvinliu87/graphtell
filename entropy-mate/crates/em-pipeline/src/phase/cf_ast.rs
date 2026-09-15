@@ -373,7 +373,11 @@ fn build_file(
             language: file.language.clone(),
             phase: phase.clone(),
             confidence: 1.0,
-            properties: serde_json::Value::Null,
+            // 调用语句原文：供 UI 在链路的"调用处"直接显示，便于一眼核验。
+            properties: match &call.snippet {
+                Some(s) => serde_json::json!({ "snippet": s }),
+                None => serde_json::Value::Null,
+            },
         });
         ctx.ws.add_edge(NewEdge {
             project_id,

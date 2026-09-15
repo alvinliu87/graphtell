@@ -66,6 +66,30 @@ export interface EdgeView {
   via?: ViaNode[];
   /** 终点这跳的"调用处"（即 via 最后一跳 → to 的 CallSite 位置）。 */
   to_call_site?: SourceLocation | null;
+  /**
+   * 是否为**传播得来**的间接边：起点自身并未执行该动作，
+   * 而是其调用链下游某处发生过（P8 沿 Calls 复刻）。
+   *
+   * 例：路由 A 的 handler 调了共享服务，该服务读了配置 K，
+   * 则 A 会被标上 `--ReadsConfig--> K`：事实成立但强度弱，UI 应降权呈现。
+   */
+  indirect?: boolean;
+  /**
+   * 这条链路（起点 → 各中间跳 → 终点）**每个节点**的位置，后端构建视图时内联。
+   *
+   * 折叠视图的链路是临时提拉的，中间跳按边 id 重查不到，因此由后端一次给全，
+   * 前端无需再对每个节点单独请求 `/nodes/{id}/locations`。
+   * 为空表示未内联（非折叠视图等），前端回退到原接口。
+   */
+  node_locations?: NodeLocationEntry[];
+}
+
+/** 链路中某节点（起点 / 中间跳 / 终点）的位置，随边一并返回。 */
+export interface NodeLocationEntry {
+  id: number;
+  /** 合成节点：它的"全部出处"并不都属于当前链路，UI 需换一种标注。 */
+  synthetic: boolean;
+  locations: SourceLocation[];
 }
 
 export interface HiddenInfo {

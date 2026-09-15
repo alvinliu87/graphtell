@@ -17,7 +17,8 @@
 use std::collections::{HashMap, HashSet};
 
 use em_domain::model::{
-    EdgeKind, FactValue, NewEdge, NodeId, Phase, ResolveStrategy, ResolveTier, Resolution, Severity,
+    EdgeKind, FactValue, NewEdge, NodeId, NodeKind, Phase, ResolveStrategy, ResolveTier, Resolution,
+    Severity,
 };
 use em_domain::port::KnowledgeProvider;
 use serde_json::Value;
@@ -702,14 +703,34 @@ fn resolve_call_target(ctx: &PipelineContext, call: &CallRecord) -> Option<NodeI
         return None;
     }
     // 2) 自由函数 `foo()`（排除 `new Foo`）
+    //
+    // **只接受解析到 `Function` 节点的结果**：`find_by_name` 是按 FQN 查的，而全局
+    // helper 的名字会与命名空间 / 类撞名 —— `app()` 命中 Namespace `app`、
+    // `config()` 命中同名类方法。此前不校验种类，凭空连出大量错误 Calls 边。
+    // 宁可缺边，不可错边。
     let callee = call.callee.trim();
     if callee.is_empty() || callee.starts_with("new ") {
         return None;
     }
     if let Some(id) = ctx.ws.find_by_name(callee) {
+        if is_function_node(ctx, id) {
+            return Some(id);
+        }
+    }
+    let id = ctx
+        .ws
+        .resolve_short_name(callee)
+        .and_then(|f| ctx.ws.find_by_name(&f))?;
+    if is_function_node(ctx, id) {
         return Some(id);
     }
+    None
+}
+
+/// 是否为自由函数节点（决定自由函数调用能否连到它）。
+fn is_function_node(ctx: &PipelineContext, id: NodeId) -> bool {
     ctx.ws
-        .resolve_short_name(callee)
-        .and_then(|f| ctx.ws.find_by_name(&f))
+        .node(id)
+        .map(|n| n.kind.as_str() == NodeKind::FUNCTION)
+        .unwrap_or(false)
 }

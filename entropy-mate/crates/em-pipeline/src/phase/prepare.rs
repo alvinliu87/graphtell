@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 use crate::context::PipelineContext;
 use crate::engine::{capture_locale, path_matches};
 use crate::normalize::strip_prefixes;
+use crate::workspace::RouteGroup;
 
 /// 执行 Prepare。
 pub fn run(
@@ -635,6 +636,49 @@ fn load_config_keys(ctx: &mut PipelineContext, _sub: &em_domain::model::SubProje
 }
 
 fn load_routes(ctx: &mut PipelineContext, _sub: &em_domain::model::SubProject) {
+    // 先收集路由组区间：`Route::group('v2', function(){...})` 的前缀要拼到组内每条
+    // 路由的路径上，否则契约 ID 会丢掉 `v2`、与真实请求路径及前端调用对不上。
+    // 收集时遍历的是**全量**调用点，因此只需登记一次（后续子工程重复调用时跳过）。
+    if ctx.ws.route_groups.is_empty() {
+        let mut groups: Vec<RouteGroup> = Vec::new();
+        for call in ctx.ws.calls.iter() {
+            let is_route = call
+                .receiver
+                .as_deref()
+                .map(|r| r.eq_ignore_ascii_case("Route") || r.ends_with("\\Route"))
+                .unwrap_or(false);
+            if !is_route {
+                continue;
+            }
+            if !call
+                .method
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("group"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            // 无前缀写法 `Route::group(function(){...})`：arg0 是闭包不是字符串，跳过。
+            let Some(em_domain::model::FactValue::String(prefix)) = call.args.first() else {
+                continue;
+            };
+            let prefix = prefix.trim().trim_matches('/').trim().to_string();
+            if prefix.is_empty() {
+                continue;
+            }
+            groups.push(RouteGroup {
+                file: call.file.clone(),
+                start_line: call.span.start_line,
+                end_line: call.span.end_line,
+                prefix,
+            });
+        }
+        if !groups.is_empty() {
+            info!("P3 路由组：{} 个带前缀的 Route::group", groups.len());
+            ctx.ws.add_route_groups(groups);
+        }
+    }
+
     let mut found: Vec<(String, String, String, u32)> = Vec::new();
     for call in ctx.ws.calls.iter() {
         let is_route = call

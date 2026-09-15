@@ -57,6 +57,16 @@ pub fn run(ctx: &mut PipelineContext) {
     for (src, src_seeds) in &by_source {
         let reach = transitive_callers(*src, &callers, ctx);
         for s in src_seeds {
+            // 环境读取类（`ReadsConfig` / `ReadsCache`）沿链上移后语义退化，
+            // 衰减置信度并标记 `indirect`，让视图与查询能区分「直接读」与「上游读过」。
+            let (confidence, indirect) = propagated(&s.kind, s.confidence);
+            let mut props = json!({
+                "via": "propagate",
+                "seed_source": *src,
+            });
+            if indirect {
+                props["indirect"] = json!(true);
+            }
             for c in &reach {
                 // `add_edge` 按 (kind, from, to) 去重，跨来源/跨种子天然合并。
                 ctx.ws.add_edge(NewEdge {
@@ -65,11 +75,8 @@ pub fn run(ctx: &mut PipelineContext) {
                     from_id: NodeId(*c),
                     to_id: s.target,
                     phase: phase.clone(),
-                    confidence: s.confidence,
-                    properties: json!({
-                        "via": "propagate",
-                        "seed_source": *src,
-                    }),
+                    confidence,
+                    properties: props.clone(),
                 });
             }
         }
@@ -115,6 +122,29 @@ fn transitive_callers(
 /// 是否为「动作发出方」节点：只有方法 / 函数能作为语义动作的源头被传播。
 fn is_action_site(kind: &str) -> bool {
     kind == NODE_KIND_METHOD || kind == NODE_KIND_FUNCTION
+}
+
+/// 传播时会**退化**的语义边种类。
+///
+/// `ReadsDb` / `WritesDb` / `PublishesTo` 这类是**真实发生的动作**：调用方调用了它，
+/// 该动作就确实在这次调用中发生了，传播到调用方不算失真。
+///
+/// `ReadsConfig` / `ReadsCache` 则不同：它们是**环境读取**，传播后含义从
+/// 「此处读取了该配置」退化为「上游某处读过，本入口可能受影响」——事实强度明显更弱。
+/// 若不加以区分，任何一个读了 `member_func_status` 的共享方法，都会把所有途经它的
+/// 入口全标成「读取该配置」，产生大量假正。
+const DECAYED_KINDS: &[&str] = &[EdgeKind::READS_CONFIG, "ReadsCache"];
+
+/// 退化系数：环境读取类语义边沿调用链每向上传播一次所保留的置信度。
+const DECAY_FACTOR: f32 = 0.6;
+
+/// 计算传播边的置信度与「是否间接」标记。
+fn propagated(kind: &str, base: f32) -> (f32, bool) {
+    if DECAYED_KINDS.contains(&kind) {
+        (base * DECAY_FACTOR, true)
+    } else {
+        (base, false)
+    }
 }
 
 const NODE_KIND_METHOD: &str = "Method";

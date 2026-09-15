@@ -11,8 +11,8 @@ use std::sync::Arc;
 use em_domain::error::{DomainError, Result};
 use em_domain::model::{
     graph::NodeSummary, AggregateView, Candidate, Cluster, EdgeEvidence, EdgeKind, EdgeView,
-    GroupBy, HiddenInfo, MatrixView, NodeId, NodeKind, NodeLocations, NodeView, ObjectView,
-    PerspectiveSpec, ProjectId, SourceLocation, UnresolvedInfo, ViewRegistry, ViaNode,
+    GroupBy, HiddenInfo, MatrixView, NodeId, NodeKind, NodeLocationEntry, NodeLocations, NodeView,
+    ObjectView, PerspectiveSpec, ProjectId, SourceLocation, UnresolvedInfo, ViewRegistry, ViaNode,
 };
 use em_domain::port::{EdgeDirection, NodeFilter, Persistence, ViewRegistryProvider};
 use serde_json::{json, Value};
@@ -251,6 +251,11 @@ impl ViewService {
         let mut force_visible: HashSet<i64> = HashSet::new();
         // 反向模式：从中心走到该节点途中遇到的**语义边种类**（即"资源被怎样访问"）。
         let mut path_kind: HashMap<i64, String> = HashMap::new();
+        // 与 `path_kind` 平行：走到该节点途中遇到的语义边**是否为传播得来的间接边**。
+        // 资源视角（"谁在读这个配置"）同样要能区分直接读者与"上游读过"的间接入口。
+        let mut path_indirect: HashMap<i64, bool> = HashMap::new();
+        // 每个节点在本层择优时胜出的**边 id**：用于「边 id 小者优先」的确定性兜底比较。
+        let mut best_edge_id_of: HashMap<i64, i64> = HashMap::new();
         kind_of.insert(center_id.get(), center_node.kind.to_string());
         name_of.insert(center_id.get(), center_node.name.clone());
         semantic_of.insert(center_id.get(), node_is_semantic(&center_node));
@@ -393,17 +398,22 @@ impl ViewService {
                     } else {
                         e.from_id.get()
                     };
-                    if ring_of.contains_key(&other) {
-                        continue;
+                    // 同一节点 `other` 可能被本层多条边（不同父、不同 kind、直接或传播边）
+                    // 同时发现。以前用 `or_insert`（先到先得），而"先到"取决于 `HashMap` / 边查询
+                    // 的遍历顺序，导致每次运行给同一节点打上不同的「访问方式」标签，甚至把**直接读者
+                    // 误判为间接**（影响前端虚线渲染）。改为按「直接优先 → 高 rank 优先 → 边 id
+                    // 小者优先」的确定顺序择优，结果不再依赖任何非确定遍历顺序。
+                    let already = ring_of.get(&other).copied();
+                    if let Some(r) = already {
+                        if r != ring + 1 {
+                            // 已在更近的层确定路径（或异常更远），不再处理。
+                            continue;
+                        }
+                        // r == ring + 1：本层重见，按比较器决定是否升级。
                     }
-                    // 记录"资源被怎样访问"：用访问方式标签的**优先级**而非"先到先得"，
-                    // 否则 `Model→Table` 的 `MapsTo`（结构映射）会盖过真正的读/写访问。
-                    //
-                    // 优先级：ReadsDb/WritesDb(3) > ReadsConfig/ReadsCache/PublishesTo/Triggers(2)
-                    //         > MapsTo(1) > 其它(0)。
-                    // 关键：`MapsTo` 的语义是「Model → Table」的**结构映射**（如 `StoreCategory` 模型
-                    // 对应 `store_category` 表），它**不是**"路由如何访问这张表"的标签；真正的读/写
-                    // 访问应以 `ReadsDb`/`WritesDb`（由 DAO/方法到表）为准，必须压过 `MapsTo`。
+                    // 访问方式标签优先级：ReadsDb/WritesDb(3) > ReadsConfig/ReadsCache/
+                    // PublishesTo/Triggers(2) > MapsTo(1) > 其它(0)。`MapsTo` 是结构映射
+                    // （Model→Table），不是"如何访问"，必须被真正的读/写访问压过。
                     let access_rank = |k: &str| -> u8 {
                         match k {
                             "ReadsDb" | "WritesDb" => 3,
@@ -412,10 +422,10 @@ impl ViewService {
                             _ => 0,
                         }
                     };
-                    let inherited_rank =
-                        path_kind.get(&id).map(|k| access_rank(k)).unwrap_or(0);
-                    let new_rank = access_rank(e.kind.as_str());
-                    let pk = if new_rank > inherited_rank {
+                    let indirect = is_indirect_edge(e);
+                    let rank = access_rank(e.kind.as_str());
+                    let inherited_rank = path_kind.get(&id).map(|k| access_rank(k)).unwrap_or(0);
+                    let pk = if rank > inherited_rank {
                         e.kind.to_string()
                     } else if inherited_rank > 0 {
                         path_kind.get(&id).cloned().unwrap()
@@ -424,10 +434,25 @@ impl ViewService {
                     } else {
                         String::new()
                     };
-                    path_kind.entry(other).or_insert(pk);
-                    ring_of.insert(other, ring + 1);
-                    parent_of.insert(other, id);
-                    next.push(other);
+                    let first_time = already.is_none();
+                    let upgrade = if first_time {
+                        true
+                    } else {
+                        let old_ind = path_indirect.get(&other).copied().unwrap_or(false);
+                        let old_rank = path_kind.get(&other).map(|k| access_rank(k)).unwrap_or(0);
+                        let old_eid = best_edge_id_of.get(&other).copied().unwrap_or(0);
+                        better_path(indirect, rank, e.id.get(), old_ind, old_rank, old_eid)
+                    };
+                    if upgrade {
+                        path_kind.insert(other, pk);
+                        path_indirect.insert(other, indirect);
+                        ring_of.insert(other, ring + 1);
+                        parent_of.insert(other, id);
+                        best_edge_id_of.insert(other, e.id.get());
+                    }
+                    if first_time {
+                        next.push(other);
+                    }
                 }
             }
             // 把"正向播种的第 1 环"并入第 1 层一起展开。
@@ -559,7 +584,9 @@ impl ViewService {
             }
             self.call_site_between(from, to)
         };
+        // `indirect`：该语义边是否由 P8 沿调用链传播得来（起点自身并未执行该动作）。
         let push_edge = |from: i64, to: i64, kind: &str, src: i64, mut via: Vec<ViaNode>,
+                             indirect: bool,
                              seen: &mut HashSet<(String, i64, i64)>,
                              out: &mut Vec<EdgeView>| {
             if from == to {
@@ -611,11 +638,15 @@ impl ViewService {
                 kind: kind.clone(),
                 from: NodeId(f),
                 to: NodeId(t),
-                resolved: agg_rank(kind.as_str()) > 0,
-                confidence: 0.8,
+                // 间接边（传播得来）只说明"上游某处发生过"，属于待验证假设 → 画虚线。
+                resolved: agg_rank(kind.as_str()) > 0 && !indirect,
+                confidence: if indirect { 0.5 } else { 0.8 },
                 hops,
                 via,
                 to_call_site,
+                indirect,
+                // 由"内联链路位置"步骤统一填充（见 object_view 末尾）。
+                node_locations: Vec::new(),
             });
         };
 
@@ -707,7 +738,16 @@ impl ViewService {
                     if via.last().map(|v| v.id.get()) == Some(*id) {
                         via.pop();
                     }
-                    push_edge(*id, center_id.get(), &kind, 0, via, &mut shown_keys, &mut shown_edges);
+                    push_edge(
+                        *id,
+                        center_id.get(),
+                        &kind,
+                        0,
+                        via,
+                        path_indirect.get(id).copied().unwrap_or(false),
+                        &mut shown_keys,
+                        &mut shown_edges,
+                    );
                 }
                 for id in users.iter().skip(MAX_USERS) {
                     hidden_total += 1;
@@ -719,6 +759,11 @@ impl ViewService {
                 // 环外语义目标先暂存，等 `push_edge`/`chain_to`（捕获了这些 map）用完后
                 // 再写回 `ring_of`/`parent_of`，避免与它们的不可变借用冲突。
                 let mut pending: Vec<(i64, i64, u32)> = Vec::new();
+                // 按「(kind, 提拉祖先 a, 目标 to)」分组，每组取**边 id 最小**的原始边作为代表。
+                // 否则同一视图边可能由不同原始边「先到先得」地决定 `indirect` / `via` / 证据，
+                // 而原始边的选取依赖 HashMap / 边查询的遍历顺序 → 每次运行结果不同。
+                let mut groups: HashMap<(String, i64, i64), Vec<em_domain::model::Edge>> =
+                    HashMap::new();
                 let all_nodes: Vec<i64> = ring_of.keys().copied().collect();
                 for node in &all_nodes {
                     let outs = out_edges.get(node).into_iter().flatten().cloned();
@@ -746,11 +791,31 @@ impl ViewService {
                         if a == to {
                             continue;
                         }
-                        // 被折叠掉的中间节点：从"提拉到的语义祖先"一路到"真正持有这条语义边的节点"
-                        let via = chain_to(e.from_id.get(), a);
-                        // 带上真实来源边 id：点击这条提拉边时能查到原始语义边的证据
-                        push_edge(a, to, e.kind.as_str(), e.id.get(), via, &mut shown_keys, &mut shown_edges);
+                        groups
+                            .entry((e.kind.as_str().to_string(), a, to))
+                            .or_default()
+                            .push(e);
                     }
+                }
+                for ((kind, a, to), mut es) in groups {
+                    // 边 id 全图唯一，取最小者即确定；该代表边决定 `via` 与证据查询 id。
+                    es.sort_by_key(|e| e.id.get());
+                    let best = &es[0];
+                    // `indirect` 同时考虑两点：① 原始边本身就是传播边（P8 沿调用链复刻）；
+                    // ② 该边是从子孙节点**提拉**到祖先 `a` 的——祖先并不直接执行该动作
+                    // （如 route 经调用链读到 config，route 本身不读）。两者任一成立即为间接。
+                    let via = chain_to(best.from_id.get(), a);
+                    let indirect = a != best.from_id.get() || is_indirect_edge(best);
+                    push_edge(
+                        a,
+                        to,
+                        &kind,
+                        best.id.get(),
+                        via,
+                        indirect,
+                        &mut shown_keys,
+                        &mut shown_edges,
+                    );
                 }
                 for (to, from, r) in pending {
                     ring_of.entry(to).or_insert(r);
@@ -776,6 +841,105 @@ impl ViewService {
                 if !semantic_of.get(id).copied().unwrap_or(false) {
                     *hidden_by_kind.entry(k.clone()).or_insert(0) += 1;
                     hidden_total += 1;
+                }
+            }
+        }
+
+        // ---- 内联链路节点的位置 ----
+        // 折叠视图的"链路"是**临时提拉**的结果，中间跳只存在于当次响应里，
+        // 按边 id 重查拿不到 —— 以往前端只能对每个节点单独请求
+        // `/nodes/{id}/locations`（N+1 次），且那些位置与"这条边"不同源。
+        // 这里一次性查好、按链路顺序（起点 → 各跳 → 终点）内联进 EdgeView。
+        // 非折叠视图边量大且无提拉，保持原行为（前端回退到原接口）。
+        if collapse {
+            let mut need: Vec<i64> = Vec::new();
+            for e in &shown_edges {
+                need.push(e.from.get());
+                for v in &e.via {
+                    need.push(v.id.get());
+                }
+                need.push(e.to.get());
+            }
+            need.sort_unstable();
+            need.dedup();
+            let mut locs: HashMap<i64, Vec<SourceLocation>> = HashMap::new();
+            let mut synth: HashMap<i64, bool> = HashMap::new();
+            for id in need {
+                if let Ok(nl) = self.node_locations(NodeId(id)) {
+                    synth.insert(id, nl.synthetic);
+                    locs.insert(id, nl.locations);
+                }
+            }
+            for e in shown_edges.iter_mut() {
+                let mut ids: Vec<i64> = vec![e.from.get()];
+                ids.extend(e.via.iter().map(|v| v.id.get()));
+                ids.push(e.to.get());
+                e.node_locations = ids
+                    .into_iter()
+                    .filter_map(|id| {
+                        locs.get(&id).map(|l| NodeLocationEntry {
+                            id: NodeId(id),
+                            synthetic: *synth.get(&id).unwrap_or(&false),
+                            locations: l.clone(),
+                        })
+                    })
+                    .collect();
+
+                // 终点那跳的"调用处"：语义边（`ReadsConfig` / `ReadsDb` …）在
+                // `properties.evidence.location` 里记着"这条边是在哪读到的"，
+                // 那正是**本链路访问该资源的位置**。
+                //
+                // 必须在这里补：`call_site_between` 对它无能为力 —— 其回退逻辑按
+                // **被调函数名**匹配（`sys_config`），而终点的名字是**资源名**
+                // （`offline_pay_status`），永远对不上，导致终点只剩"全部出处"列表，
+                // 看起来像链路串到了无关文件。
+                //
+                // **不能靠提拉边的 `e.id` 反查**：折叠时多条 raw 边（P5 直接边 +
+                // P8 传播边）会提拉到同一个 (from, to)，`push_edge` 留下哪条的 id
+                // 取决于 `HashMap` 遍历顺序（非确定），而传播边**没有** `evidence`
+                // —— 那样会时有时无。改为从**链路节点**（起点 + 各跳）出发，
+                // 找指向终点的、带 `evidence` 的直接语义边。
+                if e.to_call_site.is_none() {
+                    // 在**终点的入边**里找：同 kind、带 `evidence`、且**起点在本视图环内**
+                    // （即属于这条链路）的那条。取 from 最小者，保证结果确定。
+                    //
+                    // 不依赖提拉边的 id / via：二者会随 `HashMap` 遍历顺序变化
+                    // （同一 (from,to) 上 P5 直接边与 P8 传播边竞争，而传播边无 evidence）。
+                    let mut best: Option<(i64, SourceLocation)> = None;
+                    if let Ok(ins) = self.store.edges_of(e.to, EdgeDirection::Incoming) {
+                        for raw in &ins {
+                            if raw.kind.as_str() != e.kind {
+                                continue;
+                            }
+                            if !ring_of.contains_key(&raw.from_id.get()) {
+                                continue;
+                            }
+                            let Some(ev) = raw.properties.get("evidence") else {
+                                continue;
+                            };
+                            let Some(loc) = ev.get("location").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
+                            let (file, line) = split_file_line(loc);
+                            let cand = SourceLocation {
+                                file,
+                                line,
+                                symbol: None,
+                                note: Some("本链路访问该资源的位置".to_string()),
+                                snippet: ev
+                                    .get("snippet")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                            };
+                            match &best {
+                                Some((f, _)) if *f <= raw.from_id.get() => {}
+                                _ => best = Some((raw.from_id.get(), cand)),
+                            }
+                        }
+                    }
+                    if let Some((_, loc)) = best {
+                        e.to_call_site = Some(loc);
+                    }
                 }
             }
         }
@@ -1086,6 +1250,11 @@ impl ViewService {
                     line: node.span.start_line,
                     symbol: node.fqn.clone(),
                     note: Some(format!("{} 定义", node.kind)),
+                    snippet: node
+                        .properties
+                        .get("snippet")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 });
             }
         }
@@ -1110,6 +1279,7 @@ impl ViewService {
                             line: entry.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                             symbol: Some(name.clone()),
                             note: Some(format!("权威源 {table}")),
+                            snippet: None,
                         });
                     }
                     if let Some(Value::Array(srcs)) = entry.get("sources") {
@@ -1124,6 +1294,7 @@ impl ViewService {
                                     line,
                                     symbol: Some(name.clone()),
                                     note: Some(format!("{table} 来源")),
+                                    snippet: None,
                                 });
                             }
                         }
@@ -1167,6 +1338,11 @@ impl ViewService {
                     line,
                     symbol: None,
                     note: Some("边建立时的证据位置".into()),
+                    // P5 建边时一并存入的调用语句原文。
+                    snippet: ev
+                        .get("snippet")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 });
             }
             if let Some(s) = ev.get("evidence").and_then(|v| v.as_str()) {
@@ -1183,6 +1359,11 @@ impl ViewService {
                         line: from.span.start_line,
                         symbol: from.fqn.clone(),
                         note: Some("起点定义".into()),
+                        snippet: from
+                            .properties
+                            .get("snippet")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                     });
                 }
             }
@@ -1195,6 +1376,11 @@ impl ViewService {
                         line: to.span.start_line,
                         symbol: to.fqn.clone(),
                         note: Some("终点定义".into()),
+                        snippet: to
+                            .properties
+                            .get("snippet")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                     });
                 }
             }
@@ -1219,7 +1405,9 @@ impl ViewService {
             "Extends" | "Implements" | "UsesTrait" | "Declares" | "Contains" | "HasCallSite"
         );
         let has_tier = e.properties.get("tier").is_some();
-        let resolved = authoritative || has_tier;
+        // 传播边（P8 沿调用链复刻）只说明"上游某处发生过"，不是本节点的直接动作 → 虚线。
+        let indirect = is_indirect_edge(&e);
+        let resolved = (authoritative || has_tier) && !indirect;
         let hops = e
             .properties
             .get("hops")
@@ -1235,6 +1423,8 @@ impl ViewService {
             confidence: e.confidence,
             hops,
             to_call_site: None,
+            indirect,
+            node_locations: Vec::new(),
         }
     }
 
@@ -1248,6 +1438,12 @@ impl ViewService {
             line: node.span.start_line,
             symbol: node.fqn.clone(),
             note: None,
+            // CallSite 节点带"调用语句"原文，显示在链路的每一跳下便于核验。
+            snippet: node
+                .properties
+                .get("snippet")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         })
     }
 
@@ -1474,6 +1670,44 @@ fn node_is_semantic(n: &em_domain::model::Node) -> bool {
 /// 语义边判定（权威来源：`kinds.rs` 的语义边集合）。
 fn is_semantic_edge(kind: &str) -> bool {
     EdgeKind(kind.to_string()).is_semantic()
+}
+
+/// 是否为**传播得来**的间接边（P8 沿 `Calls` 调用链复刻，见 `propagate.rs`）。
+///
+/// 直接由 FKB 规则命中的边只带 `evidence`；传播边带 `via: "propagate"`，
+/// 其中环境读取类（`ReadsConfig` / `ReadsCache`）还会额外带 `indirect: true`。
+///
+/// 必须区分二者：否则任何读了某配置的共享方法，都会让所有途经它的入口
+/// 在图上显示为"直接读取该配置"，看起来像是真实依赖。
+fn is_indirect_edge(e: &em_domain::model::Edge) -> bool {
+    e.properties
+        .get("indirect")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || e.properties.get("via").and_then(|v| v.as_str()) == Some("propagate")
+}
+
+/// 比较两个「节点访问方式」候选，返回 `new` 是否优于 `old`。
+///
+/// 优先级：① 直接(`false`) 优于 间接(`true`)；② 访问 rank 高者优；③ 边 id 小者优（确定性兜底）。
+///
+/// 边 id 全图唯一，故同一 BFS 层内给定节点的所有候选里**优胜者唯一**——
+/// 无论 `HashMap` / 边查询以何种顺序遍历，最终选中的边都相同，结果确定。
+fn better_path(
+    new_indirect: bool,
+    new_rank: u8,
+    new_eid: i64,
+    old_indirect: bool,
+    old_rank: u8,
+    old_eid: i64,
+) -> bool {
+    if new_indirect != old_indirect {
+        return !new_indirect; // 新的更直接 → 更优
+    }
+    if new_rank != old_rank {
+        return new_rank > old_rank;
+    }
+    new_eid < old_eid
 }
 
 /// 按 HTTP 契约名（如 `POST /product`、`GET /products`）首词判定读/写，

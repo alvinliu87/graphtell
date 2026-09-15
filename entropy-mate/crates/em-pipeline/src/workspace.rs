@@ -54,6 +54,34 @@ pub struct InheritRecord {
     pub span: Span,
 }
 
+/// 路由组区间：`Route::group('v2', function () { ... })`。
+///
+/// ThinkPHP 会把组前缀拼到组内**所有**路由的路径上：
+/// `Route::group('v2', fn(){ Route::get('order/x') })` 的真实路径是 `/v2/order/x`。
+/// 若只取 `arg:0` 建契约 ID，就会丢掉 `v2`，导致：
+/// * 后端契约与真实请求路径不符，无法与前端 `CallsHttp` 汇聚；
+/// * 不同版本 / 分组下的同名子路径会被幂等合并成同一个节点。
+#[derive(Debug, Clone)]
+pub struct RouteGroup {
+    pub file: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub prefix: String,
+}
+
+/// 是否参与「短名 → FQN」索引的**类型节点**。
+///
+/// 只有类 / 接口 / trait / 枚举参与：短名索引的语义本就是
+/// 「`StoreOrderServices` → `app\services\order\StoreOrderServices`」。
+/// 方法与函数若也进索引，高频全局函数名（`config` / `get` / `app` …）
+/// 会撞上同名方法，制造大量错误 Calls 边（详见 `add_node` 注释）。
+fn is_type_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        NodeKind::CLASS | NodeKind::INTERFACE | NodeKind::TRAIT | NodeKind::ENUM
+    )
+}
+
 /// 尚未解析的动态链接（P5 产出，P7 解析）。
 #[derive(Debug, Clone)]
 pub struct PendingLink {
@@ -86,6 +114,8 @@ pub struct GraphWorkspace {
     pub configs: Vec<ConfigRecord>,
     pub inherits: Vec<InheritRecord>,
     pub pending_links: Vec<PendingLink>,
+    /// 路由组区间（`Route::group('v2', ...)`），供契约 ID 补齐组前缀。
+    pub route_groups: Vec<RouteGroup>,
     pub symbols: BTreeMap<String, BTreeMap<String, Value>>,
     /// 类属性默认值：`(class_node_id, property_name) → value`。
     prop_values: HashMap<(i64, String), FactValue>,
@@ -133,6 +163,7 @@ impl GraphWorkspace {
             configs: Vec::new(),
             inherits: Vec::new(),
             pending_links: Vec::new(),
+            route_groups: Vec::new(),
             symbols: BTreeMap::new(),
             prop_values: HashMap::new(),
             file_nodes: HashMap::new(),
@@ -207,12 +238,24 @@ impl GraphWorkspace {
         };
         if let Some(fqn) = &new.fqn {
             self.by_fqn.entry(fqn.clone()).or_insert(id.get());
-            if let Some(short) = fqn.rsplit(['\\', ':', '/']).next() {
-                if !short.is_empty() {
-                    self.by_short
-                        .entry(short.to_ascii_lowercase())
-                        .or_default()
-                        .push(id.get());
+            // 短名索引**只登记类型节点**（Class / Interface / Trait / Enum）。
+            //
+            // 曾经把 Method / Function 一并登记，于是 `config()` / `get()` / `index()`
+            // 这类高频全局函数被短名解析撞到**同名方法**上
+            // （`config()` → `app\api\controller\v1\PayController::config`），
+            // 凭空生成几十条错误 Calls 边，再经 P8 传播把无关的配置依赖扩散到全部入口
+            // —— 表现就是"路由连到了毫不相关的文件"。
+            //
+            // 短名索引的语义本就只是「类短名 → 类 FQN」；方法一律用
+            // `Class::method` 全限定名精确查找，不需要也不该进短名索引。
+            if is_type_kind(new.kind.as_str()) {
+                if let Some(short) = fqn.rsplit(['\\', ':', '/']).next() {
+                    if !short.is_empty() {
+                        self.by_short
+                            .entry(short.to_ascii_lowercase())
+                            .or_default()
+                            .push(id.get());
+                    }
                 }
             }
         }
@@ -483,6 +526,7 @@ impl GraphWorkspace {
         line: u32,
         symbol: Option<String>,
         note: Option<String>,
+        snippet: Option<String>,
     ) {
         const CAP: usize = 50;
         let loc = em_domain::model::SourceLocation {
@@ -490,7 +534,26 @@ impl GraphWorkspace {
             line,
             symbol,
             note,
+            snippet,
         };
+        // 同一「文件 + 行」只保留一份：`append_location` 的语义是记录该对象的
+        // **不同**共现位置，而不是"每次规则命中都追加一条"。
+        // 不去重时，同一调用点被重复命中就会让前端看到成对重复的条目。
+        let dup = self
+            .nodes
+            .get(&id.get())
+            .and_then(|n| n.properties.get("locations"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().any(|item| {
+                    item.get("file").and_then(|v| v.as_str()) == Some(loc.file.as_str())
+                        && item.get("line").and_then(|v| v.as_u64()) == Some(loc.line as u64)
+                })
+            })
+            .unwrap_or(false);
+        if dup {
+            return;
+        }
         if let Some(node) = self.nodes.get_mut(&id.get()) {
             let existing = node
                 .properties
@@ -519,6 +582,39 @@ impl GraphWorkspace {
 
     pub fn table_prefixes(&self) -> &[String] {
         &self.table_prefixes
+    }
+
+    /// 登记路由组区间（P3 从 `Route::group('v2', ...)` 调用点收集）。
+    ///
+    /// 用**追加**而非覆盖：loaders 按子工程逐个调用，而收集时遍历的是全量调用点，
+    /// 覆盖会丢掉先处理子工程的数据（追加后由 `route_group_prefix` 去重）。
+    pub fn add_route_groups(&mut self, groups: Vec<RouteGroup>) {
+        self.route_groups.extend(groups);
+    }
+
+    /// 求某个调用点（文件 + 行号）所在的路由组前缀，外层在前（如 `v2` / `v2/inner`）。
+    ///
+    /// 用**行号区间包含**而非 AST 遍历：调用点的 `span` 天然覆盖整个
+    /// `Route::group(...)` 表达式（含闭包体），判断区间包含即可还原嵌套层级。
+    pub fn route_group_prefix(&self, file: &str, line: u32) -> String {
+        let mut matched: Vec<&RouteGroup> = self
+            .route_groups
+            .iter()
+            .filter(|g| g.file == file && g.start_line <= line && line <= g.end_line)
+            .collect();
+        if matched.is_empty() {
+            return String::new();
+        }
+        // 外层组 start_line 更小、end_line 更大：按 (start 升序, end 降序) 即由外到内。
+        matched.sort_by_key(|g| (g.start_line, std::cmp::Reverse(g.end_line), g.prefix.clone()));
+        // 同一区间被重复登记时只算一次（loaders 按子工程重复遍历全量调用点）。
+        matched.dedup_by_key(|g| (g.start_line, g.end_line, g.prefix.clone()));
+        matched
+            .iter()
+            .map(|g| g.prefix.trim().trim_matches('/'))
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     /// 去掉已知表前缀；同时尝试若干通用前缀。

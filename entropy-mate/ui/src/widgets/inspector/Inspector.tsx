@@ -207,11 +207,25 @@ function EdgePanel({
         <Descriptions.Item label={t('状态')}>
           {unresolved ? <Tag color="orange">{t('待验证假设（虚线）')}</Tag> : <Tag color="green">{t('已解析（实线）')}</Tag>}
         </Descriptions.Item>
+        {edge.indirect ? (
+          <Descriptions.Item label={t('性质')}>
+            <Tag color="gold">{t('间接（沿调用链传播）')}</Tag>
+          </Descriptions.Item>
+        ) : null}
         <Descriptions.Item label={t('置信度')}>{edge.confidence.toFixed(2)}</Descriptions.Item>
         {edge.hops !== null ? (
           <Descriptions.Item label={t('跳数')}>{t('途经 ') + edge.hops + t(' 跳')}</Descriptions.Item>
         ) : null}
       </Descriptions>
+
+      {edge.indirect ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={t('间接依赖：起点自身并未执行该动作')}
+          description={t('它由调用链下游某处传播而来（P8 沿 Calls 复刻），不是起点的直接动作。事实成立但强度弱——起点是否真的受影响，请按下面逐跳核对。')}
+        />
+      ) : null}
 
       {via.length > 0 ? (
         <CollapsedChain
@@ -309,23 +323,57 @@ function CollapsedChain({
     return [...s];
   }, [pathList, edge.from, edge.to]);
 
-  const [locs, setLocs] = useState<Record<number, SourceLocation[]>>({});
+  // 存整个 `NodeLocations`：需要 `synthetic` 来决定如何标注"定义处"。
+  // 共享节点（ConfigKey / Table / Cache …）由同键多处共现合成，
+  // 它的**全部出处并不都属于当前链路** —— 混着展示会让人以为链路串到了无关文件。
+  //
+  // 优先用后端**内联**在 `edge.node_locations` 里的位置（折叠视图链路是临时提拉的，
+  // 中间跳按边 id 重查不到，所以后端一次给全）。只对缺失的节点回退到原接口，
+  // 避免对每一跳都发一次 `/nodes/{id}/locations`（N+1）。
+  const inline = useMemo(() => {
+    const m: Record<number, NodeLocations> = {};
+    for (const e of edge.node_locations ?? []) {
+      m[e.id] = {
+        id: e.id,
+        kind: '',
+        name: '',
+        synthetic: e.synthetic,
+        locations: e.locations,
+        reference_count: 0,
+      };
+    }
+    return m;
+  }, [edge.node_locations]);
+
+  const missingKey = allIds.filter((id) => !(id in inline)).join(',');
+
+  const [fetched, setFetched] = useState<Record<number, NodeLocations>>({});
   useEffect(() => {
+    const missing = missingKey ? missingKey.split(',').map(Number) : [];
+    if (missing.length === 0) return;
     let alive = true;
     void Promise.all(
-      allIds.map((id) =>
+      missing.map((id) =>
         viewApi
           .nodeLocations(id)
-          .then((r) => [id, r.locations] as const)
-          .catch(() => [id, [] as SourceLocation[]] as const),
+          .then((r) => [id, r] as const)
+          .catch(() => [id, null] as const),
       ),
     ).then((pairs) => {
-      if (alive) setLocs(Object.fromEntries(pairs));
+      if (!alive) return;
+      const next: Record<number, NodeLocations> = {};
+      for (const [id, r] of pairs) {
+        if (r) next[id] = r;
+      }
+      setFetched(next);
     });
     return () => {
       alive = false;
     };
-  }, [allIds]);
+  }, [missingKey]);
+
+  // 内联数据优先；仅补上后端没有内联的节点。
+  const locs = useMemo(() => ({ ...fetched, ...inline }), [fetched, inline]);
 
   type Step = {
     key: string;
@@ -339,17 +387,17 @@ function CollapsedChain({
 
   const renderPath = (p: ViaNode[]) => {
     const steps: Step[] = [
-      { key: `from-${edge.from}`, id: edge.from, kind: null, name: name(edge.from), role: '起点', locations: locs[edge.from] ?? [], callSite: null },
+      { key: `from-${edge.from}`, id: edge.from, kind: null, name: name(edge.from), role: '起点', locations: locs[edge.from]?.locations ?? [], callSite: null },
       ...p.map((v) => ({
         key: `via-${v.id}`,
         id: v.id,
         kind: v.kind,
         name: v.name,
         role: null as string | null,
-        locations: locs[v.id] ?? [],
+        locations: locs[v.id]?.locations ?? [],
         callSite: v.call_site ?? null,
       })),
-      { key: `to-${edge.to}`, id: edge.to, kind: null, name: name(edge.to), role: '终点', locations: locs[edge.to] ?? [], callSite: edge.to_call_site ?? null },
+      { key: `to-${edge.to}`, id: edge.to, kind: null, name: name(edge.to), role: '终点', locations: locs[edge.to]?.locations ?? [], callSite: edge.to_call_site ?? null },
     ];
     return (
       <div>
@@ -379,20 +427,60 @@ function CollapsedChain({
                 {s.name}
               </Button>
             </div>
-            {s.locations.length > 0 ? (
-              <div style={{ marginTop: 4 }}>
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  {t('定义处')}
-                </Typography.Text>
-                <LocationList
-                  locations={s.locations}
-                  kind={s.kind ?? undefined}
-                  projectRoot={projectRoot}
-                  wslDistro={wslDistro}
-                  showCopyAll={false}
-                />
-              </div>
-            ) : null}
+            {(() => {
+              const synthetic = locs[s.id]?.synthetic ?? false;
+              const cs = s.callSite;
+              const sameAsCallSite = (l: SourceLocation) =>
+                !!cs && l.file === cs.file && l.line === cs.line;
+              // 共享资源（ConfigKey / Table / Cache…）的"全部出处"**并不都属于当前链路**：
+              // 与"调用处"重合的那条已在下面单独显示，这里只列**其余**出处，
+              // 并默认折叠 —— 铺开会让人误以为"链路串到了无关文件"。
+              const rest =
+                synthetic && cs ? s.locations.filter((l) => !sameAsCallSite(l)) : s.locations;
+              if (rest.length === 0) return null;
+              if (synthetic && cs) {
+                return (
+                  <Collapse
+                    size="small"
+                    ghost
+                    style={{ marginTop: 4 }}
+                    items={[
+                      {
+                        key: 'rest',
+                        label: (
+                          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                            {t('该资源的其他 ') + rest.length + t(' 处读取点（与当前链路无关）')}
+                          </Typography.Text>
+                        ),
+                        children: (
+                          <LocationList
+                            locations={rest}
+                            kind={s.kind ?? undefined}
+                            projectRoot={projectRoot}
+                            wslDistro={wslDistro}
+                            showCopyAll={false}
+                          />
+                        ),
+                      },
+                    ]}
+                  />
+                );
+              }
+              return (
+                <div style={{ marginTop: 4 }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    {synthetic ? t('全部出处（共享节点）') : t('定义处')}
+                  </Typography.Text>
+                  <LocationList
+                    locations={rest}
+                    kind={s.kind ?? undefined}
+                    projectRoot={projectRoot}
+                    wslDistro={wslDistro}
+                    showCopyAll={false}
+                  />
+                </div>
+              );
+            })()}
             {s.callSite ? (
               <div style={{ marginTop: 4 }}>
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>

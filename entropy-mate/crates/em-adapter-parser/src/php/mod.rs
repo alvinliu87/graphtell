@@ -555,9 +555,11 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                 let method = child.child_by_field_name("name").map(|n| text(n, ctx.src));
                 let args = args_of(child, ctx);
                 if let (Some(object), Some(method)) = (object, method) {
+                    let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
                         callee_text: format!("{}->{}", object, method),
+                        snippet,
                         receiver: Some(object),
                         method: Some(method),
                         args,
@@ -572,9 +574,11 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                 let args = args_of(child, ctx);
                 if let (Some(scope), Some(method)) = (scope, method) {
                     let scope = trim_leading(scope);
+                    let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
                         callee_text: format!("{}::{}", scope, method),
+                        snippet,
                         receiver: Some(scope),
                         method: Some(method),
                         args,
@@ -588,9 +592,11 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                 let args = args_of(child, ctx);
                 if let Some(func) = func {
                     let f = trim_leading(func);
+                    let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
                         callee_text: f.clone(),
+                        snippet,
                         receiver: None,
                         method: Some(f),
                         args,
@@ -606,9 +612,11 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                     .map(|c| trim_leading(text(c, ctx.src)));
                 let args = args_of(child, ctx);
                 if let Some(cls) = cls {
+                    let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
                         callee_text: format!("new {}", cls),
+                        snippet,
                         receiver: None,
                         method: Some(cls),
                         args,
@@ -625,6 +633,28 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
 fn recurse_calls(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
     // 闭包/匿名函数内部的调用归属外层方法
     collect_call_sites(node, ctx, owner_fqn);
+}
+
+/// 取调用点所在**行**的源码文本，供 UI 直接显示"调用语句"，便于人工核验。
+///
+/// 只取单行：`span` 可能覆盖跨行的长表达式，多行片段对"一眼判断"并无帮助，
+/// 只会撑大存储与视图响应。超长则截断（避开 UTF-8 边界），避免异常长的行污染视图。
+fn snippet_of(node: Node, src: &str) -> Option<String> {
+    const MAX: usize = 160;
+    let start = node.start_byte().min(src.len());
+    let line_start = src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = src[line_start..].lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return None;
+    }
+    if line.len() <= MAX {
+        return Some(line.to_string());
+    }
+    let mut end = MAX;
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", &line[..end]))
 }
 
 fn args_of(node: Node, ctx: &Ctx) -> Vec<FactValue> {

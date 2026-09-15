@@ -652,6 +652,15 @@ fn exec_synthesize(
     props["sources"] = json!([rule.id]);
     new_node.properties = props.clone();
 
+    // 调用语句原文（CallSite 由 P2 从 span 提取）。让边的证据与合成节点的出处
+    // 都能直接显示"这条边 / 这个配置是怎么读出来的"，不必自己打开文件核对。
+    let snippet = ctx
+        .ws
+        .node(matched)
+        .and_then(|n| n.properties.get("snippet"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     let (node_id, created) = ctx.ws.get_or_create_synthesized(new_node);
 
     // 记录"这个语义对象在源码里的出处"，供前端给出**多位置列表**跳转
@@ -666,22 +675,28 @@ fn exec_synthesize(
             line,
             Some(identity.value.clone()),
             Some(format!("规则 {}", rule.id)),
+            snippet.clone(),
         );
     }
 
     if !created {
-        // 幂等合并：追加来源
+        // 幂等合并：**只补 `sources`**，绝不整份回写 properties。
+        //
+        // 内存里的 `node.properties` 已被 `append_location` 累积了 `locations` 数组；
+        // 若把它整份作为 property patch 推给落库，而 `location_patches` 又会逐条追加，
+        // 同一份 locations 就会被写两遍 —— 落库时 `merge_into` 是浅合并，
+        // 整份 patch 里的 `locations` 会先覆盖、随后又被逐条追加
+        // （实测 7 个位置变成 14 条，"整批重复"）。
         if let Some(node) = ctx.ws.node(node_id) {
-            let mut p = node.properties.clone();
-            let mut sources = p
+            let mut sources = node
+                .properties
                 .get("sources")
                 .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
                 .unwrap_or_default();
             if !sources.contains(&rule.id) {
                 sources.push(rule.id.clone());
             }
-            p["sources"] = json!(sources);
-            ctx.ws.patch_properties(node_id, p);
+            ctx.ws.patch_properties(node_id, json!({ "sources": sources }));
         }
     }
 
@@ -730,7 +745,11 @@ fn exec_synthesize(
                     phase: phase.clone(),
                     confidence,
                     properties: serde_json::json!({
-                        "evidence": { "rule": rule.id, "location": location_of(ctx, mctx) },
+                        "evidence": {
+                            "rule": rule.id,
+                            "location": location_of(ctx, mctx),
+                            "snippet": snippet.clone(),
+                        },
                     }),
                 });
                 // 记录传播种子：owner 是「动作发出方」，其调用方沿 CALLS 链也应被识别为同一语义动作的发出方。
@@ -941,6 +960,24 @@ fn compute_identity(
             .and_then(|s| ev.string(s))
             .unwrap_or_else(|| "GET".to_string());
         let path = spec.path.as_ref().and_then(|s| ev.string(s))?;
+        // 补齐 `Route::group('v2', ...)` 的路由组前缀。
+        // 不补的话 `Route::group('v2', fn(){ Route::get('order/x') })` 会建成
+        // `GET /order/x`，与真实请求路径 `/v2/order/x` 不符，也无法与前端契约汇聚。
+        //
+        // 注意：`path` 已由 `ValueSource.normalize`（含 `leading_slash`）处理过，
+        // 而 `IdentitySpec.normalize` 通常为空 —— 所以这里必须**自己保住前导斜杠**，
+        // 把组前缀插到斜杠之后，而不是简单前置（否则会产出 `GET v2/order/x`）。
+        let path = match ev.ctx() {
+            crate::eval::MatchCtx::Call(c) => {
+                let prefix = ev.ws().route_group_prefix(&c.file, c.span.start_line);
+                if prefix.is_empty() {
+                    path
+                } else {
+                    format!("/{}/{}", prefix, path.trim_start_matches('/'))
+                }
+            }
+            _ => path,
+        };
         let path = apply_normalize(&path, &apply_table_prefix_steps(&spec.normalize, prefixes));
         return Some(IdentityKey::contract(&method, &path));
     }

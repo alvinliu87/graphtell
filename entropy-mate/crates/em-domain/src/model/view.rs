@@ -130,6 +130,13 @@ pub struct SourceLocation {
     pub symbol: Option<String>,
     /// 说明，如 "Model 的 $table 定义"、"Db::name('store_order') 调用处"。
     pub note: Option<String>,
+    /// 该位置对应的**源码语句**（如调用点那一行的文本）。
+    ///
+    /// 只给 `file:line` 时，用户必须自己打开文件才能判断"这条边对不对"；
+    /// 带上语句才能一眼核验 —— 尤其对**间接传播**来的边，需要立刻看出
+    /// "上游是不是真的读了这个配置"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
 /// 视图中的节点。
@@ -159,6 +166,21 @@ pub struct NodeView {
     pub metrics: Value,
 }
 
+/// 链路中某个节点（起点 / 中间跳 / 终点）的位置，随边一并返回。
+///
+/// 折叠视图的"链路"是**临时提拉**的结果：中间跳只存在于当次视图响应里，
+/// 按边 id 重查拿不到（提拉没有持久化）。以往前端只能对每个节点单独请求
+/// `/nodes/{id}/locations`（N+1 次调用），且拿到的位置与"这条边"不同源。
+/// 改由构建视图时一并内联，前端无需额外请求。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeLocationEntry {
+    pub id: NodeId,
+    /// 是否为合成节点：共享资源（ConfigKey / Table …）的"全部出处"
+    /// 并不都属于当前链路，前台需据此换一种标注。
+    pub synthetic: bool,
+    pub locations: Vec<SourceLocation>,
+}
+
 /// 视图中的边。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeView {
@@ -182,6 +204,20 @@ pub struct EdgeView {
     /// 与每个 `ViaNode.call_site` 一起，让折叠链既显示"定义处"也显示"调用处"。
     #[serde(default)]
     pub to_call_site: Option<SourceLocation>,
+    /// 是否为**传播得来**的间接边：起点自身并未执行该动作，
+    /// 而是其调用链下游某处发生过，由 P8 沿 `Calls` 复刻而来。
+    ///
+    /// 例：路由 A 的 handler 调了共享服务，该服务读了配置 K，
+    /// 则 A 会被标上 `A --ReadsConfig--> K` —— 事实成立但**强度弱**。
+    /// UI 据此画虚线 / 降权，避免"看起来像 A 直接依赖 K"。
+    #[serde(default)]
+    pub indirect: bool,
+    /// 这条链路（起点 → 各中间跳 → 终点）**每个节点**的位置，由构建视图时内联。
+    ///
+    /// 顺序与链路一致（起点在最前、终点在最后），便于前端直接逐跳渲染。
+    /// 为空表示未内联（如非折叠视图），前端可回退到 `/nodes/{id}/locations`。
+    #[serde(default)]
+    pub node_locations: Vec<NodeLocationEntry>,
 }
 
 /// 边上被折叠掉的中间节点（调用链的一环）。

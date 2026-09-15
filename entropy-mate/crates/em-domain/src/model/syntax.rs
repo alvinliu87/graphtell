@@ -83,6 +83,9 @@ pub struct CallSiteFact {
     pub method: Option<String>,
     pub args: Vec<FactValue>,
     pub span: Span,
+    /// 该调用点所在行的源码文本（由 parser 从 `span` 提取，供 UI 直接显示语句）。
+    #[serde(default)]
+    pub snippet: Option<String>,
 }
 
 /// 配置条目。
