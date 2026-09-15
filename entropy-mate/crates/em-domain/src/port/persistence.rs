@@ -3,14 +3,17 @@
 //! 按 **接口隔离原则** 拆成若干细粒度 trait，再由一个空的组合 trait
 //! [`Persistence`] 提供 blanket impl，方便上层一次拿到全部能力。
 
+use std::collections::HashMap;
+
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::model::{
     AliasEntry, Annotation, Diagnostic, Edge, NewAnnotation, NewEdge, NewNode, NewProject,
-    NewSourceFile, NewSubProject, Node, NodeKind, Project, ProjectId, ProjectPatch, ProjectStatus,
-    SourceFile, SubProject, SubProjectId, SymbolEntry,
+    NewSourceFile, NewSubProject, Node, NodeId, NodeKind, Project, ProjectId, ProjectPatch,
+    ProjectStatus, SourceFile, SubProject, SubProjectId, SymbolEntry,
 };
+use crate::model::graph::NodeSummary;
 
 /// 图的一次批量写入。
 ///
@@ -124,6 +127,13 @@ pub trait GraphQuery: Send + Sync {
         node: crate::model::NodeId,
         direction: EdgeDirection,
     ) -> Result<Vec<Edge>>;
+    /// 工程全部节点的概要（id/kind/name/fqn/sub_project_id），供视图层一次预加载，
+    /// 取代 BFS 里每个节点一次的 `get_node` 往返。返回 `id -> 概要` 便于 O(1) 查询。
+    fn nodes_summary(&self, project_id: ProjectId) -> Result<HashMap<i64, NodeSummary>>;
+    /// 批量取「出边」：返回 `from_id -> 边列表`，内部按 `from_id IN (...)` 分块查询。
+    fn edges_outgoing(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>>;
+    /// 批量取「入边」：返回 `to_id -> 边列表`，内部按 `to_id IN (...)` 分块查询。
+    fn edges_incoming(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>>;
     fn annotations_of(&self, node: crate::model::NodeId) -> Result<Vec<Annotation>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
     /// 按主键取边（供"边证据链"查询）。

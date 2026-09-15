@@ -146,6 +146,16 @@ pub struct Edge {
     pub properties: Value,
 }
 
+/// 节点概要（供视图层一次性预加载，取代逐个 `get_node` 往返）。
+#[derive(Debug, Clone)]
+pub struct NodeSummary {
+    pub id: i64,
+    pub kind: String,
+    pub name: String,
+    pub fqn: Option<String>,
+    pub sub_project_id: Option<i64>,
+}
+
 /// 新建边入参。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewEdge {

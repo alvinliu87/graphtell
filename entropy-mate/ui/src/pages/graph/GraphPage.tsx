@@ -51,6 +51,7 @@ import {
 } from '@/shared/lib/ide';
 import { formatNumber } from '@/shared/lib/format';
 import { useLocale } from '@/shared/lib/i18n';
+import { FullscreenOutlined } from '@ant-design/icons';
 
 /** 图视图页：两级筛选 → 单对象链路子图 → 可跳转的结论面板。 */
 export function GraphPage() {
@@ -103,6 +104,14 @@ export function GraphPage() {
 
   const current = perspectives.find((p) => p.id === state.p) ?? null;
   const isAggregate = current?.mode === 'aggregate';
+
+  // 图的语义内容标识：仅「切换视角 / 选中对象 / 切聚合视图 / 展开语法」这类导航动作会改变它，
+  // 用于触发 GraphCanvas 重新 fit。单节点就地展开、悬浮、手动缩放平移不计入。
+  const fitKey = isAggregate
+    ? `agg:${state.p}`
+    : `obj:${state.p ?? ''}:${state.n ?? ''}:${expandSyntax}`;
+  /** 手动「适应屏幕」信号：每次 +1 即让 GraphCanvas 重置为整图 fit。 */
+  const [fitSignal, setFitSignal] = useState(0);
 
   // 边面板关闭时同步丢弃随身边对象，避免下次打开残留上一条边的折叠链。
   useEffect(() => {
@@ -433,6 +442,11 @@ export function GraphPage() {
               <Typography.Text type="secondary">{t('边类型')}</Typography.Text>
             </Space>
           </Tooltip>
+          <Tooltip title={t('重置缩放与平移，使整张图完整显示在当前视窗内')}>
+            <Button size="small" icon={<FullscreenOutlined />} onClick={() => setFitSignal((s) => s + 1)}>
+              {t('适应屏幕')}
+            </Button>
+          </Tooltip>
           <Button size="small" type="primary" ghost onClick={() => setDrawerOpen(true)}>
             {t('结论 / 导航')}
           </Button>
@@ -536,7 +550,9 @@ export function GraphPage() {
             }}
             onEdgeClick={handleEdgeClick}
             showEdgeLabels={showEdgeLabels}
-          />
+            fitKey={fitKey}
+            fitSignal={fitSignal}
+            />
 
           {/* 诚实性守门：省略了什么、为什么省略 */}
           {view ? (

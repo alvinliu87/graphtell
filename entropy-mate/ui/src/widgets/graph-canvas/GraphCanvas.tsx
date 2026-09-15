@@ -121,6 +121,14 @@ export interface GraphCanvasProps {
   locationsOf?: (id: number) => SourceLocation[];
   /** 是否在边上标注边的类型（如 `ReadsConfig`）。默认开启，边过多或缩小时自动隐藏。 */
   showEdgeLabels?: boolean;
+  /**
+   * 图「语义内容」的标识。当其变化时（切换视角 / 选中对象 / 切聚合视图 / 展开语法），
+   * 重置平移缩放到「整图 fit」初始态。悬浮聚焦、手动缩放平移、单节点就地展开**不**改变它，
+   * 以免打断在当前图内的探索。
+   */
+  fitKey?: string | number;
+  /** 手动触发 fit 的信号：每次自增即把视图重置回整图 fit（工具栏「适应屏幕」按钮）。 */
+  fitSignal?: number;
 }
 
 /**
@@ -151,6 +159,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
     onNodeContextMenu,
     onEdgeClick,
     showEdgeLabels = true,
+    fitKey,
+    fitSignal,
   } = props;
 
   const { t } = useLocale();
@@ -159,6 +169,18 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const [pointer, setPointer] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number } | null>(null);
+
+  // 语义图内容切换（fitKey 变化）时，把平移缩放重置回「整图 fit」初始态。
+  // 悬浮聚焦 / 手动缩放平移 / 单节点就地展开不改变 fitKey，故不触发重置。
+  useEffect(() => {
+    setTransform({ x: 0, y: 0, k: 1 });
+  }, [fitKey]);
+
+  // 工具栏「适应屏幕」按钮：fitSignal 自增即重置为整图 fit。
+  useEffect(() => {
+    if (fitSignal === undefined) return;
+    setTransform({ x: 0, y: 0, k: 1 });
+  }, [fitSignal]);
 
   // 用真实容器宽度喂给布局，避免"按 1040 设计、再被窄列整体缩小"导致的拥挤。
   // 首帧用默认 width，挂载后 ResizeObserver 量出真实宽度并触发一次重排（无感）。

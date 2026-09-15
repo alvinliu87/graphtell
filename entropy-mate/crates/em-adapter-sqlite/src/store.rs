@@ -1,7 +1,7 @@
 //! SQLite 仓储实现。
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -17,6 +17,7 @@ use em_domain::port::{
     DiagnosticSink, EdgeDirection, GraphQuery, GraphSink, GraphStats, NodeFilter, ProjectReader,
     ProjectWriter, SymbolTableReader,
 };
+use em_domain::model::graph::NodeSummary;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use tracing::{debug, info};
@@ -615,6 +616,34 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)
     }
 
+    fn nodes_summary(&self, project_id: ProjectId) -> Result<HashMap<i64, NodeSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, name, fqn, sub_project_id FROM nodes WHERE project_id = ?1 ORDER BY id",
+            )
+            .map_err(DomainError::infra)?;
+        let rows = stmt
+            .query_map(params![project_id.get()], |row| {
+                Ok(NodeSummary {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    name: row.get(2)?,
+                    fqn: row.get(3)?,
+                    sub_project_id: row.get::<_, Option<i64>>(4)?,
+                })
+            })
+            .map_err(DomainError::infra)?;
+        let list = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)?;
+        let mut out: HashMap<i64, NodeSummary> = HashMap::with_capacity(list.len());
+        for s in list {
+            out.insert(s.id, s);
+        }
+        Ok(out)
+    }
+
     fn edges_of(&self, node: NodeId, direction: EdgeDirection) -> Result<Vec<Edge>> {
         let conn = self.conn.lock().unwrap();
         let sql = match direction {
@@ -634,6 +663,60 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(DomainError::infra)
+    }
+
+    fn edges_outgoing(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut out: HashMap<i64, Vec<Edge>> = HashMap::new();
+        for chunk in ids.chunks(400) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
+                 FROM edges WHERE from_id IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
+            let params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter()), row_to_edge)
+                .map_err(DomainError::infra)?;
+            for e in rows
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(DomainError::infra)?
+            {
+                out.entry(e.from_id.get()).or_default().push(e);
+            }
+        }
+        Ok(out)
+    }
+
+    fn edges_incoming(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut inc: HashMap<i64, Vec<Edge>> = HashMap::new();
+        for chunk in ids.chunks(400) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
+                 FROM edges WHERE to_id IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
+            let params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter()), row_to_edge)
+                .map_err(DomainError::infra)?;
+            for e in rows
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(DomainError::infra)?
+            {
+                inc.entry(e.to_id.get()).or_default().push(e);
+            }
+        }
+        Ok(inc)
     }
 
     fn annotations_of(&self, node: NodeId) -> Result<Vec<Annotation>> {

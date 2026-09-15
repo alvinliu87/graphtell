@@ -206,12 +206,30 @@ impl ViewService {
         // 语义边由"使用者"指向资源（`X --ReadsDb/WritesDb--> 表`、`X --ReadsConfig--> 配置键`），
         // 所以要回答"谁在用它"必须沿**入边回溯调用链**；路由（HttpContract）才是正向展开依赖。
         let reverse = collapse && center_node.kind.as_str() != NodeKind::HTTP_CONTRACT;
-        let chain_depth = if collapse { 12 } else { depth };
+        let chain_depth = depth;
+
+        // 一次性预加载全工程节点概要，取代 BFS 里每个节点一次的 `get_node` 往返；
+        // 语义性按需由 kind 计算，避免为「是否语义节点」反复查库。
+        let node_meta = self.store.nodes_summary(project_id)?;
+        let sem_of = |id: i64| -> bool {
+            node_meta
+                .get(&id)
+                .map(|m| NodeKind(m.kind.clone()).is_semantic())
+                .unwrap_or(false)
+        };
+        let sub_of = |id: i64| -> i64 {
+            node_meta.get(&id).and_then(|m| m.sub_project_id).unwrap_or(0)
+        };
+
         let mut ring_of: HashMap<i64, u32> = HashMap::new();
         let mut parent_of: HashMap<i64, i64> = HashMap::new();
         let mut kind_of: HashMap<i64, String> = HashMap::new();
         let mut name_of: HashMap<i64, String> = HashMap::new();
         let mut semantic_of: HashMap<i64, bool> = HashMap::new();
+        // 边缓存：BFS 与后续「提拉 / 原样保留边」共享，避免对同一节点反复 `edges_of` 往返。
+        let mut out_edges: HashMap<i64, Vec<em_domain::model::Edge>> = HashMap::new();
+        let mut in_edges: HashMap<i64, Vec<em_domain::model::Edge>> = HashMap::new();
+
         // 事件 / 队列 / 缓存等中介节点：其直接生产方（`Triggers` 入边）与消费方
         // （`HandledBy` / `PublishesTo` 出边）通常不是第一类语义节点（而是
         // `event('x')` 调用点或被 `listener` 标注的类），但正是该视角关心的对象。
@@ -224,155 +242,232 @@ impl ViewService {
         name_of.insert(center_id.get(), center_node.name.clone());
         semantic_of.insert(center_id.get(), node_is_semantic(&center_node));
         ring_of.insert(center_id.get(), 0);
+
+        // 按层批量取边（分块 `IN` 查询），写入边缓存。
+        let fetch_edges = |ids: &[i64],
+                           out: &mut HashMap<i64, Vec<em_domain::model::Edge>>,
+                           inc: &mut HashMap<i64, Vec<em_domain::model::Edge>>|
+         -> Result<()> {
+            if ids.is_empty() {
+                return Ok(());
+            }
+            let nids: Vec<NodeId> = ids.iter().map(|i| NodeId(*i)).collect();
+            let outs = self.store.edges_outgoing(&nids)?;
+            let ins = self.store.edges_incoming(&nids)?;
+            for (k, v) in outs {
+                out.entry(k).or_insert(v);
+            }
+            for (k, v) in ins {
+                inc.entry(k).or_insert(v);
+            }
+            Ok(())
+        };
+
+        // 预取中心节点的双向边（Event 播种 / 正向播种 / 第 0 层展开都要用）。
+        fetch_edges(&[center_id.get()], &mut out_edges, &mut in_edges)?;
+
         if matches!(center_node.kind.as_str(), "Event" | "Queue" | "Topic") {
-            if let Ok(edges) = self.store.edges_of(center_id, EdgeDirection::Both) {
-                for e in edges {
-                    if !matches!(e.kind.as_str(), "Triggers" | "HandledBy" | "PublishesTo") {
-                        continue;
-                    }
-                    let other =
-                        if e.from_id.get() == center_id.get() { e.to_id.get() } else { e.from_id.get() };
-                    if other == center_id.get() {
-                        continue;
-                    }
-                    path_kind.entry(other).or_insert(e.kind.to_string());
-                    if !ring_of.contains_key(&other) {
-                        ring_of.insert(other, 1);
-                        parent_of.insert(other, center_id.get());
-                        semantic_of.insert(other, false);
-                    }
-                    force_visible.insert(other);
+            let outs = out_edges.get(&center_id.get()).cloned().unwrap_or_default();
+            let ins = in_edges.get(&center_id.get()).cloned().unwrap_or_default();
+            for e in outs.iter().chain(ins.iter()) {
+                if !matches!(e.kind.as_str(), "Triggers" | "HandledBy" | "PublishesTo") {
+                    continue;
                 }
+                let other = if e.from_id.get() == center_id.get() {
+                    e.to_id.get()
+                } else {
+                    e.from_id.get()
+                };
+                if other == center_id.get() {
+                    continue;
+                }
+                path_kind.entry(other).or_insert(e.kind.to_string());
+                if !ring_of.contains_key(&other) {
+                    ring_of.insert(other, 1);
+                    parent_of.insert(other, center_id.get());
+                    semantic_of.insert(other, false);
+                }
+                force_visible.insert(other);
             }
         }
-        let mut queue: VecDeque<(NodeId, u32)> = VecDeque::new();
-        queue.push_back((center_id, 0));
-        let library_check = !library_subs.is_empty();
-        let mut sub_cache: HashMap<i64, i64> = HashMap::new();
 
         // 正向模式：把"中心的入向链邻居"也作为第 1 环（表 / 外部系统视角需要）。
-        // 反向模式本身就是走入边，无需再播种。
+        // 这些第 1 环节点要在第 1 层与中心的孩子一起展开。
+        let mut seed_ring1: Vec<i64> = Vec::new();
         if collapse && !reverse {
-            for e in self.store.edges_of(center_id, EdgeDirection::Incoming)? {
-                if !is_chain_edge(e.kind.as_str()) {
-                    continue;
+            if let Some(inc) = in_edges.get(&center_id.get()) {
+                for e in inc {
+                    if !is_chain_edge(e.kind.as_str()) {
+                        continue;
+                    }
+                    let other = e.from_id.get();
+                    if other == center_id.get() || ring_of.contains_key(&other) {
+                        continue;
+                    }
+                    ring_of.insert(other, 1);
+                    parent_of.insert(other, center_id.get());
+                    seed_ring1.push(other);
                 }
-                let other = e.from_id;
-                if ring_of.contains_key(&other.get()) {
-                    continue;
-                }
-                ring_of.insert(other.get(), 1);
-                parent_of.insert(other.get(), center_id.get());
-                queue.push_back((other, 1));
             }
         }
 
-        while let Some((id, r)) = queue.pop_front() {
-            // 记录并缓存 kind / 语义性（语义终点判定要用）
-            if !kind_of.contains_key(&id.get()) {
-                if let Some(n) = self.store.get_node(id)? {
-                    kind_of.insert(id.get(), n.kind.to_string());
-                    name_of.insert(id.get(), n.name.clone());
-                    semantic_of.insert(id.get(), node_is_semantic(&n));
+        // 分层 BFS：每层一次性批量取边，把原来「每节点一次 edges_of 往返」压成几次分块查询；
+        // 语义节点是终点（折叠模式不再向外穿透），第三方库子工程节点也不展开。
+        let library_check = !library_subs.is_empty();
+        let mut current: Vec<i64> = vec![center_id.get()];
+        let mut ring: u32 = 0;
+        loop {
+            if current.is_empty() {
+                break;
+            }
+            fetch_edges(&current, &mut out_edges, &mut in_edges)?;
+            let mut next: Vec<i64> = Vec::new();
+            for &id in &current {
+                if !kind_of.contains_key(&id) {
+                    if let Some(m) = node_meta.get(&id) {
+                        kind_of.insert(id, m.kind.clone());
+                        name_of.insert(id, m.name.clone());
+                        semantic_of.insert(id, NodeKind(m.kind.clone()).is_semantic());
+                    }
                 }
-            }
-            let k = kind_of.get(&id.get()).cloned().unwrap_or_default();
-            // 折叠模式：语义节点是终点，不再向外穿透
-            if collapse
-                && id != center_id
-                && semantic_of.get(&id.get()).copied().unwrap_or(false)
-            {
-                continue;
-            }
-            // 折叠模式：把方法的"声明类"也纳入链路，让**类级语义边**（Dao→Model、Model→Table）浮现。
-            // 安全：`Declares` 不在链边集合里，所以从类节点出发不会再展开出它的一堆方法。
-            if collapse && k == "Method" {
-                if let Ok(inc) = self.store.edges_of(id, EdgeDirection::Incoming) {
-                    for e in inc {
-                        if e.kind.as_str() != "Declares" || ring_of.contains_key(&e.from_id.get()) {
-                            continue;
+                let k = kind_of.get(&id).cloned().unwrap_or_default();
+                // 折叠模式：语义节点是终点，不再向外穿透
+                if collapse && id != center_id.get() && sem_of(id) {
+                    continue;
+                }
+                // 折叠模式：把方法的"声明类"也纳入链路，让**类级语义边**（Dao→Model、Model→Table）浮现。
+                // 安全：`Declares` 不在链边集合里，所以从类节点出发不会再展开出它的一堆方法。
+                if collapse && k == "Method" {
+                    if let Some(inc) = in_edges.get(&id) {
+                        for e in inc {
+                            if e.kind.as_str() != "Declares"
+                                || ring_of.contains_key(&e.from_id.get())
+                            {
+                                continue;
+                            }
+                            // 沿用路径上的语义边种类，避免后续被 `HandledBy` 之类的边覆盖
+                            let inherited =
+                                path_kind.get(&id).cloned().unwrap_or_default();
+                            path_kind.entry(e.from_id.get()).or_insert(inherited);
+                            ring_of.insert(e.from_id.get(), ring + 1);
+                            parent_of.insert(e.from_id.get(), id);
+                            next.push(e.from_id.get());
                         }
-                        // 沿用路径上的语义边种类，避免后续被 `HandledBy` 之类的边覆盖
-                        let inherited = path_kind.get(&id.get()).cloned().unwrap_or_default();
-                        path_kind.entry(e.from_id.get()).or_insert(inherited);
-                        ring_of.insert(e.from_id.get(), r + 1);
-                        parent_of.insert(e.from_id.get(), id.get());
-                        queue.push_back((e.from_id, r + 1));
                     }
                 }
-            }
-            if r >= chain_depth {
-                continue;
-            }
-            if library_check {
-                let sub = *sub_cache.entry(id.get()).or_insert_with(|| {
-                    self.store
-                        .get_node(id)
-                        .ok()
+                if ring >= chain_depth {
+                    continue;
+                }
+                if library_check && library_subs.contains(&sub_of(id)) {
+                    continue;
+                }
+                let dir_edges: Vec<&em_domain::model::Edge> = match (collapse, reverse) {
+                    (false, _) => out_edges
+                        .get(&id)
+                        .into_iter()
+                        .chain(in_edges.get(&id).into_iter())
                         .flatten()
-                        .and_then(|n| n.sub_project_id)
-                        .map(|s| s.get())
-                        .unwrap_or(0)
-                });
-                if library_subs.contains(&sub) {
-                    continue;
-                }
-            }
-            let dir = if !collapse {
-                EdgeDirection::Both
-            } else if reverse {
-                EdgeDirection::Incoming
-            } else {
-                EdgeDirection::Outgoing
-            };
-            for e in self.store.edges_of(id, dir)? {
-                if collapse && !is_chain_edge(e.kind.as_str()) {
-                    continue;
-                }
-                let other = if e.from_id == id { e.to_id } else { e.from_id };
-                if ring_of.contains_key(&other.get()) {
-                    continue;
-                }
-                // 记录"资源被怎样访问"：用访问方式标签的**优先级**而非"先到先得"，
-                // 否则 `Model→Table` 的 `MapsTo`（结构映射）会盖过真正的读/写访问。
-                //
-                // 优先级：ReadsDb/WritesDb(3) > ReadsConfig/ReadsCache/PublishesTo/Triggers(2)
-                //         > MapsTo(1) > 其它(0)。
-                // 关键：`MapsTo` 的语义是「Model → Table」的**结构映射**（如 `StoreCategory` 模型
-                // 对应 `store_category` 表），它**不是**"路由如何访问这张表"的标签；真正的读/写
-                // 访问应以 `ReadsDb`/`WritesDb`（由 DAO/方法到表）为准，必须压过 `MapsTo`。
-                let access_rank = |k: &str| -> u8 {
-                    match k {
-                        "ReadsDb" | "WritesDb" => 3,
-                        "ReadsConfig" | "ReadsCache" | "PublishesTo" | "Triggers" => 2,
-                        "MapsTo" => 1,
-                        _ => 0,
+                        .collect(),
+                    (true, false) => out_edges.get(&id).into_iter().flatten().collect(),
+                    (true, true) => in_edges.get(&id).into_iter().flatten().collect(),
+                };
+                for e in dir_edges {
+                    if collapse && !is_chain_edge(e.kind.as_str()) {
+                        continue;
                     }
-                };
-                let inherited_rank = path_kind.get(&id.get()).map(|k| access_rank(k)).unwrap_or(0);
-                let new_rank = access_rank(e.kind.as_str());
-                let pk = if new_rank > inherited_rank {
-                    e.kind.to_string()
-                } else if inherited_rank > 0 {
-                    path_kind.get(&id.get()).cloned().unwrap()
-                } else if is_semantic_edge(e.kind.as_str()) {
-                    e.kind.to_string()
-                } else {
-                    String::new()
-                };
-                path_kind.entry(other.get()).or_insert(pk);
-                ring_of.insert(other.get(), r + 1);
-                parent_of.insert(other.get(), id.get());
-                queue.push_back((other, r + 1));
+                    let other = if e.from_id.get() == id {
+                        e.to_id.get()
+                    } else {
+                        e.from_id.get()
+                    };
+                    if ring_of.contains_key(&other) {
+                        continue;
+                    }
+                    // 记录"资源被怎样访问"：用访问方式标签的**优先级**而非"先到先得"，
+                    // 否则 `Model→Table` 的 `MapsTo`（结构映射）会盖过真正的读/写访问。
+                    //
+                    // 优先级：ReadsDb/WritesDb(3) > ReadsConfig/ReadsCache/PublishesTo/Triggers(2)
+                    //         > MapsTo(1) > 其它(0)。
+                    // 关键：`MapsTo` 的语义是「Model → Table」的**结构映射**（如 `StoreCategory` 模型
+                    // 对应 `store_category` 表），它**不是**"路由如何访问这张表"的标签；真正的读/写
+                    // 访问应以 `ReadsDb`/`WritesDb`（由 DAO/方法到表）为准，必须压过 `MapsTo`。
+                    let access_rank = |k: &str| -> u8 {
+                        match k {
+                            "ReadsDb" | "WritesDb" => 3,
+                            "ReadsConfig" | "ReadsCache" | "PublishesTo" | "Triggers" => 2,
+                            "MapsTo" => 1,
+                            _ => 0,
+                        }
+                    };
+                    let inherited_rank =
+                        path_kind.get(&id).map(|k| access_rank(k)).unwrap_or(0);
+                    let new_rank = access_rank(e.kind.as_str());
+                    let pk = if new_rank > inherited_rank {
+                        e.kind.to_string()
+                    } else if inherited_rank > 0 {
+                        path_kind.get(&id).cloned().unwrap()
+                    } else if is_semantic_edge(e.kind.as_str()) {
+                        e.kind.to_string()
+                    } else {
+                        String::new()
+                    };
+                    path_kind.entry(other).or_insert(pk);
+                    ring_of.insert(other, ring + 1);
+                    parent_of.insert(other, id);
+                    next.push(other);
+                }
             }
+            // 把"正向播种的第 1 环"并入第 1 层一起展开。
+            if ring == 0 {
+                for s in &seed_ring1 {
+                    if !next.contains(s) {
+                        next.push(*s);
+                    }
+                }
+            }
+            current = next;
+            ring += 1;
         }
 
-        // 补齐所有可达节点的 kind / 语义性（边展示阶段要用）
+        // 补齐所有可达节点的 kind / 语义性（边展示阶段要用）—— 直接读预加载的节点概要，
+        // 不再逐个 `get_node` 往返。
         for &id in ring_of.keys() {
             if !kind_of.contains_key(&id) {
-                if let Some(n) = self.store.get_node(NodeId(id))? {
-                    kind_of.insert(id, n.kind.to_string());
-                    semantic_of.insert(id, node_is_semantic(&n));
+                if let Some(m) = node_meta.get(&id) {
+                    kind_of.insert(id, m.kind.clone());
+                    name_of.insert(id, m.name.clone());
+                    semantic_of.insert(id, NodeKind(m.kind.clone()).is_semantic());
+                }
+            }
+        }
+
+        // 补齐环内节点的边缓存（原逻辑在提拉 / 原样保留边时会对每个环内节点再 `edges_of` 一次；
+        // 这里一次性批量补齐，等价于原行为但把 N 次往返压成几次分块查询）。
+        let miss_out: Vec<i64> = ring_of
+            .keys()
+            .copied()
+            .filter(|id| !out_edges.contains_key(id))
+            .collect();
+        if !miss_out.is_empty() {
+            let nids: Vec<NodeId> = miss_out.iter().map(|i| NodeId(*i)).collect();
+            if let Ok(m) = self.store.edges_outgoing(&nids) {
+                for (k, v) in m {
+                    out_edges.entry(k).or_insert(v);
+                }
+            }
+        }
+        if !collapse {
+            let miss_in: Vec<i64> = ring_of
+                .keys()
+                .copied()
+                .filter(|id| !in_edges.contains_key(id))
+                .collect();
+            if !miss_in.is_empty() {
+                let nids: Vec<NodeId> = miss_in.iter().map(|i| NodeId(*i)).collect();
+                if let Ok(m) = self.store.edges_incoming(&nids) {
+                    for (k, v) in m {
+                        in_edges.entry(k).or_insert(v);
+                    }
                 }
             }
         }
@@ -386,8 +481,6 @@ impl ViewService {
             }
             semantic_of.get(&id).copied().unwrap_or(false) || force_visible.contains(&id)
         };
-
-        let visible_nodes: Vec<i64> = ring_of.keys().copied().filter(|&id| is_visible(id)).collect();
 
         // 语义边优先级（用于折叠路径上的边提拉）
         fn agg_rank(kind: &str) -> u8 {
@@ -437,6 +530,22 @@ impl ViewService {
         // `src`：该边的**真实来源边 id**（提拉时带上，点击可查到原始证据）；反向汇总出的
         // 合成边没有来源，传 0，随后统一改成唯一负数 id。
         // `via`：被折叠掉的中间节点 —— 让"看起来直连"的边如实说明自己跨了几跳。
+        // 调用处定位：优先用已缓存的出边（BFS 阶段已批量取过）做精确 `Calls` 命中，
+        // 仅在精确边缺失时回退到原 `call_site_between`（含 HasCallSite 启发式）。
+        let call_site = |from: i64, to: i64| -> Option<SourceLocation> {
+            if let Some(outs) = out_edges.get(&from) {
+                for e in outs {
+                    if e.kind.as_str() == "Calls" && e.to_id.get() == to {
+                        if let Some(cs_id) = e.properties.get("call_site").and_then(|v| v.as_i64()) {
+                            if let Some(loc) = self.node_source_location(NodeId(cs_id)) {
+                                return Some(loc);
+                            }
+                        }
+                    }
+                }
+            }
+            self.call_site_between(from, to)
+        };
         let push_edge = |from: i64, to: i64, kind: &str, src: i64, mut via: Vec<ViaNode>,
                              seen: &mut HashSet<(String, i64, i64)>,
                              out: &mut Vec<EdgeView>| {
@@ -475,10 +584,10 @@ impl ViewService {
             // 给每一跳补上"调用处"：prev(起点/上一跳) → 本跳 的 CallSite 位置。
             let mut prev = f;
             for v in via.iter_mut() {
-                v.call_site = self.call_site_between(prev, v.id.get());
+                v.call_site = call_site(prev, v.id.get());
                 prev = v.id.get();
             }
-            let to_call_site = self.call_site_between(prev, t);
+            let to_call_site = call_site(prev, t);
             let hops = if via.is_empty() {
                 None
             } else {
@@ -498,10 +607,12 @@ impl ViewService {
         };
 
         if !collapse {
-            // ---- 原逻辑：逐环保留边 ----
-            let all_nodes: Vec<NodeId> = ring_of.keys().map(|k| NodeId(*k)).collect();
+            // ---- 原逻辑：逐环保留边 ----（边直接来自缓存，不再逐节点查库）
+            let all_nodes: Vec<i64> = ring_of.keys().copied().collect();
             for node in &all_nodes {
-                for e in self.store.edges_of(*node, EdgeDirection::Both)? {
+                let outs = out_edges.get(node).into_iter().flatten();
+                let ins = in_edges.get(node).into_iter().flatten();
+                for e in outs.chain(ins).cloned() {
                     let r_from = ring_of.get(&e.from_id.get()).copied();
                     let r_to = ring_of.get(&e.to_id.get()).copied();
                     let involves_center = e.from_id == center_id || e.to_id == center_id;
@@ -592,19 +703,31 @@ impl ViewService {
                     }
                 }
             } else {
-                let all_nodes: Vec<NodeId> = ring_of.keys().map(|k| NodeId(*k)).collect();
+                // 环外语义目标先暂存，等 `push_edge`/`chain_to`（捕获了这些 map）用完后
+                // 再写回 `ring_of`/`parent_of`，避免与它们的不可变借用冲突。
+                let mut pending: Vec<(i64, i64, u32)> = Vec::new();
+                let all_nodes: Vec<i64> = ring_of.keys().copied().collect();
                 for node in &all_nodes {
-                    for e in self.store.edges_of(*node, EdgeDirection::Outgoing)? {
+                    let outs = out_edges.get(node).into_iter().flatten().cloned();
+                    for e in outs {
                         // 只画语义边，且目标必须是语义节点（ReadsConfig→ConfigKey、MapsTo→Table…）
                         if !is_semantic_edge(e.kind.as_str()) {
                             continue;
                         }
                         let to = e.to_id.get();
-                        if !ring_of.contains_key(&to) {
+                        // 目标可以是"被语法链挡在环外的语义节点"：把它登记进环，
+                        // 这样即便 depth 较小，折叠视图仍能把语义目标渲染出来。
+                        let to_is_sem = node_meta
+                            .get(&to)
+                            .map(|m| NodeKind(m.kind.clone()).is_semantic())
+                            .unwrap_or(false);
+                        if !to_is_sem {
                             continue;
                         }
-                        if !semantic_of.get(&to).copied().unwrap_or(false) {
-                            continue;
+                        if !ring_of.contains_key(&to) {
+                            let from_ring =
+                                ring_of.get(&e.from_id.get()).copied().unwrap_or(0);
+                            pending.push((to, e.from_id.get(), from_ring + 1));
                         }
                         let a = *lift.get(&e.from_id.get()).unwrap_or(&e.from_id.get());
                         if a == to {
@@ -614,6 +737,23 @@ impl ViewService {
                         let via = chain_to(e.from_id.get(), a);
                         // 带上真实来源边 id：点击这条提拉边时能查到原始语义边的证据
                         push_edge(a, to, e.kind.as_str(), e.id.get(), via, &mut shown_keys, &mut shown_edges);
+                    }
+                }
+                for (to, from, r) in pending {
+                    ring_of.entry(to).or_insert(r);
+                    parent_of.entry(to).or_insert(from);
+                }
+            }
+
+            // 提拉阶段可能把环外的语义目标登记进了 `ring_of`，这里补齐它们的
+            // kind / name / 语义性（直接读预加载的节点概要，不查库）。必须在 `chain_to` 等
+            // 捕获了这些 map 的闭包使用完毕后再做，避免借用冲突。
+            for &id in ring_of.keys() {
+                if !kind_of.contains_key(&id) {
+                    if let Some(m) = node_meta.get(&id) {
+                        kind_of.insert(id, m.kind.clone());
+                        name_of.insert(id, m.name.clone());
+                        semantic_of.insert(id, NodeKind(m.kind.clone()).is_semantic());
                     }
                 }
             }
@@ -626,6 +766,16 @@ impl ViewService {
                 }
             }
         }
+
+        // 可见节点：环内"语义节点 / 强制可见节点"。提拉阶段可能把环外的语义目标登记进环，
+        // 所以放在提拉之后计算。
+        let visible_nodes: Vec<i64> = ring_of
+            .keys()
+            .copied()
+            .filter(|&id| {
+                semantic_of.get(&id).copied().unwrap_or(false) || force_visible.contains(&id)
+            })
+            .collect();
 
         // 合成边（反向汇总产生，无真实行）的 id 仍是 0：统一改成**唯一负数 id**。
         // 否则前端 `<g key={id}>` 会撞 key，按 id 查找 EdgeView 也永远只命中第一条
@@ -649,8 +799,8 @@ impl ViewService {
         }
 
         // ---- 组装可见节点的环与节点视图 ----
-        let display_depth = if collapse { chain_depth } else { depth };
-        let mut visible_rings: Vec<Vec<NodeId>> = vec![vec![]; display_depth as usize + 1];
+        let max_ring = ring_of.values().copied().max().unwrap_or(0);
+        let mut visible_rings: Vec<Vec<NodeId>> = vec![vec![]; max_ring as usize + 1];
         for &id in &visible_nodes {
             if !touched.contains(&id) {
                 continue;
