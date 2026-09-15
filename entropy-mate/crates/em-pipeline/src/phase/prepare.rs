@@ -9,7 +9,8 @@ use std::path::Path;
 
 use em_domain::error::Result;
 use em_domain::model::{
-    Detector, FrameworkKnowledge, Language, Phase, PickStrategy, Rule, SubProjectId,
+    Detector, FrameworkKnowledge, KnowledgeScope, Language, Phase, PickStrategy, Rule,
+    SubProjectId,
 };
 use em_domain::port::{FileSystem, KnowledgeProvider, ParserRegistry};
 use serde_json::{json, Value};
@@ -31,12 +32,20 @@ pub fn run(
     let project_root = ctx.project.root_path.clone();
 
     for sub in &subs {
-        let frameworks = detect_frameworks(kb, fs, sub, &project_root);
+        // 框架级 + 项目级知识分别识别：项目级仅在该子工程被识别为对应项目时加载，
+        // 其规则只进 `rules_by_sub`（不进 `ctx.frameworks`、不进全局），绝不串味到其它工程。
+        let frameworks = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Framework);
         info!("子工程 {} 识别到框架: {:?}", sub.name, frameworks);
         ctx.frameworks.insert(sub.id.get(), frameworks.clone());
 
+        let projects = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Project);
+        if !projects.is_empty() {
+            info!("子工程 {} 识别到项目知识: {:?}", sub.name, projects);
+        }
+
+        // 框架 + 项目知识都应用 root_rules / loaders（项目知识通常无，但通道通用）。
         let mut facts = serde_json::Map::new();
-        for id in &frameworks {
+        for id in frameworks.iter().chain(projects.iter()) {
             let Some(fk) = kb.by_id(id) else { continue };
             apply_root_rules(ctx, fk, sub, &mut facts, &phase, fs, parsers);
             // 自动探测表前缀：FKB 的 `db_prefix` root_rule 从工程配置读出，
@@ -53,7 +62,7 @@ pub fn run(
                 ctx.ws.set_table_prefixes(prefixes);
             }
         }
-        for id in &frameworks {
+        for id in frameworks.iter().chain(projects.iter()) {
             let Some(fk) = kb.by_id(id) else { continue };
             run_loaders(ctx, fk, sub, &project_root, fs, parsers, &phase);
         }
@@ -63,7 +72,10 @@ pub fn run(
             ctx.ws.set_fact(sub.id, &k, v);
         }
 
-        // 规则按子工程装配：本子工程识别到的框架 + 同语言的其它框架。
+        // 规则按子工程装配：
+        // ① 本子工程识别到的框架规则；
+        // ② 同语言、未显式识别的**框架级**规则（只加"同语言"，避免把 Uni-app 规则套到 PHP）；
+        // ③ 本子工程识别到的**项目级**规则（仅检测到的，不外溢）。
         // （只加"同语言"而不是全部，避免把 Uni-app 规则套到 PHP 调用上）
         let mut rules: Vec<Rule> = frameworks
             .iter()
@@ -71,16 +83,28 @@ pub fn run(
             .flat_map(|fk| fk.rules.iter().cloned())
             .collect();
         for fk in kb.all() {
-            if fk.language == sub.language && !frameworks.contains(&fk.id) {
+            if fk.scope == KnowledgeScope::Framework
+                && fk.language == sub.language
+                && !frameworks.contains(&fk.id)
+            {
+                rules.extend(fk.rules.iter().cloned());
+            }
+        }
+        for id in &projects {
+            if let Some(fk) = kb.by_id(id) {
                 rules.extend(fk.rules.iter().cloned());
             }
         }
         ctx.rules_by_sub.insert(sub.id.get(), dedup_rules(rules));
     }
 
-    // 全局规则：所有框架规则去重后共享（合成节点可能跨工程汇聚）
+    // 全局规则：仅**框架级**规则去重后共享（合成节点可能跨工程汇聚）。
+    // 项目级规则不进全局 —— 它们只在被识别为对应项目的子工程内生效。
     let mut global: Vec<Rule> = Vec::new();
     for fk in kb.all() {
+        if fk.scope != KnowledgeScope::Framework {
+            continue;
+        }
         for r in &fk.rules {
             if !global.iter().any(|g| g.id == r.id) {
                 global.push(r.clone());
@@ -99,9 +123,13 @@ fn detect_frameworks(
     fs: &dyn FileSystem,
     sub: &em_domain::model::SubProject,
     project_root: &Path,
+    scope: KnowledgeScope,
 ) -> Vec<String> {
     let mut hits: Vec<(String, f32)> = Vec::new();
     for fk in kb.all() {
+        if fk.scope != scope {
+            continue;
+        }
         if fk.language != sub.language && sub.language.as_str() != Language::UNKNOWN {
             continue;
         }

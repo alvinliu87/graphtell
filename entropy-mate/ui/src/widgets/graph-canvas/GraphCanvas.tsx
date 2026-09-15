@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocale } from '@/shared/lib/i18n';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import type { EdgeView, LayoutMode, NodeView, SourceLocation } from '@/entities/view';
 import { edgeColor, nodeColor } from '@/entities/graph';
@@ -26,6 +27,45 @@ const DIM_EDGE_HIGH = 40; // 边数高于此取最深
  * 同一对端点也可能有多条不同种类的边，所以带上端点一起构成键。
  */
 const edgeKey = (e: { id: number; from: number; to: number }) => `${e.id}:${e.from}->${e.to}`;
+
+/**
+ * 边标签锚点。
+ *
+ * 取折线**真实几何中点**（按累计长度），再沿所在段的法线偏移若干像素，
+ * 让标签落在边旁而不是压在边线 / 端点上。
+ *
+ * 不能用 `points[Math.floor(len / 2)]`：直线边只有两个点，索引 1 就是**终点**，
+ * 标签会被后绘制的目标节点药丸（不透明白底）整块盖住 —— 表现就是
+ * "只有悬浮时才能在卡片里看到边名"。
+ */
+function labelAnchor(points: Array<[number, number]>, offset = 9): { x: number; y: number } {
+  if (points.length === 0) return { x: 0, y: 0 };
+  if (points.length === 1) return { x: points[0][0], y: points[0][1] - offset };
+
+  const segLen: number[] = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const l = Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+    segLen.push(l);
+    total += l;
+  }
+
+  let remain = total / 2;
+  for (let i = 0; i < segLen.length; i += 1) {
+    const [ax, ay] = points[i];
+    const [bx, by] = points[i + 1];
+    if (remain <= segLen[i] || i === segLen.length - 1) {
+      const t = segLen[i] > 0 ? remain / segLen[i] : 0;
+      const mx = ax + (bx - ax) * t;
+      const my = ay + (by - ay) * t;
+      const len = Math.hypot(bx - ax, by - ay) || 1;
+      // 沿法线偏移：标签贴在边的一侧，不遮住线的走向
+      return { x: mx + (-(by - ay) / len) * offset, y: my + ((bx - ax) / len) * offset };
+    }
+    remain -= segLen[i];
+  }
+  return { x: points[0][0], y: points[0][1] - offset };
+}
 
 export interface CanvasNode {
   id: number;
@@ -113,6 +153,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     showEdgeLabels = true,
   } = props;
 
+  const { t } = useLocale();
   const [hover, setHover] = useState<number | null>(null);
   const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const [pointer, setPointer] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -239,7 +280,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         {/* `tip` 只在 nest / fullscreen 模式下生效，这里用文字并列避免 antd 告警 */}
         <Space direction="vertical" align="center" size={8}>
           <Spin />
-          <Typography.Text type="secondary">加载视图…</Typography.Text>
+          <Typography.Text type="secondary">{t('加载视图…')}</Typography.Text>
         </Space>
       </div>
     );
@@ -247,7 +288,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   if (!layout) {
     return (
       <div style={{ height, display: 'grid', placeItems: 'center' }}>
-        <Empty description="该视角下暂无可展示的对象" />
+        <Empty description={t('该视角下暂无可展示的对象')} />
       </div>
     );
   }
@@ -321,7 +362,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 textAnchor="middle"
                 style={{ pointerEvents: 'none', userSelect: 'none' }}
               >
-                {g.label}
+                {g.label + t(' 跳')}
               </text>
             </g>
           ))}
@@ -343,7 +384,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 {truncate(g.label, 22)}
               </text>
               <text x={g.x + g.w - 14} y={g.y + 22} fontSize={11} fill="#94a3b8" textAnchor="end">
-                {g.count} 个成员
+                {g.count + t(' 个成员')}
               </text>
             </g>
           ))}
@@ -407,7 +448,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const dim = focusing && !inFocus;
             const active = inFocus;
             const d = e.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]},${p[1]}`).join(' ');
-            const mid = e.points[Math.floor(e.points.length / 2)] ?? [0, 0];
+            // 标签锚点：真实几何中点 + 法线偏移，避免落在边线上或目标节点底下
+            const lp = labelAnchor(e.points);
             // 方向箭头：沿末段方向在终点前回退若干 px 画小三角，避免被节点盖住。
             // 矩形药丸按半宽回退，圆形按固定量回退。
             const _pts = e.points;
@@ -455,24 +497,27 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   style={{ pointerEvents: 'none' }}
                 />
                 {/* 边的类型：语义边种类（`ReadsConfig` / `MapsTo`…）就是这个图的"谓语"，
-                    标出来才读得懂。但边一多就会糊成一片，所以：
-                    边数超过阈值时只标"悬浮/选中"的那条；放大后恢复全标。 */}
-                {view && showEdgeLabels && !dim && (edges.length <= EDGE_LABEL_LIMIT || active || transform.k >= 1.15) ? (
+                    标出来才读得懂。默认**常显**（不再要求悬浮）：只有边数超过阈值、
+                    又没被放大时，才退化为"只标悬浮/选中那条"以防糊成一片。
+                    悬浮时其它边只淡出、不隐藏标签（不因聚焦而丢信息）。 */}
+                {view && showEdgeLabels && (edges.length <= EDGE_LABEL_LIMIT || active || transform.k >= 1.15) ? (
                   <text
-                    x={mid[0]}
-                    y={mid[1] - 4}
+                    x={lp.x}
+                    y={lp.y}
                     fontSize={10}
+                    fontWeight={500}
                     textAnchor="middle"
                     stroke="#ffffff"
-                    strokeWidth={3}
+                    strokeWidth={3.5}
+                    strokeLinejoin="round"
                     paintOrder="stroke"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}
                   >
-                    {/* 边种类 */}
-                    <tspan fill={edgeColor(view.kind)}>{view.kind}</tspan>
+                    {/* 边种类（按语言本地化为语义谓语，如 `PublishesTo` → `投递到`） */}
+                    <tspan fill={edgeColor(view.kind)}>{t(`edge.${view.kind}`)}</tspan>
                     {/* 折叠提示：这条"直连"其实跨了 N 个语法节点，必须标出来，不能让它看起来是真的直连 */}
                     {view.hops ? (
-                      <tspan fill="#94a3b8"> ·经 {view.hops} 跳</tspan>
+                      <tspan fill="#94a3b8">{` ·经 ${view.hops}${t(' 跳')}`}</tspan>
                     ) : null}
                   </text>
                 ) : null}
@@ -532,8 +577,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 {/* 原生 tooltip：种类 / 类别 / 名称 —— 便于分辨同名或含义不明的节点 */}
                 <title>
                   {meta?.category && meta.category !== n.kind
-                    ? `${n.kind}（类别 ${meta.category}）· ${n.name}`
-                    : `${n.kind} · ${n.name}`}
+                    ? `${t(`node.${n.kind}`)}（类别 ${meta.category}）· ${n.name}`
+                    : `${t(`node.${n.kind}`)} · ${n.name}`}
                 </title>
                 <text
                   x={0}
@@ -544,19 +589,26 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   textAnchor="middle"
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 >
-                  {/* 种类徽标（用节点配色高亮）：
-                      让 `wechat_user` 看得出是 Table，也让 `Table(cache)` 与 `Cache` 可分辨 */}
-                  <tspan fill={fill} fontWeight={600}>
-                    {n.kind}
-                  </tspan>
+                  {/* 语义名（如 `store_order_refund_service`）才是人真正在找的实体，做主；
+                      种类 `kind` 仅作小号彩色前缀徽标（保留"看得出是 Queue / Table"的能力），
+                      不再喧宾夺主。名字与 kind 同串渲染，宽度与布局 `pillWidth` 估算一致，不会溢出药丸。 */}
                   {n.name && n.name !== n.kind ? (
                     <>
+                      <tspan fill={fill} fontWeight={700} fontSize={isCenter ? 10 : 9}>
+                        {t(`node.${n.kind}`)}
+                      </tspan>
                       <tspan fill="#94a3b8" fontWeight={400}>
                         {' · '}
                       </tspan>
-                      <tspan>{truncate(n.name, 26)}</tspan>
+                      <tspan fontWeight={isCenter ? 700 : 500} fontSize={isCenter ? 13 : 11}>
+                        {truncate(n.name, 26)}
+                      </tspan>
                     </>
-                  ) : null}
+                  ) : (
+                    <tspan fill={fill} fontWeight={600}>
+                      {n.kind}
+                    </tspan>
+                  )}
                 </text>
                 {selectedId === n.id ? (
                   <rect
@@ -604,9 +656,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 background: nodeColor(hoveredNode.kind),
               }}
             />
-            <b>{hoveredNode.kind}</b>
+            <b>{t(`node.${hoveredNode.kind}`)}</b>
             {hoveredNode.category && hoveredNode.category !== hoveredNode.kind ? (
-              <span style={{ color: '#94a3b8' }}>类别 {hoveredNode.category}</span>
+              <span style={{ color: '#94a3b8' }}>{t('类别 ') + hoveredNode.category}</span>
             ) : null}
           </div>
           <div style={{ fontSize: 13, fontWeight: 600, marginTop: 2, wordBreak: 'break-all' }}>
@@ -665,9 +717,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 background: edgeColor(hoveredEdge.kind),
               }}
             />
-            <b>{hoveredEdge.kind}</b>
+            <b>{t(`edge.${hoveredEdge.kind}`)}</b>
             <span style={{ color: hoveredEdge.resolved ? '#16a34a' : '#f59e0b' }}>
-              {hoveredEdge.resolved ? '已解析' : '待验证'}
+              {hoveredEdge.resolved ? t('status.resolved') : t('status.unverified')}
             </span>
           </div>
           <div style={{ marginTop: 2, wordBreak: 'break-all' }}>
@@ -676,10 +728,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
             {nodeById.get(hoveredEdge.to)?.name ?? `#${hoveredEdge.to}`}
           </div>
           <div style={{ color: '#64748b' }}>
-            置信度 {hoveredEdge.confidence.toFixed(2)}
-            {hoveredEdge.hops != null ? ` · 途经 ${hoveredEdge.hops} 跳` : ''}
+            {t('置信度') + ' ' + hoveredEdge.confidence.toFixed(2)}
+            {hoveredEdge.hops != null ? ` · ${t('途经 ') + hoveredEdge.hops + t(' 跳')}` : ''}
           </div>
-          <div style={{ marginTop: 6, color: '#94a3b8' }}>单击查看证据链</div>
+          <div style={{ marginTop: 6, color: '#94a3b8' }}>{t('单击查看证据链')}</div>
         </div>
       ) : null}
 
@@ -695,9 +747,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
           alignItems: 'center',
         }}
       >
-        <span style={{ color: '#0f172a', fontWeight: 600 }}>{layout.note}</span>
-        <span>虚线 = 待验证假设；实线 = 已解析</span>
-        <span>滚轮缩放 · 拖拽平移 · 左键单击切视角 · 右键打开位置</span>
+        <span style={{ color: '#0f172a', fontWeight: 600 }}>{t(layout.note)}</span>
+        <span>{t('虚线 = 待验证假设；实线 = 已解析')}</span>
+        <span>{t('滚轮缩放 · 拖拽平移 · 左键单击切视角 · 右键打开位置')}</span>
       </div>
     </div>
   );

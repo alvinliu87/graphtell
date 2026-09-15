@@ -4,4 +4,5 @@ pub mod annotate;
 pub mod cf_ast;
 pub mod ingest;
 pub mod prepare;
+pub mod propagate;
 pub mod resolve;

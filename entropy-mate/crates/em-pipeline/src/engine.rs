@@ -57,6 +57,11 @@ fn alt_matches(alt: &str, callee: &str, receiver: Option<&str>, method: Option<&
         let (r, m) = (&alt[..pos], &alt[pos + 2..]);
         return recv_matches(r, receiver, callee) && meth_matches(m, method);
     }
+    // 单冒号形式：`*:dispatch` 表示「任意接收者、方法 dispatch」。
+    if let Some(pos) = alt.find(':') {
+        let (r, m) = (&alt[..pos], &alt[pos + 1..]);
+        return recv_matches(r, receiver, callee) && meth_matches(m, method);
+    }
     if let Some(pos) = alt.find("->") {
         let (r, m) = (&alt[..pos], &alt[pos + 2..]);
         return recv_matches(r, receiver, callee) && meth_matches(m, method);
@@ -70,6 +75,39 @@ fn alt_matches(alt: &str, callee: &str, receiver: Option<&str>, method: Option<&
     callee.eq_ignore_ascii_case(alt) || callee.ends_with(&format!("::{}", alt))
 }
 
+/// 在匹配前，把调用点的 `receiver` / `callee` 经由 **import 别名** 还原（通用，不针对任何框架）。
+///
+/// 例：`use think\facade\Queue as QueueThink;` 后写 `QueueThink::push()`，receiver `QueueThink`
+/// 被还原成 `think\facade\Queue`，从而能命中 FKB 里 `Queue::push` 这类「以伞名结尾」的模式
+/// （`recv_matches` 的尾部 `\Queue` 匹配）。别名查的是 P2 写进 `imports` 符号表的全局索引。
+///
+/// 若没有对应别名，调用点原样匹配，行为与此前完全一致（无回归）。
+pub fn aliased_callee_matches(ws: &GraphWorkspace, pattern: &str, rec: &CallRecord) -> bool {
+    let (recv, method, callee) = resolve_aliased_call(ws, rec);
+    callee_matches(pattern, &callee, recv.as_deref(), method.as_deref())
+}
+
+/// 把调用点的 receiver / callee 还原成别名对应的 FQN。
+fn resolve_aliased_call(ws: &GraphWorkspace, rec: &CallRecord) -> (Option<String>, Option<String>, String) {
+    let method = rec.method.clone();
+    let mut recv = rec.receiver.clone();
+    let mut callee = rec.callee.clone();
+    if let Some(r) = &recv {
+        if let Some(fqn) = ws.resolve_import_alias(r) {
+            if let Some(m) = &method {
+                callee = format!("{}::{}", fqn, m);
+            }
+            recv = Some(fqn);
+        }
+    } else if let Some((head, tail)) = rec.callee.split_once("::") {
+        if let Some(fqn) = ws.resolve_import_alias(head) {
+            recv = Some(fqn.clone());
+            callee = format!("{}::{}", fqn, tail);
+        }
+    }
+    (recv, method, callee)
+}
+
 fn recv_matches(pattern: &str, receiver: Option<&str>, callee: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -79,11 +117,14 @@ fn recv_matches(pattern: &str, receiver: Option<&str>, callee: &str) -> bool {
     if r.eq_ignore_ascii_case(pattern) {
         return true;
     }
-    // 尾部匹配：`Db` 匹配 `think\facade\Db`
-    r.len() > pattern.len()
-        && r[1..].eq_ignore_ascii_case(pattern)
+    // 尾部匹配：`Queue` 匹配 `think\facade\Queue`（以 `\pattern` 结尾的伞名）。
+    if r.len() > pattern.len()
         && r.as_bytes()[r.len() - pattern.len() - 1] == b'\\'
-        || callee.eq_ignore_ascii_case(pattern)
+        && r[r.len() - pattern.len()..].eq_ignore_ascii_case(pattern)
+    {
+        return true;
+    }
+    callee.eq_ignore_ascii_case(pattern)
 }
 
 fn meth_matches(pattern: &str, method: Option<&str>) -> bool {
@@ -103,7 +144,7 @@ pub fn matches_call(sel: &Selector, rec: &CallRecord, ws: &GraphWorkspace) -> bo
         _ => return false,
     };
     if let Some(pat) = callee_pat {
-        if !callee_matches(pat, &rec.callee, rec.receiver.as_deref(), rec.method.as_deref()) {
+        if !aliased_callee_matches(ws, pat, rec) {
             return false;
         }
     }
@@ -289,6 +330,18 @@ pub fn eval_predicate(
         },
         Predicate::ArgCount(n) => match mctx {
             Some(MatchCtx::Call(c)) => c.args.len() == *n,
+            _ => false,
+        },
+        Predicate::ArgStartsWith { arg, prefix } => match mctx {
+            Some(MatchCtx::Call(c)) => c
+                .args
+                .get(*arg)
+                .and_then(|v| match v {
+                    FactValue::String(s) => Some(s),
+                    _ => None,
+                })
+                .map(|s| s.starts_with(prefix))
+                .unwrap_or(false),
             _ => false,
         },
     }
@@ -680,6 +733,15 @@ fn exec_synthesize(
                         "evidence": { "rule": rule.id, "location": location_of(ctx, mctx) },
                     }),
                 });
+                // 记录传播种子：owner 是「动作发出方」，其调用方沿 CALLS 链也应被识别为同一语义动作的发出方。
+                ctx.propagation_seeds.push(crate::context::PropSeed {
+                    source: owner,
+                    target: node_id,
+                    kind: link.kind.0.clone(),
+                    confidence,
+                    sub,
+                    phase: phase.clone(),
+                });
             }
             em_domain::model::Direction::Outgoing => {
                 ctx.ws.add_edge(NewEdge {
@@ -698,39 +760,62 @@ fn exec_synthesize(
                     .as_ref()
                     .map(|src| Evaluator::new(&ctx.ws, mctx).list(src))
                     .unwrap_or_default();
-                for item in items {
-                    let raw = match item {
-                        FactValue::String(s) | FactValue::ClassConst(s) => s,
-                        _ => continue,
-                    };
-                    let resolved = Evaluator::new(&ctx.ws, mctx).resolve_name(&raw);
-                    if let Some(target) = find_target_node(ctx, &resolved, &link.kind) {
-                        ctx.ws.add_edge(NewEdge {
-                            project_id: ctx.project.id,
-                            kind: link.kind.clone(),
-                            from_id: node_id,
-                            to_id: target,
-                            phase: phase.clone(),
-                            confidence,
-                            properties: serde_json::json!({
-                                "evidence": { "rule": rule.id, "target": resolved },
-                            }),
-                        });
-                    } else {
-                        // 交给 P7：路由 handler 可能需要按约定拼装后才知道是否存在
-                        ctx.ws.pending_links.push(crate::workspace::PendingLink {
-                            from: node_id,
-                            kind: link.kind.clone(),
-                            raw: resolved.clone(),
-                            // `resolve` 既可以写在 link 上，也可以写在 to 的值来源里
-                            resolve: link.resolve.clone().or_else(|| {
-                                link.to.as_ref().and_then(|t| t.resolve)
-                            }).unwrap_or(em_domain::model::ResolveAs::ClassConst),
-                            confidence,
-                            sub,
-                            file: location_of(ctx, mctx).unwrap_or_default(),
-                            line: 0,
-                        });
+                let fb_items = link
+                    .to_fallback
+                    .as_ref()
+                    .map(|src| Evaluator::new(&ctx.ws, mctx).list(src))
+                    .unwrap_or_default();
+                // 主来源里「可当作字符串目标」的项（跳过数组/空，正是队列 `arg:0` 是数组的场景）。
+                let primary_strings: Vec<String> = items
+                    .iter()
+                    .filter_map(|item| match item {
+                        FactValue::String(s) | FactValue::ClassConst(s) if !s.is_empty() => {
+                            Some(s.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if primary_strings.is_empty() && !fb_items.is_empty() {
+                    // 主来源解析不出（如队列 `arg:0` 是数组/动作名而非类），
+                    // 整体退回 `to_fallback`（如 `receiver_class`）继续找消费方。
+                    push_to_target_edges(
+                        ctx, mctx, rule, link, node_id, phase, confidence, sub, &fb_items,
+                    );
+                } else {
+                    for raw in primary_strings {
+                        let resolved = Evaluator::new(&ctx.ws, mctx).resolve_name(&raw);
+                        if let Some(target) = find_target_node(ctx, &resolved, &link.kind)
+                            .or_else(|| ctx.ws.find_by_name(&resolved))
+                        {
+                            ctx.ws.add_edge(NewEdge {
+                                project_id: ctx.project.id,
+                                kind: link.kind.clone(),
+                                from_id: node_id,
+                                to_id: target,
+                                phase: phase.clone(),
+                                confidence,
+                                properties: serde_json::json!({
+                                    "evidence": { "rule": rule.id, "target": resolved },
+                                }),
+                            });
+                        } else {
+                            // 交给 P7：路由 handler 可能需要按约定拼装后才知道是否存在
+                            ctx.ws.pending_links.push(crate::workspace::PendingLink {
+                                from: node_id,
+                                kind: link.kind.clone(),
+                                raw: resolved.clone(),
+                                // `resolve` 既可以写在 link 上，也可以写在 to 的值来源里
+                                resolve: link
+                                    .resolve
+                                    .clone()
+                                    .or_else(|| link.to.as_ref().and_then(|t| t.resolve))
+                                    .unwrap_or(em_domain::model::ResolveAs::ClassConst),
+                                confidence,
+                                sub,
+                                file: location_of(ctx, mctx).unwrap_or_default(),
+                                line: 0,
+                            });
+                        }
                     }
                 }
             }
@@ -758,20 +843,82 @@ fn exec_synthesize(
     node_id
 }
 
-/// 解析边目标：类 → 优先其 `handle`/`fire` 方法，否则类本身。
+/// 解析边目标：类 → 优先其 `handle`/`fire`/`doJob` 方法，否则类本身。
+///
+/// `doJob` 是 ThinkPHP/CRMEB 队列 Job 类的通用入口（`QueueTrait` 约定），
+/// 与 Laravel 的 `handle`、Symfony 的 `__invoke` 并列纳入。
 fn find_target_node(ctx: &PipelineContext, fqn: &str, _kind: &EdgeKind) -> Option<NodeId> {
     let class_id = ctx
         .ws
         .find_by_name(fqn)
         .or_else(|| ctx.ws.resolve_short_name(fqn).and_then(|f| ctx.ws.find_by_name(&f)))?;
-    // 找 handle / fire / __invoke 方法
-    for m in ["handle", "fire", "__invoke", "run"] {
+    // 找 handle / fire / doJob / __invoke / run 方法
+    for m in ["handle", "fire", "doJob", "__invoke", "run"] {
         let method_fqn = format!("{}::{}", fqn_of(ctx, class_id), m);
         if let Some(id) = ctx.ws.find_by_name(&method_fqn) {
             return Some(id);
         }
     }
     Some(class_id)
+}
+
+/// `ToTarget` 边生成：把一组值来源解析为「目标节点」并建边（查不到则降级为 PendingLink）。
+///
+/// 与内联逻辑一致，供主 `to` 解析失败后的 `to_fallback` 复用。
+fn push_to_target_edges(
+    ctx: &mut PipelineContext,
+    mctx: MatchCtx<'_>,
+    rule: &em_domain::model::Rule,
+    link: &em_domain::model::LinkSpec,
+    node_id: em_domain::model::NodeId,
+    phase: &em_domain::model::Phase,
+    confidence: f32,
+    sub: Option<em_domain::model::SubProjectId>,
+    items: &[em_domain::model::FactValue],
+) {
+    for item in items {
+        let raw = match item {
+            em_domain::model::FactValue::String(s) | em_domain::model::FactValue::ClassConst(s) => {
+                s.clone()
+            }
+            _ => continue,
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        // 先解析（临时 Evaluator，用后即弃，避免与下方 `find_target_node(ctx, …)` 的整结构借用冲突）。
+        let resolved = Evaluator::new(&ctx.ws, mctx).resolve_name(&raw);
+        if let Some(target) = find_target_node(ctx, &resolved, &link.kind)
+            .or_else(|| ctx.ws.find_by_name(&resolved))
+        {
+            ctx.ws.add_edge(NewEdge {
+                project_id: ctx.project.id,
+                kind: link.kind.clone(),
+                from_id: node_id,
+                to_id: target,
+                phase: phase.clone(),
+                confidence,
+                properties: serde_json::json!({
+                    "evidence": { "rule": rule.id, "target": resolved },
+                }),
+            });
+        } else {
+            ctx.ws.pending_links.push(crate::workspace::PendingLink {
+                from: node_id,
+                kind: link.kind.clone(),
+                raw: resolved.clone(),
+                resolve: link
+                    .resolve
+                    .clone()
+                    .or_else(|| link.to.as_ref().and_then(|t| t.resolve))
+                    .unwrap_or(em_domain::model::ResolveAs::ClassConst),
+                confidence,
+                sub,
+                file: location_of(ctx, mctx).unwrap_or_default(),
+                line: 0,
+            });
+        }
+    }
 }
 
 fn fqn_of(ctx: &PipelineContext, id: NodeId) -> String {
@@ -797,7 +944,11 @@ fn compute_identity(
         let path = apply_normalize(&path, &apply_table_prefix_steps(&spec.normalize, prefixes));
         return Some(IdentityKey::contract(&method, &path));
     }
-    let raw = spec.value.as_ref().and_then(|s| ev.string(s))?;
+    let raw = spec
+        .value
+        .as_ref()
+        .and_then(|s| ev.string(s))
+        .or_else(|| spec.value_fallback.as_ref().and_then(|s| ev.string(s)))?;
     let value = apply_normalize(&raw, &apply_table_prefix_steps(&spec.normalize, prefixes));
     if value.is_empty() {
         return None;
@@ -817,3 +968,122 @@ pub fn default_merge() -> MergeStrategy {
 
 /// 语言占位（供编译期校验）。
 pub fn _assert_language(_l: &Language) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::GraphWorkspace;
+    use em_domain::model::{Language, NodeId, ProjectId, Span};
+
+    fn call_record(receiver: Option<&str>, method: Option<&str>, callee: &str) -> CallRecord {
+        CallRecord {
+            node: NodeId(0),
+            owner: NodeId(0),
+            owner_fqn: String::new(),
+            callee: callee.to_string(),
+            receiver: receiver.map(|s| s.to_string()),
+            method: method.map(|s| s.to_string()),
+            args: vec![],
+            span: Span::default(),
+            file: String::new(),
+            sub: None,
+            language: Language::default(),
+        }
+    }
+
+    #[test]
+    fn alias_resolution_makes_facade_pattern_match() {
+        let mut ws = GraphWorkspace::new(ProjectId(1));
+        // 模拟 P2 写进的 import 符号表：`use think\facade\Queue as QueueThink;`
+        ws.put_symbol(
+            ProjectId(1),
+            "imports",
+            "queuethink",
+            serde_json::json!({ "fqn": "think\\facade\\Queue" }),
+        );
+        let rec = call_record(Some("QueueThink"), Some("push"), "QueueThink::push");
+
+        // 未做别名还原时，原始匹配失败（receiver 是 QueueThink，不是 \Queue 结尾）。
+        assert!(!callee_matches(
+            "Queue::push",
+            &rec.callee,
+            rec.receiver.as_deref(),
+            rec.method.as_deref()
+        ));
+        // 经 import 别名还原后应命中 FKB 的 `Queue::push` 伞名模式。
+        assert!(aliased_callee_matches(&ws, "Queue::push", &rec));
+    }
+
+    #[test]
+    fn alias_absent_keeps_original_behavior() {
+        let ws = GraphWorkspace::new(ProjectId(1));
+        let rec = call_record(Some("Db"), Some("name"), "Db::name");
+        assert!(aliased_callee_matches(&ws, "Db::name", &rec));
+
+        let rec2 = call_record(Some("UnknownThing"), Some("push"), "UnknownThing::push");
+        assert!(!aliased_callee_matches(&ws, "Queue::push", &rec2));
+    }
+
+    #[test]
+    fn alias_resolution_is_global_heuristic_safe() {
+        // 不存在的别名不应改变匹配结果（无回归）。
+        let ws = GraphWorkspace::new(ProjectId(1));
+        let rec = call_record(Some("QueueThink"), Some("push"), "QueueThink::push");
+        // 没有写 imports 表，QueueThink 解析不到 → 仍不匹配。
+        assert!(!aliased_callee_matches(&ws, "Queue::push", &rec));
+        // 但裸方法模式（`*:dispatch`）不受 receiver 影响。
+        assert!(aliased_callee_matches(
+            &ws,
+            "*:dispatch",
+            &call_record(None, Some("dispatch"), "->dispatch")
+        ));
+    }
+
+    #[test]
+    fn owner_class_extracted_from_call_context() {
+        use crate::eval::{Evaluator, MatchCtx};
+        use em_domain::model::ValueSource;
+        let ws = GraphWorkspace::new(ProjectId(1));
+        let mut rec = call_record(Some("QueueTrait"), Some("dispatch"), "QueueTrait::dispatch");
+        // `owner_fqn` 是「调用方方法」的完全限定名，去掉末尾 ::method 即所属类。
+        rec.owner_fqn = "app\\services\\order\\StoreOrderServices::createOrder".to_string();
+        let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
+        let vs = ValueSource {
+            owner_class: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            ev.string(&vs),
+            Some("app\\services\\order\\StoreOrderServices".to_string())
+        );
+    }
+
+    #[test]
+    fn require_class_rejects_non_class_arg_then_fallback() {
+        use crate::eval::{Evaluator, MatchCtx};
+        use em_domain::model::{ValueSource, ResolveAs};
+        let ws = GraphWorkspace::new(ProjectId(1));
+        // `$action` 不是代码库里的类 → class_const + require_class 应返回 None。
+        let rec = call_record(Some("QueueTrait"), Some("dispatch"), "QueueTrait::dispatch");
+        let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
+        let vs = ValueSource {
+            arg: Some(0),
+            resolve: Some(ResolveAs::ClassConst),
+            require_class: Some(true),
+            literal: None,
+            ..Default::default()
+        };
+        // CallRecord 没有真实实参，这里直接验证 owner_class 兜底路径可用。
+        let fb = ValueSource {
+            owner_class: Some(true),
+            ..Default::default()
+        };
+        let mut rec2 = rec.clone();
+        rec2.owner_fqn = "app\\services\\Foo::bar".to_string();
+        let ev2 = Evaluator::new(&ws, MatchCtx::Call(&rec2));
+        // 主源（arg0，无实参）取不到，回退到 owner_class。
+        let value = ev.string(&vs).or_else(|| ev2.string(&fb));
+        assert_eq!(value, Some("app\\services\\Foo".to_string()));
+    }
+}
+

@@ -72,7 +72,7 @@ perspectives:
     # 定时任务是"一条执行链路"，自顶向下的层 = 跳数，比径向更能体现执行流向。
     layout: layered
     depth: 2
-    description: 定时任务的执行链路（当前流水线尚未产出 Schedule 节点）
+    description: 定时任务的执行链路（由项目级 FKB 合成 Schedule 节点，如 CRMEB 的 crontab 路由）
 
   - id: topic
     label: 消息 Topic

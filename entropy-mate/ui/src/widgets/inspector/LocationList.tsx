@@ -13,6 +13,7 @@ import {
   preferredIde,
   setPreferredIde,
 } from '@/shared/lib/ide';
+import { useLocale } from '@/shared/lib/i18n';
 
 /**
  * 位置列表。
@@ -24,6 +25,7 @@ export function LocationList({
   locations,
   kind,
   projectRoot,
+  wslDistro,
   emptyHint = '该节点没有可用的源码位置（可能是纯语义合成对象）',
   ordered = false,
   showCopyAll = true,
@@ -31,14 +33,18 @@ export function LocationList({
   locations: SourceLocation[];
   kind?: string;
   projectRoot?: string;
+  /** WSL 发行版名；非空时跳转 / 复制按 WSL 处理。 */
+  wslDistro?: string;
   emptyHint?: string;
   /** 相邻位置之间显示"从上往下"箭头，用于边证据链等有序场景。 */
   ordered?: boolean;
   /** 是否在底部提供"复制全部位置"；逐跳链路里每跳只放一个位置，不必重复这个按钮。 */
   showCopyAll?: boolean;
 }) {
+  const { t } = useLocale();
+
   if (locations.length === 0) {
-    return <Typography.Text type="secondary">{emptyHint}</Typography.Text>;
+    return <Typography.Text type="secondary">{t(emptyHint)}</Typography.Text>;
   }
 
   const sensitive = kind ? isSensitive(kind) : false;
@@ -47,16 +53,16 @@ export function LocationList({
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       {sensitive ? (
         <Typography.Text type="warning" style={{ fontSize: 12 }}>
-          敏感位置：只跳到键名所在行，不展示任何值
+          {t('敏感位置：只跳到键名所在行，不展示任何值')}
         </Typography.Text>
       ) : null}
       {locations.map((loc, i) => {
-        const items = (Object.keys(IDE_LABEL) as IdeTarget[]).map((t) => ({
-          key: t,
-          label: IDE_LABEL[t],
+        const items = (Object.keys(IDE_LABEL) as IdeTarget[]).map((it) => ({
+          key: it,
+          label: IDE_LABEL[it],
           onClick: () => {
-            setPreferredIde(t);
-            void openInIde(t, loc, projectRoot);
+            setPreferredIde(it);
+            void openInIde(it, loc, projectRoot, wslDistro);
           },
         }));
         return (
@@ -74,15 +80,15 @@ export function LocationList({
             >
               <div style={{ minWidth: 0 }}>
                 <Typography.Link
-                  onClick={() => void openInIde(preferredIde(), loc, projectRoot)}
-                  title={`在 IDE 中打开（${IDE_LABEL[preferredIde()]}；右上角图标可换 IDE）`}
+                  onClick={() => void openInIde(preferredIde(), loc, projectRoot, wslDistro)}
+                  title={t('在 IDE 中打开（') + IDE_LABEL[preferredIde()] + t('；右上角图标可换 IDE）')}
                   style={{ fontSize: 12, fontWeight: 600, wordBreak: 'break-all', display: 'inline-block' }}
                 >
                   {loc.file}:{loc.line}
                 </Typography.Link>
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>
-                  {loc.note ?? (loc.symbol ? `符号 ${loc.symbol}` : '')}
-                  {loc.symbol ? ` · ${driftHint(loc)}` : ''}
+                  {loc.note ?? (loc.symbol ? t('符号 ') + loc.symbol : '')}
+                  {loc.symbol ? ' · ' + t(driftHint(loc)) : ''}
                 </div>
                 {loc.snippet ? (
                   <pre
@@ -104,16 +110,16 @@ export function LocationList({
               </div>
               <Space size={4}>
                 <Dropdown menu={{ items }} trigger={['click']}>
-                  <Tooltip title="在 IDE 中打开（失败会自动复制路径）">
+                  <Tooltip title={t('在 IDE 中打开（失败会自动复制路径）')}>
                     <Button size="small" type="text" icon={<ExportOutlined />} />
                   </Tooltip>
                 </Dropdown>
-                <Tooltip title="复制绝对 path:line（无 IDE 场景的兜底）">
+                <Tooltip title={t('复制绝对 path:line（无 IDE 场景的兜底）')}>
                   <Button
                     size="small"
                     type="text"
                     icon={<CopyOutlined />}
-                    onClick={() => void copyPath(loc, projectRoot)}
+                    onClick={() => void copyPath(loc, projectRoot, wslDistro)}
                   />
                 </Tooltip>
               </Space>
@@ -131,10 +137,10 @@ export function LocationList({
           size="small"
           block
           onClick={() =>
-            void copyAllLocations(locations, projectRoot, `${locations.length} 处共现位置`)
+            void copyAllLocations(locations, projectRoot, `${locations.length}${t(' 处共现位置')}`, wslDistro)
           }
         >
-          复制全部位置（绝对路径）
+          {t('复制全部位置（绝对路径）')}
         </Button>
       ) : null}
     </Space>
@@ -143,7 +149,8 @@ export function LocationList({
 
 /** 位置数量的角标。 */
 export function LocationBadge({ count }: { count: number }) {
-  if (count === 0) return <Tag>无位置</Tag>;
-  if (count === 1) return <Tag color="blue">1 处位置</Tag>;
-  return <Tag color="blue">{count} 处共现位置</Tag>;
+  const { t } = useLocale();
+  if (count === 0) return <Tag>{t('无位置')}</Tag>;
+  if (count === 1) return <Tag color="blue">{1 + t(' 处位置')}</Tag>;
+  return <Tag color="blue">{count + t(' 处共现位置')}</Tag>;
 }

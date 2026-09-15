@@ -38,6 +38,23 @@ pub struct FrameworkKnowledge {
     pub resolvers: Vec<ResolverSpec>,
     /// 缺省排除目录（叠加在工程/语言默认规则之上）。
     pub exclude_globs: Vec<String>,
+    /// 知识库作用域：框架级（默认）vs 项目级。
+    ///
+    /// * `Framework`：通用框架知识（如 `thinkphp6` / `uni-app`），被任意使用该框架的工程加载；
+    /// * `Project`：项目专有知识（如 `crmeb`），**仅当工程被识别为该项目时才加载**，
+    ///   避免把项目约定（如 CRMEB 的 crontab 路由）串味到其它同框架工程。
+    pub scope: KnowledgeScope,
+}
+
+/// 知识库作用域。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeScope {
+    /// 框架知识：随框架识别加载，适用于所有使用该框架的工程。
+    #[default]
+    Framework,
+    /// 项目知识：随项目识别加载，仅适用于被识别为该项目（其 detectors 命中）的工程。
+    Project,
 }
 
 /// 框架识别信号。
@@ -252,6 +269,9 @@ pub enum Predicate {
     NameMatches(String),
     /// 节点属性等于给定值。
     PropertyIs { name: String, value: String },
+    /// 调用点第 `arg` 个实参（字符串）以 `prefix` 开头（大小写敏感）。
+    /// 用于按调用实参前缀收窄匹配，例如只挑 `Route::get('crontab/...')` 这类路由。
+    ArgStartsWith { arg: usize, prefix: String },
 }
 
 /// 绑定动作。
@@ -424,6 +444,12 @@ pub struct IdentitySpec {
     pub path: Option<ValueSource>,
     #[serde(default)]
     pub normalize: Vec<NormalizeStep>,
+    /// 主身份取不到（或 `require_class` 判定非类）时的兜底来源。
+    ///
+    /// 例：队列 topic 优先取 `arg:0`（实参里的 Job 类），取不到时退回 `owner_class`
+    /// （产生该调用的类自身）。两条来源算出相同 identity 时幂等合并为同一节点。
+    #[serde(default)]
+    pub value_fallback: Option<ValueSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -459,6 +485,9 @@ pub struct LinkSpec {
     pub kind: EdgeKind,
     /// 边的另一端来源（如 handler 字符串）。
     pub to: Option<ValueSource>,
+    /// `to` 取不到目标时的兜底来源（如队列消费方 `arg:0` 解析不出时退回 `receiver_class`）。
+    #[serde(default)]
+    pub to_fallback: Option<ValueSource>,
     /// 方向：incoming（来源指向新节点）/ outgoing（新节点指向来源）/ to_target。
     pub direction: Direction,
     pub resolve: Option<ResolveAs>,
@@ -515,6 +544,21 @@ pub struct ValueSource {
     pub file_stem: Option<bool>,
     /// 取当前 locale（i18n 装载时）。
     pub locale: Option<bool>,
+    /// 取「发起调用的类」：`owner_fqn` 去掉末尾 `::method` 后的类 FQN。
+    ///
+    /// 通用语义：当身份是「调用方类」而非某个实参时（如 self-enqueue 模式里，
+    /// 队列的 Job / topic 就是产生它的那个类自身，典型如 `QueueTrait::dispatch`
+    /// 经 `->job(__CLASS__)` 把消费方设成调用类）。这是框架无关的提取能力。
+    pub owner_class: Option<bool>,
+    /// 取调用点的接收者类：把 `receiver` 经 import 别名还原成 FQN。
+    ///
+    /// 与 `owner_class`（调用所在类）不同，这是「被调用方的接收者类」，
+    /// 例如 `QueueThink::push()` 里 `QueueThink` 经别名还原成 `think\facade\Queue`。
+    pub receiver_class: Option<bool>,
+    /// 当 `resolve: class_const` 时，若解析结果在代码库中不存在为类节点，则整体返回
+    /// `None`（而不是把变量名 / 字面量当类用）。用于「优先用实参里的 Job 类，否则
+    /// 退回 `owner_class`」这类兜底，避免 `$action` 之类的字符串污染语义身份。
+    pub require_class: Option<bool>,
     /// 字面量。
     pub literal: Option<String>,
     /// 嵌套来源：`{ source: { arg: 1 }, field: 'url' }`。

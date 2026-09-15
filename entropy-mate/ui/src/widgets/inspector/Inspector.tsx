@@ -6,6 +6,7 @@ import { viewApi } from '@/entities/view';
 import { nodeColor } from '@/entities/graph';
 import { useAsync } from '@/shared/lib/useAsync';
 import { LocationBadge, LocationList } from './LocationList';
+import { useLocale } from '@/shared/lib/i18n';
 
 /** 稳定的空 via 引用：`?? []` 每次渲染都会生成新数组，会让折叠链的取数 effect 反复触发。 */
 const NO_VIA: ViaNode[] = [];
@@ -24,6 +25,7 @@ export function Inspector({
   edgeView,
   nodeNameOf,
   projectRoot,
+  wslDistro,
   onClose,
   onJumpToReference,
 }: {
@@ -37,14 +39,17 @@ export function Inspector({
   /** 端点 id → 名字；用于把折叠链首尾两个语义节点也标出名字。 */
   nodeNameOf?: (id: number) => string;
   projectRoot?: string;
+  /** WSL 发行版名；非空时跳转 / 复制按 WSL 处理（远程 scheme + UNC 前缀）。 */
+  wslDistro?: string;
   onClose: () => void;
   onJumpToReference?: (nodeId: number) => void;
 }) {
   const open = nodeId !== null || edgeId !== null;
+  const { t } = useLocale();
 
   return (
     <Drawer
-      title={nodeId !== null ? '节点详情' : '边证据链'}
+      title={nodeId !== null ? t('节点详情') : t('边证据链')}
       open={open}
       onClose={onClose}
       width={560}
@@ -54,6 +59,7 @@ export function Inspector({
         <NodePanel
           nodeId={nodeId}
           projectRoot={projectRoot}
+          wslDistro={wslDistro}
           onJumpToReference={onJumpToReference}
         />
       ) : null}
@@ -63,6 +69,7 @@ export function Inspector({
           edgeView={edgeView}
           nodeNameOf={nodeNameOf}
           projectRoot={projectRoot}
+          wslDistro={wslDistro}
           onNodeClick={onJumpToReference}
         />
       ) : null}
@@ -73,52 +80,55 @@ export function Inspector({
 function NodePanel({
   nodeId,
   projectRoot,
+  wslDistro,
   onJumpToReference,
 }: {
   nodeId: number;
   projectRoot?: string;
+  wslDistro?: string;
   onJumpToReference?: (nodeId: number) => void;
 }) {
   const { data, loading } = useAsync<NodeLocations | null>(
     () => viewApi.nodeLocations(nodeId),
     [nodeId],
   );
+  const { t } = useLocale();
 
-  if (loading) return <Typography.Text type="secondary">加载中…</Typography.Text>;
-  if (!data) return <Empty description="未找到该节点" />;
+  if (loading) return <Typography.Text type="secondary">{t('加载中…')}</Typography.Text>;
+  if (!data) return <Empty description={t('未找到该节点')} />;
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label="种类">
+        <Descriptions.Item label={t('种类')}>
           <Tag color={nodeColor(data.kind)} style={{ color: '#fff' }}>
             {data.kind}
           </Tag>
         </Descriptions.Item>
-        <Descriptions.Item label="名称">{data.name}</Descriptions.Item>
-        <Descriptions.Item label="节点类型">
-          {data.synthetic ? '合成节点（语义对象）' : '语法节点'}
+        <Descriptions.Item label={t('名称')}>{data.name}</Descriptions.Item>
+        <Descriptions.Item label={t('节点类型')}>
+          {data.synthetic ? t('合成节点（语义对象）') : t('语法节点')}
         </Descriptions.Item>
-        <Descriptions.Item label="位置">
+        <Descriptions.Item label={t('位置')}>
           <LocationBadge count={data.locations.length} />
         </Descriptions.Item>
-        <Descriptions.Item label="引用">{data.reference_count} 条入边</Descriptions.Item>
+        <Descriptions.Item label={t('引用')}>{data.reference_count + t(' 条入边')}</Descriptions.Item>
       </Descriptions>
 
       {data.synthetic ? (
         <Alert
           type="info"
           showIcon
-          message="这是合成节点：它由多处共现汇聚而成"
-          description="下面列出全部出处，请按需逐条验证；这里不会替你挑一个'看起来像'的位置。"
+          message={t('这是合成节点：它由多处共现汇聚而成')}
+          description={t('下面列出全部出处，请按需逐条验证；这里不会替你挑一个\'看起来像\'的位置。')}
         />
       ) : null}
 
-      <LocationList locations={data.locations} kind={data.kind} projectRoot={projectRoot} />
+      <LocationList locations={data.locations} kind={data.kind} projectRoot={projectRoot} wslDistro={wslDistro} />
 
       {data.reference_count > 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          另有 {data.reference_count} 处引用指向它。
+          {t('另有 ') + data.reference_count + t(' 处引用指向它。')}
         </Typography.Text>
       ) : null}
     </Space>
@@ -130,18 +140,21 @@ function EdgePanel({
   edgeView,
   nodeNameOf,
   projectRoot,
+  wslDistro,
   onNodeClick,
 }: {
   edgeId: number;
   edgeView?: EdgeView | null;
   nodeNameOf?: (id: number) => string;
   projectRoot?: string;
+  wslDistro?: string;
   onNodeClick?: (id: number) => void;
 }) {
   const { data, loading } = useAsync<EdgeEvidence | null>(
     () => viewApi.edgeEvidence(edgeId),
     [edgeId],
   );
+  const { t } = useLocale();
 
   // 这条边折叠掉的中间节点：只存在于点击时的视图结果里（按 id 重查拿不到）。
   const via = edgeView?.via ?? NO_VIA;
@@ -155,11 +168,11 @@ function EdgePanel({
         <Alert
           type="info"
           showIcon
-          message="合成边（折叠汇总）"
+          message={t('合成边（折叠汇总）')}
           description={
             via.length > 0
-              ? '这条边是把多条调用链汇总后提拉出的语义边，没有与它一一对应的源码位置；下面是它折叠掉的中间节点（自起点到终点），可据此逐跳核对。'
-              : '这条边是把多条调用链汇总后提拉出的语义边，图里没有与它一一对应的原始边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到原始调用。'
+              ? t('这条边是把多条调用链汇总后提拉出的语义边，没有与它一一对应的源码位置；下面是它折叠掉的中间节点（自起点到终点），可据此逐跳核对。')
+              : t('这条边是把多条调用链汇总后提拉出的语义边，图里没有与它一一对应的原始边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到原始调用。')
           }
         />
         {via.length > 0 && edgeView ? (
@@ -169,6 +182,7 @@ function EdgePanel({
             paths={[via]}
             nodeNameOf={nodeNameOf}
             projectRoot={projectRoot}
+            wslDistro={wslDistro}
             onNodeClick={onNodeClick}
           />
         ) : null}
@@ -176,26 +190,26 @@ function EdgePanel({
     );
   }
 
-  if (loading && !edgeView) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+  if (loading && !edgeView) return <Typography.Text type="secondary">{t('加载中…')}</Typography.Text>;
 
   // **以"用户点击的那条边"为准**：它带着 via / hops，状态与置信度也与图上悬浮卡一致。
   // `/edges/{id}/evidence` 返回的是**提拉前的 raw 边**——它的端点、状态、置信度都可能不同，
   // 之前拿它冒充这条边，才出现"悬浮卡 0.80/已解析、抽屉 0.54/待验证"的自相矛盾。
   // 现在只把 raw 边当作"底层位置"的来源，并如实标注，绝不顶替这条边本身。
   const edge = edgeView ?? data?.edge ?? null;
-  if (!edge) return <Empty description="未找到该边" />;
+  if (!edge) return <Empty description={t('未找到该边')} />;
   const unresolved = !edge.resolved;
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label="关系">{edge.kind}</Descriptions.Item>
-        <Descriptions.Item label="状态">
-          {unresolved ? <Tag color="orange">待验证假设（虚线）</Tag> : <Tag color="green">已解析（实线）</Tag>}
+        <Descriptions.Item label={t('关系')}>{edge.kind}</Descriptions.Item>
+        <Descriptions.Item label={t('状态')}>
+          {unresolved ? <Tag color="orange">{t('待验证假设（虚线）')}</Tag> : <Tag color="green">{t('已解析（实线）')}</Tag>}
         </Descriptions.Item>
-        <Descriptions.Item label="置信度">{edge.confidence.toFixed(2)}</Descriptions.Item>
+        <Descriptions.Item label={t('置信度')}>{edge.confidence.toFixed(2)}</Descriptions.Item>
         {edge.hops !== null ? (
-          <Descriptions.Item label="跳数">途经 {edge.hops} 跳</Descriptions.Item>
+          <Descriptions.Item label={t('跳数')}>{t('途经 ') + edge.hops + t(' 跳')}</Descriptions.Item>
         ) : null}
       </Descriptions>
 
@@ -206,6 +220,7 @@ function EdgePanel({
           paths={[via]}
           nodeNameOf={nodeNameOf}
           projectRoot={projectRoot}
+          wslDistro={wslDistro}
           onNodeClick={onNodeClick}
         />
       ) : null}
@@ -214,7 +229,7 @@ function EdgePanel({
 
       {unresolved && via.length === 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          虚线边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。
+          {t('虚线边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。')}
         </Typography.Text>
       ) : null}
 
@@ -229,7 +244,7 @@ function EdgePanel({
       {data && data.locations.length > 0 ? (
         <div>
           <Typography.Text strong style={{ fontSize: 13 }}>
-            {via.length > 0 ? '底层原始边（提拉前）的证据位置' : '证据位置'}
+            {via.length > 0 ? t('底层原始边（提拉前）的证据位置') : t('证据位置')}
           </Typography.Text>
           {via.length > 0 ? (
             <div style={{ marginTop: 4 }}>
@@ -246,7 +261,8 @@ function EdgePanel({
               locations={data.locations}
               ordered
               projectRoot={projectRoot}
-              emptyHint="这条边没有可跳转的证据位置（可能来自权威源推断）"
+              wslDistro={wslDistro}
+              emptyHint={t('这条边没有可跳转的证据位置（可能来自权威源推断）')}
             />
           </div>
         </div>
@@ -268,6 +284,7 @@ function CollapsedChain({
   paths,
   nodeNameOf,
   projectRoot,
+  wslDistro,
   onNodeClick,
 }: {
   edge: EdgeView;
@@ -277,9 +294,11 @@ function CollapsedChain({
   paths?: ViaNode[][];
   nodeNameOf?: (id: number) => string;
   projectRoot?: string;
+  wslDistro?: string;
   /** 点击某跳的节点名 → 在主图中以该节点为中心重绘。 */
   onNodeClick?: (id: number) => void;
 }) {
+  const { t } = useLocale();
   const name = (id: number) => nodeNameOf?.(id) ?? `#${id}`;
   const pathList = paths && paths.length > 0 ? paths : via ? [via] : [];
 
@@ -341,7 +360,7 @@ function CollapsedChain({
                 color={s.kind ? nodeColor(s.kind) : 'blue'}
                 style={s.kind ? { color: '#fff' } : undefined}
               >
-                {s.kind ?? s.role}
+                {s.kind ?? t(s.role ?? '')}
               </Tag>
               <Button
                 type="link"
@@ -355,7 +374,7 @@ function CollapsedChain({
                   whiteSpace: 'normal',
                 }}
                 onClick={() => onNodeClick?.(s.id)}
-                title="在主图中以该节点为中心重绘"
+                title={t('在主图中以该节点为中心重绘')}
               >
                 {s.name}
               </Button>
@@ -363,12 +382,13 @@ function CollapsedChain({
             {s.locations.length > 0 ? (
               <div style={{ marginTop: 4 }}>
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  定义处
+                  {t('定义处')}
                 </Typography.Text>
                 <LocationList
                   locations={s.locations}
                   kind={s.kind ?? undefined}
                   projectRoot={projectRoot}
+                  wslDistro={wslDistro}
                   showCopyAll={false}
                 />
               </div>
@@ -376,12 +396,13 @@ function CollapsedChain({
             {s.callSite ? (
               <div style={{ marginTop: 4 }}>
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  调用处
+                  {t('调用处')}
                 </Typography.Text>
                 <LocationList
                   locations={[s.callSite]}
                   kind={s.kind ?? undefined}
                   projectRoot={projectRoot}
+                  wslDistro={wslDistro}
                   showCopyAll={false}
                 />
               </div>
@@ -402,10 +423,10 @@ function CollapsedChain({
   return (
     <div>
       <Typography.Text strong style={{ fontSize: 13 }}>
-        折叠掉的调用链
+        {t('折叠掉的调用链')}
         {pathList.length > 1
-          ? `（${pathList.length} 条路径）`
-          : `（起止各 1 个 + 中间 ${pathList[0].length} 跳）`}
+          ? `（${(pathList.length) + t(' 条路径')}）`
+          : `（${t('（起止各 1 个 + 中间 ') + pathList[0].length + t(' 跳）')}）`}
       </Typography.Text>
       <div style={{ marginTop: 8 }}>
         {pathList.length === 1 ? (
@@ -416,7 +437,7 @@ function CollapsedChain({
             size="small"
             items={pathList.map((p, idx) => ({
               key: String(idx),
-              label: `路径 ${idx + 1}`,
+              label: `${t('路径 ') + (idx + 1)}`,
               children: renderPath(p),
             }))}
           />

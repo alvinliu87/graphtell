@@ -77,6 +77,7 @@ declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点�
     QUEUE      = "Queue"       => "消息队列节点（进程外中介）",
     CACHE      = "Cache"       => "缓存节点（进程外中介）",
     TOPIC      = "Topic"       => "消息主题节点（进程外中介）",
+    SCHEDULE   = "Schedule"    => "定时任务节点（计划任务 / 调度）",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新种类",
 }
 
@@ -97,6 +98,7 @@ impl NodeKind {
         Self::QUEUE,
         Self::CACHE,
         Self::TOPIC,
+        Self::SCHEDULE,
     ];
 
     /// 是否为"第一类"语义节点（kind 自身即语义）。
@@ -159,6 +161,7 @@ declare_open_kind! { Phase => "流水线阶段";
     SYNTHESIZE    = "Synthesize"    => "P5 合成非代码语义节点",
     ANNOTATE_POST = "AnnotatePost"  => "P6 在汇聚结果上打标 / 注册别名",
     RESOLVE       = "Resolve"       => "P7 动态解析（漏斗 + 不动点）",
+    PROPAGATE     = "Propagate"     => "P8 语义沿调用链向上传播（通用，不绑定框架）",
 }
 
 declare_open_kind! { AnnotationChannel => "标注通道（不同通道互不干扰，可共存）";

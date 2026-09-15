@@ -1,4 +1,5 @@
 import { Alert, Button, Modal, Space, Spin, Typography } from 'antd';
+import { useLocale } from '@/shared/lib/i18n';
 import {
   ArrowLeftOutlined,
   FolderOpenOutlined,
@@ -26,6 +27,7 @@ export function DirectoryPickerModal({
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { t } = useLocale();
 
   useEffect(() => {
     if (!open) return;
@@ -55,18 +57,18 @@ export function DirectoryPickerModal({
 
   return (
     <Modal
-      title="选择代码库根目录"
+      title={t('选择代码库根目录')}
       open={open}
       onCancel={onClose}
       onOk={() => onSelect(path)}
-      okText="选择此目录"
-      cancelText="取消"
+      okText={t('选择此目录')}
+      cancelText={t('取消')}
       width={560}
       destroyOnClose
     >
       <Space style={{ marginBottom: 12 }} wrap>
         <Button size="small" icon={<ArrowLeftOutlined />} onClick={goUp}>
-          上级目录
+          {t('上级目录')}
         </Button>
         <Button size="small" icon={<HomeOutlined />} onClick={() => setPath('/home')}>
           /home
@@ -75,7 +77,7 @@ export function DirectoryPickerModal({
           /
         </Button>
         <Button size="small" onClick={() => setPath('/mnt')}>
-          /mnt（WSL 磁盘）
+          /mnt（{t('WSL 磁盘')}）
         </Button>
       </Space>
 
@@ -83,7 +85,7 @@ export function DirectoryPickerModal({
         type="secondary"
         style={{ display: 'block', marginBottom: 8, wordBreak: 'break-all' }}
       >
-        当前目录：{path}
+        {t('当前目录：')}{path}
       </Typography.Text>
 
       {error && (
@@ -118,7 +120,7 @@ export function DirectoryPickerModal({
             </div>
           ))}
           {!loading && !error && entries.length === 0 && (
-            <div style={{ padding: 16, color: '#999' }}>该目录下没有子目录</div>
+            <div style={{ padding: 16, color: '#999' }}>{t('该目录下没有子目录')}</div>
           )}
         </div>
       </Spin>

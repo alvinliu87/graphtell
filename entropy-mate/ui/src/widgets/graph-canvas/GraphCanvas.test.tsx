@@ -91,8 +91,9 @@ describe('GraphCanvas', () => {
       root.render(<GraphCanvas mode="radial" center={center} rings={rings} edges={edges} />);
     });
     const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
-    // 两条边各有各的种类，不能因为 id 重复/为负而全部退化成第一条的种类
-    expect(labels).toContain('MapsTo');
-    expect(labels).toContain('ReadsConfig');
+    // 两条边各有各的种类，不能因为 id 重复/为负而全部退化成第一条的种类。
+    // 未包 `LocaleProvider` 时 `t` 原样回退为 i18n 键（如 `edge.MapsTo`），故按键断言。
+    expect(labels).toContain('edge.MapsTo');
+    expect(labels).toContain('edge.ReadsConfig');
   });
 });

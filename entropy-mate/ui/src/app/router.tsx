@@ -4,6 +4,7 @@ import { ProjectsPage } from '@/pages/projects/ProjectsPage';
 import { GraphPage } from '@/pages/graph/GraphPage';
 import { ExplorerPage } from '@/pages/explorer/ExplorerPage';
 import { DiagnosticsPage } from '@/pages/diagnostics/DiagnosticsPage';
+import { SettingsPage } from '@/pages/settings/SettingsPage';
 
 export const router = createBrowserRouter([
   {
@@ -15,6 +16,7 @@ export const router = createBrowserRouter([
       { path: 'projects/:projectId/graph', element: <GraphPage /> },
       { path: 'projects/:projectId/explorer', element: <ExplorerPage /> },
       { path: 'projects/:projectId/diagnostics', element: <DiagnosticsPage /> },
+      { path: 'settings', element: <SettingsPage /> },
     ],
   },
 ]);

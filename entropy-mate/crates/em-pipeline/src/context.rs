@@ -3,10 +3,29 @@
 use std::collections::HashMap;
 
 use em_domain::model::{
-    Language, Phase, Project, ProjectConfig, Rule, SourceFile, SubProject, SubProjectId,
+    Language, NodeId, Phase, Project, ProjectConfig, Rule, SourceFile, SubProject, SubProjectId,
 };
 
 use crate::workspace::GraphWorkspace;
+
+/// 传播种子：合成阶段里，某个「动作发出方」方法节点与语义节点之间的边。
+///
+/// 传播阶段（P8）据此沿 `Calls` 调用链向上，把同一语义关系复刻到该方法的每一个调用方，
+/// 从而兑现「一个功能最终调用了 FKB 认得的东西，就该被正确解析，无论多深」的原则。
+///
+/// 这是通用机制：不认识任何框架，只搬运「方法 → 语义节点」这一事实。
+#[derive(Debug, Clone)]
+pub struct PropSeed {
+    /// 动作的发出方（被 FKB 规则命中的调用点所在方法）。
+    pub source: NodeId,
+    /// 语义节点（Queue / Table / Cache / ConfigKey …）。
+    pub target: NodeId,
+    /// 语义边种类（如 `PublishesTo` / `ReadsDb` / `ReadsCache` / `ReadsConfig`）。
+    pub kind: String,
+    pub confidence: f32,
+    pub sub: Option<SubProjectId>,
+    pub phase: Phase,
+}
 
 /// 一次流水线运行的上下文。
 pub struct PipelineContext {
@@ -20,6 +39,8 @@ pub struct PipelineContext {
     pub rules_by_sub: HashMap<i64, Vec<Rule>>,
     /// 跨子工程共享的规则（合成节点可能跨工程汇聚）。
     pub rules_global: Vec<Rule>,
+    /// 传播种子：合成阶段产出的「方法 → 语义节点」动作边，待 P8 沿调用链向上复刻。
+    pub propagation_seeds: Vec<PropSeed>,
 }
 
 impl PipelineContext {
@@ -33,6 +54,7 @@ impl PipelineContext {
             frameworks: HashMap::new(),
             rules_by_sub: HashMap::new(),
             rules_global: Vec::new(),
+            propagation_seeds: Vec::new(),
         }
     }
 

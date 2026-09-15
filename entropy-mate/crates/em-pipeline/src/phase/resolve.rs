@@ -24,7 +24,6 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::context::PipelineContext;
-use crate::engine::callee_matches;
 use crate::workspace::CallRecord;
 
 /// 一次动态解析请求（去重后参与不动点迭代）。
@@ -72,8 +71,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
     let mut keys: HashSet<String> = HashSet::new();
     for call in ctx.ws.calls.iter() {
         for (pattern, strategy) in &resolvers {
-            if !callee_matches(pattern, &call.callee, call.receiver.as_deref(), call.method.as_deref())
-            {
+            if !crate::engine::aliased_callee_matches(&ctx.ws, pattern, call) {
                 continue;
             }
             // 变量类型：按「所属方法 + 接收者 + 方法」建定位点，不依赖参数。

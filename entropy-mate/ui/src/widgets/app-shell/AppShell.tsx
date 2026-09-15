@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Badge, Button, Layout, Menu, Space, Tag, Tooltip, Typography } from 'antd';
+import { Badge, Button, Layout, Menu, Segmented, Space, Tag, Tooltip, Typography } from 'antd';
 import {
   ApartmentOutlined,
   DatabaseOutlined,
@@ -7,10 +7,12 @@ import {
   FundProjectionScreenOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  SettingOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useHealth } from '@/entities/pipeline';
+import { useLocale, type Lang } from '@/shared/lib/i18n';
 
 const { Sider, Content, Header } = Layout;
 
@@ -20,6 +22,7 @@ export function AppShell() {
   const location = useLocation();
   const { projectId } = useParams();
   const { health } = useHealth();
+  const { lang, setLang, t } = useLocale();
 
   // 左侧栏是否收起：图视图路由默认收起（进入即最大化，让出横向空间给图），
   // 其余路由默认展开。仅在 pathname 变化时按路由重置；页面内的手动折叠/展开在路由内持续有效。
@@ -36,14 +39,15 @@ export function AppShell() {
   const withProject = (path: string) => (projectId ? `/projects/${projectId}${path}` : '/');
 
   const items = [
-    { key: '/', icon: <FundProjectionScreenOutlined />, label: '工程总览' },
+    { key: '/', icon: <FundProjectionScreenOutlined />, label: t('工程总览') },
     ...(projectId
       ? [
-          { key: withProject('/graph'), icon: <ApartmentOutlined />, label: '图视图' },
-          { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: '节点浏览' },
-          { key: withProject('/diagnostics'), icon: <WarningOutlined />, label: '诊断' },
+          { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('图视图') },
+          { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
+          { key: withProject('/diagnostics'), icon: <WarningOutlined />, label: t('诊断') },
         ]
       : []),
+    { key: '/settings', icon: <SettingOutlined />, label: t('设置') },
   ];
 
   return (
@@ -82,7 +86,7 @@ export function AppShell() {
           {!collapsed && (
             <div>
               <div style={{ fontWeight: 700, letterSpacing: '-0.02em' }}>EntropyMate</div>
-              <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)' }}>代码库图化分析</div>
+              <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)' }}>{t('代码库图化分析')}</div>
             </div>
           )}
         </div>
@@ -109,27 +113,42 @@ export function AppShell() {
           <Space size={12}>
             <Button
               type="text"
-              aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+              aria-label={collapsed ? t('展开侧边栏') : t('收起侧边栏')}
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               onClick={toggleSider}
             />
             <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              {projectId ? `当前工程 #${projectId}` : '选择或创建一个工程开始分析'}
-            </Typography.Text>
-          </Space>
-          <Space size={10}>
+              {projectId ? `${t('当前工程')} #${projectId}` : t('选择或创建一个工程开始分析')}
+                  </Typography.Text>
+                </Space>
+                <Segmented
+                  size="small"
+                  value={lang}
+                  onChange={(v) => setLang(v as Lang)}
+                  options={[
+                    { label: '中文', value: 'zh-CN' },
+                    { label: 'EN', value: 'en-US' },
+                  ]}
+                />
+                <Button
+                  type="text"
+                  aria-label={t('设置')}
+                  icon={<SettingOutlined />}
+                  onClick={() => navigate('/settings')}
+                />
+                <Space size={10}>
             {health ? (
               <>
-                <Tooltip title="已装载的框架知识数量">
+                <Tooltip title={t('已装载的框架知识数量')}>
                   <Tag icon={<DeploymentUnitOutlined />} color="blue">
                     FKB {health.frameworks}
                   </Tag>
                 </Tooltip>
                 <Tag color="green">{health.languages.map((l: string) => l.toUpperCase()).join(' / ')}</Tag>
-                <Badge status={health.status === 'ok' ? 'success' : 'error'} text="后端在线" />
+                <Badge status={health.status === 'ok' ? 'success' : 'error'} text={t('后端在线')} />
               </>
             ) : (
-              <Badge status="error" text="后端未连接" />
+              <Badge status="error" text={t('后端未连接')} />
             )}
           </Space>
         </Header>

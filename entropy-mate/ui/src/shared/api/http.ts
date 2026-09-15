@@ -11,6 +11,8 @@
  * 4. 默认 `http://127.0.0.1:5177`
  */
 
+import { translate as t } from '@/shared/lib/i18n';
+
 export interface ApiResponse<T> {
   ok: boolean;
   data: T | null;
@@ -77,7 +79,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const body = (await res.json()) as ApiResponse<T>;
   if (!body.ok || body.data === null) {
-    throw new ApiError(body.error ?? '未知错误', res.status);
+    throw new ApiError(body.error ?? t('未知错误'), res.status);
   }
   return body.data;
 }

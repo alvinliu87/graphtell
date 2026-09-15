@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import { projectApi } from '@/entities/project';
 import type { CreateProjectInput } from '@/entities/project';
 import { DirectoryPickerModal } from './DirectoryPickerModal';
+import { useLocale } from '@/shared/lib/i18n';
 
 type Phase = 'editing' | 'submitting' | 'building' | 'ready' | 'failed';
 
@@ -36,16 +37,17 @@ function RootPathField({
   onPick: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useLocale();
   return (
     <Space.Compact style={{ width: '100%' }}>
       <Input
         readOnly
         value={value}
-        placeholder="点击右侧按钮选择目录"
+        placeholder={t('点击右侧按钮选择目录')}
         onChange={(e) => onChange?.(e.target.value)}
       />
       <Button icon={<FolderOpenOutlined />} onClick={onPick} disabled={disabled}>
-        选择目录
+        {t('选择目录')}
       </Button>
     </Space.Compact>
   );
@@ -67,6 +69,7 @@ export function CreateProjectModal({
   onClose: () => void;
   onCreated?: (projectId: number) => void;
 }) {
+  const { t } = useLocale();
   const navigate = useNavigate();
   const [form] = Form.useForm<CreateProjectInput & { full_pipeline: boolean }>();
   const [phase, setPhase] = useState<Phase>('editing');
@@ -167,12 +170,12 @@ export function CreateProjectModal({
   return (
     <>
       <Modal
-        title="新建工程"
+        title={t('新建工程')}
         open={open}
         onCancel={handleClose}
         onOk={handleOk}
         okText={okText}
-        cancelText="取消"
+        cancelText={t('取消')}
         okButtonProps={{ disabled: phase === 'building', loading: phase === 'submitting' }}
         cancelButtonProps={{ disabled: locked }}
         maskClosable={!locked}
@@ -183,8 +186,8 @@ export function CreateProjectModal({
           <Space direction="vertical" style={{ width: '100%' }} size={16}>
             <Result
               status="success"
-              title="建图完成"
-              subTitle="工程已就绪，可查看代码结构图"
+              title={t('建图完成')}
+              subTitle={t('工程已就绪，可查看代码结构图')}
             />
             <Card
               hoverable
@@ -201,7 +204,7 @@ export function CreateProjectModal({
             >
               <EyeOutlined style={{ fontSize: 24, color: '#3d7eff' }} />
               <div style={{ marginTop: 8, fontSize: 15, fontWeight: 600, color: '#3d7eff' }}>
-                点击查看图
+                {t('点击查看图')}
               </div>
             </Card>
           </Space>
@@ -215,28 +218,28 @@ export function CreateProjectModal({
           >
             <Form.Item
               name="name"
-              label="工程名称"
-              rules={[{ required: true, message: '请输入名称' }]}
+              label={t('工程名称')}
+              rules={[{ required: true, message: t('请输入名称') }]}
             >
-              <Input placeholder="例如：CRMEB" />
+              <Input placeholder={t('例如：CRMEB')} />
             </Form.Item>
             <Form.Item
               name="root_path"
-              label="代码库根目录"
-              rules={[{ required: true, message: '请选择目录' }]}
-              extra="将自动识别其中的子工程（composer.json / package.json / pom.xml 等）"
+              label={t('代码库根目录')}
+              rules={[{ required: true, message: t('请选择目录') }]}
+              extra={t('将自动识别其中的子工程（composer.json / package.json / pom.xml 等）')}
             >
               <RootPathField onPick={() => setPickerOpen(true)} disabled={locked} />
             </Form.Item>
-            <Form.Item name="description" label="描述">
-              <Input.TextArea rows={2} placeholder="可选" />
+            <Form.Item name="description" label={t('描述')}>
+              <Input.TextArea rows={2} placeholder={t('可选')} />
             </Form.Item>
-            <Form.Item name="full_pipeline" label="执行全阶段流水线" valuePropName="checked">
+            <Form.Item name="full_pipeline" label={t('执行全阶段流水线')} valuePropName="checked">
               <Switch />
             </Form.Item>
             {phase === 'failed' && (
               <Typography.Text type="danger">
-                建图失败，可关闭后重试或检查代码库根目录。
+                {t('建图失败，可关闭后重试或检查代码库根目录。')}
               </Typography.Text>
             )}
           </Form>

@@ -15,7 +15,7 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::context::PipelineContext;
-use crate::phase::{annotate, cf_ast, ingest, prepare, resolve};
+use crate::phase::{annotate, cf_ast, ingest, prepare, propagate, resolve};
 
 /// 流水线所需的基础设施集合（依赖倒置：由组装根注入）。
 pub trait PipelineInfrastructure {
@@ -144,6 +144,14 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     resolve::run(&mut ctx, infra.kb());
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+
+    // ---------------------------------------------------------- P8 Propagate
+    // 必须在 P7 之后：依赖 P7 建好的 `Calls` 边；种子在 P5 收集、暂存于 ctx。
+    let phase = Phase(Phase::PROPAGATE.to_string());
+    let started = Instant::now();
+    observer.on_phase_start(project.id, &phase);
+    propagate::run(&mut ctx);
     flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
 
     Ok(outcome)

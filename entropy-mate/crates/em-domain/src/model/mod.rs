@@ -11,7 +11,8 @@ pub mod view;
 pub use fkb::{
     Action, AliasSpec, AnnotateAction, AnnotateTarget, AnnotationSpec, CallContext, Detector,
     Direction, FanInThresholds, FieldSpec, FileFormat, FrameworkKnowledge, IdentitySpec,
-    LinkAction, LinkSpec, LoaderSource, LoaderSpec, NormalizeStep, PickStrategy, Predicate,
+    KnowledgeScope, LinkAction, LinkSpec, LoaderSource, LoaderSpec, NormalizeStep, PickStrategy,
+    Predicate,
     ResolveAs, ResolveStrategy, ResolveTier, Resolution, ResolverSpec, RootRule, RootSource, Rule,
     Selector, SubkindSource, SynthesizeAction, TransformSpec, ValueSource,
 };

@@ -1104,6 +1104,106 @@ fn v1_php_routes_are_in_graph() {
 }
 
 /// 直接看 v1.php 的解析产物（原始调用点），不经过整张图。
+/// 队列语义节点应被**框架级** FKB 探测出来（无需任何项目级 FKB）。
+///
+/// CRMEB 经 `QueueTrait::dispatch` / `crmeb\utils\Queue` 包装使用 `think\facade\Queue`，
+/// 框架规则 `tp6-queue-topic` 通过 `arg:0`（Job 类）+ `owner_class` 兜底（产生调用的类）
+/// 把队列 topic 合成出来；再由传播把 `PublishesTo` 边上溯到各 Service。
+#[test]
+fn synthesize_detects_queues_from_framework_fkb() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let queues = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind(NodeKind::QUEUE.to_string())),
+            name_contains: None,
+            limit: Some(1000),
+            offset: Some(0),
+        })
+        .expect("查询可读");
+    eprintln!("CRMEB 探测到的 Queue 节点数 = {}", queues.len());
+    assert!(
+        !queues.is_empty(),
+        "框架级 FKB 应探测出队列节点（CRMEB 经门面/包装/trait 使用 think\\facade\\Queue）"
+    );
+    // 每个 Queue 节点都应有至少一条 PublishesTo 入边（谁投递）。
+    let with_publisher = queues
+        .iter()
+        .filter(|q| {
+            b.store
+                .edges_of(q.id, em_domain::port::EdgeDirection::Incoming)
+                .unwrap_or_default()
+                .iter()
+                .any(|e| e.kind.as_str() == "PublishesTo")
+        })
+        .count();
+    assert!(
+        with_publisher > 0,
+        "至少部分 Queue 节点应有 PublishesTo 入边，实际 {with_publisher}/{}",
+        queues.len()
+    );
+    // 队列还应有消费方（HandledBy）：`arg:0` 解析不出时退回 `receiver_class`（被投递的
+    // Job 类），其 `doJob`/`handle` 即为消费入口，使「队列视角」与事件一样看得到消费者。
+    let with_consumer = queues
+        .iter()
+        .filter(|q| {
+            b.store
+                .edges_of(q.id, em_domain::port::EdgeDirection::Outgoing)
+                .unwrap_or_default()
+                .iter()
+                .any(|e| e.kind.as_str() == "HandledBy")
+        })
+        .count();
+    assert!(
+        with_consumer > 0,
+        "至少部分 Queue 节点应有 HandledBy 出边（消费方），实际 {with_consumer}/{}",
+        queues.len()
+    );
+}
+
+#[test]
+fn synthesize_detects_schedules_from_project_fkb() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let schedules = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind(NodeKind::SCHEDULE.to_string())),
+            name_contains: None,
+            limit: Some(1000),
+            offset: Some(0),
+        })
+        .expect("查询可读");
+    eprintln!("CRMEB 探测到的 Schedule 节点数 = {}", schedules.len());
+    assert!(
+        !schedules.is_empty(),
+        "项目级 FKB（crmeb.yaml）应把 crontab/* 路由合成为 Schedule 节点"
+    );
+    // 每个 Schedule 节点都应 HandledBy 到对应 CrontabController 方法。
+    let with_handler = schedules
+        .iter()
+        .filter(|s| {
+            b.store
+                .edges_of(s.id, em_domain::port::EdgeDirection::Outgoing)
+                .unwrap_or_default()
+                .iter()
+                .any(|e| e.kind.as_str() == "HandledBy")
+        })
+        .count();
+    assert!(
+        with_handler > 0,
+        "至少部分 Schedule 节点应有 HandledBy 出边（处理方），实际 {with_handler}/{}",
+        schedules.len()
+    );
+}
+
 #[test]
 fn v1_php_parse_result() {
     let Some(root) = common::sample_root() else {

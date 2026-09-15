@@ -1,5 +1,6 @@
 import { Select, Space, Tag, Tooltip } from 'antd';
 import type { Candidate, LayoutMode, Perspective } from '@/entities/view';
+import { useLocale } from '@/shared/lib/i18n';
 import { truncate } from '@/shared/lib/format';
 
 /** 布局算法可读名（用于「跟随视角默认」选项的说明）。 */
@@ -64,6 +65,7 @@ export function PerspectivePicker({
 }) {
   const current = perspectives.find((p) => p.id === perspective) ?? null;
   const isAggregate = current?.mode === 'aggregate';
+  const { t } = useLocale();
 
   return (
     <Space direction="vertical" size={10} style={{ width: '100%' }}>
@@ -88,12 +90,12 @@ export function PerspectivePicker({
           }))}
         />
         {isAggregate ? (
-          <Tag>聚合视角没有"单个对象"</Tag>
+          <Tag>{t('聚合视角没有"单个对象"')}</Tag>
         ) : (
           <Select
             showSearch
             style={{ width: 360 }}
-            placeholder={loading ? '加载候选…' : '选择一个对象'}
+            placeholder={loading ? t('加载候选…') : t('选择一个对象')}
             value={node ?? undefined}
             loading={loading}
             onChange={(v: number) => onNodeChange(v)}
@@ -107,7 +109,7 @@ export function PerspectivePicker({
           />
         )}
         <Space size={6}>
-          <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>布局</span>
+          <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>{t('布局')}</span>
           <Select
             size="small"
             style={{ width: 168 }}
@@ -116,20 +118,20 @@ export function PerspectivePicker({
             options={[
               {
                 value: AUTO,
-                label: `跟随视角默认（${LAYOUT_LABELS[current?.layout ?? 'radial'] ?? current?.layout ?? 'radial'}）`,
+                label: t('跟随视角默认（') + t(LAYOUT_LABELS[current?.layout ?? 'radial'] ?? current?.layout ?? 'radial') + t('）'),
               },
-              { value: 'radial', label: '径向（环=跳数）' },
-              { value: 'layered', label: '分层调用链' },
-              { value: 'spine', label: 'Spine 取证' },
-              { value: 'compound', label: '聚类框' },
-              { value: 'matrix', label: '矩阵' },
-              { value: 'er', label: 'ER 正交' },
+              { value: 'radial', label: t('径向（环=跳数）') },
+              { value: 'layered', label: t('分层调用链') },
+              { value: 'spine', label: t('Spine 取证') },
+              { value: 'compound', label: t('聚类框') },
+              { value: 'matrix', label: t('矩阵') },
+              { value: 'er', label: t('ER 正交') },
             ]}
           />
         </Space>
         {current ? (
           <Tag color={isAggregate ? 'purple' : 'blue'}>
-            {isAggregate ? '聚合概览' : '单链路'}
+            {isAggregate ? t('聚合概览') : t('单链路')}
           </Tag>
         ) : null}
       </Space>
@@ -137,7 +139,7 @@ export function PerspectivePicker({
       {/* 面包屑：可回退到任意一步 */}
       {trail.length > 1 ? (
         <Space size={4} wrap style={{ fontSize: 12 }}>
-          <span style={{ color: 'rgba(0,0,0,0.45)' }}>回退：</span>
+          <span style={{ color: 'rgba(0,0,0,0.45)' }}>{t('回退：')}</span>
           {trail.map((t, i) => (
             <span key={`${t.perspective}-${t.node}-${i}`}>
               {i > 0 ? <span style={{ color: 'rgba(0,0,0,0.25)' }}> › </span> : null}

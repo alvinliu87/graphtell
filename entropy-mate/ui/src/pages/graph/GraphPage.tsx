@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   Drawer,
   Input,
   InputNumber,
@@ -16,7 +17,7 @@ import {
   Typography,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useProject } from '@/entities/project';
 import {
   useAggregateView,
@@ -42,12 +43,21 @@ import {
   sameViewState,
   type ViewState,
 } from '@/shared/lib/urlState';
+import {
+  effectiveTemplate,
+  getWslDistro,
+  getWslMode,
+  resolveProjectRoot,
+} from '@/shared/lib/ide';
 import { formatNumber } from '@/shared/lib/format';
+import { useLocale } from '@/shared/lib/i18n';
 
 /** 图视图页：两级筛选 → 单对象链路子图 → 可跳转的结论面板。 */
 export function GraphPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
+  const navigate = useNavigate();
+  const { t } = useLocale();
   const [params, setParams] = useSearchParams();
   const { project, reload: reloadProject } = useProject(id);
   const { run } = useRunStatus(id, project?.status);
@@ -327,8 +337,7 @@ export function GraphPage() {
     : undefined;
 
   const layoutMode: LayoutMode = state.m ?? current?.layout ?? 'radial';
-  // 后端分析的工程根（如 Linux 容器路径）可能和本地开发机路径不一致，
-  // 这里允许用户本地覆盖，只影响 IDE 跳转和复制，不改后端数据。
+  // 按工程覆盖：优先级高于全局根模板，用于模板表达不了的特例；只影响 IDE 跳转与复制，不改后端数据。
   const rootStorageKey = `em.projectRootOverride.${id}`;
   const [localRoot, setLocalRoot] = useState<string>(() => {
     try {
@@ -347,17 +356,29 @@ export function GraphPage() {
       /* ignore */
     }
   };
-  const projectRoot = localRoot.trim() || project?.root_path || undefined;
+  // 本地工程根只影响 IDE 跳转与复制，不改后端数据。
+  // 解析优先级：按工程覆盖（localRoot） > 全局根模板 / WSL 预设（设置页）> 后端 root_path。
+  const projectRoot = resolveProjectRoot(project?.root_path, localRoot, effectiveTemplate());
+  // WSL 模式开启时把 distro 透传给跳转 / 复制逻辑，生成正确的远程 scheme 与 UNC 前缀。
+  const wslDistro = getWslMode() ? getWslDistro() : undefined;
+  // 仅用于界面核对：本工程实际生效根来自哪一层（覆盖 > 模板 / WSL > 后端）。
+  const rootSource = localRoot
+    ? t('按工程覆盖')
+    : getWslMode()
+      ? t('WSL 模式') + '（' + (getWslDistro() || 'Ubuntu') + '）'
+      : effectiveTemplate()
+        ? t('全局根模板')
+        : t('后端 root_path');
 
   if (projectId === undefined || Number.isNaN(id)) {
-    return <Alert type="error" message="缺少工程 ID" />;
+    return <Alert type="error" message={t('缺少工程 ID')} />;
   }
 
   return (
     <>
       <PageHeader
-        title={project ? `图视图 · ${project.name}` : '图视图'}
-        subtitle="一级选视角、二级选对象；只渲染当前这一条链路，被省略的部分以计数与未解析记账呈现"
+        title={project ? `${t('图视图')} · ${project.name}` : t('图视图')}
+        subtitle={t('一级选视角、二级选对象；只渲染当前这一条链路，被省略的部分以计数与未解析记账呈现')}
         extra={<RunPipelineButton projectId={id} onStarted={() => void reloadProject()} />}
       />
 
@@ -387,15 +408,15 @@ export function GraphPage() {
           loading={loading && candidates.length === 0}
         />
         <Space style={{ marginTop: 8 }} align="center" wrap>
-          <Tooltip title="展开 Method / CallSite 等语法节点；默认只显示语义节点，点击节点可就地展开其调用链">
+          <Tooltip title={t('展开 Method / CallSite 等语法节点；默认只显示语义节点，点击节点可就地展开其调用链')}>
             <Space size={6} align="center">
               <Switch size="small" checked={expandSyntax} onChange={setExpandSyntax} />
-              <Typography.Text type="secondary">展开语法</Typography.Text>
+              <Typography.Text type="secondary">{t('展开语法')}</Typography.Text>
             </Space>
           </Tooltip>
-          <Tooltip title="就地展开调用链时向下钻取的跳数（多跳展开，而非仅相邻一环）；只影响折叠模式下点击节点的子图">
+          <Tooltip title={t('就地展开调用链时向下钻取的跳数（多跳展开，而非仅相邻一环）；只影响折叠模式下点击节点的子图')}>
             <Space size={6} align="center">
-              <Typography.Text type="secondary">展开跳数</Typography.Text>
+              <Typography.Text type="secondary">{t('展开跳数')}</Typography.Text>
               <InputNumber
                 size="small"
                 min={1}
@@ -406,40 +427,70 @@ export function GraphPage() {
               />
             </Space>
           </Tooltip>
-          <Tooltip title="在边上标注 ReadsConfig / MapsTo 等类型">
+          <Tooltip title={t('在边上标注 ReadsConfig / MapsTo 等类型')}>
             <Space size={6} align="center">
               <Switch size="small" checked={showEdgeLabels} onChange={setShowEdgeLabels} />
-              <Typography.Text type="secondary">边类型</Typography.Text>
+              <Typography.Text type="secondary">{t('边类型')}</Typography.Text>
             </Space>
           </Tooltip>
           <Button size="small" type="primary" ghost onClick={() => setDrawerOpen(true)}>
-            结论 / 导航
+            {t('结论 / 导航')}
           </Button>
           {Object.keys(expanded).length > 0 && (
             <Button size="small" onClick={() => setExpanded({})}>
-              收起调用（{Object.keys(expanded).length}）
+              {t('收起调用') + '（' + Object.keys(expanded).length + '）'}
             </Button>
           )}
         </Space>
-        <Space style={{ marginTop: 8 }} align="center" wrap>
-          <Tooltip title="若后端分析路径与本地不一致（如 Linux/WSL 分析、Windows 本地开发），填写本地绝对路径；留空则使用后端路径">
-            <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-              本地工程根目录
-            </Typography.Text>
-          </Tooltip>
-          <Input
-            size="small"
-            style={{ width: 420 }}
-            placeholder={project?.root_path ?? '本地绝对路径，例如 C:/Users/.../CRMEB-master'}
-            value={localRoot}
-            onChange={(e) => updateLocalRoot(e.target.value)}
-          />
-          {localRoot ? (
-            <Button size="small" type="link" onClick={() => updateLocalRoot('')}>
-              使用后端路径
-            </Button>
-          ) : null}
-        </Space>
+        <Collapse
+          ghost
+          bordered={false}
+          defaultActiveKey={[]}
+          style={{ marginTop: 8, maxWidth: 760 }}
+          items={[
+            {
+              key: 'override',
+              label: (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('高级 · 按工程覆盖本地根（特殊场景才需要）')}
+                </Typography.Text>
+              ),
+              children: (
+                <Space align="center" wrap>
+                  <Tooltip title={t('本地工程根仅用于 IDE 跳转与复制，不改后端数据。优先级：此处「按工程覆盖」> 全局根模板（设置页）> 后端 root_path。留空即按后两者解析。')}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                      {t('本地工程根（覆盖）')}
+                    </Typography.Text>
+                  </Tooltip>
+                  <Input
+                    size="small"
+                    style={{ width: 420 }}
+                    placeholder={project?.root_path ?? t('按工程覆盖的本地绝对路径，留空则取全局模板 / 后端路径')}
+                    value={localRoot}
+                    onChange={(e) => updateLocalRoot(e.target.value)}
+                  />
+                  {localRoot ? (
+                    <Button size="small" type="link" onClick={() => updateLocalRoot('')}>
+                      {t('用全局 / 后端路径')}
+                    </Button>
+                  ) : null}
+                  <Button size="small" type="link" onClick={() => navigate('/settings')}>
+                    {t('全局根模板设置')}
+                  </Button>
+                </Space>
+              ),
+            },
+          ]}
+        />
+        <Typography.Paragraph
+          type="secondary"
+          style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}
+        >
+          {t('本工程当前生效根（来源：') + rootSource + t('）：')}
+          <Typography.Text code style={{ fontSize: 12 }}>
+            {projectRoot || t('（无法解析，请检查后端 root_path 或上方覆盖）')}
+          </Typography.Text>
+        </Typography.Paragraph>
       </Card>
 
       {isAggregate && aggView?.notice ? (
@@ -453,12 +504,12 @@ export function GraphPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`对象 #${state.n} 在「${current?.label ?? state.p}」视角下取不到链路`}
-          description={`可能已被删除、或不属于该视角（${errText(objectError)}）。请在左侧一级视角重新选择。`}
+          message={t('对象 #') + state.n + t(' 在「') + (current?.label ?? state.p) + t('」视角下取不到链路')}
+          description={t('可能已被删除、或不属于该视角（') + errText(objectError) + t('）。请在左侧一级视角重新选择。')}
           action={
             candidates.length > 0 ? (
               <Button size="small" onClick={() => setState((s) => ({ ...s, n: candidates[0].id }))}>
-                换第一个对象
+                {t('换第一个对象')}
               </Button>
             ) : null
           }
@@ -508,7 +559,7 @@ export function GraphPage() {
               variant="borderless"
               style={{ borderRadius: 14, marginTop: 16 }}
               size="small"
-              title="未解析记账"
+              title={t('未解析记账')}
               extra={<Tag color="orange">{view.unresolved.length}</Tag>}
             >
               <Table
@@ -517,9 +568,9 @@ export function GraphPage() {
                 dataSource={view.unresolved}
                 pagination={false}
                 columns={[
-                  { title: '代码', dataIndex: 'code', width: 170 },
-                  { title: '说明', dataIndex: 'message' },
-                  { title: '位置', dataIndex: 'location', width: 220, ellipsis: true },
+                  { title: t('代码'), dataIndex: 'code', width: 170 },
+                  { title: t('说明'), dataIndex: 'message' },
+                  { title: t('位置'), dataIndex: 'location', width: 220, ellipsis: true },
                 ]}
               />
             </Card>
@@ -528,22 +579,22 @@ export function GraphPage() {
       </Row>
 
       <Drawer
-        title="结论与导航"
+        title={t('结论与导航')}
         placement="right"
         width={360}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         styles={{ body: { padding: 16 } }}
       >
-        <Card variant="borderless" style={{ borderRadius: 14 }} title="结论">
+        <Card variant="borderless" style={{ borderRadius: 14 }} title={t('结论')}>
           {view ? (
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
               <Row gutter={12}>
                 <Col span={12}>
-                  <Statistic title="入边" value={fmt(view.conclusions['入边'])} />
+                  <Statistic title={t('入边')} value={fmt(view.conclusions['入边'])} />
                 </Col>
                 <Col span={12}>
-                  <Statistic title="出边" value={fmt(view.conclusions['出边'])} />
+                  <Statistic title={t('出边')} value={fmt(view.conclusions['出边'])} />
                 </Col>
               </Row>
               <Space size={6} wrap>
@@ -555,26 +606,26 @@ export function GraphPage() {
               </Space>
               {view.conclusions['schema 列数'] !== undefined ? (
                 <Typography.Text type="secondary">
-                  schema 列数：{String(view.conclusions['schema 列数'])}
+                  {t('schema 列数：') + String(view.conclusions['schema 列数'])}
                 </Typography.Text>
               ) : null}
               {view.conclusions['路由表登记'] ? (
                 <Typography.Text type="secondary">
-                  路由表登记 handler：{String(view.conclusions['路由表登记'])}
+                  {t('路由表登记 handler：') + String(view.conclusions['路由表登记'])}
                 </Typography.Text>
               ) : null}
             </Space>
           ) : aggView ? (
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              <Statistic title="分组数" value={aggView.clusters.length} />
+              <Statistic title={t('分组数')} value={aggView.clusters.length} />
               {aggView.matrix ? (
                 <Typography.Text type="secondary">
-                  共 {formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0))} 个单元格取值
+                  {t('共 ') + formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0)) + t(' 个单元格取值')}
                 </Typography.Text>
               ) : null}
             </Space>
           ) : (
-            <Typography.Text type="secondary">选择一个对象后显示结论</Typography.Text>
+            <Typography.Text type="secondary">{t('选择一个对象后显示结论')}</Typography.Text>
           )}
         </Card>
 
@@ -582,13 +633,13 @@ export function GraphPage() {
           variant="borderless"
           style={{ borderRadius: 14, marginTop: 16 }}
           size="small"
-          title="环上节点"
+          title={t('环上节点')}
         >
           <Space direction="vertical" size={4} style={{ width: '100%' }}>
             {(view?.rings ?? []).map((ring, i) => (
               <div key={i}>
                 <Typography.Text strong style={{ fontSize: 12 }}>
-                  环 {i + 1}（{ring.length}）
+                  {t('环') + (i + 1) + '（' + ring.length + '）'}
                 </Typography.Text>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
                   {ring.slice(0, 12).map((n) => (
@@ -619,6 +670,7 @@ export function GraphPage() {
         edgeView={inspectEdgeView}
         nodeNameOf={nodeNameOf}
         projectRoot={projectRoot}
+        wslDistro={wslDistro}
         onClose={() => {
           setInspectNode(null);
           setInspectEdge(null);

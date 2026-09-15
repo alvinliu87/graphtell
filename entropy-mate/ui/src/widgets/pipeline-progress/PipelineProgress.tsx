@@ -1,10 +1,12 @@
 import { Alert, Card, Progress, Space, Steps, Tag, Typography } from 'antd';
 import { PHASE_HINT, PHASE_LABEL, PHASE_ORDER, type RunStatus } from '@/entities/pipeline';
+import { useLocale } from '@/shared/lib/i18n';
 import { formatDuration, formatNumber } from '@/shared/lib/format';
 
 /** 建图进度：阶段步骤条 + 每阶段产物统计。 */
 export function PipelineProgress({ run, indexing }: { run: RunStatus | null; indexing: boolean }) {
   const currentIndex = run?.current_phase ? PHASE_ORDER.indexOf(run.current_phase) : -1;
+  const { t } = useLocale();
 
   return (
     <Card variant="borderless" style={{ borderRadius: 14 }}>
@@ -13,8 +15,8 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
           <Alert
             type="info"
             showIcon
-            message={`正在执行 ${run?.current_phase ? PHASE_LABEL[run.current_phase] ?? run.current_phase : '建图'} …`}
-            description={run?.current_phase ? PHASE_HINT[run.current_phase] : undefined}
+            message={t('正在执行 ') + (run?.current_phase ? t(PHASE_LABEL[run.current_phase] ?? run.current_phase) : t('建图')) + t(' …')}
+            description={run?.current_phase ? t(PHASE_HINT[run.current_phase] ?? '') : undefined}
           />
         ) : null}
 
@@ -22,7 +24,7 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
           size="small"
           current={currentIndex}
           status={indexing ? 'process' : 'finish'}
-          items={PHASE_ORDER.map((p) => ({ title: PHASE_LABEL[p] ?? p }))}
+          items={PHASE_ORDER.map((p) => ({ title: t(PHASE_LABEL[p] ?? p) }))}
         />
 
         {run && run.phases.length > 0 ? (
@@ -31,12 +33,11 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
               <div key={r.phase}>
                 <Space size={8} style={{ marginBottom: 4 }}>
                   <Typography.Text strong style={{ fontSize: 13 }}>
-                    {PHASE_LABEL[r.phase] ?? r.phase}
+                    {t(PHASE_LABEL[r.phase] ?? r.phase)}
                   </Typography.Text>
                   <Tag>{formatDuration(r.duration_ms)}</Tag>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    节点 {formatNumber(r.nodes_created)} · 边 {formatNumber(r.edges_created)} · 标注{' '}
-                    {formatNumber(r.annotations_created)} · 别名 {formatNumber(r.aliases_created)}
+                    {t('节点 ') + formatNumber(r.nodes_created) + t(' · 边 ') + formatNumber(r.edges_created) + t(' · 标注 ') + formatNumber(r.annotations_created) + t(' · 别名 ') + formatNumber(r.aliases_created)}
                   </Typography.Text>
                 </Space>
                 <Progress
@@ -50,7 +51,7 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
             ))}
           </Space>
         ) : (
-          <Typography.Text type="secondary">暂无运行记录</Typography.Text>
+          <Typography.Text type="secondary">{t('暂无运行记录')}</Typography.Text>
         )}
       </Space>
     </Card>

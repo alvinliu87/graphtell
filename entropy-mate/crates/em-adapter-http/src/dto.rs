@@ -135,6 +135,10 @@ pub struct HealthDto {
     pub version: String,
     pub languages: Vec<String>,
     pub frameworks: usize,
+    /// 后端进程是否运行在 WSL 中（前端据此自动套用 WSL 路径映射）。
+    pub is_wsl: bool,
+    /// WSL 发行版名（仅 `is_wsl` 为 true 时有意义，默认 Ubuntu）。
+    pub wsl_distro: String,
 }
 
 /// 建图触发响应。

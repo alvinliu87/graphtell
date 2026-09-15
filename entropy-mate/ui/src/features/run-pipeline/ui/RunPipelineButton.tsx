@@ -1,4 +1,5 @@
 import { Button, message } from 'antd';
+import { useLocale } from '@/shared/lib/i18n';
 import { ThunderboltOutlined } from '@ant-design/icons';
 import { pipelineApi } from '@/entities/pipeline';
 
@@ -10,19 +11,20 @@ export function RunPipelineButton({
   projectId: number;
   onStarted?: () => void;
 }) {
+  const { t } = useLocale();
   const run = async () => {
     try {
       await pipelineApi.run(projectId);
-      message.success('已开始建图');
+      message.success(t('已开始建图'));
       onStarted?.();
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '启动失败');
+      message.error(e instanceof Error ? e.message : t('启动失败'));
     }
   };
 
   return (
     <Button type="primary" icon={<ThunderboltOutlined />} onClick={run}>
-      重新建图
+      {t('重新建图')}
     </Button>
   );
 }

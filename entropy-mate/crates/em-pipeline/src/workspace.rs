@@ -330,6 +330,11 @@ impl GraphWorkspace {
         self.edges.len()
     }
 
+    /// 全部边（只读）。传播阶段据此构建反向调用索引。
+    pub fn edges(&self) -> &[Edge] {
+        &self.edges
+    }
+
     pub fn fan_in(&self, id: NodeId) -> u32 {
         self.fan_in.get(&id.get()).copied().unwrap_or(0)
     }
@@ -600,6 +605,22 @@ impl GraphWorkspace {
 
     pub fn get_symbol(&self, table: &str, key: &str) -> Option<&Value> {
         self.symbols.get(table).and_then(|m| m.get(key))
+    }
+
+    /// 经由 import 别名把短名还原为 FQN（通用机制，**不绑定任何框架**）。
+    ///
+    /// `use think\facade\Queue as QueueThink;` 会被 P2 写进 `imports` 符号表，
+    /// 于是 `QueueThink` 能还原为 `think\facade\Queue`，从而命中 FKB 里
+    /// `Queue::push` 这类「以伞名结尾」的匹配模式。
+    ///
+    /// 这是全局索引（按短名小写），与 `resolve_short_name` 同样的启发式权衡：
+    /// 不同文件里同名别名可能指向不同 FQN，但匹配是尽力而为、可叠加的。
+    pub fn resolve_import_alias(&self, name: &str) -> Option<String> {
+        let key = name.trim_start_matches('\\').to_ascii_lowercase();
+        self.get_symbol("imports", &key)
+            .and_then(|v| v.get("fqn"))
+            .and_then(|f| f.as_str())
+            .map(|s| s.to_string())
     }
 
     pub fn symbol_table(&self, table: &str) -> Option<&BTreeMap<String, Value>> {

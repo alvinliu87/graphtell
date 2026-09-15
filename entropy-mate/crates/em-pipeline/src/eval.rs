@@ -73,7 +73,19 @@ impl<'a> Evaluator<'a> {
         }
         if let Some(resolve) = &src.resolve {
             s = match resolve {
-                ResolveAs::ClassConst | ResolveAs::AsIs => self.resolve_name(&s),
+                ResolveAs::ClassConst => {
+                    let resolved = self.resolve_name(&s);
+                    // `require_class`：解析结果必须是代码库中真实存在的类，否则整体视为
+                    // 取不到（触发 `value_fallback`）。避免 `$action` 之类变量名被当类用。
+                    if src.require_class == Some(true)
+                        && self.ws.find_by_name(&resolved).is_none()
+                        && self.ws.resolve_short_name(&resolved).is_none()
+                    {
+                        return None;
+                    }
+                    resolved
+                }
+                ResolveAs::AsIs => self.resolve_name(&s),
                 ResolveAs::HandlerPattern | ResolveAs::ByAlias => s,
             };
         }
@@ -155,6 +167,26 @@ impl<'a> Evaluator<'a> {
                         return None;
                     }
                     return Some(EvalValue::Fact(a.clone()));
+                }
+                if src.owner_class == Some(true) {
+                    if c.owner_fqn.is_empty() {
+                        return None;
+                    }
+                    // 去掉末尾的 `::method`，保留类 FQN。
+                    let class = match c.owner_fqn.rfind("::") {
+                        Some(idx) => &c.owner_fqn[..idx],
+                        None => &c.owner_fqn[..],
+                    };
+                    return Some(EvalValue::Str(class.to_string()));
+                }
+                if src.receiver_class == Some(true) {
+                    let recv = c.receiver.as_ref()?;
+                    // 经 import 别名还原（如 `QueueThink` → `think\facade\Queue`）。
+                    let fqn = self
+                        .ws
+                        .resolve_import_alias(recv)
+                        .unwrap_or_else(|| recv.clone());
+                    return Some(EvalValue::Str(fqn));
                 }
                 None
             }

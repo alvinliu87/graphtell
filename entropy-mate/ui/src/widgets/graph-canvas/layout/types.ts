@@ -182,7 +182,7 @@ export function radialLayout(input: LayoutInput): LayoutResult {
     cx,
     cy,
     r: ringRadii[i],
-    label: `${i + 1} 跳`,
+    label: `${i + 1}`,
   }));
 
   return {

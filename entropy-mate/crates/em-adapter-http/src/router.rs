@@ -98,7 +98,26 @@ pub fn build_router(state: Shared) -> Router {
 
 // ---------------------------------------------------------------- 处理器
 
+/// 探测后端进程是否运行在 WSL 中。
+///
+/// WSL 的内核发行信息（`/proc/sys/kernel/osrelease` 与 `/proc/version`）会包含
+/// "microsoft" 字样，裸 Linux / Docker / 远程 VM 不会。发行版名难以从内核信息取得，
+/// 默认返回 `Ubuntu`（绝大多数默认发行版即此名），前端仍可手动覆盖。
+fn detect_wsl() -> (bool, String) {
+    let check = |path: &str| {
+        fs::read_to_string(path)
+            .map(|s| s.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false)
+    };
+    if check("/proc/sys/kernel/osrelease") || check("/proc/version") {
+        (true, "Ubuntu".to_string())
+    } else {
+        (false, String::new())
+    }
+}
+
 async fn health(State(state): State<Shared>) -> Json<ApiResponse<HealthDto>> {
+    let (is_wsl, wsl_distro) = detect_wsl();
     Json(ApiResponse::success(HealthDto {
         status: "ok".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -109,6 +128,8 @@ async fn health(State(state): State<Shared>) -> Json<ApiResponse<HealthDto>> {
             .map(|l| l.to_string())
             .collect(),
         frameworks: state.frameworks,
+        is_wsl,
+        wsl_distro,
     }))
 }
 
