@@ -646,15 +646,22 @@ impl GraphQuery for SqliteStore {
 
     fn edges_of(&self, node: NodeId, direction: EdgeDirection) -> Result<Vec<Edge>> {
         let conn = self.conn.lock().unwrap();
+        // 边必须与其端点节点同属一个工程：库中可能残留历史工程的边
+        // （删除工程后节点被清、边未清，或端点 id 被新工程复用），
+        // 不过滤会把旧工程的边混进当前工程，污染视图与证据链。
         let sql = match direction {
             EdgeDirection::Outgoing => {
-                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties FROM edges WHERE from_id = ?1"
+                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties FROM edges \
+                 WHERE from_id = ?1 AND project_id = (SELECT project_id FROM nodes WHERE id = ?1)"
             }
             EdgeDirection::Incoming => {
-                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties FROM edges WHERE to_id = ?1"
+                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties FROM edges \
+                 WHERE to_id = ?1 AND project_id = (SELECT project_id FROM nodes WHERE id = ?1)"
             }
             EdgeDirection::Both => {
-                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties FROM edges WHERE from_id = ?1 OR to_id = ?1"
+                "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties FROM edges \
+                 WHERE (from_id = ?1 OR to_id = ?1) \
+                 AND project_id = (SELECT project_id FROM nodes WHERE id = ?1)"
             }
         };
         let mut stmt = conn.prepare(sql).map_err(DomainError::infra)?;
@@ -673,12 +680,16 @@ impl GraphQuery for SqliteStore {
         let mut out: HashMap<i64, Vec<Edge>> = HashMap::new();
         for chunk in ids.chunks(400) {
             let placeholders = vec!["?"; chunk.len()].join(",");
+            // 同 `edges_of`：按端点节点所属工程过滤，挡掉历史工程的残留边。
             let sql = format!(
                 "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
-                 FROM edges WHERE from_id IN ({placeholders})"
+                 FROM edges WHERE from_id IN ({placeholders}) \
+                 AND project_id IN (SELECT project_id FROM nodes WHERE id IN ({placeholders}))"
             );
             let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
-            let params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
+            // 占位符出现两份（端点列表 + 工程过滤子查询），参数也要绑两份。
+            let mut params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
+            params.extend(chunk.iter().map(|n| n.get()));
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(params.iter()), row_to_edge)
                 .map_err(DomainError::infra)?;
@@ -700,12 +711,16 @@ impl GraphQuery for SqliteStore {
         let mut inc: HashMap<i64, Vec<Edge>> = HashMap::new();
         for chunk in ids.chunks(400) {
             let placeholders = vec!["?"; chunk.len()].join(",");
+            // 同 `edges_of`：按端点节点所属工程过滤，挡掉历史工程的残留边。
             let sql = format!(
                 "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
-                 FROM edges WHERE to_id IN ({placeholders})"
+                 FROM edges WHERE to_id IN ({placeholders}) \
+                 AND project_id IN (SELECT project_id FROM nodes WHERE id IN ({placeholders}))"
             );
             let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
-            let params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
+            // 占位符出现两份（端点列表 + 工程过滤子查询），参数也要绑两份。
+            let mut params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
+            params.extend(chunk.iter().map(|n| n.get()));
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(params.iter()), row_to_edge)
                 .map_err(DomainError::infra)?;
