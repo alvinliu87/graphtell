@@ -107,11 +107,27 @@ impl ViewService {
         let summary = self.store.nodes_summary(project_id)?;
         let (out, inc) = self.store.chain_adjacency(project_id)?;
 
+        Ok(self.rank_candidates(nodes, &summary, &out, &inc, limit as usize))
+    }
+
+    /// 候选对象打分核心：把 `query_nodes` 取回的节点按"语义价值"排序并截断。
+    ///
+    /// `summary` / `out` / `inc` 来自 `nodes_summary` + `chain_adjacency`，
+    /// **由调用方负责加载一次后复用**——`object_view` 与 `candidates` 共享同一份，
+    /// 避免每次请求重复加载整图概要 + 链边邻接（工程越大越贵）。
+    fn rank_candidates(
+        &self,
+        nodes: Vec<em_domain::model::Node>,
+        summary: &HashMap<i64, NodeSummary>,
+        out: &HashMap<i64, Vec<i64>>,
+        inc: &HashMap<i64, Vec<i64>>,
+        limit: usize,
+    ) -> Vec<Candidate> {
         let mut scored: Vec<(usize, Candidate)> = nodes
             .into_iter()
             .map(|n| {
                 let fan = inc.get(&n.id.get()).map(|e| e.len()).unwrap_or(0);
-                let value = self.semantic_value(n.id, &summary, &out, &inc);
+                let value = self.semantic_value(n.id, summary, out, inc);
                 (
                     value,
                     Candidate {
@@ -123,8 +139,8 @@ impl ViewService {
             })
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
-        scored.truncate(limit as usize);
-        Ok(scored.into_iter().map(|(_, c)| c).collect())
+        scored.truncate(limit);
+        scored.into_iter().map(|(_, c)| c).collect()
     }
 
     /// 候选对象的"价值"：其调用链（chain 边）可达的语义节点数（表 / 配置 / 缓存 / 事件…）。
@@ -221,17 +237,21 @@ impl ViewService {
         let reverse = collapse && center_node.kind.as_str() != NodeKind::HTTP_CONTRACT;
         let chain_depth = depth;
 
-        // 一次性预加载全工程节点概要，取代 BFS 里每个节点一次的 `get_node` 往返；
+        // 一次性预加载全工程节点概要 + 链边邻接，供整段视图复用：
+        // BFS 的语义性判定、候选打分（末尾 `rank_candidates`）、链路回溯都用这一份，
+        // 不再重复加载（此前每次请求加载了 3 遍节点概要 + 2 遍链边邻接，是 ~3.5s 卡顿主因）。
+        let summary = self.store.nodes_summary(project_id)?;
+        let (out, inc) = self.store.chain_adjacency(project_id)?;
+
         // 语义性按需由 kind 计算，避免为「是否语义节点」反复查库。
-        let node_meta = self.store.nodes_summary(project_id)?;
         let sem_of = |id: i64| -> bool {
-            node_meta
+            summary
                 .get(&id)
                 .map(|m| NodeKind(m.kind.clone()).is_semantic())
                 .unwrap_or(false)
         };
         let sub_of = |id: i64| -> i64 {
-            node_meta.get(&id).and_then(|m| m.sub_project_id).unwrap_or(0)
+            summary.get(&id).and_then(|m| m.sub_project_id).unwrap_or(0)
         };
 
         let mut ring_of: HashMap<i64, u32> = HashMap::new();
@@ -342,7 +362,7 @@ impl ViewService {
             let mut next: Vec<i64> = Vec::new();
             for &id in &current {
                 if !kind_of.contains_key(&id) {
-                    if let Some(m) = node_meta.get(&id) {
+                    if let Some(m) = summary.get(&id) {
                         kind_of.insert(id, m.kind.clone());
                         name_of.insert(id, m.name.clone());
                         semantic_of.insert(id, NodeKind(m.kind.clone()).is_semantic());
@@ -471,7 +491,7 @@ impl ViewService {
         // 不再逐个 `get_node` 往返。
         for &id in ring_of.keys() {
             if !kind_of.contains_key(&id) {
-                if let Some(m) = node_meta.get(&id) {
+                if let Some(m) = summary.get(&id) {
                     kind_of.insert(id, m.kind.clone());
                     name_of.insert(id, m.name.clone());
                     semantic_of.insert(id, NodeKind(m.kind.clone()).is_semantic());
@@ -582,7 +602,7 @@ impl ViewService {
                     }
                 }
             }
-            self.call_site_between(from, to)
+            self.call_site_between(from, to, &out_edges)
         };
         // `indirect`：该语义边是否由 P8 沿调用链传播得来（起点自身并未执行该动作）。
         let push_edge = |from: i64, to: i64, kind: &str, src: i64, mut via: Vec<ViaNode>,
@@ -775,7 +795,7 @@ impl ViewService {
                         let to = e.to_id.get();
                         // 目标可以是"被语法链挡在环外的语义节点"：把它登记进环，
                         // 这样即便 depth 较小，折叠视图仍能把语义目标渲染出来。
-                        let to_is_sem = node_meta
+                        let to_is_sem = summary
                             .get(&to)
                             .map(|m| NodeKind(m.kind.clone()).is_semantic())
                             .unwrap_or(false);
@@ -828,7 +848,7 @@ impl ViewService {
             // 捕获了这些 map 的闭包使用完毕后再做，避免借用冲突。
             for &id in ring_of.keys() {
                 if !kind_of.contains_key(&id) {
-                    if let Some(m) = node_meta.get(&id) {
+                    if let Some(m) = summary.get(&id) {
                         kind_of.insert(id, m.kind.clone());
                         name_of.insert(id, m.name.clone());
                         semantic_of.insert(id, NodeKind(m.kind.clone()).is_semantic());
@@ -906,8 +926,16 @@ impl ViewService {
                     // 不依赖提拉边的 id / via：二者会随 `HashMap` 遍历顺序变化
                     // （同一 (from,to) 上 P5 直接边与 P8 传播边竞争，而传播边无 evidence）。
                     let mut best: Option<(i64, SourceLocation)> = None;
-                    if let Ok(ins) = self.store.edges_of(e.to, EdgeDirection::Incoming) {
-                        for raw in &ins {
+                    // 优先命中 BFS 阶段已批量预取的入边缓存；缓存未覆盖（极少数漏预取的节点）
+                    // 时再回退到单点查询。避免对每条 shown 边各发一次 DB 往返（N+1）。
+                    let cached_ins = in_edges.get(&e.to.get()).cloned();
+                    let store_ins = if cached_ins.is_some() {
+                        None
+                    } else {
+                        self.store.edges_of(e.to, EdgeDirection::Incoming).ok()
+                    };
+                    if let Some(ins) = cached_ins.as_ref().or(store_ins.as_ref()) {
+                        for raw in ins {
                             if raw.kind.as_str() != e.kind {
                                 continue;
                             }
@@ -993,7 +1021,7 @@ impl ViewService {
         }
 
         let center_view = self
-            .build_node_view(center_id, 0)?
+            .build_node_view(center_id, 0, &in_edges, &out_edges)?
             .ok_or_else(|| DomainError::NotFound(format!("节点 {center_id}")))?;
         let ring_views: Vec<Vec<NodeView>> = visible_rings
             .iter()
@@ -1001,7 +1029,11 @@ impl ViewService {
             .skip(1)
             .map(|(r, slot)| {
                 slot.iter()
-                    .filter_map(|id| self.build_node_view(*id, r as u32).ok().flatten())
+                    .filter_map(|id| {
+                        self.build_node_view(*id, r as u32, &in_edges, &out_edges)
+                            .ok()
+                            .flatten()
+                    })
                     .collect()
             })
             .collect();
@@ -1041,7 +1073,19 @@ impl ViewService {
             hidden,
             unresolved,
             conclusions,
-            candidates: self.candidates(project_id, perspective, 300, None)?,
+            // 复用本视图已经加载的整图概要 / 链边邻接，只额外取一次候选节点，
+            // 不再重跑 `nodes_summary` + `chain_adjacency` + 全量打分（这是此前 ~3.5s 主因）。
+            candidates: {
+                let cand_nodes = self.store.query_nodes(&NodeFilter {
+                    project_id,
+                    kind: spec.node_kind.clone().map(NodeKind),
+                    name_contains: None,
+                    limit: Some(5000),
+                    offset: Some(0),
+                })?;
+                let r = self.rank_candidates(cand_nodes, &summary, &out, &inc, 300);
+                r
+            },
         })
     }
 
@@ -1096,7 +1140,16 @@ impl ViewService {
                 let samples = members
                     .into_iter()
                     .take(sample_limit as usize)
-                    .filter_map(|n| self.build_node_view(n.id, 1).ok().flatten())
+                    .filter_map(|n| {
+                        self.build_node_view(
+                            n.id,
+                            1,
+                            &HashMap::new(),
+                            &HashMap::new(),
+                        )
+                        .ok()
+                        .flatten()
+                    })
                     .collect();
                 Cluster { label: key.clone(), key, count, members: samples }
             })
@@ -1462,10 +1515,21 @@ impl ViewService {
     /// （见 `resolve_calls`），直接取它即可，无需任何启发式。仅当这条精确边不存在（例如
     /// `route → handler`、`method → table` 这类语义边，而非 `Calls` 边）时，才回退到
     /// `HasCallSite` 调用点按被调名匹配。
-    fn call_site_between(&self, from: i64, to: i64) -> Option<SourceLocation> {
+    fn call_site_between(
+        &self,
+        from: i64,
+        to: i64,
+        out_cache: &HashMap<i64, Vec<em_domain::model::Edge>>,
+    ) -> Option<SourceLocation> {
+        // 复用 BFS 阶段批量预取的出边缓存，避免对每条折叠边各发一次 DB 往返（N+1）。
+        // 缓存未覆盖（极少数漏预取的节点）时回退到单点查询。
+        let outs = out_cache
+            .get(&from)
+            .cloned()
+            .or_else(|| self.store.edges_of(NodeId(from), EdgeDirection::Outgoing).ok());
         // 1) 精确：直接读 `from → to` 的 Calls 边上记录的 CallSite 节点 id
-        if let Some(outs) = self.store.edges_of(NodeId(from), EdgeDirection::Outgoing).ok() {
-            for e in &outs {
+        if let Some(outs) = outs.as_ref() {
+            for e in outs {
                 if e.kind.as_str() != "Calls" || e.to_id.get() != to {
                     continue;
                 }
@@ -1485,7 +1549,7 @@ impl ViewService {
         if to_name.is_empty() {
             return None;
         }
-        for e in self.store.edges_of(NodeId(from), EdgeDirection::Outgoing).ok()? {
+        for e in outs.as_ref()? {
             if e.kind.as_str() != "HasCallSite" {
                 continue;
             }
@@ -1524,7 +1588,13 @@ impl ViewService {
         s.strip_prefix("new ").unwrap_or(s).trim().to_string()
     }
 
-    fn build_node_view(&self, id: NodeId, ring: u32) -> Result<Option<NodeView>> {
+    fn build_node_view(
+        &self,
+        id: NodeId,
+        ring: u32,
+        in_cache: &HashMap<i64, Vec<em_domain::model::Edge>>,
+        out_cache: &HashMap<i64, Vec<em_domain::model::Edge>>,
+    ) -> Result<Option<NodeView>> {
         let Some(n) = self.store.get_node(id)? else {
             return Ok(None);
         };
@@ -1540,15 +1610,16 @@ impl ViewService {
                 None => a.kind,
             })
             .collect();
-        let fan_in = self
-            .store
-            .edges_of(id, EdgeDirection::Incoming)
+        // 优先命中 BFS 已批量预取的边缓存，避免对每个节点各发 2 次 DB 往返（N+1）。
+        let fan_in = in_cache
+            .get(&id.get())
             .map(|e| e.len())
+            .or_else(|| self.store.edges_of(id, EdgeDirection::Incoming).ok().map(|e| e.len()))
             .unwrap_or(0);
-        let fan_out = self
-            .store
-            .edges_of(id, EdgeDirection::Outgoing)
+        let fan_out = out_cache
+            .get(&id.get())
             .map(|e| e.len())
+            .or_else(|| self.store.edges_of(id, EdgeDirection::Outgoing).ok().map(|e| e.len()))
             .unwrap_or(0);
         let mut locations = Vec::new();
         if let Some(Value::Array(arr)) = n.properties.get("locations") {
