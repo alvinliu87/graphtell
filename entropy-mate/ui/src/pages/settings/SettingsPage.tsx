@@ -75,7 +75,18 @@ export function SettingsPage() {
         {t('设置')}
       </Typography.Title>
 
-      {/* WSL 快捷预设：开关 + 发行版名，零填写即可让 WSL 分析的工程一键跳转。 */}
+      {/* 暂时注释：WSL 快捷配置 / 全局根模板 / 默认 IDE 等设置项停用（IDE 打开入口已移除，
+          无需再处理「后端根 → Windows 本地根」的映射）。以后再考虑加回：去掉下方注释块的起止标记即可恢复。 */}
+      <Alert
+        type="info"
+        showIcon
+        message={t('设置项暂未启用')}
+        description={t('本地根模板 / WSL 模式 / 默认 IDE 等设置仅服务于「跳转 IDE」；该入口已移除，相关设置暂时停用。')}
+      />
+
+      {/*
+        ===== 以下为暂时注释的设置项（WSL 快捷配置 / 全局根模板 / 预览 / 默认 IDE / 按工程特例）=====
+        WSL 快捷预设：开关 + 发行版名，零填写即可让 WSL 分析的工程一键跳转。
       <Card size="small" style={{ background: '#f8fafc' }} title={t('WSL 快捷配置')}>
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Space size={10} align="center">
@@ -237,6 +248,8 @@ export function SettingsPage() {
       <Typography.Paragraph type="secondary" style={{ fontSize: 11, marginTop: 12 }}>
         {t('存储键：')}{WSL_MODE_KEY}、{WSL_DISTRO_KEY}、{ROOT_TEMPLATE_KEY}{t('（浏览器 localStorage，仅本机生效）')}
       </Typography.Paragraph>
+        ===== 暂时注释结束（以后再考虑加回）=====
+      */}
     </Card>
   );
 }

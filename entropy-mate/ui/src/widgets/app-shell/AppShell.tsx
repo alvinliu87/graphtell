@@ -7,7 +7,8 @@ import {
   FundProjectionScreenOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  SettingOutlined,
+  // 暂时注释：设置入口已隐藏
+  // SettingOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -47,7 +48,8 @@ export function AppShell() {
           { key: withProject('/diagnostics'), icon: <WarningOutlined />, label: t('诊断') },
         ]
       : []),
-    { key: '/settings', icon: <SettingOutlined />, label: t('设置') },
+    // 暂时注释：设置页路由已停用，导航入口一并隐藏（以后再考虑加回）。
+    // { key: '/settings', icon: <SettingOutlined />, label: t('设置') },
   ];
 
   return (
@@ -130,18 +132,20 @@ export function AppShell() {
                     { label: 'EN', value: 'en-US' },
                   ]}
                 />
+                {/* 暂时注释：设置入口已隐藏
                 <Button
                   type="text"
                   aria-label={t('设置')}
                   icon={<SettingOutlined />}
                   onClick={() => navigate('/settings')}
                 />
+                */}
                 <Space size={10}>
             {health ? (
               <>
                 <Tooltip title={t('已装载的框架知识数量')}>
                   <Tag icon={<DeploymentUnitOutlined />} color="blue">
-                    FKB {health.frameworks}
+                    {t('框架知识')} {health.frameworks}
                   </Tag>
                 </Tooltip>
                 <Tag color="green">{health.languages.map((l: string) => l.toUpperCase()).join(' / ')}</Tag>

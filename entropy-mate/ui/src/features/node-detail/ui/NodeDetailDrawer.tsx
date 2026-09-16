@@ -37,7 +37,6 @@ export function NodeDetailDrawer({
               {node.start_line ? ` : ${node.start_line}-${node.end_line}` : ''}
             </Descriptions.Item>
             <Descriptions.Item label={t('语言')}>{node.language}</Descriptions.Item>
-            <Descriptions.Item label={t('产生阶段')}>{node.phase}</Descriptions.Item>
             <Descriptions.Item label={t('置信度')}>{node.confidence.toFixed(2)}</Descriptions.Item>
           </Descriptions>
 

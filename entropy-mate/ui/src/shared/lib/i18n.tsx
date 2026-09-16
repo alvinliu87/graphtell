@@ -73,7 +73,7 @@ const dict: Record<Lang, Record<string, string>> = {
     'status.resolved': '已解析',
     'status.unverified': '待验证',
     'indirect.tooltip':
-      '起点自身并未执行该动作；由调用链下游某处传播而来（P8 沿 Calls 复刻）。事实成立，可在下方「调用链」中逐跳核对。',
+      '起点自身并未执行该动作；由调用链下游某处传播而来。事实成立，可在下方「调用链」中逐跳核对。',
   },
   'en-US': {
     'edge.Contains': 'contains',
@@ -120,7 +120,7 @@ const dict: Record<Lang, Record<string, string>> = {
     'status.resolved': 'resolved',
     'status.unverified': 'unverified',
     'indirect.tooltip':
-      'The focal node itself did not perform this action; it was propagated from downstream along the call chain (P8 replicated via Calls). The fact holds — verify it hop by hop in the chain below.',
+      'The focal node itself did not perform this action; it was propagated from downstream along the call chain. The fact holds — verify it hop by hop in the chain below.',
 
     // ---- 界面文案（中文即键；zh-CN 回退为原串，en-US 提供英译）----
     '工程总览': 'Projects',
@@ -128,12 +128,16 @@ const dict: Record<Lang, Record<string, string>> = {
     '节点浏览': 'Explorer',
     '诊断': 'Diagnostics',
     '设置': 'Settings',
+    '设置项暂未启用': 'Settings are temporarily disabled',
+    '本地根模板 / WSL 模式 / 默认 IDE 等设置仅服务于「跳转 IDE」；该入口已移除，相关设置暂时停用。':
+      'The local root template / WSL mode / default IDE only served "jump to IDE", which has been removed; these settings are temporarily disabled.',
     '代码库图化分析': 'Codebase graph analysis',
     '展开侧边栏': 'Expand sidebar',
     '收起侧边栏': 'Collapse sidebar',
     '当前工程': 'Current project',
     '选择或创建一个工程开始分析': 'Select or create a project to start',
     '已装载的框架知识数量': 'Loaded framework knowledge count',
+    '框架知识': 'Framework knowledge',
     '后端在线': 'Backend online',
     '后端未连接': 'Backend disconnected',
 
@@ -193,16 +197,16 @@ const dict: Record<Lang, Record<string, string>> = {
     '语法节点': 'Syntax node',
     '引用': 'References',
     ' 条入边': ' in-edges',
-    '这是合成节点：它由多处共现汇聚而成': 'This is a synthetic node: aggregated from multiple co-occurrences',
+    '这是合成节点：它由多处来源汇聚而成': 'This is a synthetic node: aggregated from multiple sources',
     '下面列出全部出处，请按需逐条验证；这里不会替你挑一个「看起来像」的位置。':
       'All sources are listed below; verify each as needed. We will not pick a "looks-like" location for you.',
     '另有 ': ' plus ',
     ' 处引用指向它。': ' references point to it.',
     '合成边（折叠汇总）': 'Synthetic edge (collapsed aggregate)',
-    '这条边是把多条调用链汇总后提拉出的语义边，没有与它一一对应的源码位置；下面是它折叠掉的中间节点（自起点到终点），可据此逐跳核对。':
-      'This edge is a semantic edge lifted from aggregating multiple call chains; there is no one-to-one source location. Below are the intermediate nodes it collapsed (start to end); verify hop by hop.',
-    '这条边是把多条调用链汇总后提拉出的语义边，图里没有与它一一对应的原始边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到原始调用。':
-      'This edge is a semantic edge lifted from aggregating call chains; no corresponding raw edge exists in the graph, so there is no hop-by-hop evidence. Enable "Expand all syntax nodes" to see the raw calls.',
+    '这条边是把多条调用链聚合后归纳出的语义边，没有与之对应的单一源码位置；下面是被它折叠的中间节点（自起点到终点），可据此逐跳核对。':
+      'This edge is a semantic edge aggregated from multiple call chains; there is no single corresponding source location. Below are the intermediate nodes it collapsed (start to end); verify hop by hop.',
+    '这条边是把多条调用链聚合后归纳出的语义边，图里没有与之对应的单条直接边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到各跳的调用。':
+      'This edge is a semantic edge aggregated from multiple call chains; there is no single corresponding direct edge in the graph, so there is no hop-by-hop evidence. Enable "Expand all syntax nodes" to see the calls at each hop.',
     '未找到该边': 'Edge not found',
     '关系': 'Relation',
     '状态': 'Status',
@@ -214,12 +218,16 @@ const dict: Record<Lang, Record<string, string>> = {
     ' 跳': ' hops',
     '未解析的边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。':
       'Unresolved edges are inferences: each location below is verifiable; verify before trusting.',
-    '底层原始边（提拉前）的证据位置': 'Evidence locations of the underlying raw edge (before lifting)',
     '证据位置': 'Evidence locations',
     '这条边没有可跳转的证据位置（可能来自权威源推断）':
       'This edge has no jumpable evidence location (may come from authoritative-source inference)',
     '定义处': 'Definition',
     '调用处': 'Call site',
+    '定义': 'Definition',
+    '全部出处': 'All occurrences',
+    '未解析到调用语句': 'Call statement not resolved',
+    '该跳不是直接的 Calls 边（如 路由→handler 的绑定，或调用未解析），后端未给出「调用处」':
+      'This hop is not a direct Calls edge (e.g. a route→handler binding, or an unresolved call), so the backend provides no call site.',
     '在主图中以该节点为中心重绘': 'Re-center the main graph on this node',
     '折叠掉的调用链': 'Collapsed call chain',
     '（': ' (',
@@ -228,7 +236,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '路径 ': 'Path ',
     '完全限定名': 'Fully qualified name',
     'Identity': 'Identity',
-    '产生阶段': 'Phase',
+
     '语言': 'Language',
     '暂无标注': 'No annotations',
     '通道': 'Channel',
@@ -247,7 +255,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '；右上角图标可换 IDE）': '; icon at top-right to switch IDE)',
     '复制绝对 path:line（无 IDE 场景的兜底）': 'Copy absolute path:line (fallback when no IDE)',
     '在 IDE 中打开（失败会自动复制路径）': 'Open in IDE (falls back to copying path on failure)',
-    ' 处共现位置': ' co-occurrence locations',
+    ' 处来源位置': ' source locations',
     '复制全部位置（绝对路径）': 'Copy all locations (absolute paths)',
     '无位置': 'No location',
     ' 处位置': ' locations',
@@ -255,9 +263,9 @@ const dict: Record<Lang, Record<string, string>> = {
 
     '还没有工程，点击右上角「新建工程」开始': 'No projects yet; click "New project" at top-right to start',
     '根目录': 'Root',
-    '全阶段': 'Full pipeline',
+    '完整流程': 'Full pipeline',
     '是': 'Yes',
-    '仅 P0/P2': 'P0/P2 only',
+    '仅基础阶段': 'basic stages only',
     '创建时间': 'Created',
     '操作': 'Actions',
     '刷新': 'Refresh',
@@ -340,7 +348,7 @@ const dict: Record<Lang, Record<string, string>> = {
       'Sub-projects are auto-detected (composer.json / package.json / pom.xml, etc.)',
     '描述': 'Description',
     '可选': 'Optional',
-    '执行全阶段流水线': 'Run full pipeline',
+    '执行完整建图流程': 'Run full pipeline',
     '建图失败，可关闭后重试或检查代码库根目录。': 'Graphing failed; close and retry, or check the codebase root.',
     '关闭': 'Close',
     '建图中…': 'Graphing…',
@@ -389,16 +397,19 @@ const dict: Record<Lang, Record<string, string>> = {
 
     '待建图': 'Pending',
     '失败': 'Failed',
-    'P0 摄取': 'P0 Ingest',
-    'P2 语法建图': 'P2 Syntax graph',
-    'P3 知识装载': 'P3 Knowledge load',
-    'P7 动态解析': 'P7 Dynamic resolve',
+    '摄取': 'Ingest',
+    '语法建图': 'Syntax graph',
+    '知识装载': 'Knowledge load',
+    '源码标注': 'Source annotation',
+    '语义合成': 'Semantic synthesis',
+    '汇聚标注': 'Aggregate annotation',
+    '动态解析': 'Dynamic resolve',
     '识别子工程与待分析文件，排除依赖目录与静态资源':
       'Detect sub-projects and files to analyze, excluding dependency dirs and static assets',
     '从语言语法创建 Class / Method / Property / CallSite 节点与继承边':
       'Create Class / Method / Property / CallSite nodes and inheritance edges from language syntax',
-    '装载 FKB，解析 AppRoot、容器绑定、事件表、数据库 schema 等权威源':
-      'Load FKB; resolve authoritative sources like AppRoot, container bindings, event tables, DB schema',
+    '装载框架知识，解析 AppRoot、容器绑定、事件表、数据库 schema 等权威源':
+      'Load framework knowledge; resolve authoritative sources like AppRoot, container bindings, event tables, DB schema',
 
     '该视角下暂无可展示的对象': 'No displayable objects under this perspective',
     '后端 root_path → 本地根': 'backend root_path → local root',
@@ -416,22 +427,19 @@ const dict: Record<Lang, Record<string, string>> = {
     '已复制 ': 'Copied ',
     ' 处位置（绝对路径）': ' locations (absolute paths)',
     '未知错误': 'Unknown error',
-    '若行号已漂移，请按符号 ': 'If the line number drifted, locate by symbol ',
-    ' 在该文件中重新定位': ' in this file',
-    '若行号已漂移，请按文件路径重新定位': 'If the line number drifted, locate by file path',
 
     '径向布局：中心为当前对象，同心环表示跳数（环 1 = 直接关联）。环半径按各环药丸数量自适应，避免重叠。':
       'Radial layout: center is the current object; concentric rings denote hops (ring 1 = direct). Ring radius adapts to the number of pills per ring to avoid overlap.',
     '分层布局：自上而下分层（层 = 跳数），层间用 90° 正交折线，适合看调用链下钻。':
       'Layered layout: top-down layers (layer = hops) with 90° orthogonal links between layers; good for drilling a call chain.',
-    'Spine 布局：把最长的一条链排成主轴，便于污点 / 风险取证逐跳核对。':
-      'Spine layout: the longest chain becomes the main axis for step-by-step taint / risk forensics.',
+    'Spine 布局：把最长的一条链排成主轴，便于数据流 / 风险取证逐跳核对。':
+      'Spine layout: the longest chain becomes the main axis for step-by-step data-flow / risk forensics.',
     '聚类布局：每个框是一个分组，框上只给计数与样例成员，不是单链路。':
       'Cluster layout: each box is a group; the box shows only a count and sample members, not a single link.',
     '矩阵布局：行 × 列两维度，单元格颜色深浅表示数量，0 表示该组合确实没有产出。':
       'Matrix layout: rows × columns; cell shade shows quantity, 0 means that combination truly has no output.',
-    'ER 布局：表与表之间用 90° 正交连线，用于看同事务共现关系。':
-      'ER layout: tables linked by 90° orthogonal lines; for viewing same-transaction co-occurrence.',
+    'ER 布局：表与表之间用 90° 正交连线，用于看同事务关联。':
+      'ER layout: tables linked by 90° orthogonal lines; for viewing same-transaction relations.',
   },
 };
 

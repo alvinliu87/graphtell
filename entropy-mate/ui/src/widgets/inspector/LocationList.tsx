@@ -5,7 +5,6 @@ import type { SourceLocation } from '@/entities/view';
 import {
   copyAllLocations,
   copyPath,
-  driftHint,
   IDE_LABEL,
   IdeTarget,
   isSensitive,
@@ -86,7 +85,6 @@ export function LocationList({
                 </Typography.Text>
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>
                   {loc.note ?? (loc.symbol ? t('符号 ') + loc.symbol : '')}
-                  {loc.symbol ? ' · ' + t(driftHint(loc)) : ''}
                 </div>
                 {loc.snippet ? (
                   <pre
@@ -137,7 +135,7 @@ export function LocationList({
           size="small"
           block
           onClick={() =>
-            void copyAllLocations(locations, projectRoot, `${locations.length}${t(' 处共现位置')}`)
+            void copyAllLocations(locations, projectRoot, `${locations.length}${t(' 处来源位置')}`)
           }
         >
           {t('复制全部位置（绝对路径）')}
@@ -152,5 +150,5 @@ export function LocationBadge({ count }: { count: number }) {
   const { t } = useLocale();
   if (count === 0) return <Tag>{t('无位置')}</Tag>;
   if (count === 1) return <Tag color="blue">{1 + t(' 处位置')}</Tag>;
-  return <Tag color="blue">{count + t(' 处共现位置')}</Tag>;
+  return <Tag color="blue">{count + t(' 处来源位置')}</Tag>;
 }

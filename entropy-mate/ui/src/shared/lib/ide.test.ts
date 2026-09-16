@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ideUrl, isSensitive, driftHint, resolveProjectRoot, absolutePath } from './ide';
+import { ideUrl, isSensitive, resolveProjectRoot, absolutePath } from './ide';
 import type { SourceLocation } from '@/entities/view';
 
 const loc = (file: string, line: number, symbol: string | null): SourceLocation => ({
@@ -86,11 +86,3 @@ describe('isSensitive', () => {
   it('普通节点非敏感', () => expect(isSensitive('Class')).toBe(false));
 });
 
-describe('driftHint', () => {
-  it('有符号时提示按符号定位', () => {
-    expect(driftHint(loc('/a', 1, 'Foo'))).toContain('Foo');
-  });
-  it('无符号时提示按文件路径定位', () => {
-    expect(driftHint(loc('/a', 1, null))).toContain('文件路径');
-  });
-});

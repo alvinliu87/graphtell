@@ -234,7 +234,7 @@ export function CreateProjectModal({
             <Form.Item name="description" label={t('描述')}>
               <Input.TextArea rows={2} placeholder={t('可选')} />
             </Form.Item>
-            <Form.Item name="full_pipeline" label={t('执行全阶段流水线')} valuePropName="checked">
+            <Form.Item name="full_pipeline" label={t('执行完整建图流程')} valuePropName="checked">
               <Switch />
             </Form.Item>
             {phase === 'failed' && (

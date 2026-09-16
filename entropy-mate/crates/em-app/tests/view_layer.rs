@@ -537,6 +537,55 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
     );
 }
 
+/// 回归：路由契约 → handler（`detail`）这一跳必须给出「调用处」（路由注册行），
+/// 而不是在折叠链第一跳就显示「未解析到调用语句」。
+///
+/// 折叠链里每一跳的 `via[i].call_site` 是「上一跳调用本跳的语句」：
+/// `tidyOrder` 的调用处是 `StoreOrderInvoiceController.php:120`（在 `detail` 体内），
+/// 那么 `detail` 自己的调用处就应该是**路由注册处**（`Route::get('invoice_detail', …)`）。
+/// `HttpContract` 是合成节点（无 `file_id`），`node_source_location` 返回 `None`，
+/// 故 `call_site_between` 改用 `node_locations` 取它汇聚的路由文件+行号。
+#[test]
+fn invoice_detail_route_first_hop_has_call_site() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let store = &b.container.store;
+    let nodes = store
+        .query_nodes(&NodeFilter {
+            project_id: b.project_id,
+            kind: Some(NodeKind("HttpContract".into())),
+            name_contains: Some("order/invoice_detail".into()),
+            limit: Some(5),
+            offset: Some(0),
+        })
+        .expect("query_nodes");
+    let Some(contract) = nodes.first() else {
+        eprintln!("图里没有 invoice_detail 路由，跳过");
+        return;
+    };
+    let ov = views
+        .object_view(b.project_id, "route", contract.id, Some(2))
+        .expect("object_view");
+
+    let mut checked = 0usize;
+    for e in &ov.edges {
+        let Some(first) = e.via.first() else { continue };
+        if first.name != "detail" {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            first.call_site.is_some(),
+            "路由 → handler 首跳（{name}）应给出调用处（路由注册行），实际为 None（会显示「未解析到调用语句」）",
+            name = first.name
+        );
+    }
+    assert!(checked > 0, "应检查到至少一条经由 detail 的折叠边");
+}
+
 /// **特征测试（characterization test）**：钉住 `object_view` 对一个固定路由的完整输出形状。
 ///
 /// 存在的唯一目的：`object_view` 是个近千行的折叠流程，将来拆分 / 优化时，

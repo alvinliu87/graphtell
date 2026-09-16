@@ -43,12 +43,14 @@ import {
   sameViewState,
   type ViewState,
 } from '@/shared/lib/urlState';
-import {
-  effectiveTemplate,
-  getWslDistro,
-  getWslMode,
-  resolveProjectRoot,
-} from '@/shared/lib/ide';
+// 暂时注释：IDE 打开入口已移除，无需再处理「后端根 → 本地根」映射（根模板 / WSL / 按工程覆盖）。
+// 以后再考虑加回时恢复此 import。
+// import {
+//   effectiveTemplate,
+//   getWslDistro,
+//   getWslMode,
+//   resolveProjectRoot,
+// } from '@/shared/lib/ide';
 import { formatNumber } from '@/shared/lib/format';
 import { useLocale } from '@/shared/lib/i18n';
 import { FullscreenOutlined } from '@ant-design/icons';
@@ -391,38 +393,46 @@ export function GraphPage() {
     : undefined;
 
   const layoutMode: LayoutMode = state.m ?? current?.layout ?? 'radial';
-  // 按工程覆盖：优先级高于全局根模板，用于模板表达不了的特例；只影响 IDE 跳转与复制，不改后端数据。
-  const rootStorageKey = `em.projectRootOverride.${id}`;
-  const [localRoot, setLocalRoot] = useState<string>(() => {
-    try {
-      return localStorage.getItem(rootStorageKey) ?? '';
-    } catch {
-      return '';
-    }
-  });
-  const updateLocalRoot = (value: string) => {
-    const trimmed = value.trim();
-    setLocalRoot(trimmed);
-    try {
-      if (trimmed) localStorage.setItem(rootStorageKey, trimmed);
-      else localStorage.removeItem(rootStorageKey);
-    } catch {
-      /* ignore */
-    }
-  };
-  // 本地工程根只影响 IDE 跳转与复制，不改后端数据。
-  // 解析优先级：按工程覆盖（localRoot） > 全局根模板 / WSL 预设（设置页）> 后端 root_path。
-  const projectRoot = resolveProjectRoot(project?.root_path, localRoot, effectiveTemplate());
-  // WSL 模式开启时把 distro 透传给跳转 / 复制逻辑，生成正确的远程 scheme 与 UNC 前缀。
-  const wslDistro = getWslMode() ? getWslDistro() : undefined;
-  // 仅用于界面核对：本工程实际生效根来自哪一层（覆盖 > 模板 / WSL > 后端）。
-  const rootSource = localRoot
-    ? t('按工程覆盖')
-    : getWslMode()
-      ? t('WSL 模式') + '（' + (getWslDistro() || 'Ubuntu') + '）'
-      : effectiveTemplate()
-        ? t('全局根模板')
-        : t('后端 root_path');
+  // 暂时注释：本地根模板 / WSL 模式 / 按工程覆盖 三处设置只在「跳转 IDE」时才需要，
+  // 跳转入口已移除，复制绝对路径直接用后端 root_path 即可（以后再考虑加回）。
+  //
+  // // 按工程覆盖：优先级高于全局根模板，用于模板表达不了的特例；只影响 IDE 跳转与复制，不改后端数据。
+  // const rootStorageKey = `em.projectRootOverride.${id}`;
+  // const [localRoot, setLocalRoot] = useState<string>(() => {
+  //   try {
+  //     return localStorage.getItem(rootStorageKey) ?? '';
+  //   } catch {
+  //     return '';
+  //   }
+  // });
+  // const updateLocalRoot = (value: string) => {
+  //   const trimmed = value.trim();
+  //   setLocalRoot(trimmed);
+  //   try {
+  //     if (trimmed) localStorage.setItem(rootStorageKey, trimmed);
+  //     else localStorage.removeItem(rootStorageKey);
+  //   } catch {
+  //     /* ignore */
+  //   }
+  // };
+  // // 本地工程根只影响 IDE 跳转与复制，不改后端数据。
+  // // 解析优先级：按工程覆盖（localRoot） > 全局根模板 / WSL 预设（设置页）> 后端 root_path。
+  // const projectRoot = resolveProjectRoot(project?.root_path, localRoot, effectiveTemplate());
+  // // WSL 模式开启时把 distro 透传给跳转 / 复制逻辑，生成正确的远程 scheme 与 UNC 前缀。
+  // const wslDistro = getWslMode() ? getWslDistro() : undefined;
+  // // 仅用于界面核对：本工程实际生效根来自哪一层（覆盖 > 模板 / WSL > 后端）。
+  // const rootSource = localRoot
+  //   ? t('按工程覆盖')
+  //   : getWslMode()
+  //     ? t('WSL 模式') + '（' + (getWslDistro() || 'Ubuntu') + '）'
+  //     : effectiveTemplate()
+  //       ? t('全局根模板')
+  //       : t('后端 root_path');
+
+  // 复制绝对路径用的本地根：暂不做模板 / WSL / 覆盖变换，直接用后端 root_path。
+  const projectRoot = project?.root_path;
+  // WSL 映射停用（见上）；Inspector 仍接收该 prop，留空即可，恢复时改回 getWslMode() 计算。
+  const wslDistro: string | undefined = undefined;
 
   if (projectId === undefined || Number.isNaN(id)) {
     return <Alert type="error" message={t('缺少工程 ID')} />;
@@ -496,6 +506,7 @@ export function GraphPage() {
             </Button>
           )}
         </Space>
+        {/* 暂时注释：IDE 打开入口已移除，按工程覆盖本地根与「当前生效根」展示一并停用（以后再考虑加回）。
         <Collapse
           ghost
           bordered={false}
@@ -545,6 +556,7 @@ export function GraphPage() {
             {projectRoot || t('（无法解析，请检查后端 root_path 或上方覆盖）')}
           </Typography.Text>
         </Typography.Paragraph>
+        */}
       </Card>
 
       {isAggregate && aggView?.notice ? (

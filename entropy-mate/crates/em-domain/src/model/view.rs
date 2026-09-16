@@ -191,7 +191,8 @@ pub struct EdgeView {
     pub kind: String,
     pub from: NodeId,
     pub to: NodeId,
-    /// 是否为已解析的实边；虚线 = 待验证假设。
+    /// 是否为已解析的实边（有可追溯的证据，而非无证据的推断）。
+    /// 注意：画布虚线仅表示「间接（经调用链传播）」，不再等价于"待验证"。
     pub resolved: bool,
     pub confidence: f32,
     /// 虚线边经过的跳数（`via: 3 hops`）。

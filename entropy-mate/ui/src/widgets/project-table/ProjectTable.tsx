@@ -54,10 +54,10 @@ export function ProjectTable({
           ),
         },
         {
-          title: t('全阶段'),
+          title: t('完整流程'),
           dataIndex: ['config', 'full_pipeline'],
           width: 90,
-          render: (v: boolean) => (v ? t('是') : t('仅 P0/P2')),
+          render: (v: boolean) => (v ? t('是') : t('仅基础阶段')),
         },
         {
           title: t('创建时间'),

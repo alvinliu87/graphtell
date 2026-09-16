@@ -1,15 +1,42 @@
-import { Alert, Button, Collapse, Descriptions, Drawer, Empty, Space, Tag, Tooltip, Typography } from 'antd';
-import { Fragment, useEffect, useMemo, useState } from 'react';
-import { DownOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { Alert, Button, Collapse, Descriptions, Drawer, Empty, Space, Tag, Timeline, Tooltip, Typography } from 'antd';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { CopyOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import type { EdgeEvidence, EdgeView, NodeLocations, SourceLocation, ViaNode } from '@/entities/view';
 import { viewApi } from '@/entities/view';
 import { nodeColor } from '@/entities/graph';
+import { copyPath } from '@/shared/lib/ide';
 import { useAsync } from '@/shared/lib/useAsync';
 import { LocationBadge, LocationList } from './LocationList';
 import { useLocale } from '@/shared/lib/i18n';
 
 /** 稳定的空 via 引用：`?? []` 每次渲染都会生成新数组，会让折叠链的取数 effect 反复触发。 */
 const NO_VIA: ViaNode[] = [];
+
+/** Inspector 纵向 / 横向节奏统一间距，避免散落 magic number。 */
+const SP = {
+  /** 大区块之间：Descriptions ↔ 链 ↔ Alert 等（外层 Space）。 */
+  block: 16,
+  /** 小节标题与其内容的间距：如「折叠掉的调用链」↔ 时间线。 */
+  section: 14,
+  /** 时间线各跳之间。 */
+  step: 12,
+  /** 跳内分行：节点名 ↔ 位置块、标签行之间。 */
+  row: 8,
+  /** 最紧凑：同标签下多个路径之间。 */
+  tight: 4,
+  /** 节点名前 Tag ↔ 节点名。 */
+  tagGap: 6,
+} as const;
+
+/** 节点名前 Tag 的最小宽度；同时作为下方「调用语句 / 定义复制按钮」相对节点名左缘的缩进基准。 */
+const TAG_W = 64;
+/** 下方调用语句、定义复制按钮统一缩进到与节点名同列：NAME_INDENT = TAG_W + tagGap。 */
+const NAME_INDENT = TAG_W + SP.tagGap; // 64 + 6 = 70
+
+/** 节点名文字色：中性近黑而非彩色，避免与「Tag 的 kind 色」和「文件名的蓝 Link」堆叠出过多颜色。 */
+const NODE_NAME_COLOR = '#1f2937';
+/** 时间线圆点色：统一中性灰，不再按 kind 上色（kind 已由 Tag 表达），减少整屏色彩。 */
+const TIMELINE_DOT_COLOR = '#94a3b8';
 
 /**
  * 右侧 Inspector。
@@ -98,7 +125,7 @@ function NodePanel({
   if (!data) return <Empty description={t('未找到该节点')} />;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
       <Descriptions column={1} size="small" bordered>
         <Descriptions.Item label={t('种类')}>
           <Tag color={nodeColor(data.kind)} style={{ color: '#fff' }}>
@@ -119,7 +146,7 @@ function NodePanel({
         <Alert
           type="info"
           showIcon
-          message={t('这是合成节点：它由多处共现汇聚而成')}
+          message={t('这是合成节点：它由多处来源汇聚而成')}
           description={t('下面列出全部出处，请按需逐条验证；这里不会替你挑一个\'看起来像\'的位置。')}
         />
       ) : null}
@@ -164,15 +191,15 @@ function EdgePanel({
   // 先于 loading 判断：这条边的证据请求注定失败，没必要先闪一下"加载中…"。
   if (edgeId < 0) {
     return (
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
         <Alert
           type="info"
           showIcon
           message={t('合成边（折叠汇总）')}
           description={
             via.length > 0
-              ? t('这条边是把多条调用链汇总后提拉出的语义边，没有与它一一对应的源码位置；下面是它折叠掉的中间节点（自起点到终点），可据此逐跳核对。')
-              : t('这条边是把多条调用链汇总后提拉出的语义边，图里没有与它一一对应的原始边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到原始调用。')
+              ? t('这条边是把多条调用链聚合后归纳出的语义边，没有与之对应的单一源码位置；下面是被它折叠的中间节点（自起点到终点），可据此逐跳核对。')
+              : t('这条边是把多条调用链聚合后归纳出的语义边，图里没有与之对应的单条直接边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到各跳的调用。')
           }
         />
         {via.length > 0 && edgeView ? (
@@ -201,7 +228,7 @@ function EdgePanel({
   const unresolved = !edge.resolved;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
       <Descriptions column={1} size="small" bordered>
         <Descriptions.Item label={t('关系')}>{edge.kind}</Descriptions.Item>
         <Descriptions.Item label={t('状态')}>
@@ -251,21 +278,13 @@ function EdgePanel({
         </Space>
       ) : null}
 
-      {data && data.locations.length > 0 ? (
+      {/* 有链路（via.length > 0）时，每一跳的 定义处/调用处 已在上方折叠链逐条列出，
+          raw 边的位置是其子集，无需重复展示；只在没有链路（该边本身就是 raw 边）时显示。 */}
+      {data && data.locations.length > 0 && via.length === 0 ? (
         <div>
           <Typography.Text strong style={{ fontSize: 13 }}>
-            {via.length > 0 ? t('底层原始边（提拉前）的证据位置') : t('证据位置')}
+            {t('证据位置')}
           </Typography.Text>
-          {via.length > 0 ? (
-            <div style={{ marginTop: 4 }}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {nodeNameOf?.(data.edge.from) ?? `#${data.edge.from}`}
-                {' → '}
-                {nodeNameOf?.(data.edge.to) ?? `#${data.edge.to}`}（{data.edge.kind} · 置信度{' '}
-                {data.edge.confidence.toFixed(2)} · {data.edge.resolved ? '已解析' : '待验证'}）
-              </Typography.Text>
-            </div>
-          ) : null}
           <div style={{ marginTop: 8 }}>
             <LocationList
               locations={data.locations}
@@ -381,6 +400,109 @@ function CollapsedChain({
     callSite: SourceLocation | null;
   };
 
+  // 单条位置的紧凑渲染：只保留 `file:line · symbol` 与（可选）snippet。
+  // 相比 `LocationList` 的整块灰卡，去掉外框与重复按钮，让链路每一跳更轻。
+  // `symbol` 是机器合成的全限定名（如 `A::b#C::d:252`），与上方 `Tag + 节点名` 重复，
+  // 且会让一行路径换行参差；改为只在悬停时显示（`note` 同理），可见行只保留 `file:line` + 可选 snippet。
+  const locationNode = (loc: SourceLocation) => {
+    const tip = [loc.note, loc.symbol].filter(Boolean).join(' · ');
+    const title = loc.file + ':' + loc.line + (tip ? ' — ' + tip : '');
+    return (
+      <div style={{ minWidth: 0 }}>
+        <Tooltip title={title}>
+          <Typography.Link
+            style={{ fontSize: 12, wordBreak: 'break-all' }}
+            onClick={() => void copyPath(loc, projectRoot)}
+          >
+            {loc.file}:{loc.line}
+          </Typography.Link>
+        </Tooltip>
+        {loc.snippet ? (
+        <pre
+          style={{
+            margin: '4px 0 0',
+            padding: '4px 8px',
+            fontSize: 11,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            background: '#f6f8fa',
+            borderRadius: 6,
+            color: '#475569',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            maxHeight: 120,
+            overflow: 'auto',
+          }}
+        >
+          {loc.snippet}
+        </pre>
+      ) : null}
+      </div>
+    );
+  };
+
+  // 这是「边链路视图」（点边打开），只应展示与本边相关（on-path）的位置，**绝不**展示资源在全代码库的
+  // 共现足迹（"全部出处 N 处"）。资源的完整足迹属于「点节点」场景（NodePanel / LocationList），
+  // 在边证据链里出现会让人误以为 N 处都在链上——其实只有 1 处在链上，其余只是「同类共现」。
+  //  - 非终点：节点自身定义处（s.locations[0]），即链路途经的方法 / 类位置；
+  //  - 终点：本边到达它的那一行（s.callSite = edge.to_call_site），即上一跳调用它的位置
+  //    （它已在上一行的调用语句里显示过，这里再给一个复制按钮方便跳转）。
+  const definitionButton = (s: Step): ReactNode => {
+    if (s.locations.length === 0 && !s.callSite) return null;
+    const onPath = s.role === '终点' ? s.callSite ?? s.locations[0] : s.locations[0];
+    if (!onPath) return null;
+    const tip = [onPath.note, onPath.symbol].filter(Boolean).join(' · ');
+    return (
+      <Tooltip title={tip || t('复制 path:line')}>
+        <Button
+          size="small"
+          type="text"
+          icon={<CopyOutlined />}
+          style={{ fontSize: 11, flexShrink: 0 }}
+          onClick={() => void copyPath(onPath, projectRoot)}
+        />
+      </Tooltip>
+    );
+  };
+
+  const stepDescription = (s: Step, nextCallSite?: SourceLocation | null, prevNextCallSite?: SourceLocation | null): ReactNode => {
+    // 调用方归属：cs = 本节点体内「调下一跳」的那一行（即下一跳的 call_site，指向本节点文件内），
+    // 与被调方的「定义处」同属一个文件，读起来是「route 调 detail / detail 调 tidyOrder …」的自然叙述。
+    // 定义处已提到节点名右侧的「定义」按钮（见 definitionButton），这里只保留调用语句这一主干。
+    const cs = nextCallSite;
+    const isEnd = s.role === '终点';
+
+    const rows: ReactNode[] = [];
+    // 与上一行「调用语句」同址时不重复渲染（如 相邻两跳恰好落在同一 file:line）。
+    const dupCallSite =
+      !!prevNextCallSite && !!cs && prevNextCallSite.file === cs.file && prevNextCallSite.line === cs.line;
+    if (cs && !dupCallSite) {
+      rows.push(<Fragment key="cs">{locationNode(cs)}</Fragment>);
+    } else if (!isEnd && !cs) {
+      // 非终点却拿不到「调下一跳」的调用语句：该跳不是直接的 `Calls` 边（如 路由→handler 的绑定，或调用未解析），
+      // 后端 `call_site_between` 两种来源都落空。如实标注，避免调用链在这里看起来莫名断掉。
+      rows.push(
+        <Typography.Text
+          key="cs"
+          type="secondary"
+          title={t('该跳不是直接的 Calls 边（如 路由→handler 的绑定，或调用未解析），后端未给出「调用处」')}
+          style={{ fontSize: 11 }}
+        >
+          {t('未解析到调用语句')}
+        </Typography.Text>,
+      );
+    }
+    if (rows.length === 0) return null;
+
+    // 统一缩进到与节点名同列（NAME_INDENT），调用语句的 file:line / snippet 上下对齐。
+    return (
+      <div style={{ paddingLeft: NAME_INDENT }}>
+        <Space direction="vertical" size={SP.row} style={{ width: '100%' }}>
+          {rows}
+        </Space>
+      </div>
+    );
+  };
+
   const renderPath = (p: ViaNode[]) => {
     const steps: Step[] = [
       { key: `from-${edge.from}`, id: edge.from, kind: null, name: name(edge.from), role: '起点', locations: locs[edge.from]?.locations ?? [], callSite: null },
@@ -396,109 +518,56 @@ function CollapsedChain({
       { key: `to-${edge.to}`, id: edge.to, kind: null, name: name(edge.to), role: '终点', locations: locs[edge.to]?.locations ?? [], callSite: edge.to_call_site ?? null },
     ];
     return (
-      <div>
-        {steps.map((s, i) => (
-          <Fragment key={s.key}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
-              <Tag
-                color={s.kind ? nodeColor(s.kind) : 'blue'}
-                style={s.kind ? { color: '#fff' } : undefined}
-              >
-                {s.kind ?? t(s.role ?? '')}
-              </Tag>
-              <Button
-                type="link"
-                size="small"
-                style={{
-                  padding: 0,
-                  height: 'auto',
-                  fontSize: 13,
-                  wordBreak: 'break-all',
-                  textAlign: 'left',
-                  whiteSpace: 'normal',
-                }}
-                onClick={() => onNodeClick?.(s.id)}
-                title={t('在主图中以该节点为中心重绘')}
-              >
-                {s.name}
-              </Button>
-            </div>
-            {(() => {
-              const synthetic = locs[s.id]?.synthetic ?? false;
-              const cs = s.callSite;
-              const sameAsCallSite = (l: SourceLocation) =>
-                !!cs && l.file === cs.file && l.line === cs.line;
-              // 共享资源（ConfigKey / Table / Cache…）的"全部出处"**并不都属于当前链路**：
-              // 与"调用处"重合的那条已在下面单独显示，这里只列**其余**出处，
-              // 并默认折叠 —— 铺开会让人误以为"链路串到了无关文件"。
-              const rest =
-                synthetic && cs ? s.locations.filter((l) => !sameAsCallSite(l)) : s.locations;
-              if (rest.length === 0) return null;
-              if (synthetic && cs) {
+      <Timeline
+        items={steps.map((s, i) => ({
+          color: TIMELINE_DOT_COLOR,
+          children: (
+            <div style={{ marginBottom: SP.step }}>
+              {(() => {
+                const isEndpoint = !s.kind;
+                // 端点（起点/终点）用描边淡标签：白底 + 彩边 + 彩字，与中间节点「按 kind 实心填充」分层、不抢眼。
+                const stroke = isEndpoint
+                  ? s.role === '起点'
+                    ? '#16a34a'
+                    : s.role === '终点'
+                      ? '#dc2626'
+                      : '#1677ff'
+                  : '#1677ff';
                 return (
-                  <Collapse
-                    size="small"
-                    ghost
-                    style={{ marginTop: 4 }}
-                    items={[
-                      {
-                        key: 'rest',
-                        label: (
-                          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                            {t('该资源的其他 ') + rest.length + t(' 处读取点（与当前链路无关）')}
-                          </Typography.Text>
-                        ),
-                        children: (
-                          <LocationList
-                            locations={rest}
-                            kind={s.kind ?? undefined}
-                            projectRoot={projectRoot}
-                            wslDistro={wslDistro}
-                            showCopyAll={false}
-                          />
-                        ),
-                      },
-                    ]}
-                  />
+                  <Space size={SP.tagGap} wrap style={{ rowGap: 2 }}>
+                    <Tag
+                      color={isEndpoint ? undefined : nodeColor(s.kind ?? '')}
+                      style={{
+                        ...(isEndpoint
+                          ? { backgroundColor: '#fff', borderColor: stroke, color: stroke }
+                          : { color: '#fff' }),
+                        minWidth: 64,
+                        margin: 0,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {s.kind ?? t(s.role ?? '')}
+                    </Tag>
+                    {/* 节点名走中性近黑，不跟着 Tag 上色：颜色额度只留两处 —— Tag（kind 色）与文件名（可跳转的蓝 Link）。
+                        否则绿起点 / 蓝 Method / 红终点 + 蓝文件名，一屏全是颜色。可点性由加粗与悬停提示表达。 */}
+                    <Typography.Link
+                      style={{ fontSize: 13, fontWeight: 600, wordBreak: 'break-all', color: NODE_NAME_COLOR }}
+                      onClick={() => onNodeClick?.(s.id)}
+                      title={t('在主图中以该节点为中心重绘')}
+                    >
+                      {s.name}
+                    </Typography.Link>
+                    {definitionButton(s)}
+                  </Space>
                 );
-              }
-              return (
-                <div style={{ marginTop: 4 }}>
-                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    {synthetic ? t('全部出处（共享节点）') : t('定义处')}
-                  </Typography.Text>
-                  <LocationList
-                    locations={rest}
-                    kind={s.kind ?? undefined}
-                    projectRoot={projectRoot}
-                    wslDistro={wslDistro}
-                    showCopyAll={false}
-                  />
-                </div>
-              );
-            })()}
-            {s.callSite ? (
-              <div style={{ marginTop: 4 }}>
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  {t('调用处')}
-                </Typography.Text>
-                <LocationList
-                  locations={[s.callSite]}
-                  kind={s.kind ?? undefined}
-                  projectRoot={projectRoot}
-                  wslDistro={wslDistro}
-                  showCopyAll={false}
-                />
-              </div>
-            ) : null}
-            {i < steps.length - 1 ? (
-              <div style={{ display: 'flex', justifyContent: 'center', color: '#94a3b8', padding: '2px 0' }}>
-                <DownOutlined />
-              </div>
-            ) : null}
-          </Fragment>
-        ))}
-      </div>
+              })()}
+              {/* 调用语句归属调用方：行 i 展示「本节点体内调下一跳」的那一行，故传入下一跳的 callSite；
+                  终点无下一跳，自然只留定义处。上一行的 nextCallSite 用于同址去重。 */}
+              <div style={{ marginTop: SP.row }}>{stepDescription(s, i < steps.length - 1 ? steps[i + 1].callSite : null, i > 0 ? steps[i].callSite : null)}</div>
+            </div>
+          ),
+        }))}
+      />
     );
   };
 
@@ -508,11 +577,11 @@ function CollapsedChain({
     <div>
       <Typography.Text strong style={{ fontSize: 13 }}>
         {t('折叠掉的调用链')}
-        {pathList.length > 1
-          ? `（${(pathList.length) + t(' 条路径')}）`
-          : `（${t('（起止各 1 个 + 中间 ') + pathList[0].length + t(' 跳）')}）`}
+        {/* 多路径时保留条数汇总（有用）；单路径的"跳数"已由顶部 Descriptions 的「跳数」给出，这里不再重复。 */}
+        {pathList.length > 1 ? `（${pathList.length}${t(' 条路径')}）` : null}
       </Typography.Text>
-      <div style={{ marginTop: 8 }}>
+      {/* 标题与下方第一个节点之间留出呼吸间隙，避免标题贴住时间线圆点。 */}
+      <div style={{ marginTop: SP.section }}>
         {pathList.length === 1 ? (
           renderPath(pathList[0])
         ) : (

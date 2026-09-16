@@ -864,21 +864,7 @@ impl ViewService {
             d.semantic_of.get(&id).copied().unwrap_or(false) || d.force_visible.contains(&id)
         };
 
-        // 语义边优先级（用于折叠路径上的边提拉）
-        fn agg_rank(kind: &str) -> u8 {
-            match kind {
-                "ReadsDb" | "WritesDb" => 9,
-                "ReadsConfig" => 8,
-                "ReadsCache" => 7,
-                "PublishesTo" => 6,
-                "MapsTo" => 5,
-                "Triggers" => 4,
-                "CallsHttp" => 3,
-                "HandledBy" => 2,
-                "ResolvesTo" => 1,
-                _ => 0,
-            }
-        }
+        // 语义边优先级（用于折叠路径上的边提拉）：见 `Self::agg_rank`。
         let mut shown_edges: Vec<EdgeView> = Vec::new();
         // 去重键带上**路径**（via 的节点序列）：同一对端点的不同路径要都保留。
         // 只按 (kind, from, to) 去重时，多条路径只剩一条代表 —— 分叉/汇聚信息就丢了，
@@ -1038,8 +1024,8 @@ impl ViewService {
                 // `resolved` 与置信度只反映"是否为可追溯的真实语义依赖"，
                 // 与"直接/间接（经调用链提拉）"无关——间接边同样可以有实打实的调用链与接触点证据。
                 // 直接性仅通过 `indirect`（画布虚线 + 金色「间接」标签）表达，不再降权为"待验证假设"。
-                resolved: agg_rank(kind.as_str()) > 0,
-                confidence: if agg_rank(kind.as_str()) > 0 { 0.8 } else { 0.5 },
+                resolved: Self::agg_rank(kind.as_str()) > 0,
+                confidence: if Self::agg_rank(kind.as_str()) > 0 { 0.8 } else { 0.5 },
                 hops,
                 via,
                 to_call_site,
@@ -1673,9 +1659,10 @@ impl ViewService {
             }
         }
 
-        if !view.resolved {
+        // 仅在「未解析且无任何可定位证据」时提示：有真实调用点/证据位置的边不应被冤枉为"推断边"。
+        if !view.resolved && locations.is_empty() {
             reason = Some(format!(
-                "该边为推断边（{}），尚未被权威源交叉验证；请按上面的位置逐跳确认后再采信。",
+                "该边（{}）没有可定位的证据位置，可能来自规则补全，请谨慎采信。",
                 edge.kind
             ));
         }
@@ -1690,6 +1677,23 @@ impl ViewService {
 
     // ---------------------------------------------------------------- 内部
 
+    /// 语义边优先级：用于折叠路径上的边提拉，以及 `to_edge_view` 判定是否"已解析"。
+    /// 返回 >0 即视为已解析的语义边（来自真实调用点/FKB 规则合成，而非无证据的推断）。
+    fn agg_rank(kind: &str) -> u8 {
+        match kind {
+            "ReadsDb" | "WritesDb" => 9,
+            "ReadsConfig" => 8,
+            "ReadsCache" => 7,
+            "PublishesTo" => 6,
+            "MapsTo" => 5,
+            "Triggers" => 4,
+            "CallsHttp" => 3,
+            "HandledBy" => 2,
+            "ResolvesTo" => 1,
+            _ => 0,
+        }
+    }
+
     fn to_edge_view(&self, e: em_domain::model::Edge) -> EdgeView {
         // 实边判定：来自权威解析（P7 解析结果）或语法确定的继承/实现/声明
         let authoritative = matches!(
@@ -1697,9 +1701,10 @@ impl ViewService {
             "Extends" | "Implements" | "UsesTrait" | "Declares" | "Contains" | "HasCallSite"
         );
         let has_tier = e.properties.get("tier").is_some();
-        // 传播边（P8 沿调用链复刻）只说明"上游某处发生过"，不是本节点的直接动作 → 虚线。
+        // `indirect`（P8 沿调用链传播）只决定画布虚线与「间接」标签，不再降权为"待验证"。
         let indirect = is_indirect_edge(&e);
-        let resolved = (authoritative || has_tier) && !indirect;
+        // 已解析 = 语法/结构边（authoritative）或 权威解析边（has_tier）或 语义边（agg_rank>0）。
+        let resolved = (authoritative || has_tier) || Self::agg_rank(e.kind.as_str()) > 0;
         let hops = e
             .properties
             .get("hops")
@@ -1780,6 +1785,18 @@ impl ViewService {
                 }
             }
         }
+        // 3) route → handler（HttpContract ─HandledBy→ handler）不是 Calls 边，没有 CallSite；
+        //    但它的「调用处」就是路由注册处。HttpContract 是合成节点（无 file_id/span），
+        //    `node_source_location` 会返回 None，故改用 `node_locations` 取它汇聚的路由文件+行号
+        //    （来自 properties.locations 或 route_list 符号表），避免折叠链在起点这一跳莫名缺「调用语句」。
+        let from_kind = self.node_kind(from);
+        if matches!(from_kind.as_str(), "HttpContract" | "Route" | "Endpoint") {
+            if let Ok(locs) = self.node_locations(NodeId(from)) {
+                if let Some(loc) = locs.locations.into_iter().next() {
+                    return Some(loc);
+                }
+            }
+        }
         // 2) 回退：from 的 HasCallSite 调用点里，被调名与 to 匹配的那一个
         let to_name = self.short_name_of(to);
         if to_name.is_empty() {
@@ -1795,12 +1812,24 @@ impl ViewService {
             }
             if let Some(cs_node) = self.store.get_node(NodeId(cs)).ok().flatten() {
                 if let Some(fqn) = &cs_node.fqn {
-                    // fqn 形如 "Owner::callee:line" / "Owner->callee:line" / "new Klass"
-                    let callee = fqn.split('#').nth(1).unwrap_or("");
-                    let callee_method = callee.split([':', '-', '>']).next().unwrap_or("").trim();
-                    let callee_method = callee_method.strip_prefix("new ").unwrap_or(callee_method);
-                    if !callee_method.is_empty() && self.short_name_str(callee_method) == to_name {
-                        return self.node_source_location(NodeId(cs));
+                    // fqn 形如 "<owner>#<callee_text>:<line>"（见 cf_ast.rs）：
+                    //   "Owner::callee:line" / "Owner->callee:line" / "new Klass:line"
+                    // 取 '#' 之后、末尾 ":line" 之前的部分作为被调标识，再交给 `short_name_str`
+                    // 取末段方法名，与 `to` 的短名比较。
+                    // 旧实现 `split([':', '-', '>']).next()` 在第一个 ':' 就切断 ——
+                    // "Class::method" 被切成 "Class"、"this->method" 切成 "this"，永远对不上方法名，
+                    // 导致所有变量接收者调用（`resolve_calls` 故意不为它们建 Calls 边）的回退全部失效。
+                    if let Some(callee_full) = fqn.split('#').nth(1) {
+                        let callee = callee_full
+                            .trim_end_matches(|c: char| c.is_ascii_digit())
+                            .trim_end_matches(':')
+                            .trim_end();
+                        let callee_method = callee.strip_prefix("new ").unwrap_or(callee).trim();
+                        if !callee_method.is_empty()
+                            && self.short_name_str(callee_method) == to_name
+                        {
+                            return self.node_source_location(NodeId(cs));
+                        }
                     }
                 }
             }

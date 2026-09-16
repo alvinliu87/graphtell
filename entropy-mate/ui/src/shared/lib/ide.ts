@@ -278,9 +278,3 @@ export function isSensitive(kind: string): boolean {
   return kind === 'SecretLocation';
 }
 
-/** 行号漂移提示文案。 */
-export function driftHint(loc: SourceLocation): string {
-  return loc.symbol
-    ? t('若行号已漂移，请按符号 ') + loc.symbol + t(' 在该文件中重新定位')
-    : t('若行号已漂移，请按文件路径重新定位');
-}
