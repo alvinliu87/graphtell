@@ -69,6 +69,25 @@ impl<'a> Evaluator<'a> {
     /// 求值后取字符串（依次应用 resolve → transform → normalize）。
     pub fn string(&self, src: &ValueSource) -> Option<String> {
         let raw = self.raw(src)?;
+        // `require_literal`：值必须来自**字面量**实参，不能是变量或表达式文本。
+        // 非字面量（`Cache::get($name)`、`Cache::get(A . $b)`）被 `raw` 记成
+        // `FactValue::Unknown(Some(原文))`，若直接采信就会造出 `$name` 这类垃圾身份；
+        // 判否 → 返回 None → 触发 `value_fallback`（与 `require_class` 同一套语义）。
+        if src.require_literal == Some(true) {
+            let is_literal = matches!(raw, EvalValue::Str(_))
+                || matches!(
+                    raw,
+                    EvalValue::Fact(
+                        FactValue::String(_)
+                            | FactValue::Int(_)
+                            | FactValue::Float(_)
+                            | FactValue::Bool(_)
+                    )
+                );
+            if !is_literal {
+                return None;
+            }
+        }
         let mut s = raw.as_string();
         if s.is_empty() {
             if let Some(d) = &src.default {

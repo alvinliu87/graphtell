@@ -44,7 +44,7 @@ const TIMELINE_DOT_COLOR = '#94a3b8';
  * 两类用途：
  * 1. **没有对应视角的节点**（`ConfigKey` / `KeyPattern` / `Component` / `SecretLocation`）
  *    —— 点它**不切顶部筛选器**，只在这里显示属性与"另有 N 处引用"
- * 2. 边 —— 显示证据链：实边单点、虚线边展开途经的每个 CallSite 位置
+ * 2. 边 —— 显示证据链：一律按 起点 → 各跳 → 终点（语义节点）列出，直达边即为 起点/终点 两跳
  */
 export function Inspector({
   nodeId,
@@ -186,10 +186,16 @@ function EdgePanel({
   // 这条边折叠掉的中间节点：只存在于点击时的视图结果里（按 id 重查拿不到）。
   const via = edgeView?.via ?? NO_VIA;
 
-  // 负数 id = 折叠视图汇总出的合成边（没有对应的单条原始边），查证据注定查不到。
+  // 负数 id = 折叠视图汇总出的合成边（没有对应的单条原始边），按 id 查证据注定查不到。
   // 与其显示"未找到该边"让人以为坏了，不如直说它是什么，并把折叠掉的中间节点逐跳列出来。
   // 先于 loading 判断：这条边的证据请求注定失败，没必要先闪一下"加载中…"。
-  if (edgeId < 0) {
+  //
+  // 但"合成"**不等于"没有证据"**：反向视角（资源类中心）的边一律是负 id，其中不少就是
+  // 一条真实的直接边（如 `paySuccess --Triggers--> 事件`），它内联了触发点（`to_call_site`）
+  // 与端点位置（`node_locations`） —— 这些必须照常渲染，不能一句"没有证据"就盖过去。
+  // 只有三者全无时才是真的无据可查。
+  const hasOwnEvidence = !!edgeView?.to_call_site || (edgeView?.node_locations?.length ?? 0) > 0;
+  if (edgeId < 0 && (via.length > 0 || !hasOwnEvidence)) {
     return (
       <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
         <Alert
@@ -199,7 +205,7 @@ function EdgePanel({
           description={
             via.length > 0
               ? t('这条边是把多条调用链聚合后归纳出的语义边，没有与之对应的单一源码位置；下面是被它折叠的中间节点（自起点到终点），可据此逐跳核对。')
-              : t('这条边是把多条调用链聚合后归纳出的语义边，图里没有与之对应的单条直接边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到各跳的调用。')
+              : t('这条边是把多条调用链聚合后归纳出的语义边，图里没有与之对应的单条直接边，也没有可定位的触发点，因此没有逐跳证据可查。')
           }
         />
         {via.length > 0 && edgeView ? (
@@ -226,6 +232,23 @@ function EdgePanel({
   const edge = edgeView ?? data?.edge ?? null;
   if (!edge) return <Empty description={t('未找到该边')} />;
   const unresolved = !edge.resolved;
+  // 证据位置的来源：优先用后端 `/edges/{id}/evidence`（真实边）；
+  // 合成边按 id 查不到它，此时退到边自己内联的 `to_call_site` ——
+  // `paySuccess --Triggers--> 事件` 这类直接语义边就是靠它给出 `event('X')` 那一行。
+  const evidenceLocations = data?.locations?.length
+    ? data.locations
+    : edgeView?.to_call_site
+      ? [edgeView.to_call_site]
+      : [];
+
+  // 只要点边时随身带了这条边本身（`from` / `to` / 内联位置），就把它画成「起点 → 各跳 → 终点」，
+  // 与路由链路的呈现完全一致。此前仅在"折叠出了中间节点"（`via` 非空）时才画链，于是
+  // `save --投递到--> 队列` 这类**直达语义边**只剩孤零零一个位置：既看不到起点 `save`，
+  // 也看不到终点的语义节点 —— 看起来像"这条边没建好"。
+  const showChain = !!edgeView;
+  // 链路里是否已给出「本边自己那一行」（`via` 各跳的调用处，或直达边的 `to_call_site`）：
+  // 给了就不必再单列一份证据位置，否则同一行会在链路的起点跳与「证据位置」里各出现一次。
+  const chainCoversProof = via.length > 0 || !!edgeView?.to_call_site;
 
   return (
     <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
@@ -250,7 +273,7 @@ function EdgePanel({
         ) : null}
       </Descriptions>
 
-      {via.length > 0 ? (
+      {showChain ? (
         <CollapsedChain
           edge={edge}
           via={via}
@@ -264,7 +287,7 @@ function EdgePanel({
 
       {data?.reason ? <Alert type="warning" showIcon message={data.reason} /> : null}
 
-      {unresolved && via.length === 0 ? (
+      {unresolved && !chainCoversProof ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {t('未解析的边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。')}
         </Typography.Text>
@@ -278,16 +301,16 @@ function EdgePanel({
         </Space>
       ) : null}
 
-      {/* 有链路（via.length > 0）时，每一跳的 定义处/调用处 已在上方折叠链逐条列出，
-          raw 边的位置是其子集，无需重复展示；只在没有链路（该边本身就是 raw 边）时显示。 */}
-      {data && data.locations.length > 0 && via.length === 0 ? (
+      {/* 链路已把每一跳的调用处逐条列出（直达边的 `to_call_site` 也在其中），raw 边的位置是其子集，
+          无需重复展示；只在链路没给出本边那一行时显示。 */}
+      {evidenceLocations.length > 0 && !chainCoversProof ? (
         <div>
           <Typography.Text strong style={{ fontSize: 13 }}>
             {t('证据位置')}
           </Typography.Text>
           <div style={{ marginTop: 8 }}>
             <LocationList
-              locations={data.locations}
+              locations={evidenceLocations}
               ordered
               projectRoot={projectRoot}
               wslDistro={wslDistro}
@@ -301,11 +324,15 @@ function EdgePanel({
 }
 
 /**
- * 折叠链：把"提拉"后被折叠掉的中间节点，按 起点 → 中间各跳 → 终点 逐跳列出。
+ * 调用链：把这条边按 起点 → 中间各跳 → 终点（语义节点）逐跳列出。
  *
- * 提拉边在图上看似直连，其实是一条多跳调用链被折叠后的结果。这些中间节点只存在于
+ * 折叠提拉边在图上看似直连，其实是一条多跳调用链被折叠后的结果；被折掉的中间节点只存在于
  * **当次视图结果**（`EdgeView.via`）里，按边 id 重查是拿不到的 —— 所以必须由点击方随身带入。
  * via 节点只带 id/kind/name，因此每一跳的源码位置要按节点 id 现查，才能给出真正的"调用处"。
+ *
+ * **直达语义边**（`via` 为空，如 `save --投递到--> 队列`）也走这里：只有 起点/终点 两跳，
+ * 中间那一行取自边的 `to_call_site`。这样"点边看链"在两种情形下是同一套版式 ——
+ * 都能看见起点是谁、终点是哪个语义节点，而不是只剩一行孤立的位置。
  */
 function CollapsedChain({
   edge,
@@ -576,7 +603,9 @@ function CollapsedChain({
   return (
     <div>
       <Typography.Text strong style={{ fontSize: 13 }}>
-        {t('折叠掉的调用链')}
+        {/* 有中间跳被折掉才叫「折叠掉的调用链」；直达边只有 起点↔终点 两跳，标题如实写「调用链」，
+            版式与路由链路完全一致。 */}
+        {t(pathList.some((p) => p.length > 0) ? '折叠掉的调用链' : '调用链')}
         {/* 多路径时保留条数汇总（有用）；单路径的"跳数"已由顶部 Descriptions 的「跳数」给出，这里不再重复。 */}
         {pathList.length > 1 ? `（${pathList.length}${t(' 条路径')}）` : null}
       </Typography.Text>

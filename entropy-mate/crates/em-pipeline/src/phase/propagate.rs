@@ -16,7 +16,7 @@
 //! * 只沿「方法 / 函数」节点向上；类节点（如 `MapsTo` 的源）不参与，避免把语义边误挂到类上。
 //! * 与具体边种类无关：`PublishesTo` / `ReadsDb` / `ReadsCache` / `ReadsConfig` 等一律同等对待。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use em_domain::model::{EdgeKind, NewEdge, NodeId, Phase};
 use serde_json::json;
@@ -53,52 +53,70 @@ pub fn run(ctx: &mut PipelineContext) {
         by_source.entry(s.source.get()).or_default().push(s);
     }
 
-    // **必须按 source 排序后遍历**。
+    // **必须按 source 排序后遍历**，保证 `add_edge` 的提交顺序可复现。
     //
-    // 同一个 `(kind, from, to)` 往往能被多个 seed 传播到（如 `detail` 既经由
-    // `getQRCodePath`、又经由 `getQRCodePath → init` 读到同一个配置键）。
-    // `add_edge` 按 (kind, from, to) 去重且**先到者胜出**，胜出者写下的
-    // `seed_source` 就成了这条边的唯一"根因"。HashMap 的遍历顺序随进程随机，
-    // 于是同一条传播边每次建图拿到不同的 `seed_source` —— 视图据此回溯出的
-    // 接触点与完整路径随之改变（实测同一路由画出的边数在 29 / 30 之间跳）。
+    // **确定性根因**：同一个 `(kind, from, to)` 往往能被多个 seed 传播到（如 `detail`
+    // 既经由 `getQRCodePath`、又经由 `getQRCodePath → init` 读到同一个配置键）。
+    // 之前「`add_edge` 按 (kind, from, to) 先到者胜出」让胜出者写下唯一 `seed_source`，
+    // 而 HashMap 遍历顺序随进程随机，于是同一条传播边每次建图拿到不同的 `seed_source`
+    // —— 视图据此回溯出的接触点与完整路径随之改变（实测同一路由画出的边数在 29/30 间跳）。
     //
-    // 排序只保证**结果稳定**；"取 id 最小的 seed"是并列时的确定性打破方式，
-    // 不是语义选择。要同时保留多个根因，得让边记录 `seed_sources` 数组并让视图
-    // 为每个根因各画一条路径 —— 那是另一件事（与"一条路径一条边"同源）。
+    // 现在：按 `(kind, from, to)` 聚合**全部**根因进 `seed_sources` 数组（升序、确定），
+    // 并保留 `seed_source = 最小 seed` 作为兼容字段。视图即可确定性地选到真正接触点，
+    // 不再因遍历顺序而变。（"取 id 最小的 seed"仍是并列时的确定性打破方式，非语义选择；
+    // 要为每个根因各画一条路径是另一件事，与"一条路径一条边"同源。）
     let mut sources: Vec<i64> = by_source.keys().copied().collect();
     sources.sort_unstable();
 
-    let mut added = 0usize;
-    for src in sources {
-        let src_seeds = &by_source[&src];
-        let reach = transitive_callers(src, &callers, ctx);
+    // `(kind, from, to)` → 全部根因（直接边起点，升序）；及其置信度 / 间接标记。
+    let mut edge_seeds: HashMap<(EdgeKind, i64, i64), BTreeSet<i64>> = HashMap::new();
+    let mut edge_meta: HashMap<(EdgeKind, i64, i64), (f32, bool)> = HashMap::new();
+    for src in &sources {
+        let src_seeds = &by_source[src];
+        let reach = transitive_callers(*src, &callers, ctx);
         for s in src_seeds {
-            // 环境读取类（`ReadsConfig` / `ReadsCache`）沿链上移后语义退化，
-            // 衰减置信度并标记 `indirect`，让视图与查询能区分「直接读」与「上游读过」。
             let (confidence, indirect) = propagated(&s.kind, s.confidence);
-            let mut props = json!({
-                "via": "propagate",
-                "seed_source": src,
-            });
-            if indirect {
-                props["indirect"] = json!(true);
-            }
             for c in &reach {
-                // `add_edge` 按 (kind, from, to) 去重，跨来源/跨种子天然合并。
-                ctx.ws.add_edge(NewEdge {
-                    project_id: ctx.project.id,
-                    kind: EdgeKind(s.kind.clone()),
-                    from_id: NodeId(*c),
-                    to_id: s.target,
-                    phase: phase.clone(),
-                    confidence,
-                    properties: props.clone(),
-                });
+                // `from` 是沿调用链上行到达的调用方，`to` 是语义目标；
+                // `src` 才是真正执行该动作的方法节点（根因）。
+                let key = (EdgeKind(s.kind.clone()), *c, s.target.get());
+                edge_seeds.entry(key.clone()).or_default().insert(*src);
+                edge_meta.entry(key.clone()).or_insert((confidence, indirect));
             }
         }
-        added += reach.len() * src_seeds.len();
     }
-    tracing::info!("P8 传播完成：{} 个 source，新增 {} 条语义边", by_source.len(), added);
+    let mut keys: Vec<(EdgeKind, i64, i64)> = edge_seeds.keys().cloned().collect();
+    keys.sort_by(|a, b| (a.0.as_str(), a.1, a.2).cmp(&(b.0.as_str(), b.1, b.2)));
+
+    let mut added = 0usize;
+    for key in keys {
+        let seeds: Vec<i64> = edge_seeds[&key].iter().copied().collect();
+        let (confidence, indirect) = edge_meta[&key];
+        let mut props = json!({
+            "via": "propagate",
+            "seed_source": seeds[0],
+            "seed_sources": seeds,
+        });
+        if indirect {
+            props["indirect"] = json!(true);
+        }
+        ctx.ws.add_edge(NewEdge {
+            project_id: ctx.project.id,
+            kind: key.0,
+            from_id: NodeId(key.1),
+            to_id: NodeId(key.2),
+            phase: phase.clone(),
+            confidence,
+            properties: props,
+        });
+        added += 1;
+    }
+    tracing::info!(
+        "P8 传播完成：{} 个 source，{} 条传播边（共 {} 个根因）",
+        by_source.len(),
+        added,
+        edge_seeds.values().map(|s| s.len()).sum::<usize>()
+    );
 }
 
 /// 从 `src` 出发，沿 `callers` 索引向上收集所有可达的「方法 / 函数」调用方（不含 src 自身）。

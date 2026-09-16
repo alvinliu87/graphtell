@@ -606,6 +606,16 @@ export function GraphPage() {
             fitSignal={fitSignal}
             />
 
+          {/* 入口类视角（路由 / 定时任务）无链路时给出说明，避免"画面空了 = 坏了"的错觉 */}
+          {view && view.conclusions['提示'] ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginTop: 16 }}
+              message={String(view.conclusions['提示'])}
+            />
+          ) : null}
+
           {/* 诚实性守门：省略了什么、为什么省略 */}
           {view ? (
             <Card variant="borderless" style={{ borderRadius: 14, marginTop: 16 }} size="small">

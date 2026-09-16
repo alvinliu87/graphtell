@@ -454,6 +454,21 @@ fn route_app_segment(file: &str) -> String {
         .to_string()
 }
 
+/// 把一次动态解析落成**可定位**的 `evidence` 对象（与 `engine.rs` 里 FKB 规则边同一形状）。
+///
+/// 关键在于 `location`：视图层靠 `properties.evidence.location` 取"这条边是在哪一行建立的"
+/// （`view_service::inline_chain_locations` 补 `to_call_site`、`edge_evidence` 取证据位置，
+/// 两处都读它）。此前这里只存 `res.evidence` 这**一个字符串**，形状对不上，于是
+/// `Triggers` / `HandledBy` 这类语义边永远取不到位置 —— 抽屉里只剩"没有逐跳证据可查"，
+/// 其实那一行（如 `event('X')` 的调用处）本来就在图里。
+fn evidence_of(loc: &Locator, res: &Resolution) -> serde_json::Value {
+    serde_json::json!({
+        "rule": format!("{:?}", loc.strategy),
+        "evidence": res.evidence.clone(),
+        "location": format!("{}:{}", loc.file, loc.line),
+    })
+}
+
 fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, phase: &Phase) {
     // 运行时事件监听注册：把 arg0 解析出的事件节点，用 `HandledBy` 边指向 arg1 监听器类。
     // 注意：这不是"触发"，故不走默认的 owner→target（Triggers）边。
@@ -471,7 +486,7 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
                             confidence: res.confidence,
                             properties: serde_json::json!({
                                 "tier": format!("{:?}", res.tier),
-                                "evidence": res.evidence,
+                                "evidence": evidence_of(loc, res),
                                 "via": "Event::listen/subscribe 运行时注册",
                             }),
                         });
@@ -515,7 +530,7 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
             confidence: res.confidence,
             properties: serde_json::json!({
                 "tier": format!("{:?}", res.tier),
-                "evidence": res.evidence,
+                "evidence": evidence_of(loc, res),
             }),
         });
     }

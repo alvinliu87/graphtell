@@ -65,6 +65,7 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.ConfigKey': '配置键',
     'node.I18nKey': '国际化键',
     'node.Event': '事件',
+    'node.Schedule': '计划任务',
     'node.Queue': '队列',
     'node.Cache': '缓存',
     'node.Topic': '主题',
@@ -113,6 +114,7 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.ConfigKey': 'Config key',
     'node.I18nKey': 'I18n key',
     'node.Event': 'Event',
+    'node.Schedule': 'Schedule',
     'node.Queue': 'Queue',
     'node.Cache': 'Cache',
     'node.Topic': 'Topic',
@@ -205,8 +207,8 @@ const dict: Record<Lang, Record<string, string>> = {
     '合成边（折叠汇总）': 'Synthetic edge (collapsed aggregate)',
     '这条边是把多条调用链聚合后归纳出的语义边，没有与之对应的单一源码位置；下面是被它折叠的中间节点（自起点到终点），可据此逐跳核对。':
       'This edge is a semantic edge aggregated from multiple call chains; there is no single corresponding source location. Below are the intermediate nodes it collapsed (start to end); verify hop by hop.',
-    '这条边是把多条调用链聚合后归纳出的语义边，图里没有与之对应的单条直接边，因此没有逐跳证据可查；打开「展开全部语法节点」可看到各跳的调用。':
-      'This edge is a semantic edge aggregated from multiple call chains; there is no single corresponding direct edge in the graph, so there is no hop-by-hop evidence. Enable "Expand all syntax nodes" to see the calls at each hop.',
+    '这条边是把多条调用链聚合后归纳出的语义边，图里没有与之对应的单条直接边，也没有可定位的触发点，因此没有逐跳证据可查。':
+      'This edge is a semantic edge aggregated from multiple call chains; there is no single corresponding direct edge in the graph and no locatable trigger point, so there is no hop-by-hop evidence.',
     '未找到该边': 'Edge not found',
     '关系': 'Relation',
     '状态': 'Status',
@@ -230,6 +232,7 @@ const dict: Record<Lang, Record<string, string>> = {
       'This hop is not a direct Calls edge (e.g. a route→handler binding, or an unresolved call), so the backend provides no call site.',
     '在主图中以该节点为中心重绘': 'Re-center the main graph on this node',
     '折叠掉的调用链': 'Collapsed call chain',
+    '调用链': 'Call chain',
     '（': ' (',
     ' 条路径': ' paths',
     '起止各 1 个 + 中间 ': ' one start + one end + ',

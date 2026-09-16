@@ -559,6 +559,13 @@ pub struct ValueSource {
     /// `None`（而不是把变量名 / 字面量当类用）。用于「优先用实参里的 Job 类，否则
     /// 退回 `owner_class`」这类兜底，避免 `$action` 之类的字符串污染语义身份。
     pub require_class: Option<bool>,
+    /// 只接受**字面量**（字符串 / 标量），拒绝变量与表达式文本。
+    ///
+    /// `arg` 对变量 / 拼接表达式会求值成 `FactValue::Unknown(Some(原文))`（见
+    /// `em-adapter-parser::php::value`），直接采信会把 `$name`、`self::X . $y` 这类
+    /// 源码文本当成身份，凭空造出垃圾语义节点。与 `require_class` 对称：判否即整体
+    /// 返回 `None`，交给 `value_fallback` 兜底。
+    pub require_literal: Option<bool>,
     /// 字面量。
     pub literal: Option<String>,
     /// 嵌套来源：`{ source: { arg: 1 }, field: 'url' }`。

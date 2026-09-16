@@ -1205,6 +1205,60 @@ fn synthesize_detects_schedules_from_project_fkb() {
     );
 }
 
+/// Cache 节点必须**按字面量 key 区分**，而不是全库聚成一个 blob；
+/// 且变量 / 表达式实参**绝不能**被当成身份（否则会造出 `$name`、`self::X . $y` 垃圾节点）。
+///
+/// 曾把 identity 写死为 `literal: "Cache"`：346 条调用边汇到同一节点、`key` 字段被反复
+/// 覆盖只剩最后一个值 —— 既答不了「谁读写了同一缓存键」，也污染了诚信度。
+#[test]
+fn cache_nodes_split_by_literal_key() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let caches = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind("Cache".into())),
+            name_contains: None,
+            limit: Some(2000),
+            offset: Some(0),
+        })
+        .expect("查询可读");
+    eprintln!(
+        "Cache 节点 {} 个：{:?}",
+        caches.len(),
+        caches.iter().map(|n| n.name.as_str()).collect::<Vec<_>>()
+    );
+
+    // ① 动态键（`Cache::get($name)` 等）必须回退到统一的 `Cache` 节点。
+    assert!(
+        caches.iter().any(|n| n.name == "Cache"),
+        "应有动态键兜底节点 `Cache`，实际 {:?}",
+        caches.iter().map(|n| n.name.as_str()).collect::<Vec<_>>()
+    );
+    // ② 至少出现一个字面量键节点（如 `crontabCache`）。
+    assert!(
+        caches.iter().any(|n| n.name != "Cache"),
+        "应按字面量 key 拆分出节点（如 crontabCache），实际 {:?}",
+        caches.iter().map(|n| n.name.as_str()).collect::<Vec<_>>()
+    );
+    // ③ 绝不能把变量 / 表达式文本当成身份（合法字面量键不含 `$` 与 `::`）。
+    for n in &caches {
+        assert!(
+            !n.name.starts_with('$'),
+            "变量名被当成缓存身份：{}",
+            n.name
+        );
+        assert!(
+            !n.name.contains("::"),
+            "表达式文本被当成缓存身份：{}",
+            n.name
+        );
+    }
+}
+
 #[test]
 fn v1_php_parse_result() {
     let Some(root) = common::sample_root() else {

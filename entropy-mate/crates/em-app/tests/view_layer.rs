@@ -359,6 +359,76 @@ fn object_view_resource_center_shows_its_users() {
     }
 }
 
+/// 事件视角：① `HandledBy` 的方向必须跟着原始边（**事件 --由…处理--> 监听器**）；
+/// ② `Triggers` 这类只有 1 跳的直接边必须给出**触发点**（`to_call_site`）。
+///
+/// 反向视角原本一律画成「使用者 --语义边--> 中心」，于是 `HandledBy` 被翻成
+/// "监听器 --由…处理--> 事件"，读起来正好相反；同时语义边此前把 `evidence` 存成**字符串**
+/// （没有 `location`），触发点取不到，前端抽屉只剩一句"没有逐跳证据可查"。
+#[test]
+fn event_view_handled_by_points_outward_and_triggers_have_call_site() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let cands = views
+        .candidates(b.project_id, "event", 20, None)
+        .expect("candidates");
+    let Some(top) = cands.first() else {
+        eprintln!("事件视角没有候选，跳过");
+        return;
+    };
+    let ov = views
+        .object_view(b.project_id, "event", top.id, Some(2))
+        .expect("object_view");
+    assert_eq!(ov.center.kind, "Event", "事件视角中心应是 Event");
+
+    let mut triggers = 0usize;
+    let mut handled = 0usize;
+    for e in &ov.edges {
+        match e.kind.as_str() {
+            "Triggers" => {
+                // 触发方 --触发--> 事件：主语在触发方，事件是终点。
+                assert_eq!(
+                    e.to.get(),
+                    ov.center.id.get(),
+                    "Triggers 边应指向事件中心，实际 {} -> {}",
+                    e.from.get(),
+                    e.to.get()
+                );
+                // 只有 1 跳的直接边也要给出触发点（`event('X')` 那一行）：
+                // 没有它，前端抽屉只能说"没有逐跳证据可查"，其实那一行就在图里。
+                if e.via.is_empty() {
+                    assert!(
+                        e.to_call_site.is_some(),
+                        "直接 Triggers 边 #{} -> #{} 应给出触发点（to_call_site）",
+                        e.from.get(),
+                        e.to.get()
+                    );
+                    triggers += 1;
+                }
+            }
+            "HandledBy" => {
+                // 事件 --由…处理--> 监听器：主语是事件自己，不能反过来。
+                assert_eq!(
+                    e.from.get(),
+                    ov.center.id.get(),
+                    "HandledBy 边应从事件中心出发（事件由监听器处理），实际 {} -> {}",
+                    e.from.get(),
+                    e.to.get()
+                );
+                handled += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        triggers + handled > 0,
+        "事件视角应给出触发方或监听方，否则就是一张空图"
+    );
+}
+
 #[test]
 fn node_locations_returns_sources() {
     let Some(b) = built() else {
@@ -466,6 +536,106 @@ fn folded_semantic_edges_end_at_real_contact() {
         "存在断在发现深度上的伪路径：\n{}",
         violations.join("\n")
     );
+}
+
+/// **资源视角**下的同一条不变式（上面那条只测了 `route` 视角，于是漏掉了这个方向）。
+///
+/// `Cache` 这类共享资源被反向展开时，折叠入边的 `via` 末端也必须是**真实接触点**
+/// （自己持有一条带 `evidence` 的直接语义边），不能停在 P8 传播边这条"捷径"回溯出的
+/// 上游调用者上 —— 否则填 `to_call_site` 时无证据可依，就会在环路里任取一个同资源读者。
+///
+/// 实测反例：`PUT /setting/seckill_data/set_status/:id/:status` 经
+/// `SystemGroupData::set_status` → `CacheService::clear()` → `Cache::tag('crmeb')->clear()`
+/// （`CacheService.php:98`）触达缓存；但缓存视角把 `via` 停在 `set_status`，再把
+/// `DataMigrationServices.php:53` 的 `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)`
+/// 当作"本链路访问缓存的位置" —— 该路由根本没碰那个键。
+#[test]
+fn cache_view_folded_edges_end_at_real_contact() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let store = &b.container.store;
+    let cands = views.candidates(b.project_id, "cache", 50, None).expect("cache 候选");
+    assert!(!cands.is_empty(), "cache 视角应有候选");
+
+    let mut checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for c in cands.iter() {
+        let Ok(ov) = views.object_view(b.project_id, "cache", c.id, Some(3)) else {
+            continue;
+        };
+        for e in &ov.edges {
+            // 只看经过折叠的（`via` 非空的）语义边；直连边由起点自己负责。
+            let Some(contact) = e.via.last() else { continue };
+            checked += 1;
+            let outs = store
+                .edges_of(contact.id, EdgeDirection::Outgoing)
+                .unwrap_or_default();
+            let has_direct = outs.iter().any(|r| {
+                r.kind.as_str() == e.kind
+                    && r.to_id == e.to
+                    && r.properties.get("evidence").is_some()
+            });
+            if !has_direct {
+                violations.push(format!(
+                    "缓存 {} 的折叠边 --{}--> #{} 末端接触点是 {:?}（#{}），但它没有带 evidence 的直接边",
+                    c.name,
+                    e.kind,
+                    e.to.get(),
+                    contact.name,
+                    contact.id.get()
+                ));
+            }
+        }
+    }
+    assert!(checked > 0, "应检查到折叠边，实际一条都没有");
+    assert!(
+        violations.is_empty(),
+        "资源视角存在断在传播捷径上的伪路径（接触点张冠李戴）：\n{}",
+        violations.join("\n")
+    );
+
+    // 具体回归：`PUT /setting/seckill_data/set_status/:id/:status` 若出现在缓存视角，
+    // 其"访问缓存的位置"必须落在 `CacheService.php`（它经 `CacheService::clear()` →
+    // `Cache::tag('crmeb')->clear()` 触达缓存），**不得**是别的同资源读者
+    // （曾错标为 `DataMigrationServices.php:53` 的 `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)`，
+    // 而该路由根本没碰那个键）。
+    let center = cands.iter().find(|c| c.name == "Cache");
+    let route = store
+        .query_nodes(&NodeFilter {
+            project_id: b.project_id,
+            kind: Some(NodeKind("HttpContract".into())),
+            name_contains: Some("seckill_data/set_status".into()),
+            limit: Some(5),
+            offset: Some(0),
+        })
+        .ok()
+        .and_then(|v| v.into_iter().next());
+    if let (Some(center), Some(route)) = (center, route) {
+        let ov = views
+            .object_view(b.project_id, "cache", center.id, Some(3))
+            .expect("object_view");
+        if let Some(e) = ov
+            .edges
+            .iter()
+            .find(|e| e.from == route.id && e.kind == "ReadsCache")
+        {
+            let cs = e.to_call_site.as_ref().expect("该缓存边应给出访问位置");
+            assert!(
+                cs.file.ends_with("CacheService.php"),
+                "该路由访问缓存的位置应在 CacheService.php，实际 {}:{}",
+                cs.file,
+                cs.line
+            );
+            assert!(
+                !e.via.is_empty() && e.via.last().unwrap().name == "clear",
+                "该缓存边的接触点应是 CacheService::clear，实际 {:?}",
+                e.via.iter().map(|v| v.name.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
 }
 
 /// 具体回归：`GET /v2/order/invoice_detail/:uni` 到 `Cache` 曾画出 3 条 `ReadsCache`，
@@ -658,5 +828,166 @@ fn object_view_characterization_invoice_detail() {
         via_len.iter().filter(|&&l| l == 1).count() >= 6,
         "应有多条 1 跳的直接边（detail 自己读的配置），实际 {via_len:?}"
     );
+}
+
+/// 计划任务视角：`Schedule` 是**入口类**节点（CRMEB 的项目级 FKB 把 `crontab/...` 路由合成
+/// Schedule 节点），它的依赖全在**出边**：`Schedule --HandledBy--> handler →Calls→ … → ReadsCache`，
+/// 入边恒为 0。曾把它当作"资源类中心"沿入边回溯 ⇒ 一条边也走不到：环全空、`hidden.total = 0`，
+/// 画布上只剩一个孤零零的中心节点（外加一圈空的"1 跳"参考环）；而二级候选的徽标按 3 跳评分
+/// 却写着"语义依赖 1" —— 列表说有、图里没有，两处自相矛盾。
+#[test]
+fn schedule_view_follows_outgoing_chain() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let cands = views
+        .candidates(b.project_id, "schedule", 30, None)
+        .expect("candidates");
+    assert!(!cands.is_empty(), "计划任务视角应有候选（CRMEB 的 crontab 路由）");
+
+    // 具体回归：`crontab/set_open/:id/:is_open` 经 `SystemCrontab::setTimerStatus`
+    // → `SystemCrontabServices::setTimerStatus` 读缓存，视图里必须看得见这条依赖。
+    if let Some(c) = cands.iter().find(|c| c.name.starts_with("crontab/set_open")) {
+        let ov = views
+            .object_view(b.project_id, "schedule", c.id, Some(2))
+            .expect("object_view");
+        assert_eq!(ov.center.kind, "Schedule", "计划任务视角中心应是 Schedule");
+        assert!(
+            !ov.edges.is_empty(),
+            "计划任务 {} 画出了空图（环 {:?}）：入口类中心的依赖在出边，不能沿入边回溯",
+            c.name,
+            ov.rings.iter().map(|r| r.len()).collect::<Vec<_>>()
+        );
+        assert!(
+            ov.rings.iter().flatten().count() > 0,
+            "计划任务 {} 的环里应有可达的语义节点",
+            c.name
+        );
+        for e in &ov.edges {
+            assert!(
+                em_domain::model::EdgeKind(e.kind.clone()).is_semantic(),
+                "默认视图不应出现语法边：{}",
+                e.kind
+            );
+            assert_eq!(
+                e.from.get(),
+                ov.center.id.get(),
+                "入口类视角的边应从中心出发，实际 {} -> {}",
+                e.from.get(),
+                e.to.get()
+            );
+        }
+        // 这条计划任务的依赖与"路由视角"对同一个 handler 的结论必须一致：
+        // `SystemCrontab::setTimerStatus → SystemCrontabServices::setTimerStatus` 读了缓存，
+        // 中间两跳（都是语法节点）以 `via` 链给出，并能给出访问缓存的那一行。
+        let cache = ov
+            .edges
+            .iter()
+            .find(|e| e.kind == "ReadsCache")
+            .unwrap_or_else(|| {
+                panic!(
+                    "计划任务 {} 应读缓存（与路由视角一致），实际边：{:?}",
+                    c.name,
+                    ov.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            !cache.via.is_empty(),
+            "应经过折叠链（handler → 服务方法）到达缓存，实际 via 为空"
+        );
+        assert!(
+            cache.to_call_site.is_some(),
+            "应给出访问缓存的那一行（本链路访问该资源的位置）"
+        );
+    } else {
+        eprintln!("图里没有 crontab/set_open 计划任务，跳过具体断言");
+    }
+
+    // 通用不变量：徽标里的"语义依赖 N"是 3 跳内可达的语义节点数（`semantic_value`）。
+    // N > 0 ⇒ 同一对象在视图里**必须**画得出边，否则列表与画布互相打脸。
+    let mut checked = 0usize;
+    let mut dead: Vec<String> = Vec::new();
+    for c in cands.iter() {
+        let value: usize = c
+            .badge
+            .as_deref()
+            .and_then(|b| b.strip_prefix("语义依赖 "))
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if value == 0 {
+            continue;
+        }
+        // 用打分一致的 3 跳取视图，避免把"深度不够"误判成"方向错了"。
+        let ov = views
+            .object_view(b.project_id, "schedule", c.id, Some(3))
+            .expect("object_view");
+        checked += 1;
+        if ov.edges.is_empty() {
+            dead.push(format!("{}（徽标 {:?}）", c.name, c.badge));
+        }
+    }
+    assert!(checked > 0, "应有语义依赖 > 0 的计划任务候选");
+    assert!(
+        dead.is_empty(),
+        "这些计划任务有语义依赖，视图却画出空图：\n{}",
+        dead.join("\n")
+    );
+}
+
+/// 空依赖的计划任务（或路由）视角：画布只剩一个中心节点时，必须给出一条"提示"结论，
+/// 把"画面空了 = 视图坏了"的错觉消除掉，同时说明这通常就是真实情况。
+///
+/// 不变量：**空图 ⇔ 带提示**，二者必须同时出现 / 同时消失 ——
+/// 否则要么空图没解释（看着像坏了），要么有链路还硬塞提示（误导）。
+#[test]
+fn empty_entry_view_carries_hint() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+
+    let mut empty_seen = 0usize;
+    for perspective in ["schedule", "route"] {
+        let cands = views
+            .candidates(b.project_id, perspective, 200, None)
+            .expect("candidates");
+        assert!(!cands.is_empty(), "{perspective} 视角应有候选");
+        for c in cands.iter() {
+            let ov = views
+                .object_view(b.project_id, perspective, c.id, Some(3))
+                .expect("object_view");
+            let has_hint = ov.conclusions.get("提示").is_some();
+            assert_eq!(
+                ov.edges.is_empty(),
+                has_hint,
+                "{perspective} {} 空图与提示必须同时出现/消失：edges={} hint={:?}",
+                c.name,
+                ov.edges.len(),
+                ov.conclusions.get("提示")
+            );
+            if has_hint {
+                empty_seen += 1;
+                let msg = ov.conclusions["提示"].as_str().unwrap_or("");
+                assert!(
+                    msg.contains(if perspective == "schedule" {
+                        "定时任务"
+                    } else {
+                        "路由"
+                    }),
+                    "{perspective} {} 的提示应点明入口类型，实际 {msg}",
+                    c.name
+                );
+            }
+        }
+    }
+    if empty_seen == 0 {
+        eprintln!("本次样本没有空依赖的入口（不影响不变量），跳过内容断言");
+    } else {
+        assert!(empty_seen > 0, "应至少命中一个空依赖入口以验证提示内容");
+    }
 }
 

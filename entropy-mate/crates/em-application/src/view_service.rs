@@ -59,6 +59,10 @@ struct Discovery {
     path_kind: HashMap<i64, String>,
     /// 与 `path_kind` 平行：该语义边是否由 P8 传播得来。
     path_indirect: HashMap<i64, bool>,
+    /// 与 `path_kind` 平行：该原始边是**中心 → 该节点**（中心为出边的一侧）。
+    /// 反向模式默认画「使用者 --语义边--> 中心」，但 `HandledBy` 的主语是中心自己，
+    /// 必须按原始边方向画成「中心 --由…处理--> 监听器」。
+    path_from_center: HashSet<i64>,
     /// 是否反向（资源类中心沿入边回溯）。
     reverse: bool,
 }
@@ -276,7 +280,16 @@ impl ViewService {
         // **资源类中心**（Table / ConfigKey / Cache / Event…）的关系方向是反向的：
         // 语义边由"使用者"指向资源（`X --ReadsDb/WritesDb--> 表`、`X --ReadsConfig--> 配置键`），
         // 所以要回答"谁在用它"必须沿**入边回溯调用链**；路由（HttpContract）才是正向展开依赖。
-        let reverse = center_node.kind.as_str() != NodeKind::HTTP_CONTRACT;
+        //
+        // **入口类中心**（HttpContract = HTTP 入口、Schedule = 定时任务入口）与资源相反：
+        // 它们**没有入边**，依赖全在出边（`Schedule --HandledBy--> handler →Calls→ …→ ReadsCache`）。
+        // 曾把 Schedule 归进"资源类"沿入边回溯 → 一条边也走不到，画布上只剩孤零零一个中心节点
+        // （环全空、`hidden.total = 0`），而候选列表的徽标却按 3 跳评分显示"语义依赖 1" —— 自相矛盾。
+        // 判定"往哪走"的依据不是"是不是语义节点"，而是**依赖在出边还是入边**：入口在出边，资源在入边。
+        let reverse = !matches!(
+            center_node.kind.as_str(),
+            NodeKind::HTTP_CONTRACT | NodeKind::SCHEDULE
+        );
         let chain_depth = depth;
 
         // 一次性预加载全工程节点概要 + 链边邻接，供整段视图复用：
@@ -379,7 +392,13 @@ impl ViewService {
         };
 
         let unresolved = self.unresolved_for(project_id, &center_node.name);
-        let conclusions = self.conclusions_for(project_id, spec, &center_node.name, &center_view);
+        let conclusions = self.conclusions_for(
+            project_id,
+            spec,
+            &center_node.name,
+            &center_view,
+            shown_edges.len(),
+        );
 
         Ok(ObjectView {
             project_id,
@@ -443,6 +462,11 @@ impl ViewService {
         // 与 `path_kind` 平行：走到该节点途中遇到的语义边**是否为传播得来的间接边**。
         // 资源视角（"谁在读这个配置"）同样要能区分直接读者与"上游读过"的间接入口。
         let mut path_indirect: HashMap<i64, bool> = HashMap::new();
+        // 与 `path_kind` 平行：这条原始边是**中心 → 该节点**（中心为出边的一侧）。
+        // 反向模式默认画「使用者 --语义边--> 中心」，这对主语在使用者的边（Triggers /
+        // ReadsDb …）是对的；但 `HandledBy` 的主语是**中心自己**（`事件 --由…处理--> 监听器`、
+        // `契约 --由…处理--> handler`），它是中心的出边，照默认方向画就颠倒了谓语。
+        let mut path_from_center: HashSet<i64> = HashSet::new();
         // 每个节点在本层择优时胜出的**边 id**：用于「边 id 小者优先」的确定性兜底比较。
         let mut best_edge_id_of: HashMap<i64, i64> = HashMap::new();
         kind_of.insert(center_id.get(), center_node.kind.to_string());
@@ -480,7 +504,8 @@ impl ViewService {
                 if !matches!(e.kind.as_str(), "Triggers" | "HandledBy" | "PublishesTo") {
                     continue;
                 }
-                let other = if e.from_id.get() == center_id.get() {
+                let center_side = e.from_id.get() == center_id.get();
+                let other = if center_side {
                     e.to_id.get()
                 } else {
                     e.from_id.get()
@@ -489,6 +514,10 @@ impl ViewService {
                     continue;
                 }
                 path_kind.entry(other).or_insert(e.kind.to_string());
+                // 中心的**出边**（如 `事件 --HandledBy--> 监听器`）：画边时不能反过来。
+                if center_side {
+                    path_from_center.insert(other);
+                }
                 if !ring_of.contains_key(&other) {
                     ring_of.insert(other, 1);
                     parent_of.insert(other, center_id.get());
@@ -690,6 +719,7 @@ impl ViewService {
             force_visible,
             path_kind,
             path_indirect,
+            path_from_center,
             reverse,
         })
     }
@@ -701,6 +731,79 @@ impl ViewService {
     /// 省掉前端对每个节点单独请求 `/nodes/{id}/locations` 的 N+1 次往返，
     /// 且这些位置与"这条边"同源。
     fn inline_chain_locations(&self, shown_edges: &mut Vec<EdgeView>, d: &Discovery) {
+        // ---- 补回 P8 传播边漏掉的"真实接触点" ----
+        //
+        // 折叠出的语义边，其 `via` 末端必须是**真实接触点**：自己持有指向该资源的直接语义边
+        // （P5 命中、带 `evidence`）。反向（资源视角）会沿 P8 **传播边**这条"捷径"回溯，
+        // 于是 `via` 停在上游调用者（如 `SystemGroupData::set_status`），漏掉真正访问资源的
+        // `CacheService::clear`；随后填 `to_call_site` 时接触点无 `evidence` 可依，就退到
+        // 环路里**任取一个同资源读者** —— 表现为"本链路访问缓存的位置"指向无关文件
+        // （实测 `PUT /setting/seckill_data/set_status` 的缓存边被标到
+        // `DataMigrationServices.php:53` 的 `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)`，
+        // 而该路由其实经 `CacheService::clear()` → `Cache::tag('crmeb')->clear()` 触达缓存）。
+        //
+        // 传播边的 `seed_source(s)` 正是那条原始直接边的起点（见 `propagate.rs`）：现在传播边
+        // 记录升序、确定的 `seed_sources` 数组（兼容 `seed_source = 最小 seed`），把它补回
+        // `via` 末端：既补齐缺的一跳，也让接触点重新锚定到有证据的直接边上，且不再随建图
+        // 遍历顺序而变（修掉同一路由画出边数在 29/30 间跳的非确定问题）。
+        // 只对**接触点是传播边**的情形生效 —— 直接边已有 `evidence`，不受影响。
+        for e in shown_edges.iter_mut() {
+            let contact = e.via.last().map(|v| v.id.get()).unwrap_or(e.from.get());
+            let Some(ins) = d.in_edges.get(&e.to.get()) else {
+                continue;
+            };
+            let Some(raw) = ins
+                .iter()
+                .find(|r| r.kind.as_str() == e.kind && r.from_id.get() == contact)
+            else {
+                continue;
+            };
+            if raw.properties.get("evidence").is_some() {
+                continue;
+            }
+            // 接触点是传播边：没有 `evidence`，真实接触点在 `seed_source(s)`（原始直接边起点）。
+            // 取 `seed_sources` 数组（升序、确定）；优先选其中**确实持有指向本资源、带 evidence
+            // 直接边**的那个，否则按 id 升序取第一个 —— 即便同一条传播边由多个根因汇聚，
+            // 也始终是同一个接触点，不再随建图遍历顺序而变。
+            let seeds = match raw.properties.get("seed_sources").and_then(|v| v.as_array()) {
+                Some(arr) => arr.iter().filter_map(|x| x.as_i64()).collect::<Vec<i64>>(),
+                None => raw
+                    .properties
+                    .get("seed_source")
+                    .and_then(|v| v.as_i64())
+                    .map(|s| vec![s])
+                    .unwrap_or_default(),
+            };
+            if seeds.is_empty() {
+                continue;
+            }
+            let mut seed = *seeds.iter().min().unwrap();
+            // 优先：能从出边缓存里找到「带 evidence 的同 kind 直接边」的 seed（环路内基本都命中）。
+            for s in &seeds {
+                let Some(outs) = d.out_edges.get(s) else {
+                    continue;
+                };
+                if outs.iter().any(|r| {
+                    r.kind.as_str() == e.kind
+                        && r.to_id.get() == e.to.get()
+                        && r.properties.get("evidence").is_some()
+                }) {
+                    seed = *s;
+                    break;
+                }
+            }
+            if seed == e.to.get() || seed == contact || e.via.iter().any(|v| v.id.get() == seed) {
+                continue;
+            }
+            e.via.push(ViaNode {
+                id: NodeId(seed),
+                kind: self.node_kind(seed),
+                name: self.short_name_of(seed),
+                call_site: self.call_site_between(contact, seed, &d.out_edges),
+            });
+            e.hops = Some(e.via.len() as u32);
+        }
+
         // ---- 内联链路节点的位置 ----
         // 折叠视图的"链路"是**临时提拉**的结果，中间跳只存在于当次响应里，
         // 按边 id 重查拿不到 —— 以往前端只能对每个节点单独请求
@@ -1097,9 +1200,19 @@ impl ViewService {
                     if via.last().map(|v| v.id.get()) == Some(*id) {
                         via.pop();
                     }
+                    // 边的方向**必须跟着原始边**：这里默认画「使用者 --语义边--> 中心」，
+                    // 对主语在使用者的边（Triggers / ReadsDb / PublishesTo …）是对的；
+                    // 但 `HandledBy` 是「中心 --由…处理--> 监听器 / handler」，主语是中心
+                    // （它是播种时中心的**出边**），照默认方向画会读成"监听器由…处理事件"。
+                    let from_center = d.path_from_center.contains(id);
+                    // 端点对调后，链路顺序也要跟着翻一次：`push_edge` 在 reverse 下还会再翻，
+                    // 两次翻转正好还原为「中心 → … → 对方」的阅读顺序。
+                    if from_center {
+                        via.reverse();
+                    }
                     push_edge(
-                        *id,
-                        center_id.get(),
+                        if from_center { center_id.get() } else { *id },
+                        if from_center { *id } else { center_id.get() },
                         &kind,
                         0,
                         via,
@@ -1936,6 +2049,7 @@ impl ViewService {
         spec: &PerspectiveSpec,
         name: &str,
         center: &NodeView,
+        drawn_edges: usize,
     ) -> Value {
         let mut out = serde_json::Map::new();
         out.insert("视角".into(), json!(spec.label));
@@ -1965,6 +2079,22 @@ impl ViewService {
                 "路由表登记".into(),
                 entry.get("handler").cloned().unwrap_or(json!(null)),
             );
+        }
+        // 入口类视角（路由 / 定时任务）若一条语义边都没画出来，画布会只剩孤零零一个中心节点，
+        // 容易被误以为"视图坏了"。多半是真实情况（crontab 路由没解析到 handler，
+        // 或 handler 没接触任何语义资源）。给一行提示，避免与二级候选徽标自相矛盾。
+        if drawn_edges == 0
+            && matches!(
+                center.kind.as_str(),
+                NodeKind::HTTP_CONTRACT | NodeKind::SCHEDULE
+            )
+        {
+            let hint = if center.kind.as_str() == NodeKind::SCHEDULE {
+                "该定时任务暂无可展开的语义依赖：crontab 路由未解析到 handler，或 handler 未接触任何语义资源（表 / 配置 / 缓存 / 事件）。这通常是真实情况，并非视图缺失。"
+            } else {
+                "该路由暂无可展开的语义依赖：路由未解析到 handler，或 handler 未接触任何语义资源。这通常是真实情况，并非视图缺失。"
+            };
+            out.insert("提示".into(), json!(hint));
         }
         Value::Object(out)
     }
