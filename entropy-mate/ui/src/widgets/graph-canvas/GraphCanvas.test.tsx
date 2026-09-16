@@ -96,4 +96,55 @@ describe('GraphCanvas', () => {
     expect(labels).toContain('edge.MapsTo');
     expect(labels).toContain('edge.ReadsConfig');
   });
+
+  it('同一 (id, from, to) 的多条平行路径各自独立：悬浮只点亮一条、卡片显示各自的链路', () => {
+    // 正向视角下同一条传播边会被展开成多条路径，`push_edge` 复用同一个 evidence 边 id ——
+    // 于是出现 (id, from, to) 完全相同的两条边。旧实现只按 `id:from->to` 做键，
+    // 悬浮会同时点亮两条、卡片永远显示第一条（`edges.find` 首个命中）。
+    const c: CanvasNode = { id: 1, kind: 'HttpContract', name: 'GET /x', ring: 0 };
+    const ringNodes: CanvasNode[][] = [[{ id: 2, kind: 'Cache', name: 'cache', ring: 1 }]];
+    const parallel: EdgeView[] = [
+      {
+        id: 7,
+        kind: 'ReadsCache',
+        from: 1,
+        to: 2,
+        resolved: false,
+        confidence: 0.5,
+        indirect: true,
+        hops: 4,
+        via: [{ id: 90, kind: 'Method', name: 'a' }],
+      },
+      {
+        id: 7,
+        kind: 'ReadsCache',
+        from: 1,
+        to: 2,
+        resolved: false,
+        confidence: 0.5,
+        indirect: true,
+        hops: 6,
+        via: [{ id: 91, kind: 'Method', name: 'b' }],
+      },
+    ];
+    act(() => {
+      root.render(<GraphCanvas mode="layered" center={c} rings={ringNodes} edges={parallel} />);
+    });
+
+    const hits = Array.from(
+      container.querySelectorAll('path[stroke="transparent"]'),
+    ) as SVGPathElement[];
+    expect(hits.length).toBe(2);
+
+    act(() => {
+      hits[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('途经 4 跳');
+    expect(container.textContent).not.toContain('途经 6 跳');
+
+    act(() => {
+      hits[1].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('途经 6 跳');
+  });
 });

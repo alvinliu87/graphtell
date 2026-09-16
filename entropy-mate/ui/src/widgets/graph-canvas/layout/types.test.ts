@@ -1,0 +1,380 @@
+import { describe, expect, it } from 'vitest';
+
+import { concentricLayout, layeredLayout, radialLayout } from './types';
+import type { LayoutEdge, LayoutNode, PlacedEdge, PlacedNode } from './types';
+
+/**
+ * 下面两个判定是**测试侧独立实现**的，刻意不去复用被测代码里的 `segHitsRect` / `countCrossings`：
+ * 用同一份判断去断言自己，等于什么都没验。
+ */
+
+type Pt = [number, number];
+
+function segments(edges: PlacedEdge[]): Array<{ s: Pt; e: Pt; from: number; to: number }> {
+  const out: Array<{ s: Pt; e: Pt; from: number; to: number }> = [];
+  for (const ed of edges) {
+    for (let i = 1; i < ed.points.length; i += 1) {
+      out.push({ s: ed.points[i - 1], e: ed.points[i], from: ed.from, to: ed.to });
+    }
+  }
+  return out;
+}
+
+/** 线段是否穿过矩形（slab 法）。 */
+function hitsRect(a: Pt, b: Pt, cx: number, cy: number, w: number, h: number): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const slabs: Array<[number, number]> = [
+    [-dx, a[0] - (cx - w / 2)],
+    [dx, cx + w / 2 - a[0]],
+    [-dy, a[1] - (cy - h / 2)],
+    [dy, cy + h / 2 - a[1]],
+  ];
+  for (const [p, q] of slabs) {
+    if (p === 0) {
+      if (q < 0) return false;
+      continue;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+  }
+  return true;
+}
+
+/** 穿过非端点节点的线段数（硬约束：必须为 0）。 */
+function segmentsThroughNodes(edges: PlacedEdge[], nodes: PlacedNode[]): number {
+  let n = 0;
+  for (const seg of segments(edges)) {
+    for (const node of nodes) {
+      if (node.id === seg.from || node.id === seg.to) continue;
+      if (hitsRect(seg.s, seg.e, node.x, node.y, node.w ?? 120, node.h ?? 26)) n += 1;
+    }
+  }
+  return n;
+}
+
+/** 交叉数（共享端点的边对不算）。 */
+function crossings(edges: PlacedEdge[]): number {
+  const segs = segments(edges);
+  const orient = (a: Pt, b: Pt, c: Pt) =>
+    Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+  let n = 0;
+  for (let i = 0; i < segs.length; i += 1) {
+    for (let j = i + 1; j < segs.length; j += 1) {
+      const A = segs[i];
+      const B = segs[j];
+      if (A.from === B.from || A.from === B.to || A.to === B.from || A.to === B.to) continue;
+      if (
+        orient(B.s, B.e, A.s) * orient(B.s, B.e, A.e) < 0 &&
+        orient(A.s, A.e, B.s) * orient(A.s, A.e, B.e) < 0
+      ) {
+        n += 1;
+      }
+    }
+  }
+  return n;
+}
+
+/**
+ * 回归：分层布局的画布宽度必须受容器约束。
+ *
+ * 旧实现把一层的所有药丸单行铺开，20 条出边就能把画布撑到 3000px+；
+ * 画布随后用 `viewBox="0 0 layout.width …"` 渲染，浏览器按 `meet` 把整张图
+ * 连文字一起等比压回容器宽 —— 表现就是"出边一多，字全糊"。
+ */
+
+const node = (id: number, name: string, ring: number): LayoutNode => ({
+  id,
+  kind: 'Method',
+  name,
+  ring,
+});
+
+describe('layeredLayout', () => {
+  const WIDTH = 1040;
+
+  it('多层时允许画布超出容器宽：超出部分改为横向滚动，不再是整图缩小', () => {
+    // 20 条出边，旧实现会产出约 3300px 宽的画布
+    const fanout = Array.from({ length: 20 }, (_, i) => node(100 + i, `handler_number_${i}`, 2));
+    const center = node(1, 'job_daily_settlement', 0);
+    const ring1 = Array.from({ length: 3 }, (_, i) => node(10 + i, `service_stage_${i}`, 1));
+    const edges: LayoutEdge[] = [];
+    ring1.forEach((n) => edges.push({ id: n.id, from: center.id, to: n.id }));
+    fanout.forEach((n, i) => edges.push({ id: n.id, from: ring1[i % ring1.length].id, to: n.id }));
+
+    const r = layeredLayout({
+      center,
+      rings: [ring1, fanout],
+      edges,
+      width: WIDTH,
+      height: 720,
+    });
+
+    // 画布可以比容器宽（一轮前不允许，因为当时 viewBox 会把整张图连字一起缩小；
+    // 现在 viewBox 与渲染 1:1，超出就是滚动），但**必须给出内容包围盒**供 zoom-to-fit 使用。
+    expect(r.content).toBeDefined();
+    expect(r.content!.w).toBeLessThan(r.width);
+    // 每层一行：节点的不同 y 值个数 == 层数
+    const rowsByY = new Set(r.nodes.map((n) => n.y));
+    expect(rowsByY.size).toBe(3);
+  });
+
+  it('content 包围盒覆盖所有节点，且不超出画布', () => {
+    const fanout = Array.from({ length: 12 }, (_, i) => node(100 + i, `callee_${i}`, 1));
+    const center = node(1, 'POST /orders', 0);
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+
+    expect(r.content).toBeDefined();
+    const c = r.content!;
+    r.nodes.forEach((n) => {
+      const hw = (n.w ?? 0) / 2;
+      const hh = (n.h ?? 0) / 2;
+      expect(n.x - hw).toBeGreaterThanOrEqual(c.x);
+      expect(n.x + hw).toBeLessThanOrEqual(c.x + c.w);
+      expect(n.y - hh).toBeGreaterThanOrEqual(c.y);
+      expect(n.y + hh).toBeLessThanOrEqual(c.y + c.h);
+    });
+    // 供 zoom-to-fit 使用：必须比整块画布小，否则 fit 等于没做
+    expect(c.w).toBeLessThan(r.width);
+    expect(c.h).toBeLessThan(r.height);
+  });
+
+  it('同父的兄弟排在一起（减少跨行连线）', () => {
+    const center = node(1, 'root', 0);
+    const parents = [node(10, 'p0', 1), node(11, 'p1', 1)];
+    // 交错给出：不排序的话两个父的孩子会交替出现
+    const children = [node(20, 'a0', 2), node(21, 'b0', 2), node(22, 'a1', 2), node(23, 'b1', 2)];
+    const edges: LayoutEdge[] = [
+      { id: 1, from: 1, to: 10 },
+      { id: 2, from: 1, to: 11 },
+      { id: 3, from: 10, to: 20 },
+      { id: 4, from: 11, to: 21 },
+      { id: 5, from: 10, to: 22 },
+      { id: 6, from: 11, to: 23 },
+    ];
+
+    const r = layeredLayout({ center, rings: [parents, children], edges, width: WIDTH, height: 720 });
+    const order = r.nodes
+      .filter((n) => n.ring === 2)
+      .sort((a, b) => a.x - b.x)
+      .map((n) => n.id);
+
+    expect(order).toEqual([20, 22, 21, 23]);
+  });
+});
+
+/**
+ * 回归：可读性的两条硬约束。
+ *
+ * 「边交叉」只能尽量减小（NP-hard），但**在你这个数据里最常见的形状上它本来就该是 0**：
+ * 折叠视图里语义节点是终点（`view_service.rs`），所以"一个契约读了 32 个配置键"
+ * 就是 center + 单环 —— 所有边共用一个端点，从同一点出发的线段互不相交。
+ *
+ * 「边穿过节点」是比交叉更严重的问题（药丸被线穿过后名字读不出来），
+ * 它是**可判定**的，因此必须 100% 消除，任何布局都不许违反。
+ */
+describe('可读性硬约束', () => {
+  const WIDTH = 1040;
+
+  it('单环宽扇出 → 分层两行（中心在上、单环在下），边交叉为 0 且边不穿过节点', () => {
+    const center = node(1, 'GET /v2/order/invoice_detail', 0);
+    const fanout = Array.from({ length: 24 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+
+    // 确实是两层：中心一行在上、单环一行在下（与径向的中心辐射单列区分开）
+    const ys = [...new Set(r.nodes.map((n) => Math.round(n.y)))];
+    expect(ys.length).toBe(2);
+    const [topY, bottomY] = ys.sort((a, b) => a - b);
+    expect(Math.round(r.nodes.find((n) => n.id === center.id)!.y)).toBe(topY);
+    fanout.forEach((n) => {
+      expect(Math.round(r.nodes.find((x) => x.id === n.id)!.y)).toBe(bottomY);
+    });
+
+    expect(crossings(r.edges)).toBe(0);
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+  });
+
+  it('多层分层：边绝不穿过节点（斜边会自动绕行）', () => {
+    const center = node(1, 'handler', 0);
+    const ring1 = Array.from({ length: 4 }, (_, i) => node(10 + i, `service_${i}`, 1));
+    const ring2 = Array.from({ length: 10 }, (_, i) => node(50 + i, `table_${i}`, 2));
+    const edges: LayoutEdge[] = [];
+    ring1.forEach((n) => edges.push({ id: n.id, from: center.id, to: n.id }));
+    ring2.forEach((n, i) => edges.push({ id: n.id, from: ring1[i % ring1.length].id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [ring1, ring2], edges, width: WIDTH, height: 720 });
+
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+  });
+
+  it('截图中那种规模（契约读 32 个配置键）仍然满足两条硬约束', () => {
+    const center = node(1, 'GET /v2/order/invoice_detail', 0);
+    const fanout = [
+      ...Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1)),
+      { id: 200, kind: 'Cache', name: 'cache', ring: 1 },
+      { id: 201, kind: 'Table', name: 'cache_table', ring: 1 },
+    ];
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+
+    expect(crossings(r.edges)).toBe(0);
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+    // 同类聚在一起：Cache / Table 在底部一行的最右端，不被埋在 30 个配置键中间
+    const bottom = r.nodes
+      .filter((n) => n.id !== center.id)
+      .sort((a, b) => a.x - b.x);
+    expect(bottom.slice(-2).map((n) => n.kind).sort()).toEqual(['Cache', 'Table']);
+  });
+
+  it('同一对端点的多条路径必须错开，不能画成完全重叠的一条线', () => {
+    const center = node(1, 'GET /v2/order/invoice_detail', 0);
+    const fanout = Array.from({ length: 8 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
+    // 第二条通往同一个配置键的**不同路径**（后端现在会各出一条边，via 不同）
+    edges.push({ id: 999, from: center.id, to: fanout[0].id });
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+
+    const pair = r.edges.filter(
+      (e) => e.from === center.id && e.to === fanout[0].id,
+    );
+    expect(pair.length).toBe(2);
+    // 两条边的几何不能相同：否则用户只看到一条线，根本不知道有两条路径
+    expect(JSON.stringify(pair[0].points)).not.toBe(JSON.stringify(pair[1].points));
+    // 错开后仍满足两条硬约束
+    expect(crossings(r.edges)).toBe(0);
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+  });
+
+  it('多层且某层很宽（会换行）时，边仍不穿过节点', () => {
+    const center = node(1, 'handler', 0);
+    const ring1 = Array.from({ length: 8 }, (_, i) => node(10 + i, `service_${i}`, 1));
+    const ring2 = Array.from({ length: 22 }, (_, i) => node(50 + i, `table_${i}`, 2));
+    const edges: LayoutEdge[] = [];
+    ring1.forEach((n) => edges.push({ id: n.id, from: center.id, to: n.id }));
+    ring2.forEach((n, i) => edges.push({ id: n.id, from: ring1[i % ring1.length].id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [ring1, ring2], edges, width: WIDTH, height: 720 });
+
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+  });
+});
+
+/**
+ * 回归：径向入口必须按**图形状**分派，而不是按"有几个环 / 环上有几个节点"。
+ *
+ * 资源视角（Table / Cache / Event / Queue / Topic）在 `view_service.rs` 里走反向模式
+ * （`reverse = kind != HttpContract`），沿入边回溯到每个使用者后，把使用者**直接合成一条到
+ * 中心的边**（`MAX_USERS = 80`，其余计入 `hidden`）。此时 `ring` 只是挂在节点上的数字，
+ * 并没有对应的"叶子到叶子"的边 —— 传进来的是一颗**星**，而 `layeredLayout` 那种
+ * `nonEmpty.length === 1` 的判据在这里必然为假，必须用 `isStar` 来认。
+ *
+ * 这类数据恰好是 `MAX_USERS` 截断后的量级：同心环会被撑到容器数倍宽，而内容只占环上
+ * 一条 30px 宽的带子；改走中心辐射后同样满足两条可读性硬约束，画布小一个数量级。
+ */
+describe('radialLayout：资源视角（星形）', () => {
+  const WIDTH = 1040;
+
+  /** 造一个资源视角形态的输入：`ringSizes` = 每环人数，所有边都是 `使用者 → 中心`。 */
+  const resourceStar = (ringSizes: number[]) => {
+    const center: LayoutNode = { id: 1, kind: 'Cache', name: 'cache_order_summary', ring: 0 };
+    let seed = 100;
+    const rings: LayoutNode[][] = ringSizes.map((n, ri) =>
+      Array.from({ length: n }, (_, i) => {
+        const id = seed;
+        seed += 1;
+        return {
+          id,
+          kind: ri === 0 ? 'HttpContract' : 'Method',
+          name:
+            ri === 0
+              ? `GET /api/admin/order/refund_and_invoice_${i}`
+              : `store_order_refund_service_${i}`,
+          ring: ri + 1,
+        };
+      }),
+    );
+    const edges: LayoutEdge[] = rings.flat().map((n) => ({ id: n.id, from: n.id, to: center.id }));
+    return { center, rings, edges };
+  };
+
+  it('80 个使用者：改走中心辐射，两条可读性硬约束都成立，且保留跳数相邻性', () => {
+    const { center, rings, edges } = resourceStar([55, 25]);
+    const r = radialLayout({ center, rings, edges, width: WIDTH, height: 720 });
+
+    // 确实走了辐射：所有使用者的左边缘对齐成一列（同心环会沿不同角度散开）
+    const lefts = new Set(
+      rings.flat().map((n) => {
+        const p = r.nodes.find((x) => x.id === n.id)!;
+        return Math.round(p.x - (p.w ?? 0) / 2);
+      }),
+    );
+    expect(lefts.size).toBe(1);
+
+    expect(crossings(r.edges)).toBe(0);
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+
+    // 跳数不再由半径表达，必须由相邻性补回来：内环（直接使用者）整段排在外环（追溯得到）之前
+    const yOf = (n: LayoutNode) => r.nodes.find((x) => x.id === n.id)!.y;
+    expect(Math.max(...rings[0].map(yOf))).toBeLessThan(Math.min(...rings[1].map(yOf)));
+  });
+
+  it('同一份数据：同心环会被撑到容器 3 倍宽以上，面积大一个数量级', () => {
+    const { center, rings, edges } = resourceStar([55, 25]);
+    const input = { center, rings, edges, width: WIDTH, height: 720 };
+    const star = radialLayout(input);
+    const disc = concentricLayout(input);
+
+    // 同心环：半径 ∝ 人数 ⇒ 画布边长 ∝ 人数，直接横向炸出容器
+    expect(disc.width).toBeGreaterThan(3 * WIDTH);
+    // 辐射：宽度收在容器内（实际内容并非更窄，而是形态变了），代价转移到纵向滚动
+    expect(star.width).toBeLessThanOrEqual(WIDTH);
+    // 面积比：80 个使用者下实测约 5 倍，取 3 倍作为下界，避免边界抖动
+    expect(star.width * star.height * 3).toBeLessThan(disc.width * disc.height);
+  });
+
+  it('同心环在这种密度下确实会把外环的边压在内环药丸上（记录分派理由）', () => {
+    const { center, rings, edges } = resourceStar([55, 25]);
+    const disc = concentricLayout({ center, rings, edges, width: WIDTH, height: 720 });
+
+    // 这是**已知缺陷的特征化测试**，不是期望行为：内环半径是按"刚好排满"算的，
+    // 所以从中心贯穿到外环的边大概率穿过某个内环药丸（名字直接读不出来）。
+    // 若日后同心环自己修好了这条硬约束，应改这条断言并要求同步放宽分派条件，
+    // 而不是直接删掉它。
+    expect(segmentsThroughNodes(disc.edges, disc.nodes)).toBeGreaterThan(0);
+  });
+
+  it('小星形仍走同心环：圆最好看的场景不能被顺手换掉', () => {
+    const { center, rings, edges } = resourceStar([2, 3]);
+    const r = radialLayout({ center, rings, edges, width: WIDTH, height: 720 });
+
+    // 同心环的标志：有环引导线（= 跳数刻度）；辐射布局没有 guides
+    expect(r.guides?.length).toBe(2);
+  });
+
+  it('有叶子间边的多层图仍走同心环（把链路视角手动切成径向时不能悄悄变样）', () => {
+    const center = node(1, 'handler', 0);
+    const ring1 = Array.from({ length: 4 }, (_, i) => node(10 + i, `service_${i}`, 1));
+    const ring2 = Array.from({ length: 20 }, (_, i) => node(50 + i, `table_${i}`, 2));
+    const edges: LayoutEdge[] = [];
+    ring1.forEach((n) => edges.push({ id: n.id, from: center.id, to: n.id }));
+    ring2.forEach((n, i) => edges.push({ id: n.id, from: ring1[i % ring1.length].id, to: n.id }));
+
+    const r = radialLayout({ center, rings: [ring1, ring2], edges, width: WIDTH, height: 720 });
+
+    expect(r.guides).toBeDefined();
+  });
+});

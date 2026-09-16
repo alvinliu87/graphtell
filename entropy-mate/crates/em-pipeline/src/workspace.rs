@@ -121,6 +121,16 @@ pub struct GraphWorkspace {
     prop_values: HashMap<(i64, String), FactValue>,
     /// 文件路径 → File 节点。
     file_nodes: HashMap<String, i64>,
+    /// 文件路径 → 源文件 id（`resolve_name_in_file` 按路径查导入表用）。
+    file_id_by_path: HashMap<String, i64>,
+    /// **每个文件自己的** `use` 导入表：`源文件 id → (短名小写 → FQN)`。
+    ///
+    /// 为什么必须按文件存：PHP 的短名是按**文件**解析的（`use think\facade\Cache;`
+    /// 与 `use app\model\other\Cache;` 在不同文件里含义完全不同）。曾经只有一个
+    /// 全局短名索引（`by_short`）与一个先到先得的全局 `imports` 符号表，于是
+    /// `Cache::tag()` 被当成 `app\model\other\Cache`（一个 Model），凭空造出
+    /// `Model --MapsTo--> Table(cache)` 的类级语义边并污染整条调用链。
+    file_imports: HashMap<i64, HashMap<String, String>>,
     /// 出边邻接表：`from → [(kind, to)]`，用于祖先链判定。
     out_edges: HashMap<i64, Vec<(String, i64)>>,
     /// 短名索引：`短名(小写) → [node_id]`，替代全表线性扫描。
@@ -167,6 +177,8 @@ impl GraphWorkspace {
             symbols: BTreeMap::new(),
             prop_values: HashMap::new(),
             file_nodes: HashMap::new(),
+            file_id_by_path: HashMap::new(),
+            file_imports: HashMap::new(),
             out_edges: HashMap::new(),
             by_short: HashMap::new(),
             supertypes: HashMap::new(),
@@ -329,18 +341,31 @@ impl GraphWorkspace {
     ///
     /// 走 [`Self::by_short`] 索引，O(1)；否则在大库上会退化成 O(n) 全表扫描
     /// （CRMEB 有约 5 万个 FQN，每次线性扫描会让 P5/P7 慢几十秒）。
+    /// **歧义短名一律拒绝**：只有唯一候选才采纳。
+    ///
+    /// 曾经"先到先得"地返回第一个候选，而候选顺序取决于节点插入顺序（非确定）。
+    /// 本仓库 897 个类型短名里有 112 个重名（`User` / `StoreProduct` / `Login` 各有
+    /// 3~5 个候选，跨 `adminapi` / `api` / `model` 等命名空间）—— 猜中的那个
+    /// 常常是 controller 而不是 model，于是 `Model --MapsTo--> Table` 这类
+    /// 类级语义边会被挂到完全不相干的类上。
+    ///
+    /// 猜不出来就返回 `None`（留下 `UnresolvedLink` 诊断），**胜过连错一条边**。
+    /// 需要精确结果时请改用 `resolve_name_in_file`（按该文件的 `use` 解析）。
     pub fn resolve_short_name(&self, short: &str) -> Option<String> {
         let target = short.trim_start_matches('\\').to_ascii_lowercase();
-        if let Some(ids) = self.by_short.get(&target) {
-            for id in ids {
-                if let Some(node) = self.nodes.get(id) {
-                    if let Some(fqn) = &node.fqn {
-                        return Some(fqn.clone());
-                    }
-                }
+        let ids = self.by_short.get(&target)?;
+        let mut found: Option<&str> = None;
+        for id in ids {
+            let Some(fqn) = self.nodes.get(id).and_then(|n| n.fqn.as_deref()) else {
+                continue;
+            };
+            match found {
+                Some(prev) if prev == fqn => {}
+                Some(_) => return None, // 多个不同 FQN → 歧义，拒绝
+                None => found = Some(fqn),
             }
         }
-        None
+        found.map(|f| f.to_string())
     }
 
     // ------------------------------------------------------------ 边
@@ -711,6 +736,64 @@ impl GraphWorkspace {
     ///
     /// 这是全局索引（按短名小写），与 `resolve_short_name` 同样的启发式权衡：
     /// 不同文件里同名别名可能指向不同 FQN，但匹配是尽力而为、可叠加的。
+    /// 登记**某个文件**的 `use` 导入表（P2 调用，一个文件一份）。
+    pub fn record_file_imports(
+        &mut self,
+        file_id: i64,
+        path: &str,
+        imports: HashMap<String, String>,
+    ) {
+        self.file_id_by_path.insert(path.to_string(), file_id);
+        self.file_imports.insert(file_id, imports);
+    }
+
+    /// 取**某个文件**的 `use` 导入表：短名(小写) → FQN。
+    ///
+    /// P7 解析 `Class::method` 的接收者时必须先查它 —— 这是 PHP 真实的解析规则，
+    /// 与框架无关。查不到才允许退回全局短名索引。
+    pub fn imports_of_file(&self, file_id: i64) -> Option<&HashMap<String, String>> {
+        self.file_imports.get(&file_id)
+    }
+
+    pub fn imports_of_path(&self, path: &str) -> Option<&HashMap<String, String>> {
+        self.file_id_by_path
+            .get(path)
+            .and_then(|id| self.file_imports.get(id))
+    }
+
+    /// **在某个文件里**把短名还原成 FQN —— 所有需要"猜类名"的地方都该走这里。
+    ///
+    /// 规则（与 PHP 一致，不绑定任何框架）：
+    /// * 该文件 `use` 过这个短名 → **只**认它导入的 FQN，哪怕那个类不在图里
+    ///   （框架类，vendor 已被 P0 排除）。此时**绝不**退回全局索引去猜同名项目类；
+    /// * 否则退回全局短名索引，且**歧义短名一律拒绝**（见 `resolve_short_name`）。
+    pub fn resolve_name_in_file(&self, file: Option<&str>, raw: &str) -> Option<String> {
+        if let Some(path) = file {
+            if let Some(fqn) = self
+                .imports_of_path(path)
+                .and_then(|m| m.get(&raw.to_ascii_lowercase()))
+            {
+                return Some(fqn.clone());
+            }
+        }
+        self.resolve_short_name(raw)
+    }
+
+    /// 在**某个节点所属文件**里把短名还原成 FQN（先 `use`，再全局短名索引）。
+    ///
+    /// 供那些只有"调用方节点"而没有现成文件路径的解析点使用（接收者类型、自由函数）。
+    pub fn resolve_name_at(&self, owner: NodeId, raw: &str) -> Option<String> {
+        if let Some(fqn) = self
+            .node(owner)
+            .and_then(|n| n.file_id)
+            .and_then(|id| self.file_imports.get(&id.get()))
+            .and_then(|m| m.get(&raw.to_ascii_lowercase()))
+        {
+            return Some(fqn.clone());
+        }
+        self.resolve_short_name(raw)
+    }
+
     pub fn resolve_import_alias(&self, name: &str) -> Option<String> {
         let key = name.trim_start_matches('\\').to_ascii_lowercase();
         self.get_symbol("imports", &key)

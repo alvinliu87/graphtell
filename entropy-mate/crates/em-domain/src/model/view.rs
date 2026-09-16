@@ -95,7 +95,10 @@ pub enum ViewMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutMode {
-    /// 径向 / 同心环：环 = 跳数。对象入口子图默认。
+    /// 径向：资源视角（Table / Cache / Event / Queue / Topic）默认。
+    /// 前端按**图形状**二次分派：这些视角走反向模式、每个使用者都被合成一条到中心的边
+    /// （见 `view_service.rs` 的 `MAX_USERS`），实为一颗星 —— 人多时改走中心辐射布局
+    /// （画布随人数平方增长、外环的边会压过内环药丸）；人少或存在叶子到叶子的边时才是同心环（环 = 跳数）。
     Radial,
     /// 分层（Sugiyama）：自上而下，正交折线。下钻调用链。
     Layered,

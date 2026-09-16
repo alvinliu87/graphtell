@@ -14,6 +14,18 @@ import { layoutOf, type LayoutInput, type LayoutResult } from './layout/types';
  * 悬浮详情卡始终给出完整信息。
  */
 const EDGE_LABEL_LIMIT = 40;
+/**
+ * 「适应屏幕」的缩放区间。
+ *
+ * 下限 0.85：只容忍极轻微的缩小（约一成），再多就改为滚动。
+ * 取舍依据是"歧义成本 > 机械成本" —— 字被压小会导致看错（歧义），
+ * 而滚动/拖拽只是多动一下手（机械）。宁可滚，也不缩字。
+ * 上限是 1：小图不放大成巨号字。
+ */
+const FIT_MIN_K = 0.85;
+const FIT_MAX_K = 1;
+/** fit 时内容四周留白（世界坐标 px）。 */
+const FIT_PAD = 16;
 // 悬浮聚焦时非聚焦元素的淡出深度：随边数连续变化（边越少压得越浅，边越多压得越深），避免稀疏图像"全图消失"。
 const DIM_OPACITY_MIN = 0.12; // 稠密图最深
 const DIM_OPACITY_MAX = 0.4; // 稀疏图最浅
@@ -25,8 +37,15 @@ const DIM_EDGE_HIGH = 40; // 边数高于此取最深
  *
  * 折叠视图里存在"合成边"（提拉 / 反向汇总得到，没有真实行），只靠 `id` 会撞键；
  * 同一对端点也可能有多条不同种类的边，所以带上端点一起构成键。
+ *
+ * 还不够：正向视角下同一条传播边（seed）会被展开成**多条路径**，而 `view_service.rs`
+ * 的 `push_edge` 给它们复用同一个 evidence 边 id —— 于是会出现 `(id, from, to)` 完全相同的
+ * 两条边，只按 `id:from->to` 仍然撞键（表现为"悬浮一条高亮全部、悬浮卡永远显示第一条链"）。
+ * 因此再带上 `seq`（该边在 `edges` 输入数组中的下标）。`EdgeView` 侧由 `viewEdgeKeys`
+ * 用下标补齐同样的 `seq`，两处键才对齐。
  */
-const edgeKey = (e: { id: number; from: number; to: number }) => `${e.id}:${e.from}->${e.to}`;
+const edgeKey = (e: { id: number; from: number; to: number; seq?: number }) =>
+  `${e.seq ?? '?'}:${e.id}:${e.from}->${e.to}`;
 
 /**
  * 边标签锚点。
@@ -65,6 +84,27 @@ function labelAnchor(points: Array<[number, number]>, offset = 9): { x: number; 
     remain -= segLen[i];
   }
   return { x: points[0][0], y: points[0][1] - offset };
+}
+
+/**
+ * 沿边方向把端点收回到节点矩形**边界**上。
+ *
+ * 不能用"沿方向退回半个药丸宽度"来近似：辐射布局里射线的入射角很陡，
+ * 沿射线退回 75px 会把箭头甩到药丸外面，看起来像连到了别的东西上。
+ */
+function clipToRect(
+  from: [number, number],
+  to: [number, number],
+  w: number,
+  h: number,
+): [number, number] {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  if (dx === 0 && dy === 0) return to;
+  const tx = Math.abs(dx) < 1e-6 ? Number.POSITIVE_INFINITY : w / 2 / Math.abs(dx);
+  const ty = Math.abs(dy) < 1e-6 ? Number.POSITIVE_INFINITY : h / 2 / Math.abs(dy);
+  const t = Math.min(tx, ty);
+  return [to[0] - dx * t, to[1] - dy * t];
 }
 
 export interface CanvasNode {
@@ -167,19 +207,26 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const [hover, setHover] = useState<number | null>(null);
   const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const [pointer, setPointer] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 });
+  /**
+   * 手动平移缩放。`null` 表示"未手动干预"，此时用 `fitTransform`（自动适应屏幕）。
+   *
+   * 用 null 而不是存一份 fit 快照，是为了让首帧宽度未知（默认 1040）到
+   * ResizeObserver 量出真实宽度这段时间内，视图始终跟着布局自动重算，
+   * 而不是钉死在按 1040 算出来的那一次 fit 上。
+   */
+  const [transform, setTransform] = useState<{ x: number; y: number; k: number } | null>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
 
   // 语义图内容切换（fitKey 变化）时，把平移缩放重置回「整图 fit」初始态。
   // 悬浮聚焦 / 手动缩放平移 / 单节点就地展开不改变 fitKey，故不触发重置。
   useEffect(() => {
-    setTransform({ x: 0, y: 0, k: 1 });
+    setTransform(null);
   }, [fitKey]);
 
   // 工具栏「适应屏幕」按钮：fitSignal 自增即重置为整图 fit。
   useEffect(() => {
     if (fitSignal === undefined) return;
-    setTransform({ x: 0, y: 0, k: 1 });
+    setTransform(null);
   }, [fitSignal]);
 
   // 用真实容器宽度喂给布局，避免"按 1040 设计、再被窄列整体缩小"导致的拥挤。
@@ -193,7 +240,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
     const input: LayoutInput = {
       center: center ?? { id: -1, kind: 'Unknown', name: '', ring: 0 },
       rings: center ? rings : [],
-      edges: edges.map((e) => ({ id: e.id, from: e.from, to: e.to })),
+      // 带上 `seq`（下标）：同一 (id, from, to) 的多条路径靠它区分，见 `edgeKey` 的说明。
+      edges: edges.map((e, i) => ({ id: e.id, from: e.from, to: e.to, seq: i })),
       clusters: clusters?.map((c) => ({
         key: c.key,
         label: c.label,
@@ -227,13 +275,62 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return () => ro.disconnect();
   }, [loading, layout]);
 
-  // 按端点建索引：合成边 id 不唯一，按 id 查会永远只命中第一条（表现为"所有边都显示成同一种类"）。
+  // 视口高度（世界坐标）。svg 的 viewBox 与渲染尺寸 1:1 —— 缩放**全部**交给内层 <g transform>。
+  // 旧实现把 viewBox 设成 `layout.width`（分层布局下可能 3000px+），浏览器按 `meet` 把整张图
+  // 连文字一起等比压回容器宽，于是"出边一多字就糊"；同时滚轮以光标为锚点的换算也失准
+  // （那段代码假设 viewBox 与屏幕 1:1）。
+  const viewH = Math.max(320, layout ? layout.height : height);
+  // 图区实际可视高度（受外层 `maxHeight` 限制）：fit 按**看得见的那块**算，
+  // 而不是按滚动总高 —— 否则内容一高就被缩得比必要更小。
+  const viewportH = Math.min(height, viewH);
+
+  /**
+   * 真正的 zoom-to-fit：按**内容包围盒**（`layout.content`，缺失时退回整块画布）算缩放与居中。
+   *
+   * 旧实现只是 `setTransform({x:0,y:0,k:1})`，等于"不缩放"，所以「适应屏幕」按钮按了跟没按一样。
+   */
+  const fitTransform = useMemo(() => {
+    if (!layout) return null;
+    const box = layout.content ?? { x: 0, y: 0, w: layout.width, h: layout.height };
+    const availW = Math.max(120, renderW - FIT_PAD * 2);
+    const availH = Math.max(120, viewportH - FIT_PAD * 2);
+    const raw = Math.min(availW / Math.max(1, box.w), availH / Math.max(1, box.h));
+    const k = Math.max(FIT_MIN_K, Math.min(FIT_MAX_K, raw));
+    return {
+      k,
+      x: renderW / 2 - (box.x + box.w / 2) * k,
+      y: viewportH / 2 - (box.y + box.h / 2) * k,
+    };
+  }, [layout, renderW, viewportH]);
+
+  // 供滚轮 / 拖拽在"尚未手动干预"时以 fit 态为起点做增量（ref 稳定，不进 useCallback 依赖）。
+  const fitRef = useRef(fitTransform);
+  fitRef.current = fitTransform;
+
   // **必须在所有提前返回之前声明**，否则 loading 时它不执行、数据返回后多出一个 Hook，
   // 会直接触发 "Rendered more hooks than during the previous render" 白屏
   // （`GraphCanvas.test.tsx` 就是守这个用例的）。
+  //
+  // 按 id 建索引：后端会为同一对端点的**不同路径**各出一条边。
+  // 注意 `id` **不保证互不相同** —— 正向视角下同一条传播边（seed）展开出的多条路径会复用
+  // 同一个 evidence 边 id。所以这里只是**兜底**（首个命中），真正的精确匹配靠 `seq` + `viewEdgeKeys`。
+  const edgeById = useMemo(() => {
+    const m = new Map<number, EdgeView>();
+    for (const e of edges) if (!m.has(e.id)) m.set(e.id, e);
+    return m;
+  }, [edges]);
+  // 兜底：就地展开的子图可能带来与主图重复的 id，此时退回按端点查。
   const edgeByPair = useMemo(() => {
     const m = new Map<string, EdgeView>();
     for (const e of edges) m.set(`${e.from}->${e.to}`, e);
+    return m;
+  }, [edges]);
+  // `EdgeView` → 唯一键：用**下标**补齐 `seq`，与布局产出的 `edgeKey`（带 `seq`）对齐。
+  // 有了它，`(id, from, to)` 相同、`via` 不同的多条平行路径也能各自独立悬浮 / 点击：
+  // 悬浮谁只点亮谁，点开抽屉也显示**这条路径自己的** `via` 链路。
+  const viewEdgeKeys = useMemo(() => {
+    const m = new Map<EdgeView, string>();
+    edges.forEach((e, i) => m.set(e, edgeKey({ id: e.id, from: e.from, to: e.to, seq: i })));
     return m;
   }, [edges]);
 
@@ -248,15 +345,17 @@ export function GraphCanvas(props: GraphCanvasProps) {
       for (const e of edges) {
         if (e.from === hover) {
           nodes.add(e.to);
-          edgeKeys.add(edgeKey(e));
+          const k = viewEdgeKeys.get(e);
+          if (k) edgeKeys.add(k);
         } else if (e.to === hover) {
           nodes.add(e.from);
-          edgeKeys.add(edgeKey(e));
+          const k = viewEdgeKeys.get(e);
+          if (k) edgeKeys.add(k);
         }
       }
     }
     if (hoverEdge != null) {
-      const ev = edges.find((x) => edgeKey(x) === hoverEdge);
+      const ev = edges.find((x) => viewEdgeKeys.get(x) === hoverEdge);
       if (ev) {
         nodes.add(ev.from);
         nodes.add(ev.to);
@@ -264,7 +363,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       edgeKeys.add(hoverEdge);
     }
     return { nodes, edgeKeys, hasFocus: hover != null || hoverEdge != null };
-  }, [hover, hoverEdge, edges]);
+  }, [hover, hoverEdge, edges, viewEdgeKeys]);
   // 悬浮聚焦：始终在悬浮 node / edge 时保留"目标 + 直连邻居"全亮、其余淡出（各视角一致）。
   // 淡出深度随边数连续插值：4 条边≈0.4（轻微强调），40 条边≈0.12（深度压暗），中间线性过渡。
   const focusing = focus.hasFocus;
@@ -285,7 +384,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
         const rect = el.getBoundingClientRect();
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
-        setTransform((t) => {
+        setTransform((prev) => {
+          const t = prev ?? fitRef.current ?? { x: 0, y: 0, k: 1 };
           const k = Math.max(0.25, Math.min(3, t.k * factor));
           const ratio = k / t.k;
           return { k, x: cx - ratio * (cx - t.x), y: cy - ratio * (cy - t.y) };
@@ -331,7 +431,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
 
 
   const hoveredNode = hover != null ? nodeById.get(hover) ?? null : null;
-  const hoveredEdge = hoverEdge != null ? edges.find((x) => edgeKey(x) === hoverEdge) ?? null : null;
+  const hoveredEdge =
+    hoverEdge != null ? edges.find((x) => viewEdgeKeys.get(x) === hoverEdge) ?? null : null;
+
+  // 生效的变换：未手动缩放平移时自动适应屏幕。
+  // 取名 `tf` 而非 `view`，避免与边渲染里的局部 `view`（EdgeView）混淆。
+  const tf = transform ?? fitTransform ?? { x: 0, y: 0, k: 1 };
 
   return (
     <div
@@ -352,26 +457,33 @@ export function GraphCanvas(props: GraphCanvasProps) {
         setHoverEdge(null);
       }}
     >
-      <svg
-        width="100%"
-        height={Math.min(height, layout.height)}
-        viewBox={`0 0 ${layout.width} ${Math.min(height, layout.height)}`}
-        ref={svgWheelRef}
-        onMouseDown={(e) => {
-          drag.current = { x: e.clientX, y: e.clientY };
-        }}
-        onMouseMove={(e) => {
-          if (!drag.current) return;
-          const dx = e.clientX - drag.current.x;
-          const dy = e.clientY - drag.current.y;
-          drag.current = { x: e.clientX, y: e.clientY };
-          setTransform((t) => ({ ...t, x: t.x + dx, y: t.y + dy }));
-        }}
-        onMouseUp={() => (drag.current = null)}
-        onMouseLeave={() => (drag.current = null)}
-        style={{ cursor: 'grab', display: 'block' }}
-      >
-        <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
+      {/* 内容比视口高时改为滚动查看。旧实现用 `min(height, layout.height)` + `overflow:hidden`，
+          超出部分被直接裁掉且**无法**滚动 —— 分层图一深就"下半截凭空消失"。 */}
+      <div style={{ maxHeight: height, overflow: 'auto' }}>
+        <svg
+          width="100%"
+          height={viewH}
+          viewBox={`0 0 ${renderW} ${viewH}`}
+          preserveAspectRatio="xMinYMin meet"
+          ref={svgWheelRef}
+          onMouseDown={(e) => {
+            drag.current = { x: e.clientX, y: e.clientY };
+          }}
+          onMouseMove={(e) => {
+            if (!drag.current) return;
+            const dx = e.clientX - drag.current.x;
+            const dy = e.clientY - drag.current.y;
+            drag.current = { x: e.clientX, y: e.clientY };
+            setTransform((prev) => {
+              const t = prev ?? fitRef.current ?? { x: 0, y: 0, k: 1 };
+              return { ...t, x: t.x + dx, y: t.y + dy };
+            });
+          }}
+          onMouseUp={() => (drag.current = null)}
+          onMouseLeave={() => (drag.current = null)}
+          style={{ cursor: 'grab', display: 'block' }}
+        >
+        <g transform={`translate(${tf.x},${tf.y}) scale(${tf.k})`}>
           {/* 同心环引导线：显式标出"环 = 跳数"，仅视觉参照，不参与命中 */}
           {layout.guides?.map((g, i) => (
             <g key={`guide${i}`}>
@@ -464,7 +576,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
 
           {/* 边 */}
           {layout.edges.map((e) => {
-            const view = edgeByPair.get(`${e.from}->${e.to}`) ?? edges.find((x) => x.id === e.id);
+            // 精确回指：`seq` = 这条边在 `edges` 中的下标 ⇒ 直接取到**含各自 via 的那条** EdgeView。
+            // 同一 (id, from, to) 的多条平行路径因此不再共用同一个 view（否则悬浮卡永远显示第一条）。
+            // 仅当布局未带 `seq`（历史 / 合成路径）时才退回按 id / 端点查。
+            const view =
+              (e.seq != null ? edges[e.seq] : undefined) ??
+              edgeById.get(e.id) ??
+              edgeByPair.get(`${e.from}->${e.to}`) ??
+              edges.find((x) => x.id === e.id);
             // 聚焦：悬浮时保留"目标边 + 其两端 node"全亮，其余按密度压暗。
             const inFocus = focus.edgeKeys.has(edgeKey(e));
             const dim = focusing && !inFocus;
@@ -479,9 +598,11 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const _p0 = _pts[_pts.length - 2] ?? _pts[0];
             const _ang = Math.atan2(_p1[1] - _p0[1], _p1[0] - _p0[0]);
             const _toRect = nodeRectById.get(e.to);
-            const _off = _toRect && _toRect.shape === 'rect' ? _toRect.w / 2 + 6 : 12;
-            const _tipx = _p1[0] - _off * Math.cos(_ang);
-            const _tipy = _p1[1] - _off * Math.sin(_ang);
+            const _border = clipToRect(_p0, _p1, _toRect?.w ?? 24, _toRect?.h ?? 24);
+            const _len = Math.hypot(_p1[0] - _p0[0], _p1[1] - _p0[1]) || 1;
+            // 箭头尖落在边界外 3px：既不压住药丸，也不会看起来没连上
+            const _tipx = _border[0] - ((_p1[0] - _p0[0]) / _len) * 3;
+            const _tipy = _border[1] - ((_p1[1] - _p0[1]) / _len) * 3;
             const _a = 6;
             const _s = 0.42;
             const _ax1 = _tipx - _a * Math.cos(_ang - _s);
@@ -507,7 +628,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   stroke={edgeColor(view?.kind ?? '')}
                   strokeWidth={active ? 2.6 : 1.2}
                   strokeOpacity={active ? 1 : 0.8}
-                  strokeDasharray={view?.resolved ? undefined : '5 4'}
+                  strokeDasharray={view?.indirect ? '5 4' : undefined}
                   style={{ pointerEvents: 'none', transition: 'stroke-width 140ms ease, stroke-opacity 140ms ease' }}
                 />
                 {/* 方向箭头：点明有向依赖的流向（consumer→table / handler→config…）。
@@ -522,7 +643,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     标出来才读得懂。默认**常显**（不再要求悬浮）：只有边数超过阈值、
                     又没被放大时，才退化为"只标悬浮/选中那条"以防糊成一片。
                     悬浮时其它边只淡出、不隐藏标签（不因聚焦而丢信息）。 */}
-                {view && showEdgeLabels && (edges.length <= EDGE_LABEL_LIMIT || active || transform.k >= 1.15) ? (
+                {view && showEdgeLabels && (edges.length <= EDGE_LABEL_LIMIT || active || tf.k >= 1.15) ? (
                   <text
                     x={lp.x}
                     y={lp.y}
@@ -648,7 +769,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
             );
           })}
         </g>
-      </svg>
+        </svg>
+      </div>
 
       {/* 悬浮详情卡：取代"其它节点 / 边变淡"的旧行为 —— 悬浮即给出可读属性 */}
       {hoveredNode ? (
@@ -656,7 +778,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           style={{
             position: 'absolute',
             left: Math.min(pointer.x + 16, Math.max(8, renderW - 268)),
-            top: Math.min(pointer.y + 16, Math.max(8, height - 170)),
+            top: Math.min(pointer.y + 16, Math.max(8, viewportH - 170)),
             width: 252,
             padding: '10px 12px',
             borderRadius: 10,
@@ -717,7 +839,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           style={{
             position: 'absolute',
             left: Math.min(pointer.x + 16, Math.max(8, renderW - 268)),
-            top: Math.min(pointer.y + 16, Math.max(8, height - 150)),
+            top: Math.min(pointer.y + 16, Math.max(8, viewportH - 150)),
             width: 252,
             padding: '10px 12px',
             borderRadius: 10,
@@ -770,7 +892,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         }}
       >
         <span style={{ color: '#0f172a', fontWeight: 600 }}>{t(layout.note)}</span>
-        <span>{t('虚线 = 待验证假设；实线 = 已解析')}</span>
+        <span>{t('虚线 = 经调用链间接；实线 = 直接调用')}</span>
         <span>{t('滚轮缩放 · 拖拽平移 · 左键单击切视角 · 右键打开位置')}</span>
       </div>
     </div>

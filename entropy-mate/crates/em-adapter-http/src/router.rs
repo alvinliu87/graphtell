@@ -396,8 +396,6 @@ pub struct ViewQuery {
     pub depth: Option<u32>,
     pub limit: Option<u32>,
     pub name_contains: Option<String>,
-    /// 为 true 时展开全部语法节点（不折叠）。
-    pub expand: Option<bool>,
 }
 
 async fn view_candidates(
@@ -429,7 +427,7 @@ async fn object_view(
     };
     match state
         .views
-        .object_view(ProjectId(id), &perspective, NodeId(node), q.depth, q.expand)
+        .object_view(ProjectId(id), &perspective, NodeId(node), q.depth)
     {
         Ok(v) => Json(ApiResponse::success(v)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),

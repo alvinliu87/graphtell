@@ -12,22 +12,25 @@ export function usePerspectives(projectId: number | undefined) {
   return { perspectives: data ?? [], loading, error };
 }
 
-/** 对象类视角：只取"当前这一个对象"的链路子图。expand=true 展开语法节点。 */
+/**
+ * 对象类视角：只取"当前这一个对象"的链路子图。
+ *
+ * 恒为折叠视图：语法节点收进边的 `via` 链并带每跳调用处，单击边即可逐跳核对。
+ */
 export function useObjectView(
   projectId: number | undefined,
   perspective: string | undefined,
   nodeId: number | undefined,
   depth: number,
-  expand?: boolean,
 ) {
   const fn = useCallback(
     () =>
       projectId === undefined || perspective === undefined || nodeId === undefined
         ? Promise.resolve<ObjectView | null>(null)
-        : viewApi.object(projectId, perspective, nodeId, depth, expand),
-    [projectId, perspective, nodeId, depth, expand],
+        : viewApi.object(projectId, perspective, nodeId, depth),
+    [projectId, perspective, nodeId, depth],
   );
-  const { data, loading, error } = useAsync(fn, [projectId, perspective, nodeId, depth, expand]);
+  const { data, loading, error } = useAsync(fn, [projectId, perspective, nodeId, depth]);
   return { view: data, loading, error };
 }
 

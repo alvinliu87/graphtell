@@ -104,7 +104,14 @@ impl FileScanner for WalkDirScanner {
             )));
         }
 
-        let mut walker = walkdir::WalkDir::new(root).follow_links(false).into_iter();
+        // **必须按文件名排序**：`readdir` 的顺序取决于文件系统，逐次运行可能不同。
+        // 摄入顺序又决定了 P2 的一批"先到先得"结果（`by_fqn` 同名类谁先注册、
+        // 全局 `imports` 符号表记谁的 FQN），顺序一变，整张图就会小幅漂移
+        // （实测同一份 CRMEB 两次建图差 57 条边），视图输出也随之抖动。
+        let mut walker = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter();
         while let Some(entry) = walker.next() {
             let entry = match entry {
                 Ok(e) => e,

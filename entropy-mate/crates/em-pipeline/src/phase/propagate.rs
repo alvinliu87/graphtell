@@ -53,16 +53,32 @@ pub fn run(ctx: &mut PipelineContext) {
         by_source.entry(s.source.get()).or_default().push(s);
     }
 
+    // **必须按 source 排序后遍历**。
+    //
+    // 同一个 `(kind, from, to)` 往往能被多个 seed 传播到（如 `detail` 既经由
+    // `getQRCodePath`、又经由 `getQRCodePath → init` 读到同一个配置键）。
+    // `add_edge` 按 (kind, from, to) 去重且**先到者胜出**，胜出者写下的
+    // `seed_source` 就成了这条边的唯一"根因"。HashMap 的遍历顺序随进程随机，
+    // 于是同一条传播边每次建图拿到不同的 `seed_source` —— 视图据此回溯出的
+    // 接触点与完整路径随之改变（实测同一路由画出的边数在 29 / 30 之间跳）。
+    //
+    // 排序只保证**结果稳定**；"取 id 最小的 seed"是并列时的确定性打破方式，
+    // 不是语义选择。要同时保留多个根因，得让边记录 `seed_sources` 数组并让视图
+    // 为每个根因各画一条路径 —— 那是另一件事（与"一条路径一条边"同源）。
+    let mut sources: Vec<i64> = by_source.keys().copied().collect();
+    sources.sort_unstable();
+
     let mut added = 0usize;
-    for (src, src_seeds) in &by_source {
-        let reach = transitive_callers(*src, &callers, ctx);
+    for src in sources {
+        let src_seeds = &by_source[&src];
+        let reach = transitive_callers(src, &callers, ctx);
         for s in src_seeds {
             // 环境读取类（`ReadsConfig` / `ReadsCache`）沿链上移后语义退化，
             // 衰减置信度并标记 `indirect`，让视图与查询能区分「直接读」与「上游读过」。
             let (confidence, indirect) = propagated(&s.kind, s.confidence);
             let mut props = json!({
                 "via": "propagate",
-                "seed_source": *src,
+                "seed_source": src,
             });
             if indirect {
                 props["indirect"] = json!(true);

@@ -93,6 +93,10 @@ fn build_file(
             );
         }
     }
+    // 留一份**本文件**的导入表供 P7 解析调用接收者：全局 `imports` 符号表是先到先得的，
+    // 同名短名在不同文件里指向不同类时它必然出错，只有按文件存才符合 PHP 的解析规则。
+    ctx.ws
+        .record_file_imports(file.id.get(), &file.path, imports.clone());
 
     // Namespace 节点（按 FQN 去重）
     let mut ns_node: Option<NodeId> = None;

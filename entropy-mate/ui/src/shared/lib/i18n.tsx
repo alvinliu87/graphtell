@@ -72,6 +72,8 @@ const dict: Record<Lang, Record<string, string>> = {
     // ---- 通用 ----
     'status.resolved': '已解析',
     'status.unverified': '待验证',
+    'indirect.tooltip':
+      '起点自身并未执行该动作；由调用链下游某处传播而来（P8 沿 Calls 复刻）。事实成立，可在下方「调用链」中逐跳核对。',
   },
   'en-US': {
     'edge.Contains': 'contains',
@@ -117,6 +119,8 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.Unknown': 'Unknown',
     'status.resolved': 'resolved',
     'status.unverified': 'unverified',
+    'indirect.tooltip':
+      'The focal node itself did not perform this action; it was propagated from downstream along the call chain (P8 replicated via Calls). The fact holds — verify it hop by hop in the chain below.',
 
     // ---- 界面文案（中文即键；zh-CN 回退为原串，en-US 提供英译）----
     '工程总览': 'Projects',
@@ -208,8 +212,8 @@ const dict: Record<Lang, Record<string, string>> = {
     '跳数': 'Hops',
     '途经 ': 'via ',
     ' 跳': ' hops',
-    '虚线边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。':
-      'Dashed edges are inferences: each location below is verifiable; verify before trusting.',
+    '未解析的边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。':
+      'Unresolved edges are inferences: each location below is verifiable; verify before trusting.',
     '底层原始边（提拉前）的证据位置': 'Evidence locations of the underlying raw edge (before lifting)',
     '证据位置': 'Evidence locations',
     '这条边没有可跳转的证据位置（可能来自权威源推断）':
@@ -357,7 +361,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '选择一个对象': 'Select an object',
     '布局': 'Layout',
     '跟随视角默认（': 'Follow perspective default (',
-    '径向（环=跳数）': 'Radial (ring = hops)',
+    '径向 / 星形自适应': 'Radial / star-adaptive',
     '分层调用链': 'Layered call chain',
     'Spine 取证': 'Spine forensics',
     '聚类框': 'Cluster box',
@@ -401,7 +405,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '加载视图…': 'Loading view…',
     '类别 ': 'Category ',
     '单击查看证据链': 'Click to view the evidence chain',
-    '虚线 = 待验证假设；实线 = 已解析': 'Dashed = unverified hypothesis; solid = resolved',
+    '虚线 = 经调用链间接；实线 = 直接调用': 'Dashed = indirect via call chain; solid = direct call',
     '滚轮缩放 · 拖拽平移 · 左键单击切视角 · 右键打开位置':
       'Scroll to zoom · drag to pan · left-click to switch perspective · right-click to open location',
     ' 个成员': ' members',

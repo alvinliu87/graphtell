@@ -225,7 +225,7 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     if let Some(id) = ctx.ws.find_by_name(raw) {
         return Resolution::resolved(ResolveTier::Exact, id, format!("字面 FQN {raw}"));
     }
-    if let Some(fqn) = ctx.ws.resolve_short_name(raw) {
+    if let Some(fqn) = ctx.ws.resolve_name_in_file(Some(&loc.file), raw) {
         if let Some(id) = ctx.ws.find_by_name(&fqn) {
             return Resolution::resolved(ResolveTier::Exact, id, format!("短名解析 {raw} → {fqn}"));
         }
@@ -243,7 +243,11 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
             if let Some(id) = ctx
                 .ws
                 .find_by_name(&target)
-                .or_else(|| ctx.ws.resolve_short_name(&target).and_then(|f| ctx.ws.find_by_name(&f)))
+                .or_else(|| {
+                    ctx.ws
+                        .resolve_name_in_file(Some(&loc.file), &target)
+                        .and_then(|f| ctx.ws.find_by_name(&f))
+                })
             {
                 return Resolution::resolved(
                     ResolveTier::Registry,
@@ -264,7 +268,7 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     }
 
     // L6：与类短名全集求交
-    if let Some(fqn) = ctx.ws.resolve_short_name(raw) {
+    if let Some(fqn) = ctx.ws.resolve_name_in_file(Some(&loc.file), raw) {
         if let Some(id) = ctx.ws.find_by_name(&fqn) {
             return Resolution::resolved(ResolveTier::Intersection, id, format!("与类全集求交 {raw}"));
         }
@@ -319,14 +323,16 @@ fn resolve_event_listen(ctx: &mut PipelineContext, loc: &Locator) -> Resolution 
 }
 
 /// 把 `Foo::class` / `\App\X` 这类字面解析成图内的类节点。
-fn resolve_class_node(ctx: &PipelineContext, raw: &str) -> Option<NodeId> {
+fn resolve_class_node(ctx: &PipelineContext, raw: &str, file: Option<&str>) -> Option<NodeId> {
     let mut s = raw.trim_start_matches('\\').to_string();
     if let Some(stripped) = s.strip_suffix("::class") {
         s = stripped.to_string();
     }
-    ctx.ws
-        .find_by_name(&s)
-        .or_else(|| ctx.ws.resolve_short_name(&s).and_then(|f| ctx.ws.find_by_name(&f)))
+    ctx.ws.find_by_name(&s).or_else(|| {
+        ctx.ws
+            .resolve_name_in_file(file, &s)
+            .and_then(|f| ctx.ws.find_by_name(&f))
+    })
 }
 
 /// Facade：查 P3 装载的 FacadeMap。
@@ -420,7 +426,7 @@ pub fn resolve_handler_target(
     }
 
     let short = controller.rsplit('\\').next().unwrap_or(&controller);
-    if let Some(fqn) = ctx.ws.resolve_short_name(short) {
+    if let Some(fqn) = ctx.ws.resolve_name_in_file(Some(file), short) {
         if !method.is_empty() {
             if let Some(id) = ctx.ws.find_by_name(&format!("{}::{}", fqn, method)) {
                 return Some((id, "短名方法命中"));
@@ -455,7 +461,7 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
         if let Some(event_id) = res.candidates.first() {
             match loc.consumer.as_deref() {
                 Some(consumer) => {
-                    if let Some(listener_id) = resolve_class_node(ctx, consumer) {
+                    if let Some(listener_id) = resolve_class_node(ctx, consumer, Some(&loc.file)) {
                         ctx.ws.add_edge(NewEdge {
                             project_id: ctx.project.id,
                             kind: EdgeKind(EdgeKind::HANDLED_BY.to_string()),
@@ -539,14 +545,18 @@ fn resolve_pending_links(ctx: &mut PipelineContext, phase: &Phase) {
                 resolve_handler_target(ctx, &link.raw, file).map(|(id, _)| id)
                     .or_else(|| {
                         ctx.ws
-                            .resolve_short_name(&link.raw)
+                            .resolve_name_in_file(Some(file), &link.raw)
                             .and_then(|f| ctx.ws.find_by_name(&f))
                     })
             }
-            _ => ctx
-                .ws
-                .find_by_name(&link.raw)
-                .or_else(|| ctx.ws.resolve_short_name(&link.raw).and_then(|f| ctx.ws.find_by_name(&f))),
+            _ => {
+                let (f, _) = link.file.split_once(':').unwrap_or((link.file.as_str(), "0"));
+                ctx.ws.find_by_name(&link.raw).or_else(|| {
+                    ctx.ws
+                        .resolve_name_in_file(Some(f), &link.raw)
+                        .and_then(|x| ctx.ws.find_by_name(&x))
+                })
+            }
         };
         match target {
             Some(t) => {
@@ -624,7 +634,7 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
             if let Some(type_fqn) = receiver_type_fqn(ctx, &call.owner_fqn, recv) {
                 let cid = ctx.ws.find_by_name(&type_fqn).or_else(|| {
                     ctx.ws
-                        .resolve_short_name(&type_fqn)
+                        .resolve_name_at(call.owner, &type_fqn)
                         .and_then(|f| ctx.ws.find_by_name(&f))
                 });
                 if let Some(cid) = cid {
@@ -677,6 +687,19 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
     }
 }
 
+/// 用**调用方所在文件的 `use` 表**把短名还原成 FQN。
+///
+/// 返回 `Some(fqn)` 表示该文件确实导入了这个短名 —— 调用方必须**只**认这个 FQN，
+/// 即使它不在图里（框架类）也不能再退回全局短名索引猜测。
+/// 返回 `None` 表示该文件没有导入它（`new Foo`、全局命名空间写法等），交由后续兜底。
+fn file_import_of(ctx: &PipelineContext, owner: NodeId, short: &str) -> Option<String> {
+    let file_id = ctx.ws.node(owner)?.file_id?;
+    ctx.ws
+        .imports_of_file(file_id.get())
+        .and_then(|m| m.get(&short.to_ascii_lowercase()))
+        .cloned()
+}
+
 fn resolve_call_target(ctx: &PipelineContext, call: &CallRecord) -> Option<NodeId> {
     // 1) `Class::method`（静态 / 门面）：receiver 是类名（非变量）
     if let Some(recv) = &call.receiver {
@@ -689,7 +712,20 @@ fn resolve_call_target(ctx: &PipelineContext, call: &CallRecord) -> Option<NodeI
             if let Some(id) = ctx.ws.find_by_name(&format!("{recv}::{m}")) {
                 return Some(id);
             }
-            if let Some(fqn) = ctx.ws.resolve_short_name(recv) {
+            // 先按**本文件的 `use`** 还原 FQN —— 这才是 PHP 的真实解析规则。
+            //
+            // 关键：若文件导入的这个类**不在图里**（框架类，如 `think\facade\Cache`，
+            // vendor 已被 P0 排除），就必须**放弃解析**，绝不能退回全局短名索引去猜
+            // 一个同名的项目类。`Cache` 会被猜成 `app\model\other\Cache`（一个 Model），
+            // 于是每次 `Cache::xxx()` 都凭空多出一条 `Calls` 边，并把
+            // `Model --MapsTo--> Table(cache)` 这类类级语义边拖到路由上。
+            if let Some(fqn) = file_import_of(ctx, call.owner, recv) {
+                if let Some(id) = ctx.ws.find_by_name(&format!("{fqn}::{m}")) {
+                    return Some(id);
+                }
+                return ctx.ws.find_by_name(&fqn);
+            }
+            if let Some(fqn) = ctx.ws.resolve_name_at(call.owner, recv) {
                 if let Some(id) = ctx.ws.find_by_name(&format!("{fqn}::{m}")) {
                     return Some(id);
                 }
@@ -719,7 +755,7 @@ fn resolve_call_target(ctx: &PipelineContext, call: &CallRecord) -> Option<NodeI
     }
     let id = ctx
         .ws
-        .resolve_short_name(callee)
+        .resolve_name_at(call.owner, callee)
         .and_then(|f| ctx.ws.find_by_name(&f))?;
     if is_function_node(ctx, id) {
         return Some(id);

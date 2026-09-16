@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Select, Space, Tag, Tooltip } from 'antd';
 import type { Candidate, LayoutMode, Perspective } from '@/entities/view';
 import { useLocale } from '@/shared/lib/i18n';
@@ -5,7 +6,7 @@ import { truncate } from '@/shared/lib/format';
 
 /** 布局算法可读名（用于「跟随视角默认」选项的说明）。 */
 const LAYOUT_LABELS: Record<string, string> = {
-  radial: '径向（环=跳数）',
+  radial: '径向 / 星形自适应',
   layered: '分层调用链',
   spine: 'Spine 取证',
   compound: '聚类框',
@@ -41,6 +42,7 @@ export function PerspectivePicker({
   onNodeChange,
   onSearch,
   onDropdownVisibleChange,
+  nodeName,
   layout,
   onLayoutChange,
   trail,
@@ -56,6 +58,14 @@ export function PerspectivePicker({
   onSearch?: (input: string) => void;
   /** 二级对象下拉展开/收起时回调，供上层做"按需加载候选"。 */
   onDropdownVisibleChange?: (open: boolean) => void;
+  /**
+   * 当前选中节点的**兜底显示名**。
+   *
+   * 点图导航是直接给节点 id（不经候选列表），而候选是按需加载的 —— 两者叠加时
+   * 下拉里找不到匹配 `value` 的选项，antd 会把 value 原样渲染成裸 id（`57601`）。
+   * 有了它就能补一个选项，显示名字；候选已加载且命中时本字段不生效。
+   */
+  nodeName?: string | null;
   layout: LayoutMode | null;
   /** 传 `null` 表示"跟随视角默认"，即清掉 URL 里的 `m` 覆盖。 */
   onLayoutChange: (m: LayoutMode | null) => void;
@@ -66,6 +76,23 @@ export function PerspectivePicker({
   const current = perspectives.find((p) => p.id === perspective) ?? null;
   const isAggregate = current?.mode === 'aggregate';
   const { t } = useLocale();
+
+  /**
+   * 二级下拉的选项。
+   *
+   * 选中节点若不在候选里（点图导航后候选尚未加载，或价值排序把它挤出前 N），
+   * 必须**补一个选项**，否则 antd 会把 `value` 直接渲染成裸 id。
+   */
+  const nodeOptions = useMemo(() => {
+    const options = candidates.map((c) => ({
+      value: c.id,
+      label: `${c.name}${c.badge ? ` · ${c.badge}` : ''}`,
+    }));
+    if (node !== null && !candidates.some((c) => c.id === node)) {
+      options.unshift({ value: node, label: nodeName || `#${node}` });
+    }
+    return options;
+  }, [candidates, node, nodeName]);
 
   return (
     <Space direction="vertical" size={10} style={{ width: '100%' }}>
@@ -102,10 +129,7 @@ export function PerspectivePicker({
             filterOption={false}
             onSearch={onSearch}
             onDropdownVisibleChange={onDropdownVisibleChange}
-            options={candidates.map((c) => ({
-              value: c.id,
-              label: `${c.name}${c.badge ? ` · ${c.badge}` : ''}`,
-            }))}
+            options={nodeOptions}
           />
         )}
         <Space size={6}>
@@ -120,7 +144,7 @@ export function PerspectivePicker({
                 value: AUTO,
                 label: t('跟随视角默认（') + t(LAYOUT_LABELS[current?.layout ?? 'radial'] ?? current?.layout ?? 'radial') + t('）'),
               },
-              { value: 'radial', label: t('径向（环=跳数）') },
+              { value: 'radial', label: t('径向 / 星形自适应') },
               { value: 'layered', label: t('分层调用链') },
               { value: 'spine', label: t('Spine 取证') },
               { value: 'compound', label: t('聚类框') },

@@ -87,8 +87,6 @@ export function GraphPage() {
    *  在内存里跑 BFS（不再逐节点查库），很快；有搜索词时直接按名称返回、不打分。
    *  这里仍按需加载：已选中节点且未展开下拉时绝不预取，避免每次切视角都无谓打一次。 */
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  /** 是否展开全部语法节点（默认折叠，只显示语义节点与依赖边）。 */
-  const [expandSyntax, setExpandSyntax] = useState(false);
   /** 是否在图上标注边的类型（`ReadsConfig` / `MapsTo`…）。边过多时组件会自动退化为按需标注。 */
   const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   /** 折叠模式下，点击节点后按需展开显示的语法子图（按节点 id 归集）。 */
@@ -112,11 +110,9 @@ export function GraphPage() {
   const pendingAutoSelect =
     !isAggregate && state.n === null && (candidates.length > 0 || !candidatesLoaded);
 
-  // 图的语义内容标识：仅「切换视角 / 选中对象 / 切聚合视图 / 展开语法」这类导航动作会改变它，
+  // 图的语义内容标识：仅「切换视角 / 选中对象 / 切聚合视图」这类导航动作会改变它，
   // 用于触发 GraphCanvas 重新 fit。单节点就地展开、悬浮、手动缩放平移不计入。
-  const fitKey = isAggregate
-    ? `agg:${state.p}`
-    : `obj:${state.p ?? ''}:${state.n ?? ''}:${expandSyntax}`;
+  const fitKey = isAggregate ? `agg:${state.p}` : `obj:${state.p ?? ''}:${state.n ?? ''}`;
   /** 手动「适应屏幕」信号：每次 +1 即让 GraphCanvas 重置为整图 fit。 */
   const [fitSignal, setFitSignal] = useState(0);
 
@@ -205,12 +201,14 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidates, isAggregate, candidateSearch, state.n]);
 
+  // 视图恒为**折叠模式**：折叠时后端会把语法节点收进边的 `via` 链并内联每一跳的调用处，
+  // 点边即可逐跳核对；而"展开全部语法节点"是**信息降级**——画了 Method/CallSite，
+  // 却丢掉了 via 与每跳调用处，还把图撑成多层单行、要横向滚好几屏。
   const { view, loading, error: objectError } = useObjectView(
     id,
     state.p ?? undefined,
     state.n ?? undefined,
     state.d,
-    expandSyntax,
   );
   const { view: aggView, loading: aggLoading } = useAggregateView(
     id,
@@ -242,8 +240,9 @@ export function GraphPage() {
         return;
       }
       setExpandingId(nodeId);
+      // 同样取**折叠**子图：子图里每条边都带 `via` 与每跳调用处，点边即可展开链路。
       void viewApi
-        .object(id, state.p ?? 'route', nodeId, expandDepth, true)
+        .object(id, state.p ?? 'route', nodeId, expandDepth)
         .then((ov) => {
           setExpanded((prev) => ({
             ...prev,
@@ -268,8 +267,8 @@ export function GraphPage() {
     (nodeId: number, _kind: string, ownView: string | null) => {
       if (!ownView) {
         // `ConfigKey` 等语义资产没有"单链路"视角：不切顶部筛选器，只打开 Inspector；
-        // 折叠模式下顺带就地展开其语法调用链
-        if (!expandSyntax) toggleExpand(nodeId);
+        // 顺带就地展开它的折叠子图（边带 via 链，点边可逐跳核对）
+        toggleExpand(nodeId);
         setInspectNode(nodeId);
         setInspectEdge(null);
         setState((s) => ({ ...s, i: nodeId, e: null }));
@@ -290,7 +289,7 @@ export function GraphPage() {
       setInspectEdge(null);
       setExpanded({});
     },
-    [state.n, view, pushTrail, expandSyntax, toggleExpand],
+    [state.n, view, pushTrail, toggleExpand],
   );
 
   const handleEdgeClick = useCallback((edge: EdgeView) => {
@@ -348,6 +347,26 @@ export function GraphPage() {
     },
     [merged],
   );
+
+  /**
+   * 二级筛选器的显示名兜底。
+   *
+   * 「点击图中的节点切视角」是**直接给节点 id**（不经候选列表），而候选是**按需加载**的
+   * （已选中节点且未展开下拉时刻意不预取）—— 于是下拉里找不到匹配 `value` 的选项，
+   * antd 会把 value 原样渲染成裸 id（如 `57601`），看起来像筛选器坏了。
+   *
+   * 这里从当前视图中心 / 面包屑取名字兜底；候选里已命中时返回 null（不生效），
+   * 因此不改变既有的按需加载策略与候选排序。
+   */
+  const selectedNodeName = useMemo(() => {
+    if (state.n === null) return null;
+    if (candidates.some((c) => c.id === state.n)) return null;
+    // 点图导航后 `view` 仍是上一视角的数据（`useAsync` 保留旧值），所以先查面包屑再查中心。
+    for (let i = trail.length - 1; i >= 0; i -= 1) {
+      if (trail[i].node === state.n && trail[i].nodeName) return trail[i].nodeName;
+    }
+    return view?.center.id === state.n ? view.center.name : null;
+  }, [state.n, candidates, trail, view]);
 
   // 首次进入时把当前位置压入面包屑
   useEffect(() => {
@@ -436,6 +455,7 @@ export function GraphPage() {
           }}
           onSearch={setCandidateSearch}
           onDropdownVisibleChange={setDropdownOpen}
+          nodeName={selectedNodeName}
           layout={state.m}
           onLayoutChange={(m) => setState((s) => ({ ...s, m }))}
           trail={trail}
@@ -443,13 +463,7 @@ export function GraphPage() {
           loading={loading && candidates.length === 0}
         />
         <Space style={{ marginTop: 8 }} align="center" wrap>
-          <Tooltip title={t('展开 Method / CallSite 等语法节点；默认只显示语义节点，点击节点可就地展开其调用链')}>
-            <Space size={6} align="center">
-              <Switch size="small" checked={expandSyntax} onChange={setExpandSyntax} />
-              <Typography.Text type="secondary">{t('展开语法')}</Typography.Text>
-            </Space>
-          </Tooltip>
-          <Tooltip title={t('就地展开调用链时向下钻取的跳数（多跳展开，而非仅相邻一环）；只影响折叠模式下点击节点的子图')}>
+          <Tooltip title={t('就地展开调用链时向下钻取的跳数（多跳展开，而非仅相邻一环）；只影响点击节点时插入的折叠子图')}>
             <Space size={6} align="center">
               <Typography.Text type="secondary">{t('展开跳数')}</Typography.Text>
               <InputNumber

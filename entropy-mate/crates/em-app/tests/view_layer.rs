@@ -9,8 +9,10 @@ use std::sync::{Arc, OnceLock};
 
 use em_app::{AppConfig, Container};
 use em_application::{PipelineService, ProjectService, ViewService};
-use em_domain::model::NewProject;
-use em_domain::port::{NoopObserver, Persistence, SystemClock};
+use em_domain::model::{NewProject, NodeKind};
+use em_domain::port::{
+    EdgeDirection, GraphQuery, NoopObserver, NodeFilter, Persistence, SystemClock,
+};
 
 /// 在 `CARGO_MANIFEST_DIR` 向上查找 `samples/CRMEB-master`。
 fn find_sample() -> Option<PathBuf> {
@@ -209,7 +211,7 @@ fn object_view_chain_and_hidden() {
         return;
     };
     let ov = views
-        .object_view(b.project_id, &pid, nid, Some(2), None)
+        .object_view(b.project_id, &pid, nid, Some(2))
         .expect("object_view");
     assert_eq!(ov.perspective, pid);
     assert_eq!(ov.center.id, nid);
@@ -249,7 +251,7 @@ fn object_view_default_is_semantic_only() {
     );
 
     let ov = views
-        .object_view(b.project_id, &pid, top.id, Some(2), None)
+        .object_view(b.project_id, &pid, top.id, Some(2))
         .expect("object_view");
 
     // 语义节点 = 第一类语义 kind，或带 `category`（外部系统子类型 Cache / Event / Queue…）。
@@ -301,7 +303,7 @@ fn object_view_resource_center_shows_its_users() {
         return;
     };
     let ov = views
-        .object_view(b.project_id, "table", top.id, Some(2), None)
+        .object_view(b.project_id, "table", top.id, Some(2))
         .expect("object_view");
 
     assert_eq!(ov.center.kind, "Table", "表视角中心应是 Table");
@@ -338,6 +340,22 @@ fn object_view_resource_center_shows_its_users() {
             e.from.get(),
             e.to.get()
         );
+        // **方向**必须保持「使用者 --语义边--> 资源」：`ReadsDb` / `ReadsCache` / `WritesDb`
+        // 这些谓语的主语是使用者，`to` 才是资源。曾按"由内向外"把两端对调，
+        // 于是每条边都成了「资源 → 使用者」（表现为 `表·cache --读库--> GET /verify_code`），
+        // 箭头、hover 卡的 `from → to`、Inspector 的「起点 / 终点」全部与谓语语义相反。
+        assert_eq!(
+            e.to.get(),
+            ov.center.id.get(),
+            "资源视角的边必须指向中心（使用者 → 资源），实际 {} -> {}",
+            e.from.get(),
+            e.to.get()
+        );
+        assert_ne!(
+            e.from.get(),
+            ov.center.id.get(),
+            "资源视角的边不应从中心出发（{e:?}）"
+        );
     }
 }
 
@@ -367,26 +385,229 @@ fn edge_evidence_verifies_chain() {
         return;
     };
     let views = view_svc(&b);
-    let Some((pid, nid)) = first_object_target(&views, b.project_id) else {
+    let Some((_pid, nid)) = first_object_target(&views, b.project_id) else {
         eprintln!("无对象节点，跳过 edge 断言");
         return;
     };
-    // 折叠视图会把语义边"提拉"为合成边（无独立 id），而本测试验证的是**真实链路边**的证据，
-    // 因此显式 expand=true 取非折叠视图。
-    let ov = views
-        .object_view(b.project_id, &pid, nid, Some(1), Some(true))
-        .expect("object_view");
-    let Some(e) = ov.edges.first() else {
-        eprintln!("中心节点没有链路边，跳过 edge_evidence 断言");
+    // `edge_evidence` 验证的是**真实链路边**的证据，所以要直接用库里的真实边 id：
+    // 视图里的边在折叠后经过"提拉"（一条真实边可能对应多条视图边），
+    // 反向视角（资源类中心）的边更是合成出来的（id 为负），都不能当证据 id 用。
+    let store = &b.container.store;
+    let edges = store
+        .edges_of(nid, EdgeDirection::Both)
+        .expect("edges_of 不应失败");
+    let Some(e) = edges.into_iter().next() else {
+        eprintln!("中心节点没有任何边，跳过 edge_evidence 断言");
         return;
     };
     let ev = views
-        .edge_evidence(e.id)
+        .edge_evidence(e.id.get())
         .expect("edge_evidence")
         .expect("边应存在");
-    assert_eq!(ev.edge.id, e.id);
+    assert_eq!(ev.edge.id, e.id.get());
     assert!(
         !ev.locations.is_empty() || ev.reason.is_some(),
         "实边或虚线都应有证据位置或理由"
     );
 }
+
+/// 折叠视图里**经过折叠**的语义边，其 `via` 末端必须落在**真实接触点**上：
+/// 该接触点自己持有一条指向该资源的**直接**语义边（P5 命中，带 `evidence`）。
+///
+/// 反例：P8 传播边只陈述"上游可达该资源"，它**不是路径**。若拿它当 `via` 末端，
+/// 链路就断在发现深度上，画出"路由自己读了缓存"这种伪路径（真实接触点在几跳之外）。
+/// 这条不变量与边的种类（读库 / 读缓存 / 投递…）无关，对任何仓库都应成立。
+#[test]
+fn folded_semantic_edges_end_at_real_contact() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let store = &b.container.store;
+    let cands = match views.candidates(b.project_id, "route", 6, None) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("无 route 候选，跳过");
+            return;
+        }
+    };
+    assert!(!cands.is_empty(), "route 视角应有候选");
+
+    let mut checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for c in cands.iter().take(6) {
+        let Ok(ov) = views.object_view(b.project_id, "route", c.id, Some(2)) else {
+            continue;
+        };
+        for e in &ov.edges {
+            // 只看经过折叠的（`via` 非空的）语义边；直连边由起点自己负责。
+            let Some(contact) = e.via.last() else { continue };
+            checked += 1;
+            let outs = store
+                .edges_of(contact.id, EdgeDirection::Outgoing)
+                .unwrap_or_default();
+            let has_direct = outs.iter().any(|r| {
+                r.kind.as_str() == e.kind
+                    && r.to_id == e.to
+                    && r.properties.get("evidence").is_some()
+            });
+            if !has_direct {
+                violations.push(format!(
+                    "路由 {} 的边 --{}--> #{} 末端接触点是 {:?}（#{}），但它没有带 evidence 的直接边",
+                    c.name, e.kind, e.to.get(), contact.name, contact.id.get()
+                ));
+            }
+        }
+    }
+    assert!(checked > 0, "应检查到折叠边，实际一条都没有");
+    assert!(
+        violations.is_empty(),
+        "存在断在发现深度上的伪路径：\n{}",
+        violations.join("\n")
+    );
+}
+
+/// 具体回归：`GET /v2/order/invoice_detail/:uni` 到 `Cache` 曾画出 3 条 `ReadsCache`，
+/// 且每条的 `via` 都是截断的（有一条甚至只有 `[detail]`，等于断言 `detail` 自己读缓存）。
+///
+/// 真实情况只有**两条完整到达路径**，且都汇到同一个接触点 `CacheService::remember`：
+///   detail → tidyOrder → SystemConfigService::more → CacheService::remember
+///   detail → getQRCodePath → UploadService::init → SystemConfigService::more → CacheService::remember
+#[test]
+fn invoice_detail_route_cache_edges_have_complete_paths() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let store = &b.container.store;
+    let nodes = store
+        .query_nodes(&NodeFilter {
+            project_id: b.project_id,
+            kind: Some(NodeKind("HttpContract".into())),
+            name_contains: Some("order/invoice_detail".into()),
+            limit: Some(5),
+            offset: Some(0),
+        })
+        .expect("query_nodes");
+    let Some(contract) = nodes.first() else {
+        eprintln!("图里没有 invoice_detail 路由，跳过");
+        return;
+    };
+    let ov = views
+        .object_view(b.project_id, "route", contract.id, Some(2))
+        .expect("object_view");
+
+    let cache_edges: Vec<_> = ov.edges.iter().filter(|e| e.kind == "ReadsCache").collect();
+    let desc: Vec<String> = cache_edges
+        .iter()
+        .map(|e| {
+            let chain: Vec<String> = e.via.iter().map(|v| v.name.clone()).collect();
+            format!("[{}]", chain.join(" → "))
+        })
+        .collect();
+    assert_eq!(
+        cache_edges.len(),
+        2,
+        "应只有两条完整到达路径（tidyOrder / getQRCodePath 两条分支），实际 {}: {:?}",
+        cache_edges.len(),
+        desc
+    );
+    for e in &cache_edges {
+        let last = e
+            .via
+            .last()
+            .unwrap_or_else(|| panic!("缓存边应经过折叠链，实际 via 为空：{desc:?}"));
+        assert_eq!(
+            last.name, "remember",
+            "via 必须落在真正的接触点 CacheService::remember 上，实际末端是 {:?}（整链 {desc:?}）",
+            last.name
+        );
+        assert!(e.indirect, "路由自身不读缓存，应标记为间接（虚线）");
+        assert!(
+            e.to_call_site.is_some(),
+            "应给出本链路访问缓存的位置（CacheService.php 的 Cache::tag()->remember()）"
+        );
+    }
+    // 曾经的伪路径形态：via 只有一跳，等于说 handler 自己读了缓存。
+    assert!(
+        !cache_edges.iter().any(|e| e.via.len() <= 1),
+        "不应再出现单跳的断尾伪路径：{desc:?}"
+    );
+}
+
+/// **特征测试（characterization test）**：钉住 `object_view` 对一个固定路由的完整输出形状。
+///
+/// 存在的唯一目的：`object_view` 是个近千行的折叠流程，将来拆分 / 优化时，
+/// 任何"顺手改坏"都必须在这里立刻暴露 —— 边数、按种类的分布、via 长度分布、
+/// 间接边与证据覆盖率、可见环分布，任一项变了都说明行为变了。
+///
+/// 它不是"正确性"断言（正确性是下面两个用例的事），而是**行为不变**的护栏。
+#[test]
+fn object_view_characterization_invoice_detail() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let store = &b.container.store;
+    let nodes = store
+        .query_nodes(&NodeFilter {
+            project_id: b.project_id,
+            kind: Some(NodeKind("HttpContract".into())),
+            name_contains: Some("order/invoice_detail".into()),
+            limit: Some(5),
+            offset: Some(0),
+        })
+        .expect("query_nodes");
+    let Some(contract) = nodes.first() else {
+        eprintln!("图里没有 invoice_detail 路由，跳过");
+        return;
+    };
+    let ov = views
+        .object_view(b.project_id, "route", contract.id, Some(2))
+        .expect("object_view");
+
+    let mut by_kind: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut via_len: Vec<usize> = Vec::new();
+    let mut indirect = 0usize;
+    let mut with_loc = 0usize;
+    for e in &ov.edges {
+        *by_kind.entry(e.kind.clone()).or_default() += 1;
+        via_len.push(e.via.len());
+        if e.indirect {
+            indirect += 1;
+        }
+        if e.to_call_site.is_some() {
+            with_loc += 1;
+        }
+    }
+    via_len.sort_unstable();
+
+    assert_eq!(ov.edges.len(), 29, "边总数变了：{:?}", by_kind);
+    assert_eq!(
+        by_kind.get("ReadsCache").copied().unwrap_or(0),
+        2,
+        "ReadsCache 边数变了"
+    );
+    assert_eq!(
+        by_kind.get("ReadsConfig").copied().unwrap_or(0),
+        27,
+        "ReadsConfig 边数变了"
+    );
+    assert_eq!(indirect, ov.edges.len(), "全部都是提拉/传播得来的间接边，变了说明 indirect 判定被改坏");
+    assert_eq!(with_loc, ov.edges.len(), "每条边都应能给出资源访问位置，变了说明证据选取被改坏");
+    // 关键：**最长链必须到 5 跳**（detail → getQRCodePath → init → more → remember），
+    // 若折叠/回溯被改坏，最长链会退回 2~3 跳。
+    assert_eq!(
+        via_len.last().copied().unwrap_or(0),
+        5,
+        "最长 via 链应为 5 跳，实际分布 {via_len:?}"
+    );
+    assert!(
+        via_len.iter().filter(|&&l| l == 1).count() >= 6,
+        "应有多条 1 跳的直接边（detail 自己读的配置），实际 {via_len:?}"
+    );
+}
+

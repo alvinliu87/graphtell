@@ -25,9 +25,9 @@ export const viewApi = {
     http.get<Candidate[]>(
       `/api/projects/${projectId}/view/${perspective}/candidates${qs({ limit, name_contains: search })}`,
     ),
-  object: (projectId: number, perspective: string, node: number, depth?: number, expand?: boolean) =>
+  object: (projectId: number, perspective: string, node: number, depth?: number) =>
     http.get<ObjectView>(
-      `/api/projects/${projectId}/view/${perspective}${qs({ node, depth, expand })}`,
+      `/api/projects/${projectId}/view/${perspective}${qs({ node, depth })}`,
     ),
   aggregate: (projectId: number, perspective: string, limit = 12) =>
     http.get<AggregateView>(

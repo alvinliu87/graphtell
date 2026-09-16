@@ -55,7 +55,7 @@ export interface EdgeView {
   kind: string;
   from: number;
   to: number;
-  /** 实线 = 已解析；虚线 = 待验证假设。 */
+  /** 是否为可追溯的真实语义依赖（非语义/合成边才为 false）。虚线/实线由 `indirect` 表示直接性。 */
   resolved: boolean;
   confidence: number;
   hops: number | null;
@@ -71,7 +71,8 @@ export interface EdgeView {
    * 而是其调用链下游某处发生过（P8 沿 Calls 复刻）。
    *
    * 例：路由 A 的 handler 调了共享服务，该服务读了配置 K，
-   * 则 A 会被标上 `--ReadsConfig--> K`：事实成立但强度弱，UI 应降权呈现。
+   * 则 A 会被标上 `--ReadsConfig--> K`：事实成立，调用链与接触点均可核实；
+   * UI 仅以虚线 + 金色「间接」标签区分其"非起点直接动作"，不再降权为待验证假设。
    */
   indirect?: boolean;
   /**

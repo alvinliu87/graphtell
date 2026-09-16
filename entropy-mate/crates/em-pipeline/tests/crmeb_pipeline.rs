@@ -8,7 +8,8 @@ mod common;
 
 use em_domain::model::{NodeKind, ProjectId, SubProjectId};
 use em_domain::port::{
-    DiagnosticSink, GraphQuery, NodeFilter, ParserRegistry, ProjectReader, SymbolTableReader,
+    DiagnosticSink, EdgeDirection, GraphQuery, NodeFilter, ParserRegistry, ProjectReader,
+    SymbolTableReader,
 };
 
 use serde_json::Value;
@@ -1251,3 +1252,72 @@ fn v1_php_parse_result() {
     }
     assert!(!route_calls.is_empty(), "v1.php 应解析出 Route 调用点");
 }
+
+/// 门面短名必须按**文件自己的 `use`** 解析，不能退回全局短名索引去猜。
+///
+/// `crmeb/crmeb/services/CacheService.php` 里写的是 `use think\facade\Cache;`，
+/// 而项目里恰好有一个 Model 叫 `app\model\other\Cache`（`protected $name = 'cache'`）。
+/// 若用全局短名索引解析，`Cache::tag($tag)->remember(...)` 就会被当成那个 Model，
+/// 于是每一次缓存调用都凭空多出一条 `Calls` 边，并把
+/// `Model --MapsTo--> Table(cache)` 这条**类级**语义边沿调用链拖到每个路由上。
+///
+/// 这是 PHP 的名字解析规则（按文件），与框架无关；`Request` / `Route` / `Response`
+/// 等同样有同名项目类，受同一条规则保护。
+#[test]
+fn facade_short_name_resolves_per_file_import() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    // `name_contains` 匹配的是节点的 `name`，所以先按短名粗筛、再按 fqn 精确定位。
+    let by_fqn = |fqn: &str| -> Option<em_domain::model::Node> {
+        let short = fqn.rsplit(['\\', ':']).next().unwrap_or(fqn);
+        b.store
+            .query_nodes(&NodeFilter {
+                project_id: b.project.id,
+                kind: None,
+                name_contains: Some(short.to_string()),
+                limit: Some(2000),
+                offset: Some(0),
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .find(|n| n.fqn.as_deref() == Some(fqn))
+    };
+    let cache_model = by_fqn("app\\model\\other\\Cache");
+    let Some(model) = cache_model else {
+        eprintln!("图里没有 app\\model\\other\\Cache，跳过");
+        return;
+    };
+    let remember = by_fqn("crmeb\\services\\CacheService::remember");
+    let Some(remember) = remember else {
+        eprintln!("图里没有 CacheService::remember，跳过");
+        return;
+    };
+
+    // `Cache::...` 在这个文件里是 `think\facade\Cache`（图外，vendor 已排除），
+    // 因此**不该**解析到项目里的同名 Model。
+    let bogus = b
+        .store
+        .edges_of(remember.id, EdgeDirection::Outgoing)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.kind.as_str() == "Calls" && e.to_id == model.id)
+        .count();
+    assert_eq!(
+        bogus, 0,
+        "CacheService::remember 不应有指向 app\\model\\other\\Cache 的 Calls 边：\
+         `use think\\facade\\Cache;` 是图外的框架类，短名解析不能退回全局同名类"
+    );
+
+    // 该 Model 自身的类级语义边必须完好（修的是"猜错调用"，不是"删掉这个类"）。
+    let maps_to = b
+        .store
+        .edges_of(model.id, EdgeDirection::Outgoing)
+        .unwrap_or_default()
+        .into_iter()
+        .any(|e| e.kind.as_str() == "MapsTo");
+    assert!(maps_to, "app\\model\\other\\Cache 仍应保留 Model --MapsTo--> Table 的类级边");
+}
+
+

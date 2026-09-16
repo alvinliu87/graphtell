@@ -1,6 +1,6 @@
-import { Alert, Button, Collapse, Descriptions, Drawer, Empty, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Collapse, Descriptions, Drawer, Empty, Space, Tag, Tooltip, Typography } from 'antd';
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { DownOutlined } from '@ant-design/icons';
+import { DownOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import type { EdgeEvidence, EdgeView, NodeLocations, SourceLocation, ViaNode } from '@/entities/view';
 import { viewApi } from '@/entities/view';
 import { nodeColor } from '@/entities/graph';
@@ -205,11 +205,16 @@ function EdgePanel({
       <Descriptions column={1} size="small" bordered>
         <Descriptions.Item label={t('关系')}>{edge.kind}</Descriptions.Item>
         <Descriptions.Item label={t('状态')}>
-          {unresolved ? <Tag color="orange">{t('待验证假设（虚线）')}</Tag> : <Tag color="green">{t('已解析（实线）')}</Tag>}
+          {unresolved ? <Tag color="orange">{t('status.unverified')}</Tag> : <Tag color="green">{t('status.resolved')}</Tag>}
         </Descriptions.Item>
         {edge.indirect ? (
           <Descriptions.Item label={t('性质')}>
-            <Tag color="gold">{t('间接（沿调用链传播）')}</Tag>
+            <Space size={4}>
+              <Tag color="gold">{t('间接（沿调用链传播）')}</Tag>
+              <Tooltip title={t('indirect.tooltip')}>
+                <InfoCircleOutlined style={{ color: '#d48806', cursor: 'help' }} />
+              </Tooltip>
+            </Space>
           </Descriptions.Item>
         ) : null}
         <Descriptions.Item label={t('置信度')}>{edge.confidence.toFixed(2)}</Descriptions.Item>
@@ -217,15 +222,6 @@ function EdgePanel({
           <Descriptions.Item label={t('跳数')}>{t('途经 ') + edge.hops + t(' 跳')}</Descriptions.Item>
         ) : null}
       </Descriptions>
-
-      {edge.indirect ? (
-        <Alert
-          type="warning"
-          showIcon
-          message={t('间接依赖：起点自身并未执行该动作')}
-          description={t('它由调用链下游某处传播而来（P8 沿 Calls 复刻），不是起点的直接动作。事实成立但强度弱——起点是否真的受影响，请按下面逐跳核对。')}
-        />
-      ) : null}
 
       {via.length > 0 ? (
         <CollapsedChain
@@ -243,7 +239,7 @@ function EdgePanel({
 
       {unresolved && via.length === 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('虚线边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。')}
+          {t('未解析的边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。')}
         </Typography.Text>
       ) : null}
 
