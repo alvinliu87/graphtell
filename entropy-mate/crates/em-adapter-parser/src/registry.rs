@@ -9,6 +9,7 @@ use em_domain::error::{DomainError, Result};
 use em_domain::model::Language;
 use em_domain::port::{LanguageParser, ParserRegistry};
 
+use crate::java::JavaParser;
 use crate::php::PhpParser;
 
 /// 默认注册中心。
@@ -19,9 +20,13 @@ pub struct DefaultParserRegistry {
 impl DefaultParserRegistry {
     pub fn new() -> Self {
         let mut parsers: HashMap<String, Box<dyn LanguageParser>> = HashMap::new();
-        // 目标：兼容所有主流技术栈；当前先落地 PHP。
+        // 目标：兼容所有主流技术栈。新增语言 = 在这里注册一个 `LanguageParser` 实现，
+        // 上层流水线（P0~P8）无需任何改动。
         if let Ok(p) = PhpParser::new() {
             parsers.insert(Language::PHP.to_string(), Box::new(p));
+        }
+        if let Ok(p) = JavaParser::new() {
+            parsers.insert(Language::JAVA.to_string(), Box::new(p));
         }
         Self { parsers }
     }

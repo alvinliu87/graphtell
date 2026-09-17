@@ -9,7 +9,7 @@ use em_domain::error::{DomainError, Result};
 use em_domain::model::{
     Language, NewSourceFile, NewSubProject, Project, ProjectId, SourceFile, SubProject,
 };
-use em_domain::port::{FileScanner, ScanRequest};
+use em_domain::port::{FileScanner, ParserRegistry, ScanRequest};
 use tracing::info;
 
 /// 子工程标记文件 → (语言, 角色)。
@@ -30,7 +30,11 @@ pub struct IngestResult {
 }
 
 /// 执行 Ingest。
-pub fn run(project: &Project, scanner: &dyn FileScanner) -> Result<IngestResult> {
+pub fn run(
+    project: &Project,
+    scanner: &dyn FileScanner,
+    parsers: &dyn ParserRegistry,
+) -> Result<IngestResult> {
     let markers: Vec<&str> = MARKERS.iter().map(|m| m.0).collect();
     let found = scanner.find_markers(&project.root_path, &markers, 4)?;
 
@@ -68,10 +72,25 @@ pub fn run(project: &Project, scanner: &dyn FileScanner) -> Result<IngestResult>
     }
 
     // 扫描全部源文件，再按路径前缀归属到最具体的子工程
+    // 「语言 → 扩展名」取自解析器注册表，保证它与子工程标记文件表同源：
+    // 不会出现 `go.mod` 能识别子工程、`.go` 文件却被扫不进来的错位。
+    let language_extensions: Vec<(String, Vec<String>)> = parsers
+        .supported_languages()
+        .into_iter()
+        .filter_map(|l| {
+            parsers.parser_for(&l).map(|p| {
+                (
+                    l.as_str().to_string(),
+                    p.extensions().iter().map(|e| e.to_string()).collect(),
+                )
+            })
+        })
+        .collect();
     let request = ScanRequest {
         root: project.root_path.clone(),
         extra_excludes: project.config.exclude_globs.clone(),
         languages: Vec::new(),
+        language_extensions,
     };
     let scanned = scanner.scan(&request)?;
     info!(

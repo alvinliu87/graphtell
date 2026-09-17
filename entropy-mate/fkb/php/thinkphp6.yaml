@@ -1,0 +1,625 @@
+# ThinkPHP 框架知识（**形态级**，非单版本）
+#
+# 这里只描述"如何识别 / 如何解析 / 如何建图"，不含任何 Rust 代码。
+# 新增框架 = 新增一份这样的 YAML。
+#
+# 覆盖范围：**5.1 / 6.x / 8.x —— 同一 API 形态家族**。
+# 三者共用 `think\facade\*` 门面、`Db::name` / `Model`、`Route::{get,post,...}`、
+# `config/database.php` 这套核心形态，差异只在个别文件名与入口名：
+#   * 事件注册表：5.x 叫 `app/tags.php`（行为扩展），6.x+ 叫 `app/event.php`
+#   * 事件触发：5.x 用 `Hook::listen`，6.x+ 用 `event()` / `Event::trigger`
+#   * 框架源码目录：5.x 在 `thinkphp/`（**未被 Ingest 排除，见文末 TODO**），
+#     6.x+ 在 `vendor/topthink/framework/`（已由通用规则排除）
+#   * 应用根：5.x 常见 `application/`，6.x+ 为 `app/`（已由 root_rules.fallbacks 覆盖）
+# 这些差异**用文件内的数据吸收**（并列选择器 / 双 loader / fallback），
+# 不按大版本号拆文件 —— 详见 `fkb/README` 的形态切分约定。
+
+id: thinkphp6
+display_name: ThinkPHP 6
+language: php
+version_hint: "5.1 / 6.x / 8.x"
+# NOTE: 本字段当前**不生效** —— Ingest（P0）早于框架识别（P3）执行，
+# 无法按 FKB 过滤文件；实际生效的是 `ProjectConfig.exclude_globs`（工程级）。
+# 保留在此仅作意图记录，待 Ingest 前置探测支持后再接上。
+exclude_globs:
+  - "runtime/**"
+  - "public/static/**"
+  - "extend/**"
+  - "thinkphp/**"
+
+# ---------------------------------------------------------------- 识别
+detectors:
+  - kind: manifest_dependency
+    manifest: composer.json
+    dependency: topthink/framework
+    confidence: 0.95
+  - kind: file_exists
+    path: think
+    confidence: 0.5
+
+# ---------------------------------------------------------------- 框架根
+# 从 composer.json 的 autoload.psr-4 解析 AppRoot：
+#   { "autoload": { "psr-4": { "app\\": "app/", "crmeb\\": "crmeb/" } } }
+#   → AppRoot = "app"，confidence 1.0，source 记录解析依据
+root_rules:
+  - id: tp6-app-root
+    key: app_root
+    source:
+      kind: manifest_json
+      manifest: composer.json
+      pointer: autoload.psr-4
+      pick: shallowest_dir
+    confidence: 1.0
+    fallbacks:
+      - app
+      - application
+      - src
+
+  # 自动探测数据库表前缀：ThinkPHP 把前缀写在 `config/database.php` 的
+  # `connections.<驱动>.prefix`。探测结果写入 `db_prefix` 事实，P3 据此为
+  # 整个工程配置 table_prefixes，避免把 CRMEB 的 `eb_` 之类写死在通用层。
+  - id: tp6-db-prefix
+    key: db_prefix
+    source:
+      kind: manifest_php
+      manifest: config/database.php
+      pointer: connections.mysql.prefix
+    confidence: 1.0
+
+# ---------------------------------------------------------------- 路由 handler
+# ThinkPHP 的 handler 形如 `'admin.Login/login'`、`'v1.CrontabController/orderUnpaidCancel'`：
+#   * 点号表示控制器所在子目录（`v1.agent.AgentManage` → `v1\agent\AgentManage`）
+#   * 斜杠分隔方法名
+# 控制器统一落在 `app/<应用段>/controller/` 下，应用段由路由文件路径推断
+# （`app/api/route/pc.php` → `api`），推断不出时按下面的候选逐个试。
+#
+# 这段**曾经硬编码在内核**（`resolve.rs` 里的 `app\{app}\controller\{C}` 模板与
+# `["api","adminapi","outapi","kefuapi","index"]` 白名单），现迁到 FKB。
+handler:
+  method_separators: ["/"]
+  hierarchy_separators: ["."]
+  class_templates:
+    - "app\\{app}\\controller\\{controller}"
+    - "app\\{app}\\controller\\v1\\{controller}"
+  app_segments: ["api", "adminapi", "outapi", "kefuapi", "index"]
+  app_anchor_dir: "route"
+  app_fallback: "api"
+
+# 消费入口方法名：连向一个类时优先连到它的哪个方法。
+#   `handle` 事件监听器、`doJob`/`fire` 队列 Job（CRMEB `QueueTrait` 约定）、
+#   `run` TP5 行为类（Behavior）。声明后内核的默认集不再生效。
+entry_methods: ["handle", "doJob", "fire", "run", "__invoke"]
+
+# ---------------------------------------------------------------- P3 装载
+loaders:
+  # FacadeMap：由框架知识给出（权威），不靠猜
+  - id: tp6-facade-map
+    table: facade_map
+    from:
+      kind: inline
+      rows:
+        - { facade: "think\\facade\\Cache", target: "think\\Cache" }
+        - { facade: "think\\facade\\Db", target: "think\\Db" }
+        - { facade: "think\\facade\\Config", target: "think\\Config" }
+        - { facade: "think\\facade\\Env", target: "think\\Env" }
+        - { facade: "think\\facade\\Log", target: "think\\Log" }
+        - { facade: "think\\facade\\Queue", target: "think\\queue\\Queue" }
+        - { facade: "think\\facade\\Request", target: "think\\Request" }
+        - { facade: "think\\facade\\Route", target: "think\\Route" }
+        - { facade: "think\\facade\\Session", target: "think\\Session" }
+        - { facade: "think\\facade\\View", target: "think\\View" }
+  # 容器绑定：app/provider.php
+  - id: tp6-container-bindings
+    table: container_bindings
+    from:
+      kind: file
+      path: "{app_root}/provider.php"
+      format: php
+  # 事件监听注册表：app/event.php（6.x+ 形态）
+  - id: tp6-event-listeners
+    table: event_listeners
+    from:
+      kind: file
+      path: "{app_root}/event.php"
+      key_path: listen
+      format: php
+  # 行为扩展注册表：app/tags.php（**5.x 形态**）。
+  # TP5 把事件叫「行为（Behavior）」，注册表是 `tags.php` 且**扁平结构**
+  # （`'sms_send' => [Listener::class]`），没有 6.x 的 `listen` 外层键。
+  # 文件不存在时装载器静默跳过，故对 6.x+ 工程无副作用。
+  - id: tp6-behavior-listeners
+    table: event_listeners
+    from:
+      kind: file
+      path: "{app_root}/tags.php"
+      format: php
+  # 数据库 schema（从 SQL 安装脚本 / 源码中的表名收集）
+  - id: tp6-db-schema
+    table: schema
+    from:
+      kind: builtin
+      name: php_db_schema
+      params: {}
+  # 配置键权威源
+  - id: tp6-config-keys
+    table: config_keys
+    from:
+      kind: builtin
+      name: php_config_keys
+      params: {}
+  # 多语言（lang/<locale>/*.php）
+  - id: tp6-i18n
+    table: i18n
+    from:
+      kind: glob
+      pattern: "lang/*/*.php"
+      locale_regex: "lang/([^/]+)/"
+      format: php
+  # 路由表（Route:: 调用收集）
+  - id: tp6-route-list
+    table: route_list
+    from:
+      kind: builtin
+      name: php_routes
+      params: {}
+  # Nginx 配置
+  - id: nginx-config
+    table: nginx
+    from:
+      kind: builtin
+      name: nginx_config
+      params: {}
+
+# ---------------------------------------------------------------- P7 解析
+resolvers:
+  - id: tp6-container-make
+    call: "app()->make|app|make|invoke"
+    strategy: container
+  - id: tp6-event-trigger
+    call: "event|Event::trigger"
+    strategy: event
+  # 5.x 形态：`Hook::listen('sms_send', $params)` / `hook('sms_send')`。
+  # 与 6.x 的 `event('x')` 同义 —— arg0 是事件名，走 L3 别名索引解析到
+  # 由 `tags.php` / `event.php` 合成的事件节点。
+  # 注意用 `event` 而非 `event_listen`：后者的 arg1 是**监听器类**
+  # （`Event::listen('x', Listener::class)`），而 `Hook::listen` 的 arg1 是**载荷参数**。
+  - id: tp6-hook-trigger
+    call: "Hook::listen|hook"
+    strategy: event
+  # 运行时事件监听注册：`Event::listen('x', Listener::class)`。
+  # arg0 解析为事件节点（event_name 别名），`apply_resolution` 再把 `HandledBy` 边从事件节点指向 arg1 监听器。
+  # 注：`Event::subscribe(Sub::class)` 的 arg0 是「订阅者类」而非事件名（事件名在其 subscribe() 体内），
+  # 无法精确回链到具体事件，故只由 `tp6-event-listener-registration` 规则标成 `listener`，不在此建边。
+  - id: tp6-event-listen
+    call: "Event::listen"
+    strategy: event_listen
+  - id: tp6-facade
+    call: "think\\facade\\*::*"
+    strategy: facade
+  - id: tp6-accessor
+    call: "*->get*Attr"
+    strategy: accessor
+  # 实例方法调用：`$services->appAuth()`。类型来自方法参数类型提示与构造器属性注入
+  # （`__construct(T $x){ $this->p = $x; }`），是 ThinkPHP 的 DI 约定。
+  # 未知类型不建边 —— 宁可缺边，不可错边。
+  - id: tp6-typed-instance-call
+    call: "*->*"
+    strategy: variable_type
+
+# ---------------------------------------------------------------- 规则
+rules:
+  # ===== P4 Annotate-Pre：污点语义 =====
+  - id: tp6-sanitizer-param
+    phase: AnnotatePre
+    selector:
+      kind: call
+      callee: "*:where|*:whereLike|*:whereIn|*:whereOr|*:bind"
+    binding:
+      - Annotate:
+          channel: Taint
+          target: matched
+          annotations:
+            - kind: sanitizer
+              subkind: { literal: Parameterized }
+              confidence: 0.9
+          merge: Coexist
+
+  - id: tp6-sink-raw-sql
+    phase: AnnotatePre
+    selector:
+      kind: call
+      callee: "*:whereRaw|*:whereExp|Db::raw|*:query|*:execute"
+    binding:
+      - Annotate:
+          channel: Taint
+          target: matched
+          annotations:
+            - kind: sink
+              subkind: { literal: RawSql }
+              severity: critical
+              confidence: 0.9
+          merge: Coexist
+
+  - id: tp6-source-request
+    phase: AnnotatePre
+    selector:
+      kind: call
+      # `input()` 是 TP/CRMEB 最常见的取 HTTP 入参的框架全局助手函数（裸函数形式）。
+      # `param` 仅 Request 拥有，保留 `*` 通配以覆盖 `$this->request->param()` 这类别名写法；
+      # `get`/`post` 同时存在于 Cache/Session/Cookie/Model 等对象上，故收紧为 request 助手
+      # 与 `think\facade\Request` 门面两种形态，避免 `cache()->get()` 等被误标为 HttpRequest 源。
+      # 裸 `request()` 助手函数本身不在此标注：它返回的是 Request 对象，真正的污点源是其
+      # `param/get/post` 访问，已由下方模式覆盖。
+      callee: "*:param|request->get|request->post|Request::get|Request::post|input"
+    binding:
+      - Annotate:
+          channel: Taint
+          target: matched
+          annotations:
+            - kind: source
+              subkind: { literal: HttpRequest }
+              confidence: 0.9
+          merge: Coexist
+
+  # ===== P5 Synthesize：Table（三条 hook 汇聚到同一个 identity）=====
+  - id: tp6-db-name-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "think\\facade\\Db::name|Db::name|*:name|*:table"
+      where:
+        # 与 P3 装载的 schema 求交：避免把 `Route::name('xxx')` 当成表
+        - in_symbol_table: { table: schema, key_of: { arg: 0 } }
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              normalize:
+                - strip_prefix: []
+                - singularize
+                - strip_prefix: []
+                - trim
+          link: { kind: ReadsDb, direction: incoming }
+          confidence: 0.95
+
+  - id: tp6-model-table-property
+    phase: Synthesize
+    selector:
+      kind: inheritance
+      base: "think\\Model|Model"
+      with_property: "table"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              property: "table"
+              normalize:
+                - strip_prefix: []
+                - singularize
+                - trim
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.95
+
+  - id: tp6-model-table-convention
+    phase: Synthesize
+    selector:
+      kind: inheritance
+      base: "think\\Model|Model"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              self: true
+              transform: { snake_plural: true, strip_namespace: true }
+              normalize:
+                - strip_prefix: []
+                - singularize
+                - trim
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.6
+
+  # ===== P5 Synthesize：ConfigKey =====
+  - id: tp6-sys-config
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "sys_config|sys_config_all|config|think\\facade\\Env::get|env"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value: { arg: 0 }
+          fields:
+            - name: storage
+              from_symbol_table: { table: config_keys, field: storage }
+            - name: value_type
+              from_symbol_table: { table: config_keys, field: value_type }
+            - name: mutable
+              from_symbol_table: { table: config_keys, field: mutable }
+          link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.9
+
+  # ===== P5 Synthesize：Cache =====
+  # **按字面量 key 区分节点**（与 ConfigKey / Table / Queue 一致），而不是全库聚成一个 blob。
+  #
+  # 历史问题：identity 曾写死 `literal: "Cache"`，于是全库所有 `Cache::*` 调用点都汇到
+  # 同一个节点（实测 346 条入边），`key` 字段被反复覆盖、只剩最后一个值 —— 既无法回答
+  # 「谁读写了同一个缓存键」，`key` 的"记录"承诺也名存实亡。
+  #
+  # 现在：`arg:0` 为**字面量**时用作身份（`Cache::get('crontabCache')` → 节点 `crontabCache`）；
+  # 变量 / 表达式（`Cache::get($name)`、`Cache::get(self::PREFIX . $x)`）由 `require_literal`
+  # 判否 → 回退到统一的 `Cache` 节点（表示"键不可静态确定"），绝不把 `$name` 当身份。
+  - id: tp6-cache-store
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "think\\facade\\Cache::*|Cache::*"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：队列 topic =====
+  #
+  # 身份提取策略（框架无关、通用）：
+  # * 优先 `arg:0`（`Queue::push($jobClass)` 里显式给出的 Job 类），且 `require_class`
+  #   保证只有真实存在的类才被采纳；
+  # * 取不到时退回 `owner_class` —— 即「发起调用的类」。这正好覆盖 self-enqueue 模式
+  #   （如 CRMEB 的 `QueueTrait::dispatch` 经 `->job(__CLASS__)` 把消费方设成调用类自身）：
+  #   此时 `arg:0` 是动作字符串 `$action` 而非类，`require_class` 判否后退回产生调用的
+  #   服务类，topic 即该服务。于是「支持 think\facade\Queue 这一个框架」自动惠及所有
+  #   经门面 / 包装 / trait 使用队列的项目，无需任何项目级 FKB。
+  - id: tp6-queue-topic
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Queue::push|Queue::later|*:dispatch"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Queue
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              resolve: class_const
+              require_class: true
+              transform: { class_to_topic: true }
+            value_fallback:
+              owner_class: true
+              transform: { class_to_topic: true }
+          link: { kind: PublishesTo, direction: incoming }
+          confidence: 0.85
+      # 消费方：队列消息由 Job 类消费（其 `fire()` / `handle()` 处理投递来的任务）。
+      # 与 `Event::listen` → `HandledBy` 对称：把 Job 类用 `HandledBy` 边连回 Queue，
+      # 使「队列视角」既看得到「谁投递」(PublishesTo)，也看得到「谁消费」(HandledBy)。
+      # 同一 identity 会按队列名合并成同一个节点；若 Job 类未在代码库内定义，则降级为
+      # PendingLink 待 P7 解析（同路由 handler 机制）。
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Queue
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              resolve: class_const
+              require_class: true
+              transform: { class_to_topic: true }
+            value_fallback:
+              owner_class: true
+              transform: { class_to_topic: true }
+          link:
+            kind: HandledBy
+            direction: to_target
+            # 优先用 `arg:0` 解析消费方（如 `JobClass::dispatch('action')` → `JobClass::action`）；
+            # 取不到时退回 `receiver_class`（被投递的 Job 类本身，如 `ProductLogJob`，
+            # 其 `doJob` 方法即为消费入口），避免 `arg:0` 是数组/动作名时消费方整条缺失。
+            to: { arg: 0, resolve: class_const }
+            to_fallback: { receiver_class: true }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：HTTP 契约桥（后端侧）=====
+  - id: tp6-route-http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "think\\facade\\Route::{post,get,any,rule,put,delete,patch}|Route::{post,get,any,rule,put,delete,patch}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { method_name: true, normalize: [upper] }
+            path:
+              arg: 0
+              normalize:
+                - strip_prefix: ["api/"]
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+            - name: handler
+              value: { arg: 1 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { arg: 1, resolve: handler_pattern }
+          confidence: 0.95
+
+  # ===== P4+P5+P6：事件注册表 =====
+  - id: tp6-event-registry
+    phase: AnnotatePre
+    selector:
+      kind: config_entry
+      file: "*/event.php"
+      key_path: "listen.*"
+      where:
+        # 只要数组条目：排除 `listen.<evt>.0` 这类被展开出的标量叶子（否则同一事件
+        # 会额外合成一个 `<evt>.0` 噪声节点），也排除值为空的条目。
+        - entry_arity_gte: 1
+    binding:
+      # ① P4：标注【已存在】的监听器类
+      - Annotate:
+          phase: Pre
+          target:
+            from_field:
+              source: { array_values: true }
+              resolve: class_const
+          channel: FkbMark
+          annotations:
+            - kind: listener
+              confidence: 0.95
+          merge: MaxByKind
+      # ② P5：建事件中介节点（多点汇聚 + 一对多）
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Event
+          identity:
+            kind: Named
+            value: { path_segment: 1 }
+          fields:
+            - name: payload_arity
+              value: { array_length: true }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { array_values: true, resolve: class_const }
+          confidence: 0.95
+          alias:
+            namespace: event_name
+            key: { path_segment: 1 }
+      # ③ P6：给事件节点注册别名（供 P7 解析 event('x')）
+      - Annotate:
+          phase: Post
+          target: { synthesized_ref: "@self" }
+          channel: Alias
+          annotations:
+            - kind: event_name
+              confidence: 1.0
+          merge: MaxByKind
+
+  # ===== P4+P5+P6：行为扩展注册表（**5.x 形态** `app/tags.php`）=====
+  # 与上方 `tp6-event-registry` 同构，差异只有两点：
+  #   * 文件名：5.x 是 `tags.php`，6.x+ 是 `event.php`。选择器 `file` 只支持 `*`
+  #     通配、不支持 `|` 分隔，故写成两条规则而不是一条带 `|` 的规则；
+  #   * 结构：5.x 的 `tags.php` 是**扁平**的（`'sms_send' => [Listener::class]`），
+  #     没有 6.x 的 `listen` 外层键 —— 所以 `key_path: "*"`，且 identity 用
+  #     `path_segment: 0`（扁平键只有一段，取 `1` 会因 `n < segs.len()` 不成立而返回 None）。
+  # 同一概念在两个版本算出相同 identity 时幂等合并，不会造出重复事件节点。
+  - id: tp6-behavior-registry
+    phase: AnnotatePre
+    selector:
+      kind: config_entry
+      file: "*/tags.php"
+      key_path: "*"
+      where:
+        # 同上：只取数组条目。这一步对 5.x 尤其必要 —— `tags.php` 里
+        # `app_init` / `app_begin` 等框架级标签是**空数组**，没有监听器，
+        # 放行会让「事件视角」混进一批没有任何 HandledBy 边的空壳节点。
+        - entry_arity_gte: 1
+    binding:
+      # ① P4：标注【已存在】的行为类
+      - Annotate:
+          phase: Pre
+          target:
+            from_field:
+              source: { array_values: true }
+              resolve: class_const
+          channel: FkbMark
+          annotations:
+            - kind: listener
+              confidence: 0.95
+          merge: MaxByKind
+      # ② P5：建事件中介节点（多点汇聚 + 一对多）
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Event
+          identity:
+            kind: Named
+            value: { path_segment: 0 }
+          fields:
+            - name: payload_arity
+              value: { array_length: true }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { array_values: true, resolve: class_const }
+          confidence: 0.95
+          alias:
+            namespace: event_name
+            key: { path_segment: 0 }
+      # ③ P6：注册别名（供 P7 解析 `Hook::listen('x')` / `hook('x')`）
+      - Annotate:
+          phase: Post
+          target: { synthesized_ref: "@self" }
+          channel: Alias
+          annotations:
+            - kind: event_name
+              confidence: 1.0
+          merge: MaxByKind
+
+  # ===== P4+P6：运行时事件监听注册（`Event::listen` / `Event::subscribe`）=====
+  # 静态 `event.php` 只能覆盖声明式监听；很多代码库在运行时用
+  # `Event::listen('OrderCreate', Listener::class)` 或 `Event::subscribe(Sub::class)`
+  # 动态注册消费者。这里把被注册的监听器类标成 `listener`，使其与静态注册一样
+  # 进入「事件视角」的消费方。订阅者类（其 `subscribe()` 内部调 `Event::listen`）
+  # 也走 arg1，一并标成 `listener`。
+  # 注：本规则只补「标注」，事件→监听器的 `HandledBy` 边仍由上方 `event.php`
+  # 注册表生成；若某事件完全靠运行时注册、不在 `event.php` 里，则该监听器被标注
+  # 为 `listener` 但暂无精确的 `HandledBy` 边（视图仍按 `listener` 标注呈现消费方）。
+  - id: tp6-event-listener-registration
+    phase: AnnotatePost
+    selector:
+      kind: call
+      callee: "Event::listen|Event::subscribe"
+    binding:
+      - Annotate:
+          phase: Post
+          target:
+            from_field:
+              source: { arg: 1 }
+              resolve: class_const
+          channel: FkbMark
+          annotations:
+            - kind: listener
+              confidence: 0.9
+          merge: MaxByKind
+
+  # ===== P5 Synthesize：I18nKey（多 locale 合并成一个节点）=====
+  - id: tp6-i18n-key
+    phase: Synthesize
+    selector:
+      kind: config_entry
+      file: "lang/{locale}/*.php"
+      key_path: "*"
+    binding:
+      - Synthesize:
+          node: I18nKey
+          identity:
+            kind: Named
+            value:
+              path: [{ file_stem: true }, { key_path: true }]
+              join: "."
+          fields:
+            - name: texts
+              value: { entry_value: true }
+              accumulate: { key: { locale: true }, value: { entry_value: true } }
+          modifiers: ["MergeBy(key)"]
+          confidence: 0.9

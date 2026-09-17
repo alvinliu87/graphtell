@@ -5,8 +5,8 @@
 
 use em_domain::model::{
     Action, AliasEntry, AnnotateTarget, AnnotationChannel, EdgeKind, FactValue, IdentityKey,
-    Language, MergeStrategy, NewAnnotation, NewEdge, NodeId, NodeKind, Phase, Predicate,
-    ResolveTier, Rule, Selector, Severity, SubkindSource, SynthesizedKind,
+    Language, MergeStrategy, NamespacePolicy, NewAnnotation, NewEdge, NodeId, NodeKind, Phase,
+    Predicate, ResolveTier, Rule, Selector, Severity, SubProjectId, SubkindSource, SynthesizedKind,
 };
 use serde_json::{json, Value};
 
@@ -14,6 +14,17 @@ use crate::eval::{Evaluator, MatchCtx};
 use crate::normalize::{apply_normalize, apply_table_prefix_steps};
 use crate::workspace::{CallRecord, ConfigRecord, GraphWorkspace, InheritRecord};
 use crate::context::PipelineContext;
+
+// ---------------------------------------------------------------- 命名空间
+
+/// 已知命名空间分隔符的并集：PHP `\`、Java/JS `.`、路径式 `/`、C++/Ruby `:`。
+///
+/// 内核做 FQN 归一与短名提取时按**并集**处理，不假设某一门语言用哪个符号。
+/// "本语言分隔符"由 [`em_domain::port::LanguageParser::namespace_separator()`]
+/// 提供，并经 [`em_domain::model::NamespacePolicy`] 随流水线传递到每个子工程
+/// （见 [`crate::context::PipelineContext::lang_policy_for_sub`]），拼接与解析
+/// 都按该语言的分隔符取值 —— 内核不认识任何具体语言。
+pub const NS_SEPARATORS: [char; 4] = ['\\', '.', '/', ':'];
 
 // ---------------------------------------------------------------- 选择器
 
@@ -113,16 +124,22 @@ fn recv_matches(pattern: &str, receiver: Option<&str>, callee: &str) -> bool {
         return true;
     }
     let Some(r) = receiver else { return false };
-    let r = r.trim_start_matches('\\');
+    // 前导分隔符折叠：Java 的 `com.x.X` 与 PHP 的 `\X` 统一去掉前缀分隔符。
+    let r = r.trim_start_matches(|c| NS_SEPARATORS.contains(&c));
     if r.eq_ignore_ascii_case(pattern) {
         return true;
     }
-    // 尾部匹配：`Queue` 匹配 `think\facade\Queue`（以 `\pattern` 结尾的伞名）。
-    if r.len() > pattern.len()
-        && r.as_bytes()[r.len() - pattern.len() - 1] == b'\\'
-        && r[r.len() - pattern.len()..].eq_ignore_ascii_case(pattern)
-    {
-        return true;
+    // 尾部匹配（伞名）：`Queue` 匹配 `think\facade\Queue`，`Service` 匹配 `com.x.Service`。
+    // 分隔符取已知语言的并集，不假设某门语言用哪个符号（内核零语言知识）。
+    if r.len() > pattern.len() {
+        for sep in NS_SEPARATORS {
+            let prefix = format!("{}{}", sep, pattern);
+            if r.len() >= prefix.len()
+                && r[r.len() - prefix.len()..].eq_ignore_ascii_case(&prefix)
+            {
+                return true;
+            }
+        }
     }
     callee.eq_ignore_ascii_case(pattern)
 }
@@ -155,9 +172,14 @@ pub fn matches_call(sel: &Selector, rec: &CallRecord, ws: &GraphWorkspace) -> bo
 }
 
 /// 配置条目是否匹配选择器（支持 `file` 中含 `{locale}` 的占位与 `*` 通配）。
-pub fn matches_config(sel: &Selector, rec: &ConfigRecord) -> bool {
-    let (file_pat, key_pat) = match sel {
-        Selector::ConfigEntry { file, key_path } => (file, key_path),
+pub fn matches_config(
+    sel: &Selector,
+    rec: &ConfigRecord,
+    node: NodeId,
+    ws: &GraphWorkspace,
+) -> bool {
+    let (file_pat, key_pat, preds) = match sel {
+        Selector::ConfigEntry { file, key_path, r#where } => (file, key_path, r#where),
         _ => return false,
     };
     if let Some(pat) = file_pat {
@@ -167,6 +189,15 @@ pub fn matches_config(sel: &Selector, rec: &ConfigRecord) -> bool {
     }
     if let Some(pat) = key_pat {
         if !wildcard_matches(pat, &rec.key_path) {
+            return false;
+        }
+    }
+    if !preds.is_empty() {
+        let ev = Evaluator::new(ws, MatchCtx::Config(rec));
+        if !preds
+            .iter()
+            .all(|p| eval_predicate(p, node, Some(MatchCtx::Config(rec)), ws, &ev))
+        {
             return false;
         }
     }
@@ -319,6 +350,14 @@ pub fn eval_predicate(
             (present < required) == *want
         }
         Predicate::FanInGte(n) => ws.fan_in(node) as u64 >= *n,
+        Predicate::EntryArityGte(n) => match mctx {
+            // 只放行「值是数组且元素数 >= n」的配置条目：
+            // 既排除数组展开出的标量叶子条目（`listen.evt.0`），也排除空数组条目。
+            Some(MatchCtx::Config(c)) => {
+                matches!(&c.value, FactValue::Array(_)) && c.value.array_len() >= *n
+            }
+            _ => false,
+        },
         Predicate::NameMatches(sub) => {
             let Some(n) = ws.node(node) else { return false };
             let hay = n.identity.as_ref().map(|i| i.value.clone()).unwrap_or_else(|| n.name.clone());
@@ -774,6 +813,13 @@ fn exec_synthesize(
                 });
             }
             em_domain::model::Direction::ToTarget => {
+                // 目标方法名：数组式 handler 的 `[Ctrl::class, 'method']` 在这里给出。
+                let method = link
+                    .to_method
+                    .as_ref()
+                    .and_then(|src| Evaluator::new(&ctx.ws, mctx).string(src));
+                let entry = entry_methods_for(ctx, sub);
+                let policy = ctx.lang_policy_for_sub(sub).clone();
                 let items = link
                     .to
                     .as_ref()
@@ -803,8 +849,15 @@ fn exec_synthesize(
                 } else {
                     for raw in primary_strings {
                         let resolved = Evaluator::new(&ctx.ws, mctx).resolve_name(&raw);
-                        if let Some(target) = find_target_node(ctx, &resolved, &link.kind)
-                            .or_else(|| ctx.ws.find_by_name(&resolved))
+                        if let Some(target) = find_target_node(
+                            ctx,
+                            &resolved,
+                            &link.kind,
+                            method.as_deref(),
+                            &entry,
+                            &policy,
+                        )
+                        .or_else(|| ctx.ws.find_by_name(&resolved))
                         {
                             ctx.ws.add_edge(NewEdge {
                                 project_id: ctx.project.id,
@@ -862,18 +915,87 @@ fn exec_synthesize(
     node_id
 }
 
+/// 全限定名的候选形态。
+///
+/// 源码里指涉一个类有两种写法：**标识符引用**（`app\common\X`、`com.example.X`）
+/// 与**字符串字面量**（`'app\\common\\X'`）。后者取到的是源码原文，命名空间分隔符
+/// 常被转义成连续两个字符，与图里已经建好的 FQN 对不上，边就连不上。
+///
+/// 这里做的是**语言无关**的归一：折叠连续重复的命名空间分隔符、去掉前导分隔符
+/// （全局命名空间写法）。内核不假设某门语言用哪个符号 —— 分隔符取已知语言的并集。
+/// 顺序上先试原值，因此不会改变任何原本就能匹配的情形。
+fn fqn_variants(fqn: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: String| {
+        if !s.is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    };
+    push(fqn.to_string());
+
+    // 折叠连续重复的分隔符：`app\\common\\X` ≡ `app\common\X`
+    let mut collapsed = String::with_capacity(fqn.len());
+    let mut prev: Option<char> = None;
+    for ch in fqn.chars() {
+        if NS_SEPARATORS.contains(&ch) && prev == Some(ch) {
+            continue;
+        }
+        collapsed.push(ch);
+        prev = Some(ch);
+    }
+    push(collapsed.clone());
+
+    // 去前导分隔符：`\app\X` ≡ `app\X`
+    for cand in [fqn.to_string(), collapsed] {
+        push(cand.trim_start_matches(|c| NS_SEPARATORS.contains(&c)).to_string());
+    }
+    out
+}
+
+/// 取某子工程（或全局兜底）的消费入口方法名候选（FKB `entry_methods`）。
+fn entry_methods_for(ctx: &PipelineContext, sub: Option<SubProjectId>) -> Vec<String> {
+    if let Some(s) = sub {
+        if let Some(v) = ctx.entry_methods.get(&s.get()) {
+            return v.clone();
+        }
+    }
+    ctx.entry_methods_default.clone()
+}
+
 /// 解析边目标：类 → 优先其 `handle`/`fire`/`doJob` 方法，否则类本身。
 ///
 /// `doJob` 是 ThinkPHP/CRMEB 队列 Job 类的通用入口（`QueueTrait` 约定），
 /// 与 Laravel 的 `handle`、Symfony 的 `__invoke` 并列纳入。
-fn find_target_node(ctx: &PipelineContext, fqn: &str, _kind: &EdgeKind) -> Option<NodeId> {
-    let class_id = ctx
-        .ws
-        .find_by_name(fqn)
-        .or_else(|| ctx.ws.resolve_short_name(fqn).and_then(|f| ctx.ws.find_by_name(&f)))?;
-    // 找 handle / fire / doJob / __invoke / run 方法
-    for m in ["handle", "fire", "doJob", "__invoke", "run"] {
-        let method_fqn = format!("{}::{}", fqn_of(ctx, class_id), m);
+fn find_target_node(
+    ctx: &PipelineContext,
+    fqn: &str,
+    _kind: &EdgeKind,
+    method: Option<&str>,
+    entry_methods: &[String],
+    policy: &NamespacePolicy,
+) -> Option<NodeId> {
+    let class_id = fqn_variants(fqn).iter().find_map(|cand| {
+        ctx.ws
+            .find_by_name(cand)
+            .or_else(|| ctx.ws.resolve_short_name(cand).and_then(|f| ctx.ws.find_by_name(&f)))
+    })?;
+    // FKB 显式指定了方法名（如数组式 handler 的 `[Ctrl::class, 'method']`）—— 优先于约定入口
+    if let Some(m) = method.filter(|m| !m.is_empty()) {
+        let method_fqn = policy.join_member(&fqn_of(ctx, class_id), m);
+        if let Some(id) = ctx.ws.find_by_name(&method_fqn) {
+            return Some(id);
+        }
+    }
+    // 消费入口方法：优先 FKB 的 `entry_methods`（框架知识），未声明时回退到
+    // 跨框架常见入口名默认集。新框架只需在 YAML 里声明，不必改内核。
+    const DEFAULT_ENTRY_METHODS: [&str; 5] = ["handle", "fire", "doJob", "__invoke", "run"];
+    let list: Vec<&str> = if entry_methods.is_empty() {
+        DEFAULT_ENTRY_METHODS.to_vec()
+    } else {
+        entry_methods.iter().map(|s| s.as_str()).collect()
+    };
+    for m in list {
+        let method_fqn = policy.join_member(&fqn_of(ctx, class_id), m);
         if let Some(id) = ctx.ws.find_by_name(&method_fqn) {
             return Some(id);
         }
@@ -895,6 +1017,13 @@ fn push_to_target_edges(
     sub: Option<em_domain::model::SubProjectId>,
     items: &[em_domain::model::FactValue],
 ) {
+    // 目标方法名（与主路径一致，供 `to_fallback` 场景复用）
+    let method = link
+        .to_method
+        .as_ref()
+        .and_then(|src| Evaluator::new(&ctx.ws, mctx).string(src));
+    let entry = entry_methods_for(ctx, sub);
+    let policy = ctx.lang_policy_for_sub(sub).clone();
     for item in items {
         let raw = match item {
             em_domain::model::FactValue::String(s) | em_domain::model::FactValue::ClassConst(s) => {
@@ -907,8 +1036,9 @@ fn push_to_target_edges(
         }
         // 先解析（临时 Evaluator，用后即弃，避免与下方 `find_target_node(ctx, …)` 的整结构借用冲突）。
         let resolved = Evaluator::new(&ctx.ws, mctx).resolve_name(&raw);
-        if let Some(target) = find_target_node(ctx, &resolved, &link.kind)
-            .or_else(|| ctx.ws.find_by_name(&resolved))
+        if let Some(target) =
+            find_target_node(ctx, &resolved, &link.kind, method.as_deref(), &entry, &policy)
+                .or_else(|| ctx.ws.find_by_name(&resolved))
         {
             ctx.ws.add_edge(NewEdge {
                 project_id: ctx.project.id,
@@ -1017,6 +1147,7 @@ mod tests {
             node: NodeId(0),
             owner: NodeId(0),
             owner_fqn: String::new(),
+            owner_class: None,
             callee: callee.to_string(),
             receiver: receiver.map(|s| s.to_string()),
             method: method.map(|s| s.to_string()),

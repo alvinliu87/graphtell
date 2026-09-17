@@ -27,6 +27,9 @@ pub struct SyntaxFacts {
     pub inheritances: Vec<InheritanceFact>,
     /// 方法体内的一次调用点。
     pub call_sites: Vec<CallSiteFact>,
+    /// 字段声明与类型（Java `@Autowired` 字段注入等）：`class -> field -> type`，
+    /// 供 P7 按字段声明类型解析 `field.method()` 实例调用（service→mapper 链路）。
+    pub field_types: Vec<FieldTypeFact>,
     /// 配置文件条目（如 `app/event.php` 的 `listen.*`）。
     pub config_entries: Vec<ConfigEntryFact>,
 }
@@ -78,6 +81,13 @@ pub struct InheritanceFact {
 pub struct CallSiteFact {
     /// 所在方法/函数的 FQN（自由函数时为自身 FQN）。
     pub owner_fqn: String,
+    /// 该调用点所在的**类** FQN，由 parser 显式记录。
+    /// 与 `owner_fqn` 分离：方法级注解的 `owner_fqn` 是 `Class.method`，
+    /// 而类级注解的 `owner_fqn` 已是 `Class`。供 `owner_class` 绑定直接取用，
+    /// 避免在 Java 里按 `.` 切分时把类级注解误切成包名。PHP 侧暂未填充，
+    /// 内核退回字符串切分（兼容旧行为）。
+    #[serde(default)]
+    pub owner_class: Option<String>,
     pub callee_text: String,
     pub receiver: Option<String>,
     pub method: Option<String>,
@@ -98,6 +108,56 @@ pub struct ConfigEntryFact {
     pub key_path: String,
     pub value: FactValue,
     pub span: Span,
+}
+
+/// 语言的命名空间 / 成员书写规则。
+///
+/// 从 [`crate::port::LanguageParser`] 抽取后随流水线传递 —— 内核多数位置拿不到
+/// 解析器注册表，但都拿得到流水线上下文。这些信息此前以 `\\` 与 `::` 字面量
+/// 散落在内核各处，换一门语言就要全量改动。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespacePolicy {
+    /// 首选命名空间分隔符（用于**拼接**）。
+    pub ns_separator: char,
+    /// 全部可能的命名空间分隔符（用于归一化与**匹配容错**）。
+    pub ns_separators: Vec<char>,
+    /// 类与成员之间的分隔符：PHP/C++ 是 `::`，Java/JS/Python 是 `.`。
+    pub member_separator: String,
+}
+
+impl NamespacePolicy {
+    /// 从解析器抽取该语言的书写规则。
+    pub fn from_parser(p: &dyn crate::port::LanguageParser) -> Self {
+        let seps = p.namespace_separator();
+        Self {
+            ns_separator: seps.first().copied().unwrap_or('\\'),
+            ns_separators: seps.to_vec(),
+            member_separator: p.member_separator().to_string(),
+        }
+    }
+
+    /// 类 + 成员 → 成员的完全限定名。
+    pub fn join_member(&self, class_fqn: &str, member: &str) -> String {
+        format!("{}{}{}", class_fqn, self.member_separator, member)
+    }
+
+    /// PHP 风格（`\` 与 `::`）。
+    ///
+    /// **未装配语言策略时的兜底**，与改造前内核的硬编码等价。
+    /// 全量接入 `LanguageParser` 后，正常路径都应走 [`Self::from_parser`]。
+    pub fn php() -> Self {
+        Self {
+            ns_separator: '\\',
+            ns_separators: vec!['\\'],
+            member_separator: "::".to_string(),
+        }
+    }
+}
+
+impl Default for NamespacePolicy {
+    fn default() -> Self {
+        Self::php()
+    }
 }
 
 /// 可静态求值的字面量值。

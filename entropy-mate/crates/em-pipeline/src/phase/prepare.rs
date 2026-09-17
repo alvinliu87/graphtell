@@ -5,14 +5,14 @@
 //! * 用 `loaders` 装载权威源：`schema` / `config_keys` / `i18n` / `facade_map`
 //!   / `container_bindings` / `event_listeners` / `route_list` / `nginx`
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use em_domain::error::Result;
 use em_domain::model::{
     Detector, FrameworkKnowledge, KnowledgeScope, Language, Phase, PickStrategy, Rule,
     SubProjectId,
 };
-use em_domain::port::{FileSystem, KnowledgeProvider, ParserRegistry};
+use em_domain::port::{FileSystem, KnowledgeProvider, LanguageParser, ParserRegistry};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
@@ -31,17 +31,46 @@ pub fn run(
     let phase = Phase(Phase::PREPARE.to_string());
     let subs = ctx.sub_projects.clone();
     let project_root = ctx.project.root_path.clone();
+    // 全部子工程识别到的框架并集 —— 决定哪些框架规则有资格进入全局规则集。
+    let mut detected_frameworks: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for sub in &subs {
         // 框架级 + 项目级知识分别识别：项目级仅在该子工程被识别为对应项目时加载，
         // 其规则只进 `rules_by_sub`（不进 `ctx.frameworks`、不进全局），绝不串味到其它工程。
         let frameworks = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Framework);
         info!("子工程 {} 识别到框架: {:?}", sub.name, frameworks);
+        detected_frameworks.extend(frameworks.iter().cloned());
         ctx.frameworks.insert(sub.id.get(), frameworks.clone());
 
         let projects = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Project);
         if !projects.is_empty() {
             info!("子工程 {} 识别到项目知识: {:?}", sub.name, projects);
+        }
+
+        // 路由 handler 解析规则 + 消费入口方法名：框架级优先，其次项目级。
+        // 都由 FKB 声明（每个框架怎么写 handler / 入口方法叫什么，是框架知识）。
+        if let Some(spec) = frameworks
+            .iter()
+            .chain(projects.iter())
+            .filter_map(|id| kb.by_id(id))
+            .find_map(|fk| fk.handler.clone())
+        {
+            if ctx.handler_spec_default.is_none() {
+                ctx.handler_spec_default = Some(spec.clone());
+            }
+            ctx.handler_specs.insert(sub.id.get(), spec);
+        }
+        if let Some(methods) = frameworks
+            .iter()
+            .chain(projects.iter())
+            .filter_map(|id| kb.by_id(id))
+            .find(|fk| !fk.entry_methods.is_empty())
+            .map(|fk| fk.entry_methods.clone())
+        {
+            if ctx.entry_methods_default.is_empty() {
+                ctx.entry_methods_default = methods.clone();
+            }
+            ctx.entry_methods.insert(sub.id.get(), methods);
         }
 
         // 框架 + 项目知识都应用 root_rules / loaders（项目知识通常无，但通道通用）。
@@ -75,9 +104,12 @@ pub fn run(
 
         // 规则按子工程装配：
         // ① 本子工程识别到的框架规则；
-        // ② 同语言、未显式识别的**框架级**规则（只加"同语言"，避免把 Uni-app 规则套到 PHP）；
+        // ② 同语言、未识别的框架级规则 —— **仅限显式声明 `apply_without_detection` 的**；
         // ③ 本子工程识别到的**项目级**规则（仅检测到的，不外溢）。
-        // （只加"同语言"而不是全部，避免把 Uni-app 规则套到 PHP 调用上）
+        //
+        // ② 曾经是无条件的，后果是用 A 框架的知识解释 B 框架的代码（ThinkPHP 规则
+        // 套到 Laravel 工程上凭空造出上百个 Table / HttpContract）。框架规则带强框架
+        // 假设，未识别到该框架时不应生效。
         let mut rules: Vec<Rule> = frameworks
             .iter()
             .filter_map(|id| kb.by_id(id))
@@ -87,6 +119,7 @@ pub fn run(
             if fk.scope == KnowledgeScope::Framework
                 && fk.language == sub.language
                 && !frameworks.contains(&fk.id)
+                && fk.apply_without_detection
             {
                 rules.extend(fk.rules.iter().cloned());
             }
@@ -101,9 +134,13 @@ pub fn run(
 
     // 全局规则：仅**框架级**规则去重后共享（合成节点可能跨工程汇聚）。
     // 项目级规则不进全局 —— 它们只在被识别为对应项目的子工程内生效。
+    // 框架级同样要求「被任一子工程识别」或「显式声明无需识别」，理由同 `rules_by_sub`。
     let mut global: Vec<Rule> = Vec::new();
     for fk in kb.all() {
         if fk.scope != KnowledgeScope::Framework {
+            continue;
+        }
+        if !detected_frameworks.contains(&fk.id) && !fk.apply_without_detection {
             continue;
         }
         for r in &fk.rules {
@@ -202,11 +239,7 @@ fn apply_root_rules(
                 resolve_manifest_pointer(&path, pointer, *pick)
             }
             em_domain::model::RootSource::DirectoryExists { path } => {
-                if sub.root_path.join(path).exists() {
-                    Some((path.clone(), format!("directory exists: {}", path)))
-                } else {
-                    None
-                }
+                resolve_directory_exists(&sub.root_path, path)
             }
             em_domain::model::RootSource::ManifestPhp { manifest, pointer } => {
                 resolve_manifest_php(sub, &ctx.project.root_path, manifest, pointer, fs, parsers)
@@ -251,6 +284,48 @@ fn apply_root_rules(
             }),
         );
     }
+}
+
+/// 解析 `directory_exists` 根规则：在子工程内（含多级子目录，深度受限）查找目标相对路径
+/// （如 `src/main/java`）。命中后返回其**父目录**作为源根（`app_root` 的语义应是源码根，而非
+/// `src/main/java` 本身）。单模块工程在根目录直下命中时返回 `"."`；多模块工程返回首个命中模块
+/// 的相对目录（如 `mall-admin`）。仅当整棵目录树都找不到时才返回 `None`（触发兜底 / 告警）。
+fn resolve_directory_exists(root: &Path, rel: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    // 根目录直下命中：源根即子工程根。
+    if root.join(rel).is_dir() {
+        return Some((".".to_string(), format!("directory exists: {}", rel)));
+    }
+    // 多模块：广度优先（优先浅层），深度受限避免扫描整棵大目录树。
+    let mut queue: std::collections::VecDeque<(PathBuf, u32)> =
+        std::collections::VecDeque::from([(root.to_path_buf(), 0)]);
+    let max_depth = 5;
+    while let Some((dir, depth)) = queue.pop_front() {
+        let target = parts.iter().fold(dir.clone(), |acc, p| acc.join(p));
+        if target.is_dir() {
+            let rel_root = dir.strip_prefix(root).unwrap_or_else(|_| Path::new(""));
+            let value = if rel_root.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                rel_root.to_string_lossy().replace('\\', "/")
+            };
+            return Some((value, format!("directory exists (recursive): {}", rel)));
+        }
+        if depth < max_depth {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        queue.push_back((p, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn resolve_manifest_pointer(
@@ -307,7 +382,7 @@ fn resolve_manifest_php(
         return None;
     }
     let text = fs.read_to_string(&abs).ok()?;
-    let parser = parsers.parser_for(&Language::new(Language::PHP))?;
+    let parser = parser_for_file(parsers, Some(sub), &abs)?;
     let rel = abs.to_string_lossy().replace('\\', "/");
     if let Ok(facts) = parser.parse(&rel, &text) {
         for entry in &facts.config_entries {
@@ -355,6 +430,27 @@ fn run_loaders(
     }
 }
 
+/// 按**文件**选择解析器：优先用扩展名判定语言，取不到时回退到子工程语言。
+///
+/// 装载器处理的是具体文件（`config/database.php`、`app/event.php`、`lang/zh-cn/*.php`），
+/// 语言应由文件本身决定。写死成某一种语言会让新增语言后所有装载器**静默失效**
+/// （不报错、只是什么都不装载）—— 这是「内核不认识具体语言」在 P3 的落点。
+fn parser_for_file<'a>(
+    parsers: &'a dyn ParserRegistry,
+    fallback_sub: Option<&em_domain::model::SubProject>,
+    path: &Path,
+) -> Option<&'a dyn LanguageParser> {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(p) = parsers
+            .language_for_extension(ext)
+            .and_then(|lang| parsers.parser_for(&lang))
+        {
+            return Some(p);
+        }
+    }
+    fallback_sub.and_then(|sub| parsers.parser_for(&sub.language))
+}
+
 fn run_loader(
     ctx: &mut PipelineContext,
     loader: &em_domain::model::LoaderSpec,
@@ -381,7 +477,7 @@ fn run_loader(
                 return Ok(());
             }
             let text = fs.read_to_string(&abs)?;
-            let Some(parser) = parsers.parser_for(&Language::new(Language::PHP)) else {
+            let Some(parser) = parser_for_file(parsers, Some(sub), &abs) else {
                 return Ok(());
             };
             let rel_display = abs
@@ -469,7 +565,7 @@ fn load_i18n(
         let Some(locale) = locale else { continue };
         let abs = project_root.join(&file.path);
         let Ok(text) = fs.read_to_string(&abs) else { continue };
-        let Some(parser) = parsers.parser_for(&Language::new(Language::PHP)) else {
+        let Some(parser) = parser_for_file(parsers, None, &abs) else {
             continue;
         };
         let Ok(facts) = parser.parse(&file.path, &text) else {

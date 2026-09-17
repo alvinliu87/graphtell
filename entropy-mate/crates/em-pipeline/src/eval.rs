@@ -191,17 +191,36 @@ impl<'a> Evaluator<'a> {
                         }
                         return None;
                     }
+                    // 按下标取数组元素：`[Ctrl::class, 'method']` → 第 0 / 1 项。
+                    if let Some(idx) = src.element {
+                        if let FactValue::Array(items) = a {
+                            return items.get(idx).map(|(_, v)| EvalValue::Fact(v.clone()));
+                        }
+                        return None;
+                    }
                     return Some(EvalValue::Fact(a.clone()));
                 }
                 if src.owner_class == Some(true) {
+                    // 优先用 parser 显式记录的所属类：方法级注解的 `owner_fqn` 是
+                    // `Class.method`、类级注解的 `owner_fqn` 已是 `Class`，靠分隔符切分
+                    // 会把类级注解误切成包名。PHP 侧未填此字段，退回字符串切分。
+                    if let Some(cls) = &c.owner_class {
+                        if !cls.is_empty() {
+                            return Some(EvalValue::Str(cls.clone()));
+                        }
+                    }
                     if c.owner_fqn.is_empty() {
                         return None;
                     }
-                    // 去掉末尾的 `::method`，保留类 FQN。
-                    let class = match c.owner_fqn.rfind("::") {
-                        Some(idx) => &c.owner_fqn[..idx],
-                        None => &c.owner_fqn[..],
-                    };
+                    // 去掉末尾的成员部分，保留类 FQN。
+                    // 成员分隔符随语言而变：PHP `::`、Java `.`
+                    // （`com.example.Ctrl.list` → `com.example.Ctrl`）。
+                    let class = c
+                        .owner_fqn
+                        .rfind("::")
+                        .or_else(|| c.owner_fqn.rfind('.'))
+                        .map(|idx| &c.owner_fqn[..idx])
+                        .unwrap_or(&c.owner_fqn[..]);
                     return Some(EvalValue::Str(class.to_string()));
                 }
                 if src.receiver_class == Some(true) {

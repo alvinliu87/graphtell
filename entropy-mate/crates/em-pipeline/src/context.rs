@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use em_domain::model::{
-    Language, NodeId, Phase, Project, ProjectConfig, Rule, SourceFile, SubProject, SubProjectId,
+    HandlerSpec, Language, NamespacePolicy, NodeId, Phase, Project, ProjectConfig, Rule,
+    SourceFile, SubProject, SubProjectId,
 };
 
 use crate::workspace::GraphWorkspace;
@@ -35,6 +36,19 @@ pub struct PipelineContext {
     pub files: Vec<SourceFile>,
     /// 子工程 → 识别出的框架 id。
     pub frameworks: HashMap<i64, Vec<String>>,
+    /// 子工程 → 路由 handler 解析规则（由 FKB 声明，P3 装配、P7 消费）。
+    pub handler_specs: HashMap<i64, HandlerSpec>,
+    /// 全局兜底的 handler 解析规则：单框架工程里 P7 常常拿不到子工程上下文，
+    /// 用第一个声明了 `handler` 的框架兜底。
+    pub handler_spec_default: Option<HandlerSpec>,
+    /// 语言 → 命名空间 / 成员书写规则（P0 从解析器注册表抽取）。
+    pub lang_policies: HashMap<String, NamespacePolicy>,
+    /// 兜底书写规则（单语言工程 / 语言未知时使用）。
+    pub lang_policy_default: NamespacePolicy,
+    /// 子工程 → 消费入口方法名候选（FKB `entry_methods`）。
+    pub entry_methods: HashMap<i64, Vec<String>>,
+    /// 全局兜底的入口方法名（取第一个声明了 `entry_methods` 的框架）。
+    pub entry_methods_default: Vec<String>,
     /// 子工程 → 该子工程适用的规则。
     pub rules_by_sub: HashMap<i64, Vec<Rule>>,
     /// 跨子工程共享的规则（合成节点可能跨工程汇聚）。
@@ -52,10 +66,37 @@ impl PipelineContext {
             sub_projects: Vec::new(),
             files: Vec::new(),
             frameworks: HashMap::new(),
+            handler_specs: HashMap::new(),
+            handler_spec_default: None,
+            lang_policies: HashMap::new(),
+            lang_policy_default: NamespacePolicy::default(),
+            entry_methods: HashMap::new(),
+            entry_methods_default: Vec::new(),
             rules_by_sub: HashMap::new(),
             rules_global: Vec::new(),
             propagation_seeds: Vec::new(),
         }
+    }
+
+    /// 取某语言的命名空间 / 成员书写规则；未知语言用兜底策略。
+    pub fn lang_policy(&self, lang: Option<&Language>) -> &NamespacePolicy {
+        if let Some(l) = lang {
+            if let Some(p) = self.lang_policies.get(l.as_str()) {
+                return p;
+            }
+        }
+        &self.lang_policy_default
+    }
+
+    /// 取某子工程所属语言的书写规则。
+    pub fn lang_policy_for_sub(&self, sub: Option<SubProjectId>) -> &NamespacePolicy {
+        let lang = sub.and_then(|s| {
+            self.sub_projects
+                .iter()
+                .find(|x| x.id == s)
+                .map(|x| x.language.clone())
+        });
+        self.lang_policy(lang.as_ref())
     }
 
     /// 取某子工程的规则；跨工程节点（sub 为空）用全局规则。

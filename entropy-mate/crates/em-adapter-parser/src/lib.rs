@@ -3,6 +3,7 @@
 //! 本 crate 是**唯一**接触 tree-sitter 的地方。它把各语言的具体语法树
 //! 翻译成领域定义的、语言无关的 [`SyntaxFacts`]，从而使流水线与语言无关。
 
+pub mod java;
 pub mod php;
 pub mod registry;
 

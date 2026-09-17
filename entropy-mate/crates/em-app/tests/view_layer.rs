@@ -239,10 +239,32 @@ fn object_view_chain_and_hidden() {
     // 在每次对象视图里重算「5000 个候选逐个 BFS 打分」纯属浪费（见 `ObjectView` 注释）。
 }
 
+/// 折叠视图允许出现的节点：语义节点，或"塌缩兜底"——与中心有**直接语义边**的
+/// 直接访问方（其调用链上游无任何语义发起者，不画就永远不可见、与候选徽标矛盾）。
+fn assert_visible_node_ok(ov: &em_domain::model::ObjectView, n: &em_domain::model::NodeView) {
+    let semantic = em_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some();
+    if semantic {
+        return;
+    }
+    let direct_accessor = ov.edges.iter().any(|e| {
+        em_domain::model::EdgeKind(e.kind.clone()).is_semantic()
+            && (e.from.get() == n.id.get() || e.to.get() == n.id.get())
+            && (e.from.get() == ov.center.id.get() || e.to.get() == ov.center.id.get())
+    });
+    assert!(
+        direct_accessor,
+        "默认视图只允许语义节点或与中心直连的塌缩兜底节点：{} ({})",
+        n.name, n.kind
+    );
+}
+
 #[test]
 fn object_view_default_is_semantic_only() {
     // 折叠（默认）视图必须「只显示对人类有意义的语义节点 / 语义边」：
     // * 不出现 Method / CallSite / Class 等语法节点与 Calls / HasCallSite 等语法边；
+    //   **唯一例外**是"塌缩兜底"的直接访问方：上游不存在任何语义发起者时
+    //   （Seeder / DataGrid / 迁移脚本…），折叠提拉永远到不了它们，只能如实画出
+    //   `访问方 --ReadsDb/WritesDb…--> 资源`，否则画布空图、与候选徽标的「入边 N」矛盾。
     // * 不出现指向不可见节点的悬空边；
     // * 二级候选按"价值"降序（前端默认打开价值最高的那个）。
     let Some(b) = built() else {
@@ -281,12 +303,7 @@ fn object_view_default_is_semantic_only() {
     visible.insert(ov.center.id.get());
     for n in ov.rings.iter().flatten() {
         visible.insert(n.id.get());
-        assert!(
-            is_semantic(n),
-            "默认视图不应出现语法节点：{} ({})",
-            n.name,
-            n.kind
-        );
+        assert_visible_node_ok(&ov, n);
     }
     for e in &ov.edges {
         assert!(
@@ -338,12 +355,7 @@ fn object_view_resource_center_shows_its_users() {
     visible.insert(ov.center.id.get());
     for n in ov.rings.iter().flatten() {
         visible.insert(n.id.get());
-        assert!(
-            em_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some(),
-            "默认视图不应出现语法节点：{} ({})",
-            n.name,
-            n.kind
-        );
+        assert_visible_node_ok(&ov, n);
     }
     for e in &ov.edges {
         assert!(

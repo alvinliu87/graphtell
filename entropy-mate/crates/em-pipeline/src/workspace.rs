@@ -20,6 +20,9 @@ pub struct CallRecord {
     /// 所在方法的节点（用于建语义边，如 `Method --ReadsDb--> Table`）。
     pub owner: NodeId,
     pub owner_fqn: String,
+    /// 该调用点所在的**类** FQN（由 parser 从 `CallSiteFact.owner_class` 透传）。
+    /// 供 `owner_class` 绑定直接取用；PHP 侧为 `None`（退回字符串切分）。
+    pub owner_class: Option<String>,
     pub callee: String,
     pub receiver: Option<String>,
     pub method: Option<String>,
@@ -228,6 +231,14 @@ impl GraphWorkspace {
     }
 
     // ------------------------------------------------------------ 节点
+
+    /// 跨工程唯一分配：把节点 id 计数器抬到全局最大值之上。
+    ///
+    /// 节点的 `id` 主键跨工程共享，而 `next_node` 每轮从 1 起算；若不抬升，
+    /// 后建工程会用 `INSERT OR REPLACE` 覆盖先建工程的节点行（见 `GraphSink::max_node_id`）。
+    pub fn seed_node_id(&mut self, max: i64) {
+        self.next_node = self.next_node.max(max) + 1;
+    }
 
     /// 新增语法节点。
     pub fn add_node(&mut self, mut new: NewNode) -> NodeId {

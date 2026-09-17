@@ -1218,6 +1218,47 @@ impl ViewService {
                         }
                     }
                 }
+                // 折叠塌缩兜底：资源的**直接**访问方（第 1 环、父即中心）是语法节点、
+                // 且其发现树路径上不存在任何语义用户（上游没有路由 / 契约等语义发起者
+                // —— Seeder / DataGrid / 迁移脚本 / Console 命令是常态）时，它既不会被
+                // 画成用户，也永远不会出现在任何提拉边的 via 链里 —— 画布只剩孤零零的
+                // 中心节点，而候选徽标却按原始边计数显示「入边 N」，自相矛盾。
+                // 此时把该访问方本身强制可见，直接画 `使用者 --语义边--> 资源`
+                // （via 为空 = 直连，证据在边上）。反之，路径上已有语义用户时，
+                // 其 via 链已如实收录这些语法跳，维持折叠视图「只画语义节点」的约束。
+                {
+                    let mut covered: HashSet<i64> = HashSet::new();
+                    let mut sem_ids: Vec<i64> = users.clone();
+                    sem_ids.sort_unstable();
+                    for s in sem_ids {
+                        let mut cur = s;
+                        for _ in 0..64 {
+                            if !covered.insert(cur) {
+                                break;
+                            }
+                            match d.parent_of.get(&cur) {
+                                Some(p) => cur = *p,
+                                None => break,
+                            }
+                        }
+                    }
+                    let mut collapsed: Vec<i64> = d.ring_of
+                        .keys()
+                        .copied()
+                        .filter(|id| {
+                            *id != center_id.get()
+                                && d.parent_of.get(id) == Some(&center_id.get())
+                                && !d.semantic_of.get(id).copied().unwrap_or(false)
+                                && !covered.contains(id)
+                                && d.path_kind.get(id).map_or(false, |k| !k.is_empty())
+                        })
+                        .collect();
+                    collapsed.sort_unstable();
+                    for id in &collapsed {
+                        d.force_visible.insert(*id);
+                    }
+                    users.extend(collapsed);
+                }
                 users.sort_by_key(|id| d.ring_of.get(id).copied().unwrap_or(0));
                 for id in users.iter().take(MAX_USERS) {
                     let kind = d.path_kind

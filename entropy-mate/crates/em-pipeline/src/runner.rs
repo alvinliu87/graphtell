@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use em_domain::error::Result;
 use em_domain::model::{
-    GraphDelta, NewSourceFile, NewSubProject, Phase, PhaseReport, Project, Severity, SourceFile,
-    SubProject, SubProjectId,
+    GraphDelta, NamespacePolicy, NewSourceFile, NewSubProject, Phase, PhaseReport, Project,
+    Severity, SourceFile, SubProject, SubProjectId,
 };
 use em_domain::port::{
     FileScanner, FileSystem, GraphSink, KnowledgeProvider, ParserRegistry, PipelineObserver,
@@ -43,15 +43,34 @@ pub fn run(
     observer: &dyn PipelineObserver,
 ) -> Result<PipelineOutcome> {
     let mut ctx = PipelineContext::new(project.clone());
+    // 跨工程唯一分配节点 id：从全局最大 id 起算，避免后建工程用 `INSERT OR REPLACE`
+    // 覆盖先建工程的节点行（节点的 `id` 主键跨工程共享）。
+    if let Ok(max) = infra.graph().max_node_id() {
+        ctx.ws.seed_node_id(max);
+    }
     ctx.ws.set_table_prefixes(project.config.table_prefixes.clone());
     let mut outcome = PipelineOutcome::default();
+
+    // 语言的命名空间 / 成员书写规则：从解析器注册表抽取。
+    // 新增一门语言时，这些规则随 `LanguageParser` 实现一起注册进来 —— 内核无需改动。
+    for lang in infra.parsers().supported_languages() {
+        if let Some(p) = infra.parsers().parser_for(&lang) {
+            ctx.lang_policies
+                .insert(lang.as_str().to_string(), NamespacePolicy::from_parser(p));
+        }
+    }
+    if let Some(first) = infra.parsers().supported_languages().first() {
+        if let Some(p) = infra.parsers().parser_for(first) {
+            ctx.lang_policy_default = NamespacePolicy::from_parser(p);
+        }
+    }
 
     // ---------------------------------------------------------- P0 Ingest
     let started = Instant::now();
     observer.on_phase_start(project.id, &Phase(Phase::INGEST.to_string()));
     let root = ingest::validate_root(&project.root_path)?;
     let _ = root;
-    let ingested = ingest::run(project, infra.scanner())?;
+    let ingested = ingest::run(project, infra.scanner(), infra.parsers())?;
     let subs: Vec<SubProject> = infra
         .projects()
         .replace_sub_projects(project.id, ingested.sub_projects.clone())?;
@@ -97,6 +116,9 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &Phase(Phase::PREPARE.to_string()));
     prepare::run(&mut ctx, infra.kb(), infra.fs(), infra.parsers())?;
+    // MyBatis mapper XML → 伪调用点（原生 MyBatis 工程的表语义来源）。
+    // 必须在 P2 之后（Mapper 接口方法节点已建）、P5 之前（伪调用点要喂给合成规则）。
+    crate::mybatis::run(&mut ctx);
     // 框架标识回写
     for sub in &ctx.sub_projects {
         let ids = ctx.frameworks.get(&sub.id.get()).cloned().unwrap_or_default();

@@ -1,0 +1,292 @@
+# Laravel 框架知识
+#
+# **由 samples/laravel-projects 下的真实项目驱动**（aimeos-laravel / bagisto / beikeshop，
+# 涵盖 Laravel 10 ~ 12），而不是照框架文档罗列 API —— 只写这三个项目里**实际出现**的写法。
+#
+# 与 ThinkPHP 的形态差异（同一门语言、同一套 DSL，纯数据差异）：
+#   | 概念         | ThinkPHP 6              | Laravel                                  |
+#   |--------------|-------------------------|------------------------------------------|
+#   | 表访问       | `Db::name('x')`         | `DB::table('x')`（注意大小写）           |
+#   | 路由 handler | `'Ctrl/method'` 字符串  | `[Ctrl::class, 'method']` 数组（主形式） |
+#   | 事件注册     | `app/event.php` 配置文件| `EventServiceProvider::boot()` 里运行时  |
+#   |              |                         | `Event::listen('evt', 'Listener@handle')`|
+#   | 门面命名空间 | `think\facade\*`        | `Illuminate\Support\Facades\*`           |
+#   | 队列投递     | `Queue::push`           | `dispatch(new Job)` / `Job::dispatch()`  |
+#
+# 注意：`config()` / `Cache::get()` 两个框架写法**相同**，这类规则属于 PHP 生态通用层，
+# 将来应抽到语言级 FKB（详见 `apply_without_detection` 的说明）。
+
+id: laravel
+display_name: Laravel
+language: php
+version_hint: "10.x / 11.x / 12.x"
+
+detectors:
+  - kind: manifest_dependency
+    manifest: composer.json
+    dependency: laravel/framework
+    confidence: 0.95
+  - kind: file_exists
+    path: artisan
+    confidence: 0.7
+
+exclude_globs:
+  - "vendor/**"
+  - "node_modules/**"
+  - "public/**"
+  - "storage/framework/**"
+  - "storage/logs/**"
+
+root_rules:
+  - id: laravel-app-root
+    key: app_root
+    source:
+      kind: manifest_json
+      manifest: composer.json
+      pointer: autoload.psr-4
+      pick: shallowest_dir
+    confidence: 1.0
+    fallbacks:
+      - app
+      - src
+  # 表前缀：Laravel 与 ThinkPHP 一样写在 `config/database.php`，结构相同，可直接复用探测。
+  - id: laravel-db-prefix
+    key: db_prefix
+    source:
+      kind: manifest_php
+      manifest: config/database.php
+      pointer: connections.mysql.prefix
+    confidence: 1.0
+
+# ---------------------------------------------------------------- 路由 handler
+#
+# Laravel 的 handler 有四种形态（三个项目实测）：
+#   ① `[WebMcpController::class, 'product']` —— 数组，**主形式**
+#   ② `'LoginController@login'` —— @ 分隔方法
+#   ③ `Route::resource('addresses', AddressController::class)` —— 直接给类
+#   ④ `Route::get('install', 'index')` —— 仅方法名，controller 由外层 group 决定
+#
+# 与 ThinkPHP 的关键差别：Laravel 控制器通常**已是全限定名**（经 `use` 导入或
+# `::class`），不需要 `app\{app}\controller\{C}` 那套拼装；因此模板里直接放
+# `{controller}`，命中不了时由「短名 + 路由文件 import」兜底。
+handler:
+  method_separators: ["@", "::", "/"]
+  hierarchy_separators: []
+  class_templates:
+    - "{controller}"
+    - "App\\Http\\Controllers\\{controller}"
+  app_segments: []
+  app_anchor_dir: "routes"
+  app_fallback: ""
+
+# 消费入口方法名：`handle` 是 Laravel 的 Job / Listener 约定，
+# `__invoke` 是单动作控制器（Single Action Controller）。
+entry_methods: ["handle", "__invoke"]
+
+loaders:
+  # FacadeMap：Laravel 的门面（真实类名取自 Illuminate 组件）。
+  - id: laravel-facade-map
+    table: facade_map
+    from:
+      kind: inline
+      rows:
+        - { facade: "Illuminate\\Support\\Facades\\Cache", target: "Illuminate\\Cache\\CacheManager" }
+        - { facade: "Illuminate\\Support\\Facades\\DB", target: "Illuminate\\Database\\DatabaseManager" }
+        - { facade: "Illuminate\\Support\\Facades\\Config", target: "Illuminate\\Config\\Repository" }
+        - { facade: "Illuminate\\Support\\Facades\\Log", target: "Illuminate\\Log\\LogManager" }
+        - { facade: "Illuminate\\Support\\Facades\\Queue", target: "Illuminate\\Queue\\QueueManager" }
+        - { facade: "Illuminate\\Support\\Facades\\Route", target: "Illuminate\\Routing\\Router" }
+        - { facade: "Illuminate\\Support\\Facades\\Event", target: "Illuminate\\Events\\Dispatcher" }
+        - { facade: "Illuminate\\Support\\Facades\\Storage", target: "Illuminate\\Filesystem\\FilesystemManager" }
+
+rules:
+  # ===== P5 Synthesize：Table =====
+  # `DB::table('product_flat')` —— bagisto 实测 200+ 处。
+  - id: laravel-db-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "DB::table"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: ReadsDb, direction: incoming }
+          confidence: 0.9
+
+  # Eloquent 约定：`class ProductGroupedProduct extends Model` → `product_grouped_products`。
+  # 与 ThinkPHP 的 Model 约定同一套算法（snake_plural），只是基类不同。
+  - id: laravel-model-table
+    phase: Synthesize
+    selector:
+      kind: inheritance
+      base: "Illuminate\\Database\\Eloquent\\Model|Model"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              self: true
+              transform: { snake_plural: true, strip_namespace: true }
+              normalize:
+                - singularize
+                - trim
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.6
+
+  # ===== P5 Synthesize：ConfigKey =====
+  - id: laravel-config
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "config|Config::get|env"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+          link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.9
+
+  # ===== P5 Synthesize：Cache =====
+  # 与 ThinkPHP 同形（`Cache::get($key)`），按字面量 key 区分节点。
+  - id: laravel-cache
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Cache::*|cache"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：Queue =====
+  # `dispatch(new OrderCreatedJob($x))` / `OrderCreatedJob::dispatch($x)`。
+  # 与 ThinkPHP 的 `Queue::push` 同：优先 arg:0 的真实类，取不到退回「发起调用的类」。
+  - id: laravel-queue-dispatch
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "dispatch|*::dispatch"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Queue
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              resolve: class_const
+              require_class: true
+              transform: { class_to_topic: true }
+            value_fallback:
+              owner_class: true
+              transform: { class_to_topic: true }
+          link: { kind: PublishesTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：事件（**运行时注册**）=====
+  #
+  # Laravel 没有 ThinkPHP 的 `app/event.php` 那样的配置文件 —— 事件在 ServiceProvider
+  # 的 `boot()` 里用 `Event::listen('evt', 'Listener@handle')` 注册。
+  # 因此这里**由调用点合成事件节点**，而不是从配置装载。
+  #
+  # 三种实测形态：
+  #   ① `'Listener@handle'` 字符串 → 交给 P7，用本文件 `handler` 声明的 `@` 拆成类 + 方法
+  #   ② `function ($x) {...}` 闭包 → 无法静态解析，只建事件节点、不建 `HandledBy` 边
+  #   ③ `protected $listen = ['evt' => [[Product::class, 'beforeUpdate']]]` 类属性
+  #      → **当前 DSL 无法表达**（属性数组值不是 `config_entry`），留作后续
+  - id: laravel-event-registration
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Event::listen"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Event
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { arg: 1, resolve: handler_pattern }
+          confidence: 0.9
+          alias:
+            namespace: event_name
+            key: { arg: 0, require_literal: true }
+
+  # ===== P5 Synthesize：HTTP 契约 =====
+  #
+  # Laravel 的 handler 有三种形态（bagisto / beikeshop 实测）：
+  #   ① `[WebMcpController::class, 'product']` 数组 —— **主形式**，需要"取数组第 0 项的类
+  #      + 第 1 项的方法名"，现有 `ValueSource` 表达不了（只有 `arg` / `field`），
+  #      故此处 `to` 解析会失败并降级为 PendingLink；
+  #   ② `Route::resource('addresses', AddressController::class)` —— arg1 直接是类；
+  #   ③ `Route::get('install', 'index')` —— 单方法名，controller 由外层 group 决定。
+  #
+  # 现在 DSL 已支持数组式 handler：
+  #   `to: { arg: 1, element: 0 }` 取类名、`to_method: { arg: 1, element: 1 }` 取方法名；
+  #   arg1 不是数组时（`Route::resource` 直接给类）`element` 取不到，
+  #   由 `to_fallback` 退回「整个 arg1」按类解析。
+  - id: laravel-route-http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Route::{get,post,any,put,delete,patch,resource,view}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { method_name: true, normalize: [upper] }
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            # 形态 ①：`[Ctrl::class, 'method']` —— 类名在 arg1[0]，方法名在 arg1[1]
+            to: { arg: 1, element: 0, resolve: class_const }
+            to_method: { arg: 1, element: 1 }
+            # 形态 ③：`Route::resource('x', Ctrl::class)` —— arg1 不是数组，取整个值
+            to_fallback: { arg: 1, resolve: class_const }
+          confidence: 0.9
+
+resolvers:
+  - id: laravel-container-make
+    call: "app|app()->make|resolve|make"
+    strategy: container
+  - id: laravel-event-trigger
+    call: "event|Event::dispatch"
+    strategy: event
+  - id: laravel-facade
+    call: "Illuminate\\Support\\Facades\\*::*"
+    strategy: facade
+  - id: laravel-typed-instance-call
+    call: "*->*"
+    strategy: variable_type

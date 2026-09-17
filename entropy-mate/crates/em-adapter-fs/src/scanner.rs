@@ -38,7 +38,17 @@ pub const ASSET_EXTENSIONS: &[&str] = &[
     "eot", "map", "lock",
 ];
 
-/// 按扩展名推断语言（不依赖解析器注册表，供扫描器独立使用）。
+/// 按调用方给出的「语言 → 扩展名」映射判定语言（与解析器注册表同源）。
+fn language_for_ext(map: &[(String, Vec<String>)], ext: &str) -> Option<Language> {
+    map.iter()
+        .find(|(_, exts)| exts.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+        .map(|(lang, _)| Language::new(lang))
+}
+
+/// 按扩展名推断语言（**兜底**：调用方未提供映射时使用）。
+///
+/// 这张表只用于保证「扫描到的文件一定归属某个已知语言」，避免与解析器注册表脱节；
+/// 真正的权威来源是 [`ParserRegistry::language_for_extension`]。
 pub fn language_of_extension(ext: &str) -> Option<Language> {
     let ext = ext.to_ascii_lowercase();
     match ext.as_str() {
@@ -47,6 +57,16 @@ pub fn language_of_extension(ext: &str) -> Option<Language> {
         "ts" | "tsx" => Some(Language::new(Language::TYPESCRIPT)),
         "java" => Some(Language::new(Language::JAVA)),
         "rs" => Some(Language::new(Language::RUST)),
+        // 以下是子工程标记表里已有（`go.mod` / `pyproject.toml` / …）但此前
+        // 扩展名表遗漏的语言 —— 遗漏会导致这些子工程被识别却零个源文件。
+        "go" => Some(Language::new("go")),
+        "py" | "pyi" => Some(Language::new("python")),
+        "kt" | "kts" => Some(Language::new("kotlin")),
+        "rb" => Some(Language::new("ruby")),
+        "cs" => Some(Language::new("csharp")),
+        "scala" | "sc" => Some(Language::new("scala")),
+        "c" | "h" => Some(Language::new("c")),
+        "cpp" | "cc" | "cxx" | "hpp" => Some(Language::new("cpp")),
         _ => None,
     }
 }
@@ -133,7 +153,11 @@ impl FileScanner for WalkDirScanner {
                 continue;
             }
             let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            let language = match language_of_extension(&ext) {
+            // 优先用解析器注册表给出的「语言 → 扩展名」映射，它与子工程标记文件
+            // 表同源，不会出现「识别出 Go 子工程却扫不到 .go 文件」的不一致。
+            let language = match language_for_ext(&request.language_extensions, &ext)
+                .or_else(|| language_of_extension(&ext))
+            {
                 Some(l) => l,
                 None => continue,
             };

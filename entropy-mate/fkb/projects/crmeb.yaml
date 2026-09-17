@@ -1,0 +1,52 @@
+# CRMEB 项目知识
+#
+# 作用域：项目级（scope: project）。仅当工程被识别为 CRMEB（detectors 命中）时才加载，
+# 不污染其它 ThinkPHP 工程。这里只描述 CRMEB 的**项目专有约定**；框架通用部分仍在
+# fkb/php/thinkphp6.yaml。
+#
+# 调度约定：CRMEB 没有用框架级调度器（ThinkPHP 核心无内置 Schedule，CRMEB 也没用
+# topthink/think-schedule 之类扩展），而是自己实现了一套「HTTP 路由 + 外部调度器
+# 心跳触发」的定时任务：
+#   Route::get('crontab/order_cancel', 'v1.CrontabController/orderUnpaidCancel')
+#     ->name('orderUnpaidCancel')->option(['real_name' => '未支付自动取消订单']);
+# 这些路由既是普通 HttpContract（由 tp6-route-http-contract 合成），又被本规则额外
+# 合成为 Schedule 语义节点并 HandledBy 到对应 CrontabController 方法。
+
+id: crmeb
+display_name: CRMEB
+language: php
+scope: project
+version_hint: "CRMEB 商城"
+
+detectors:
+  # CRMEB 专有标记文件：后台定时任务服务（核心模块，稳定存在）。
+  - kind: file_exists
+    path: app/services/system/crontab/SystemCrontabServices.php
+    confidence: 0.9
+
+rules:
+  # ===== P5 Synthesize：计划任务（Schedule）=====
+  - id: crmeb-schedule-task
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "think\\facade\\Route::{get,post,any,rule,put,delete,patch}|Route::{get,post,any,rule,put,delete,patch}"
+      where:
+        # 只收 crontab 前缀的路由（外部调度器触发），避免把所有业务路由当成定时任务。
+        - arg_starts_with: { arg: 0, prefix: "crontab/" }
+    binding:
+      - Synthesize:
+          node: Schedule
+          identity:
+            kind: Named
+            value: { arg: 0 }
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+            - name: handler
+              value: { arg: 1 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { arg: 1, resolve: handler_pattern }
+          confidence: 0.9

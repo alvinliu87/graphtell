@@ -29,7 +29,6 @@ CRMEB-master.zip
 
 # ===== 运行时数据 / 缓存 / 生成物 =====
 **/data/
-**/fkb/
 *.db
 *.db-shm
 *.db-wal

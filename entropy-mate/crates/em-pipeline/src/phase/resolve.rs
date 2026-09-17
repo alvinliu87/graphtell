@@ -17,8 +17,8 @@
 use std::collections::{HashMap, HashSet};
 
 use em_domain::model::{
-    EdgeKind, FactValue, NewEdge, NodeId, NodeKind, Phase, ResolveStrategy, ResolveTier, Resolution,
-    Severity,
+    EdgeKind, FactValue, HandlerSpec, NewEdge, NodeId, NodeKind, Phase, ResolveStrategy,
+    ResolveTier, Resolution, Severity, SubProjectId,
 };
 use em_domain::port::KnowledgeProvider;
 use serde_json::Value;
@@ -43,6 +43,8 @@ struct Locator {
     consumer: Option<String>,
     file: String,
     line: u32,
+    /// 所属子工程：用于取该子工程的路由 handler 解析规则（FKB 声明）。
+    sub: Option<SubProjectId>,
 }
 
 /// 执行 Resolve。
@@ -97,6 +99,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                         consumer: None,
                         file: call.file.clone(),
                         line: call.span.start_line,
+                        sub: call.sub,
                     });
                 }
                 continue;
@@ -123,6 +126,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                     consumer,
                     file: call.file.clone(),
                     line: call.span.start_line,
+                    sub: call.sub,
                 });
             }
         }
@@ -372,7 +376,7 @@ fn resolve_accessor(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
 
 /// 路由 handler：`'Login/appleLogin'` → `app\api\controller\Login::appleLogin`。
 fn resolve_handler(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
-    match resolve_handler_target(ctx, &loc.raw, &loc.file) {
+    match resolve_handler_target(ctx, &loc.raw, &loc.file, loc.sub) {
         Some((id, note)) => Resolution::resolved(
             ResolveTier::Convention,
             id,
@@ -390,31 +394,58 @@ pub fn resolve_handler_target(
     ctx: &PipelineContext,
     raw: &str,
     file: &str,
+    sub: Option<em_domain::model::SubProjectId>,
 ) -> Option<(NodeId, &'static str)> {
+    // handler 的形态（分隔符 / 类名模板 / 应用段）全部由 FKB 声明 —— 内核不认识任何框架。
+    let spec = sub
+        .and_then(|s| ctx.handler_specs.get(&s.get()).cloned())
+        .or_else(|| ctx.handler_spec_default.clone())
+        .unwrap_or_default();
+    // 命名空间 / 成员分隔符来自语言策略（PHP `\` + `::`，Java `.` + `.`）
+    let policy = ctx.lang_policy_for_sub(sub).clone();
+
     let raw = raw.trim_start_matches('\\');
     if let Some(id) = ctx.ws.find_by_name(raw) {
         return Some((id, "完全限定名直接命中"));
     }
 
-    let (controller_part, method) = match raw.split_once('/') {
-        Some((c, m)) => (c.to_string(), m.to_string()),
-        None => (raw.to_string(), String::new()),
-    };
+    // ① 按 FKB 声明的分隔符拆 controller / method
+    let (controller_part, method) = split_handler(raw, &spec.method_separators);
 
-    let app_seg = route_app_segment(file);
-    // CRMEB 用点号表示控制器层级：`v1.agent.AgentManage` → `v1\agent\AgentManage`
-    let controller = controller_part.replace('.', "\\");
-    let mut bases = vec![
-        format!("app\\{}\\controller\\{}", app_seg, controller),
-        format!("app\\{}\\controller\\v1\\{}", app_seg, controller),
-    ];
-    for seg in ["api", "adminapi", "outapi", "kefuapi", "index"] {
-        bases.push(format!("app\\{}\\controller\\{}", seg, controller));
+    // ② controller 内部的层级字符 → 命名空间分隔符
+    //    例：ThinkPHP 的 `v1.agent.AgentManage` → `v1\agent\AgentManage`
+    let mut controller = controller_part.to_string();
+    let ns_sep = policy.ns_separator.to_string();
+    for sep in &spec.hierarchy_separators {
+        if !sep.is_empty() {
+            controller = controller.replace(sep.as_str(), &ns_sep);
+        }
     }
 
+    // ③ 候选类名 = 模板 × 应用段
+    let app_seg = route_app_segment(file, &spec);
+    let mut app_segs: Vec<String> = vec![app_seg];
+    app_segs.extend(spec.app_segments.iter().cloned());
+    let mut bases: Vec<String> = Vec::new();
+    for tpl in &spec.class_templates {
+        for seg in &app_segs {
+            let b = tpl
+                .replace("{app}", seg)
+                .replace("{controller}", &controller);
+            if !bases.contains(&b) {
+                bases.push(b);
+            }
+        }
+    }
+    // 框架没声明模板时，controller 本身即候选（全限定名或短名，由 ⑤ 兜底）
+    if bases.is_empty() {
+        bases.push(controller.clone());
+    }
+
+    // ④ 方法优先，其次回退到类（控制器方法常继承自基类，要求方法存在会断链）
     if !method.is_empty() {
         for base in &bases {
-            if let Some(id) = ctx.ws.find_by_name(&format!("{}::{}", base, method)) {
+            if let Some(id) = ctx.ws.find_by_name(&policy.join_member(base, &method)) {
                 return Some((id, "方法精确命中"));
             }
         }
@@ -425,10 +456,14 @@ pub fn resolve_handler_target(
         }
     }
 
-    let short = controller.rsplit('\\').next().unwrap_or(&controller);
+    // ⑤ 短名兜底：按路由文件里的 import 还原
+    let short = controller
+        .rsplit(|c: char| policy.ns_separators.contains(&c))
+        .next()
+        .unwrap_or(&controller);
     if let Some(fqn) = ctx.ws.resolve_name_in_file(Some(file), short) {
         if !method.is_empty() {
-            if let Some(id) = ctx.ws.find_by_name(&format!("{}::{}", fqn, method)) {
+            if let Some(id) = ctx.ws.find_by_name(&policy.join_member(&fqn, &method)) {
                 return Some((id, "短名方法命中"));
             }
         }
@@ -439,19 +474,35 @@ pub fn resolve_handler_target(
     None
 }
 
-/// 从路由文件路径推断应用段：`app/api/route/pc.php` → `api`。
-fn route_app_segment(file: &str) -> String {
-    let parts: Vec<&str> = file.split('/').collect();
-    if let Some(pos) = parts.iter().position(|p| *p == "route") {
-        if pos > 0 {
-            return parts[pos - 1].to_string();
+/// 按 FKB 声明的**顺序**尝试分隔符，拆出 controller 与 method。
+///
+/// ThinkPHP 用 `/`、Laravel 与 Symfony 用 `@` 或 `::`、Rails 用 `#` —— 都由此支持。
+fn split_handler(raw: &str, seps: &[String]) -> (String, String) {
+    for s in seps {
+        if s.is_empty() {
+            continue;
+        }
+        if let Some((c, m)) = raw.split_once(s.as_str()) {
+            return (c.to_string(), m.to_string());
         }
     }
-    parts
-        .first()
-        .copied()
-        .unwrap_or("api")
-        .to_string()
+    (raw.to_string(), String::new())
+}
+
+/// 从路由文件路径推断应用段：`app/api/route/pc.php` + 锚点 `route` → `api`。
+fn route_app_segment(file: &str, spec: &HandlerSpec) -> String {
+    let parts: Vec<&str> = file.split('/').collect();
+    if let Some(anchor) = &spec.app_anchor_dir {
+        if let Some(pos) = parts.iter().position(|p| *p == anchor.as_str()) {
+            if pos > 0 {
+                return parts[pos - 1].to_string();
+            }
+        }
+    }
+    if !spec.app_fallback.is_empty() {
+        return spec.app_fallback.clone();
+    }
+    parts.first().copied().unwrap_or("").to_string()
 }
 
 /// 把一次动态解析落成**可定位**的 `evidence` 对象（与 `engine.rs` 里 FKB 规则边同一形状）。
@@ -557,7 +608,7 @@ fn resolve_pending_links(ctx: &mut PipelineContext, phase: &Phase) {
         let target = match link.resolve {
             em_domain::model::ResolveAs::HandlerPattern => {
                 let (file, _) = link.file.split_once(':').unwrap_or((link.file.as_str(), "0"));
-                resolve_handler_target(ctx, &link.raw, file).map(|(id, _)| id)
+                resolve_handler_target(ctx, &link.raw, file, link.sub).map(|(id, _)| id)
                     .or_else(|| {
                         ctx.ws
                             .resolve_name_in_file(Some(file), &link.raw)

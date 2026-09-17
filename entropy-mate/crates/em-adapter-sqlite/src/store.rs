@@ -341,6 +341,14 @@ impl ProjectWriter for SqliteStore {
 // ---------------------------------------------------------------- 图
 
 impl GraphSink for SqliteStore {
+    fn max_node_id(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let m: i64 = conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM nodes", [], |r| r.get(0))
+            .map_err(DomainError::infra)?;
+        Ok(m)
+    }
+
     fn apply(&self, delta: &GraphDelta) -> Result<()> {
         if delta.is_empty() {
             return Ok(());

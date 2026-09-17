@@ -14,6 +14,7 @@
 pub mod context;
 pub mod engine;
 pub mod eval;
+pub mod mybatis;
 pub mod normalize;
 pub mod phase;
 pub mod runner;

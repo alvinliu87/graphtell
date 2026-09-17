@@ -40,10 +40,34 @@ pub struct FrameworkKnowledge {
     pub exclude_globs: Vec<String>,
     /// 知识库作用域：框架级（默认）vs 项目级。
     ///
-    /// * `Framework`：通用框架知识（如 `thinkphp6` / `uni-app`），被任意使用该框架的工程加载；
+    /// * `Framework`：通用框架知识（如 `thinkphp6` / `laravel`），被任意使用该框架的工程加载；
     /// * `Project`：项目专有知识（如 `crmeb`），**仅当工程被识别为该项目时才加载**，
     ///   避免把项目约定（如 CRMEB 的 crontab 路由）串味到其它同框架工程。
     pub scope: KnowledgeScope,
+    /// 路由 handler 的解析规则：如何把 `Route::get` 的第二实参还原成「类 + 方法」。
+    ///
+    /// 这是**框架知识**而非内核知识 —— 见 [`HandlerSpec`]。
+    #[serde(default)]
+    pub handler: Option<HandlerSpec>,
+    /// 「消费入口方法名」候选：连向一个类时，优先连到它的哪个方法。
+    ///
+    /// 各框架约定不同：Laravel/队列 Job 是 `handle`、Symfony 是 `__invoke`、
+    /// ThinkPHP/CRMEB 的 Job 是 `doJob`、TP5 行为类是 `run`。
+    /// 由 FKB 声明，避免新框架为了一个方法名去改内核。
+    /// 未声明时回退到内核内置的**跨框架常见入口名**默认集。
+    #[serde(default)]
+    pub entry_methods: Vec<String>,
+    /// 未识别到本框架时，是否仍应用其规则（默认 **false**）。
+    ///
+    /// 框架级规则带有强烈的框架假设（`Db::name` 是表名、`Route::get` 的第二个实参是
+    /// handler……）。若对**同语言但不同框架**的工程无条件套用，就会用 A 框架的知识
+    /// 去解释 B 框架的代码，产出**看似合理实则不可信**的图 —— 实测把 ThinkPHP 规则
+    /// 套到 Laravel 工程上会凭空造出上百个 `Table` / `HttpContract` 节点。
+    ///
+    /// 因此默认只在 detector 命中时生效；仅当某份知识确实是「该语言的通用兜底」
+    /// （不含具体框架假设）时才显式打开。
+    #[serde(default)]
+    pub apply_without_detection: bool,
 }
 
 /// 知识库作用域。
@@ -55,6 +79,52 @@ pub enum KnowledgeScope {
     Framework,
     /// 项目知识：随项目识别加载，仅适用于被识别为该项目（其 detectors 命中）的工程。
     Project,
+}
+
+/// 路由 handler 的解析规则（**框架知识，不写死在内核**）。
+///
+/// 「哪个类/方法处理这个请求」在各框架里是完全不同的形态：
+///
+/// | 框架 | handler 形态 |
+/// |------|-------------|
+/// | ThinkPHP | `'admin.Login/login'`（点号表层级，斜杠分隔方法） |
+/// | Laravel | `[LoginController::class, 'login']` / `'Ctrl@login'` |
+/// | Symfony | `App\Controller\LoginController::login` |
+/// | Rails | `'login#index'` |
+///
+/// 因此「用什么符号分隔方法」「类名怎么拼」「应用段有哪些」全部由 FKB 声明；
+/// 内核只负责按声明展开候选并查表。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HandlerSpec {
+    /// handler 串里 controller 与 method 的分隔符（按序尝试，取第一个能拆开的）。
+    pub method_separators: Vec<String>,
+    /// controller 内部表示命名空间层级的字符（会被替换成该语言的命名空间分隔符）。
+    ///
+    /// ThinkPHP 的 `v1.agent.AgentManage` → `v1\agent\AgentManage`。
+    pub hierarchy_separators: Vec<String>,
+    /// 类名候选模板，`{app}` 与 `{controller}` 为占位符。
+    pub class_templates: Vec<String>,
+    /// `{app}` 的候选值（模板 × 段 逐个展开）。
+    pub app_segments: Vec<String>,
+    /// 从路由文件路径推断 `{app}`：取该锚点目录的**上一级**目录名。
+    /// 例：`app/api/route/pc.php` + 锚点 `route` → `api`。
+    pub app_anchor_dir: Option<String>,
+    /// 推断不出时 `{app}` 的兜底值。
+    pub app_fallback: String,
+}
+
+impl Default for HandlerSpec {
+    fn default() -> Self {
+        Self {
+            method_separators: vec!["/".into()],
+            hierarchy_separators: Vec::new(),
+            class_templates: Vec::new(),
+            app_segments: Vec::new(),
+            app_anchor_dir: None,
+            app_fallback: String::new(),
+        }
+    }
 }
 
 /// 框架识别信号。
@@ -221,6 +291,9 @@ pub enum Selector {
         file: Option<String>,
         #[serde(default)]
         key_path: Option<String>,
+        /// 附加谓词（只作用在配置条目上）。
+        #[serde(default)]
+        r#where: Vec<Predicate>,
     },
     /// 语法声明。
     Declaration {
@@ -272,6 +345,15 @@ pub enum Predicate {
     /// 调用点第 `arg` 个实参（字符串）以 `prefix` 开头（大小写敏感）。
     /// 用于按调用实参前缀收窄匹配，例如只挑 `Route::get('crontab/...')` 这类路由。
     ArgStartsWith { arg: usize, prefix: String },
+    /// 配置条目的值是**数组**且元素个数不少于 `n`（仅对 `kind: config_entry` 生效）。
+    ///
+    /// PHP 配置解析会把数组元素展开成独立条目（`listen.evt.0`）并与父条目
+    /// （`listen.evt`）**同时存在**。而 `key_path` 是纯子串通配，`"*"` 与
+    /// `"listen.*"` 都会把父子两条都匹配上，于是同一事件合成出 `evt` 与 `evt.0`
+    /// 两个节点（后者是标量，建不出 `HandledBy` 边，纯噪声）。
+    /// 本谓词只放行数组条目：既排除掉展开出的标量叶子，也顺带滤掉
+    /// `app_init => []` 这类框架级空标签。
+    EntryArityGte(usize),
 }
 
 /// 绑定动作。
@@ -485,6 +567,13 @@ pub struct LinkSpec {
     pub kind: EdgeKind,
     /// 边的另一端来源（如 handler 字符串）。
     pub to: Option<ValueSource>,
+    /// 目标**方法名**（可选）。给出时优先连到 `类::方法`。
+    ///
+    /// 两个用途：① 数组式 handler 的方法部分（`[Ctrl::class, 'method']` 的第 1 项）；
+    /// ② 让「消费入口方法」由 FKB 决定，而不是内核硬编码的
+    /// `handle`/`fire`/`doJob`/`__invoke`/`run` 列表。
+    #[serde(default)]
+    pub to_method: Option<ValueSource>,
     /// `to` 取不到目标时的兜底来源（如队列消费方 `arg:0` 解析不出时退回 `receiver_class`）。
     #[serde(default)]
     pub to_fallback: Option<ValueSource>,
@@ -521,6 +610,11 @@ pub struct AliasSpec {
 pub struct ValueSource {
     /// 第 n 个实参。
     pub arg: Option<usize>,
+    /// 实参是**数组**时，按下标取第 n 项。
+    ///
+    /// 用于数组式 handler —— Laravel 主形式 `Route::get('/x', [Ctrl::class, 'method'])`
+    /// 的类名在 `arg1[0]`、方法名在 `arg1[1]`，此前无法表达（只能取整个数组）。
+    pub element: Option<usize>,
     /// 实参是对象字面量时取其字段（如 `uni.request({url:..})`）。
     pub field: Option<String>,
     /// 取类属性（如 Model 的 `$table`）。

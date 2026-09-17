@@ -396,6 +396,7 @@ fn build_file(
             node: call_node,
             owner,
             owner_fqn: call.owner_fqn.clone(),
+            owner_class: call.owner_class.clone(),
             callee: call.callee_text.clone(),
             receiver: call.receiver.clone(),
             method: call.method.clone(),

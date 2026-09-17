@@ -175,7 +175,7 @@ fn apply_source_rules(ctx: &mut PipelineContext, phase: &Phase) {
             {
                 continue;
             }
-            if !matches_config(&rule.selector, cfg) {
+            if !matches_config(&rule.selector, cfg, cfg_node(ctx, cfg), &ctx.ws) {
                 continue;
             }
             let mut last: Option<em_domain::model::NodeId> = None;

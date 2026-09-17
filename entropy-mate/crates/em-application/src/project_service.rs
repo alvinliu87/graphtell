@@ -30,6 +30,15 @@ impl ProjectService {
                 new.root_path.display()
             )));
         }
+        // 同名工程视为重建：先删除旧工程（含其图数据），再创建，避免重复累积。
+        if let Some(existing) = self
+            .store
+            .list_projects()?
+            .into_iter()
+            .find(|p| p.name == new.name)
+        {
+            self.store.delete_project(existing.id)?;
+        }
         let project = self.store.create_project(new)?;
         info!("创建工程 {} ({})", project.name, project.id);
         Ok(project)

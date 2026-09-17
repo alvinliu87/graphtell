@@ -40,6 +40,22 @@ impl LanguageParser for PhpParser {
         &["php", "phtml", "php5", "php7", "php8", "inc"]
     }
 
+    fn namespace_separator(&self) -> &'static [char] {
+        &['\\']
+    }
+
+    fn member_separator(&self) -> &'static str {
+        "::"
+    }
+
+    fn manifest_files(&self) -> &'static [&'static str] {
+        &["composer.json"]
+    }
+
+    fn exclude_dirs(&self) -> &'static [&'static str] {
+        &["vendor"]
+    }
+
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {
         let tree = PARSER.with(|cell| {
             let mut borrow = cell.borrow_mut();
@@ -558,6 +574,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                     let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
+                        owner_class: None,
                         callee_text: format!("{}->{}", object, method),
                         snippet,
                         receiver: Some(object),
@@ -577,6 +594,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                     let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
+                        owner_class: None,
                         callee_text: format!("{}::{}", scope, method),
                         snippet,
                         receiver: Some(scope),
@@ -595,6 +613,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                     let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
+                        owner_class: None,
                         callee_text: f.clone(),
                         snippet,
                         receiver: None,
@@ -615,6 +634,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                     let snippet = snippet_of(child, ctx.src);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
+                        owner_class: None,
                         callee_text: format!("new {}", cls),
                         snippet,
                         receiver: None,

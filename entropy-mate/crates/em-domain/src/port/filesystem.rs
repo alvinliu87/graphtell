@@ -24,6 +24,13 @@ pub struct ScanRequest {
     pub extra_excludes: Vec<String>,
     /// 目标语言；为空表示全部支持的语言。
     pub languages: Vec<Language>,
+    /// 「语言 → 扩展名列表」，由解析器注册表提供。
+    ///
+    /// 用于扩展名到语言的判定。此前扫描器自带一张写死的扩展名表，与子工程标记
+    /// 文件表（`composer.json` / `go.mod` / `pyproject.toml` …）**对不上** ——
+    /// 结果 Go / Python 子工程能被识别出来，却一个源文件都扫不到。
+    /// 为空时回退到扫描器的内置表（保持向后兼容）。
+    pub language_extensions: Vec<(String, Vec<String>)>,
 }
 
 /// 扫描得到的候选文件。
