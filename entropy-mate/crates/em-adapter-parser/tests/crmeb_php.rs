@@ -19,10 +19,29 @@ fn sample_root() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../samples/CRMEB-master");
-    if candidate.is_dir() {
-        return Some(candidate.canonicalize().unwrap_or(candidate));
+    // 从 `CARGO_MANIFEST_DIR` 向上逐层查找 `samples/**/CRMEB-master`：
+    // 先试 `samples/CRMEB-master`，再遍历一层子目录（样本按技术栈分目录放置时也能命中）。
+    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..6 {
+        let samples = cur.join("samples");
+        let direct = samples.join("CRMEB-master");
+        if direct.is_dir() {
+            return Some(direct.canonicalize().unwrap_or(direct));
+        }
+        let mut hits: Vec<PathBuf> = std::fs::read_dir(&samples)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path().join("CRMEB-master"))
+            .filter(|p| p.is_dir())
+            .collect();
+        hits.sort();
+        if let Some(hit) = hits.into_iter().next() {
+            return Some(hit.canonicalize().unwrap_or(hit));
+        }
+        if !cur.pop() {
+            break;
+        }
     }
     None
 }
@@ -64,8 +83,11 @@ fn parses_model_namespace_and_fqn() {
     );
 }
 
+/// ThinkPHP 模型**不用** `$table` 承载表名，而是 `$name`（`protected $name = 'store_order'`，
+/// 表前缀由配置另给）；`$pk` 同理给出主键。P5 识别「模型 → 表」依赖这两个属性，
+/// 这里守住"属性值必须被提取"——只断言属性存在是不够的，空值等于没识别到表名。
 #[test]
-fn parses_model_table_property() {
+fn parses_model_name_and_pk_properties() {
     let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
         eprintln!("跳过：未找到 CRMEB 样本");
         return;
@@ -76,27 +98,31 @@ fn parses_model_table_property() {
         .find(|d| d.kind.is("Class") && d.name == "StoreOrder")
         .expect("应解析出 StoreOrder 类");
     // 属性是独立的 Declaration，parent_fqn 指向所属类
-    let table = facts
-        .declarations
-        .iter()
-        .find(|d| {
+    let prop = |name: &str| {
+        facts.declarations.iter().find(|d| {
             d.kind.is("Property")
-                && d.name == "table"
+                && d.name == name
                 && d.parent_fqn.as_deref() == Some(class.fqn.as_str())
-        });
-    assert!(
-        table.is_some(),
-        "StoreOrder 应有 protected $table 属性（P5 据此识别表名）"
+        })
+    };
+    // 属性默认值存在 `extra["default"]`（`extra["value"]` 是 const 的键，别混用），
+    // 序列化形态是 `FactValue::String` → `{"String": "..."}`。
+    // `FactValue` 以 `#[serde(tag = "t", content = "v")]` 序列化：`{"t":"String","v":"..."}`。
+    fn default_of(d: &em_domain::model::Declaration) -> Option<String> {
+        let v = d.extra.get("default")?;
+        if v.get("t").and_then(|t| t.as_str()) != Some("String") {
+            return None;
+        }
+        v.get("v").and_then(|x| x.as_str()).map(|s| s.to_string())
+    }
+    let name = prop("name").expect("StoreOrder 应有 protected $name（表名来源）");
+    assert_eq!(
+        default_of(name).as_deref(),
+        Some("store_order"),
+        "$name 的属性值必须被提取"
     );
-    let value = table
-        .unwrap()
-        .extra
-        .get("value")
-        .and_then(|v| v.as_str());
-    assert!(
-        value.is_some(),
-        "$table 的属性值必须被提取（如 eb_store_order）"
-    );
+    let pk = prop("pk").expect("StoreOrder 应有 protected $pk（主键）");
+    assert_eq!(default_of(pk).as_deref(), Some("id"), "$pk 的属性值必须被提取");
 }
 
 #[test]
@@ -105,16 +131,26 @@ fn parses_event_php_config_entries() {
         eprintln!("跳过：未找到 CRMEB 样本");
         return;
     };
-    // 顶层 return [...] 里的 'listen' 配置应被提取成 config_entry
-    let listen = facts
+    // 顶层 `return [...]` 里的 'listen' 应被提取成 config_entry。
+    // CRMEB 的 listen 是**平铺**的：`'事件名' => [监听器类...]`（不是 `listen.order.pay_success`
+    // 这种嵌套分组），数组元素以 `.0` 形式展开成独立条目。
+    let pay_success = facts
         .config_entries
         .iter()
-        .find(|c| c.key_path == "listen.order.pay_success")
-        .expect("event.php 应提取出 listen.order.pay_success 配置项");
-    // 值是数组（监听器类列表）
+        .find(|c| c.key_path == "listen.OrderPaySuccessListener")
+        .expect("event.php 应提取出 listen.OrderPaySuccessListener 配置项");
     assert!(
-        !listen.value.array_values().is_empty() || listen.value.as_str().is_some(),
-        "order.pay_success 事件应带有监听器列表"
+        !pay_success.value.array_values().is_empty() || pay_success.value.as_str().is_some(),
+        "OrderPaySuccessListener 事件应带有监听器列表"
+    );
+    // 监听器类本身也要落进条目里，否则事件 → 监听器这条边无从建立。
+    assert!(
+        facts
+            .config_entries
+            .iter()
+            .any(|c| c.key_path.starts_with("listen.OrderPaySuccessListener.")
+                && c.value.as_str() == Some("app\\listener\\order\\OrderPaySuccessListener")),
+        "监听器类 app\\listener\\order\\OrderPaySuccessListener 应被提取"
     );
 }
 
@@ -124,15 +160,26 @@ fn parses_provider_php_bindings() {
         eprintln!("跳过：未找到 CRMEB 样本");
         return;
     };
-    // 容器绑定形如 'order_services' => StoreOrderServices::class
-    let has_binding = facts
-        .config_entries
-        .iter()
-        .any(|c| c.key_path.starts_with("bind.") || c.key_path.starts_with("providers."));
-    assert!(
-        has_binding,
-        "provider.php 应解析出容器绑定（P7 动态解析的关键）"
-    );
+    // 容器绑定是**顶层**的 `'think\Request' => Request::class`（不是包在 `bind` / `providers`
+    // 子数组里）——ThinkPHP 的 provider.php 直接返回接口 → 实现的映射表。
+    // 这是 P7 动态解析的关键：`app(Request::class)` 要能落到 `app\Request`。
+    let entry = |key: &str| {
+        facts
+            .config_entries
+            .iter()
+            .find(|c| c.key_path == key)
+            .unwrap_or_else(|| panic!("provider.php 应解析出绑定 {key}"))
+    };
+    for (interface, impl_hint) in [
+        ("think\\Request", "Request"),
+        ("think\\exception\\Handle", "ExceptionHandle"),
+    ] {
+        let e = entry(interface);
+        assert!(
+            e.value.as_str().is_some_and(|v| !v.is_empty()),
+            "{interface} 应绑定到非空的实现（{impl_hint}）"
+        );
+    }
 }
 
 #[test]

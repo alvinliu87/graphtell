@@ -1,21 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Select, Space, Tag, Tooltip } from 'antd';
-import type { Candidate, LayoutMode, Perspective } from '@/entities/view';
+import type { Candidate, Perspective } from '@/entities/view';
 import { useLocale } from '@/shared/lib/i18n';
 import { truncate } from '@/shared/lib/format';
-
-/** 布局算法可读名（用于「跟随视角默认」选项的说明）。 */
-const LAYOUT_LABELS: Record<string, string> = {
-  radial: '径向 / 星形自适应',
-  layered: '分层调用链',
-  spine: 'Spine 取证',
-  compound: '聚类框',
-  matrix: '矩阵',
-  er: 'ER 正交',
-};
-
-/** 「跟随视角默认」在 Select 里的哨兵值（不是合法 LayoutMode）。 */
-const AUTO = '__auto__' as const;
 
 export interface BreadcrumbItem {
   perspective: string;
@@ -43,11 +30,12 @@ export function PerspectivePicker({
   onSearch,
   onDropdownVisibleChange,
   nodeName,
-  layout,
-  onLayoutChange,
   trail,
   onTrailClick,
   loading,
+  /** 追加在筛选行末尾的操作区（把「适应屏幕 / 结论·导航」等塞进同一行，
+   *  避免图上方再占一条工具栏 —— 每多一行，图就要往上挤 40px）。 */
+  extra,
 }: {
   perspectives: Perspective[];
   perspective: string | null;
@@ -66,12 +54,10 @@ export function PerspectivePicker({
    * 有了它就能补一个选项，显示名字；候选已加载且命中时本字段不生效。
    */
   nodeName?: string | null;
-  layout: LayoutMode | null;
-  /** 传 `null` 表示"跟随视角默认"，即清掉 URL 里的 `m` 覆盖。 */
-  onLayoutChange: (m: LayoutMode | null) => void;
   trail: BreadcrumbItem[];
   onTrailClick: (index: number) => void;
   loading?: boolean;
+  extra?: ReactNode;
 }) {
   const current = perspectives.find((p) => p.id === perspective) ?? null;
   const isAggregate = current?.mode === 'aggregate';
@@ -94,9 +80,15 @@ export function PerspectivePicker({
     return options;
   }, [candidates, node, nodeName]);
 
+  // 面包屑只保留最近几步：它是一条"可回退"的辅助信息，宽屏也放不下十几步，
+  // 而最该能点的是**最近**几步；更早的用「…」表示存在但不占宽度。
+  const MAX_TRAIL = 3;
+  const shownTrail = trail.length > MAX_TRAIL ? trail.slice(-MAX_TRAIL) : trail;
+  const trailOffset = trail.length - shownTrail.length;
+
   return (
-    <Space direction="vertical" size={10} style={{ width: '100%' }}>
-      {/* 一行：一级视角（下拉）+ 二级对象 + 布局，紧凑成一行，减少竖向占用 */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      {/* 一行：一级视角（下拉）+ 二级对象 + 布局 + 面包屑 + 操作区 */}
       <Space size={10} wrap align="center">
         <Select
           style={{ width: 200 }}
@@ -132,55 +124,53 @@ export function PerspectivePicker({
             options={nodeOptions}
           />
         )}
-        <Space size={6}>
-          <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>{t('布局')}</span>
-          <Select
-            size="small"
-            style={{ width: 168 }}
-            value={(layout ?? AUTO) as string}
-            onChange={(v: string) => onLayoutChange(v === AUTO ? null : (v as LayoutMode))}
-            options={[
-              {
-                value: AUTO,
-                label: t('跟随视角默认（') + t(LAYOUT_LABELS[current?.layout ?? 'radial'] ?? current?.layout ?? 'radial') + t('）'),
-              },
-              { value: 'radial', label: t('径向 / 星形自适应') },
-              { value: 'layered', label: t('分层调用链') },
-              { value: 'spine', label: t('Spine 取证') },
-              { value: 'compound', label: t('聚类框') },
-              { value: 'matrix', label: t('矩阵') },
-              { value: 'er', label: t('ER 正交') },
-            ]}
-          />
-        </Space>
-        {current ? (
-          <Tag color={isAggregate ? 'purple' : 'blue'}>
-            {isAggregate ? t('聚合概览') : t('单链路')}
-          </Tag>
-        ) : null}
       </Space>
 
-      {/* 面包屑：可回退到任意一步 */}
+      {/* 面包屑：可回退到任意一步。与筛选器同一行，超宽时**横向裁剪**而不是换行，
+          换行会把下面的画布整体往下推。 */}
       {trail.length > 1 ? (
-        <Space size={4} wrap style={{ fontSize: 12 }}>
+        <div
+          style={{
+            flex: '1 1 120px',
+            minWidth: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            fontSize: 12,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+          }}
+        >
           <span style={{ color: 'rgba(0,0,0,0.45)' }}>{t('回退：')}</span>
-          {trail.map((t, i) => (
-            <span key={`${t.perspective}-${t.node}-${i}`}>
-              {i > 0 ? <span style={{ color: 'rgba(0,0,0,0.25)' }}> › </span> : null}
-              <a
-                onClick={() => onTrailClick(i)}
-                style={{
-                  fontWeight: i === trail.length - 1 ? 600 : 400,
-                  color: i === trail.length - 1 ? '#0f172a' : '#3d7eff',
-                }}
-              >
-                {t.label}
-                {t.nodeName ? ` · ${truncate(t.nodeName, 28)}` : ''}
-              </a>
-            </span>
-          ))}
-        </Space>
+          {trailOffset > 0 ? <span style={{ color: 'rgba(0,0,0,0.25)' }}>… ›</span> : null}
+          {shownTrail.map((item, i) => {
+            const index = trailOffset + i;
+            // 当前这一步"点了也白点"（= 原地不动），所以不当链接渲染：不显示手型指针，
+            // 也不暗示它有跳转。
+            const isCurrentStep = index === trail.length - 1;
+            const text = (
+              <>
+                {item.label}
+                {item.nodeName ? ` · ${truncate(item.nodeName, 28)}` : ''}
+              </>
+            );
+            return (
+              <span key={`${item.perspective}-${item.node}-${index}`}>
+                {i > 0 ? <span style={{ color: 'rgba(0,0,0,0.25)' }}> › </span> : null}
+                {isCurrentStep ? (
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{text}</span>
+                ) : (
+                  <a onClick={() => onTrailClick(index)} style={{ color: '#3d7eff' }}>
+                    {text}
+                  </a>
+                )}
+              </span>
+            );
+          })}
+        </div>
       ) : null}
-    </Space>
+
+      {extra ? <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>{extra}</div> : null}
+    </div>
   );
 }

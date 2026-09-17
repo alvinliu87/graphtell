@@ -12,13 +12,13 @@ describe('encode/decode', () => {
   it('空状态编码为空串', () => expect(encodeViewState(EMPTY_STATE)).toBe(''));
 
   it('往返一致', () => {
-    const s: ViewState = { p: 'route', n: 7, d: 3, m: 'radial', i: 2, e: 4 };
+    const s: ViewState = { p: 'route', n: 7, d: 3, i: 2, e: 4 };
     const dec = decodeViewState(encodeViewState(s));
     expect(dec).toEqual(s);
   });
 
   it('默认深度 2 被省略', () => {
-    const s: ViewState = { p: 'route', n: 7, d: 2, m: null, i: null, e: null };
+    const s: ViewState = { p: 'route', n: 7, d: 2, i: null, e: null };
     const dec = decodeViewState(encodeViewState(s));
     expect(dec.d).toBe(2);
     expect(dec.p).toBe('route');

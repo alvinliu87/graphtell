@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale } from '@/shared/lib/i18n';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
+import { InfoCircleOutlined } from '@ant-design/icons';
 import type { EdgeView, LayoutMode, NodeView, SourceLocation } from '@/entities/view';
 import { edgeColor, nodeColor } from '@/entities/graph';
 import { truncate } from '@/shared/lib/format';
@@ -12,17 +13,23 @@ import { layoutOf, type LayoutInput, type LayoutResult } from './layout/types';
  * 边类型是语义图的"谓语"（`ReadsConfig` / `MapsTo` / `ReadsCache`…），标出来才读得懂；
  * 但共享资源视图可能有上百条边，全部标注会糊成一片 —— 所以边多时退化成"按需标注"，
  * 悬浮详情卡始终给出完整信息。
+ *
+ * 40 是按"横向分层图"定的：标签沿各层散开，不太会叠。星形视图（一个中心拖 27 个
+ * 配置键）所有边的中点都挤在中心附近那一小圈里，二十几个标签必然叠成一摞 ——
+ * 所以这个阈值必须按"标签会不会物理重叠"取值，14 条以上星形就已经叠了。
  */
-const EDGE_LABEL_LIMIT = 40;
+const EDGE_LABEL_LIMIT = 14;
 /**
  * 「适应屏幕」的缩放区间。
  *
- * 下限 0.85：只容忍极轻微的缩小（约一成），再多就改为滚动。
- * 取舍依据是"歧义成本 > 机械成本" —— 字被压小会导致看错（歧义），
- * 而滚动/拖拽只是多动一下手（机械）。宁可滚，也不缩字。
+ * 下限 0.5：星形大图（一个中心拖 27 个药丸，包围盒 2000px+）在 0.85 下根本放不进
+ * 视口 —— fit 把中心对到视口中央、两边照样被裁，"适应屏幕"名存实亡，只能盲滚。
+ * 取舍从「宁可滚，也不缩字」改为「先见全貌，再看细节」：0.5 时 13px 字约 6.5px，
+ * 认结构足够、认内容吃力，但边标签在缩小后已自动隐藏（见 `EDGE_LABEL_LIMIT`），
+ * 结构轮廓 + 滚轮放大看细节才是这个尺度下的正确用法。
  * 上限是 1：小图不放大成巨号字。
  */
-const FIT_MIN_K = 0.85;
+const FIT_MIN_K = 0.5;
 const FIT_MAX_K = 1;
 /** fit 时内容四周留白（世界坐标 px）。 */
 const FIT_PAD = 16;
@@ -386,7 +393,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
         const cy = e.clientY - rect.top;
         setTransform((prev) => {
           const t = prev ?? fitRef.current ?? { x: 0, y: 0, k: 1 };
-          const k = Math.max(0.25, Math.min(3, t.k * factor));
+          // 范围收窄到 0.6–2：缩放是"看空间关系"的手段，不是字号开关 ——
+          // 0.25 会把字压到 3px（不可读），3 会把药丸撑成巨块，两端都没有信息增量。
+          const k = Math.max(0.6, Math.min(2, t.k * factor));
           const ratio = k / t.k;
           return { k, x: cx - ratio * (cx - t.x), y: cy - ratio * (cy - t.y) };
         });
@@ -487,7 +496,18 @@ export function GraphCanvas(props: GraphCanvasProps) {
           {/* 同心环引导线：显式标出"环 = 跳数"，仅视觉参照，不参与命中 */}
           {layout.guides?.map((g, i) => (
             <g key={`guide${i}`}>
-              <circle cx={g.cx} cy={g.cy} r={g.r} fill="none" stroke="#e6ebf3" strokeWidth={1} />
+              {/* 以下线宽一律 `non-scaling-stroke`：缩放只改变**空间关系**，不把线一起放大/压细
+                  （地图语义）。放大时不糊成粗杠，缩小时也不会细到看不见。
+                  文字与其描边白底**不**在此列 —— 它们要跟着字号走，否则描边与字脱节。 */}
+              <circle
+                cx={g.cx}
+                cy={g.cy}
+                r={g.r}
+                fill="none"
+                stroke="#e6ebf3"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+              />
               <text
                 x={g.cx}
                 y={g.cy - g.r - 6}
@@ -513,6 +533,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 fill="#ffffff"
                 stroke="#dbe2f0"
                 strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
               />
               <text x={g.x + 14} y={g.y + 22} fontSize={12} fontWeight={600} fill="#334155">
                 {truncate(g.label, 22)}
@@ -629,6 +650,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   strokeWidth={active ? 2.6 : 1.2}
                   strokeOpacity={active ? 1 : 0.8}
                   strokeDasharray={view?.indirect ? '5 4' : undefined}
+                  vectorEffect="non-scaling-stroke"
                   style={{ pointerEvents: 'none', transition: 'stroke-width 140ms ease, stroke-opacity 140ms ease' }}
                 />
                 {/* 方向箭头：点明有向依赖的流向（consumer→table / handler→config…）。
@@ -642,8 +664,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 {/* 边的类型：语义边种类（`ReadsConfig` / `MapsTo`…）就是这个图的"谓语"，
                     标出来才读得懂。默认**常显**（不再要求悬浮）：只有边数超过阈值、
                     又没被放大时，才退化为"只标悬浮/选中那条"以防糊成一片。
-                    悬浮时其它边只淡出、不隐藏标签（不因聚焦而丢信息）。 */}
-                {view && showEdgeLabels && (edges.length <= EDGE_LABEL_LIMIT || active || tf.k >= 1.15) ? (
+                    悬浮时其它边只淡出、不隐藏标签（不因聚焦而丢信息）。
+                    另外缩小时（k < 0.85）标签物理上更挤，也退化为按需标注 ——
+                    反正那时字已经小到读不清，常显只剩噪声。 */}
+                {view &&
+                showEdgeLabels &&
+                (active || (edges.length <= EDGE_LABEL_LIMIT && tf.k >= 0.85) || tf.k >= 1.15) ? (
                   <text
                     x={lp.x}
                     y={lp.y}
@@ -694,6 +720,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   onNodeContextMenu?.(n.id, n.kind, e);
                 }}
               >
+                {/* 中心节点用**加粗的种类色描边**表达强调，不再叠一层"选中环"——
+                    `selectedId` 恒为中心（点有视角的节点即切视角变中心），两层边框永远
+                    同时出现在中心药丸上，看起来像画重了。 */}
                 <rect
                   x={-w / 2}
                   y={-h / 2}
@@ -702,7 +731,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   rx={6}
                   fill="#fff"
                   stroke={fill}
-                  strokeWidth={1.4}
+                  strokeWidth={isCenter ? 2 : 1.4}
+                  vectorEffect="non-scaling-stroke"
                   style={{ transition: 'stroke-width 140ms ease' }}
                 />
                 {isOrigin ? (
@@ -753,7 +783,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     </tspan>
                   )}
                 </text>
-                {selectedId === n.id ? (
+                {/* 选中环只给"非中心的选中节点"留（当前交互下不会出现，留作扩展点） */}
+                {selectedId === n.id && !isCenter ? (
                   <rect
                     x={-w / 2 - 3}
                     y={-h / 2 - 3}
@@ -879,6 +910,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
         </div>
       ) : null}
 
+      {/* 底部只常驻**图例**（虚线 = 间接是这张图最易误读的点）；
+          布局说明与操作提示收进 ⓘ —— 都是看一次就够的文案，不值得占一行。 */}
       <div
         style={{
           padding: '8px 14px',
@@ -891,9 +924,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
           alignItems: 'center',
         }}
       >
-        <span style={{ color: '#0f172a', fontWeight: 600 }}>{t(layout.note)}</span>
         <span>{t('虚线 = 经调用链间接；实线 = 直接调用')}</span>
-        <span>{t('滚轮缩放 · 拖拽平移 · 左键单击切视角 · 右键打开位置')}</span>
+        <Tooltip title={t(layout.note) + ' ' + t('滚轮缩放 · 拖拽平移 · 左键单击切视角 · 右键打开位置')}>
+          <InfoCircleOutlined style={{ cursor: 'help', color: 'rgba(0,0,0,0.35)' }} />
+        </Tooltip>
       </div>
     </div>
   );

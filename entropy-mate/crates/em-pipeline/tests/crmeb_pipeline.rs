@@ -1,4 +1,4 @@
-//! 以 `samples/CRMEB-master` 为材料的建图集成测试。
+//! 以 `samples/thinkphp-projects/CRMEB-master` 为材料的建图集成测试。
 //!
 //! 这些用例验证的是**端到端结论**，而不是某个函数的返回值：
 //! 子工程是否被正确识别、依赖目录是否被排除、`AppRoot` 是否按 FKB 解析、
@@ -677,7 +677,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
     }
 }
 
-/// 专门验证 `samples/CRMEB-master/crmeb/app/api/route/v1.php` 里的这条路由：
+/// 专门验证 `samples/thinkphp-projects/CRMEB-master/crmeb/app/api/route/v1.php` 里的这条路由：
 ///
 /// ```php
 /// Route::post('apple_login', 'v1.LoginController/appleLogin')->name('appleLogin');

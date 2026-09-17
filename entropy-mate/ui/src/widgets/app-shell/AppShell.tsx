@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Badge, Button, Layout, Menu, Segmented, Space, Tag, Tooltip, Typography } from 'antd';
+import { Badge, Button, Divider, Layout, Menu, Segmented, Space, Typography } from 'antd';
 import {
   ApartmentOutlined,
   DatabaseOutlined,
-  DeploymentUnitOutlined,
   FundProjectionScreenOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -121,38 +120,33 @@ export function AppShell() {
             />
             <Typography.Text type="secondary" style={{ fontSize: 13 }}>
               {projectId ? `${t('当前工程')} #${projectId}` : t('选择或创建一个工程开始分析')}
-                  </Typography.Text>
-                </Space>
-                <Segmented
-                  size="small"
-                  value={lang}
-                  onChange={(v) => setLang(v as Lang)}
-                  options={[
-                    { label: '中文', value: 'zh-CN' },
-                    { label: 'EN', value: 'en-US' },
-                  ]}
-                />
-                {/* 暂时注释：设置入口已隐藏
-                <Button
-                  type="text"
-                  aria-label={t('设置')}
-                  icon={<SettingOutlined />}
-                  onClick={() => navigate('/settings')}
-                />
-                */}
-                <Space size={10}>
-            {health ? (
+            </Typography.Text>
+          </Space>
+          {/* 右侧：仅语言切换 + 离线告警。框架知识 / 语言等静态信息已从顶栏移除（可在工程详情查看），
+              后端在线时无提示（应用能跑即代表在线），仅在异常时冒出红点告警，避免日常噪音。 */}
+          <Space size={10} align="center">
+            <Segmented
+              size="small"
+              value={lang}
+              onChange={(v) => setLang(v as Lang)}
+              options={[
+                { label: '中文', value: 'zh-CN' },
+                { label: 'EN', value: 'en-US' },
+              ]}
+            />
+            {/* 暂时注释：设置入口已隐藏
+            <Button
+              type="text"
+              aria-label={t('设置')}
+              icon={<SettingOutlined />}
+              onClick={() => navigate('/settings')}
+            />
+            */}
+            {health && health.status !== 'ok' && (
               <>
-                <Tooltip title={t('已装载的框架知识数量')}>
-                  <Tag icon={<DeploymentUnitOutlined />} color="blue">
-                    {t('框架知识')} {health.frameworks}
-                  </Tag>
-                </Tooltip>
-                <Tag color="green">{health.languages.map((l: string) => l.toUpperCase()).join(' / ')}</Tag>
-                <Badge status={health.status === 'ok' ? 'success' : 'error'} text={t('后端在线')} />
+                <Divider type="vertical" style={{ marginInline: 2 }} />
+                <Badge status="error" text={t('后端未连接')} />
               </>
-            ) : (
-              <Badge status="error" text={t('后端未连接')} />
             )}
           </Space>
         </Header>

@@ -16,10 +16,29 @@ fn sample_root() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../samples/CRMEB-master");
-    if candidate.is_dir() {
-        return Some(candidate.canonicalize().unwrap_or(candidate));
+    // 从 `CARGO_MANIFEST_DIR` 向上逐层查找 `samples/**/CRMEB-master`：
+    // 先试 `samples/CRMEB-master`，再遍历一层子目录（样本按技术栈分目录放置时也能命中）。
+    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..6 {
+        let samples = cur.join("samples");
+        let direct = samples.join("CRMEB-master");
+        if direct.is_dir() {
+            return Some(direct.canonicalize().unwrap_or(direct));
+        }
+        let mut hits: Vec<PathBuf> = std::fs::read_dir(&samples)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path().join("CRMEB-master"))
+            .filter(|p| p.is_dir())
+            .collect();
+        hits.sort();
+        if let Some(hit) = hits.into_iter().next() {
+            return Some(hit.canonicalize().unwrap_or(hit));
+        }
+        if !cur.pop() {
+            break;
+        }
     }
     None
 }

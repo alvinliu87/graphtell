@@ -1,5 +1,3 @@
-import type { LayoutMode } from '@/entities/view';
-
 /**
  * 视图现场（URL 即状态）。
  *
@@ -8,7 +6,8 @@ import type { LayoutMode } from '@/entities/view';
  * * **前进 / 后退** —— 切视角是有成本的导航动作，浏览器返回键必须能撤销
  * * **分享 / 报告** —— 一条链接就是一个结论（"看这个端点的链路"）
  *
- * 采用短键名以保持 URL 可读：`p` 视角、`n` 中心、`d` 深度、`m` 布局、`i` Inspector。
+ * 采用短键名以保持 URL 可读：`p` 视角、`n` 中心、`d` 深度、`i` Inspector。
+ * （曾有 `m` 布局覆盖：布局由 `views/perspectives.yaml` 按视角声明，不再暴露给用户。）
  */
 export interface ViewState {
   /** 一级：视角 id。 */
@@ -17,22 +16,19 @@ export interface ViewState {
   n: number | null;
   /** 跳数。 */
   d: number;
-  /** 布局覆盖（不填则用视角默认布局）。 */
-  m: LayoutMode | null;
   /** Inspector 选中的节点（不切视角）。 */
   i: number | null;
   /** Inspector 选中的边。 */
   e: number | null;
 }
 
-export const EMPTY_STATE: ViewState = { p: null, n: null, d: 2, m: null, i: null, e: null };
+export const EMPTY_STATE: ViewState = { p: null, n: null, d: 2, i: null, e: null };
 
 export function encodeViewState(s: ViewState): string {
   const usp = new URLSearchParams();
   if (s.p) usp.set('p', s.p);
   if (s.n !== null) usp.set('n', String(s.n));
   if (s.d !== 2) usp.set('d', String(s.d));
-  if (s.m) usp.set('m', s.m);
   if (s.i !== null) usp.set('i', String(s.i));
   if (s.e !== null) usp.set('e', String(s.e));
   const str = usp.toString();
@@ -47,12 +43,10 @@ export function decodeViewState(search: string): ViewState {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
-  const mode = usp.get('m');
   return {
     p: usp.get('p'),
     n: num('n'),
     d: num('d') ?? 2,
-    m: (mode as LayoutMode | null) ?? null,
     i: num('i'),
     e: num('e'),
   };
@@ -60,7 +54,7 @@ export function decodeViewState(search: string): ViewState {
 
 /** 两个现场是否等价（用于避免写入重复的历史记录）。 */
 export function sameViewState(a: ViewState, b: ViewState): boolean {
-  return a.p === b.p && a.n === b.n && a.d === b.d && a.m === b.m && a.i === b.i && a.e === b.e;
+  return a.p === b.p && a.n === b.n && a.d === b.d && a.i === b.i && a.e === b.e;
 }
 
 /**

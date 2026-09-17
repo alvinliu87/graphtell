@@ -1,6 +1,6 @@
 //! em-app 视角层集成测试（组装根 → 建图 → 视角切片）。
 //!
-//! 以真实的 `samples/CRMEB-master` 为原料，经由 `Container` 装配全部适配器，
+//! 以真实的 `samples/thinkphp-projects/CRMEB-master` 为原料，经由 `Container` 装配全部适配器，
 //! 跑一遍完整建图，再用 `ViewService` 验证一/二级筛选器与各视角切片。
 //! 样本缺失时整组跳过（可用 `ENTROPY_MATE_SAMPLE_DIR` 指定）。
 
@@ -14,7 +14,25 @@ use em_domain::port::{
     EdgeDirection, GraphQuery, NoopObserver, NodeFilter, Persistence, SystemClock,
 };
 
-/// 在 `CARGO_MANIFEST_DIR` 向上查找 `samples/CRMEB-master`。
+/// 在 `dir/samples` 下定位 CRMEB 样本：先试 `samples/CRMEB-master`，再遍历一层子目录
+/// `samples/*/CRMEB-master`（样本按技术栈分目录放置时也能命中）。
+fn under_samples(dir: &Path) -> Option<PathBuf> {
+    let samples = dir.join("samples");
+    let direct = samples.join("CRMEB-master");
+    if direct.is_dir() {
+        return Some(direct);
+    }
+    let mut hits: Vec<PathBuf> = std::fs::read_dir(&samples)
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("CRMEB-master"))
+        .filter(|p| p.is_dir())
+        .collect();
+    hits.sort();
+    hits.into_iter().next()
+}
+
+/// 在 `CARGO_MANIFEST_DIR` 向上查找 `samples/**/CRMEB-master`。
 fn find_sample() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("ENTROPY_MATE_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -24,8 +42,7 @@ fn find_sample() -> Option<PathBuf> {
     }
     let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for _ in 0..6 {
-        let cand = cur.join("samples/CRMEB-master");
-        if cand.is_dir() {
+        if let Some(cand) = under_samples(&cur) {
             return Some(cand);
         }
         if !cur.pop() {

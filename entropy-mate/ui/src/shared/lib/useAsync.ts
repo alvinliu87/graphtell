@@ -30,25 +30,33 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
     };
   }, []);
 
-  const run = useCallback(async () => {
-    setFetching(true);
-    setError(null);
-    try {
-      const result = await fn();
-      if (mounted.current) setData(result);
-      return result;
-    } catch (e) {
-      if (mounted.current) setError(e instanceof Error ? e.message : String(e));
-      return null;
-    } finally {
-      if (mounted.current) {
-        // 成败都标记本轮 deps 已结算：成功→数据就绪；失败→停止 spinner 并展示 error，避免永久转圈
-        fetchedDeps.current = deps;
-        setFetching(false);
+  /**
+   * @param silent 静默刷新：不置 `fetching`，因此不闪 spinner / 不遮罩表格。
+   *   用于**轮询**——列表里"建图中"的转圈应该代表"真的在跟进"，
+   *   而不是每 3 秒把表格糊一层遮罩。
+   */
+  const run = useCallback(
+    async (silent = false) => {
+      if (!silent) setFetching(true);
+      setError(null);
+      try {
+        const result = await fn();
+        if (mounted.current) setData(result);
+        return result;
+      } catch (e) {
+        if (mounted.current) setError(e instanceof Error ? e.message : String(e));
+        return null;
+      } finally {
+        if (mounted.current) {
+          // 成败都标记本轮 deps 已结算：成功→数据就绪；失败→停止 spinner 并展示 error，避免永久转圈
+          fetchedDeps.current = deps;
+          if (!silent) setFetching(false);
+        }
       }
-    }
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+    deps,
+  );
 
   useEffect(() => {
     void run();
@@ -60,7 +68,10 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
   const ready = fetchedDeps.current !== null && depsEqual(fetchedDeps.current, deps);
   const loading = !ready || fetching;
 
-  return { data, loading, error, reload: run };
+  const reload = useCallback(() => run(false), [run]);
+  const silentReload = useCallback(() => run(true), [run]);
+
+  return { data, loading, error, reload, silentReload };
 }
 
 /** 轮询：用于建图进度。 */

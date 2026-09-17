@@ -2,10 +2,10 @@
 //!
 //! # 样本从哪来
 //!
-//! 测试以 `samples/CRMEB-master` 为材料。为了在没带样本的机器上也能跑 CI，
+//! 测试以 `samples/thinkphp-projects/CRMEB-master` 为材料。为了在没带样本的机器上也能跑 CI，
 //! 样本缺失时测试**跳过**而不是失败：
 //! * 环境变量 `ENTROPY_MATE_SAMPLE_DIR` 显式指定，或
-//! * 仓库内的相对路径 `samples/CRMEB-master`
+//! * 仓库内的相对路径 `samples/thinkphp-projects/CRMEB-master`
 
 #![allow(dead_code)]
 
@@ -24,9 +24,27 @@ use em_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
 pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
+/// 在 `dir/samples` 下定位 CRMEB 样本：先试 `samples/CRMEB-master`，再遍历一层子目录
+/// `samples/*/CRMEB-master`（样本按技术栈分目录放置时也能命中）。
+fn under_samples(dir: &Path) -> Option<PathBuf> {
+    let samples = dir.join("samples");
+    let direct = samples.join("CRMEB-master");
+    if direct.is_dir() {
+        return Some(direct);
+    }
+    let mut hits: Vec<PathBuf> = std::fs::read_dir(&samples)
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("CRMEB-master"))
+        .filter(|p| p.is_dir())
+        .collect();
+    hits.sort();
+    hits.into_iter().next()
+}
+
 /// 定位 CRMEB 样本根目录。
 ///
-/// 从 `CARGO_MANIFEST_DIR` 向上逐层查找 `samples/CRMEB-master`，
+/// 从 `CARGO_MANIFEST_DIR` 向上逐层查找 `samples/**/CRMEB-master`，
 /// 兼容「仓库根即工作区」与「工作区嵌套在子目录」两种布局。
 pub fn sample_root() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("ENTROPY_MATE_SAMPLE_DIR") {
@@ -37,8 +55,7 @@ pub fn sample_root() -> Option<PathBuf> {
     }
     let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for _ in 0..6 {
-        let candidate = cur.join("samples/CRMEB-master");
-        if candidate.is_dir() {
+        if let Some(candidate) = under_samples(&cur) {
             return Some(candidate.canonicalize().unwrap_or(candidate));
         }
         if !cur.pop() {

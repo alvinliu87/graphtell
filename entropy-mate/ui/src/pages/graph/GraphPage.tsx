@@ -6,11 +6,8 @@ import {
   Collapse,
   Drawer,
   Input,
-  InputNumber,
   Row,
   Space,
-  Statistic,
-  Switch,
   Table,
   Tag,
   Tooltip,
@@ -53,7 +50,7 @@ import {
 // } from '@/shared/lib/ide';
 import { formatNumber } from '@/shared/lib/format';
 import { useLocale } from '@/shared/lib/i18n';
-import { FullscreenOutlined } from '@ant-design/icons';
+import { FullscreenOutlined, InfoCircleOutlined } from '@ant-design/icons';
 
 /** 图视图页：两级筛选 → 单对象链路子图 → 可跳转的结论面板。 */
 export function GraphPage() {
@@ -89,13 +86,9 @@ export function GraphPage() {
    *  在内存里跑 BFS（不再逐节点查库），很快；有搜索词时直接按名称返回、不打分。
    *  这里仍按需加载：已选中节点且未展开下拉时绝不预取，避免每次切视角都无谓打一次。 */
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  /** 是否在图上标注边的类型（`ReadsConfig` / `MapsTo`…）。边过多时组件会自动退化为按需标注。 */
-  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   /** 折叠模式下，点击节点后按需展开显示的语法子图（按节点 id 归集）。 */
   const [expanded, setExpanded] = useState<Record<number, { nodes: CanvasNode[]; edges: EdgeView[] }>>({});
   const [expandingId, setExpandingId] = useState<number | null>(null);
-  /** 就地展开调用链时的跳数：默认 2（多跳），封顶 4 以免节点爆炸；只影响折叠模式下点击节点展开的子图，不动主图中心跳数。 */
-  const [expandDepth, setExpandDepth] = useState(2);
   const [inspectNode, setInspectNode] = useState<number | null>(state.i);
   const [inspectEdge, setInspectEdge] = useState<number | null>(state.e);
   /** 点击的那条边本身。合成边的折叠链（`via`）只存在于当次视图结果里，按 id 重查拿不到，
@@ -117,6 +110,28 @@ export function GraphPage() {
   const fitKey = isAggregate ? `agg:${state.p}` : `obj:${state.p ?? ''}:${state.n ?? ''}`;
   /** 手动「适应屏幕」信号：每次 +1 即让 GraphCanvas 重置为整图 fit。 */
   const [fitSignal, setFitSignal] = useState(0);
+
+  /**
+   * 画布高度按**视口剩余空间**自适应。
+   *
+   * 图区上方那块（页头 + 筛选行 + 可能插入的提示条）高度是动态的，写死 720 会让
+   * 首屏必须下滑才能看全图。这里量出图区在文档中的起始位置，把视口剩下的高度全给画布。
+   * 每次渲染后重算一次（提示条出现 / 消失都会改变起始位置），窗口缩放时再补一次；
+   * `setCanvasHeight` 值不变时 React 会自行跳过重渲染，不会自激。
+   */
+  const graphHostRef = useRef<HTMLDivElement>(null);
+  const [canvasHeight, setCanvasHeight] = useState(560);
+  const recomputeCanvasHeight = useCallback(() => {
+    const el = graphHostRef.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top + window.scrollY;
+    setCanvasHeight(Math.max(380, Math.round(window.innerHeight - top - 24)));
+  }, []);
+  useEffect(recomputeCanvasHeight);
+  useEffect(() => {
+    window.addEventListener('resize', recomputeCanvasHeight);
+    return () => window.removeEventListener('resize', recomputeCanvasHeight);
+  }, [recomputeCanvasHeight]);
 
   // 边面板关闭时同步丢弃随身边对象，避免下次打开残留上一条边的折叠链。
   useEffect(() => {
@@ -243,8 +258,10 @@ export function GraphPage() {
       }
       setExpandingId(nodeId);
       // 同样取**折叠**子图：子图里每条边都带 `via` 与每跳调用处，点边即可展开链路。
+      // 跳数沿用当前视角的 `state.d`（与中心主图同深度）：不再单开一个"展开跳数"，
+      // 否则同一个页面里两套深度各说各话，用户也不知道该填几。
       void viewApi
-        .object(id, state.p ?? 'route', nodeId, expandDepth)
+        .object(id, state.p ?? 'route', nodeId, state.d)
         .then((ov) => {
           setExpanded((prev) => ({
             ...prev,
@@ -257,7 +274,7 @@ export function GraphPage() {
         .catch(() => {})
         .finally(() => setExpandingId((cur) => (cur === nodeId ? null : cur)));
     },
-    [expanded, id, state.p, expandDepth],
+    [expanded, id, state.p, state.d],
   );
 
   /**
@@ -304,13 +321,17 @@ export function GraphPage() {
     (index: number) => {
       const item = trail[index];
       if (!item) return;
+      // 点**当前这一步**是空操作：既不关 Inspector、不清 `from` 标记，也不多压一条历史记录。
+      // 更要紧的是 `n` —— 切视角压进来的那一步 `node` 是 `null`，照原样 set 会把中心
+      // 重置成第一个候选，于是"点自己"看起来像跳到了别处。
+      if (index === trail.length - 1 && item.perspective === state.p) return;
       setTrail((prev) => prev.slice(0, index + 1));
       setState((s) => ({ ...s, p: item.perspective, n: item.node, i: null, e: null }));
       setInspectNode(null);
       setInspectEdge(null);
       setOrigin(null);
     },
-    [trail],
+    [trail, state.p],
   );
 
   // 折叠模式下，把"按需展开的语法子图"合并进当前语义图（按锚点环号偏移，避免重排）。
@@ -392,7 +413,8 @@ export function GraphPage() {
     ? { rows: aggView.matrix.rows, cols: aggView.matrix.cols, cells: aggView.matrix.cells }
     : undefined;
 
-  const layoutMode: LayoutMode = state.m ?? current?.layout ?? 'radial';
+  // 布局由 `views/perspectives.yaml` 按视角声明（路由=分层、资源=径向……），不再有手动覆盖。
+  const layoutMode: LayoutMode = current?.layout ?? 'radial';
   // 暂时注释：本地根模板 / WSL 模式 / 按工程覆盖 三处设置只在「跳转 IDE」时才需要，
   // 跳转入口已移除，复制绝对路径直接用后端 root_path 即可（以后再考虑加回）。
   //
@@ -441,12 +463,26 @@ export function GraphPage() {
   return (
     <>
       <PageHeader
-        title={project ? `${t('图视图')} · ${project.name}` : t('图视图')}
-        subtitle={t('一级选视角、二级选对象；只渲染当前这一条链路，被省略的部分以计数与未解析记账呈现')}
+        compact
+        title={
+          <>
+            {project ? `${t('图视图')} · ${project.name}` : t('图视图')}
+            {/* 使用说明收进 tooltip：这行字只有第一次看有用，不值得常驻一行 */}
+            <Tooltip title={t('一级选视角、二级选对象；只渲染当前这一条链路，被省略的部分以计数与未解析记账呈现')}>
+              <InfoCircleOutlined
+                style={{ fontSize: 13, color: 'rgba(0,0,0,0.35)', marginLeft: 6, cursor: 'help' }}
+              />
+            </Tooltip>
+          </>
+        }
         extra={<RunPipelineButton projectId={id} onStarted={() => void reloadProject()} />}
       />
 
-      <Card variant="borderless" style={{ borderRadius: 14, marginBottom: 12 }}>
+      <Card
+        variant="borderless"
+        style={{ borderRadius: 14, marginBottom: 10 }}
+        styles={{ body: { padding: '8px 12px' } }}
+      >
         <PerspectivePicker
           perspectives={perspectives}
           perspective={state.p}
@@ -466,46 +502,26 @@ export function GraphPage() {
           onSearch={setCandidateSearch}
           onDropdownVisibleChange={setDropdownOpen}
           nodeName={selectedNodeName}
-          layout={state.m}
-          onLayoutChange={(m) => setState((s) => ({ ...s, m }))}
           trail={trail}
           onTrailClick={onTrailClick}
           loading={loading && candidates.length === 0}
+          extra={
+            <>
+              {/* 图标化 + tooltip：省下来的宽度留给面包屑，避免这一行换行把画布往下推 */}
+              <Tooltip title={t('重置缩放与平移，使整张图完整显示在当前视窗内')}>
+                <Button size="small" icon={<FullscreenOutlined />} onClick={() => setFitSignal((s) => s + 1)} />
+              </Tooltip>
+              <Button size="small" type="primary" ghost onClick={() => setDrawerOpen(true)}>
+                {t('结论 / 导航')}
+              </Button>
+              {Object.keys(expanded).length > 0 && (
+                <Button size="small" onClick={() => setExpanded({})}>
+                  {t('收起调用') + '（' + Object.keys(expanded).length + '）'}
+                </Button>
+              )}
+            </>
+          }
         />
-        <Space style={{ marginTop: 8 }} align="center" wrap>
-          <Tooltip title={t('就地展开调用链时向下钻取的跳数（多跳展开，而非仅相邻一环）；只影响点击节点时插入的折叠子图')}>
-            <Space size={6} align="center">
-              <Typography.Text type="secondary">{t('展开跳数')}</Typography.Text>
-              <InputNumber
-                size="small"
-                min={1}
-                max={4}
-                value={expandDepth}
-                onChange={(v) => setExpandDepth(typeof v === 'number' && v >= 1 ? v : 1)}
-                style={{ width: 64 }}
-              />
-            </Space>
-          </Tooltip>
-          <Tooltip title={t('在边上标注 ReadsConfig / MapsTo 等类型')}>
-            <Space size={6} align="center">
-              <Switch size="small" checked={showEdgeLabels} onChange={setShowEdgeLabels} />
-              <Typography.Text type="secondary">{t('边类型')}</Typography.Text>
-            </Space>
-          </Tooltip>
-          <Tooltip title={t('重置缩放与平移，使整张图完整显示在当前视窗内')}>
-            <Button size="small" icon={<FullscreenOutlined />} onClick={() => setFitSignal((s) => s + 1)}>
-              {t('适应屏幕')}
-            </Button>
-          </Tooltip>
-          <Button size="small" type="primary" ghost onClick={() => setDrawerOpen(true)}>
-            {t('结论 / 导航')}
-          </Button>
-          {Object.keys(expanded).length > 0 && (
-            <Button size="small" onClick={() => setExpanded({})}>
-              {t('收起调用') + '（' + Object.keys(expanded).length + '）'}
-            </Button>
-          )}
-        </Space>
         {/* 暂时注释：IDE 打开入口已移除，按工程覆盖本地根与「当前生效根」展示一并停用（以后再考虑加回）。
         <Collapse
           ghost
@@ -584,7 +600,10 @@ export function GraphPage() {
 
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={24}>
+          {/* 量高锚点：见上方 `recomputeCanvasHeight` */}
+          <div ref={graphHostRef} />
           <GraphCanvas
+            height={canvasHeight}
             mode={layoutMode}
             center={merged.center}
             rings={merged.rings}
@@ -601,7 +620,7 @@ export function GraphPage() {
               setState((s) => ({ ...s, i: nodeId, e: null }));
             }}
             onEdgeClick={handleEdgeClick}
-            showEdgeLabels={showEdgeLabels}
+            showEdgeLabels
             fitKey={fitKey}
             fitSignal={fitSignal}
             />
@@ -616,20 +635,31 @@ export function GraphPage() {
             />
           ) : null}
 
-          {/* 诚实性守门：省略了什么、为什么省略 */}
+          {/* 诚实性守门：省略了什么、为什么省略。
+              机制必须保留（绝不静默省略），但呈现压成一行 —— 整句模板每次一字不差，
+              只有数字在变，看第三遍起就是噪声；数字直接取结构化字段，不再渲染后端模板句。 */}
           {view ? (
-            <Card variant="borderless" style={{ borderRadius: 14, marginTop: 16 }} size="small">
-              <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                <Typography.Text style={{ fontSize: 13 }}>{view.hidden.note}</Typography.Text>
-                <Space size={6} wrap>
-                  {Object.entries(view.hidden.by_kind).map(([k, v]) => (
-                    <Tag key={k}>
-                      {k} {v}
-                    </Tag>
-                  ))}
-                </Space>
-              </Space>
-            </Card>
+            <div
+              style={{
+                marginTop: 12,
+                fontSize: 12,
+                color: 'rgba(0,0,0,0.45)',
+                display: 'flex',
+                gap: 8,
+                flexWrap: 'wrap',
+                alignItems: 'center',
+              }}
+            >
+              <span>
+                {t('已画 ') + view.hidden.shown + t(' 条边，折叠 ') + (view.hidden.total - view.hidden.shown) + t(' 个语法节点')}
+              </span>
+              {Object.entries(view.hidden.by_kind).map(([k, v]) => (
+                <Tag key={k} style={{ marginInlineEnd: 0 }}>
+                  {k} {v}
+                </Tag>
+              ))}
+              <span>{t('单击任意边可查看它经由的每一跳及调用处')}</span>
+            </div>
           ) : null}
 
           {view && view.unresolved.length > 0 ? (
@@ -664,77 +694,78 @@ export function GraphPage() {
         onClose={() => setDrawerOpen(false)}
         styles={{ body: { padding: 16 } }}
       >
-        <Card variant="borderless" style={{ borderRadius: 14 }} title={t('结论')}>
+        {/* 「结论」不再单独立卡：入边/出边两个大数字在图上一眼可数（环上节点标题也写了），
+             大数字卡占 ~150px 只为说两句话。压成环上节点卡的 extra + 底部一行，
+             有增量信息的（标注 / schema 列数 / 路由表登记）才有资格出现。 */}
+        <Card
+          variant="borderless"
+          size="small"
+          title={t('环上节点')}
+          extra={
+            view ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('入边 ') + fmt(view.conclusions['入边']) + ' · ' + t('出边 ') + fmt(view.conclusions['出边'])}
+              </Typography.Text>
+            ) : aggView ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('分组数 ') + aggView.clusters.length}
+              </Typography.Text>
+            ) : null
+          }
+        >
           {view ? (
-            <Space direction="vertical" size={10} style={{ width: '100%' }}>
-              <Row gutter={12}>
-                <Col span={12}>
-                  <Statistic title={t('入边')} value={fmt(view.conclusions['入边'])} />
-                </Col>
-                <Col span={12}>
-                  <Statistic title={t('出边')} value={fmt(view.conclusions['出边'])} />
-                </Col>
-              </Row>
-              <Space size={6} wrap>
-                {Array.from(new Set(asArray(view.conclusions['标注']))).map((a) => (
-                  <Tag key={a} color="volcano">
-                    {a}
-                  </Tag>
-                ))}
-              </Space>
-              {view.conclusions['schema 列数'] !== undefined ? (
-                <Typography.Text type="secondary">
-                  {t('schema 列数：') + String(view.conclusions['schema 列数'])}
-                </Typography.Text>
-              ) : null}
-              {view.conclusions['路由表登记'] ? (
-                <Typography.Text type="secondary">
-                  {t('路由表登记 handler：') + String(view.conclusions['路由表登记'])}
-                </Typography.Text>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {(view?.rings ?? []).map((ring, i) => (
+                <div key={i}>
+                  <Typography.Text strong style={{ fontSize: 12 }}>
+                    {t('环') + (i + 1) + '（' + ring.length + '）'}
+                  </Typography.Text>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                    {ring.slice(0, 12).map((n) => (
+                      <Tag
+                        key={n.id}
+                        color={n.has_own_view ? 'blue' : 'default'}
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => handleNodeClick(n.id, n.kind, n.own_view)}
+                      >
+                        {n.name.slice(0, 24)}
+                      </Tag>
+                    ))}
+                    {ring.length > 12 ? <Tag>+{ring.length - 12}</Tag> : null}
+                  </div>
+                </div>
+              ))}
+              {Array.from(new Set(asArray(view.conclusions['标注']))).length > 0 ||
+              view.conclusions['schema 列数'] !== undefined ||
+              view.conclusions['路由表登记'] ? (
+                <Space size={6} wrap style={{ marginTop: 4 }}>
+                  {Array.from(new Set(asArray(view.conclusions['标注']))).map((a) => (
+                    <Tag key={a} color="volcano" style={{ marginInlineEnd: 0 }}>
+                      {a}
+                    </Tag>
+                  ))}
+                  {view.conclusions['schema 列数'] !== undefined ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('schema 列数：') + String(view.conclusions['schema 列数'])}
+                    </Typography.Text>
+                  ) : null}
+                  {view.conclusions['路由表登记'] ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('路由表登记 handler：') + String(view.conclusions['路由表登记'])}
+                    </Typography.Text>
+                  ) : null}
+                </Space>
               ) : null}
             </Space>
           ) : aggView ? (
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              <Statistic title={t('分组数')} value={aggView.clusters.length} />
-              {aggView.matrix ? (
-                <Typography.Text type="secondary">
-                  {t('共 ') + formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0)) + t(' 个单元格取值')}
-                </Typography.Text>
-              ) : null}
-            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {aggView.matrix
+                ? t('共 ') + formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0)) + t(' 个单元格取值')
+                : t('选择一个对象后显示结论')}
+            </Typography.Text>
           ) : (
             <Typography.Text type="secondary">{t('选择一个对象后显示结论')}</Typography.Text>
           )}
-        </Card>
-
-        <Card
-          variant="borderless"
-          style={{ borderRadius: 14, marginTop: 16 }}
-          size="small"
-          title={t('环上节点')}
-        >
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            {(view?.rings ?? []).map((ring, i) => (
-              <div key={i}>
-                <Typography.Text strong style={{ fontSize: 12 }}>
-                  {t('环') + (i + 1) + '（' + ring.length + '）'}
-                </Typography.Text>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-                  {ring.slice(0, 12).map((n) => (
-                    <Tag
-                      key={n.id}
-                      color={n.has_own_view ? 'blue' : 'default'}
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => handleNodeClick(n.id, n.kind, n.own_view)}
-                    >
-                      {n.name.slice(0, 24)}
-                    </Tag>
-                  ))}
-                  {ring.length > 12 ? <Tag>+{ring.length - 12}</Tag> : null}
-                </div>
-              </div>
-            ))}
-          </Space>
         </Card>
 
         <div style={{ marginTop: 16 }}>

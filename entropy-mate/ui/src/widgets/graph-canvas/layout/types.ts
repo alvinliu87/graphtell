@@ -116,10 +116,27 @@ export const LAYOUTS: Record<LayoutMode, LayoutFn> = {
 };
 
 const PILL_H = 30;
-/** 药丸节点宽度估算：按 `kind · name`（截断 26 字）算宽，限 96–220px，与 GraphCanvas 内文字截断一致。 */
-function pillWidth(kind: string, name: string): number {
-  const text = `${kind} · ${name}`.slice(0, 26);
-  return Math.max(96, Math.min(220, text.length * 7 + 22));
+
+/** 近似字符宽：CJK / 全角按 1.8 个拉丁位计（同字号下 CJK ≈ 拉丁的 1.8 倍宽）。 */
+function units(s: string): number {
+  let u = 0;
+  for (const ch of s) u += (ch.codePointAt(0) ?? 0) > 0x2e7f ? 1.8 : 1;
+  return u;
+}
+
+/**
+ * 药丸节点宽度估算。必须与 GraphCanvas 的实际渲染对齐：
+ * `种类徽标 · 名称`，徽标字号 10（中心）/ 9（其它），名称字号 13（中心）/ 11（其它）
+ * 且按字符截断 26 字 —— `truncate` 数的是字符，CJK 一字宽达 1.8 位，
+ * 所以上限按 26×1.8 位封顶，否则中文名会溢出药丸。
+ *
+ * 以前按「合并字符串截 26 字 × 7px」估：中心节点字号更大、徽标又是本地化文本，
+ * 实测 `GET /v2/order/...` 这类长名会顶出边框。
+ */
+function pillWidth(kind: string, name: string, center = false): number {
+  const kindPx = units(kind) * (center ? 7 : 6);
+  const namePx = Math.min(units(name), 26 * 1.8) * (center ? 7.4 : 6.2);
+  return Math.max(96, Math.min(300, Math.ceil(kindPx + 12 + namePx + 24)));
 }
 
 // ---------------------------------------------------------------- radial
@@ -170,7 +187,7 @@ export function concentricLayout(input: LayoutInput): LayoutResult {
   // 同时保证与上一环径向不重叠，且环 1 不被中心药丸盖住。这样无论第几环有多少节点都不挤。
   const GAP = 18;
   const PAD = 60;
-  const maxPillW = Math.max(110, ...rings.flat().map((n) => pillWidth(n.kind, n.name)), pillWidth(center.kind, center.name));
+  const maxPillW = Math.max(110, ...rings.flat().map((n) => pillWidth(n.kind, n.name)), pillWidth(center.kind, center.name, true));
   const ringRadii: number[] = [];
   let r = 0;
   for (let i = 0; i < rings.length; i++) {
@@ -191,7 +208,7 @@ export function concentricLayout(input: LayoutInput): LayoutResult {
   const cy = contentH / 2;
 
   const nodes: PlacedNode[] = [
-    { ...center, x: cx, y: cy, shape: 'rect', w: pillWidth(center.kind, center.name), h: PILL_H },
+    { ...center, x: cx, y: cy, shape: 'rect', w: pillWidth(center.kind, center.name, true), h: PILL_H },
   ];
 
   const ringCount = rings.length;
@@ -537,7 +554,7 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
   const HUB_GAP_X = 140;
   const GUTTER = 14; // 列前通道宽度
 
-  const centerW = pillWidth(center.kind, center.name);
+  const centerW = pillWidth(center.kind, center.name, true);
   const targetW = Math.max(...fanout.map((n) => pillWidth(n.kind, n.name)));
   const colLeft = PAD + centerW + HUB_GAP_X;
   const gutterX = colLeft - GUTTER;
@@ -755,11 +772,26 @@ function stackedLayout(input: LayoutInput): LayoutResult {
  *
  * 与 `radial` 刻意区分：径向遇到星形会自己改走中心辐射（中心在左、邻居单列在右），
  * 而分层保持「分层调用链」的本意 —— 中心一行在上、每一环一行在下。对"契约读 N 个配置键"
- * 这种资源视角的星形（中心 + 单环），分层画成两行网格：中心在上、N 个使用者横排在下一行，
- * 自中心向下呈扇形发散。因为全部边共用一个端点（中心），所以同样是 0 交叉、0 穿节点，
- * 但视觉与径向的中心辐射完全不同，切换布局能看出区别。
+ * 这种资源视角的星形（中心 + 单环）：小扇出（≤ `LAYERED_FAN_MAX`）画成两行扇形，
+ * 中心在上、叶子一行在下，自中心向下发散；宽扇出改走中心辐射（见 `LAYERED_FAN_MAX`）。
+ * 因为全部边共用一个端点（中心），两种形态同样是 0 交叉、0 穿节点。
  */
+/**
+ * 分层布局对**单环宽扇出**的容忍上限。
+ *
+ * 分层把「中心 + 单环」画成两行扇形（中心在上、叶子一行在下），扇形宽度 ∝ 叶子数 ×
+ * 药丸宽 —— 7~10 个时是"调用流向自上而下"的好看形态；但"契约读 27 个配置键"时
+ * 一行 6000px+，fit 后两端被裁、中间大片空白（实测截图）。超限后改走中心辐射
+ * （hub 在左、单列在右）：宽度固定 ~600px，代价只是纵向滚动。
+ * 小扇出保留扇形 —— 那仍是"自上而下"最直观的表达。
+ */
+const LAYERED_FAN_MAX = 10;
+
 export function layeredLayout(input: LayoutInput): LayoutResult {
+  const leaves = input.rings.flat();
+  if (leaves.length > LAYERED_FAN_MAX && isStar(input.center.id, input.edges)) {
+    return hubSpokeLayout(input, leaves, false);
+  }
   return stackedLayout(input);
 }
 
@@ -797,7 +829,7 @@ export function spineLayout(input: LayoutInput): LayoutResult {
   best.forEach((id) => {
     const found = findNode(input, id);
     if (!found) return;
-    const w = pillWidth(found.kind, found.name);
+    const w = pillWidth(found.kind, found.name, found.id === center.id);
     nodes.push({ ...found, x: cursor + w / 2, y: spineY, shape: 'rect', w, h: PILL_H });
     cursor += w + GAP;
   });

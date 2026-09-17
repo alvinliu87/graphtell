@@ -11,7 +11,7 @@ import { DeploymentUnitOutlined, FolderOpenOutlined } from '@ant-design/icons';
 
 /** 工程总览页：CRUD 入口。 */
 export function ProjectsPage() {
-  const { projects, loading, reload } = useProjects();
+  const { projects, loading, reload, building } = useProjects();
   const [open, setOpen] = useState(false);
   const { t } = useLocale();
 
@@ -48,7 +48,8 @@ export function ProjectsPage() {
           <StatCard title={t('已就绪')} value={ready} accent="#16a34a" icon={<DeploymentUnitOutlined />} />
         </Col>
         <Col xs={24} sm={8}>
-          <StatCard title={t('建图中')} value={indexing} accent="#f59e0b" icon={<ReloadOutlined spin={indexing > 0} />} />
+          {/* 转圈只在**真在跟进**时转（列表在建图期间静默轮询），不是装饰 */}
+          <StatCard title={t('建图中')} value={indexing} accent="#f59e0b" icon={<ReloadOutlined spin={building} />} />
         </Col>
       </Row>
 
