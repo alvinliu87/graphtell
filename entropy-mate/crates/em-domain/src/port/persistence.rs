@@ -122,6 +122,11 @@ pub struct GraphStats {
 pub trait GraphQuery: Send + Sync {
     fn query_nodes(&self, filter: &NodeFilter) -> Result<Vec<Node>>;
     fn get_node(&self, id: crate::model::NodeId) -> Result<Option<Node>>;
+    /// 批量取节点（`id IN (...)`，内部分块）。
+    ///
+    /// 折叠视图要把每条边 `via` 链上所有节点的位置一次内联出来，一次请求涉及几十上百个
+    /// 节点 —— 逐个 `get_node` 是 N+1 往返，实测占对象视图耗时近三分之一。
+    fn get_nodes(&self, ids: &[crate::model::NodeId]) -> Result<HashMap<i64, Node>>;
     fn edges_of(
         &self,
         node: crate::model::NodeId,

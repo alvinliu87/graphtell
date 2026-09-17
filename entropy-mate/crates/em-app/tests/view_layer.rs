@@ -235,7 +235,8 @@ fn object_view_chain_and_hidden() {
     assert!(!ov.center.name.is_empty());
     assert_eq!(ov.center.ring, 0, "中心节点应在 0 环");
     assert!(!ov.hidden.note.is_empty(), "必须给出省略说明（诚实性）");
-    assert!(!ov.candidates.is_empty(), "应回带二级筛选候选");
+    // 候选**不再**由对象视图回带：前端下拉按需请求 `/view/{p}/candidates`，
+    // 在每次对象视图里重算「5000 个候选逐个 BFS 打分」纯属浪费（见 `ObjectView` 注释）。
 }
 
 #[test]

@@ -616,6 +616,34 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)
     }
 
+    fn get_nodes(&self, ids: &[NodeId]) -> Result<HashMap<i64, Node>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut out: HashMap<i64, Node> = HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(400) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT id, project_id, sub_project_id, kind, name, fqn, identity, file_id,
+                    start_line, end_line, start_byte, end_byte, language, phase, confidence, properties
+                 FROM nodes WHERE id IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
+            let params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter()), row_to_node)
+                .map_err(DomainError::infra)?;
+            for n in rows
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(DomainError::infra)?
+            {
+                out.insert(n.id.get(), n);
+            }
+        }
+        Ok(out)
+    }
+
     fn nodes_summary(&self, project_id: ProjectId) -> Result<HashMap<i64, NodeSummary>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn

@@ -271,8 +271,9 @@ pub struct ObjectView {
     pub unresolved: Vec<UnresolvedInfo>,
     /// 视角专属结论（表视角=引用数/PII/关键度；路由视角=鉴权/死端点…）。
     pub conclusions: Value,
-    /// 二级筛选器的候选对象列表。
-    pub candidates: Vec<Candidate>,
+    // 曾在此回带二级筛选器候选（`candidates`）：前端下拉是**按需**单独请求
+    // `/view/{p}/candidates` 的，从不读这个字段，等于每次对象视图都白算一遍
+    // 「取 5000 个候选 + 逐个 BFS 打分」（实测约 110ms，且让响应体多 300 项）。
 }
 
 /// 二级筛选器候选。

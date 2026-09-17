@@ -122,7 +122,6 @@ export interface ObjectView {
   hidden: HiddenInfo;
   unresolved: UnresolvedInfo[];
   conclusions: Record<string, unknown>;
-  candidates: Candidate[];
 }
 
 export interface Cluster {

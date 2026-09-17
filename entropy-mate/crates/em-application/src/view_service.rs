@@ -293,10 +293,11 @@ impl ViewService {
         let chain_depth = depth;
 
         // 一次性预加载全工程节点概要 + 链边邻接，供整段视图复用：
-        // BFS 的语义性判定、候选打分（末尾 `rank_candidates`）、链路回溯都用这一份，
-        // 不再重复加载（此前每次请求加载了 3 遍节点概要 + 2 遍链边邻接，是 ~3.5s 卡顿主因）。
+        // BFS 的语义性判定、链路回溯都用这一份，不再重复加载
+        // （此前每次请求加载了 3 遍节点概要 + 2 遍链边邻接，是 ~3.5s 卡顿主因）。
         let summary = self.store.nodes_summary(project_id)?;
-        let (out, inc) = self.store.chain_adjacency(project_id)?;
+        // `inc` 只服务于候选打分（已移出对象视图，见 `ObjectView` 注释），这里不再需要。
+        let (out, _inc) = self.store.chain_adjacency(project_id)?;
 
         // 语义性按需由 kind 计算，避免为「是否语义节点」反复查库。
         let sem_of = |id: i64| -> bool {
@@ -325,7 +326,7 @@ impl ViewService {
         let mut shown_edges = fold.edges;
         let hidden_total = fold.hidden_total;
         let hidden_by_kind = fold.hidden_by_kind;
-        self.inline_chain_locations(&mut shown_edges, &d);
+        self.inline_chain_locations(&mut shown_edges, &d, &summary);
         // 可见节点：环内"语义节点 / 强制可见节点"。提拉阶段可能把环外的语义目标登记进环，
         // 所以放在提拉之后计算。
         let visible_nodes: Vec<i64> = d
@@ -410,19 +411,6 @@ impl ViewService {
             hidden,
             unresolved,
             conclusions,
-            // 复用本视图已经加载的整图概要 / 链边邻接，只额外取一次候选节点，
-            // 不再重跑 `nodes_summary` + `chain_adjacency` + 全量打分（这是此前 ~3.5s 主因）。
-            candidates: {
-                let cand_nodes = self.store.query_nodes(&NodeFilter {
-                    project_id,
-                    kind: spec.node_kind.clone().map(NodeKind),
-                    name_contains: None,
-                    limit: Some(5000),
-                    offset: Some(0),
-                })?;
-                let r = self.rank_candidates(cand_nodes, &summary, &out, &inc, 300);
-                r
-            },
         })
     }
 
@@ -730,7 +718,12 @@ impl ViewService {
     /// 拿不到 —— 这里一次性查好、按链路顺序（起点 → 各跳 → 终点）内联进 `EdgeView`，
     /// 省掉前端对每个节点单独请求 `/nodes/{id}/locations` 的 N+1 次往返，
     /// 且这些位置与"这条边"同源。
-    fn inline_chain_locations(&self, shown_edges: &mut Vec<EdgeView>, d: &Discovery) {
+    fn inline_chain_locations(
+        &self,
+        shown_edges: &mut Vec<EdgeView>,
+        d: &Discovery,
+        summary: &HashMap<i64, NodeSummary>,
+    ) {
         // ---- 补回 P8 传播边漏掉的"真实接触点" ----
         //
         // 折叠出的语义边，其 `via` 末端必须是**真实接触点**：自己持有指向该资源的直接语义边
@@ -795,11 +788,19 @@ impl ViewService {
             if seed == e.to.get() || seed == contact || e.via.iter().any(|v| v.id.get() == seed) {
                 continue;
             }
+            // kind / 短名取自本视图已经预加载的 `summary`，别再为它俩各 `get_node` 一次。
+            let (kind, name) = summary
+                .get(&seed)
+                .map(|m| {
+                    let raw = m.fqn.as_deref().filter(|s| !s.is_empty()).unwrap_or(&m.name);
+                    (m.kind.clone(), self.short_name_str(raw))
+                })
+                .unwrap_or_default();
             e.via.push(ViaNode {
                 id: NodeId(seed),
-                kind: self.node_kind(seed),
-                name: self.short_name_of(seed),
-                call_site: self.call_site_between(contact, seed, &d.out_edges),
+                kind,
+                name,
+                call_site: self.call_site_between(contact, seed, &d.out_edges, &NodeCache::default()),
             });
             e.hops = Some(e.via.len() as u32);
         }
@@ -810,6 +811,9 @@ impl ViewService {
         // `/nodes/{id}/locations`（N+1 次），且那些位置与"这条边"不同源。
         // 这里一次性查好、按链路顺序（起点 → 各跳 → 终点）内联进 EdgeView。
         {
+            // 同一终点会被多条 shown 边反复问到（平行路径），入边缓存住，别每次都查库。
+            let ins_cache =
+                std::cell::RefCell::new(HashMap::<i64, Vec<em_domain::model::Edge>>::new());
             let mut need: Vec<i64> = Vec::new();
             for e in shown_edges.iter() {
                 need.push(e.from.get());
@@ -822,10 +826,18 @@ impl ViewService {
             need.dedup();
             let mut locs: HashMap<i64, Vec<SourceLocation>> = HashMap::new();
             let mut synth: HashMap<i64, bool> = HashMap::new();
+            // 一次取回链路上全部节点（`id IN (...)` 分块）：原先逐个 `node_locations`
+            // 是 N+1 往返（每个节点还要额外算 `reference_count`），一条 29 边的图要
+            // 几百次查询，实测 420ms —— 占对象视图的大头。
+            let nids: Vec<NodeId> = need.iter().map(|i| NodeId(*i)).collect();
+            let nodes = self.store.get_nodes(&nids).unwrap_or_default();
+            let loc_cache = NodeCache::default();
             for id in need {
-                if let Ok(nl) = self.node_locations(NodeId(id)) {
-                    synth.insert(id, nl.synthetic);
-                    locs.insert(id, nl.locations);
+                if let Some(n) = nodes.get(&id) {
+                    if let Ok((s, l)) = self.locations_of_node(n, &loc_cache) {
+                        synth.insert(id, s);
+                        locs.insert(id, l);
+                    }
                 }
             }
             for e in shown_edges.iter_mut() {
@@ -872,7 +884,18 @@ impl ViewService {
                     let store_ins = if cached_ins.is_some() {
                         None
                     } else {
-                        self.store.edges_of(e.to, EdgeDirection::Incoming).ok()
+                        // 同一终点会被多条 shown 边反复问到（平行路径），缓存住，别每次都查库。
+                        Some(
+                            ins_cache
+                                .borrow_mut()
+                                .entry(e.to.get())
+                                .or_insert_with(|| {
+                                    self.store
+                                        .edges_of(e.to, EdgeDirection::Incoming)
+                                        .unwrap_or_default()
+                                })
+                                .clone(),
+                        )
                     };
                     if let Some(ins) = cached_ins.as_ref().or(store_ins.as_ref()) {
                         for raw in ins {
@@ -1006,32 +1029,43 @@ impl ViewService {
         // `via`：被折叠掉的中间节点 —— 让"看起来直连"的边如实说明自己跨了几跳。
         // 调用处定位：优先用已缓存的出边（BFS 阶段已批量取过）做精确 `Calls` 命中，
         // 仅在精确边缺失时回退到原 `call_site_between`（含 HasCallSite 启发式）。
+        // 折叠链上每个"调用处"都要查节点 / 文件 / 符号表，同一批节点被反复查 —— 请求级缓存。
+        let cs_cache = NodeCache::default();
+        let outs_cache = std::cell::RefCell::new(HashMap::<i64, Vec<em_domain::model::Edge>>::new());
         let call_site = |from: i64, to: i64| -> Option<SourceLocation> {
             // 优先用已缓存的出边（BFS 阶段已批量取过）做精确 `Calls` 命中。
             // 传播边回溯出的完整链路会经过**发现深度之外**的方法节点，缓存里没有它们
             // —— 这里补一次单点查询，否则抽屉里这些跳全部没有调用处，看起来仍像断链。
             let outs = match d.out_edges.get(&from) {
                 Some(v) => v.clone(),
-                None => self
-                    .store
-                    .edges_outgoing(&[NodeId(from)])
-                    .ok()
-                    .and_then(|m| m.get(&from).cloned())
-                    .unwrap_or_default(),
+                None => {
+                    outs_cache
+                        .borrow_mut()
+                        .entry(from)
+                        .or_insert_with(|| {
+                            self.store
+                                .edges_outgoing(&[NodeId(from)])
+                                .ok()
+                                .and_then(|m| m.get(&from).cloned())
+                                .unwrap_or_default()
+                        })
+                        .clone()
+                }
             };
             {
                 for e in outs {
                     if e.kind.as_str() == "Calls" && e.to_id.get() == to {
                         if let Some(cs_id) = e.properties.get("call_site").and_then(|v| v.as_i64())
                         {
-                            if let Some(loc) = self.node_source_location(NodeId(cs_id)) {
+                            if let Some(loc) = self.node_source_location_cached(NodeId(cs_id), &cs_cache)
+                            {
                                 return Some(loc);
                             }
                         }
                     }
                 }
             }
-            self.call_site_between(from, to, &d.out_edges)
+            self.call_site_between(from, to, &d.out_edges, &cs_cache)
         };
         // 把节点 id 序列还原成 `ViaNode` 链。
         //
@@ -1279,7 +1313,7 @@ impl ViewService {
                 // 传播边回溯到接触点时允许的最大跳数。`seed_source` 通常在发现深度之外，
                 // 但离中心并不远（CRMEB 实测 4~5 跳）；超过即放弃回溯、退回原行为。
                 const MAX_SEED_HOPS: usize = 8;
-                for ((kind, a, to), mut es) in groups {
+                        for ((kind, a, to), mut es) in groups {
                     es.sort_by_key(|e| e.id.get());
                     // **路径起点必须是真实接触点**。
                     //
@@ -1616,12 +1650,38 @@ impl ViewService {
             .store
             .get_node(node_id)?
             .ok_or_else(|| DomainError::NotFound(format!("节点 {node_id}")))?;
+        let (synthetic, locations) = self.locations_of_node(&node, &NodeCache::default())?;
+        let reference_count = self
+            .store
+            .edges_of(node_id, EdgeDirection::Incoming)
+            .map(|e| e.len())
+            .unwrap_or(0);
+
+        Ok(NodeLocations {
+            id: node_id,
+            kind: node.kind.to_string(),
+            name: node.name.clone(),
+            synthetic,
+            locations,
+            reference_count,
+        })
+    }
+
+    /// 从**已在内存里的**节点算出位置列表（不再查库取节点）。
+    ///
+    /// `files` 是文件路径缓存：一条链路上的多个节点常落在同一批文件里，
+    /// 逐个 `file_path()` 会重复往返。
+    fn locations_of_node(
+        &self,
+        node: &em_domain::model::Node,
+        c: &NodeCache,
+    ) -> Result<(bool, Vec<SourceLocation>)> {
         let synthetic = node.identity.is_some();
         let mut locations: Vec<SourceLocation> = Vec::new();
 
         // ① 语法节点：文件 + 行号 + 符号
         if let Some(file_id) = node.file_id {
-            if let Some(path) = self.file_path(file_id) {
+            if let Some(path) = self.cached_file(c, file_id) {
                 locations.push(SourceLocation {
                     file: path,
                     line: node.span.start_line,
@@ -1658,7 +1718,7 @@ impl ViewService {
                 "event_listeners",
                 "container_bindings",
             ] {
-                if let Some(entry) = self.store.get_symbol(node.project_id, table, &name)? {
+                if let Some(entry) = self.cached_symbol(c, node.project_id, table, &name) {
                     if let Some(file) = entry.get("file").and_then(|v| v.as_str()) {
                         locations.push(SourceLocation {
                             file: file.to_string(),
@@ -1689,20 +1749,7 @@ impl ViewService {
             }
         }
 
-        let reference_count = self
-            .store
-            .edges_of(node_id, EdgeDirection::Incoming)
-            .map(|e| e.len())
-            .unwrap_or(0);
-
-        Ok(NodeLocations {
-            id: node_id,
-            kind: node.kind.to_string(),
-            name: node.name.clone(),
-            synthetic,
-            locations,
-            reference_count,
-        })
+        Ok((synthetic, locations))
     }
 
     /// 边的证据链：实边单点跳，虚线边展开途经的 CallSite 位置。
@@ -1839,10 +1886,10 @@ impl ViewService {
     }
 
     /// 单个节点的"定义位置"（无 file/span 时返回 None）。
-    fn node_source_location(&self, id: NodeId) -> Option<SourceLocation> {
-        let node = self.store.get_node(id).ok()??;
+    fn node_source_location_cached(&self, id: NodeId, c: &NodeCache) -> Option<SourceLocation> {
+        let node = self.cached_node(c, id.get())?;
         let file_id = node.file_id?;
-        let path = self.file_path(file_id)?;
+        let path = self.cached_file(c, file_id)?;
         Some(SourceLocation {
             file: path,
             line: node.span.start_line,
@@ -1857,13 +1904,40 @@ impl ViewService {
         })
     }
 
-    fn node_kind(&self, id: i64) -> String {
-        self.store
-            .get_node(NodeId(id))
-            .ok()
-            .flatten()
-            .map(|n| n.kind.to_string())
-            .unwrap_or_default()
+    /// 请求级缓存取节点：同一节点在折叠 / 内联链路里会被查很多次，
+    /// 缓存让它最多查一次库（见 [`NodeCache`]）。
+    fn cached_node(&self, c: &NodeCache, id: i64) -> Option<em_domain::model::Node> {
+        if let Some(hit) = c.nodes.borrow().get(&id) {
+            return hit.clone();
+        }
+        let v = self.store.get_node(NodeId(id)).ok().flatten();
+        c.nodes.borrow_mut().insert(id, v.clone());
+        v
+    }
+
+    fn cached_file(&self, c: &NodeCache, id: em_domain::model::FileId) -> Option<String> {
+        if let Some(hit) = c.files.borrow().get(&id.get()) {
+            return hit.clone();
+        }
+        let v = self.file_path(id);
+        c.files.borrow_mut().insert(id.get(), v.clone());
+        v
+    }
+
+    fn cached_symbol(
+        &self,
+        c: &NodeCache,
+        project_id: em_domain::model::ProjectId,
+        table: &str,
+        key: &str,
+    ) -> Option<Value> {
+        let k = (project_id.get(), table.to_string(), key.to_string());
+        if let Some(hit) = c.symbols.borrow().get(&k) {
+            return hit.clone();
+        }
+        let v = self.store.get_symbol(project_id, table, key).ok().flatten();
+        c.symbols.borrow_mut().insert(k, v.clone());
+        v
     }
 
     /// 两个节点之间"调用处"的位置。
@@ -1877,6 +1951,7 @@ impl ViewService {
         from: i64,
         to: i64,
         out_cache: &HashMap<i64, Vec<em_domain::model::Edge>>,
+        c: &NodeCache,
     ) -> Option<SourceLocation> {
         // 复用 BFS 阶段批量预取的出边缓存，避免对每条折叠边各发一次 DB 往返（N+1）。
         // 缓存未覆盖（极少数漏预取的节点）时回退到单点查询。
@@ -1892,7 +1967,7 @@ impl ViewService {
                     continue;
                 }
                 if let Some(cs_id) = e.properties.get("call_site").and_then(|v| v.as_i64()) {
-                    if let Some(loc) = self.node_source_location(NodeId(cs_id)) {
+                    if let Some(loc) = self.node_source_location_cached(NodeId(cs_id), c) {
                         return Some(loc);
                     }
                 }
@@ -1902,16 +1977,28 @@ impl ViewService {
         //    但它的「调用处」就是路由注册处。HttpContract 是合成节点（无 file_id/span），
         //    `node_source_location` 会返回 None，故改用 `node_locations` 取它汇聚的路由文件+行号
         //    （来自 properties.locations 或 route_list 符号表），避免折叠链在起点这一跳莫名缺「调用语句」。
-        let from_kind = self.node_kind(from);
+        let from_node = self.cached_node(c, from);
+        let from_kind = from_node
+            .as_ref()
+            .map(|n| n.kind.to_string())
+            .unwrap_or_default();
         if matches!(from_kind.as_str(), "HttpContract" | "Route" | "Endpoint") {
-            if let Ok(locs) = self.node_locations(NodeId(from)) {
-                if let Some(loc) = locs.locations.into_iter().next() {
-                    return Some(loc);
+            if let Some(n) = from_node.as_ref() {
+                if let Ok((_, locs)) = self.locations_of_node(n, c) {
+                    if let Some(loc) = locs.into_iter().next() {
+                        return Some(loc);
+                    }
                 }
             }
         }
         // 2) 回退：from 的 HasCallSite 调用点里，被调名与 to 匹配的那一个
-        let to_name = self.short_name_of(to);
+        let to_name = match self.cached_node(c, to) {
+            Some(n) => {
+                let raw = n.fqn.as_deref().filter(|s| !s.is_empty()).unwrap_or(&n.name);
+                self.short_name_str(raw)
+            }
+            None => String::new(),
+        };
         if to_name.is_empty() {
             return None;
         }
@@ -1920,10 +2007,15 @@ impl ViewService {
                 continue;
             }
             let cs = e.to_id.get();
-            if self.node_kind(cs) != "CallSite" {
+            if self
+                .cached_node(c, cs)
+                .map(|n| n.kind.to_string())
+                .unwrap_or_default()
+                != "CallSite"
+            {
                 continue;
             }
-            if let Some(cs_node) = self.store.get_node(NodeId(cs)).ok().flatten() {
+            if let Some(cs_node) = self.cached_node(c, cs) {
                 if let Some(fqn) = &cs_node.fqn {
                     // fqn 形如 "<owner>#<callee_text>:<line>"（见 cf_ast.rs）：
                     //   "Owner::callee:line" / "Owner->callee:line" / "new Klass:line"
@@ -1941,7 +2033,7 @@ impl ViewService {
                         if !callee_method.is_empty()
                             && self.short_name_str(callee_method) == to_name
                         {
-                            return self.node_source_location(NodeId(cs));
+                            return self.node_source_location_cached(NodeId(cs), c);
                         }
                     }
                 }
@@ -2187,6 +2279,20 @@ fn is_indirect_edge(e: &em_domain::model::Edge) -> bool {
 /// `via: "propagate"`（环境读取类还额外带 `indirect: true`）。
 fn seed_source_of(e: &em_domain::model::Edge) -> Option<i64> {
     e.properties.get("seed_source").and_then(|v| v.as_i64())
+}
+
+/// 一次视图请求内的节点缓存。
+///
+/// 折叠与内联链路会对**同一批节点反复查库**：`get_node` / `file_path` / `get_symbol`
+/// 各自一次往返，一条 29 边的图要几百次查询 —— 实测"调用处定位"一项就占
+/// 对象视图 ~670ms（占 2/3）。缓存让每个节点 / 文件 / 符号表项最多查一次。
+///
+/// 请求级而非全局：图会被重建，缓存跨请求会读到陈旧数据。
+#[derive(Default)]
+pub(crate) struct NodeCache {
+    nodes: std::cell::RefCell<HashMap<i64, Option<em_domain::model::Node>>>,
+    files: std::cell::RefCell<HashMap<i64, Option<String>>>,
+    symbols: std::cell::RefCell<HashMap<(i64, String, String), Option<serde_json::Value>>>,
 }
 
 /// 在链边邻接上枚举 `from → to` 的完整**简单路径**（DFS，最多 `limit` 条，深度上限 `max_hops`）。
