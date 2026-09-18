@@ -135,7 +135,7 @@ fn recv_matches(pattern: &str, receiver: Option<&str>, callee: &str) -> bool {
         for sep in NS_SEPARATORS {
             let prefix = format!("{}{}", sep, pattern);
             if r.len() >= prefix.len()
-                && r[r.len() - prefix.len()..].eq_ignore_ascii_case(&prefix)
+                && r.as_bytes()[r.len() - prefix.len()..].eq_ignore_ascii_case(prefix.as_bytes())
             {
                 return true;
             }

@@ -644,6 +644,14 @@ pub struct ValueSource {
     /// 队列的 Job / topic 就是产生它的那个类自身，典型如 `QueueTrait::dispatch`
     /// 经 `->job(__CLASS__)` 把消费方设成调用类）。这是框架无关的提取能力。
     pub owner_class: Option<bool>,
+    /// 取 `owner_fqn` 末尾的**成员名**（方法 / 字段），与 `owner_class` 互补。
+    ///
+    /// 典型用途：Java 方法级注解（`@GetMapping`）的调用点 `owner_fqn` 是方法 FQN
+    /// `com.example.Ctrl.list`，`owner_member` 取出 `list`，供 link 的 `to_method`
+    /// 把 `HandledBy` 精确连到**处理方法**节点（而非控制器类），让视角能沿方法
+    /// 的调用链继续下钻。类级注解 `owner_fqn` 已是类 FQN，取到的是类短名，
+    /// 查不到方法节点时 `find_target_node` 回退到类节点，语义安全。
+    pub owner_member: Option<bool>,
     /// 取调用点的接收者类：把 `receiver` 经 import 别名还原成 FQN。
     ///
     /// 与 `owner_class`（调用所在类）不同，这是「被调用方的接收者类」，

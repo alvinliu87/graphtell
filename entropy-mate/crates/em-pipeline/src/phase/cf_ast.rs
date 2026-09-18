@@ -14,7 +14,7 @@ use em_domain::model::{
     ResolveAs, Severity, SourceFile, Span, SyntaxFacts,
 };
 use em_domain::port::{FileSystem, ParserRegistry};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::context::PipelineContext;
 

@@ -76,9 +76,10 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            # 控制器类本身；方法入口由注解所在方法决定，
-            # `owner_class` 切掉成员部分后即所属类。
+            # 优先精确连到**处理方法**节点（`to_method` 从注解所在方法的 FQN 取成员名），
+            # 视角才能沿方法调用链继续下钻；查不到方法时回退控制器类。
             to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
           confidence: 0.9
 
   # `@RequestMapping("/api/x")` —— 未声明 HTTP 方法，记为 ANY。
@@ -106,7 +107,9 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
+            # 同 spring-mapping-http-contract：优先方法节点，回退控制器类。
             to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
           confidence: 0.8
 
   # ===== P5 Synthesize：Table =====

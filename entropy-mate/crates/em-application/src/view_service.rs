@@ -1242,6 +1242,56 @@ impl ViewService {
                             }
                         }
                     }
+                    // 上游可达语义用户判定：从候选方法沿「调用方(Calls) / 被路由处理(HandledBy)
+                    // / 声明类(Declares)」等上游链边上溯，若途中经过语义用户（路由）或已覆盖节点，
+                    // 则该方法的资源访问应归因于那个语义用户、折叠进其 `via`，而非作为独立直连
+                    // 读者被 `collapsed` 点亮。
+                    //
+                    // 背景：P8 沿调用链把 `ReadsDb/WritesDb` 复刻到了每个中间调用方
+                    // （controller / service / mapper），使它们都成了表的直连读者；但语义归属
+                    // 应落在最上游的路由上（见 `propagate.rs` 与 `inline_chain_locations` 的
+                    // seed_source 补回）。否则资源视角会画出一堆方法节点、而非其上游语义入口。
+                    let upstream_reaches_semantic = |start: i64| -> bool {
+                        // 多分支 BFS：从候选方法沿「调用方(Calls) / 被路由处理(HandledBy) /
+                        // 声明类(Declares)」等上游链边上溯，任一分支途中遇到语义用户（路由）或
+                        // 已覆盖节点即命中。必须穷举所有上游分支——只跟第一条会漏掉并行分支
+                        // （如 controller 类同时被 `HandledBy→路由` 与 `Declares→文件` 连接，
+                        // 或 mapper 同时被 `Calls→service` 与 `Declares→接口` 连接）。
+                        let mut frontier: Vec<i64> = vec![start];
+                        let mut seen: HashSet<i64> = HashSet::new();
+                        for _ in 0..64 {
+                            if frontier.is_empty() {
+                                break;
+                            }
+                            let mut nxt: Vec<i64> = Vec::new();
+                            for cur in frontier {
+                                if !seen.insert(cur) {
+                                    continue;
+                                }
+                                if users.contains(&cur)
+                                    || covered.contains(&cur)
+                                    || d.semantic_of.get(&cur).copied().unwrap_or(false)
+                                    || summary
+                                        .get(&cur)
+                                        .map_or(false, |m| NodeKind(m.kind.clone()).is_semantic())
+                                {
+                                    return true;
+                                }
+                                if let Some(ins) = d.in_edges.get(&cur) {
+                                    for e in ins {
+                                        if matches!(
+                                            e.kind.as_str(),
+                                            "Calls" | "HandledBy" | "Declares"
+                                        ) {
+                                            nxt.push(e.from_id.get());
+                                        }
+                                    }
+                                }
+                            }
+                            frontier = nxt;
+                        }
+                        false
+                    };
                     let mut collapsed: Vec<i64> = d.ring_of
                         .keys()
                         .copied()
@@ -1250,6 +1300,7 @@ impl ViewService {
                                 && d.parent_of.get(id) == Some(&center_id.get())
                                 && !d.semantic_of.get(id).copied().unwrap_or(false)
                                 && !covered.contains(id)
+                                && !upstream_reaches_semantic(*id)
                                 && d.path_kind.get(id).map_or(false, |k| !k.is_empty())
                         })
                         .collect();

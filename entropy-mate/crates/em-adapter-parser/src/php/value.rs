@@ -120,7 +120,11 @@ pub fn unwrap_string(node: Node, src: &str) -> String {
         return t.lines().skip(1).collect::<Vec<_>>().join("\n");
     }
     let bytes = t.as_bytes();
-    if bytes.len() >= 2 && (bytes[0] == b'\'' || bytes[0] == b'"') {
+    // 首尾都必须是 ASCII 引号才可字节切片（防多字节字符边界 panic）。
+    if bytes.len() >= 2
+        && (bytes[0] == b'\'' || bytes[0] == b'"')
+        && (bytes[bytes.len() - 1] == b'\'' || bytes[bytes.len() - 1] == b'"')
+    {
         let inner = &t[1..t.len() - 1];
         return inner.replace("\\'", "'").replace("\\\"", "\"");
     }

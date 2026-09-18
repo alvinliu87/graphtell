@@ -223,6 +223,25 @@ impl<'a> Evaluator<'a> {
                         .unwrap_or(&c.owner_fqn[..]);
                     return Some(EvalValue::Str(class.to_string()));
                 }
+                if src.owner_member == Some(true) {
+                    // 取 owner_fqn 末尾的成员名（方法 / 字段）：Java 方法级注解的
+                    // `owner_fqn` 是 `com.example.Ctrl.list` → `list`；类级注解
+                    // `owner_fqn` 已是类 FQN → 取到类短名，find_target_node 按方法
+                    // 查不到时自然回退到类节点，语义安全。
+                    if c.owner_fqn.is_empty() {
+                        return None;
+                    }
+                    let member = &c.owner_fqn[c
+                        .owner_fqn
+                        .rfind("::")
+                        .or_else(|| c.owner_fqn.rfind('.'))
+                        .map(|idx| idx + 1)
+                        .unwrap_or(0)..];
+                    if member.is_empty() {
+                        return None;
+                    }
+                    return Some(EvalValue::Str(member.to_string()));
+                }
                 if src.receiver_class == Some(true) {
                     let recv = c.receiver.as_ref()?;
                     // 经 import 别名还原（如 `QueueThink` → `think\facade\Queue`）。

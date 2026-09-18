@@ -720,9 +720,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   onNodeContextMenu?.(n.id, n.kind, e);
                 }}
               >
-                {/* 中心节点用**加粗的种类色描边**表达强调，不再叠一层"选中环"——
-                    `selectedId` 恒为中心（点有视角的节点即切视角变中心），两层边框永远
-                    同时出现在中心药丸上，看起来像画重了。 */}
+                {/* 所有节点统一用 1.4px 种类色描边；中心节点的强调改由尺寸 + 字重承担，
+                    不再靠加粗边框堆层级，避免同 kind 节点描边粗细看着不一致。 */}
                 <rect
                   x={-w / 2}
                   y={-h / 2}
@@ -731,7 +730,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   rx={6}
                   fill="#fff"
                   stroke={fill}
-                  strokeWidth={isCenter ? 2 : 1.4}
+                  strokeWidth={1.4}
                   vectorEffect="non-scaling-stroke"
                   style={{ transition: 'stroke-width 140ms ease' }}
                 />
