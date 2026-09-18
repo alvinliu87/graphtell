@@ -35,6 +35,6 @@ pub use view::{
 };
 
 pub use syntax::{
-    CallSiteFact, ConfigEntryFact, Declaration, FactValue, ImportFact, InheritanceFact,
-    NamespacePolicy, SyntaxFacts,
+    CallSiteFact, ConfigEntryFact, Declaration, FactValue, FieldTypeFact, ImportFact,
+    InheritanceFact, NamespacePolicy, SyntaxFacts,
 };

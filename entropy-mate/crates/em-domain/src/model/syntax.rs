@@ -98,6 +98,22 @@ pub struct CallSiteFact {
     pub snippet: Option<String>,
 }
 
+/// 字段声明与类型：`class -> field -> type`。
+///
+/// 用于 P7 按字段声明类型解析 `field.method()` 实例调用（如 Java `@Autowired`
+/// 字段注入的 `service.mapper.findX()` 链路）。`type_name` 为声明处的原始类型
+/// 名（含可能的泛型），P2 会剔除泛型后按 `import` 还原成 FQN。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldTypeFact {
+    /// 声明该字段的类的 FQN。
+    pub class_fqn: String,
+    /// 字段名。
+    pub field: String,
+    /// 字段的原始类型名（可能含泛型）。
+    pub type_name: String,
+    pub span: Span,
+}
+
 /// 配置条目。
 ///
 /// 例如 `app/event.php`：`key_path = "listen.order.pay_success"`，

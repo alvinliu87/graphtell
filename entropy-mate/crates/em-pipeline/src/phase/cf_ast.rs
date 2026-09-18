@@ -14,7 +14,7 @@ use em_domain::model::{
     ResolveAs, Severity, SourceFile, Span, SyntaxFacts,
 };
 use em_domain::port::{FileSystem, ParserRegistry};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::context::PipelineContext;
 
@@ -79,7 +79,12 @@ fn build_file(
         let fqn = imp.name.trim_start_matches('\\').to_string();
         let short = match &imp.alias {
             Some(a) => a.clone(),
-            None => fqn.rsplit('\\').next().unwrap_or(&fqn).to_string(),
+            // 短名取最后一个命名空间分段：Java 用 `.`、PHP 用 `\`，统一按两者之一切分。
+            None => fqn
+                .rsplit(|c: char| c == '.' || c == '\\')
+                .next()
+                .unwrap_or(&fqn)
+                .to_string(),
         };
         imports
             .entry(short.to_ascii_lowercase())
@@ -352,6 +357,13 @@ fn build_file(
             confidence: 1.0,
             properties: serde_json::Value::Null,
         });
+    }
+
+    // 字段声明类型：按 import 还原成 FQN，写入 `prop_types`（供 P7 按字段类型解析
+    // `field.method()` 实例调用，打通 `service → mapper → 表` 的调用链）。
+    for ft in &facts.field_types {
+        let type_fqn = resolve_type(facts.namespace.as_deref(), &imports, &ft.type_name);
+        ctx.ws.set_prop_type(&ft.class_fqn, &ft.field, &type_fqn);
     }
 
     // 调用点：细化到 CallSite 节点

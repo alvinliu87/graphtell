@@ -79,6 +79,7 @@ fn scan_excludes_vendor_and_assets() {
             root: root.clone(),
             extra_excludes: Vec::new(),
             languages: Vec::new(), // 空 = 所有支持的语言
+            language_extensions: Vec::new(), // 空 = 回退扫描器内置扩展名表
         })
         .expect("扫描");
 

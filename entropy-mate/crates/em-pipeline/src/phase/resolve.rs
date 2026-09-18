@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use em_domain::model::{
-    EdgeKind, FactValue, HandlerSpec, NewEdge, NodeId, NodeKind, Phase, ResolveStrategy,
+    EdgeKind, FactValue, HandlerSpec, Language, NewEdge, NodeId, NodeKind, Phase, ResolveStrategy,
     ResolveTier, Resolution, Severity, SubProjectId,
 };
 use em_domain::port::KnowledgeProvider;
@@ -84,7 +84,10 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                 else {
                     continue;
                 };
-                if !recv.starts_with('$') || method.is_empty() {
+                // PHP：接收者须为 `$var` / `$this->prop`（静态 `Foo::m()` 交给 Facade）；
+                // Java：字段是裸标识符，直接按字段声明类型解析。
+                let is_java = call.language.as_str() == Language::JAVA;
+                if (!recv.starts_with('$') && !is_java) || method.is_empty() {
                     continue;
                 }
                 let raw = format!("{}::{recv}::{method}", call.owner_fqn);
@@ -199,6 +202,7 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
     };
 
     // 目标方法：先本类，再沿继承链回溯（方法常继承自基类）。
+    // 成员分隔符语言相关：PHP `Class::method`、Java `Class.method` —— 两者都试。
     let mut stack = vec![type_fqn.clone()];
     let mut visited: HashSet<String> = HashSet::new();
     let mut steps = 0;
@@ -207,11 +211,15 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
         if steps > 50 || !visited.insert(t.clone()) {
             continue;
         }
-        if let Some(id) = ctx.ws.find_by_name(&format!("{t}::{method}")) {
+        let candidates = [
+            format!("{t}::{method}"),
+            format!("{t}.{method}"),
+        ];
+        if let Some(id) = candidates.iter().find_map(|f| ctx.ws.find_by_name(f)) {
             return Resolution::resolved(
                 ResolveTier::Convention,
                 id,
-                format!("按变量类型解析 {t}::{method}"),
+                format!("按变量类型解析 {} -> {method}", t),
             );
         }
         for parent in ctx.ws.parents_of(&t) {
@@ -740,17 +748,69 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
                 break;
             }
             if let Some(ty) = ctx.ws.prop_type(&c, prop) {
-                return Some(ty.to_string());
+                return Some(resolve_impl(ctx, &ty));
             }
             cur = ctx.ws.parents_of(&c).into_iter().next();
         }
         None
     } else if recv.starts_with('$') {
         let var = recv.trim_start_matches('$');
-        ctx.ws.param_type(owner_fqn, var).map(|s| s.to_string())
+        ctx.ws
+            .param_type(owner_fqn, var)
+            .map(|s| resolve_impl(ctx, s))
     } else {
+        // Java 字段（裸标识符）：从所属类（含父类）的字段类型推断
+        // `service.mapper.findX()` 中 `mapper` 是 `@Autowired` 注入字段。
+        let class_fqn = owner_class_of(owner_fqn);
+        let mut cur = Some(class_fqn);
+        let mut visited: HashSet<String> = HashSet::new();
+        while let Some(c) = cur {
+            if !visited.insert(c.clone()) {
+                break;
+            }
+            if let Some(ty) = ctx.ws.prop_type(&c, recv) {
+                return Some(resolve_impl(ctx, &ty));
+            }
+            cur = ctx.ws.parents_of(&c).into_iter().next();
+        }
         None
     }
+}
+
+/// 若 `type_fqn` 是接口且存在实现类，返回实现类的 FQN：Spring 注入的是实现类，
+/// DB 调用也在实现类的方法体里；否则原样返回。
+///
+/// 不解析到实现类会断链：路由 → 服务接口（`@Autowired` 字段类型）→ 实现类方法
+/// （真正 `mapper.xxx()` 的地方）→ Mapper → 表。
+fn resolve_impl(ctx: &PipelineContext, type_fqn: &str) -> String {
+    if let Some(id) = ctx.ws.find_by_name(type_fqn) {
+        if ctx
+            .ws
+            .node(id)
+            .map(|n| n.kind.is("Interface"))
+            .unwrap_or(false)
+        {
+            if let Some(rec) = ctx
+                .ws
+                .inherits
+                .iter()
+                .find(|r| r.base == type_fqn && r.kind.as_str() == "Implements")
+            {
+                return rec.child_fqn.clone();
+            }
+        }
+    }
+    type_fqn.to_string()
+}
+
+/// 从「方法 FQN」取所属类 FQN：Java `pkg.Class.method` → `pkg.Class`，
+/// PHP `Class::method` → `Class`。
+fn owner_class_of(owner_fqn: &str) -> String {
+    owner_fqn
+        .rsplit_once('.')
+        .or_else(|| owner_fqn.rsplit_once("::"))
+        .map(|(c, _)| c.to_string())
+        .unwrap_or_else(|| owner_fqn.to_string())
 }
 
 /// 用**调用方所在文件的 `use` 表**把短名还原成 FQN。

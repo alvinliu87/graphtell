@@ -10,8 +10,8 @@ use std::cell::RefCell;
 
 use em_domain::error::Result;
 use em_domain::model::{
-    CallSiteFact, Declaration, EdgeKind, FactValue, ImportFact, InheritanceFact, Language, NodeKind,
-    Span, SyntaxFacts,
+    CallSiteFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact, InheritanceFact,
+    Language, NodeKind, Span, SyntaxFacts,
 };
 use em_domain::port::LanguageParser;
 use tree_sitter::{Node, Parser};
@@ -124,7 +124,12 @@ fn walk(
             }
         }
         "method_declaration" | "constructor_declaration" => {
-            declare_member(node, src, out, stack);
+            if let Some(fqn) = declare_member(node, src, out, stack) {
+                stack.push(fqn);
+                recurse(node, src, package, out, stack);
+                stack.pop();
+                return;
+            }
         }
         "method_invocation" => {
             collect_call(node, src, out, stack);
@@ -134,6 +139,7 @@ fn walk(
             // owner_fqn 用类 FQN（字段属于类而非方法），owner_class 同为该类的 FQN。
             if let Some(class_fqn) = stack.last().cloned() {
                 collect_annotations(node, src, &class_fqn, &class_fqn, out);
+                collect_field_type(node, src, &class_fqn, out);
             }
         }
         _ => {}
@@ -224,14 +230,47 @@ fn collect_supertypes(node: Node, src: &[u8], fqn: &str, out: &mut SyntaxFacts) 
     }
 }
 
-/// 方法 / 构造器 → 成员声明。
-fn declare_member(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String]) {
-    let Some(name) = opt_text(node.child_by_field_name("name"), src) else {
+/// 字段声明 `Type name;` / `Type a, b;` → 记录每条字段与其声明类型。
+///
+/// 仅取**裸类型名**（剔除泛型 `<...>` 与数组 `[]`），泛型参数在 P2 按
+/// `import` 还原时通常无法定位到工程内类，留待需要时再扩展。
+fn collect_field_type(node: Node, src: &[u8], class_fqn: &str, out: &mut SyntaxFacts) {
+    let Some(type_node) = node.child_by_field_name("type") else {
         return;
     };
-    let Some(class_fqn) = stack.last().cloned() else {
+    let Some(raw) = text(type_node, src) else {
         return;
     };
+    let type_name = raw
+        .split(['<', '['])
+        .next()
+        .unwrap_or(&raw)
+        .trim()
+        .to_string();
+    if type_name.is_empty() {
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "variable_declarator" {
+            continue;
+        }
+        if let Some(name) = opt_text(child.child_by_field_name("name"), src) {
+            out.field_types.push(FieldTypeFact {
+                class_fqn: class_fqn.to_string(),
+                field: name,
+                type_name: type_name.clone(),
+                span: span_of(child),
+            });
+        }
+    }
+}
+
+/// 方法 / 构造器 → 成员声明。返回方法 FQN（供调用者把方法压栈，使方法体内的
+/// 调用点 `owner_fqn` 精确到 `类.方法` 而非仅类）。
+fn declare_member(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String]) -> Option<String> {
+    let name = opt_text(node.child_by_field_name("name"), src)?;
+    let class_fqn = stack.last().cloned()?;
     let fqn = format!("{}.{}", class_fqn, name);
     out.declarations.push(Declaration {
         kind: NodeKind(NodeKind::METHOD.to_string()),
@@ -245,6 +284,7 @@ fn declare_member(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String
     // 方法级注解（`@GetMapping("/list")` / `@Value("${x}")` …）
     // owner_class 是所属类（target_fqn 即 `类.方法`，故单独传入 class_fqn）。
     collect_annotations(node, src, &fqn, &class_fqn, out);
+    Some(fqn)
 }
 
 /// 注解 → **调用点**。
@@ -354,9 +394,17 @@ fn collect_call(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String])
         Some(r) => format!("{}.{}", r, method),
         None => method.clone(),
     };
+    // 方法压栈后：`stack.last()` 是方法 FQN，`stack[len-2]` 是所属类；
+    // 类级调用（不在方法体内）时两者相同。
+    let owner_fqn = stack.last().cloned().unwrap_or_default();
+    let owner_class = if stack.len() >= 2 {
+        stack.get(stack.len() - 2).cloned()
+    } else {
+        stack.last().cloned()
+    };
     out.call_sites.push(CallSiteFact {
-        owner_fqn: stack.last().cloned().unwrap_or_default(),
-        owner_class: stack.last().cloned(),
+        owner_fqn,
+        owner_class,
         callee_text,
         receiver,
         method: Some(method),
