@@ -1,0 +1,12 @@
+[package]
+name = "gt-domain"
+description = "GraphTell 领域内核：实体、值对象与端口（六边形架构的最内层）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }

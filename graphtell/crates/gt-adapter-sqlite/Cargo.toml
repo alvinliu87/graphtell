@@ -1,0 +1,14 @@
+[package]
+name = "gt-adapter-sqlite"
+description = "SQLite 持久化适配器（图数据 + 工程元数据）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gt-domain = { workspace = true }
+serde = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,32 @@
+[package]
+name = "gt-app"
+description = "GraphTell 组装根与 CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gt-domain = { workspace = true }
+gt-application = { workspace = true }
+gt-pipeline = { workspace = true }
+gt-adapter-fs = { workspace = true }
+gt-adapter-parser = { workspace = true }
+gt-adapter-fkb = { workspace = true }
+gt-adapter-views = { workspace = true }
+gt-adapter-sqlite = { workspace = true }
+gt-adapter-http = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+
+[[bin]]
+name = "graphtell"
+path = "src/main.rs"
+
+[lib]
+name = "gt_app"
+path = "src/lib.rs"

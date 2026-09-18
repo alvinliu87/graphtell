@@ -1,0 +1,15 @@
+[package]
+name = "gt-application"
+description = "GraphTell 应用层：用例编排与事务边界"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gt-domain = { workspace = true }
+gt-pipeline = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }

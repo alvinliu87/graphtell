@@ -1,0 +1,134 @@
+# 视角注册表
+#
+# 顶部「两级筛选器」的一级选项，以及「点击节点切换视角」的映射规则。
+#
+# 两类视角语义完全不同，不可混用：
+#   mode: object    —— 对象类。**只渲染当前这一个对象**的链路子图，
+#                      其它对象的链路边直接不画（不是变暗），
+#                      靠 hidden 计数 + unresolved 记账 + 可切换来守住诚实性。
+#   mode: aggregate —— 聚合类。**不是单链路**，而是聚合概览（聚类框 / 矩阵）。
+#
+# 对象类视角**默认折叠**：只渲染"语义节点"（Table / HttpContract / ConfigKey /
+# I18nKey / Event / Queue / Cache / Topic / Schedule…）与"语义边"（HandledBy /
+# CallsHttp / Triggers / PublishesTo / ReadsDb / WritesDb / MapsTo / ReadsConfig /
+# ReadsCache / ResolvesTo），判定权威来自 `gt-domain/src/model/kinds.rs`；语法节点
+# （Method / CallSite / Class…）折叠起来，前端点击可展开查看调用链。
+#
+# 进程外中介（Event / Queue / Cache / Topic）各自是独立种类，视角**直接按种类**
+# 显示（事件 / 队列 / 缓存 / 消息 Topic），不再有笼统的"外部系统"伞。
+#
+# node_views 里**没有**列出的节点种类不会切换顶部筛选器，
+# 只打开右侧 Inspector —— 例如 ConfigKey / KeyPattern / Component /
+# SecretLocation 这类资产/结构节点没有"单链路"语义。
+
+perspectives:
+  # ---------------- 对象类视角（单链路）----------------
+  - id: route
+    label: 路由视角
+    mode: object
+    node_kind: HttpContract
+    # 路由是"一条 HTTP 入口的调用流"，自顶向下的层 = 跳数，比径向更能体现调用顺序与流向。
+    layout: layered
+    depth: 2
+    collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
+    description: 以一个 HTTP 契约为中心，看它被谁处理、被谁调用、读写了哪些表
+
+  - id: table
+    label: 表视角
+    mode: object
+    node_kind: Table
+    layout: radial
+    depth: 2
+    description: 以一张表为中心的入边汇聚：谁在读写它、PII 与关键度
+
+  - id: event
+    label: 事件视角
+    mode: object
+    node_kind: Event
+    layout: radial
+    depth: 2
+    description: 事件总线：谁发布、谁监听（节点种类 Event）
+
+  - id: queue
+    label: 队列视角
+    mode: object
+    node_kind: Queue
+    layout: radial
+    depth: 2
+    description: 消息队列：谁投递、谁消费（节点种类 Queue）
+
+  - id: cache
+    label: 缓存视角
+    mode: object
+    node_kind: Cache
+    layout: radial
+    depth: 2
+    description: 缓存：谁读、谁写（节点种类 Cache）
+
+  - id: schedule
+    label: 计划任务
+    mode: object
+    node_kind: Schedule
+    # 定时任务是"一条执行链路"，自顶向下的层 = 跳数，比径向更能体现执行流向。
+    layout: layered
+    depth: 2
+    description: 定时任务的执行链路（由项目级 FKB 合成 Schedule 节点，如 CRMEB 的 crontab 路由）
+
+  - id: topic
+    label: 消息 Topic
+    mode: object
+    node_kind: Topic
+    layout: radial
+    depth: 2
+    description: 消息 topic 的生产与消费（节点种类 Topic）
+
+  # ---------------- 以下视角 MVP 暂不实现，先注释 ----------------
+  # - id: page
+  #   label: 页面视角
+  #   mode: object
+  #   node_kind: Page
+  #   layout: radial
+  #   depth: 2
+  #   description: 前端页面发起的调用链（当前流水线尚未产出 Page 节点）
+  #
+  # - id: domain
+  #   label: 领域聚合
+  #   mode: aggregate
+  #   layout: compound
+  #   group_by: { property: domain }
+  #   description: 按业务领域分框概览（图里还没有 domain 属性时给出诚实提示）
+  #
+  # - id: deploy_unit
+  #   label: 部署单元
+  #   mode: aggregate
+  #   layout: compound
+  #   group_by: sub_project
+  #   description: 按子工程（部署单元）分框概览
+  #
+  # - id: platform
+  #   label: 多端对比
+  #   mode: aggregate
+  #   layout: matrix
+  #   row_from: sub_project
+  #   col_from: node_kind
+  #   description: 子工程 × 节点种类的矩阵：谁产出了哪类资产
+  #
+  # - id: er
+  #   label: 表关系 / ER
+  #   mode: aggregate
+  #   layout: er
+  #   group_by: node_kind
+  #   description: 表与表之间的正交关系视图
+
+# 点击节点时切换到哪个视角。
+# 只有"在顶部筛选器中有对应视角"的种类才列在这里。
+node_views:
+  HttpContract: route
+  Table: table
+  # 进程外中介各自是独立种类，直接切到对应具体视角（不再有"外部系统"伞）。
+  Cache: cache
+  Event: event
+  Queue: queue
+  Schedule: schedule
+  Topic: topic
+  # MVP 暂不支持：Page / Domain / DeployUnit / Platform 不入映射。

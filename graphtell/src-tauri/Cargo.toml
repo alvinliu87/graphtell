@@ -1,0 +1,32 @@
+[package]
+name = "graphtell-desktop"
+version = "0.1.0"
+description = "GraphTell 桌面常驻界面（Tauri）"
+edition = "2021"
+rust-version = "1.77"
+
+# Tauri 依赖 webkit2gtk(Linux) / WebView2(Windows) 等系统库，
+# 因此这里声明为独立 workspace，不参与主 workspace 的日常构建与 CI。
+[workspace]
+
+[lib]
+name = "graphtell_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+gt-app = { path = "../crates/gt-app" }
+gt-domain = { path = "../crates/gt-domain" }
+gt-adapter-http = { path = "../crates/gt-adapter-http" }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

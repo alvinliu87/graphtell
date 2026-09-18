@@ -1,0 +1,91 @@
+# 前端（JS / TS / Vue …）与后端通过 HttpContract 汇聚
+#
+# 前端子工程与后端子工程各自建出 HttpContract 节点，
+# 靠**同一个 identity** 合并 —— 这就是契约桥配对。
+# 死端点 / 幽灵调用检测由此自动成立：
+#   * 有 HandledBy 无 CallsHttp = 后端死端点（没人调）
+#   * 有 CallsHttp 无 HandledBy = 前端幽灵调用（调了个不存在的路由）
+#
+# 本 FKB 覆盖常见前端 HTTP 调用写法：
+#   * uni.request / request / http.request（对象式，url / method 在实参里）
+#   * axios.get/post/put/delete/patch / axios({ url, method })（成员式 + 对象式）
+#   * fetch(url, { method })
+
+id: frontend-js
+display_name: 前端 JS/TS
+language: javascript
+version_hint: "*"
+
+detectors:
+  # uni-app / CRMEB 类多端工程
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: "@dcloudio/uni-app"
+    confidence: 0.95
+  # 通用前端工程（axios 是 HTTP 客户端的事实标准）
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: "axios"
+    confidence: 0.9
+  # 退路：存在 package.json 即视为 JS 前端子工程（后端通常不是 JS）
+  - kind: file_exists
+    path: package.json
+    confidence: 0.6
+
+exclude_globs:
+  - "unpackage/**"
+  - "static/**"
+  - "node_modules/**"
+  - "dist/**"
+  - "build/**"
+  - ".output/**"
+  - ".nuxt/**"
+  - ".next/**"
+
+rules:
+  - id: frontend-http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "uni.request|request|http.request|axios|fetch"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              arg: 0
+              field: "method"
+              default: "GET"
+              normalize: [upper]
+            path:
+              arg: 0
+              field: "url"
+              # URL 为变量 / 含插值模板串时解析器给 Unknown，此处必须拒收，
+              # 否则会合成 `GET /<dynamic-url>` 这类垃圾契约污染路由视角。
+              require_literal: true
+              normalize:
+                - strip_prefix: ["api/"]
+                - leading_slash
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: CallsHttp, direction: incoming }
+          confidence: 0.9
+
+  - id: frontend-mark-called
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: HttpContract
+      where:
+        - property_is: { name: "side", value: "frontend" }
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: frontend.called
+              confidence: 0.9
+          merge: Coexist

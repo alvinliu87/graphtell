@@ -1,0 +1,205 @@
+# Spring Boot 框架知识
+#
+# **由 samples/ 下的真实 Java 项目驱动**（mall / crmeb_java-3.0 / snowy-master 等），
+# 只写这些项目里**实际出现**的注解。实测分布：
+#   @RequestMapping 890+ · @GetMapping 219 · @PostMapping 213
+#   @Table 330 · @TableName 143 · @Value 58 · @Mapper 7
+#
+# 与 PHP 侧的对照 —— 同一个概念，不同表达：
+#   | 概念       | ThinkPHP            | Laravel                    | Spring Boot        |
+#   |------------|---------------------|----------------------------|--------------------|
+#   | HTTP 契约  | `Route::get(...)`   | `Route::get(...)`          | `@GetMapping("/x")`|
+#   | 表映射     | `$table` 属性       | Eloquent 约定              | `@TableName("x")`  |
+#   | 配置读取   | `sys_config()`      | `config()`                 | `@Value("${x}")`   |
+#
+# 注解在内核里被建模为**调用点**（`CallSiteFact`）—— Java 注解 / Python 装饰器 /
+# C# Attribute 是同一概念：声明式的框架调用。因此这里不需要任何新的 DSL 能力。
+
+id: spring-boot
+display_name: Spring Boot
+language: java
+version_hint: "2.x / 3.x"
+scope: framework
+
+detectors:
+  # pom.xml 里出现 spring-boot（`manifest_has` 对非 JSON 文件做文本包含匹配）
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: spring-boot
+    confidence: 0.95
+  - kind: file_exists
+    path: src/main/java
+    confidence: 0.6
+
+exclude_globs:
+  - "target/**"
+  - "*/target/**"
+  - "*/build/**"
+
+root_rules:
+  - id: spring-source-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: src/main/java
+    confidence: 1.0
+    fallbacks:
+      - src/main/java
+      - src
+
+rules:
+  # ===== P5 Synthesize：HTTP 契约 =====
+  # `@GetMapping("/list")` —— 方法从注解名推导（去 `Mapping` 后缀再大写）。
+  - id: spring-mapping-http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - replace: { from: "Mapping", to: "" }
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            # 优先精确连到**处理方法**节点（`to_method` 从注解所在方法的 FQN 取成员名），
+            # 视角才能沿方法调用链继续下钻；查不到方法时回退控制器类。
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9
+
+  # `@RequestMapping("/api/x")` —— 未声明 HTTP 方法，记为 ANY。
+  # 常见写法还有 `@RequestMapping(value = "/x", method = RequestMethod.GET)`，
+  # 其字面量参数同样落在 arg:0，方法信息取不到故保守记为 ANY。
+  - id: spring-request-mapping-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "RequestMapping"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { literal: "ANY" }
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            # 同 spring-mapping-http-contract：优先方法节点，回退控制器类。
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：Table =====
+  # MyBatis-Plus `@TableName("eb_user")` 与 JPA `@Table(name = "eb_user")`。
+  - id: spring-table-name
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "TableName|Table"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：MyBatis mapper XML（原生 MyBatis，无注解可依）=====
+  # newbee-mall / litemall / mall 的表访问全在 `resources/mapper/*.xml` 里。
+  # 流水线（gt-pipeline::mybatis）把每条语句 × 每张表注入为伪调用点：
+  # `mybatis::select|insert|update|delete(表名)`，owner = Mapper 接口方法（namespace.id）。
+  # `<select>` 是读，`<insert|update|delete>` 是写。
+  - id: mybatis-select-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "mybatis::select"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: ReadsDb, direction: incoming }
+          confidence: 0.85
+
+  - id: mybatis-write-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "mybatis::insert|mybatis::update|mybatis::delete"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: WritesDb, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：ConfigKey =====
+  # `@Value("${app.name}")` —— 去掉 `${` 与 `}` 得到配置键。
+  - id: spring-value-config
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Value"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - replace: { from: "${", to: "" }
+                - replace: { from: "}", to: "" }
+                - trim
+          link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.85
+
+resolvers:
+  # `@Autowired` 字段注入：按字段声明类型解析实例调用。
+  - id: spring-autowired-call
+    call: "*->*"
+    strategy: variable_type

@@ -1,0 +1,20 @@
+[package]
+name = "gt-adapter-parser"
+description = "tree-sitter 解析适配器（当前支持 PHP）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gt-domain = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-language = { workspace = true }
+tree-sitter-php = { workspace = true }
+tree-sitter-java = { workspace = true }
+# TS 语法是 JS 的超集：LANGUAGE_TYPESCRIPT 解析 .js/.ts，LANGUAGE_TSX 解析 .jsx/.tsx。
+# 因此仅引这一个 crate 即可覆盖全部前端 JS/TS，无需再引 tree-sitter-javascript。
+tree-sitter-typescript = "0.23"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
