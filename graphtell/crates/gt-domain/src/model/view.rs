@@ -161,6 +161,10 @@ pub struct NodeView {
     /// 点击时一级视角切到它、二级对象设为该节点；无对应视角时为 `null`。
     #[serde(default)]
     pub own_view: Option<String>,
+    /// 节点所属「端」：`frontend` / `backend`（由 FKB 在语义节点上标注 `side`）。
+    /// 用于 UI 区分前后端子工程：图上一眼看出哪些节点属于前端、哪些属于后端。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
     /// 跳转用的定义位置；合成节点会有**多个**。
     pub locations: Vec<SourceLocation>,
     /// 标注摘要（pii / auth.public / data.criticality …）。
@@ -283,6 +287,8 @@ pub struct Candidate {
     pub name: String,
     /// 供列表展示的次要信息（如引用数）。
     pub badge: Option<String>,
+    /// 该候选对象所属子工程（前端按子工程收敛候选时回带，便于联动与显示）。
+    pub sub_project_id: Option<SubProjectId>,
 }
 
 /// 聚合视角的聚类框。

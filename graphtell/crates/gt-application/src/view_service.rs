@@ -12,7 +12,8 @@ use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
     graph::NodeSummary, AggregateView, Candidate, Cluster, EdgeEvidence, EdgeKind, EdgeView,
     GroupBy, HiddenInfo, MatrixView, NodeId, NodeKind, NodeLocationEntry, NodeLocations, NodeView,
-    ObjectView, PerspectiveSpec, ProjectId, SourceLocation, UnresolvedInfo, ViaNode, ViewRegistry,
+    ObjectView, PerspectiveSpec, ProjectId, SourceLocation, SubProjectId, UnresolvedInfo, ViaNode,
+    ViewRegistry,
 };
 use gt_domain::port::{EdgeDirection, NodeFilter, Persistence, ViewRegistryProvider};
 use serde_json::{json, Value};
@@ -114,6 +115,7 @@ impl ViewService {
         perspective: &str,
         limit: u32,
         name_contains: Option<&str>,
+        sub_project_id: Option<SubProjectId>,
     ) -> Result<Vec<Candidate>> {
         let spec = self
             .views
@@ -123,7 +125,7 @@ impl ViewService {
         let Some(kind) = &spec.node_kind else {
             return Ok(Vec::new());
         };
-        let nodes = self.store.query_nodes(&NodeFilter {
+        let mut nodes = self.store.query_nodes(&NodeFilter {
             project_id,
             kind: Some(gt_domain::model::NodeKind(kind.clone())),
             name_contains: name_contains.map(|s| s.to_string()),
@@ -133,6 +135,12 @@ impl ViewService {
             offset: Some(0),
         })?;
 
+        // 按子工程收敛候选：选中单一子工程时，下拉只列出该子工程内的对象，
+        // 让「子项目作为上层维度」切到该子项目后，默认对象也落在它内部。
+        if let Some(sid) = sub_project_id {
+            nodes.retain(|n| n.sub_project_id == Some(sid));
+        }
+
         // 有搜索词：直接按名称命中，不做全量打分（下拉按需搜索，求快）。
         if name_contains.is_some() {
             return Ok(nodes
@@ -141,6 +149,7 @@ impl ViewService {
                     id: n.id,
                     name: n.name,
                     badge: None,
+                    sub_project_id: n.sub_project_id,
                 })
                 .collect());
         }
@@ -179,6 +188,7 @@ impl ViewService {
                         id: n.id,
                         name: n.name.clone(),
                         badge: Some(format!("语义依赖 {value} · 入边 {fan}")),
+                        sub_project_id: n.sub_project_id,
                     },
                 )
             })
@@ -2257,6 +2267,13 @@ impl ViewService {
                 }
             }
         }
+        // 节点所属「端」：FKB 在语义节点上标注的 `side`（`frontend` / `backend`）。
+        // 透传给前端，用于图上区分前后端子工程。
+        let side = n
+            .properties
+            .get("side")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         Ok(Some(NodeView {
             id,
             kind: n.kind.to_string(),
@@ -2271,6 +2288,7 @@ impl ViewService {
             sub_project_id: n.sub_project_id,
             has_own_view,
             own_view,
+            side,
             locations,
             annotations,
             metrics: json!({ "fan_in": fan_in, "fan_out": fan_out }),

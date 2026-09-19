@@ -36,6 +36,8 @@ export interface NodeView {
   has_own_view: boolean;
   /** 该节点对应的视角 id；单击时一级切到它、二级设为该节点。 */
   own_view: string | null;
+  /** 节点所属「端」：`frontend` / `backend`（由 FKB 标注的 `side`）。用于 UI 区分前后端子工程。 */
+  side?: string | null;
   locations: SourceLocation[];
   annotations: string[];
   metrics: { fan_in?: number; fan_out?: number } | null;

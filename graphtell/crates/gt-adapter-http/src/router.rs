@@ -396,6 +396,7 @@ pub struct ViewQuery {
     pub depth: Option<u32>,
     pub limit: Option<u32>,
     pub name_contains: Option<String>,
+    pub sub_project_id: Option<i64>,
 }
 
 async fn view_candidates(
@@ -410,6 +411,7 @@ async fn view_candidates(
             &perspective,
             q.limit.unwrap_or(300),
             q.name_contains.as_deref(),
+            q.sub_project_id.map(SubProjectId),
         )
     {
         Ok(v) => Json(ApiResponse::success(v)),

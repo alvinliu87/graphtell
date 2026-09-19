@@ -132,7 +132,7 @@ fn first_object_target(
             continue;
         }
         let id = p["id"].as_str()?.to_string();
-        if let Ok(cands) = views.candidates(pid, &id, 50, None) {
+        if let Ok(cands) = views.candidates(pid, &id, 50, None, None) {
             if let Some(c) = cands.first() {
                 return Some((id, c.id));
             }
@@ -278,7 +278,7 @@ fn object_view_default_is_semantic_only() {
     };
     // 取价值最高的候选（`candidates` 已按语义依赖价值降序）。
     let cands = views
-        .candidates(b.project_id, &pid, 5, None)
+        .candidates(b.project_id, &pid, 5, None, None)
         .expect("candidates");
     let Some(top) = cands.first() else {
         eprintln!("该视角没有候选，跳过");
@@ -331,7 +331,7 @@ fn object_view_resource_center_shows_its_users() {
     };
     let views = view_svc(&b);
     let cands = views
-        .candidates(b.project_id, "table", 1, None)
+        .candidates(b.project_id, "table", 1, None, None)
         .expect("candidates");
     let Some(top) = cands.first() else {
         eprintln!("表视角没有候选，跳过");
@@ -403,7 +403,7 @@ fn event_view_handled_by_points_outward_and_triggers_have_call_site() {
     };
     let views = view_svc(&b);
     let cands = views
-        .candidates(b.project_id, "event", 20, None)
+        .candidates(b.project_id, "event", 20, None, None)
         .expect("candidates");
     let Some(top) = cands.first() else {
         eprintln!("事件视角没有候选，跳过");
@@ -525,7 +525,7 @@ fn folded_semantic_edges_end_at_real_contact() {
     };
     let views = view_svc(&b);
     let store = &b.container.store;
-    let cands = match views.candidates(b.project_id, "route", 6, None) {
+    let cands = match views.candidates(b.project_id, "route", 6, None, None) {
         Ok(c) => c,
         Err(_) => {
             eprintln!("无 route 候选，跳过");
@@ -587,7 +587,7 @@ fn cache_view_folded_edges_end_at_real_contact() {
     };
     let views = view_svc(&b);
     let store = &b.container.store;
-    let cands = views.candidates(b.project_id, "cache", 50, None).expect("cache 候选");
+    let cands = views.candidates(b.project_id, "cache", 50, None, None).expect("cache 候选");
     assert!(!cands.is_empty(), "cache 视角应有候选");
 
     let mut checked = 0usize;
@@ -886,7 +886,7 @@ fn schedule_view_follows_outgoing_chain() {
     };
     let views = view_svc(&b);
     let cands = views
-        .candidates(b.project_id, "schedule", 30, None)
+        .candidates(b.project_id, "schedule", 30, None, None)
         .expect("candidates");
     assert!(!cands.is_empty(), "计划任务视角应有候选（CRMEB 的 crontab 路由）");
 
@@ -996,7 +996,7 @@ fn empty_entry_view_carries_hint() {
     let mut empty_seen = 0usize;
     for perspective in ["schedule", "route"] {
         let cands = views
-            .candidates(b.project_id, perspective, 200, None)
+            .candidates(b.project_id, perspective, 200, None, None)
             .expect("candidates");
         assert!(!cands.is_empty(), "{perspective} 视角应有候选");
         for c in cands.iter() {

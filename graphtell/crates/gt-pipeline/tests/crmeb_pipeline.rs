@@ -53,13 +53,21 @@ fn ingest_detects_three_sub_projects() {
         .find(|s| s.detected_by == "composer.json")
         .expect("后端应由 composer.json 识别");
     assert_eq!(backend.language.as_str(), "php");
-    assert_eq!(backend.role, "backend");
+    assert!(
+        backend.role.starts_with("backend"),
+        "后端角色应以 backend 开头，实际：{}",
+        backend.role
+    );
 
     let frontend = subs
         .iter()
         .find(|s| s.detected_by == "package.json")
         .expect("前端应由 package.json 识别");
-    assert_eq!(frontend.role, "frontend");
+    assert!(
+        frontend.role.starts_with("frontend"),
+        "前端角色应以 frontend 开头，实际：{}",
+        frontend.role
+    );
 }
 
 #[test]

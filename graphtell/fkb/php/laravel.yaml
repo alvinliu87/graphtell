@@ -118,6 +118,9 @@ rules:
               normalize:
                 - singularize
                 - trim
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link: { kind: ReadsDb, direction: incoming }
           confidence: 0.9
 
@@ -139,44 +142,15 @@ rules:
               normalize:
                 - singularize
                 - trim
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
 
-  # ===== P5 Synthesize：ConfigKey =====
-  - id: laravel-config
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "config|Config::get|env"
-    binding:
-      - Synthesize:
-          node: ConfigKey
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-          link: { kind: ReadsConfig, direction: incoming }
-          confidence: 0.9
-
-  # ===== P5 Synthesize：Cache =====
-  # 与 ThinkPHP 同形（`Cache::get($key)`），按字面量 key 区分节点。
-  - id: laravel-cache
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "Cache::*|cache"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Cache" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-          link: { kind: ReadsCache, direction: incoming }
-          confidence: 0.85
+  # ===== P5 Synthesize：ConfigKey / Cache =====
+  # 已抽到语言通用层 `fkb/php/common.yaml`（`php-common-config` / `php-common-cache-*`），
+  # 对所有 PHP 框架生效，避免每个框架 FKB 重复一份相同的缓存 / 配置识别逻辑。
 
   # ===== P5 Synthesize：Queue =====
   # `dispatch(new OrderCreatedJob($x))` / `OrderCreatedJob::dispatch($x)`。
@@ -200,6 +174,9 @@ rules:
             value_fallback:
               owner_class: true
               transform: { class_to_topic: true }
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.85
 
@@ -226,6 +203,9 @@ rules:
           identity:
             kind: Named
             value: { arg: 0, require_literal: true }
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -267,6 +247,8 @@ rules:
           fields:
             - name: raw_path
               value: { arg: 0 }
+            - name: side
+              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target

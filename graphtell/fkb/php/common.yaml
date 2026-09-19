@@ -1,0 +1,172 @@
+# PHP 语言通用知识（跨框架，不绑定某一框架）
+#
+# 设计：本 FKB 声明 `apply_without_detection: true`，于是**无论工程被识别为
+# ThinkPHP / Laravel / 其它 PHP 框架，其规则都对同语言子工程生效** —— 跨框架相同的
+# 语义（缓存、配置读取）只写一份，新增框架无需再抄一遍（这正是 `laravel.yaml` 注释里
+# 提到的「`config()` / `Cache::get()` 属于 PHP 生态通用层，应抽到语言级 FKB」）。
+#
+# 注意：本文件只放「各 PHP 框架写法相同」的规则；带强框架假设的规则
+# （表访问 `Db::name` vs `DB::table`、路由 handler 形态、事件注册方式…）仍留在各
+# 框架专属 FKB 里，避免用 A 框架知识解释 B 框架代码。
+
+id: php-common
+display_name: PHP 通用
+language: php
+version_hint: "*"
+# 不声明 detectors：本文件不是「被识别的框架」，只是对所有 PHP 工程生效的通用层。
+apply_without_detection: true
+
+rules:
+  # ===== P5 Synthesize：Cache（跨框架通用）=====
+  # `Cache::get/set(...)` 在 ThinkPHP / Laravel 里写法相同（门面 import 后用短名
+  # `Cache::*`，或全限定 `*Cache::*` 如 `think\facade\Cache::*` /
+  # `Illuminate\Support\Facades\Cache::*`）。用 `*Cache::*` 一揽子覆盖两种门面写法，
+  # 无需按框架拆规则。按字面量 key 区分节点（与 ConfigKey / Table / Queue 一致）。
+  - id: php-common-cache-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Cache::get|Cache::has|Cache::many|Cache::remember|cache|*Cache::get|*Cache::has|*Cache::many|*Cache::remember"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  - id: php-common-cache-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Cache::set|Cache::put|Cache::save|Cache::add|Cache::forever|Cache::forget|Cache::delete|Cache::clear|*Cache::set|*Cache::put|*Cache::save|*Cache::add|*Cache::forever|*Cache::forget|*Cache::delete|*Cache::clear"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：Redis（缓存后端，跨框架通用）=====
+  - id: php-common-redis-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Redis::get|Redis::hGet|Redis::mGet|*Redis::get|*Redis::hGet|*Redis::mGet"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Redis" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  - id: php-common-redis-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Redis::set|Redis::hSet|Redis::del|Redis::delete|*Redis::set|*Redis::hSet|*Redis::del|*Redis::delete"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Redis" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：缓存服务类（如 CRMEB 的 `app/services/*CacheService`）=====
+  # 业务常把缓存包一层服务类；命名约定 `*CacheService::*` 跨项目通用，故放通用层。
+  - id: php-common-cache-service-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "*CacheService::get|*CacheService::load|*CacheService::read|*CacheService::has"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.8
+
+  - id: php-common-cache-service-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "*CacheService::set|*CacheService::save|*CacheService::put|*CacheService::delete|*CacheService::remove|*CacheService::clear"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：ConfigKey（跨框架通用：config() / Config::get / env）=====
+  # 与 `Cache::get` 同理，两框架写法相同，抽到通用层避免重复。
+  # CRMEB 特有的 `sys_config` 仍留在 `thinkphp6.yaml`（业务约定，非通用）。
+  - id: php-common-config
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "config|Config::get|env|*Config::*"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+          fields:
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.9

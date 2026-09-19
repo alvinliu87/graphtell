@@ -1,0 +1,174 @@
+# 前端（JS / TS / Vue / React …）语言通用知识（跨框架，不绑定某一框架）
+#
+# 设计：本 FKB 声明 `apply_without_detection: true`，于是**无论工程被识别为
+# uni-app / Vue / React / 其它前端框架，其规则都对同语言子工程生效** —— 跨框架相同的
+# 语义（HTTP 调用、本地存储、配置、i18n）只写一份，新增前端框架无需再抄一遍。
+#
+# 与 `fkb/js/uni-app.yaml` 的分工：
+#   * 本文件放**跨前端框架通用**的写法（axios / fetch / localStorage / i18n / 配置）；
+#   * `uni-app.yaml` 只放 **uni-app 专属** 的写法（`uni.request`、
+#     `uni.setStorageSync`、`$store`、`pages.json`、`uni.navigateTo`、`uni.$emit` …），
+#     避免用 uni-app 知识解释 Vue / React 工程。
+#
+# 成员式怎么做到不误伤 `cache.get()` / `$store.get()` 这类同形异物：
+# ① 解析器只在接收者是 HTTP 客户端白名单成员时才把调用点按 HTTP 形态规整成
+#    `{ url, method }` 实参；② 这里再按要求 `X::{get,post,...}` 收一次。
+# 普通 getter 在第 ① 关就没有 `{ url, method }`，到不了合成 —— 两道闸都在。
+
+id: frontend-js-common
+display_name: 前端 JS 通用
+language: javascript
+version_hint: "*"
+# 不声明 detectors：本文件不是「被识别的框架」，只是对所有 JS 前端工程生效的通用层。
+apply_without_detection: true
+
+rules:
+  # ===== P5 Synthesize：HttpContract（跨框架通用 HTTP 客户端）=====
+  # 覆盖 axios / fetch / request / http.request 等事实标准写法，以及常见封装形态
+  # （`request::{...}`、`http::{...}`、`$http::`、`ajax::`、`api::`、`apiClient::`、
+  # `httpClient::`）。uni-app 专有的 `uni.request` 见 `uni-app.yaml`。
+  - id: frontend-http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      # 前半 = 对象式 / 裸调用；后半 = 成员式（`request::{get,post,...}` …）
+      callee: "request|http.request|axios|fetch|\
+        request::{get,post,put,delete,patch,head,options}|\
+        http::{get,post,put,delete,patch,head,options}|\
+        $http::{get,post,put,delete,patch,head,options}|\
+        ajax::{get,post,put,delete,patch,head,options}|\
+        api::{get,post,put,delete,patch,head,options}|\
+        apiClient::{get,post,put,delete,patch,head,options}|\
+        httpClient::{get,post,put,delete,patch,head,options}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              arg: 0
+              field: "method"
+              default: "GET"
+              normalize: [upper]
+            path:
+              arg: 0
+              field: "url"
+              # URL 为变量 / 首段动态（`BASE + '/api/' + url`）时解析器给 Unknown，
+              # 此处必须拒收，否则会合成 `GET /<dynamic-url>` 这类垃圾契约污染路由视角。
+              # 拼接式（`'x/' + id`）与模板串（`` `x/${id}` ``）不算动态：形状可静态确定，
+              # 非字面量段已被折成 `:param` 占位符。
+              require_literal: true
+              normalize:
+                - strip_prefix: ["api/"]
+                - leading_slash
+                # 参数名不重要，形状才重要：`/:param` ≡ 后端的 `/:id`
+                - param_wildcard
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: CallsHttp, direction: incoming }
+          confidence: 0.9
+
+  # ===== P5 Synthesize：Cache（Web 标准本地存储，跨框架通用）=====
+  # `localStorage` / `sessionStorage` 是 Web 标准，React / Vue / 原生 JS 通用。
+  # uni-app 专有的 `uni.setStorageSync` 见 `uni-app.yaml`。
+  - id: frontend-cache-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "localStorage::{getItem}|sessionStorage::{getItem}"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  - id: frontend-cache-write
+    phase: Synthesize
+    selector:
+      kind: call
+      # `removeItem` 也是写操作（删除 = 写），故并入本条。
+      callee: "localStorage::{setItem,removeItem}|sessionStorage::{setItem,removeItem}"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：ConfigKey（前端配置，跨框架通用）=====
+  # `*/config/*.js` 的声明式配置条目，与后端 `config/*.php` 同构。
+  - id: frontend-config-key
+    phase: Synthesize
+    selector:
+      kind: config_entry
+      file: "*/config/*.js"
+      key_path: "*"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value: { key_path: true }
+          fields:
+            - name: value
+              value: { entry_value: true }
+            - name: side
+              value: { literal: "frontend" }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：I18nKey（多语言文案，跨框架通用）=====
+  # `i18n.t('k')` / `this.$t('k')`：与后端 `lang/*.php` 合成的 I18nKey 同类，
+  # 同一份 identity 会让前后端文案汇聚到一个节点。
+  - id: frontend-i18n-key
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "i18n::{t}|*::{$t,*t}"
+    binding:
+      - Synthesize:
+          node: I18nKey
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          confidence: 0.85
+
+  # 前端契约调用标记：给 `side=frontend` 的 HttpContract 打 `frontend.called` 注解。
+  - id: frontend-mark-called
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: HttpContract
+      where:
+        - property_is: { name: "side", value: "frontend" }
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: frontend.called
+              confidence: 0.9
+          merge: Coexist

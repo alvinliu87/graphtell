@@ -831,8 +831,10 @@ function stackedLayout(input: LayoutInput): LayoutResult {
   const PAD = Math.max(24, Math.min(60, width * 0.05));
 
   const ordered = orderByBarycenter(layers, edges);
+  // 中心节点必须按「中心」规格量宽（13px / 700）：渲染端中心画得比普通节点大一档，
+  // 按 11px / 500 量出来的药丸装不下粗体大字，文字会溢出框（路由视角中心曾溢出）。
   const widths = ordered.map((layer) =>
-    layer.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true)),
+    layer.map((n) => pillWidth(n.kind, n.name, n.id === center.id, input.showIcons ?? true)),
   );
   const layerW = widths.map((ws) =>
     ws.reduce((s, w) => s + w, 0) + GAP * Math.max(0, ws.length - 1),

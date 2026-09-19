@@ -7,6 +7,7 @@ import {
   Drawer,
   Input,
   Row,
+  Select,
   Space,
   Table,
   Tag,
@@ -15,7 +16,8 @@ import {
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { useProject } from '@/entities/project';
+import { useAsync } from '@/shared/lib/useAsync';
+import { useProject, projectApi, type SubProject } from '@/entities/project';
 import {
   useAggregateView,
   useObjectView,
@@ -88,7 +90,7 @@ export function GraphPage() {
    * 单独快照一次，后续搜索 / 展开下拉都不会改写它，彻底断开
    * "默认对象 = 自动补全缓存的第一项" 这种前后端语义混用。
    */
-  const [defaultNodeId, setDefaultNodeId] = useState<number | null>(null);
+  const [defaultNode, setDefaultNode] = useState<{ p: string; id: number } | null>(null);
   /** 只有"属于当前视角"的候选才生效；切换视角的瞬间派生为空，等新视角候选到达后才有值。 */
   const candidates = candidateBundle.p === state.p ? candidateBundle.list : [];
   const [candidateSearch, setCandidateSearch] = useState('');
@@ -108,6 +110,24 @@ export function GraphPage() {
   /** 右侧"结论/导航"面板：默认收起为抽屉浮层，不占用图的横向空间。 */
   const [drawerOpen, setDrawerOpen] = useState(false);
   const lastPushed = useRef<string>('');
+  /**
+   * 下一次写 URL 是否要**跳过**：state 刚从 URL 同步过来时不许回写。
+   *
+   * 两个 effect 的触发时机不同（`[params]` vs `[state]`），存在"URL 与 state 同帧各变一次"
+   * 的窗口：此时 state→URL 用的还是**同步前**的旧 state，写回去就把刚到达的新 URL 覆盖掉，
+   * 而覆盖后的 URL 又会被 URL→state 同步成旧 state —— 两者互踩、永远差一拍，
+   * 表现就是切视角后 URL 在两个值之间无限来回跳。
+   */
+  const skipWrite = useRef(false);
+  /**
+   * 下一次写 URL 是否用 `replace`（不占历史记录）。
+   *
+   * 只有**用户主动导航**（切视角 / 选对象 / 点面包屑 / 点图）才配占一条历史记录；
+   * 由状态自己"补出来"的更新（URL 缺 `p` 时的修正、未指定对象时自动选中默认对象）
+   * 一律 replace —— 否则切一次视角就压两条记录（先 `?p=X` 再 `?p=X&n=Y`），
+   * 返回键退到 `?p=X` 又会被重新推一次、再自动补 `n`，URL 看起来就在原地反复跳。
+   */
+  const derivedNav = useRef(false);
 
   const current = perspectives.find((p) => p.id === state.p) ?? null;
   const isAggregate = current?.mode === 'aggregate';
@@ -121,6 +141,46 @@ export function GraphPage() {
   const fitKey = isAggregate ? `agg:${state.p}` : `obj:${state.p ?? ''}:${state.n ?? ''}`;
   /** 手动「适应屏幕」信号：每次 +1 即让 GraphCanvas 重置为整图 fit。 */
   const [fitSignal, setFitSignal] = useState(0);
+  /** 子工程过滤：按 `sub_project_id` 多选显示（空数组 = 全部）。多个前端 / 后端各自成一类。 */
+  const [subFilter, setSubFilter] = useState<number[]>([]);
+  /** 子工程列表（id / name / role），供过滤器与画布着色 / 图例使用。 */
+  const { data: subProjectsData } = useAsync(() => projectApi.subProjects(id), [id]);
+  const subProjects: SubProject[] = subProjectsData ?? [];
+  const TIER_LABEL: Record<string, string> = {
+    frontend: t('前端'),
+    backend: t('后端'),
+    library: t('库'),
+    unknown: t('未知'),
+  };
+  const KIND_LABEL: Record<string, string> = {
+    admin: t('管理后台'),
+    'mini-program': t('小程序'),
+    mobile: t('移动端'),
+    h5: t('H5'),
+    api: t('API'),
+    worker: t('任务/队列'),
+    bff: t('BFF'),
+    web: t('Web'),
+  };
+  const roleLabel = (r?: string | null) => {
+    if (!r) return t('未知');
+    const [tier, kind] = r.split(':');
+    if (kind) return KIND_LABEL[kind] ?? kind;
+    return TIER_LABEL[tier] ?? tier;
+  };
+
+  // 子项目作为「上层维度」：仅当选中「单一」子工程时，自动跳到它最相关的默认视角与对象；
+  // 多选 / 空选只做画布过滤（不切视角），避免频繁切换打断浏览。
+  const singleSubId = subFilter.length === 1 ? subFilter[0] : undefined;
+  const singleSub = singleSubId !== undefined ? subProjects.find((s) => s.id === singleSubId) : undefined;
+  useEffect(() => {
+    if (!singleSub) return;
+    const pid = defaultPerspectiveForRole(singleSub.role);
+    if (!pid) return;
+    setState((s) => ({ ...s, p: pid, n: null, i: null, e: null }));
+    // 仅依赖 subFilter：切换视角（state.p 变化）不应再次触发，否则会循环。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subFilter]);
 
   /**
    * 画布高度按**视口剩余空间**自适应。
@@ -153,16 +213,28 @@ export function GraphPage() {
   // URL → state（前进 / 后退 / 外部链接）
   useEffect(() => {
     const next = decodeViewState(params.toString());
+    // state 的来源变成 URL 了：本轮 state→URL 必须让路（见 `skipWrite` 的说明）。
+    skipWrite.current = true;
     setState((prev) => (sameViewState(prev, next) ? prev : next));
   }, [params]);
 
   // state → URL（只写差异，避免污染历史栈）
   useEffect(() => {
     const search = encodeViewState(state);
-    if (search === params.toString()) return;
+    // 口径必须一致再比：`encodeViewState` 带前导 `?`，而 `params.toString()` 没有 ——
+    // 直接拿两者相等去判断"URL 已经是这个状态"永远为假，于是每次（包括前进 / 后退
+    // 刚同步过来的状态）都会再推一条历史记录，URL 就在原地反复变。
+    const currentSearch = params.toString();
+    const derived = derivedNav.current;
+    derivedNav.current = false;
+    const skip = skipWrite.current;
+    skipWrite.current = false;
+    if (search.replace(/^\?/, '') === currentSearch) return;
+    // 这次 state 是 URL 同步来的：URL 才是真源，写回去只会把新 URL 覆盖成旧 state。
+    if (skip) return;
     if (search === lastPushed.current) return;
     lastPushed.current = search;
-    setParams(new URLSearchParams(search), { replace: false });
+    setParams(new URLSearchParams(search), { replace: derived });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
@@ -173,13 +245,17 @@ export function GraphPage() {
       state,
       perspectives.map((p) => ({ id: p.id, mode: p.mode, available: p.available })),
     );
-    if (!sameViewState(fixed, state)) setState(fixed);
+    // 这是"URL 缺 / 错了 `p`"的修正，不是用户导航 —— 用 replace，不占历史记录。
+    if (!sameViewState(fixed, state)) {
+      derivedNav.current = true;
+      setState(fixed);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [perspectives]);
 
   // 载入二级候选（服务端实时搜索，输入防抖 200ms）。这是**下拉建议的 UI 缓存**，
   // 缓存键是「视角 + 搜索词」：同键直接复用，换词就重新请求——否则首次加载后输入永
-  // 远打不进后端（曾因此搜索失效）。它**只服务于下拉建议**，不决定默认对象（见 `defaultNodeId`）。
+  // 远打不进后端（曾因此搜索失效）。它**只服务于下拉建议**，不决定默认对象（见 `defaultNode`）。
   // 按需加载：已选中节点、下拉未展开且无搜索词时不预取，
   // 把那次昂贵的全量打分推迟到用户真正要选对象时。
   useEffect(() => {
@@ -187,11 +263,11 @@ export function GraphPage() {
       setCandidateBundle({ p: state.p ?? '', q: '', list: [] });
       setCandidatesLoaded(false);
       // 视角失效时，旧视角的推荐默认对象也一并作废，避免切换瞬间误选上一个视角的节点。
-      setDefaultNodeId(null);
+      setDefaultNode(null);
       return;
     }
     // 切换视角时先清掉上一个视角的默认对象，等本次排名列表到达再重新快照。
-    if (candidateBundle.p !== state.p) setDefaultNodeId(null);
+    if (candidateBundle.p !== state.p) setDefaultNode(null);
     if (candidateBundle.p === state.p && candidateBundle.q === candidateSearch) return;
     if (state.n !== null && !dropdownOpen && candidateSearch === '') return;
     const perspective = state.p;
@@ -200,14 +276,17 @@ export function GraphPage() {
     setCandidatesLoaded(false);
     const start = () => {
       void viewApi
-        .candidates(id, perspective, 300, query)
+        .candidates(id, perspective, 300, query, singleSubId)
         .then((list) => {
           if (alive) {
             setCandidateBundle({ p: perspective, q: query, list });
             setCandidatesLoaded(true);
             // 仅当这是「无搜索词的排名列表」时，快照本次视角推荐的默认对象。
             // 有搜索词的是自动补全结果，不能当成默认对象的来源。
-            if (query === '') setDefaultNodeId(list[0]?.id ?? null);
+            // 连视角 id 一起存：切视角那一帧"清默认对象"和"自动选中"是同一次提交里
+            // 跑的两个 effect，只存 id 的话自动选中会读到**上一视角**的默认值，
+            // 把别的视角的节点当成新视角的中心（曾导致 `?p=table&n=<路由节点>`）。
+            if (query === '') setDefaultNode(list[0] ? { p: perspective, id: list[0].id } : null);
           }
         })
         .catch(() => {
@@ -228,17 +307,21 @@ export function GraphPage() {
       clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.p, isAggregate, id, candidateSearch, dropdownOpen, state.n, candidateBundle.p, candidateBundle.q]);
+  }, [state.p, isAggregate, id, candidateSearch, dropdownOpen, state.n, candidateBundle.p, candidateBundle.q, singleSubId]);
 
   // 对象视角：只在「完全没指定中心」时，用后端推荐的默认对象初始化中心。
-  // 默认对象来自 `defaultNodeId`（排名列表到达时独立快照），与下拉的自动补全缓存无关；
+  // 默认对象来自 `defaultNode`（排名列表到达时独立快照，带所属视角），与下拉的自动补全缓存无关；
   // 已经明确导航到某个节点时**绝不覆盖**——否则会把刚点进来的节点静默换成推荐项。
+  /** 只有"属于当前视角"的默认对象才生效：切视角那一帧它必须立刻失效。 */
+  const suggestedNodeId = defaultNode && defaultNode.p === state.p ? defaultNode.id : null;
   useEffect(() => {
-    if (isAggregate || state.n !== null || defaultNodeId === null) return;
+    if (isAggregate || state.n !== null || suggestedNodeId === null) return;
     if (candidateSearch !== '') return; // 用户正在搜索时，不抢先替他选默认对象
-    setState((s) => ({ ...s, n: defaultNodeId }));
+    // 自动选中是"补默认值"，不是用户导航 —— 用 replace，避免切一次视角压两条历史记录。
+    derivedNav.current = true;
+    setState((s) => ({ ...s, n: suggestedNodeId }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultNodeId, isAggregate, candidateSearch, state.n]);
+  }, [suggestedNodeId, isAggregate, candidateSearch, state.n]);
 
   // 视图恒为**折叠模式**：折叠时后端会把语法节点收进边的 `via` 链并内联每一跳的调用处，
   // 点边即可逐跳核对；而"展开全部语法节点"是**信息降级**——画了 Method/CallSite，
@@ -546,6 +629,19 @@ export function GraphPage() {
                   {t('收起调用') + '（' + Object.keys(expanded).length + '）'}
                 </Button>
               )}
+              <Select
+                mode="multiple"
+                allowClear
+                size="small"
+                style={{ minWidth: 200 }}
+                placeholder={t('全部子工程')}
+                value={subFilter}
+                onChange={(v) => setSubFilter(v ?? [])}
+                options={subProjects.map((s) => ({
+                  label: `${s.name}（${roleLabel(s.role)}）`,
+                  value: s.id,
+                }))}
+              />
             </>
           }
         />
@@ -617,7 +713,7 @@ export function GraphPage() {
           description={t('可能已被删除、或不属于该视角（') + errText(objectError) + t('）。请在左侧一级视角重新选择。')}
           action={
             candidates.length > 0 ? (
-              <Button size="small" onClick={() => setState((s) => ({ ...s, n: defaultNodeId ?? candidates[0]?.id }))}>
+              <Button size="small" onClick={() => setState((s) => ({ ...s, n: suggestedNodeId ?? candidates[0]?.id }))}>
                 {t('换第一个对象')}
               </Button>
             ) : null
@@ -650,6 +746,8 @@ export function GraphPage() {
             showEdgeLabels
             fitKey={fitKey}
             fitSignal={fitSignal}
+            subProjects={subProjects}
+            subFilter={subFilter}
             />
 
           {/* 入口类视角（路由 / 定时任务）无链路时给出说明，避免"画面空了 = 坏了"的错觉 */}
@@ -824,6 +922,10 @@ function toCanvas(n: {
   ring: number;
   category?: string | null;
   own_view?: string | null;
+  /** 节点所属「端」：`frontend` / `backend`（由 FKB 标注）。用于图上区分前后端子工程。 */
+  side?: string | null;
+  /** 节点所属子工程 id（后端 `NodeView.sub_project_id`）。图着色 / 过滤以子工程为单位。 */
+  sub_project_id?: number | null;
   /** 悬浮卡片要显示的信息；缺失时用空值兜底。 */
   fqn?: string | null;
   locations?: SourceLocation[];
@@ -835,6 +937,8 @@ function toCanvas(n: {
     kind: n.kind,
     category: n.category ?? null,
     own_view: n.own_view ?? null,
+    side: n.side ?? null,
+    sub_project_id: n.sub_project_id ?? null,
     name: n.name,
     ring: n.ring,
     fqn: n.fqn ?? null,
@@ -842,6 +946,17 @@ function toCanvas(n: {
     annotations: n.annotations ?? [],
     metrics: n.metrics ?? null,
   };
+}
+
+/// 子工程角色 → 默认视角：选了某子工程后自动跳过去。
+/// 后端：worker → 计划任务视角，其余（api / bff / admin …）→ 路由视角；
+/// 前端：暂用路由视角兜底（registry 暂无前端专属视角，见 perspectives.yaml 的 Page 视角为 MVP 暂挂）。
+function defaultPerspectiveForRole(role?: string | null): string | undefined {
+  if (!role) return undefined;
+  if (role.startsWith('backend:worker')) return 'schedule';
+  if (role.startsWith('backend')) return 'route';
+  if (role.startsWith('frontend')) return 'route';
+  return undefined;
 }
 
 function fmt(v: unknown): string {

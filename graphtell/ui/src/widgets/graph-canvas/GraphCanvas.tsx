@@ -3,6 +3,7 @@ import { useLocale } from '@/shared/lib/i18n';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import type { EdgeView, LayoutMode, NodeView, SourceLocation } from '@/entities/view';
+import type { SubProject } from '@/entities/project/model';
 import { edgeColor, nodeColor } from '@/entities/graph';
 import { truncate, truncateMiddle } from '@/shared/lib/format';
 import { layoutOf, type LayoutInput, type LayoutResult } from './layout/types';
@@ -38,6 +39,29 @@ const FIT_PAD = 16;
 const DIM_OPACITY_MIN = 0.12; // 稠密图最深
 const DIM_OPACITY_MAX = 0.4; // 稀疏图最浅
 const DIM_EDGE_LOW = 4; // 边数低于此取最浅
+/** 子工程配色：每种子工程一个稳定色相，多个前端 / 多个后端各自不同色（不再压成蓝 / 橙两桶）。 */
+const SUB_PROJECT_PALETTE = [
+  '#0ea5e9', '#f97316', '#22c55e', '#a855f7', '#eab308',
+  '#ec4899', '#14b8a6', '#6366f1', '#ef4444', '#84cc16',
+  '#06b6d4', '#f43f5e',
+];
+const ROLE_LABEL: Record<string, string> = { frontend: '前端', backend: '后端' };
+const KIND_LABEL: Record<string, string> = {
+  admin: '管理后台',
+  'mini-program': '小程序',
+  mobile: '移动端',
+  h5: 'H5',
+  api: 'API',
+  worker: '任务/队列',
+  bff: 'BFF',
+  web: 'Web',
+};
+function roleLabel(r?: string | null): string {
+  if (!r) return '未知';
+  const [tier, kind] = r.split(':');
+  if (kind) return KIND_LABEL[kind] ?? kind;
+  return ROLE_LABEL[tier] ?? tier;
+}
 const DIM_EDGE_HIGH = 40; // 边数高于此取最深
 
 /**
@@ -150,6 +174,10 @@ export interface CanvasNode {
   category?: string | null;
   /** 该节点对应的视角 id（点击即切）；无则为 null。 */
   own_view?: string | null;
+  /** 节点所属「端」：`frontend` / `backend`（由 FKB 标注的 `side`）。用于图上区分前后端子工程。 */
+  side?: string | null;
+  /** 节点所属子工程 id（后端 `NodeView.sub_project_id`）。图着色 / 过滤以子工程为单位，而非二元前后端。 */
+  sub_project_id?: number | null;
   name: string;
   ring: number;
   /**
@@ -205,6 +233,14 @@ export interface GraphCanvasProps {
   fitKey?: string | number;
   /** 手动触发 fit 的信号：每次自增即把视图重置回整图 fit（工具栏「适应屏幕」按钮）。 */
   fitSignal?: number;
+  /**
+   * 子工程过滤：按 `sub_project_id` 多选显示节点与边，中心节点始终保留作为锚点。
+   * 空数组（默认）表示不过滤、全部显示。多个前端 / 多个后端各自成一类，
+   * 不再被压成「前端 / 后端」两个桶。
+   */
+  subFilter?: number[];
+  /** 当前工程的子工程列表（含 id / name / role），用于着色与图例。 */
+  subProjects?: SubProject[];
 }
 
 /**
@@ -237,6 +273,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
     showEdgeLabels = true,
     fitKey,
     fitSignal,
+    subFilter = [],
+    subProjects = [],
   } = props;
 
   const { t } = useLocale();
@@ -283,13 +321,57 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return ks.size >= 3;
   }, [center, rings, clusters]);
 
+  // 子工程过滤：以 `sub_project_id` 为单位筛选节点与边，中心节点始终保留作为锚点；
+  // `sub_project_id == null` 的共享 / 未知节点在任一具体过滤下仍保留（属于所有子工程）。
+  // 过滤后的集合同时喂给布局、上色与前端调用方判断。
+  const { fCenter, fRings, fEdges } = useMemo(() => {
+    if (!subFilter || subFilter.length === 0) {
+      return { fCenter: center, fRings: rings ?? [], fEdges: edges };
+    }
+    const allowed = new Set(subFilter);
+    const keep = new Set<number>();
+    if (center) keep.add(center.id);
+    for (const ring of rings ?? []) {
+      for (const n of ring) {
+        if (n.sub_project_id == null || allowed.has(n.sub_project_id)) keep.add(n.id);
+      }
+    }
+    const fRings = (rings ?? []).map((ring) => ring.filter((n) => keep.has(n.id)));
+    const fEdges = edges.filter((e) => keep.has(e.from) && keep.has(e.to));
+    return { fCenter: center, fRings, fEdges };
+  }, [center, rings, edges, subFilter]);
+
+  // 子工程配色：按 id 排序后稳定映射到调色板，同一子工程颜色恒定、多个前端各自不同色。
+  const subProjectColors = useMemo(() => {
+    const m = new Map<number, string>();
+    const ids = (subProjects ?? [])
+      .map((s) => s.id)
+      .filter((v): v is number => typeof v === 'number')
+      .sort((a, b) => a - b);
+    ids.forEach((id, i) => m.set(id, SUB_PROJECT_PALETTE[i % SUB_PROJECT_PALETTE.length]));
+    return m;
+  }, [subProjects]);
+
+  // 节点 → 子工程 id 映射（仅用于上色，用未过滤的全集，过滤不改变颜色语义）。
+  const subProjectOf = useMemo(() => {
+    const m = new Map<number, number>();
+    const add = (n?: CanvasNode | null) => {
+      if (n && n.sub_project_id != null) m.set(n.id, n.sub_project_id);
+    };
+    add(center);
+    (rings ?? []).flat().forEach(add);
+    return m;
+  }, [center, rings]);
+
+
+
   const layout: LayoutResult | null = useMemo(() => {
-    if (!center && !clusters?.length && !matrix) return null;
+    if (!fCenter && !clusters?.length && !matrix) return null;
     const input: LayoutInput = {
-      center: center ?? { id: -1, kind: 'Unknown', name: '', ring: 0 },
-      rings: center ? rings : [],
+      center: fCenter ?? { id: -1, kind: 'Unknown', name: '', ring: 0 },
+      rings: fCenter ? fRings : [],
       // 带上 `seq`（下标）：同一 (id, from, to) 的多条路径靠它区分，见 `edgeKey` 的说明。
-      edges: edges.map((e, i) => ({ id: e.id, from: e.from, to: e.to, seq: i })),
+      edges: fEdges.map((e, i) => ({ id: e.id, from: e.from, to: e.to, seq: i })),
       clusters: clusters?.map((c) => ({
         key: c.key,
         label: c.label,
@@ -302,7 +384,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       showIcons: showNodeIcons,
     };
     return layoutOf(mode)(input);
-  }, [mode, center, rings, edges, clusters, matrix, renderW, height]);
+  }, [mode, fCenter, fRings, fEdges, clusters, matrix, renderW, height]);
 
   // 节点尺寸表：箭头回退量 / 选中描边要按节点实际形状（矩形药丸需按半宽，而非固定 12px）。
   // x/y 也要存：箭头边界求交必须以**节点中心**为靶点（clipToRect 的约定），
@@ -394,9 +476,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
   // 必须在提前 return 之前声明：loading→数据 两次渲染 Hook 数量不一致会白屏。
   const frontendCallerIds = useMemo(() => {
     const s = new Set<number>();
-    for (const e of edges) if (e.kind === 'CallsHttp') s.add(e.from);
+    for (const e of fEdges) if (e.kind === 'CallsHttp') s.add(e.from);
     return s;
-  }, [edges]);
+  }, [fEdges]);
 
   // 聚焦：悬浮 node / edge 时，保留"目标 + 其直连邻居"全亮，其余淡出成鬼影（仍留结构轮廓）。
   // 必须放在提前 return 之前，否则 loading→数据 两次渲染 Hook 数量不一致会白屏。
@@ -800,6 +882,24 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   vectorEffect="non-scaling-stroke"
                   style={{ transition: 'stroke-width 140ms ease' }}
                 />
+                {/* 前后端标记：节点右上角的色点（蓝=前端 / 橙=后端），一眼区分该节点属于哪一端。
+                    颜色与图例一致；无 `side` 的语法节点（File / Class …）不画。 */}
+                {(() => {
+                  const sid = subProjectOf.get(n.id);
+                  if (sid == null) return null;
+                  const col = subProjectColors.get(sid) ?? '#94a3b8';
+                  return (
+                    <circle
+                      cx={w / 2 - 6}
+                      cy={-h / 2 + 6}
+                      r={3.4}
+                      fill={col}
+                      stroke="#fff"
+                      strokeWidth={1.2}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  );
+                })()}
                 {isOrigin ? (
                   <text
                     x={0}
@@ -1064,6 +1164,31 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   </Fragment>
                 );
               })}
+              {subProjects && subProjects.length > 0 ? (
+                <Fragment>
+                  <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
+                  {subProjects.map((sp) => (
+                    <Fragment key={sp.id}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <span
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: 99,
+                            background: subProjectColors.get(sp.id) ?? '#94a3b8',
+                          }}
+                        />
+                      </span>
+                      <span style={{ lineHeight: '18px' }}>
+                        {sp.name}{' '}
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          （{roleLabel(sp.role)}）
+                        </Typography.Text>
+                      </span>
+                    </Fragment>
+                  ))}
+                </Fragment>
+              ) : null}
             </div>
           ) : null}
         </div>

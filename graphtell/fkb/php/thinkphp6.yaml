@@ -282,6 +282,9 @@ rules:
                 - singularize
                 - strip_prefix: []
                 - trim
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link: { kind: ReadsDb, direction: incoming }
           confidence: 0.95
 
@@ -302,6 +305,9 @@ rules:
                 - strip_prefix: []
                 - singularize
                 - trim
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.95
 
@@ -330,7 +336,9 @@ rules:
     phase: Synthesize
     selector:
       kind: call
-      callee: "sys_config|sys_config_all|config|think\\facade\\Env::get|env"
+      # `config()` / `Cache::get()` 这类跨框架相同的写法已抽到 `fkb/php/common.yaml`
+      # （`php-common-config`）。此处只保留 CRMEB 特有的 `sys_config`。
+      callee: "sys_config|sys_config_all"
     binding:
       - Synthesize:
           node: ConfigKey
@@ -338,6 +346,8 @@ rules:
             kind: Named
             value: { arg: 0 }
           fields:
+            - name: side
+              value: { literal: "backend" }
             - name: storage
               from_symbol_table: { table: config_keys, field: storage }
             - name: value_type
@@ -348,33 +358,8 @@ rules:
           confidence: 0.9
 
   # ===== P5 Synthesize：Cache =====
-  # **按字面量 key 区分节点**（与 ConfigKey / Table / Queue 一致），而不是全库聚成一个 blob。
-  #
-  # 历史问题：identity 曾写死 `literal: "Cache"`，于是全库所有 `Cache::*` 调用点都汇到
-  # 同一个节点（实测 346 条入边），`key` 字段被反复覆盖、只剩最后一个值 —— 既无法回答
-  # 「谁读写了同一个缓存键」，`key` 的"记录"承诺也名存实亡。
-  #
-  # 现在：`arg:0` 为**字面量**时用作身份（`Cache::get('crontabCache')` → 节点 `crontabCache`）；
-  # 变量 / 表达式（`Cache::get($name)`、`Cache::get(self::PREFIX . $x)`）由 `require_literal`
-  # 判否 → 回退到统一的 `Cache` 节点（表示"键不可静态确定"），绝不把 `$name` 当身份。
-  - id: tp6-cache-store
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "think\\facade\\Cache::*|Cache::*"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Cache" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-          link: { kind: ReadsCache, direction: incoming }
-          confidence: 0.85
+  # 已抽到语言通用层 `fkb/php/common.yaml`（`php-common-cache-*` 规则），对所有 PHP
+  # 框架生效，避免每个框架 FKB 重复一份相同的缓存识别逻辑。
 
   # ===== P5 Synthesize：队列 topic =====
   #
@@ -405,6 +390,9 @@ rules:
             value_fallback:
               owner_class: true
               transform: { class_to_topic: true }
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.85
       # 消费方：队列消息由 Job 类消费（其 `fire()` / `handle()` 处理投递来的任务）。
@@ -425,6 +413,9 @@ rules:
             value_fallback:
               owner_class: true
               transform: { class_to_topic: true }
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -459,6 +450,8 @@ rules:
               value: { arg: 0 }
             - name: handler
               value: { arg: 1 }
+            - name: side
+              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -504,6 +497,8 @@ rules:
               value: { arg: 0 }
             - name: handler
               value: { arg: 1 }
+            - name: side
+              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -543,6 +538,8 @@ rules:
             kind: Named
             value: { path_segment: 1 }
           fields:
+            - name: side
+              value: { literal: "backend" }
             - name: payload_arity
               value: { array_length: true }
           link:
@@ -603,6 +600,8 @@ rules:
             kind: Named
             value: { path_segment: 0 }
           fields:
+            - name: side
+              value: { literal: "backend" }
             - name: payload_arity
               value: { array_length: true }
           link:
@@ -666,6 +665,8 @@ rules:
               path: [{ file_stem: true }, { key_path: true }]
               join: "."
           fields:
+            - name: side
+              value: { literal: "backend" }
             - name: texts
               value: { entry_value: true }
               accumulate: { key: { locale: true }, value: { entry_value: true } }

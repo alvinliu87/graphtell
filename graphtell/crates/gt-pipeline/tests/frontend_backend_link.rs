@@ -432,3 +432,53 @@ fn member_style_request_bridges() {
     });
     assert!(!false_positive, "动态 URL 不应合成 <dynamic-url> 垃圾契约");
 }
+
+/// **后端缓存节点必须带 `side: backend`**（对称于前端 `side = frontend`）。
+///
+/// 历史问题：前端 `uni.setStorageSync('token')` 经前端 FKB 合成 `Cache` 节点并标
+/// `side = frontend`，但后端 `Cache::get(...)` 合成的节点**没有** `side`，于是在「路由 /
+/// 缓存视角」里图上只有前端的缓存概念、看不到后端缓存。现在后端缓存由
+/// `fkb/php/common.yaml` 的通用缓存规则合成并统一标注 `side = backend`；此测试锁死
+/// 这条不变量。
+#[test]
+fn backend_cache_node_tagged_backend() {
+    let root = synth_root();
+    if !root.is_dir() {
+        eprintln!("跳过：未找到合成样本 {}", root.display());
+        return;
+    }
+    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
+
+    let all = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: None,
+            name_contains: None,
+            limit: Some(5000),
+            offset: Some(0),
+        })
+        .expect("节点可读");
+
+    // 后端 controller 里的 `Cache::get('order-status')` → 节点 `order-status`。
+    let backend_cache = all
+        .iter()
+        .find(|n| n.kind.as_str() == "Cache" && n.name == "order-status")
+        .expect("后端 `Cache::get('order-status')` 应合成 Cache 语义节点（common.yaml）");
+    assert_eq!(
+        backend_cache.properties.get("side").and_then(|v| v.as_str()),
+        Some("backend"),
+        "后端缓存节点应被通用层标注 side=backend"
+    );
+
+    // 读方应挂 ReadsCache 入边。
+    let inc = b
+        .store
+        .edges_of(backend_cache.id, EdgeDirection::Incoming)
+        .unwrap_or_default();
+    assert!(
+        inc.iter().any(|e| e.kind.as_str() == "ReadsCache"),
+        "后端缓存读方应挂 ReadsCache，实际：{:?}",
+        inc.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
+    );
+}

@@ -21,9 +21,9 @@ const qs = (params: Record<string, string | number | boolean | undefined>) => {
 export const viewApi = {
   perspectives: (projectId: number) =>
     http.get<Perspective[]>(`/api/projects/${projectId}/perspectives`),
-  candidates: (projectId: number, perspective: string, limit = 300, search?: string) =>
+  candidates: (projectId: number, perspective: string, limit = 300, search?: string, subProjectId?: number) =>
     http.get<Candidate[]>(
-      `/api/projects/${projectId}/view/${perspective}/candidates${qs({ limit, name_contains: search })}`,
+      `/api/projects/${projectId}/view/${perspective}/candidates${qs({ limit, name_contains: search, sub_project_id: subProjectId })}`,
     ),
   object: (projectId: number, perspective: string, node: number, depth?: number) =>
     http.get<ObjectView>(

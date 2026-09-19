@@ -107,7 +107,9 @@ pub struct SubProject {
     pub name: String,
     pub root_path: PathBuf,
     pub language: Language,
-    /// 子工程角色，例如 `backend` / `frontend` / `library`。
+    /// 子工程角色，形如 `tier` 或 `tier:kind`（如 `backend` / `frontend:admin` / `backend:worker`）。
+    /// `tier` 为 `frontend` / `backend` / `library` / `unknown`；`kind` 进一步区分类型
+    /// （小程序 / 管理后台 / 移动端 / API / Worker …），由 Ingest 按目录名识别。
     pub role: String,
     /// 识别依据，例如 "composer.json"。
     pub detected_by: String,
