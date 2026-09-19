@@ -19,6 +19,8 @@ pub fn apply_normalize(input: &str, steps: &[NormalizeStep]) -> String {
             NormalizeStep::Singularize => singularize(&s),
             NormalizeStep::SnakePlural => snake_plural(&s),
             NormalizeStep::StripNamespace => strip_namespace(&s),
+            NormalizeStep::ParamWildcard => param_wildcard(&s),
+            NormalizeStep::StripQuery => strip_query(&s),
             NormalizeStep::Trim => s.trim().to_string(),
             NormalizeStep::Replace { from, to } => s.replace(from, to),
         };
@@ -90,6 +92,22 @@ pub fn leading_slash(s: &str) -> String {
     } else {
         format!("/{}", s)
     }
+}
+
+/// 去掉 `?` 起的查询串，只保留路径部分（页面跳转 URL 的 `?id=1` 不影响路由身份）。
+pub fn strip_query(s: &str) -> String {
+    match s.split_once('?') {
+        Some((path, _)) => path.to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// 路径参数段折成 `:*`：`/v2/invoice/detail/:id` ≡ `/v2/invoice/detail/:param`。
+pub fn param_wildcard(s: &str) -> String {
+    s.split('/')
+        .map(|seg| if seg.starts_with(':') { ":*" } else { seg })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub fn strip_namespace(s: &str) -> String {

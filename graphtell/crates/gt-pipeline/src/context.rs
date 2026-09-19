@@ -51,8 +51,9 @@ pub struct PipelineContext {
     pub entry_methods_default: Vec<String>,
     /// 子工程 → 该子工程适用的规则。
     pub rules_by_sub: HashMap<i64, Vec<Rule>>,
-    /// 跨子工程共享的规则（合成节点可能跨工程汇聚）。
-    pub rules_global: Vec<Rule>,
+    /// 跨子工程共享的规则（合成节点可能跨工程汇聚），**带来源语言** ——
+    /// 全局规则仍要按子工程语言过滤，否则会跨语言错配（见 `rules_for`）。
+    pub rules_global: Vec<(Language, Rule)>,
     /// 传播种子：合成阶段产出的「方法 → 语义节点」动作边，待 P8 沿调用链向上复刻。
     pub propagation_seeds: Vec<PropSeed>,
 }
@@ -101,17 +102,33 @@ impl PipelineContext {
 
     /// 取某子工程的规则；跨工程节点（sub 为空）用全局规则。
     pub fn rules_for(&self, sub: Option<SubProjectId>, phase: &Phase) -> Vec<Rule> {
+        // 该子工程的语言（全局规则要按语言过滤，见下）。
+        let lang = sub.and_then(|s| {
+            self.sub_projects
+                .iter()
+                .find(|x| x.id == s)
+                .map(|x| x.language.clone())
+        });
         let mut out: Vec<Rule> = match sub {
             Some(s) => self
                 .rules_by_sub
                 .get(&s.get())
                 .cloned()
                 .unwrap_or_default(),
-            None => self.rules_global.clone(),
+            None => self.rules_global.iter().map(|(_, r)| r.clone()).collect(),
         };
-        // 合成节点（Table / HttpContract）没有归属子工程时，也要应用全局规则
+        // 合成节点（Table / HttpContract）没有归属子工程时，也要应用全局规则。
+        //
+        // **按语言过滤**：全局规则来自各语言的框架 FKB（`rules_by_sub` 已经按语言
+        // 装配过），若不过滤就会把 PHP 的 `config('key')` 规则套到 JS 的
+        // `config(...)` 调用上 —— 用 A 语言的知识解释 B 语言的代码，凭空造节点。
         if sub.is_some() {
-            out.extend(self.rules_global.iter().cloned());
+            out.extend(
+                self.rules_global
+                    .iter()
+                    .filter(|(l, _)| lang.as_ref().map(|x| *l == *x).unwrap_or(true))
+                    .map(|(_, r)| r.clone()),
+            );
         }
         out.into_iter().filter(|r| r.phase == *phase).collect()
     }

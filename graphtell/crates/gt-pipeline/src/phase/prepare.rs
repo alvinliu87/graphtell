@@ -135,7 +135,7 @@ pub fn run(
     // 全局规则：仅**框架级**规则去重后共享（合成节点可能跨工程汇聚）。
     // 项目级规则不进全局 —— 它们只在被识别为对应项目的子工程内生效。
     // 框架级同样要求「被任一子工程识别」或「显式声明无需识别」，理由同 `rules_by_sub`。
-    let mut global: Vec<Rule> = Vec::new();
+    let mut global: Vec<(Language, Rule)> = Vec::new();
     for fk in kb.all() {
         if fk.scope != KnowledgeScope::Framework {
             continue;
@@ -144,8 +144,8 @@ pub fn run(
             continue;
         }
         for r in &fk.rules {
-            if !global.iter().any(|g| g.id == r.id) {
-                global.push(r.clone());
+            if !global.iter().any(|( _, g)| g.id == r.id) {
+                global.push((fk.language.clone(), r.clone()));
             }
         }
     }

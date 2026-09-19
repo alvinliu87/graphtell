@@ -28,8 +28,10 @@ export function PerspectivePicker({
   node,
   onNodeChange,
   onSearch,
-  onDropdownVisibleChange,
+  onOpenChange,
   nodeName,
+  /** 当前二级搜索词。非空时下拉处于"搜索中"，兜底选项只有名字命中搜索词才显示。 */
+  searchText,
   trail,
   onTrailClick,
   loading,
@@ -45,7 +47,9 @@ export function PerspectivePicker({
   onNodeChange: (id: number) => void;
   onSearch?: (input: string) => void;
   /** 二级对象下拉展开/收起时回调，供上层做"按需加载候选"。 */
-  onDropdownVisibleChange?: (open: boolean) => void;
+  onOpenChange?: (open: boolean) => void;
+  /** 当前搜索框输入词；非空表示用户正在搜索，见 `nodeOptions` 中的兜底过滤。 */
+  searchText?: string;
   /**
    * 当前选中节点的**兜底显示名**。
    *
@@ -68,6 +72,10 @@ export function PerspectivePicker({
    *
    * 选中节点若不在候选里（点图导航后候选尚未加载，或价值排序把它挤出前 N），
    * 必须**补一个选项**，否则 antd 会把 `value` 直接渲染成裸 id。
+   *
+   * 但用户**正在搜索**时（`searchText` 非空），这条兜底选项只有名字也命中搜索词
+   * 才显示 —— 否则后端搜不到时，下拉会冒出一条与搜索词无关的"当前选中"，
+   * 看起来就像搜索错误地匹配了（如输入 `1` 却出现 `store_product_services`）。
    */
   const nodeOptions = useMemo(() => {
     const options = candidates.map((c) => ({
@@ -75,10 +83,14 @@ export function PerspectivePicker({
       label: `${c.name}${c.badge ? ` · ${c.badge}` : ''}`,
     }));
     if (node !== null && !candidates.some((c) => c.id === node)) {
-      options.unshift({ value: node, label: nodeName || `#${node}` });
+      const label = nodeName || `#${node}`;
+      const searching = searchText !== undefined && searchText !== '';
+      if (!searching || label.toLowerCase().includes(searchText.toLowerCase())) {
+        options.unshift({ value: node, label });
+      }
     }
     return options;
-  }, [candidates, node, nodeName]);
+  }, [candidates, node, nodeName, searchText]);
 
   // 面包屑只保留最近几步：它是一条"可回退"的辅助信息，宽屏也放不下十几步，
   // 而最该能点的是**最近**几步；更早的用「…」表示存在但不占宽度。
@@ -120,7 +132,7 @@ export function PerspectivePicker({
             onChange={(v: number) => onNodeChange(v)}
             filterOption={false}
             onSearch={onSearch}
-            onDropdownVisibleChange={onDropdownVisibleChange}
+            onOpenChange={onOpenChange}
             options={nodeOptions}
           />
         )}

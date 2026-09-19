@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale } from '@/shared/lib/i18n';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import type { EdgeView, LayoutMode, NodeView, SourceLocation } from '@/entities/view';
 import { edgeColor, nodeColor } from '@/entities/graph';
-import { truncate } from '@/shared/lib/format';
+import { truncate, truncateMiddle } from '@/shared/lib/format';
 import { layoutOf, type LayoutInput, type LayoutResult } from './layout/types';
+import { nodeIcon, usedKinds } from './nodeIcons';
 
 /**
  * 超过这个边数就只在"悬浮 / 选中"时标注边类型。
@@ -57,16 +58,17 @@ const edgeKey = (e: { id: number; from: number; to: number; seq?: number }) =>
 /**
  * 边标签锚点。
  *
- * 取折线**真实几何中点**（按累计长度），再沿所在段的法线偏移若干像素，
- * 让标签落在边旁而不是压在边线 / 端点上。
+ * 取折线**真实几何中点**（按累计长度），标签**嵌在边正中**：文字垂直居中
+ * （渲染侧 `dominantBaseline="central"`）压在线上，白色描边在文字背后挖缺口，
+ * 线从文字两侧露出 —— 所有边（水平 / 斜 / 竖）观感一致。
  *
  * 不能用 `points[Math.floor(len / 2)]`：直线边只有两个点，索引 1 就是**终点**，
  * 标签会被后绘制的目标节点药丸（不透明白底）整块盖住 —— 表现就是
  * "只有悬浮时才能在卡片里看到边名"。
  */
-function labelAnchor(points: Array<[number, number]>, offset = 9): { x: number; y: number } {
+function labelAnchor(points: Array<[number, number]>): { x: number; y: number } {
   if (points.length === 0) return { x: 0, y: 0 };
-  if (points.length === 1) return { x: points[0][0], y: points[0][1] - offset };
+  if (points.length === 1) return { x: points[0][0], y: points[0][1] };
 
   const segLen: number[] = [];
   let total = 0;
@@ -82,36 +84,63 @@ function labelAnchor(points: Array<[number, number]>, offset = 9): { x: number; 
     const [bx, by] = points[i + 1];
     if (remain <= segLen[i] || i === segLen.length - 1) {
       const t = segLen[i] > 0 ? remain / segLen[i] : 0;
-      const mx = ax + (bx - ax) * t;
-      const my = ay + (by - ay) * t;
-      const len = Math.hypot(bx - ax, by - ay) || 1;
-      // 沿法线偏移：标签贴在边的一侧，不遮住线的走向
-      return { x: mx + (-(by - ay) / len) * offset, y: my + ((bx - ax) / len) * offset };
+      return { x: ax + (bx - ax) * t, y: ay + (by - ay) * t };
     }
     remain -= segLen[i];
   }
-  return { x: points[0][0], y: points[0][1] - offset };
+  return { x: points[0][0], y: points[0][1] };
 }
 
 /**
- * 沿边方向把端点收回到节点矩形**边界**上。
+ * 末段线段与节点矩形（中心 `cx,cy`、尺寸 `w×h`）的裁剪求交（Liang–Barsky），
+ * 返回箭头尖应落的边界点：
  *
- * 不能用"沿方向退回半个药丸宽度"来近似：辐射布局里射线的入射角很陡，
- * 沿射线退回 75px 会把箭头甩到药丸外面，看起来像连到了别的东西上。
+ * - 终点在矩形**外/上**（辐射布局：终点本来就是药丸近侧边缘）⇒ 取线段离开矩形的交点，
+ *   即终点自身 —— 箭头钉在**边的尽头**；
+ * - 终点在矩形**内**（旧布局：终点是节点中心）⇒ 取线段进入矩形的交点，与旧
+ *   `clipToRect` 行为一致。
+ *
+ * 不能用"指向中心的射线求交"替代：对宽扁药丸 + 斜入射的线，那条射线会先撞到
+ * 矩形**底边**，箭头就悬到药丸正下方的空白里（真实出现过）。也不能用"沿方向退回
+ * 半个药丸宽度"近似：入射角陡时会把箭头甩到药丸外面。
  */
-function clipToRect(
+function clipArrowTip(
   from: [number, number],
   to: [number, number],
+  cx: number,
+  cy: number,
   w: number,
   h: number,
 ): [number, number] {
+  const hw = w / 2;
+  const hh = h / 2;
   const dx = to[0] - from[0];
   const dy = to[1] - from[1];
-  if (dx === 0 && dy === 0) return to;
-  const tx = Math.abs(dx) < 1e-6 ? Number.POSITIVE_INFINITY : w / 2 / Math.abs(dx);
-  const ty = Math.abs(dy) < 1e-6 ? Number.POSITIVE_INFINITY : h / 2 / Math.abs(dy);
-  const t = Math.min(tx, ty);
-  return [to[0] - dx * t, to[1] - dy * t];
+  // 终点在矩形内 ⇒ 取进入交点；在外/上 ⇒ 取离开交点（= 尽头处）
+  const toInside =
+    Math.abs(to[0] - cx) <= hw + 1e-6 && Math.abs(to[1] - cy) <= hh + 1e-6;
+  let t0 = 0;
+  let t1 = 1;
+  const clip = (p: number, q: number): boolean => {
+    if (Math.abs(p) < 1e-9) return q >= 0; // 平行且在界外 ⇒ 无交
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+  const ok =
+    clip(-dx, from[0] - (cx - hw)) &&
+    clip(dx, cx + hw - from[0]) &&
+    clip(-dy, from[1] - (cy - hh)) &&
+    clip(dy, cy + hh - from[1]);
+  if (!ok) return to; // 线段与矩形不相交（不该发生）：保底用终点
+  const t = toInside ? t0 : t1;
+  return [from[0] + dx * t, from[1] + dy * t];
 }
 
 export interface CanvasNode {
@@ -241,6 +270,18 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
   const renderW = measuredWidth ?? width;
+  // 角落图例（只列本次数据实际出现的 kind；可折叠）。默认展开，便于首次看懂图标含义。
+  const [legendOpen, setLegendOpen] = useState(true);
+
+  // 本次视图实际出现的不同 kind 数：≤ 2 时（同质视图，如「谁调用了 X」几乎全是 Method）
+  // 图标在节点上全是同一种，既占横向空间又毫无区分度，退化成「只靠颜色」；≥ 3 才画图标。
+  const showNodeIcons = useMemo(() => {
+    const ks = new Set<string>();
+    if (center) ks.add(center.kind);
+    rings?.flat().forEach((n) => ks.add(n.kind));
+    clusters?.forEach((c) => c.members.forEach((m) => ks.add(m.kind)));
+    return ks.size >= 3;
+  }, [center, rings, clusters]);
 
   const layout: LayoutResult | null = useMemo(() => {
     if (!center && !clusters?.length && !matrix) return null;
@@ -258,14 +299,20 @@ export function GraphCanvas(props: GraphCanvasProps) {
       matrix,
       width: renderW,
       height,
+      showIcons: showNodeIcons,
     };
     return layoutOf(mode)(input);
   }, [mode, center, rings, edges, clusters, matrix, renderW, height]);
 
   // 节点尺寸表：箭头回退量 / 选中描边要按节点实际形状（矩形药丸需按半宽，而非固定 12px）。
+  // x/y 也要存：箭头边界求交必须以**节点中心**为靶点（clipToRect 的约定），
+  // 不能拿折线终点凑——辐射布局的终点落在药丸近侧边缘而非中心，拿它当中心会把
+  // 箭头沿射线推离药丸半个宽度，悬在半空。
   const nodeRectById = useMemo(() => {
-    const m = new Map<number, { shape: 'circle' | 'rect'; w: number; h: number }>();
-    layout?.nodes.forEach((n) => m.set(n.id, { shape: n.shape, w: n.w ?? 120, h: n.h ?? 26 }));
+    const m = new Map<number, { shape: 'circle' | 'rect'; x: number; y: number; w: number; h: number }>();
+    layout?.nodes.forEach((n) =>
+      m.set(n.id, { shape: n.shape, x: n.x, y: n.y, w: n.w ?? 120, h: n.h ?? 26 }),
+    );
     return m;
   }, [layout]);
 
@@ -339,6 +386,16 @@ export function GraphCanvas(props: GraphCanvasProps) {
     const m = new Map<EdgeView, string>();
     edges.forEach((e, i) => m.set(e, edgeKey({ id: e.id, from: e.from, to: e.to, seq: i })));
     return m;
+  }, [edges]);
+  // 前端 HTTP 调用方：作为 `CallsHttp` 边起点的函数节点。它本质上是「前端 API 入口」，
+  // 与后端 Method 同构、是被契约桥显式带入图的关键节点，不该以匿名语法药丸呈现。
+  // 这里只做**视觉升级**（带种类色填充），不改其 kind —— 既让它一眼读成「一等节点」，
+  // 又不破坏折叠视图「语义节点 / 塌缩兜底」的既有不变量与后端判定。
+  // 必须在提前 return 之前声明：loading→数据 两次渲染 Hook 数量不一致会白屏。
+  const frontendCallerIds = useMemo(() => {
+    const s = new Set<number>();
+    for (const e of edges) if (e.kind === 'CallsHttp') s.add(e.from);
+    return s;
   }, [edges]);
 
   // 聚焦：悬浮 node / edge 时，保留"目标 + 其直连邻居"全亮，其余淡出成鬼影（仍留结构轮廓）。
@@ -619,11 +676,16 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const _p0 = _pts[_pts.length - 2] ?? _pts[0];
             const _ang = Math.atan2(_p1[1] - _p0[1], _p1[0] - _p0[0]);
             const _toRect = nodeRectById.get(e.to);
-            const _border = clipToRect(_p0, _p1, _toRect?.w ?? 24, _toRect?.h ?? 24);
+            // 箭头尖 = 末段线段与目标矩形的交点：终点在药丸边缘时就是终点本身（钉在边的尽头），
+            // 终点在中心时退化为进入交点（旧布局行为不变）。
+            const _border = _toRect
+              ? clipArrowTip(_p0, _p1, _toRect.x, _toRect.y, _toRect.w, _toRect.h)
+              : _p1;
             const _len = Math.hypot(_p1[0] - _p0[0], _p1[1] - _p0[1]) || 1;
-            // 箭头尖落在边界外 3px：既不压住药丸，也不会看起来没连上
-            const _tipx = _border[0] - ((_p1[0] - _p0[0]) / _len) * 3;
-            const _tipy = _border[1] - ((_p1[1] - _p0[1]) / _len) * 3;
+            // 箭头尖直接落在边界交点上（不再回退 3px）：终点已由布局钉在药丸近侧边缘，
+            // 回退只会产生"差一点没到尽头"的空隙（用户实测反馈）。
+            const _tipx = _border[0];
+            const _tipy = _border[1];
             const _a = 6;
             const _s = 0.42;
             const _ax1 = _tipx - _a * Math.cos(_ang - _s);
@@ -647,7 +709,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   d={d}
                   fill="none"
                   stroke={edgeColor(view?.kind ?? '')}
-                  strokeWidth={active ? 2.6 : 1.2}
+                  strokeWidth={1.2}
                   strokeOpacity={active ? 1 : 0.8}
                   strokeDasharray={view?.indirect ? '5 4' : undefined}
                   vectorEffect="non-scaling-stroke"
@@ -676,6 +738,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     fontSize={10}
                     fontWeight={500}
                     textAnchor="middle"
+                    dominantBaseline="central"
                     stroke="#ffffff"
                     strokeWidth={3.5}
                     strokeLinejoin="round"
@@ -684,10 +747,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   >
                     {/* 边种类（按语言本地化为语义谓语，如 `PublishesTo` → `投递到`） */}
                     <tspan fill={edgeColor(view.kind)}>{t(`edge.${view.kind}`)}</tspan>
-                    {/* 折叠提示：这条"直连"其实跨了 N 个语法节点，必须标出来，不能让它看起来是真的直连 */}
-                    {view.hops ? (
-                      <tspan fill="#94a3b8">{` ·经 ${view.hops}${t(' 跳')}`}</tspan>
-                    ) : null}
+                    {/* 折叠的间接依赖（跨 N 个语法节点）靠虚线 + 图例区分，具体跳数在悬浮卡里给，
+                        不再挤进线上标签以免加长白缺口、和相邻边叠。 */}
                   </text>
                 ) : null}
               </g>
@@ -702,7 +763,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const w = n.w ?? 120;
             const h = n.h ?? 26;
             const fill = nodeColor(n.kind);
+            const isFrontendCaller = frontendCallerIds.has(n.id);
             // 节点统一为 rect 药丸，文字内嵌于框内，无需外伸标签。
+            // 前端 HTTP 调用方填充种类色（淡），从匿名白底语法药丸升级为「一等节点」观感；
+            // 其余节点保持白底 + 种类色描边。
             return (
               <g
                 key={n.id}
@@ -721,16 +785,18 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 }}
               >
                 {/* 所有节点统一用 1.4px 种类色描边；中心节点的强调改由尺寸 + 字重承担，
-                    不再靠加粗边框堆层级，避免同 kind 节点描边粗细看着不一致。 */}
+                    不再靠加粗边框堆层级，避免同 kind 节点描边粗细看着不一致。
+                    前端 HTTP 调用方额外填充淡种类色，凸显其「一等入口」地位。 */}
                 <rect
                   x={-w / 2}
                   y={-h / 2}
                   width={w}
                   height={h}
                   rx={6}
-                  fill="#fff"
+                  fill={isFrontendCaller ? fill : '#fff'}
+                  fillOpacity={isFrontendCaller ? 0.16 : 1}
                   stroke={fill}
-                  strokeWidth={1.4}
+                  strokeWidth={isFrontendCaller ? 1.8 : 1.4}
                   vectorEffect="non-scaling-stroke"
                   style={{ transition: 'stroke-width 140ms ease' }}
                 />
@@ -752,35 +818,44 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     ? `${t(`node.${n.kind}`)}（类别 ${meta.category}）· ${n.name}`
                     : `${t(`node.${n.kind}`)} · ${n.name}`}
                 </title>
+                {/* 种类图标：以 kind 色填充，替代原来的彩色 kind 文字前缀 —— 省下横向空间给名字，
+                    长路径（如路由）就能显示更完整。图标固定 14px，左对齐贴在药丸内。
+                    仅当本次视图出现的 kind ≥ 3 时才画（同质视图退化为只靠颜色，见 `showNodeIcons`）。
+                    必须包 `<foreignObject>`：antd 图标根元素是 HTML `<span>`，直接放进 SVG `<g>`
+                    会被浏览器按 SVG 命名空间丢弃（表现为图标消失、但 23px 图标位仍占着 —— 空白假象）。
+                    尺寸用 fontSize 控制（span 上的 width/height 属性无效），与图例渲染口径一致。 */}
+                {showNodeIcons ? (
+                  (() => {
+                    const Icon = nodeIcon(n.kind);
+                    const ICON = 14;
+                    return (
+                      <foreignObject
+                        x={-w / 2 + 6}
+                        y={-ICON / 2}
+                        width={ICON}
+                        height={ICON}
+                        style={{ pointerEvents: 'none', overflow: 'visible' }}
+                      >
+                        <Icon style={{ color: fill, fontSize: ICON, display: 'block' }} />
+                      </foreignObject>
+                    );
+                  })()
+                ) : null}
                 <text
-                  x={0}
+                  x={-w / 2 + (showNodeIcons ? 23 : 8)}
                   y={4}
                   fontSize={isCenter ? 13 : 11}
                   fontWeight={isCenter ? 700 : 400}
                   fill={isCenter ? '#0f172a' : '#475569'}
-                  textAnchor="middle"
+                  textAnchor="start"
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 >
-                  {/* 语义名（如 `store_order_refund_service`）才是人真正在找的实体，做主；
-                      种类 `kind` 仅作小号彩色前缀徽标（保留"看得出是 Queue / Table"的能力），
-                      不再喧宾夺主。名字与 kind 同串渲染，宽度与布局 `pillWidth` 估算一致，不会溢出药丸。 */}
-                  {n.name && n.name !== n.kind ? (
-                    <>
-                      <tspan fill={fill} fontWeight={700} fontSize={isCenter ? 10 : 9}>
-                        {t(`node.${n.kind}`)}
-                      </tspan>
-                      <tspan fill="#94a3b8" fontWeight={400}>
-                        {' · '}
-                      </tspan>
-                      <tspan fontWeight={isCenter ? 700 : 500} fontSize={isCenter ? 13 : 11}>
-                        {truncate(n.name, 26)}
-                      </tspan>
-                    </>
-                  ) : (
-                    <tspan fill={fill} fontWeight={600}>
-                      {n.kind}
-                    </tspan>
-                  )}
+                  {/* 语义名（如 `store_order_refund_service` / `GET /v2/order/.../create`）才是人
+                      真正在找的实体，做主。种类已由左侧图标 + 色表达，不再喧宾夺主。长名按**视觉宽度**
+                      中间截断 40 位（保头尾，CJK 一字计 1.8 位），与布局 `pillWidth` 估算一致，不会溢出药丸。 */}
+                  <tspan fontWeight={isCenter ? 700 : 500} fontSize={isCenter ? 13 : 11}>
+                    {truncateMiddle(n.name, 40)}
+                  </tspan>
                 </text>
                 {/* 选中环只给"非中心的选中节点"留（当前交互下不会出现，留作扩展点） */}
                 {selectedId === n.id && !isCenter ? (
@@ -928,6 +1003,71 @@ export function GraphCanvas(props: GraphCanvasProps) {
           <InfoCircleOutlined style={{ cursor: 'help', color: 'rgba(0,0,0,0.35)' }} />
         </Tooltip>
       </div>
+      {/* 角落图例：列出本次数据实际出现的 kind → 图标 / 本地化名，可折叠。
+          图标与节点内图标同源（nodeIcon），颜色取该 kind 色 —— 看图即可对上号。 */}
+      {layout.nodes.length > 0 ? (
+        <div
+          style={{
+            position: 'absolute',
+            right: 12,
+            top: 12,
+            background: 'rgba(255,255,255,0.92)',
+            border: '1px solid #e5e8ee',
+            borderRadius: 10,
+            boxShadow: '0 2px 8px rgba(15,23,42,0.08)',
+            fontSize: 12,
+            color: '#334155',
+            maxWidth: 240,
+            zIndex: 5,
+          }}
+        >
+          <div
+            onClick={() => setLegendOpen((v) => !v)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 10px',
+              cursor: 'pointer',
+              fontWeight: 600,
+              userSelect: 'none',
+            }}
+          >
+            <span>图例</span>
+            <span style={{ color: 'rgba(0,0,0,0.35)' }}>{legendOpen ? '▾' : '▸'}</span>
+          </div>
+          {legendOpen ? (
+            <div
+              style={{
+                padding: '2px 10px 10px',
+                display: 'grid',
+                gridTemplateColumns: 'auto 1fr',
+                gap: '4px 8px',
+                maxHeight: 220,
+                overflow: 'auto',
+              }}
+            >
+              {usedKinds(layout.nodes.map((n) => n.kind)).map((k) => {
+                const Icon = nodeIcon(k);
+                return (
+                  <Fragment key={k}>
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        color: nodeColor(k),
+                      }}
+                    >
+                      <Icon style={{ fontSize: 14 }} />
+                    </span>
+                    <span style={{ lineHeight: '18px' }}>{t(`node.${k}`)}</span>
+                  </Fragment>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

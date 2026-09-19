@@ -3,8 +3,11 @@
 //! 内核不认识任何框架 —— 它只认识"选择器"与"绑定"这两个抽象概念，
 //! 具体语义全部来自 FKB YAML（依赖倒置 + 开闭原则）。
 
+use std::collections::HashSet;
+
 use gt_domain::model::{
-    Action, AliasEntry, AnnotateTarget, AnnotationChannel, EdgeKind, FactValue, IdentityKey,
+    Action, AliasEntry, AnnotateTarget, AnnotationChannel, EdgeKind, ExpandSpec, ExpandVariant,
+    FactValue, IdentityKey,
     Language, MergeStrategy, NamespacePolicy, NewAnnotation, NewEdge, NodeId, NodeKind, Phase,
     Predicate, ResolveTier, Rule, Selector, Severity, SubProjectId, SubkindSource, SynthesizedKind,
 };
@@ -644,6 +647,12 @@ fn resolve_subkind(
 
 // ---------------------------------------------------------------- Synthesize
 
+/// 展开表：**一条调用 → N 个语义节点**（如 REST 资源路由）。
+///
+/// 顺序执行每个「被允许」的变体，各自用同一份 `identity` / `fields` / `link`
+/// 合成一个节点；变体带来的差异(method / 路径后缀 / 入口方法)由
+/// `{ expand_method: true }` / `{ expand_entry: true }` 注入。
+/// 返回**最后一个**变体的节点（供同一规则内后续 binding 的 `@self` 引用）。
 fn exec_synthesize(
     ctx: &mut PipelineContext,
     rule: &Rule,
@@ -654,8 +663,96 @@ fn exec_synthesize(
     sub: Option<gt_domain::model::SubProjectId>,
     phase: &Phase,
 ) -> NodeId {
-    let ev = Evaluator::new(&ctx.ws, mctx);
-    let identity = compute_identity(&ev, &s.identity);
+    let Some(expand) = &s.expand else {
+        return exec_synthesize_one(ctx, rule, s, mctx, matched, owner, sub, phase, None);
+    };
+    if expand.variants.is_empty() {
+        return exec_synthesize_one(ctx, rule, s, mctx, matched, owner, sub, phase, None);
+    }
+    let allowed = expanded_actions(ctx, expand, mctx);
+    let mut last = matched;
+    for v in &expand.variants {
+        if let Some(set) = &allowed {
+            if !set.contains(&v.name) {
+                continue;
+            }
+        }
+        last = exec_synthesize_one(ctx, rule, s, mctx, matched, owner, sub, phase, Some(v));
+    }
+    last
+}
+
+/// 展开表里**实际生效**的动作名集合；返回 `None` 表示「未声明过滤，全部生效」。
+///
+/// 过滤条件来自**同一语句行**上的链式调用 —— `Route::resource(...)->except(['read'])`
+/// 被解析成同一行内方法名为 `except` 的另一个调用点，其首个实参即动作名数组。
+/// 这样内核不需要认识任何框架的 `only` / `except` 语义（名字由 FKB 给出）。
+fn expanded_actions(
+    ctx: &PipelineContext,
+    spec: &ExpandSpec,
+    mctx: MatchCtx,
+) -> Option<HashSet<String>> {
+    let call = match mctx {
+        crate::eval::MatchCtx::Call(c) => c,
+        _ => return None,
+    };
+    let mut selected: Option<HashSet<String>> = None;
+    if let Some(name) = &spec.only {
+        let vals = ctx
+            .ws
+            .chained_strings(&call.file, call.span.start_line, name);
+        if !vals.is_empty() {
+            selected = Some(vals.into_iter().collect());
+        }
+    }
+    if let Some(name) = &spec.except {
+        let vals = ctx
+            .ws
+            .chained_strings(&call.file, call.span.start_line, name);
+        if !vals.is_empty() {
+            let excluded: HashSet<String> = vals.into_iter().collect();
+            match &mut selected {
+                Some(set) => set.retain(|n| !excluded.contains(n)),
+                None => {
+                    selected = Some(
+                        spec.variants
+                            .iter()
+                            .map(|v| v.name.clone())
+                            .filter(|n| !excluded.contains(n))
+                            .collect(),
+                    );
+                }
+            }
+        }
+    }
+    selected
+}
+
+
+
+/// 变体感知的求值器：`Synthesize.expand` 逐条执行时，把当前变体注入求值上下文，
+/// 使 `{ expand_method: true }` / `{ expand_entry: true }` 取到该变体的值。
+fn ev_of<'a>(
+    ws: &'a GraphWorkspace,
+    mctx: MatchCtx<'a>,
+    variant: Option<&ExpandVariant>,
+) -> Evaluator<'a> {
+    Evaluator::new(ws, mctx).with_variant(variant.cloned())
+}
+
+fn exec_synthesize_one(
+    ctx: &mut PipelineContext,
+    rule: &Rule,
+    s: &gt_domain::model::SynthesizeAction,
+    mctx: MatchCtx,
+    matched: NodeId,
+    owner: NodeId,
+    sub: Option<gt_domain::model::SubProjectId>,
+    phase: &Phase,
+    variant: Option<&ExpandVariant>,
+) -> NodeId {
+    let ev = Evaluator::new(&ctx.ws, mctx).with_variant(variant.cloned());
+    let identity = compute_identity(&ev, &s.identity, variant);
     let Some(identity) = identity else {
         ctx.ws.diagnose(
             phase,
@@ -742,8 +839,8 @@ fn exec_synthesize(
     // fields
     for f in &s.fields {
         if let Some(acc) = &f.accumulate {
-            let key = Evaluator::new(&ctx.ws, mctx).string(&acc.key).unwrap_or_default();
-            let value = Evaluator::new(&ctx.ws, mctx).string(&acc.value).unwrap_or_default();
+            let key = ev_of(&ctx.ws, mctx, variant).string(&acc.key).unwrap_or_default();
+            let value = ev_of(&ctx.ws, mctx, variant).string(&acc.value).unwrap_or_default();
             if key.is_empty() {
                 continue;
             }
@@ -753,13 +850,13 @@ fn exec_synthesize(
         }
         let value: Option<Value> = if let Some(sym) = &f.from_symbol_table {
             let key = match &sym.of {
-                Some(src) => Evaluator::new(&ctx.ws, mctx).string(src),
+                Some(src) => ev_of(&ctx.ws, mctx, variant).string(src),
                 None => Some(identity.value.clone()),
             };
             key.and_then(|k| ctx.ws.get_symbol(&sym.table, &k).cloned())
                 .and_then(|v| v.get(&sym.field).cloned())
         } else if let Some(src) = &f.value {
-            match Evaluator::new(&ctx.ws, mctx).string(src) {
+            match ev_of(&ctx.ws, mctx, variant).string(src) {
                 Some(v) => Some(json!(v)),
                 None => None,
             }
@@ -817,18 +914,18 @@ fn exec_synthesize(
                 let method = link
                     .to_method
                     .as_ref()
-                    .and_then(|src| Evaluator::new(&ctx.ws, mctx).string(src));
+                    .and_then(|src| ev_of(&ctx.ws, mctx, variant).string(src));
                 let entry = entry_methods_for(ctx, sub);
                 let policy = ctx.lang_policy_for_sub(sub).clone();
                 let items = link
                     .to
                     .as_ref()
-                    .map(|src| Evaluator::new(&ctx.ws, mctx).list(src))
+                    .map(|src| ev_of(&ctx.ws, mctx, variant).list(src))
                     .unwrap_or_default();
                 let fb_items = link
                     .to_fallback
                     .as_ref()
-                    .map(|src| Evaluator::new(&ctx.ws, mctx).list(src))
+                    .map(|src| ev_of(&ctx.ws, mctx, variant).list(src))
                     .unwrap_or_default();
                 // 主来源里「可当作字符串目标」的项（跳过数组/空，正是队列 `arg:0` 是数组的场景）。
                 let primary_strings: Vec<String> = items
@@ -848,7 +945,7 @@ fn exec_synthesize(
                     );
                 } else {
                     for raw in primary_strings {
-                        let resolved = Evaluator::new(&ctx.ws, mctx).resolve_name(&raw);
+                        let resolved = ev_of(&ctx.ws, mctx, variant).resolve_name(&raw);
                         if let Some(target) = find_target_node(
                             ctx,
                             &resolved,
@@ -896,11 +993,11 @@ fn exec_synthesize(
 
     // alias 注册
     if let Some(alias) = &s.alias {
-        if let Some(key) = Evaluator::new(&ctx.ws, mctx).string(&alias.key) {
+        if let Some(key) = ev_of(&ctx.ws, mctx, variant).string(&alias.key) {
             let qualifier = alias
                 .qualifier
                 .as_ref()
-                .and_then(|q| Evaluator::new(&ctx.ws, mctx).string(q));
+                .and_then(|q| ev_of(&ctx.ws, mctx, variant).string(q));
             ctx.ws.put_alias(AliasEntry {
                 project_id: ctx.project.id,
                 namespace: alias.namespace.clone(),
@@ -1080,6 +1177,7 @@ fn fqn_of(ctx: &PipelineContext, id: NodeId) -> String {
 fn compute_identity(
     ev: &Evaluator,
     spec: &gt_domain::model::IdentitySpec,
+    variant: Option<&ExpandVariant>,
 ) -> Option<IdentityKey> {
     let kind = spec.kind.clone();
     let prefixes = ev.ws().table_prefixes();
@@ -1106,6 +1204,13 @@ fn compute_identity(
                     format!("/{}/{}", prefix, path.trim_start_matches('/'))
                 }
             }
+            _ => path,
+        };
+        // 展开变体的路径后缀（`/create` / `/:id` / `/:id/edit`）：必须接在
+        // **组前缀之后**，否则 `Route::group('cms')` + `resource('cms')` 的
+        // `create` 会算成 `/create/cms` 而不是 `/cms/cms/create`。
+        let path = match variant.and_then(|v| v.path_suffix.as_deref()) {
+            Some(suffix) if !suffix.is_empty() => format!("{}{}", path, suffix),
             _ => path,
         };
         let path = apply_normalize(&path, &apply_table_prefix_steps(&spec.normalize, prefixes));

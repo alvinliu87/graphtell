@@ -834,7 +834,14 @@ fn object_view_characterization_invoice_detail() {
     }
     via_len.sort_unstable();
 
-    assert_eq!(ov.edges.len(), 29, "边总数变了：{:?}", by_kind);
+    assert_eq!(ov.edges.len(), 30, "边总数变了：{:?}", by_kind);
+    // 前端契约桥：uni-app 的 `` request.get(`v2/order/invoice_detail/${id}`) ``
+    // （模板串 URL）已能与该后端路由按**参数形状**汇聚，`CallsHttp` 由此入图。
+    assert_eq!(
+        by_kind.get("CallsHttp").copied().unwrap_or(0),
+        1,
+        "前端调用该契约的 CallsHttp 应可见，变了说明契约桥被改坏"
+    );
     assert_eq!(
         by_kind.get("ReadsCache").copied().unwrap_or(0),
         2,
@@ -845,7 +852,13 @@ fn object_view_characterization_invoice_detail() {
         27,
         "ReadsConfig 边数变了"
     );
-    assert_eq!(indirect, ov.edges.len(), "全部都是提拉/传播得来的间接边，变了说明 indirect 判定被改坏");
+    // 除了一条：前端 `CallsHttp` 是**直接**语义边（前端函数 → 契约），不走提拉/传播；
+    // 其余 29 条都是沿后端调用链间接得到的资源读写。
+    assert_eq!(
+        indirect,
+        ov.edges.len() - 1,
+        "除前端 CallsHttp 外都应是提拉/传播得来的间接边，变了说明 indirect 判定被改坏"
+    );
     assert_eq!(with_loc, ov.edges.len(), "每条边都应能给出资源访问位置，变了说明证据选取被改坏");
     // 关键：**最长链必须到 5 跳**（detail → getQRCodePath → init → more → remember），
     // 若折叠/回溯被改坏，最长链会退回 2~3 跳。

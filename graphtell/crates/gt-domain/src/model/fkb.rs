@@ -57,6 +57,14 @@ pub struct FrameworkKnowledge {
     /// 未声明时回退到内核内置的**跨框架常见入口名**默认集。
     #[serde(default)]
     pub entry_methods: Vec<String>,
+    /// 本 FKB 引入的**第一类语义节点种类**（在 [`NodeKind::SYNTHESIZED`] 之外追加）。
+    ///
+    /// 「哪些 kind 算语义节点」此前只写在 `kinds.rs` 的常量清单里 —— 于是每加一种
+    /// 语义节点（前端的 `Store`、页面视角的 `Page`…）都要动内核，违反 OCP。
+    /// 现在 FKB 可以自己声明：`semantic_kinds: [Store, Page]`，加载时登记进
+    /// [`crate::model::kinds::register_semantic_kinds`]，折叠视图随即按语义节点渲染。
+    #[serde(default)]
+    pub semantic_kinds: Vec<String>,
     /// 未识别到本框架时，是否仍应用其规则（默认 **false**）。
     ///
     /// 框架级规则带有强烈的框架假设（`Db::name` 是表名、`Route::get` 的第二个实参是
@@ -492,6 +500,48 @@ pub struct SynthesizeAction {
     pub modifiers: Vec<String>,
     /// 别名注册（合成后自动写入 by_alias）。
     pub alias: Option<AliasSpec>,
+    /// **一条调用展开成 N 个语义节点**（表驱动）。
+    ///
+    /// 典型场景：REST 资源路由 `Route::resource('cms', Ctrl::class)` 一条语句
+    /// 其实是 7 条契约（index / create / save / read / edit / update / delete）。
+    /// 展开表由 **FKB 给出**（内核零框架知识），内核只负责：按表逐个变体执行
+    /// 同一份 `identity` / `fields` / `link`，并把变体的 `method` / `entry`
+    /// 注入 `{ expand_method: true }` / `{ expand_entry: true }` 两个来源，
+    /// 把 `path_suffix` 追加到算出的路径之后（在 `Route::group` 前缀之后）。
+    pub expand: Option<ExpandSpec>,
+}
+
+/// 展开表：一条调用 → N 个语义节点。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExpandSpec {
+    pub variants: Vec<ExpandVariant>,
+    /// 白名单来源：**同一语句行**上名为该值的链式调用的实参数组
+    /// （`->only(['index','delete'])`）。给出时只合成列表内的动作。
+    pub only: Option<String>,
+    /// 黑名单来源：`->except(['read'])`。给出时从动作表里剔除。
+    pub except: Option<String>,
+}
+
+impl Default for ExpandSpec {
+    fn default() -> Self {
+        Self { variants: Vec::new(), only: None, except: None }
+    }
+}
+
+/// 展开表的一行：一个动作（如 REST 的 `index`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct ExpandVariant {
+    /// 动作名（与 `only` / `except` 里写的名字对应）。
+    pub name: String,
+    /// HTTP method（供 `{ expand_method: true }` 取用）。
+    pub method: Option<String>,
+    /// 追加到路径之后的后缀（如 `/create`、`/:id`）。
+    pub path_suffix: Option<String>,
+    /// handler 的入口方法名（供 `{ expand_entry: true }` 取用）。
+    pub entry: Option<String>,
 }
 
 impl Default for SynthesizeAction {
@@ -505,8 +555,9 @@ impl Default for SynthesizeAction {
             confidence: 0.9,
             modifiers: Vec::new(),
             alias: None,
-        }
-    }
+            expand: None,
+            }
+            }
 }
 
 /// 合成节点的身份规格。
@@ -683,6 +734,14 @@ pub struct ValueSource {
     /// 多段拼接：`{ path: [{file_stem:true},{key_path:true}], join: '.' }`。
     pub path: Option<Vec<ValueSource>>,
     pub join: Option<String>,
+    /// 取**当前展开变体**的 HTTP method（`expand.variants[].method`）。
+    ///
+    /// 只有配合 `Synthesize.expand` 使用才有值：一条调用展开成 N 个语义节点时，
+    /// 每个变体各有一套 method / 路径后缀 / 入口方法（如 REST 资源路由）。
+    pub expand_method: Option<bool>,
+    /// 取**当前展开变体**的入口方法名（`expand.variants[].entry`），供
+    /// `link.to_method` 把边精确连到「处理该动作的方法」。
+    pub expand_entry: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -724,6 +783,17 @@ pub enum NormalizeStep {
     SnakePlural,
     /// 去掉命名空间，只留最后一段。
     StripNamespace,
+    /// 路径参数段归一化：每个 `:` 开头的段都折成 `:*`。
+    ///
+    /// 契约桥的关键一步：后端路由写 `invoice/detail/:id`，前端拼接式 URL
+    /// `'invoice/detail/' + id` 规整出 `invoice/detail/:param` —— 参数名不同但
+    /// **形状相同**，HTTP 匹配本就只看形状。不折一下这两条永远合不到一个节点，
+    /// 路由视角里就"看不到前端"。
+    ParamWildcard,
+    /// 去掉 `?` 起的查询串（页面跳转 URL 常带 `?id=1`，但路由身份只看路径）：
+    /// `uni.navigateTo({ url: '/pages/detail?id=1' })` 与 `pages.json` 里的
+    /// `/pages/detail` 汇聚到同一个 `Page` 节点。
+    StripQuery,
     Trim,
     Replace { from: String, to: String },
 }

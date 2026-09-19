@@ -78,6 +78,12 @@ declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点�
     CACHE      = "Cache"       => "缓存节点（进程外中介）",
     TOPIC      = "Topic"       => "消息主题节点（进程外中介）",
     SCHEDULE   = "Schedule"    => "定时任务节点（计划任务 / 调度）",
+    // 前端路由节点：uni-app `pages.json` 声明的页面路由，与后端 `Route` 同构
+    // （路由视角里前后端「页面 ↔ 接口」直接对看）。
+    PAGE       = "Page"        => "页面 / 路由节点（前端 pages.json 声明的路由）",
+    // 前端事件总线节点：`uni.$emit('evt')` / `bus.$emit('evt')` 等组件解耦通信，
+    // 与后端 `Event` 同构——同一事件名即同一节点，发射方与监听方都连到它。
+    EVENT_BUS  = "EventBus"    => "事件总线节点（前端 uni.$emit / bus.$emit 组件通信）",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新种类",
 }
 
@@ -99,12 +105,49 @@ impl NodeKind {
         Self::CACHE,
         Self::TOPIC,
         Self::SCHEDULE,
+        Self::PAGE,
+        Self::EVENT_BUS,
     ];
 
     /// 是否为"第一类"语义节点（kind 自身即语义）。
+    ///
+    /// 除内置清单外，还包括 **FKB 声明**的种类（见
+    /// [`crate::model::FrameworkKnowledge::semantic_kinds`] + [`register_semantic_kinds`]）
+    /// —— 新增一种语义节点不该以改内核为代价。
     pub fn is_semantic(&self) -> bool {
-        Self::SYNTHESIZED.iter().any(|k| self.0 == *k)
+        if Self::SYNTHESIZED.iter().any(|k| self.0 == *k) {
+            return true;
+        }
+        EXTRA_SEMANTIC
+            .get_or_init(Default::default)
+            .read()
+            .map(|set| set.contains(&self.0))
+            .unwrap_or(false)
     }
+}
+
+/// FKB 追加登记的语义节点种类（进程内单例，随 FKB 装载填充）。
+static EXTRA_SEMANTIC: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// 登记 FKB 声明的语义节点种类（可重复调用，幂等合并）。
+pub fn register_semantic_kinds(kinds: impl IntoIterator<Item = String>) {
+    let mut set = EXTRA_SEMANTIC
+        .get_or_init(Default::default)
+        .write()
+        .expect("语义种类注册表未被破坏");
+    set.extend(kinds);
+}
+
+/// 当前已登记的 FKB 语义节点种类（供诊断 / 测试观察）。
+pub fn extra_semantic_kinds() -> Vec<String> {
+    let mut out: Vec<String> = EXTRA_SEMANTIC
+        .get_or_init(Default::default)
+        .read()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default();
+    out.sort();
+    out
 }
 
 declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
@@ -123,8 +166,17 @@ declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
     PUBLISHES_TO  = "PublishesTo"   => "投递到队列 topic",
     READS_DB      = "ReadsDb"       => "读库",
     WRITES_DB     = "WritesDb"      => "写库",
+    WRITES_CACHE  = "WritesCache"   => "写缓存",
     MAPS_TO       = "MapsTo"        => "模型映射到表",
     READS_CONFIG  = "ReadsConfig"   => "读配置",
+    MUTATES       = "Mutates"       => "改变状态容器（前端 Store / Vuex、Pinia…）",
+    // 前端页面跳转：`uni.navigateTo` / `redirectTo` / `reLaunch` / `switchTab` 等，
+    // 从发起方（函数 / 组件方法）指向目标 `Page` 节点。
+    NAVIGATES_TO  = "NavigatesTo"   => "前端页面跳转（uni.navigateTo 等）",
+    // 前端事件总线：发射方 `--Emits-->` 事件节点 `<--ListensTo--` 监听方，
+    // 与后端 `Event` 的 `Triggers` 同构——事件节点在折叠视图里充当「via」桥。
+    EMITS       = "Emits"       => "前端发射事件总线事件（uni.$emit / bus.$emit）",
+    LISTENS_TO  = "ListensTo"   => "前端监听事件总线事件（uni.$on / bus.$on）",
     RESOLVES_TO   = "ResolvesTo"    => "动态解析结果",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新边种类",
 }
@@ -144,6 +196,11 @@ impl EdgeKind {
         Self::MAPS_TO,
         Self::READS_CONFIG,
         Self::RESOLVES_TO,
+        Self::WRITES_CACHE,
+        Self::MUTATES,
+        Self::NAVIGATES_TO,
+        Self::EMITS,
+        Self::LISTENS_TO,
         "ReadsCache",
     ];
 
@@ -163,6 +220,11 @@ pub fn is_chain_edge(kind: &str) -> bool {
             | "HasCallSite"
             | "ReadsConfig"
             | "ReadsCache"
+            | "WritesCache"
+            | "Mutates"
+            | "NavigatesTo"
+            | "Emits"
+            | "ListensTo"
             | "ReadsDb"
             | "WritesDb"
             | "MapsTo"

@@ -418,6 +418,14 @@ fn build_file(
             sub: file.sub_project_id,
             language: file.language.clone(),
         });
+        // 同行链式调用的实参（`->except(['read'])`）：P4/P5 时 `calls` 会被临时
+        // 移出工作区，故在此顺手登记进索引，供 Synthesize 的展开表读取。
+        ctx.ws.index_chained(
+            &file.path,
+            call.span.start_line,
+            call.method.as_deref(),
+            &call.args,
+        );
     }
 
     // 配置条目（`return [...]` 型文件）

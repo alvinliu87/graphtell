@@ -44,6 +44,13 @@ impl YamlKnowledgeBase {
                 match Self::load_file(&path) {
                     Ok(fk) => {
                         info!("装载 FKB: {} ({})", fk.id, path.display());
+                        // FKB 声明的**语义节点种类**在此登记：新增一种语义节点
+                        // （前端 `Store`、页面 `Page`…）无需再改内核清单。
+                        if !fk.semantic_kinds.is_empty() {
+                            gt_domain::model::kinds::register_semantic_kinds(
+                                fk.semantic_kinds.iter().cloned(),
+                            );
+                        }
                         entries.push(fk);
                         sources.push(path);
                     }

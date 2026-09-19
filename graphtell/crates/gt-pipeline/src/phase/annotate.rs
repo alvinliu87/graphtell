@@ -214,7 +214,12 @@ fn collect_rules(ctx: &PipelineContext, phase: &Phase) -> HashMap<Option<i64>, V
             .get(&sub.id.get())
             .cloned()
             .unwrap_or_default();
-        rules.extend(ctx.rules_global.iter().cloned());
+        rules.extend(
+            ctx.rules_global
+                .iter()
+                .filter(|(l, _)| *l == sub.language)
+                .map(|(_, r)| r.clone()),
+        );
         let filtered: Vec<Rule> = dedup(rules)
             .into_iter()
             .filter(|r| r.phase == *phase)
@@ -224,6 +229,7 @@ fn collect_rules(ctx: &PipelineContext, phase: &Phase) -> HashMap<Option<i64>, V
     let global: Vec<Rule> = ctx
         .rules_global
         .iter()
+        .map(|(_, r)| r)
         .filter(|r| r.phase == *phase)
         .cloned()
         .collect();

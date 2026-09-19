@@ -72,12 +72,23 @@ export function GraphPage() {
   const [origin, setOrigin] = useState<{ id: number; name: string } | null>(null);
   /** 候选列表连同它所属的视角一起存：切视角后必须立刻失效，
    *  否则会拿上一视角的列表来填空默认值 / 判断"节点是否存在"。 */
-  const [candidateBundle, setCandidateBundle] = useState<{ p: string; list: Candidate[] }>({
+  const [candidateBundle, setCandidateBundle] = useState<{ p: string; q: string; list: Candidate[] }>({
     p: '',
+    q: '',
     list: [],
   });
   /** 当前视角的候选是否已从后端返回：用于判断"未选节点"时是「还在加载」还是「确实没有任何候选」。 */
   const [candidatesLoaded, setCandidatesLoaded] = useState(false);
+  /**
+   * 当前视角下「后端推荐的默认对象」id——独立于下拉的自动补全缓存。
+   *
+   * 与 `candidateBundle` 解耦：默认对象来自后端对**全量候选**的"语义依赖价值"排序
+   * （无搜索词那次 `candidates` 请求），是视图层派生语义；而 `candidateBundle` 是
+   * 「自动补全查询」的客户端缓存。两者语义不同、不应混用——这里在排名列表到达时
+   * 单独快照一次，后续搜索 / 展开下拉都不会改写它，彻底断开
+   * "默认对象 = 自动补全缓存的第一项" 这种前后端语义混用。
+   */
+  const [defaultNodeId, setDefaultNodeId] = useState<number | null>(null);
   /** 只有"属于当前视角"的候选才生效；切换视角的瞬间派生为空，等新视角候选到达后才有值。 */
   const candidates = candidateBundle.p === state.p ? candidateBundle.list : [];
   const [candidateSearch, setCandidateSearch] = useState('');
@@ -166,57 +177,68 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [perspectives]);
 
-  // 载入二级候选（带防抖的服务端搜索）。按需加载：已持有当前视角的候选则跳过；
-  // 已经选中节点、且下拉未展开时也不预取——把那次昂贵的全量打分推迟到用户真正要选对象时。
+  // 载入二级候选（服务端实时搜索，输入防抖 200ms）。这是**下拉建议的 UI 缓存**，
+  // 缓存键是「视角 + 搜索词」：同键直接复用，换词就重新请求——否则首次加载后输入永
+  // 远打不进后端（曾因此搜索失效）。它**只服务于下拉建议**，不决定默认对象（见 `defaultNodeId`）。
+  // 按需加载：已选中节点、下拉未展开且无搜索词时不预取，
+  // 把那次昂贵的全量打分推迟到用户真正要选对象时。
   useEffect(() => {
     if (!state.p || isAggregate) {
-      setCandidateBundle({ p: state.p ?? '', list: [] });
+      setCandidateBundle({ p: state.p ?? '', q: '', list: [] });
       setCandidatesLoaded(false);
+      // 视角失效时，旧视角的推荐默认对象也一并作废，避免切换瞬间误选上一个视角的节点。
+      setDefaultNodeId(null);
       return;
     }
-    if (candidateBundle.p === state.p) return;
-    if (state.n !== null && !dropdownOpen) return;
+    // 切换视角时先清掉上一个视角的默认对象，等本次排名列表到达再重新快照。
+    if (candidateBundle.p !== state.p) setDefaultNodeId(null);
+    if (candidateBundle.p === state.p && candidateBundle.q === candidateSearch) return;
+    if (state.n !== null && !dropdownOpen && candidateSearch === '') return;
     const perspective = state.p;
+    const query = candidateSearch;
     let alive = true;
     setCandidatesLoaded(false);
     const start = () => {
       void viewApi
-        .candidates(id, perspective, 300, candidateSearch)
+        .candidates(id, perspective, 300, query)
         .then((list) => {
           if (alive) {
-            setCandidateBundle({ p: perspective, list });
+            setCandidateBundle({ p: perspective, q: query, list });
             setCandidatesLoaded(true);
+            // 仅当这是「无搜索词的排名列表」时，快照本次视角推荐的默认对象。
+            // 有搜索词的是自动补全结果，不能当成默认对象的来源。
+            if (query === '') setDefaultNodeId(list[0]?.id ?? null);
           }
         })
         .catch(() => {
           if (alive) setCandidatesLoaded(true);
         });
     };
-    // 还没选节点时，候选要用来「自动选中第一个对象」——尽快拿到，不要防抖；
-    // 仅当用户主动展开下拉时才防抖，避免每次切视角都无谓打一次。
-    if (state.n === null) {
+    // 无搜索词且尚未选中节点：候选要用来「自动选中第一个对象」——尽快拿到，不防抖；
+    // 其余情况（用户正在输入 / 展开下拉补拉）一律防抖，避免每个按键都打一次接口。
+    if (query === '' && state.n === null) {
       start();
       return () => {
         alive = false;
       };
     }
-    const timer = setTimeout(start, 150);
+    const timer = setTimeout(start, 200);
     return () => {
       alive = false;
       clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.p, isAggregate, id, candidateSearch, dropdownOpen, state.n, candidateBundle.p]);
+  }, [state.p, isAggregate, id, candidateSearch, dropdownOpen, state.n, candidateBundle.p, candidateBundle.q]);
 
-  // 对象视角：只在「完全没指定中心」时取第一个候选作为默认值。
-  // 已经明确导航到某个节点时**绝不覆盖**——候选列表有上限（300）且可能被过滤，
-  // 拿它当"节点是否存在"的判据会把刚点进来的节点误判为不存在、静默换成第一个候选。
+  // 对象视角：只在「完全没指定中心」时，用后端推荐的默认对象初始化中心。
+  // 默认对象来自 `defaultNodeId`（排名列表到达时独立快照），与下拉的自动补全缓存无关；
+  // 已经明确导航到某个节点时**绝不覆盖**——否则会把刚点进来的节点静默换成推荐项。
   useEffect(() => {
-    if (isAggregate || state.n !== null) return;
-    if (candidates.length === 0 || candidateSearch !== '') return;
-    setState((s) => ({ ...s, n: candidates[0].id }));
+    if (isAggregate || state.n !== null || defaultNodeId === null) return;
+    if (candidateSearch !== '') return; // 用户正在搜索时，不抢先替他选默认对象
+    setState((s) => ({ ...s, n: defaultNodeId }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidates, isAggregate, candidateSearch, state.n]);
+  }, [defaultNodeId, isAggregate, candidateSearch, state.n]);
 
   // 视图恒为**折叠模式**：折叠时后端会把语法节点收进边的 `via` 链并内联每一跳的调用处，
   // 点边即可逐跳核对；而"展开全部语法节点"是**信息降级**——画了 Method/CallSite，
@@ -378,26 +400,29 @@ export function GraphPage() {
    * （已选中节点且未展开下拉时刻意不预取）—— 于是下拉里找不到匹配 `value` 的选项，
    * antd 会把 value 原样渲染成裸 id（如 `57601`），看起来像筛选器坏了。
    *
-   * 这里从当前视图中心 / 面包屑取名字兜底；候选里已命中时返回 null（不生效），
-   * 因此不改变既有的按需加载策略与候选排序。
+   * 名字只从**权威来源**取：① 面包屑历史（导航带来的节点名）② 当前视图中心
+   * （真正加载成功的对象，含名字）。**不再用 `candidates.some` 推断"节点是否存在/叫什么"**——
+   * 候选是带上限、按需加载的 UI 缓存，不是服务端权威；拿它当存在性判据正是之前"裸 id / 误判"的根源。
+   * 候选里命中时 PerspectivePicker 本就会忽略 `nodeName`、用候选的完整 label，故这里无需特判。
    */
   const selectedNodeName = useMemo(() => {
     if (state.n === null) return null;
-    if (candidates.some((c) => c.id === state.n)) return null;
     // 点图导航后 `view` 仍是上一视角的数据（`useAsync` 保留旧值），所以先查面包屑再查中心。
     for (let i = trail.length - 1; i >= 0; i -= 1) {
       if (trail[i].node === state.n && trail[i].nodeName) return trail[i].nodeName;
     }
     return view?.center.id === state.n ? view.center.name : null;
-  }, [state.n, candidates, trail, view]);
+  }, [state.n, trail, view]);
 
   // 首次进入时把当前位置压入面包屑
   useEffect(() => {
     if (!state.p || trail.length > 0) return;
-    const name = view?.center?.name ?? candidates.find((c) => c.id === state.n)?.name ?? '';
+    // 名字只从权威来源（当前视图中心）取，不回退到候选列表——候选是按需加载的 UI 缓存，
+    // 不是节点存在/命名的权威；视图未就绪时留空，待 `view` 到达后由选中态正常显示。
+    const name = view?.center?.name ?? '';
     pushTrail(state.p, state.n, name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.p, state.n, view, candidates]);
+  }, [state.p, state.n, view]);
 
   const clusters: CanvasCluster[] = useMemo(
     () =>
@@ -497,10 +522,12 @@ export function GraphPage() {
           onNodeChange={(n) => {
             const name = candidates.find((c) => c.id === n)?.name ?? '';
             pushTrail(state.p ?? '', n, name);
+            setCandidateSearch('');
             setState((s) => ({ ...s, n, i: null, e: null }));
           }}
           onSearch={setCandidateSearch}
-          onDropdownVisibleChange={setDropdownOpen}
+          onOpenChange={setDropdownOpen}
+          searchText={candidateSearch}
           nodeName={selectedNodeName}
           trail={trail}
           onTrailClick={onTrailClick}
@@ -590,7 +617,7 @@ export function GraphPage() {
           description={t('可能已被删除、或不属于该视角（') + errText(objectError) + t('）。请在左侧一级视角重新选择。')}
           action={
             candidates.length > 0 ? (
-              <Button size="small" onClick={() => setState((s) => ({ ...s, n: candidates[0].id }))}>
+              <Button size="small" onClick={() => setState((s) => ({ ...s, n: defaultNodeId ?? candidates[0]?.id }))}>
                 {t('换第一个对象')}
               </Button>
             ) : null

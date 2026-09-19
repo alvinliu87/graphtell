@@ -114,6 +114,14 @@ pub struct GraphWorkspace {
     fan_in: HashMap<i64, u32>,
     fan_out: HashMap<i64, u32>,
     pub calls: Vec<CallRecord>,
+    /// **同行调用索引**：`(文件, 起始行) → [(方法名, 首个实参里的字符串)]`。
+
+    /// 链式修饰（`Route::resource('x', C::class)->except(['read'])`）被解析成
+    /// **同一行**上的另一个调用点，展开表要按行取到它的实参才能知道哪些动作生效。
+    /// 之所以另建索引而不是遍历 `calls`：P4/P5 执行时 `calls` 被
+    /// `std::mem::take` 临时移出工作区（避免借用冲突），此刻遍历会拿到空表。
+    /// 故在 P2 建调用点时顺手登记（只有带实参的调用才占空间）。
+    chained: HashMap<(String, u32), Vec<(String, Vec<String>)>>,
     pub configs: Vec<ConfigRecord>,
     pub inherits: Vec<InheritRecord>,
     pub pending_links: Vec<PendingLink>,
@@ -173,6 +181,7 @@ impl GraphWorkspace {
             fan_in: HashMap::new(),
             fan_out: HashMap::new(),
             calls: Vec::new(),
+            chained: HashMap::new(),
             configs: Vec::new(),
             inherits: Vec::new(),
             pending_links: Vec::new(),
@@ -196,6 +205,50 @@ impl GraphWorkspace {
 
     pub fn project_id(&self) -> ProjectId {
         self.project_id
+    }
+
+    /// 登记一个调用点的「链式修饰」信息（P2 建调用点时调用）。
+    ///
+    /// 只记 (方法名, 首个实参里的字符串)：`->except(['read'])` → `("except", ["read"])`。
+    pub fn index_chained(&mut self, file: &str, line: u32, method: Option<&str>, args: &[FactValue]) {
+        let Some(m) = method else { return };
+        let mut strings: Vec<String> = Vec::new();
+        for a in args {
+            match a {
+                FactValue::String(s) => strings.push(s.clone()),
+                FactValue::Array(items) => {
+                    for (_, v) in items {
+                        if let FactValue::String(s) = v {
+                            strings.push(s.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if strings.is_empty() {
+            return;
+        }
+        self.chained
+            .entry((file.to_string(), line))
+            .or_default()
+            .push((m.to_string(), strings));
+    }
+
+    /// 取**同一行**上某链式调用的实参数组（`expanded_actions` 用）。
+    pub fn chained_strings(&self, file: &str, line: u32, method: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for (m, vals) in self
+            .chained
+            .get(&(file.to_string(), line))
+            .into_iter()
+            .flatten()
+        {
+            if m == method {
+                out.extend(vals.iter().cloned());
+            }
+        }
+        out
     }
 
     /// 记录一个参数的类型：`方法 FQN → (变量名, 类型 FQN)`。

@@ -17,12 +17,18 @@
 //! HTTP 调用（`uni.request` / `request` / `http.request` / `axios*` / `fetch`）仍被识别，
 //! 其 `args[0]` 规整为 `{ url, method }` 对象，喂给 FKB 的 `frontend-http-contract` 规则
 //! 合成 `HttpContract` 并挂 `CallsHttp`（与后端 `HandledBy` 在同一 `ContractId` 节点汇聚）。
+//!
+//! 形态不止"对象式"一种：**成员式**（`request.get('/v2/index', data, opts)`，成员名即
+//! method、URL 是首个实参）同样会被规整成 `{ url, method }` —— CRMEB 的 uni-app 子工程
+//! 就把 HTTP 客户端包了一层，真正的 `uni.request` 只有一处且 URL 是动态拼串，
+//! 能被静态确定的位置在这一层详见 [`HttpStyle::Member`] 与 [`is_http_client_recv`]。
 
 use std::cell::RefCell;
 
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
-    CallSiteFact, Declaration, FactValue, ImportFact, Language, NodeKind, Span, SyntaxFacts,
+    CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
+    InheritanceFact, Language, NodeKind, Span, SyntaxFacts,
 };
 use gt_domain::port::LanguageParser;
 use serde_json::json;
@@ -138,6 +144,12 @@ enum HttpStyle {
     Obj,
     /// `axios.get(...)`（method 来自成员名）/ `axios({ url, method })`（对象式）。
     Axios(Option<String>),
+    /// `request.get('/v2/index', data, options)`：**成员名即 HTTP method，URL 是首个实参**。
+    ///
+    /// uni-app / Vue 项目普遍把 HTTP 客户端再包一层（`request.get` → 内部唯一一次
+    /// `uni.request({ url: MASTER + '/api/' + path })`），真正的 `uni.request` URL 是
+    /// 动态拼串、抓不到；能静态确定 location 的是外层这层成员式调用。
+    Member(String),
     /// `fetch(url, { method })`。
     Fetch,
     /// 非 HTTP 调用（普通函数 / 组件方法调用）。
@@ -162,8 +174,21 @@ fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
     for child in node.named_children(&mut c) {
         match child.kind() {
             "import_statement" => collect_imports(child, ctx),
-            // `export function/const/class ...`：拆掉 export 外壳继续走内部声明。
-            "export_statement" => walk(child, ctx, owner, class),
+            // `export default { ... }` / `module.exports = { ... }`：按配置条目采集，
+            // 与 PHP 的 `return [...]` 同构（使 `kind: config_entry` 选择器对前端可用）。
+            "export_statement" => {
+                // `export default { ... }`：只有**对象字面量**才算配置（函数 / 标识符不算）。
+                collect_export_default_object(child, ctx);
+                walk(child, ctx, owner, class);
+            }
+            "expression_statement" => {
+                if let Some(ae) = child.named_child(0) {
+                    if ae.kind() == "assignment_expression" {
+                        collect_export_default_object(ae, ctx);
+                    }
+                }
+                walk(child, ctx, owner, class);
+            }
             "class_declaration" => collect_class(child, ctx),
             "function_declaration" | "generator_function_declaration" => {
                 collect_named_function(child, ctx);
@@ -188,6 +213,155 @@ fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
                 walk(child, ctx, owner, class);
             }
             _ => walk(child, ctx, owner, class),
+        }
+    }
+}
+
+/// `export default { ... }` / `module.exports = { ... }`：按"配置条目"采集。
+///
+/// 前端的配置型文件（路由表、站点配置、uni-app 的声明式配置）都是这种形态；
+/// 采成 `ConfigEntryFact` 后 `kind: config_entry` 选择器就对前端生效 —— 与 PHP
+/// 的 `return [...]` 完全同构。只收**标量叶子**，函数与嵌套对象不展开成叶子
+/// （否则每个 Vue 组件的 `methods` 都变成配置，纯噪声）。
+fn collect_export_default_object(node: Node, ctx: &mut Ctx) {
+    let mut obj: Option<Node> = None;
+    if node.kind() == "assignment_expression" {
+        if let Some(rhs) = node.child_by_field_name("right") {
+            if rhs.kind() == "object" {
+                obj = Some(rhs);
+            }
+        }
+    } else {
+        let mut c = node.walk();
+        for child in node.named_children(&mut c) {
+            if child.kind() == "object" {
+                obj = Some(child);
+            }
+        }
+    }
+    let Some(obj) = obj else { return };
+    collect_object_entries(obj, ctx, String::new());
+}
+
+/// 递归展开对象字面量：只把标量叶子写成配置条目，键路径按 `.` 连接。
+fn collect_object_entries(node: Node, ctx: &mut Ctx, prefix: String) {
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        if child.kind() != "pair" {
+            continue;
+        }
+        let Some(key) = child.child_by_field_name("key") else {
+            continue;
+        };
+        let key_text = text(key, ctx.src)
+            .trim_matches(|c| c == '\'' || c == '"')
+            .to_string();
+        if key_text.is_empty() {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            key_text
+        } else {
+            format!("{prefix}.{key_text}")
+        };
+        let Some(value) = child.child_by_field_name("value") else {
+            continue;
+        };
+        match value.kind() {
+            "object" => collect_object_entries(value, ctx, path),
+            "array" => collect_object_entries(value, ctx, path),
+            "string" | "number" | "true" | "false" | "template_string" => {
+                let fv = js_value(text(value, ctx.src));
+                if matches!(fv, FactValue::Unknown(_)) {
+                    continue;
+                }
+                ctx.facts.config_entries.push(ConfigEntryFact {
+                    key_path: path,
+                    value: fv,
+                    span: span_of(child, ctx.src),
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 取 `class X extends Y` 的基类名（TS 语法把 `extends` 放在 `class_heritage` 里）。
+fn superclass_of(class_node: Node, src: &str) -> Option<String> {
+    let mut c = class_node.walk();
+    for child in class_node.named_children(&mut c) {
+        if child.kind() == "class_heritage" {
+            let mut h = child.walk();
+            for clause in child.named_children(&mut h) {
+                if clause.kind() == "extends_clause" || clause.kind() == "implements_clause" {
+                    let mut i = clause.walk();
+                    for t in clause.named_children(&mut i) {
+                        if matches!(
+                            t.kind(),
+                            "identifier" | "type_identifier" | "nested_identifier" | "member_expression"
+                        ) {
+                            return Some(text(t, src).to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 取字段/参数的类型注解文本（`svc: UserService` → `UserService`）。
+fn type_annotation_of(node: Node, src: &str) -> Option<String> {
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        if child.kind() == "type_annotation" {
+            let mut t = child.walk();
+            for inner in child.named_children(&mut t) {
+                if matches!(
+                    inner.kind(),
+                    "type_identifier" | "predefined_type" | "nested_type_identifier" | "generic_type"
+                ) {
+                    return Some(text(inner, src).to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 构造器参数属性：`constructor(private readonly svc: UserService)` →
+/// `(svc, UserService)`，供 P7 解析 `this.svc.method()`。
+fn collect_param_types(ctor: Node, ctx: &mut Ctx, class_fqn: &str) {
+    let Some(params) = ctor.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut c = params.walk();
+    for p in params.named_children(&mut c) {
+        if p.kind() != "required_parameter" && p.kind() != "optional_parameter" {
+            continue;
+        }
+        // 只有带访问修饰符的才是"注入进 this 的属性"（普通参数不算）。
+        let mut pc = p.walk();
+        let has_modifier = p
+            .named_children(&mut pc)
+            .any(|ch| ch.kind() == "accessibility_modifier");
+        if !has_modifier {
+            continue;
+        }
+        let name = p
+            .child_by_field_name("pattern")
+            .map(|n| text(n, ctx.src).to_string())
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(t) = type_annotation_of(p, ctx.src) {
+            ctx.facts.field_types.push(FieldTypeFact {
+                class_fqn: class_fqn.to_string(),
+                field: name,
+                type_name: t,
+                span: span_of(p, ctx.src),
+            });
         }
     }
 }
@@ -261,6 +435,17 @@ fn collect_class(node: Node, ctx: &mut Ctx) {
         extra: json!({}),
     });
 
+    // 继承：`class X extends Y [implements I]` —— 与 PHP / Java 同构，
+    // 使 `kind: inheritance` 选择器对前端同样可用（Vue 组件基类 / TS 类层次）。
+    if let Some(base) = superclass_of(node, ctx.src) {
+        ctx.facts.inheritances.push(InheritanceFact {
+            child_fqn: cfqn.clone(),
+            base_name: base,
+            kind: EdgeKind(EdgeKind::EXTENDS.to_string()),
+            span: span_of(node, ctx.src),
+        });
+    }
+
     let Some(body) = node.child_by_field_name("body") else {
         return;
     };
@@ -268,6 +453,12 @@ fn collect_class(node: Node, ctx: &mut Ctx) {
     for member in body.named_children(&mut c) {
         match member.kind() {
             "method_definition" | "constructor" => {
+                // 构造器参数属性注入：`constructor(private svc: UserService)`。
+                // 与 PHP 的 `private X $p` / Java 的 `@Autowired` 同义 —— 记下类型，
+                // 供 P7 解析 `$this->svc.method()` 这类实例调用。
+                if member.kind() == "constructor" {
+                    collect_param_types(member, ctx, &cfqn);
+                }
                 let mname = member
                     .child_by_field_name("name")
                     .map(|n| text(n, ctx.src).to_string())
@@ -290,6 +481,17 @@ fn collect_class(node: Node, ctx: &mut Ctx) {
                     .child_by_field_name("name")
                     .map(|n| text(n, ctx.src).to_string())
                     .unwrap_or_default();
+                // 字段类型注解：`private svc: UserService;`（TS / Vue class 组件）
+                if !fname.is_empty() {
+                    if let Some(t) = type_annotation_of(member, ctx.src) {
+                        ctx.facts.field_types.push(FieldTypeFact {
+                            class_fqn: cfqn.clone(),
+                            field: fname.clone(),
+                            type_name: t,
+                            span: span_of(member, ctx.src),
+                        });
+                    }
+                }
                 let value = member.child_by_field_name("value");
                 if let Some(v) = value {
                     if v.kind() == "arrow_function"
@@ -411,6 +613,16 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
                         HttpStyle::Obj,
                     )
                 }
+                // 成员式 HTTP 动词：`request.get('v2/index')` / `$http.post(...)`。
+                // receiver / callee / method 一仍其旧（`request` / `request.get` / `get`），
+                // 由 FKB 的 `frontend-http-contract` 规则按 `X::{get,post,...}` 选中；
+                // 这里只负责把实参规整成 `{ url, method }` 喂给它。
+                Some(o) if is_http_verb(&prop) && is_http_client_recv(o) => (
+                    format!("{o}.{prop}"),
+                    Some(o.to_string()),
+                    Some(prop.clone()),
+                    HttpStyle::Member(prop.to_ascii_uppercase()),
+                ),
                 _ => (
                     format!("{}.{}", obj.as_deref().unwrap_or(""), prop),
                     obj.clone(),
@@ -452,8 +664,13 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
             ("method".to_string(), FactValue::String(method)),
         ])]
     } else {
-        // 非 HTTP 调用：本阶段不依赖实参（P7 按被调名解析），留空即可。
-        vec![]
+        // 非 HTTP 调用：实参同样要采 —— **前端语义节点靠 `{ arg: 0 }` 取身份**
+        // （`uni.setStorageSync('token', v)` → `Cache:token`），与后端
+        // `Cache::set('key', v)` 完全同构。只收静态可确定的字面量，其余给 Unknown
+        // —— 于是"取不到就是取不到"，FKB 的 `require_literal` 自会拒收。
+        args_node
+            .map(|a| literal_args(text(a, ctx.src)))
+            .unwrap_or_default()
     };
 
     ctx.facts.call_sites.push(CallSiteFact {
@@ -469,26 +686,41 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
 }
 
 /// 按 HTTP 形态从实参子串解出 (url, method)。
+///
+/// URL 不限于纯字面量：**拼接式**（`'v2/invoice/detail/' + id`）与
+/// **模板串**（`` `v2/order/invoice_detail/${id}` ``）同样可静态确定形状 ——
+/// 非字面量段折成 `:param` 占位符，配合 FKB 的 `param_wildcard` 归一化，
+/// 与后端路由的 `/:id` 在同一个 `ContractId` 上汇聚。
+/// 只有**首段**是变量（`BASE + '/api' + url`）才整体放弃（返回 `None`）：
+/// 连前缀都锚不住的 URL，任何形状都是猜的。
 fn extract_http_args(style: &HttpStyle, args: &str) -> (Option<String>, String) {
     match style {
         HttpStyle::Obj => {
             let method = field_string(args, "method")
                 .map(|m| m.to_ascii_uppercase())
                 .unwrap_or_else(|| "GET".to_string());
-            (field_string(args, "url"), method)
+            (field_expr(args, "url").and_then(|e| literal_url_expr(&e)), method)
         }
         HttpStyle::Axios(Some(verb)) => {
-            let url = first_string(args).or_else(|| field_string(args, "url"));
+            let url = first_arg_expr(args)
+                .and_then(|e| literal_url_expr(&e))
+                .or_else(|| field_expr(args, "url").and_then(|e| literal_url_expr(&e)));
             (url, verb.clone())
         }
         HttpStyle::Axios(None) => {
             let method = field_string(args, "method")
                 .map(|m| m.to_ascii_uppercase())
                 .unwrap_or_else(|| "GET".to_string());
-            (field_string(args, "url"), method)
+            (field_expr(args, "url").and_then(|e| literal_url_expr(&e)), method)
+        }
+        HttpStyle::Member(verb) => {
+            let url = first_arg_expr(args)
+                .and_then(|e| literal_url_expr(&e))
+                .or_else(|| field_expr(args, "url").and_then(|e| literal_url_expr(&e)));
+            (url, verb.clone())
         }
         HttpStyle::Fetch => {
-            let url = first_string(args);
+            let url = first_arg_expr(args).and_then(|e| literal_url_expr(&e));
             let method = field_string(args, "method")
                 .map(|m| m.to_ascii_uppercase())
                 .unwrap_or_else(|| "GET".to_string());
@@ -500,6 +732,254 @@ fn extract_http_args(style: &HttpStyle, args: &str) -> (Option<String>, String) 
 
 fn is_http_verb(s: &str) -> bool {
     matches!(s, "get" | "post" | "put" | "delete" | "patch" | "head" | "options")
+}
+
+// ---------------------------------------------------------------- URL 表达式规整
+
+/// 把 URL **表达式**规整成带 `:param` 占位符的字面串。
+///
+/// * `'v2/invoice/detail/' + id`           → `v2/invoice/detail/:param`
+/// * `` `v2/order/invoice_detail/${id}` `` → `v2/order/invoice_detail/:param`
+/// * `'v2/index'`                          → `v2/index`（纯字面量，原样）
+/// * `BASE + '/api' + url`                 → `None`（首段是变量，无法锚定）
+fn literal_url_expr(expr: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut first = true;
+    for part in split_top_plus(expr) {
+        let t = part.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let bytes = t.as_bytes();
+        if bytes[0] == b'"' || bytes[0] == b'\'' {
+            if let Some(s) = decode_string(t) {
+                out.push_str(&s);
+            }
+        } else if bytes[0] == b'`' {
+            // 模板串：`${expr}` 一律折成 `:param`（参数名不重要，形状才重要）。
+            let inner = &t[1..t.len() - 1];
+            let mut s = String::with_capacity(inner.len());
+            let mut rest: &str = inner;
+            while let Some(pos) = rest.find("${") {
+                s.push_str(&rest[..pos]);
+                s.push_str(":param");
+                match rest[pos + 2..].find('}') {
+                    Some(end) => rest = &rest[pos + 2 + end + 1..],
+                    None => {
+                        rest = "";
+                        break;
+                    }
+                }
+            }
+            s.push_str(rest);
+            out.push_str(&s);
+        } else if first {
+            // 首段不是字面量：连 URL 前缀都锚不住，整条放弃。
+            return None;
+        } else {
+            out.push_str(":param");
+        }
+        first = false;
+    }
+    // 只去**尾部**斜杠：首斜杠参与 FKB 的 strip_prefix / leading_slash 语义，不能动。
+    let out = out.trim_end_matches('/').to_string();
+    if out.is_empty() || out.starts_with(":param") {
+        return None;
+    }
+    Some(out)
+}
+
+/// 收集普通调用的实参：`(a, b, c)` → `[值, 值, 值]`，只保留静态可确定的部分。
+///
+/// 为什么值得做：前端 FKB 要像后端一样按 `{ arg: 0 }` 取身份，就得有实参。
+/// 但绝不能把 `$var` / `fn()` 当身份 —— 那些一律落到 [`js_value`] 的 `Unknown`，
+/// 由 FKB 的 `require_literal` 拦掉（与后端 `Cache::get($name)` 同一套处理）。
+fn literal_args(raw: &str) -> Vec<FactValue> {
+    let inner = raw.trim();
+    let inner = inner
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(inner);
+    if inner.trim().is_empty() {
+        return Vec::new();
+    }
+    split_top_commas(inner)
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| js_value(s.trim()))
+        .collect()
+}
+
+/// 把一个实参表达式文本折成 [`FactValue`]：字符串 / 字符串数组 / 对象字面量 /
+/// 数字 / 布尔，其余一律 `Unknown(原文)`。
+fn js_value(raw: &str) -> FactValue {
+    let b = raw.as_bytes();
+    let Some(&first) = b.first() else {
+        return FactValue::Unknown(None);
+    };
+    match first {
+        b'"' | b'\'' | b'`' => decode_string(raw).map(FactValue::String).unwrap_or_else(|| {
+            FactValue::Unknown(Some(raw.to_string()))
+        }),
+        b'[' => {
+            let inner = &raw[1..raw.len().saturating_sub(1)];
+            let items = split_top_commas(inner)
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| (i.to_string(), js_value(s.trim())))
+                .collect();
+            FactValue::Array(items)
+        }
+        b'{' => {
+            let inner = &raw[1..raw.len().saturating_sub(1)];
+            let items = split_top_commas(inner)
+                .into_iter()
+                .filter_map(|s| s.split_once(':'))
+                .map(|(k, v)| {
+                    (
+                        k.trim().trim_matches(|c| c == '\'' || c == '"').to_string(),
+                        js_value(v.trim()),
+                    )
+                })
+                .collect();
+            FactValue::Array(items)
+        }
+        _ if raw == "true" || raw == "false" => FactValue::Bool(raw == "true"),
+        _ if raw.parse::<i64>().is_ok() => FactValue::Int(raw.parse().unwrap_or(0)),
+        _ => FactValue::Unknown(Some(raw.to_string())),
+    }
+}
+
+/// 按顶层 `,` 切分（跳过字符串字面量与括号内部），返回去空白后的片段。
+fn split_top_commas(s: &str) -> Vec<&str> {
+    let b = s.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' | b'`' => i = skip_string(b, i),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(s[start..].trim());
+    parts
+}
+
+/// 按顶层 `+` 切分表达式（跳过字符串字面量与括号/花括号内部）。
+fn split_top_plus(expr: &str) -> Vec<String> {
+    let b = expr.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] as char {
+            '"' | '\'' | '`' => i = skip_string(b, i),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '+' if depth == 0 => {
+                parts.push(expr[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(expr[start..].to_string());
+    parts
+}
+
+/// 从 `args` 里取出**第一个顶层实参**的表达式文本（`'a/' + id, data, {...}` → `'a/' + id`）。
+fn first_arg_expr(args: &str) -> Option<String> {
+    let open = args.find('(')?;
+    top_level_segment(&args[open + 1..])
+}
+
+/// 取对象字面量里 `key:` 后的**值表达式**文本（到顶层 `,` 或串尾）。
+///
+/// 与 [`field_string`] 同一套前缀规则：`url: url`（变量）不越键、`base_url:` 不误认。
+fn field_expr(args: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}:");
+    let bytes = args.as_bytes();
+    let mut from = 0;
+    let idx = loop {
+        let pos = args[from..].find(&needle)?;
+        let abs = from + pos;
+        let prev_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
+        if prev_ok {
+            break abs;
+        }
+        from = abs + 1;
+    };
+    top_level_segment(&args[idx + needle.len()..])
+}
+
+/// 取一段文本里第一个**顶层**片段（到深度 0 的 `,` 或串尾），跳过字符串与括号。
+fn top_level_segment(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] as char {
+            '"' | '\'' | '`' => i = skip_string(b, i),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    let seg = s[..i.min(s.len())].trim();
+    if seg.is_empty() {
+        None
+    } else {
+        Some(seg.to_string())
+    }
+}
+
+/// 返回配对引号之后的下标（处理 `\"` 转义；模板串内的 `${}` 不含引号场景从简）。
+fn skip_string(b: &[u8], open: usize) -> usize {
+    let quote = b[open];
+    let mut i = open + 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            c if c == quote => return i,
+            _ => {}
+        }
+        i += 1;
+    }
+    b.len()
+}
+
+/// 成员式 HTTP 调用的**接收者白名单**：`request.get(...)` 里 `request` 这一段。
+///
+/// 只有 HTTP 动词作为方法名还不够 —— `$store.get()` / `cache.get()` / `storage.get()`
+/// 等同形异物遍地都是，一律当契约会污染路由视角（假契约 + 假幽灵调用）。故以白名单收窄：
+/// 命中面小但**不误判**，漏掉的项目级封装名可以在此处补一行。
+///
+/// `this.request.get(...)` / `store.api.get(...)`：取最后一段判定（`recv_matches`
+/// 的尾部名匹配同理，FKB 侧仍写 `request::{get,post,...}`）。
+fn is_http_client_recv(recv: &str) -> bool {
+    let last = recv.rsplit('.').next().unwrap_or(recv);
+    matches!(
+        last,
+        "request" | "requests" | "http" | "https" | "$http" | "ajax" | "api" | "apiClient" | "httpClient"
+    )
 }
 
 // ---------------------------------------------------------------- 通用小工具
@@ -578,6 +1058,12 @@ fn decode_string(raw: &str) -> Option<String> {
         return None;
     }
     let quote = bytes[0] as char;
+    // **整段必须是同一个引号包裹的字面量**才解：实参里的片段可能是 `'a' + b`
+    // 这类表达式（`literal_args` 收上来的就长这样），裸切 `1..len-1` 会切在多字节
+    // 字符中间直接 panic（CRMEB 前端的中文实参踩到过）。
+    if bytes.len() < 2 || bytes[bytes.len() - 1] != quote as u8 {
+        return None;
+    }
     if quote == '`' && raw.contains("${") {
         return None;
     }
@@ -713,19 +1199,34 @@ mod tests {
 
     #[test]
     fn non_http_calls_ignored() {
-        // 普通函数调用不应被当成 HTTP 调用（其 args 应为空，不携带 url/method）。
-        let facts = parse_src("doWork(a, b);\nif (x) { foo() }");
-        assert!(facts
+        // 普通函数调用不应被当成 HTTP 调用 —— 判据不是"args 为空"（现在普通调用也
+        // 采实参，供前端语义节点取身份），而是**不带 `{ url, method }` 归一化实参**。
+        let facts = parse_src("doWork('a', b);\nif (x) { foo() }");
+        assert!(!facts.call_sites.is_empty(), "应仍收集到普通调用点");
+        assert!(
+            facts.call_sites.iter().all(|c| !c.args.iter().any(|a| {
+                matches!(a, FactValue::Array(items)
+                    if items.iter().any(|(k, _)| k == "url" || k == "method"))
+            })),
+            "非 HTTP 调用不应携带 url/method 归一化实参"
+        );
+        // 但**字面量实参要采上来**：`doWork('a')` 的首参应为 String。
+        let work = facts
             .call_sites
             .iter()
-            .all(|c| c.args.is_empty()), "非 HTTP 调用不应携带 url/method 实参");
-        assert!(!facts.call_sites.is_empty(), "应仍收集到普通调用点");
+            .find(|c| c.callee_text == "doWork")
+            .expect("应收集到 doWork 调用");
+        assert!(
+            matches!(work.args.first(), Some(FactValue::String(s)) if s == "a"),
+            "普通调用的字面量实参要可用（前端语义节点靠 arg:0 取身份），实际：{:?}",
+            work.args
+        );
     }
 
     #[test]
     fn variable_url_is_unknown() {
-        // 含插值的模板串无法静态求值，url 必须是 Unknown（不合成幽灵契约）。
-        let facts = parse_src("axios.get(`/api/${id}`)");
+        // 首段是变量的 URL 无法锚定，url 必须是 Unknown（不合成幽灵契约）。
+        let facts = parse_src("const BASE='https://x';\naxios.get(BASE + '/api/' + path)");
         let c = facts
             .call_sites
             .iter()
@@ -737,7 +1238,18 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == "url" && matches!(v, FactValue::Unknown(_)))
         );
-        assert!(url_unknown, "模板串 url 必须是 Unknown");
+        assert!(url_unknown, "首段为变量的 url 必须是 Unknown");
+    }
+
+    #[test]
+    fn templated_url_keeps_param_shape() {
+        // 模板串 / 拼接串的**形状**可静态确定：插值段折成 `:param` 占位符，
+        // 与后端 `/:id` 在 `param_wildcard` 归一化后汇聚（不是 Unknown）。
+        let (_, url, method) = first_http("axios.get(`/api/order/${id}/detail`)");
+        assert_eq!(url.as_deref(), Some("/api/order/:param/detail"));
+        assert_eq!(method, "GET");
+        let (_, url2, _) = first_http("request.get('/api/invoice/' + id)");
+        assert_eq!(url2.as_deref(), Some("/api/invoice/:param"));
     }
 
     #[test]

@@ -452,6 +452,8 @@ rules:
               normalize:
                 - strip_prefix: ["api/"]
                 - leading_slash
+                # `/:id` 折成 `/:*`：与前端拼接式 URL 的 `/:param` 按形状汇聚
+                - param_wildcard
           fields:
             - name: raw_path
               value: { arg: 0 }
@@ -462,6 +464,52 @@ rules:
             direction: to_target
             to: { arg: 1, resolve: handler_pattern }
           confidence: 0.95
+
+  # ===== P5 Synthesize：HTTP 契约桥（后端侧 · REST 资源）=====
+  # `Route::resource('cms', 'v1.cms.Article')` 一条语句其实是 **7 条契约**：
+  #   index / create / save / read / edit / update / delete
+  # 展开表写在 FKB 里（内核只认识"一条调用展开成 N 个节点"这回事），
+  # `->only([...])` / `->except([...])` 的动作过滤由内核从**同一语句行**的
+  # 链式调用实参读出 —— 于是"哪些动作真的存在"是代码说了算，不是我们猜的。
+  - id: tp6-route-resource
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "think\\facade\\Route::resource|Route::resource"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { expand_method: true }
+            path:
+              arg: 0
+              normalize:
+                - strip_prefix: ["api/"]
+                - leading_slash
+                - param_wildcard
+          expand:
+            only: only
+            except: except
+            variants:
+              - { name: index,  method: GET,    path_suffix: "",          entry: index }
+              - { name: create, method: GET,    path_suffix: "/create",   entry: create }
+              - { name: save,   method: POST,   path_suffix: "",          entry: save }
+              - { name: read,   method: GET,    path_suffix: "/:id",      entry: read }
+              - { name: edit,   method: GET,    path_suffix: "/:id/edit", entry: edit }
+              - { name: update, method: PUT,    path_suffix: "/:id",      entry: update }
+              - { name: delete, method: DELETE, path_suffix: "/:id",      entry: delete }
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+            - name: handler
+              value: { arg: 1 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { arg: 1, resolve: handler_pattern }
+            to_method: { expand_entry: true }
+          confidence: 0.9
 
   # ===== P4+P5+P6：事件注册表 =====
   - id: tp6-event-registry

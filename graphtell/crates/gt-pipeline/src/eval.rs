@@ -1,6 +1,6 @@
 //! [`ValueSource`] 求值：把 YAML 里声明的"值从哪来"变成实际字符串/字面量。
 
-use gt_domain::model::{FactValue, NodeId, ResolveAs, ValueSource};
+use gt_domain::model::{ExpandVariant, FactValue, NodeId, ResolveAs, ValueSource};
 
 use crate::normalize::{apply_normalize, apply_table_prefix_steps, apply_transform};
 use crate::workspace::{CallRecord, ConfigRecord, GraphWorkspace, InheritRecord};
@@ -49,11 +49,20 @@ impl EvalValue {
 pub struct Evaluator<'a> {
     ws: &'a GraphWorkspace,
     ctx: MatchCtx<'a>,
+    /// 当前展开变体（`Synthesize.expand`）：非空时 `{ expand_method: true }` /
+    /// `{ expand_entry: true }` 才有值。
+    variant: Option<ExpandVariant>,
 }
 
 impl<'a> Evaluator<'a> {
     pub fn new(ws: &'a GraphWorkspace, ctx: MatchCtx<'a>) -> Self {
-        Self { ws, ctx }
+        Self { ws, ctx, variant: None }
+    }
+
+    /// 绑定当前展开变体（展开表逐条执行时设置）。
+    pub fn with_variant(mut self, v: Option<ExpandVariant>) -> Self {
+        self.variant = v;
+        self
     }
 
     pub fn ws(&self) -> &'a GraphWorkspace {
@@ -145,6 +154,21 @@ impl<'a> Evaluator<'a> {
     }
 
     fn raw(&self, src: &ValueSource) -> Option<EvalValue> {
+        // 展开变体的注入值：一条调用 → N 个语义节点时，method / 入口方法随变体而变。
+        if src.expand_method == Some(true) {
+            return self
+                .variant
+                .as_ref()
+                .and_then(|v| v.method.clone())
+                .map(EvalValue::Str);
+        }
+        if src.expand_entry == Some(true) {
+            return self
+                .variant
+                .as_ref()
+                .and_then(|v| v.entry.clone())
+                .map(EvalValue::Str);
+        }
         if let Some(lit) = &src.literal {
             return Some(EvalValue::Str(lit.clone()));
         }

@@ -1,4 +1,5 @@
 import type { LayoutMode } from '@/entities/view';
+import { truncateMiddle } from '@/shared/lib/format';
 
 export interface LayoutNode {
   id: number;
@@ -94,6 +95,12 @@ export interface LayoutInput {
     cols: string[];
     cells: number[][];
   };
+  /**
+   * 是否在节点药丸里画种类图标。默认开启。当本次视图实际出现的 kind 数 ≤ 2 时由调用方
+   * 置为 false —— 同质视图（如「谁调用了 X」几乎全是 Method）图标全同，纯属占横向空间 +
+   * 视觉噪声，靠颜色即可区分；kind ≥ 3 才画图标（多类型时图标 + 颜色才能一眼区分）。
+   */
+  showIcons?: boolean;
   width: number;
   height: number;
 }
@@ -115,7 +122,7 @@ export const LAYOUTS: Record<LayoutMode, LayoutFn> = {
   er: erLayout,
 };
 
-const PILL_H = 30;
+const PILL_H = 26;
 
 /** 近似字符宽：CJK / 全角按 1.8 个拉丁位计（同字号下 CJK ≈ 拉丁的 1.8 倍宽）。 */
 function units(s: string): number {
@@ -125,18 +132,65 @@ function units(s: string): number {
 }
 
 /**
- * 药丸节点宽度估算。必须与 GraphCanvas 的实际渲染对齐：
- * `种类徽标 · 名称`，徽标字号 10（中心）/ 9（其它），名称字号 13（中心）/ 11（其它）
- * 且按字符截断 26 字 —— `truncate` 数的是字符，CJK 一字宽达 1.8 位，
- * 所以上限按 26×1.8 位封顶，否则中文名会溢出药丸。
- *
- * 以前按「合并字符串截 26 字 × 7px」估：中心节点字号更大、徽标又是本地化文本，
- * 实测 `GET /v2/order/...` 这类长名会顶出边框。
+ * 与 `global.css` 一致的字体栈 —— 测量必须用**渲染实际使用的字体**，否则量了也白量。
  */
-function pillWidth(kind: string, name: string, center = false): number {
-  const kindPx = units(kind) * (center ? 7 : 6);
-  const namePx = Math.min(units(name), 26 * 1.8) * (center ? 7.4 : 6.2);
-  return Math.max(96, Math.min(300, Math.ceil(kindPx + 12 + namePx + 24)));
+const FONT_STACK =
+  `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', ` +
+  `'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif`;
+
+/**
+ * 真实文本宽度（canvas `measureText`）。
+ *
+ * 旧实现按「每视觉位 × 固定系数」估算：系数对实际字体普遍偏宽（拉丁正文 ≈ 0.5em/字符，
+ * 旧系数折合 0.56–0.57em），于是每个药丸右侧都拖着一段假空白，看起来"没按内容自适应"。
+ * 这里直接用与渲染一致的字体 + 字号 + 字重量出真实像素宽，并按 (weight, px, text) 缓存
+ * （同一名字在 resize / 重排时会反复量）。无 canvas 环境（jsdom 单测 / SSR）回退到旧的
+ * 系数估算，测试保持确定性；返回 null 表示"没量到"。
+ */
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+const measureCache = new Map<string, number>();
+function measureTextPx(text: string, px: number, weight: number): number | null {
+  const key = `${weight}/${px}/${text}`;
+  const hit = measureCache.get(key);
+  if (hit != null) return hit;
+  try {
+    if (typeof document === 'undefined') return null;
+    if (measureCtx === undefined) measureCtx = document.createElement('canvas').getContext('2d');
+    if (!measureCtx) return null;
+    measureCtx.font = `${weight} ${px}px ${FONT_STACK}`;
+    const w = measureCtx.measureText(text).width;
+    if (w > 0) {
+      measureCache.set(key, w);
+      return w;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 药丸节点宽度。必须与 GraphCanvas 的实际渲染对齐：
+ * `图标 + 名称`，名称字号 13 / 字重 700（中心）或 11 / 500（其它），
+ * 且渲染端按**视觉宽度**中间截断 40 位 —— 宽度计算同样先截断再测量，口径一致。
+ * 文本宽度优先 `measureText` 实测；不可测量时按系数估算兜底。上限 300 防极端长名撑爆画布。
+ */
+const ICON_AREA = 22; // 图标 14 + 左内边距 6 + 间隔 ≈ 2（文字起点 23）
+const ICON_LEFT = 8; // 无图标时仅左内边距（文字起点 8）
+const RIGHT_PAD = 18; // 右内边距（含 1–2px 渲染误差缓冲）
+const MIN_NAME_UNITS = 4; // 至少保留约 4 个拉丁字符宽的文本区（保证可点 / 可读；CJK 一字 ≈ 1.8 位，自然更宽）
+function pillWidth(kind: string, name: string, center = false, icon = true): number {
+  const px = center ? 13 : 11;
+  const weight = center ? 700 : 500;
+  // 先按渲染端同一规则截断，再量 —— 截断前的全名量出来只会虚宽。
+  const shown = truncateMiddle(name, 40);
+  const textPx =
+    measureTextPx(shown, px, weight) ?? Math.min(units(name), 40) * (center ? 7.4 : 6.2);
+  // 下限完全由内容推导：左内边距 + 右侧留白 + 至少 MIN_NAME_UNITS 字符的文本宽。
+  // 图标与否只改 `left`（有图标 23 / 无图标 8），分档常量因此被吸收、无需单独维护。
+  const left = icon ? ICON_AREA + 1 : ICON_LEFT;
+  const minNamePx = (center ? 7.4 : 6.2) * MIN_NAME_UNITS;
+  return Math.min(300, Math.ceil(left + RIGHT_PAD + Math.max(minNamePx, textPx)));
 }
 
 // ---------------------------------------------------------------- radial
@@ -187,12 +241,12 @@ export function concentricLayout(input: LayoutInput): LayoutResult {
   // 同时保证与上一环径向不重叠，且环 1 不被中心药丸盖住。这样无论第几环有多少节点都不挤。
   const GAP = 18;
   const PAD = 60;
-  const maxPillW = Math.max(110, ...rings.flat().map((n) => pillWidth(n.kind, n.name)), pillWidth(center.kind, center.name, true));
+  const maxPillW = Math.max(110, ...rings.flat().map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true)), pillWidth(center.kind, center.name, true, input.showIcons ?? true));
   const ringRadii: number[] = [];
   let r = 0;
   for (let i = 0; i < rings.length; i++) {
     const ring = rings[i];
-    const arcNeeded = ring.reduce((s, n) => s + pillWidth(n.kind, n.name) + GAP, 0);
+    const arcNeeded = ring.reduce((s, n) => s + pillWidth(n.kind, n.name, false, input.showIcons ?? true) + GAP, 0);
     const circNeeded = arcNeeded / (2 * Math.PI);
     const radialFloor = i === 0 ? maxPillW / 2 + 24 : r + PILL_H + 14;
     r = Math.max(radialFloor, circNeeded);
@@ -208,7 +262,7 @@ export function concentricLayout(input: LayoutInput): LayoutResult {
   const cy = contentH / 2;
 
   const nodes: PlacedNode[] = [
-    { ...center, x: cx, y: cy, shape: 'rect', w: pillWidth(center.kind, center.name, true), h: PILL_H },
+    { ...center, x: cx, y: cy, shape: 'rect', w: pillWidth(center.kind, center.name, true, input.showIcons ?? true), h: PILL_H },
   ];
 
   const ringCount = rings.length;
@@ -227,24 +281,33 @@ export function concentricLayout(input: LayoutInput): LayoutResult {
         x: cx + radius * Math.cos(angle),
         y: cy + radius * Math.sin(angle),
         shape: 'rect',
-        w: pillWidth(n.kind, n.name),
+        w: pillWidth(n.kind, n.name, false, input.showIcons ?? true),
         h: PILL_H,
       });
     });
   });
 
   const pos = new Map<number, [number, number]>();
+  const dims = new Map<number, { w: number; h: number }>();
   nodes.forEach((n) => {
     pos.set(n.id, [n.x, n.y]);
+    dims.set(n.id, { w: n.w ?? 0, h: n.h ?? PILL_H });
   });
 
   // 边统一为直线：不同环已按环序号错开相位（见上），端点很少再共线，
   // 故无需事后把边掰弯——直线更诚实、也更清晰。只保留两端都存在的边。
+  // 端点从**节点中心**收到**药丸边界**：不收缩时线身会钻进药丸底下，
+  // 节点不透明时被盖住看不出来，一旦聚焦变暗（半透明）线就透出来了。
   const placed: PlacedEdge[] = edges.flatMap((e) => {
     const a = pos.get(e.from);
     const b = pos.get(e.to);
     if (!a || !b) return [];
-    return [{ id: e.id, from: e.from, to: e.to, points: [a, b], orthogonal: false }];
+    const da = dims.get(e.from);
+    const db = dims.get(e.to);
+    const [a2, b2] = da && db ? shrinkToRects(a, da.w, da.h, b, db.w, db.h) : [a, b];
+    // 用 `...e` 透传 `seq`（及其余 LayoutEdge 字段）：渲染侧 `edgeKey` 依赖 `seq` 做边唯一键，
+    // 一旦丢失，悬浮聚焦就找不到这条边、连不出它的两个端节点（只有边自己高亮、节点却被压暗）。
+    return [{ ...e, points: [a2, b2], orthogonal: false }];
   });
 
   // 同心环引导线：把"环 = 跳数"显式画出来（环 1 = 直接关联）。
@@ -271,6 +334,35 @@ export function concentricLayout(input: LayoutInput): LayoutResult {
 // ---------------------------------------------------------------- 几何
 
 type Pt = [number, number];
+
+/**
+ * 把直线的两端从**节点中心**收缩到两端药丸的**边界**。
+ *
+ * 同心环布局把节点摆在圆周上、边画成中心连中心的直线；线身原本钻在药丸底下，
+ * 药丸不透明时被盖住，一旦悬浮聚焦把节点压成半透明，线就透出来（真实 bug）。
+ * 收缩后线从源药丸边缘出发、到目标药丸边缘为止，箭头（渲染侧 `clipArrowTip`
+ * 对"终点在矩形外/上"直接取终点）自然钉在药丸边缘。
+ *
+ * 两端各自沿方向求出射参数：从中心到 x/y 边界的距离除以方向分量取小者。
+ * 若两端收缩后越过了彼此（节点几乎重叠 / 线完全在矩形内部），退回原始端点。
+ */
+function shrinkToRects(a: Pt, aw: number, ah: number, b: Pt, bw: number, bh: number): [Pt, Pt] {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const exit = (hw: number, hh: number, vx: number, vy: number): number => {
+    const tx = vx !== 0 ? hw / Math.abs(vx) : Infinity;
+    const ty = vy !== 0 ? hh / Math.abs(vy) : Infinity;
+    return Math.min(tx, ty);
+  };
+  const tA = exit(aw / 2, ah / 2, dx, dy);
+  const tB = exit(bw / 2, bh / 2, dx, dy);
+  if (!Number.isFinite(tA) && !Number.isFinite(tB)) return [a, b];
+  if (tA + tB >= 1) return [a, b]; // 收缩后两端相遇 / 交叉：节点重叠，保持原样
+  return [
+    [a[0] + dx * tA, a[1] + dy * tA],
+    [b[0] - dx * tB, b[1] - dy * tB],
+  ];
+}
 
 /**
  * 线段是否穿过轴对齐矩形（Liang–Barsky 裁剪）。
@@ -464,6 +556,13 @@ function fanOffset(count: number, idx: number, fan = 11): number {
   return count <= 1 ? 0 : (idx - (count - 1) / 2) * fan;
 }
 
+/**
+ * 三次贝塞尔曲线采样为折线。
+ *
+ * 布局仍然只产出 `points`（渲染端 `M/L` 折线、标签锚点、箭头切线全部无需感知曲线）：
+ * 16 段采样在 `non-scaling-stroke` 下与真曲线视觉不可分，而测试侧的
+ * `segmentsThroughNodes` / `crossings`（按线段判定）也照常适用于采样点。
+ */
 function median(xs: number[]): number {
   if (xs.length === 0) return Number.MAX_SAFE_INTEGER;
   const s = xs.slice().sort((p, q) => p - q);
@@ -529,97 +628,158 @@ function orderByBarycenter(layers: LayoutNode[][], edges: LayoutEdge[]): LayoutN
 const HUB_MIN = 7;
 
 /**
- * 中心辐射（hub-and-spoke）：中心在左，邻居**单列**排在右侧，边走三段：
+ * 中心辐射（hub-and-spoke）：中心在左，邻居**单列**排在右侧，边为**单段直线**
+ * （从中心药丸缘直接连到目标药丸缘，无 90°/0° 折角）：
  *
  * ```
- * 中心 ──射线──▶ (通道 x, 目标 y) ──短横──▶ 目标
+ * 中心 ●━━━━━━━━━━▶ 目标（终点落在目标近侧边缘，线进入目标的 x 区间时 y 恰为目标行）
  * ```
  *
- * 为什么是三段而不是一条直线：列很高（32 个节点约 1400px）而横向间距只有几百 px 时，
- * 直连射线会**斜扫过中间若干药丸**——从中心往下数第 30 个节点，射线必然擦过中间那些。
- * 拆成三段后：纵向段走在列前的通道里（所有药丸都在它右边），横向段走在目标自己的中线上，
- * 射线段只在通道左侧活动。三段各自都碰不到任何节点。
+ * 为什么单段直线能零切节点：终点取目标药丸的*近侧边缘*而非中心——线段 x 单调增到该缘，
+ * 进入目标 x 区间时 y 已精确等于目标行，只经过目标自己那颗药丸；中心与列之间的通道区是
+ * 空白，线也不碰别的药丸。各边出发点在中心药丸缘按列序单调铺开 ⇒ 彼此不相交。这是结构保证
+ * （与 `gapX` 无关），不是优化结果。若终点误取药丸中心，远端浅线会在邻居行处扫入邻居药丸左半，
+ * 所以必须连到近侧边缘。间隔的真正来源是 `ROW_GAP`（目标行间距）与 `gapX`（通道宽、决定夹角）。
  *
- * 为什么交叉必然为 0：**从同一点出发的两条线段内部永不相交**，射线段之间不交叉；
- * 横向段各自在不同的 y 上、且只在通道右侧，也碰不到别人的射线段。这是结构保证，不是优化结果。
- *
- * 为什么不排成圆弧：圆弧同样可证零交叉（所有目标等距，射线只在端点触到目标圈），
- * 但 32 个节点排半圈需要半径约 1700px、画布约 1800×3400；
- * 单列只要宽约 600、高 n×44，代价只是纵向滚动 —— 而滚动是机械成本，交叉是歧义成本。
+ * 为什么不排成圆弧：圆弧同样可证零交叉，但 32 个节点排半圈需要半径约 1700px、画布约
+ * 1800×3400；单列只要宽约 600、高 n×60，代价只是纵向滚动 —— 而滚动是机械成本，
+ * 交叉是歧义成本。
  */
 function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = false): LayoutResult {
   const { center, edges, width, height } = input;
   const PAD = 40;
-  const ROW_GAP = 14;
-  const HUB_GAP_X = 140;
-  const GUTTER = 14; // 列前通道宽度
+  const ROW_GAP = 30; // 行距：药丸高 30 ⇒ 行距/药丸高 = 2.0。大图靠加大行距换「边间隔大」，代价是画布更高（可接受）
+  const HUB_GAP_X = 140; // 通道（中心到列）的最小横向间距；实际取值随列高自适应（见 gapX）
 
-  const centerW = pillWidth(center.kind, center.name, true);
-  const targetW = Math.max(...fanout.map((n) => pillWidth(n.kind, n.name)));
-  const colLeft = PAD + centerW + HUB_GAP_X;
-  const gutterX = colLeft - GUTTER;
-  const contentW = Math.max(width, colLeft + targetW + PAD);
-  const contentH = Math.max(height, PAD * 2 + fanout.length * (PILL_H + ROW_GAP) - ROW_GAP);
+  // ---- 分侧：把邻居按边方向分成「调用方（左列）」与「被依赖方（右列）」----
+  //
+  // 旧实现把所有邻居排在中心右侧一列 —— 资源视角（"谁在用这张表"）没问题，
+  // 但入口类中心（HTTP 契约）的图读反了：前端调用方和后端依赖混在一列，
+  // `前端 --CallsHttp--> 路由 --ReadsConfig--> 配置键` 这条请求流向在画布上没有方向感。
+  // 左列放"流向中心的来源"（入边邻居），右列放"中心流向的目标"（出边邻居），
+  // 所有箭头自然从左指向右，左→右即请求 / 数据流向。
+  // 同时挂两种边的节点按"被依赖方"归类，避免同一种 pill 出现两次。
+  const callerIds = new Set<number>();
+  const targetIds = new Set<number>();
+  edges.forEach((e) => {
+    if (e.to === center.id && e.from !== center.id) callerIds.add(e.from);
+    if (e.from === center.id && e.to !== center.id) targetIds.add(e.to);
+  });
+  targetIds.forEach((id) => callerIds.delete(id));
+  // 排序键：先环（= 跳数 / 追溯深度）后种类再名字，与旧实现一致（确定、可复现）。
+  const byRingKindName = (a: LayoutNode, b: LayoutNode) =>
+    a.ring - b.ring ||
+    (a.kind === b.kind ? 0 : a.kind.localeCompare(b.kind)) ||
+    a.name.localeCompare(b.name);
+  const callers = fanout.filter((n) => callerIds.has(n.id)).sort(byRingKindName);
+  // 无任何边接触的邻居（正常星形里不存在）兜底放右列。
+  const rightNodes = fanout
+    .filter((n) => targetIds.has(n.id) || (!callerIds.has(n.id) && !targetIds.has(n.id)))
+    .sort(byRingKindName);
+
+  const centerW = pillWidth(center.kind, center.name, true, input.showIcons ?? true);
+  // 只有**两侧都非空**才分左右两列 —— 那才存在真实的「来源 → 中心 → 去向」穿堂流。
+  // 纯入边星形（资源视角：全部是"谁在用它"）或纯出边星形没有"流"，强行分列
+  // 只会让画布凭空多出一条列宽（实测资源视角 80 使用者时宽度超出容器 4%），
+  // 维持旧的单列形态即可。
+  const twoSided = callers.length > 0 && rightNodes.length > 0;
+  // 单侧形态：全部邻居（含"调用方"）都进右列 —— 与旧实现一致。
+  const rightCol = twoSided ? rightNodes : fanout.slice().sort(byRingKindName);
+  const leftCol = twoSided ? callers : [];
+  const leftW = leftCol.length ? Math.max(...leftCol.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true))) : 0;
+  const rightW = rightCol.length
+    ? Math.max(...rightCol.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true)))
+    : centerW;
+
+  // 通道（中心到列的横向间距）= 边的主要水平长度。**不与列高同步无限增长**：
+  // 数据量大时优先让画布「变高」（靠 ROW_GAP）而非「边变长」，因为边太长既难读又
+  // 让发源处更挤。通道 = min(列半高 × 0.6, MAX_GUTTER) 封顶 —— 超出后边沿曲线呈
+  // 放射扇形张开（相邻夹角 = 行距 / 通道宽，通道有上限 ⇒ 间隔反而更大、发源处更疏），
+  // 画布随数据量在纵向上增长。MAX_GUTTER 太小会让曲线到达目标时过于竖直、失去转平
+  // 落地的弧感，故取 ~420px 的折中。
+  const MAX_GUTTER = 420;
+  const rows = Math.max(leftCol.length, rightCol.length);
+  const colHalfSpan = (rows * (PILL_H + ROW_GAP)) / 2;
+  const gapX = Math.max(HUB_GAP_X, Math.min(Math.round(colHalfSpan * 0.6), MAX_GUTTER));
+
+  // 双列时中心居中，左→右对称；单侧时退化为旧形态（中心在最左）。
+  const hubCx = twoSided ? PAD + leftW + gapX + centerW / 2 : PAD + centerW / 2;
+  const leftColLeft = PAD; // 左列药丸左缘
+  const leftColRight = PAD + leftW; // 左列药丸右缘
+  const rightColLeft = hubCx + centerW / 2 + gapX;
+  const contentW = Math.max(width, rightColLeft + rightW + PAD);
+  const contentH = Math.max(height, PAD * 2 + rows * (PILL_H + ROW_GAP) - ROW_GAP);
   const cy = Math.round(contentH / 2);
 
-  const hub: Pt = [PAD + centerW / 2, cy];
+  /** 一列药丸的纵向起点：以画布中线为轴上下居中，返回第 i 个的 y。 */
+  const colY = (i: number, n: number) =>
+    cy - ((n * (PILL_H + ROW_GAP) - ROW_GAP) / 2) + i * (PILL_H + ROW_GAP) + PILL_H / 2;
+
+  const hub: Pt = [hubCx, cy];
   const nodes: PlacedNode[] = [
     { ...center, x: hub[0], y: hub[1], shape: 'rect', w: centerW, h: PILL_H },
   ];
-  // 排序键：先环（= 跳数 / 追溯深度）后种类再名字。
-  // 环优先是为了在单列里保留"谁是直接用者、谁是追溯出来的"这一层信息（资源视角的 `ring`，
-  // 来源 `view_service.rs` 的 `ring_of`）—— 改走单列后跳数不再由半径表达，只能靠相邻性补回来。
-  // 同类聚在一起：32 个配置键 + 1 个 Cache 时，Cache 不会被埋在中间。排序确定，可复现。
-  fanout
-    .slice()
-    .sort(
-      (a, b) =>
-        a.ring - b.ring ||
-        (a.kind === b.kind ? 0 : a.kind.localeCompare(b.kind)) ||
-        a.name.localeCompare(b.name),
-    )
-    .forEach((n, i) => {
-      const w = pillWidth(n.kind, n.name);
-      nodes.push({
-        ...n,
-        x: colLeft + w / 2,
-        y: PAD + i * (PILL_H + ROW_GAP) + PILL_H / 2,
-        shape: 'rect',
-        w,
-        h: PILL_H,
-      });
-    });
+  leftCol.forEach((n, i) => {
+    const w = pillWidth(n.kind, n.name, false, input.showIcons ?? true);
+    nodes.push({ ...n, x: leftColLeft + w / 2, y: colY(i, leftCol.length), shape: 'rect', w, h: PILL_H });
+  });
+  rightCol.forEach((n, i) => {
+    const w = pillWidth(n.kind, n.name, false, input.showIcons ?? true);
+    nodes.push({ ...n, x: rightColLeft + w / 2, y: colY(i, rightCol.length), shape: 'rect', w, h: PILL_H });
+  });
 
   const pos = new Map(nodes.map((n) => [n.id, [n.x, n.y] as Pt]));
   const parallel = indexParallel(edges);
+
+  // 直线放射（单段直线，从中心药丸缘直接连到目标药丸缘）：用户要求"直接连直线"、不要
+  // 90°/0° 的正交折线。关键纠正：单段直线**可以**零切节点——只要终点落在目标的*近侧边缘*
+  // 而非中心：线段 x 单调增到目标近侧缘，进入目标 x 区间时 y 恰为目标行，只经过目标自己那颗
+  // 药丸；通道区（hubX < x < 目标近侧缘）为空 ⇒ 也不碰中心药丸。各边出发点在中心药丸缘按列序
+  // 单调铺开（attachDy）⇒ 彼此不交叉。这是结构保证，与 gapX 取值无关。
+  // （注：终点若取药丸*中心*，远端浅线会在邻居行处扫入邻居药丸左半，故必须连到近侧边缘。）
+  const ATTACH_MAX = PILL_H / 2 - 4;
+  const ATTACH_K = ATTACH_MAX / Math.max(colHalfSpan, 1);
+  const attachDy = (colPosY: number) => (colPosY - cy) * ATTACH_K;
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
   const placed: PlacedEdge[] = edges.flatMap((e, ei) => {
     const a = pos.get(e.from);
     const b = pos.get(e.to);
     if (!a || !b) return [];
-    // 两端必有一端是中心（单环扇出）。资源视角是反向的（沿入边找"谁在用"），
-    // 所以两种方向都要支持：通道点始终取**邻居**的 y，再把三段按方向串起来。
+    // 两端都不是中心：普通直连边。
     if (e.from !== center.id && e.to !== center.id) {
       return [{ ...e, points: [a, b], orthogonal: false }];
     }
-    const hubPos = e.from === center.id ? a : b;
-    const tgtPos = e.from === center.id ? b : a;
-    const via: Pt = [gutterX, tgtPos[1]];
-    // 同一对端点的多条路径：把通道点沿射线法线错开，否则两条边完全重叠。
-    // 错开后两条路径只在端点相交，中间形成柳叶形，互不遮挡。
+    const hubIsFrom = e.from === center.id;
+    const otherId = hubIsFrom ? e.to : e.from;
+    const other = hubIsFrom ? b : a;
+    const onLeft = twoSided && !hubIsFrom && callerIds.has(e.from);
+    const hubX = hubCx + (onLeft ? -centerW / 2 : centerW / 2);
+    const otherNode = nodeById.get(otherId)!;
+    // 终点取目标药丸的近侧边缘：右列 → 左缘；左列 → 右缘。
+    const tgtEdgeX = onLeft ? otherNode.x + otherNode.w! / 2 : otherNode.x - otherNode.w! / 2;
+    // 同一对端点的多条路径：单段直线没有「中段」可错开，改为**整条线沿 y 平移**。
+    // 平移量把药丸可用高度均分给组内各条（总铺开 2×ATTACH_MAX=22px，两条平行边相隔 22px，
+    // fit 缩放后仍有 ~11px），远宽于旧曲线方案的 fanOffset×0.6（仅 6.6px，缩放后糊成一束）。
+    // 终点侧 off 直接落在目标药丸近侧缘上；出发侧 attachDy 与 off 相加后钳回中心药丸缘内。
     const p = parallel.get(ei);
-    const off = p ? fanOffset(p.count, p.idx) : 0;
-    let viaPt = via;
-    if (off !== 0) {
-      const dx = via[0] - hubPos[0];
-      const dy = via[1] - hubPos[1];
-      const len = Math.hypot(dx, dy) || 1;
-      viaPt = [via[0] + (-dy / len) * off, via[1] + (dx / len) * off];
-    }
-    const pts: Pt[] =
-      e.from === center.id ? [hubPos, viaPt, tgtPos] : [tgtPos, viaPt, hubPos];
+    const off =
+      p && p.count > 1 ? -ATTACH_MAX + (p.idx * (ATTACH_MAX * 2)) / (p.count - 1) : 0;
+    const attachY =
+      cy + Math.max(-ATTACH_MAX, Math.min(ATTACH_MAX, attachDy(other[1]) + off));
+    const tgtY = other[1] + off;
+    const line: Pt[] = [
+      [hubX, attachY],
+      [tgtEdgeX, tgtY],
+    ];
+    // 方向：中心出发 → 目标；目标出发 → 中心（箭头由末端点方向决定）。
+    const pts = hubIsFrom ? line : line.slice().reverse();
     return [{ ...e, points: pts, orthogonal: false }];
   });
 
+  const flowNote = twoSided
+    ? `左列 ${leftCol.length} 个调用方 / 来源 → 中心 → 右列 ${rightCol.length} 个被依赖方，**箭头方向即请求 / 数据流向（自左向右）**；`
+    : `中心在左，${rightCol.length} 个邻居单列排在右侧；`;
   return {
     nodes,
     edges: placed,
@@ -627,8 +787,8 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     height: contentH,
     content: boundsOf(nodes),
     note: viaStar
-      ? `径向入口判定本图为**星形**（每条边都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。中心在左，${fanout.length} 个使用者按「跳数 → 种类 → 名字」单列排在右侧；边走「射线 → 列前通道 → 短横入边」三段。射线共原点、互不相交，纵向段与横向段都避开所有节点，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`
-      : `中心辐射布局：中心在左，${fanout.length} 个直接邻居单列排在右侧；边走「射线 → 列前通道 → 短横入边」三段。射线共原点、互不相交，纵向段与横向段都避开所有节点，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`,
+      ? `径向入口判定本图为**星形**（每条边都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}两列均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`
+      : `中心辐射布局：${flowNote}两列均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`,
   };
 }
 
@@ -672,7 +832,7 @@ function stackedLayout(input: LayoutInput): LayoutResult {
 
   const ordered = orderByBarycenter(layers, edges);
   const widths = ordered.map((layer) =>
-    layer.map((n) => pillWidth(n.kind, n.name)),
+    layer.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true)),
   );
   const layerW = widths.map((ws) =>
     ws.reduce((s, w) => s + w, 0) + GAP * Math.max(0, ws.length - 1),
@@ -829,7 +989,7 @@ export function spineLayout(input: LayoutInput): LayoutResult {
   best.forEach((id) => {
     const found = findNode(input, id);
     if (!found) return;
-    const w = pillWidth(found.kind, found.name, found.id === center.id);
+    const w = pillWidth(found.kind, found.name, found.id === center.id, input.showIcons ?? true);
     nodes.push({ ...found, x: cursor + w / 2, y: spineY, shape: 'rect', w, h: PILL_H });
     cursor += w + GAP;
   });

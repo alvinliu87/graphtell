@@ -11,6 +11,7 @@ use gt_domain::port::{LanguageParser, ParserRegistry};
 
 use crate::java::JavaParser;
 use crate::js::JsFrontendParser;
+use crate::json::JsonParser;
 use crate::php::PhpParser;
 
 /// 默认注册中心。
@@ -37,6 +38,11 @@ impl DefaultParserRegistry {
         }
         if let Ok(p) = JsFrontendParser::new() {
             parsers.insert(Language::TYPESCRIPT.to_string(), Box::new(p));
+        }
+        // JSON：解析 uni-app 的 `pages.json` 等路由声明（仅 pages.json 产出事实，
+        // 其余 JSON 不污染语义节点）。新增语言 = 在此注册一个实现，上层无改动。
+        if let Ok(p) = JsonParser::new() {
+            parsers.insert(Language::new("json").to_string(), Box::new(p));
         }
         Self { parsers }
     }

@@ -230,6 +230,41 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
+  /**
+   * 回归：路由视角的**左→右方向性**。
+   *
+   * 路由视角的图是「前端调用方 --CallsHttp--> 契约 --ReadsConfig/ReadsCache--> 依赖」，
+   * 旧的中心辐射把调用方和依赖混排在中心右侧一列，请求流向在画布上没有方向感。
+   * 现在两侧都非空时分左右两列：调用方在中心左侧、依赖在右侧，所有箭头自左向右。
+   */
+  it('双侧星形（调用方 + 宽依赖扇出）→ 调用方在左、依赖在右，请求流向自左向右', () => {
+    const center = node(1, 'GET /v2/order/invoice_detail', 0);
+    const caller = node(2, 'orderInvoiceDetail', 1); // 前端 Function（入边）
+    const deps = Array.from({ length: 12 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
+    const edges: LayoutEdge[] = [
+      { id: 900, from: caller.id, to: center.id },
+      ...deps.map((n) => ({ id: n.id, from: center.id, to: n.id })),
+    ];
+
+    const r = layeredLayout({ center, rings: [[caller, ...deps]], edges, width: WIDTH, height: 720 });
+
+    const cRect = r.nodes.find((n) => n.id === center.id)!;
+    const callerRect = r.nodes.find((n) => n.id === caller.id)!;
+    // 调用方整体（右缘）在中心左缘的左边；依赖在中心右侧
+    expect(callerRect.x + (callerRect.w ?? 0) / 2).toBeLessThan(cRect.x - (cRect.w ?? 0) / 2);
+    deps.forEach((n) => {
+      expect(r.nodes.find((x) => x.id === n.id)!.x).toBeGreaterThan(cRect.x);
+    });
+    // 调用边在左通道折行：折点 x 位于调用方与中心之间
+    const callEdge = r.edges.find((e) => e.from === caller.id)!;
+    const viaX = callEdge.points[1][0];
+    expect(viaX).toBeGreaterThan(callerRect.x);
+    expect(viaX).toBeLessThan(cRect.x);
+
+    expect(crossings(r.edges)).toBe(0);
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+  });
+
   it('多层分层：边绝不穿过节点（斜边会自动绕行）', () => {
     const center = node(1, 'handler', 0);
     const ring1 = Array.from({ length: 4 }, (_, i) => node(10 + i, `service_${i}`, 1));
@@ -356,7 +391,7 @@ describe('radialLayout：资源视角（星形）', () => {
     expect(Math.max(...rings[0].map(yOf))).toBeLessThan(Math.min(...rings[1].map(yOf)));
   });
 
-  it('同一份数据：同心环会被撑到容器 3 倍宽以上，面积大一个数量级', () => {
+  it('同一份数据：同心环会被撑到容器 3 倍宽以上，辐射画布仍小一个数量级', () => {
     const { center, rings, edges } = resourceStar([55, 25]);
     const input = { center, rings, edges, width: WIDTH, height: 720 };
     const star = radialLayout(input);
@@ -364,9 +399,10 @@ describe('radialLayout：资源视角（星形）', () => {
 
     // 同心环：半径 ∝ 人数 ⇒ 画布边长 ∝ 人数，直接横向炸出容器
     expect(disc.width).toBeGreaterThan(3 * WIDTH);
-    // 辐射：宽度收在容器内（实际内容并非更窄，而是形态变了），代价转移到纵向滚动
-    expect(star.width).toBeLessThanOrEqual(WIDTH);
-    // 面积比：80 个使用者下实测约 5 倍，取 3 倍作为下界，避免边界抖动
+    // 通道按纵向跨度取值（思维导图比例），画布**允许超出容器宽**（超出即横向滚动）：
+    // 80 人时 fit 缩放由高度卡住（80 行 × 44px 远超容器高），加宽通道不缩小字号。
+    // 不变量是"比同心环窄 + 面积小一个数量级"，而非"收在容器内"。
+    expect(star.width).toBeLessThan(disc.width);
     expect(star.width * star.height * 3).toBeLessThan(disc.width * disc.height);
   });
 

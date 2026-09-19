@@ -9,12 +9,29 @@
 # 本 FKB 覆盖常见前端 HTTP 调用写法：
 #   * uni.request / request / http.request（对象式，url / method 在实参里）
 #   * axios.get/post/put/delete/patch / axios({ url, method })（成员式 + 对象式）
+#   * request.get/post/...（`request` 这类 HTTP 客户端的成员式：成员名即 method，
+#     URL 是首个实参 —— CRMEB 的 uni-app 子工程就是这样把 uni.request 包了一层）
 #   * fetch(url, { method })
+#
+# 成员式怎么做到不误伤 `cache.get()` / `$store.get()` 这类同形异物：
+# ① 解析器只在接收者是 HTTP 客户端白名单成员时才把调用点按 HTTP 形态规整成
+#    `{ url, method }` 实参；② 这里再按要求 `X::{get,post,...}` 收一次。
+#    普通 getter 在第 ① 关就没有 `{ url, method }`，到不了合成 —— 两道闸都在。
+# → 若某工程把客户端封装成别的名字，改解析器白名单 + 这里加一条 `X::{...}` 即可。
 
 id: frontend-js
 display_name: 前端 JS/TS
 language: javascript
 version_hint: "*"
+
+# 本 FKB 引入的**语义节点种类**（在内核内置清单之外追加）。
+# 「哪些 kind 算第一类语义节点」不再写死在 `kinds.rs`：前端的 `Store`
+# （Vuex / Pinia 的状态容器）与后端 `Table` / `Cache` 同级，声明即生效
+# —— 折叠视图、视角切换都按语义节点对待，无需改内核。
+# `Page` 是 uni-app `pages.json` 声明的路由节点，与后端 `Route` 同构，
+# 路由视角里前后端「页面 ↔ 接口」直接对看。
+# `EventBus` 是前端组件间事件总线（uni.$emit / bus.$emit），与后端 `Event` 同构。
+semantic_kinds: [Store, Page, EventBus]
 
 detectors:
   # uni-app / CRMEB 类多端工程
@@ -47,7 +64,15 @@ rules:
     phase: Synthesize
     selector:
       kind: call
-      callee: "uni.request|request|http.request|axios|fetch"
+      # 前半 = 对象式 / 裸调用；后半 = 成员式（`request::{get,post,...}` …）
+      callee: "uni.request|request|http.request|axios|fetch|\
+        request::{get,post,put,delete,patch,head,options}|\
+        http::{get,post,put,delete,patch,head,options}|\
+        $http::{get,post,put,delete,patch,head,options}|\
+        ajax::{get,post,put,delete,patch,head,options}|\
+        api::{get,post,put,delete,patch,head,options}|\
+        apiClient::{get,post,put,delete,patch,head,options}|\
+        httpClient::{get,post,put,delete,patch,head,options}"
     binding:
       - Synthesize:
           node: HttpContract
@@ -61,17 +86,232 @@ rules:
             path:
               arg: 0
               field: "url"
-              # URL 为变量 / 含插值模板串时解析器给 Unknown，此处必须拒收，
-              # 否则会合成 `GET /<dynamic-url>` 这类垃圾契约污染路由视角。
+              # URL 为变量 / 首段动态（`BASE + '/api/' + url`）时解析器给 Unknown，
+              # 此处必须拒收，否则会合成 `GET /<dynamic-url>` 这类垃圾契约污染路由视角。
+              # 拼接式（`'x/' + id`）与模板串（`` `x/${id}` ``）不算动态：形状可静态确定，
+              # 非字面量段已被折成 `:param` 占位符。
               require_literal: true
               normalize:
                 - strip_prefix: ["api/"]
                 - leading_slash
+                # 参数名不重要，形状才重要：`/:param` ≡ 后端的 `/:id`（见下）
+                - param_wildcard
           fields:
             - name: side
               value: { literal: "frontend" }
           link: { kind: CallsHttp, direction: incoming }
           confidence: 0.9
+
+  # ===== P5 Synthesize：本地存储（Cache）=====
+  #
+  # 前端语义节点与后端**同构**的示例：后端 `Cache::get('k')` 合成 `Cache` 节点并挂
+  # `ReadsCache`，前端 `uni.getStorageSync('k')` / `localStorage.getItem('k')`
+  # 一视同仁 —— 规则写在 FKB 里，内核没有任何"前端特殊逻辑"。
+  # 前提只是解析器把实参采上来（非字面量给 Unknown，由 `require_literal` 拒收）。
+  - id: frontend-cache-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "uni::{getStorageSync,getStorage}|localStorage::{getItem}|sessionStorage::{getItem}"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  - id: frontend-cache-write
+    phase: Synthesize
+    selector:
+      kind: call
+      # `removeStorageSync` / `removeItem` 也是写操作（删除 = 写），故并入本条。
+      callee: "uni::{setStorageSync,setStorage,removeStorageSync}|localStorage::{setItem,removeItem}|sessionStorage::{setItem,removeItem}"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：ConfigKey（前端配置）=====
+  # `export default { ... }` / `module.exports = { ... }` 已被解析器采成配置条目，
+  # 于是 `kind: config_entry` 选择器对前端可用 —— 与后端 `config/*.php` 同构。
+  # 这里只收 `config/` 目录下的声明式配置（组件里的 `export default` 是代码不是配置）。
+  - id: frontend-config-key
+    phase: Synthesize
+    selector:
+      kind: config_entry
+      file: "*/config/*.js"
+      key_path: "*"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value: { key_path: true }
+          fields:
+            - name: value
+              value: { entry_value: true }
+            - name: side
+              value: { literal: "frontend" }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：I18nKey（多语言文案）=====
+  # `i18n.t('未登录')` / `this.$t('key')`：与后端 `lang/*.php` 合成的 I18nKey 同类，
+  # 同一份 identity 会让前后端文案汇聚到一个节点（谁在展示这段文案一目了然）。
+  - id: frontend-i18n-key
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "i18n::{t}|*::{$t,*t}"
+    binding:
+      - Synthesize:
+          node: I18nKey
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：Store（Vuex / Pinia 状态容器）=====
+  # `$store.commit('menus/set')` / `$store.dispatch('routesList')` → `Store` 节点。
+  # `Store` 是**本 FKB 声明的新语义种类**（见文件头 `semantic_kinds`），
+  # 因此它能像 `Cache` / `Event` 一样出现在折叠视图与视角里。
+  - id: frontend-store-mutation
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "$store::{commit,dispatch}|store::{commit,dispatch}|this.$store::{commit,dispatch}"
+    binding:
+      - Synthesize:
+          node: Store
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+          fields:
+            - name: kind
+              value: { method_name: true }
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: Mutates, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：Page（uni-app 路由节点）=====
+  # `pages.json` 已被 JSON 解析器采成 `配置条目`（仅 `pages` / `subPackages.*.pages`
+  # 段，其余 JSON 不污染），于是 `kind: config_entry` 选择器对前端路由同样可用 ——
+  # 与后端 `Route::get(...)` 合成的 `HttpContract` 同构。路由视角里前后端
+  # 「页面 ↔ 接口」直接对看。
+  - id: frontend-page
+    phase: Synthesize
+    selector:
+      kind: config_entry
+      file: "*/pages.json"
+      # `pages.json` 经 JSON 解析器**只**产出页面路由条目（主包 `pages.*` 与
+      # 子包 `subPackages.*.pages.*`），其它 JSON 不产出配置条目，故 `*` 即足够、
+      # 且不会误伤——无需在 `key_path` 里写 `|` 多选（选择器按单条通配匹配）。
+      key_path: "*"
+    binding:
+      - Synthesize:
+          node: Page
+          identity:
+            kind: Named
+            value: { entry_value: true }
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          confidence: 0.9
+
+  # ===== P5 Synthesize：前端页面跳转（NavigatesTo 边）=====
+  # `uni.navigateTo({ url })` / `redirectTo` / `reLaunch` / `switchTab`：从发起方
+  # （函数 / 组件方法）指向目标 `Page` 节点。URL 的查询串（`?id=1`）与分包前缀
+  # 都按 `pages.json` 同一套身份归一（leading_slash / strip_query），保证跳转边
+  # 精确连到 `frontend-page` 合成的同一个节点。
+  - id: frontend-navigate
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "uni::{navigateTo,redirectTo,reLaunch,switchTab}|uni.navigateToMiniProgram"
+    binding:
+      - Synthesize:
+          node: Page
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              field: "url"
+              require_literal: true
+            normalize:
+              - leading_slash
+              - strip_query
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: NavigatesTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：EventBus（前端组件间事件总线）=====
+  # `uni.$emit('evt')` / `bus.$emit('evt')` / `this.$eventHub.$emit('evt')` 与
+  # `uni.$on('evt')` / `bus.$on('evt')`：uni-app / Vue2 的组件解耦通信主干，
+  # 与后端 `Event::dispatch` 同构。事件名即身份，同一事件名的发射方与监听方
+  # 幂等合并到同一个 `EventBus` 节点——折叠视图里事件节点充当「via」桥，
+  # 把「谁发 / 谁听」两边都亮出来（组件交互终于可见）。
+  - id: frontend-emit
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "uni::$emit|bus::$emit|this::$eventHub::$emit|this::bus::$emit"
+    binding:
+      - Synthesize:
+          node: EventBus
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: Emits, direction: incoming }
+          confidence: 0.8
+
+  - id: frontend-listen
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "uni::{$on,$once}|bus::{$on,$once}|this::$eventHub::{$on,$once}|this::bus::{$on,$once}"
+    binding:
+      - Synthesize:
+          node: EventBus
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          link: { kind: ListensTo, direction: incoming }
+          confidence: 0.8
 
   - id: frontend-mark-called
     phase: AnnotatePost

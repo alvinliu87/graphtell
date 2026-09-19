@@ -5,6 +5,7 @@
 
 pub mod java;
 pub mod js;
+pub mod json;
 pub mod php;
 pub mod registry;
 
