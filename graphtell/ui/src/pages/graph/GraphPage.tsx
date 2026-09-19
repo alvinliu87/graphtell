@@ -227,16 +227,19 @@ export function GraphPage() {
     const currentSearch = params.toString();
     const derived = derivedNav.current;
     derivedNav.current = false;
-    const skip = skipWrite.current;
-    skipWrite.current = false;
     if (search.replace(/^\?/, '') === currentSearch) return;
-    // 这次 state 是 URL 同步来的：URL 才是真源，写回去只会把新 URL 覆盖成旧 state。
-    if (skip) return;
+    // 这一帧 state 是 URL 同步来的：URL 才是真源，写回去只会把新 URL 覆盖成旧 state。
+    if (skipWrite.current) return;
     if (search === lastPushed.current) return;
     lastPushed.current = search;
     setParams(new URLSearchParams(search), { replace: derived });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
+  // 标记只在「URL 刚变」的那一帧有效：帧末无条件清掉，绝不泄漏到下一次写入 ——
+  // 否则会误伤随后真正需要写入的更新（如自动选中默认对象）。
+  useEffect(() => {
+    skipWrite.current = false;
+  });
 
   // 视角未指定 / 非法 → 选第一个有数据的视角
   useEffect(() => {
