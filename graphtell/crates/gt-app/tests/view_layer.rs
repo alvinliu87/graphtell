@@ -118,6 +118,15 @@ fn skip() -> &'static str {
     "跳过：未找到 CRMEB 样本（可用 GRAPHTELL_SAMPLE_DIR 指定）"
 }
 
+/// 该视角是否在 `views/perspectives.yaml` 里注册（未注册的聚合视角无从断言）。
+fn registered(views: &ViewService, pid: gt_domain::model::ProjectId, id: &str) -> bool {
+    views
+        .perspectives(pid)
+        .unwrap_or_default()
+        .iter()
+        .any(|p| p["id"].as_str() == Some(id))
+}
+
 /// 返回一个确有候选的对象类视角 (perspective_id, center_node_id)。
 fn first_object_target(
     views: &ViewService,
@@ -182,6 +191,13 @@ fn aggregate_deploy_unit_clusters() {
         return;
     };
     let views = view_svc(&b);
+    // `deploy_unit` / `platform` 两个聚合视角在 `views/perspectives.yaml` 里尚未启用
+    // （注释标着"MVP 暂不实现"）。没启用时 `aggregate_view` 只会返回 NotFound，
+    // 这条用例无处可施力 —— 明确跳过，而不是把"视角不存在"当成视角实现有问题。
+    if !registered(&views, b.project_id, "deploy_unit") {
+        eprintln!("跳过：deploy_unit 视角未在 views/perspectives.yaml 中启用");
+        return;
+    }
     let agg = views
         .aggregate_view(b.project_id, "deploy_unit", 12)
         .expect("aggregate");
@@ -200,6 +216,10 @@ fn aggregate_platform_matrix() {
         return;
     };
     let views = view_svc(&b);
+    if !registered(&views, b.project_id, "platform") {
+        eprintln!("跳过：platform 视角未在 views/perspectives.yaml 中启用");
+        return;
+    }
     let agg = views
         .aggregate_view(b.project_id, "platform", 12)
         .expect("aggregate");
@@ -834,7 +854,10 @@ fn object_view_characterization_invoice_detail() {
     }
     via_len.sort_unstable();
 
-    assert_eq!(ov.edges.len(), 30, "边总数变了：{:?}", by_kind);
+    // 30 → 32：门面链式的 `Db::name('store_order')->count()` 被 P7 落成 `ReadsDb`
+    // （`tidyOrder` 里确实读了库），另增一条 `ReadsConfig`。二者都是真阳性，
+    // 特征测试的意义正在于**显式**接受这类行为变更，而不是让它悄悄溜过去。
+    assert_eq!(ov.edges.len(), 32, "边总数变了：{:?}", by_kind);
     // 前端契约桥：uni-app 的 `` request.get(`v2/order/invoice_detail/${id}`) ``
     // （模板串 URL）已能与该后端路由按**参数形状**汇聚，`CallsHttp` 由此入图。
     assert_eq!(
@@ -849,11 +872,11 @@ fn object_view_characterization_invoice_detail() {
     );
     assert_eq!(
         by_kind.get("ReadsConfig").copied().unwrap_or(0),
-        27,
+        28,
         "ReadsConfig 边数变了"
     );
     // 除了一条：前端 `CallsHttp` 是**直接**语义边（前端函数 → 契约），不走提拉/传播；
-    // 其余 29 条都是沿后端调用链间接得到的资源读写。
+    // 其余 31 条都是沿后端调用链间接得到的资源读写。
     assert_eq!(
         indirect,
         ov.edges.len() - 1,
@@ -923,15 +946,19 @@ fn schedule_view_follows_outgoing_chain() {
             );
         }
         // 这条计划任务的依赖与"路由视角"对同一个 handler 的结论必须一致：
-        // `SystemCrontab::setTimerStatus → SystemCrontabServices::setTimerStatus` 读了缓存，
-        // 中间两跳（都是语法节点）以 `via` 链给出，并能给出访问缓存的那一行。
+        // `SystemCrontabServices::setTimerStatus` 实际做的是
+        //   `Cache::delete('crontabCache')` + `Cache::set(...)`（147 / 148 行）
+        // 外加 `$this->dao->update(...)`（145 行）—— 即**写**库 + **写**缓存，
+        // 全工程没有任何一处 `Cache::get('crontabCache')` 落在这条链上
+        // （唯一的读在 `SystemCrontabServices::crontabCommandRun`，与本任务无关）。
+        // 中间两跳（控制器方法 → 服务方法）以 `via` 链给出，并能给出写缓存的那一行。
         let cache = ov
             .edges
             .iter()
-            .find(|e| e.kind == "ReadsCache")
+            .find(|e| e.kind == "WritesCache")
             .unwrap_or_else(|| {
                 panic!(
-                    "计划任务 {} 应读缓存（与路由视角一致），实际边：{:?}",
+                    "计划任务 {} 应写缓存（与路由视角一致），实际边：{:?}",
                     c.name,
                     ov.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
                 )
@@ -940,9 +967,15 @@ fn schedule_view_follows_outgoing_chain() {
             !cache.via.is_empty(),
             "应经过折叠链（handler → 服务方法）到达缓存，实际 via 为空"
         );
+        let cs = cache
+            .to_call_site
+            .as_ref()
+            .expect("应给出写缓存的那一行（本链路访问该资源的位置）");
         assert!(
-            cache.to_call_site.is_some(),
-            "应给出访问缓存的那一行（本链路访问该资源的位置）"
+            cs.file.ends_with("SystemCrontabServices.php"),
+            "写缓存的位置应在 SystemCrontabServices.php（147 行 Cache::delete），实际 {}:{}",
+            cs.file,
+            cs.line
         );
     } else {
         eprintln!("图里没有 crontab/set_open 计划任务，跳过具体断言");
@@ -1034,3 +1067,80 @@ fn empty_entry_view_carries_hint() {
     }
 }
 
+
+/// 「读 + 写」必须一起报，不能只报一边。
+///
+/// 折叠视图里一个使用者对同一资源只画**一条**边（按 `action_strength` 择优，写 > 读）。
+/// 于是一个既读又写的接触点（`Db::name('store_bargain')->find()` 与 `->update()` 常
+/// 同在一个方法里）只会显示成读库**或**写库 —— 单边都是失真。
+///
+/// 契约：被压掉的另一半必须记在 `EdgeView::also_kinds` 上，且**只能**是同一资源的
+/// 另一半（库 ↔ 库、缓存 ↔ 缓存），不许跨资源混搭（那说明标签张冠李戴）。
+#[test]
+fn read_write_at_same_contact_is_reported_together() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+
+    let pairs: &[(&str, &str)] = &[("table", "Db"), ("cache", "Cache")];
+    let mut checked = 0usize;
+    let mut annotated = 0usize;
+    for (perspective, family) in pairs {
+        let cands = views
+            .candidates(b.project_id, perspective, 30, None, None)
+            .unwrap_or_default();
+        for c in cands.iter().take(12) {
+            let Ok(ov) = views.object_view(b.project_id, perspective, c.id, Some(3)) else {
+                continue;
+            };
+            for e in &ov.edges {
+                checked += 1;
+                if e.also_kinds.is_empty() {
+                    continue;
+                }
+                annotated += 1;
+                let mut all: Vec<&str> = vec![e.kind.as_str()];
+                all.extend(e.also_kinds.iter().map(|s| s.as_str()));
+                all.sort_unstable();
+                all.dedup();
+                assert_eq!(
+                    all.len(),
+                    2,
+                    "{} 的 {} 边上 also_kinds 应恰好补上另一种访问方式，实际 {:?}",
+                    c.name,
+                    e.kind,
+                    e.also_kinds
+                );
+                // 库 ↔ 库、缓存 ↔ 缓存；不许库与缓存混在一处。
+                let db = all.iter().all(|k| k.ends_with("Db"));
+                let cache = all.iter().all(|k| k.ends_with("Cache"));
+                assert!(
+                    db || cache,
+                    "{} 的 {}+{:?} 跨资源混搭了（库与缓存不可能是同一条边的两种访问方式）",
+                    c.name,
+                    e.kind,
+                    e.also_kinds
+                );
+                assert!(
+                    all.contains(&"ReadsDb") || all.contains(&"ReadsCache"),
+                    "另一种访问方式应是读，实际 {:?}",
+                    e.also_kinds
+                );
+                assert!(
+                    all.contains(&"WritesDb") || all.contains(&"WritesCache"),
+                    "另一种访问方式应是写，实际 {:?}",
+                    e.also_kinds
+                );
+                let _ = family;
+            }
+        }
+    }
+    assert!(checked > 0, "应检查到折叠边，实际一条都没有");
+    assert!(
+        annotated > 0,
+        "样本里应有既读又写的接触点（CRMEB 的 store_bargain / tagDate 都是），\
+         实际一条都没被标注 —— 「读+写」又退化成单边了"
+    );
+}

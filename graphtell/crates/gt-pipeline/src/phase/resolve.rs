@@ -402,7 +402,17 @@ fn classify_db_action(
             continue;
         }
         for table in ctx.ws.mapped_tables(&t, EdgeKind::MAPS_TO) {
-            emit_db_edge(ctx, loc.owner, loc.sub, &loc.owner_fqn, table, &kind, method, 0.85);
+            emit_db_edge(
+                ctx,
+                loc.owner,
+                loc.sub,
+                &loc.owner_fqn,
+                table,
+                &kind,
+                method,
+                0.85,
+                &loc_line(loc),
+            );
         }
         // 回退：该类型自身没映射表，但它可能是「基类」，读 / 写动词写在基类里、
         // 实例却是映射到表的子类（`$this->select()` 在 `app\common\model\X` 基类，
@@ -427,7 +437,15 @@ fn classify_db_action(
             if subtype_tables.len() <= 6 {
                 for table in subtype_tables {
                     emit_db_edge(
-                        ctx, loc.owner, loc.sub, &loc.owner_fqn, table, &kind, method, 0.7,
+                        ctx,
+                        loc.owner,
+                        loc.sub,
+                        &loc.owner_fqn,
+                        table,
+                        &kind,
+                        method,
+                        0.7,
+                        &loc_line(loc),
                     );
                 }
             }
@@ -444,7 +462,15 @@ fn classify_db_action(
 fn classify_facade_db_calls(ctx: &mut PipelineContext) {
     // 先收集（只读）再落边（可变），避开「迭代 `calls` 同时改 `ctx`」的借用冲突。
     // `table_id` 是 `Copy`，直接收进 vec，落边阶段无需再查。
-    let mut pending: Vec<(NodeId, Option<SubProjectId>, String, String, EdgeKind, NodeId)> = Vec::new();
+    let mut pending: Vec<(
+        NodeId,
+        Option<SubProjectId>,
+        String,
+        String,
+        EdgeKind,
+        NodeId,
+        String,
+    )> = Vec::new();
     for call in ctx.ws.calls.iter() {
         let (Some(table_name), Some(method)) = (&call.db_table, call.method.as_deref()) else {
             continue;
@@ -475,14 +501,40 @@ fn classify_facade_db_calls(ctx: &mut PipelineContext) {
             method.to_string(),
             kind,
             table_id,
+            call_line(call),
         ));
     }
-    for (owner, sub, owner_fqn, method, kind, table_id) in pending {
-        emit_db_edge(ctx, owner, sub, &owner_fqn, table_id, &kind, &method, 0.9);
+    for (owner, sub, owner_fqn, method, kind, table_id, location) in pending {
+        emit_db_edge(
+            ctx,
+            owner,
+            sub,
+            &owner_fqn,
+            table_id,
+            &kind,
+            &method,
+            0.9,
+            &location,
+        );
     }
 }
 
+/// 调用点事实的 `文件:行`（供 `evidence.location`）。
+fn call_line(call: &crate::workspace::CallRecord) -> String {
+    format!("{}:{}", call.file, call.span.start_line)
+}
+
+/// 解析点的 `文件:行`（同上，供 `classify_db_action` 使用）。
+fn loc_line(loc: &Locator) -> String {
+    format!("{}:{}", loc.file, loc.line)
+}
+
 /// 落成一条 `方法 → 表` 的读 / 写动作边，并登记 P8 传播种子（去重交给 `add_edge`）。
+///
+/// `location`（`文件:行`）必须写进 `evidence.location`：视图靠它给出"本链路访问该资源
+/// 的位置"（`view_service::inline_chain_locations` 补 `to_call_site`、`edge_evidence`
+/// 取证据位置，两处都读它）。此前这里只存一句文字 scap evid，形状对不上，
+/// 于是门面链式的 `Db::name('x')->update()` 边永远是一条无法跳转的死边。
 fn emit_db_edge(
     ctx: &mut PipelineContext,
     owner: NodeId,
@@ -492,6 +544,7 @@ fn emit_db_edge(
     kind: &EdgeKind,
     method: &str,
     confidence: f32,
+    location: &str,
 ) {
     let added = ctx.ws.add_edge(NewEdge {
         project_id: ctx.project.id,
@@ -501,7 +554,11 @@ fn emit_db_edge(
         phase: Phase(Phase::RESOLVE.to_string()),
         confidence,
         properties: serde_json::json!({
-            "evidence": format!("{} 调用 {}（{} 动词，门面链式）", owner_fqn, method, kind_label(kind)),
+            "evidence": {
+                "rule": "db-verb-classify",
+                "location": location,
+                "evidence": format!("{} 调用 {}（{} 动词）", owner_fqn, method, kind_label(kind)),
+            },
             "verb": method,
         }),
     });

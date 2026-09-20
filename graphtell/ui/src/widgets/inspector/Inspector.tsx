@@ -7,7 +7,7 @@ import { nodeColor } from '@/entities/graph';
 import { copyPath } from '@/shared/lib/ide';
 import { useAsync } from '@/shared/lib/useAsync';
 import { LocationBadge, LocationList } from './LocationList';
-import { useLocale } from '@/shared/lib/i18n';
+import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 
 /** 稳定的空 via 引用：`?? []` 每次渲染都会生成新数组，会让折叠链的取数 effect 反复触发。 */
 const NO_VIA: ViaNode[] = [];
@@ -253,7 +253,9 @@ function EdgePanel({
   return (
     <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
       <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label={t('关系')}>{edge.kind}</Descriptions.Item>
+        <Descriptions.Item label={t('关系')}>
+          {edgeKindLabel(t, edge.kind, edge.also_kinds)}
+        </Descriptions.Item>
         <Descriptions.Item label={t('状态')}>
           {unresolved ? <Tag color="orange">{t('status.unverified')}</Tag> : <Tag color="green">{t('status.resolved')}</Tag>}
         </Descriptions.Item>

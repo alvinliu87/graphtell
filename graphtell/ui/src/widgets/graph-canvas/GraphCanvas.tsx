@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocale } from '@/shared/lib/i18n';
+import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import type { EdgeView, LayoutMode, NodeView, SourceLocation } from '@/entities/view';
@@ -1066,7 +1066,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 background: edgeColor(hoveredEdge.kind),
               }}
             />
-            <b>{t(`edge.${hoveredEdge.kind}`)}</b>
+            <b>{edgeKindLabel(t, hoveredEdge.kind, hoveredEdge.also_kinds)}</b>
             <span style={{ color: hoveredEdge.resolved ? '#16a34a' : '#f59e0b' }}>
               {hoveredEdge.resolved ? t('status.resolved') : t('status.unverified')}
             </span>

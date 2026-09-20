@@ -307,7 +307,19 @@ rules:
           fields:
             - name: side
               value: { literal: "backend" }
-          link: { kind: ReadsDb, direction: incoming }
+          # 只能落**中性**的 `MapsTo`：P5 手里的信息只有"该方法接触了这张表"，
+          # 末端动词（`->find()` 还是 `->update()`）要到 P7 才知道
+          # （见 `resolve.rs::classify_facade_db_calls` 与 FKB 的 `db_verbs`）。
+          #
+          # 这里曾落 `ReadsDb`，于是 `Db::name('Goods')->insertGetId($data)` 也被
+          # 断言成"该方法读了 goods"：同一对「方法 → 表」同时挂着假的读边与 P7 落下的
+          # 真写边，而视图 tie-break 恒选先建的（P5 早于 P7）那条，写操作于是被**全部**
+          # 显示成「读库」—— 实测 shopxo 1825 / 1825 无一处例外。
+          #
+          # `MapsTo` 的语义是"模型 / 表之间的结构映射"，会被 P7 的 `ReadsDb` / `WritesDb`
+          # 压过（见 `view_service::access_rank` 与 P8 的 MapsTo 抑制），故只在 P7 也没
+          # 认出动词时兜底显示「映射到」—— 如实，而不是编一个读。
+          link: { kind: MapsTo, direction: incoming }
           confidence: 0.95
 
   - id: tp6-model-table-property

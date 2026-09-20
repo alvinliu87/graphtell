@@ -44,8 +44,16 @@ const dict: Record<Lang, Record<string, string>> = {
     'edge.MapsTo': '映射到',
     'edge.ReadsConfig': '读配置',
     'edge.ReadsCache': '读缓存',
+    'edge.WritesCache': '写缓存',
+    'edge.Mutates': '改变状态',
+    'edge.NavigatesTo': '跳转页面',
+    'edge.Emits': '发射事件',
+    'edge.ListensTo': '监听事件',
     'edge.ResolvesTo': '解析为',
     'edge.Unknown': '未知关系',
+    // 组合谓语：同一处**既读又写**（见 `edgeKindLabel`，键 = 种类按字典序用 + 连接）。
+    'edge.ReadsDb+WritesDb': '读写库',
+    'edge.ReadsCache+WritesCache': '读写缓存',
     // ---- 节点种类 ----
     'node.File': '文件',
     'node.Directory': '目录',
@@ -69,6 +77,8 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.Queue': '队列',
     'node.Cache': '缓存',
     'node.Topic': '主题',
+    'node.Page': '页面',
+    'node.EventBus': '事件总线',
     'node.Unknown': '未知',
     // ---- 通用 ----
     'status.resolved': '已解析',
@@ -94,8 +104,15 @@ const dict: Record<Lang, Record<string, string>> = {
     'edge.MapsTo': 'maps to',
     'edge.ReadsConfig': 'reads config',
     'edge.ReadsCache': 'reads cache',
+    'edge.WritesCache': 'writes cache',
+    'edge.Mutates': 'mutates',
+    'edge.NavigatesTo': 'navigates to',
+    'edge.Emits': 'emits',
+    'edge.ListensTo': 'listens to',
     'edge.ResolvesTo': 'resolves to',
     'edge.Unknown': 'unknown relation',
+    'edge.ReadsDb+WritesDb': 'read+write DB',
+    'edge.ReadsCache+WritesCache': 'read+write cache',
     'node.File': 'File',
     'node.Directory': 'Directory',
     'node.Namespace': 'Namespace',
@@ -118,6 +135,8 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.Queue': 'Queue',
     'node.Cache': 'Cache',
     'node.Topic': 'Topic',
+    'node.Page': 'Page',
+    'node.EventBus': 'Event bus',
     'node.Unknown': 'Unknown',
     'status.resolved': 'resolved',
     'status.unverified': 'unverified',
@@ -495,4 +514,29 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
 
 export function useLocale(): LocaleApi {
   return useContext(LocaleContext);
+}
+
+/**
+ * 边谓语标签。
+ *
+ * 折叠视图里一个使用者对同一资源只画**一条**边（写 > 读择优），被压掉的另一半
+ * 由后端记在 `also_kinds` 里（`WritesDb` + `['ReadsDb']` = 这处既读又写）。
+ * 此时必须用组合谓语（「读写库」）而不是单边谓语 —— 否则屏幕上只报读或只报写，
+ * 两种都是失真。
+ *
+ * 组合键按**种类字典序**拼接（`ReadsDb+WritesDb`），与 `also_kinds` 的排列无关；
+ * 缺少对应词条时回退到单边标签，不会白屏。
+ */
+export function edgeKindLabel(
+  t: (k: string) => string,
+  kind: string,
+  also: string[] = [],
+): string {
+  const single = `edge.${kind}`;
+  if (!also.length) {
+    return t(single);
+  }
+  const both = `edge.${[kind, ...also].sort().join('+')}`;
+  const v = t(both);
+  return v === both ? t(single) : v;
 }

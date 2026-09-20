@@ -220,6 +220,16 @@ pub struct EdgeView {
     /// UI 据此画虚线 / 降权，避免"看起来像 A 直接依赖 K"。
     #[serde(default)]
     pub indirect: bool,
+    /// 同一位置（**接触点 → 终点**）上**同时成立**的其它访问方式。
+    ///
+    /// 折叠视图里一个使用者对同一资源只画**一条**边（按 `action_strength` 择优，
+    /// 写 > 读），被压掉的那条事实不能就这么消失：
+    /// `Db::name('Goods')->find()` 与 `->update($data)` 同在一个方法里时，
+    /// 只读/只写都失真，正确标签是「读+写」。
+    ///
+    /// 例：`kind = "WritesDb"`、`also_kinds = ["ReadsDb"]` ⇒ 前端显示「读写库」。
+    #[serde(default)]
+    pub also_kinds: Vec<String>,
     /// 这条链路（起点 → 各中间跳 → 终点）**每个节点**的位置，由构建视图时内联。
     ///
     /// 顺序与链路一致（起点在最前、终点在最后），便于前端直接逐跳渲染。

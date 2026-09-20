@@ -622,17 +622,6 @@ impl ViewService {
                         }
                         // r == ring + 1：本层重见，按比较器决定是否升级。
                     }
-                    // 访问方式标签优先级：ReadsDb/WritesDb(3) > ReadsConfig/ReadsCache/
-                    // PublishesTo/Triggers(2) > MapsTo(1) > 其它(0)。`MapsTo` 是结构映射
-                    // （Model→Table），不是"如何访问"，必须被真正的读/写访问压过。
-                    let access_rank = |k: &str| -> u8 {
-                        match k {
-                            "ReadsDb" | "WritesDb" => 3,
-                            "ReadsConfig" | "ReadsCache" | "PublishesTo" | "Triggers" => 2,
-                            "MapsTo" => 1,
-                            _ => 0,
-                        }
-                    };
                     let indirect = is_indirect_edge(e);
                     let rank = access_rank(e.kind.as_str());
                     let inherited_rank = path_kind.get(&id).map(|k| access_rank(k)).unwrap_or(0);
@@ -650,9 +639,16 @@ impl ViewService {
                         true
                     } else {
                         let old_ind = path_indirect.get(&other).copied().unwrap_or(false);
-                        let old_rank = path_kind.get(&other).map(|k| access_rank(k)).unwrap_or(0);
+                        let old_kind = path_kind.get(&other).cloned().unwrap_or_default();
                         let old_eid = best_edge_id_of.get(&other).copied().unwrap_or(0);
-                        better_path(indirect, rank, e.id.get(), old_ind, old_rank, old_eid)
+                        better_path(
+                            indirect,
+                            e.kind.as_str(),
+                            e.id.get(),
+                            old_ind,
+                            &old_kind,
+                            old_eid,
+                        )
                     };
                     if upgrade {
                         path_kind.insert(other, pk);
@@ -879,34 +875,50 @@ impl ViewService {
                 // 取决于 `HashMap` 遍历顺序（非确定），而传播边**没有** `evidence`
                 // —— 那样会时有时无。改为从**链路节点**（起点 + 各跳）出发，
                 // 找指向终点的、带 `evidence` 的直接语义边。
+                // 这条链的**接触点**：`via` 末端（未经折叠时就是起点自己）。
+                let contact_id = e.via.last().map(|v| v.id.get()).unwrap_or(e.from.get());
+                // 优先命中 BFS 阶段已批量预取的入边缓存；缓存未覆盖（极少数漏预取的节点）
+                // 时再回退到单点查询。避免对每条 shown 边各发一次 DB 往返（N+1）。
+                let cached_ins = d.in_edges.get(&e.to.get()).cloned();
+                let store_ins = if cached_ins.is_some() {
+                    None
+                } else {
+                    // 同一终点会被多条 shown 边反复问到（平行路径），缓存住，别每次都查库。
+                    Some(
+                        ins_cache
+                            .borrow_mut()
+                            .entry(e.to.get())
+                            .or_insert_with(|| {
+                                self.store
+                                    .edges_of(e.to, EdgeDirection::Incoming)
+                                    .unwrap_or_default()
+                            })
+                            .clone(),
+                    )
+                };
+                let ins = cached_ins.as_ref().or(store_ins.as_ref());
+                // ---- 「读+写」：把被 `action_strength` 压掉的另一种访问方式记回边上 ----
+                if let Some(ins) = ins {
+                    let mut others: Vec<String> = ins
+                        .iter()
+                        .filter(|r| {
+                            r.from_id.get() == contact_id
+                                && r.kind.as_str() != e.kind
+                                && counterpart_kinds(e.kind.as_str()).contains(&r.kind.as_str())
+                        })
+                        .map(|r| r.kind.to_string())
+                        .collect();
+                    others.sort();
+                    others.dedup();
+                    e.also_kinds = others;
+                }
                 if e.to_call_site.is_none() {
                     // 在**终点的入边**里找：同 kind、带 `evidence`、且**起点在本视图环内**
                     // （即属于这条链路）的那条。取 from 最小者，保证结果确定。
                     //
                     // 不依赖提拉边的 id / via：二者会随 `HashMap` 遍历顺序变化
                     // （同一 (from,to) 上 P5 直接边与 P8 传播边竞争，而传播边无 evidence）。
-                    // 这条链的**接触点**：`via` 末端（未经折叠时就是起点自己）。
-                    let contact_id = e.via.last().map(|v| v.id.get()).unwrap_or(e.from.get());
                     let mut best: Option<(bool, i64, SourceLocation)> = None;
-                    // 优先命中 BFS 阶段已批量预取的入边缓存；缓存未覆盖（极少数漏预取的节点）
-                    // 时再回退到单点查询。避免对每条 shown 边各发一次 DB 往返（N+1）。
-                    let cached_ins = d.in_edges.get(&e.to.get()).cloned();
-                    let store_ins = if cached_ins.is_some() {
-                        None
-                    } else {
-                        // 同一终点会被多条 shown 边反复问到（平行路径），缓存住，别每次都查库。
-                        Some(
-                            ins_cache
-                                .borrow_mut()
-                                .entry(e.to.get())
-                                .or_insert_with(|| {
-                                    self.store
-                                        .edges_of(e.to, EdgeDirection::Incoming)
-                                        .unwrap_or_default()
-                                })
-                                .clone(),
-                        )
-                    };
                     if let Some(ins) = cached_ins.as_ref().or(store_ins.as_ref()) {
                         for raw in ins {
                             if raw.kind.as_str() != e.kind {
@@ -1227,6 +1239,7 @@ impl ViewService {
                 via,
                 to_call_site,
                 indirect,
+                also_kinds: Vec::new(),
                 // 由"内联链路位置"步骤统一填充（见 object_view 末尾）。
                 node_locations: Vec::new(),
             });
@@ -2048,6 +2061,7 @@ impl ViewService {
             hops,
             to_call_site: None,
             indirect,
+            also_kinds: Vec::new(),
             node_locations: Vec::new(),
         }
     }
@@ -2541,25 +2555,92 @@ fn enumerate_chain_paths(
     acc
 }
 
+/// 访问方式标签优先级：读写动作(3) > 其它语义访问(2) > MapsTo(1) > 结构边(0)。
+///
+/// `MapsTo` 是结构映射（Model→Table），不是"如何访问"，必须被真正的读/写访问压过；
+/// `HandledBy` / `Calls` / `ResolvesTo` 这类**结构边**留 0，好让反向视角沿调用链
+/// 向语义祖先继承真正的访问方式（详见下方 **为何必须列举全部访问动作**）。
+///
+/// # 为何必须列举**全部**访问动作
+///
+/// 反向视角（谁在读 / 写这个资源）里，真正的接触点往往是**语法节点**（方法），
+/// 画出来的边要"提拉"到它的语义祖先（路由 / 计划任务 / 契约）上。标签沿发现树继承：
+/// 祖先沿用子孙的访问方式（`pk` 的 `inherited_rank` 分支）。**一旦某个访问动作没被
+/// 列进来（rank 退化成 0），继承链就断在它身上**，祖先会改挂途经的最后一条结构边 ——
+/// 于是「计划任务 → 方法 → 缓存」被标成 `HandledBy`（读作"缓存由该任务处理"），
+/// 而真相是该方法 `Cache::set('crontabCache')`，应是 `WritesCache`。
+/// 实测 CRMEB 的 `crontabCache` 一度给出 6 条这样的错标边。
+pub fn access_rank(kind: &str) -> u8 {
+    match kind {
+        // 读写动作：**最高优先级**，必须压过结构边与 MapTo。
+        "WritesDb" | "ReadsDb" | "WritesCache" | "ReadsCache" => 3,
+        // 其它语义访问：读配置 / 投递 / 触发 / 前端状态变更 / 事件总线 / 页面跳转 / 前端调用。
+        "ReadsConfig" | "PublishesTo" | "Triggers" | "Mutates" | "Emits" | "ListensTo"
+        | "CallsHttp" | "NavigatesTo" => 2,
+        "MapsTo" => 1,
+        _ => 0,
+    }
+}
+
+/// 同一 `access_rank` 内的**动作强弱**：写 > 读。
+///
+/// 背景：一个方法常常既读又写同一张表（`Db::name('Goods')->find()` 与
+/// `Db::name('Goods')->update($data)` 写在同一个方法里），P7 于是对同一对
+/// 「方法 → 表」**同时**落 `ReadsDb` 与 `WritesDb` —— 两条都是事实，但视图只画一条边，
+/// 必须挑信息量更强的那条，一律取"写"。
+///
+/// 缓存同理：`Cache::get($k)` 与 `Cache::set($k)` 并存时标成写。
+///
+/// 若退化成"边 id 小者胜"，显示结果就等于取决于建图阶段的先后（P5 早于 P7），
+/// 而阶段顺序与语义无关：实测 shopxo 里写操作被这样压成「读库」的共 1825 处，无一例外。
+pub fn action_strength(kind: &str) -> u8 {
+    match kind {
+        "WritesDb" | "WritesCache" => 2,
+        "ReadsDb" | "ReadsCache" => 1,
+        _ => 0,
+    }
+}
+
+/// 与 `kind` 作用在同一个资源上、互为"另一半"的访问方式（读 ↔ 写）。
+///
+/// 同一方法对同一张表常常两条边并存（先 `find()` 再 `update()`）；折叠视图只画一条，
+/// 被压掉的那条必须记回 `EdgeView::also_kinds`，前端才不会把「读+写」说成单边。
+/// 库与缓存各成一对，互不交叉（一条边的终点只可能是其中一种资源）。
+pub fn counterpart_kinds(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "WritesDb" | "ReadsDb" => &["WritesDb", "ReadsDb"],
+        "WritesCache" | "ReadsCache" => &["WritesCache", "ReadsCache"],
+        _ => &[],
+    }
+}
+
 /// 比较两个「节点访问方式」候选，返回 `new` 是否优于 `old`。
 ///
-/// 优先级：① 直接(`false`) 优于 间接(`true`)；② 访问 rank 高者优；③ 边 id 小者优（确定性兜底）。
+/// 优先级：① 直接(`false`) 优于 间接(`true`)；② 访问 rank 高者优；③ 同一 rank 内
+/// 动作更强者优（**写 > 读**，见 [`action_strength`]）；④ 边 id 小者优（确定性兜底）。
 ///
 /// 边 id 全图唯一，故同一 BFS 层内给定节点的所有候选里**优胜者唯一**——
 /// 无论 `HashMap` / 边查询以何种顺序遍历，最终选中的边都相同，结果确定。
 fn better_path(
     new_indirect: bool,
-    new_rank: u8,
+    new_kind: &str,
     new_eid: i64,
     old_indirect: bool,
-    old_rank: u8,
+    old_kind: &str,
     old_eid: i64,
 ) -> bool {
     if new_indirect != old_indirect {
         return !new_indirect; // 新的更直接 → 更优
     }
+    let new_rank = access_rank(new_kind);
+    let old_rank = access_rank(old_kind);
     if new_rank != old_rank {
         return new_rank > old_rank;
+    }
+    let new_strength = action_strength(new_kind);
+    let old_strength = action_strength(old_kind);
+    if new_strength != old_strength {
+        return new_strength > old_strength;
     }
     new_eid < old_eid
 }
