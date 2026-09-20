@@ -465,10 +465,11 @@ impl ViewService {
 
         // 事件 / 队列 / 缓存等中介节点：其直接生产方（`Triggers` 入边）与消费方
         // （`HandledBy` / `PublishesTo` 出边）通常不是第一类语义节点（而是
-        // `event('x')` 调用点或被 `listener` 标注的类），但正是该视角关心的对象。
-        // 反向模式原本只画语义「使用者」，会把它们漏掉、让中介节点看起来孤立。
-        // 这里在发现阶段前先把它们种入第 1 环并强制可见。
-        let mut force_visible: HashSet<i64> = HashSet::new();
+        // `event('x')` 调用点或被 `listener` 标注的类）。
+        // 画布恒为语义节点（语法节点默认折叠、在抽屉 / Inspector 展开查看），
+        // 所以这里**只**把它们种入第 1 环用于发现遍历与资源边提拉，并**不再强制可见**——
+        // 它们会作为「直连访问」降级进 `orphans` 记账（带接触点位置），而非画成画布节点。
+        let force_visible: HashSet<i64> = HashSet::new();
         // 反向模式：从中心走到该节点途中遇到的**语义边种类**（即"资源被怎样访问"）。
         let mut path_kind: HashMap<i64, String> = HashMap::new();
         // 与 `path_kind` 平行：走到该节点途中遇到的语义边**是否为传播得来的间接边**。
@@ -535,7 +536,8 @@ impl ViewService {
                     parent_of.insert(other, center_id.get());
                     semantic_of.insert(other, false);
                 }
-                force_visible.insert(other);
+                // 不再 `force_visible`：语法监听器 / 生产方不画成画布节点，
+                // 由下方 `collapsed` 分支降级进 `orphans` 记账（见 `upstream_reaches_semantic`）。
             }
         }
 
@@ -643,7 +645,7 @@ impl ViewService {
                         e.kind.to_string()
                     } else if inherited_rank > 0 {
                         path_kind.get(&id).cloned().unwrap()
-                    } else if is_semantic_edge(e.kind.as_str()) {
+                    } else if is_semantic_edge(e.kind.as_str()) || is_bridge_edge(e.kind.as_str()) {
                         e.kind.to_string()
                     } else {
                         String::new()
@@ -1020,7 +1022,7 @@ impl ViewService {
         &self,
         d: &mut Discovery,
         center_id: NodeId,
-        center_node: &gt_domain::model::Node,
+        _center_node: &gt_domain::model::Node,
         summary: &HashMap<i64, NodeSummary>,
         out: &HashMap<i64, Vec<i64>>,
     ) -> Result<FoldResult> {
@@ -1283,16 +1285,10 @@ impl ViewService {
                         *id != center_id.get() && d.semantic_of.get(id).copied().unwrap_or(false)
                     })
                     .collect();
-                // 事件 / 队列 / 缓存等中介节点的直接生产/消费方已在发现阶段前种入
-                // 第 1 环并 `d.force_visible`，这里把它们也作为「用户」画出（其 `d.path_kind`
-                // 即 `Triggers` / `HandledBy` / `PublishesTo`）。
-                if matches!(center_node.kind.as_str(), "Event" | "Queue" | "Topic") {
-                    for id in d.ring_of.keys().copied() {
-                        if d.force_visible.contains(&id) && !users.contains(&id) {
-                            users.push(id);
-                        }
-                    }
-                }
+                // 画布恒为语义节点：事件 / 队列 / 缓存等中介节点的直接生产/消费方
+                // （监听器 / 触发方，语法节点）不再强制可见，而是作为「直连访问」降级进
+                // `orphans` 记账（见 `upstream_reaches_semantic` 与 `collapsed` 分支），
+                // 由前端抽屉 / Inspector 展开查看。
                 // 孤儿访问：资源的**直接**访问方（第 1 环、父即中心）是语法节点、且沿调用链
                 // 上溯不存在任何语义用户（上游没有路由 / 契约等语义发起者 —— Seeder / 迁移
                 // 脚本 / Console 命令 / 事件处理器是常态）时，它既画不成语义用户，也永远不会
@@ -1377,12 +1373,13 @@ impl ViewService {
                                 if !seen.insert(cur) {
                                     continue;
                                 }
-                                if users.contains(&cur)
+                                if (users.contains(&cur)
                                     || covered.contains(&cur)
                                     || d.semantic_of.get(&cur).copied().unwrap_or(false)
                                     || summary
                                         .get(&cur)
-                                        .map_or(false, |m| NodeKind(m.kind.clone()).is_semantic())
+                                        .map_or(false, |m| NodeKind(m.kind.clone()).is_semantic()))
+                                    && cur != center_id.get()
                                 {
                                     return true;
                                 }
@@ -1496,8 +1493,10 @@ impl ViewService {
                 for node in &all_nodes {
                     let outs = d.out_edges.get(node).into_iter().flatten().cloned();
                     for e in outs {
-                        // 只画语义边，且目标必须是语义节点（ReadsConfig→ConfigKey、MapsTo→Table…）
-                        if !is_semantic_edge(e.kind.as_str()) {
+                        // 只画语义边，且目标必须是语义节点（ReadsConfig→ConfigKey、MapsTo→Table…）。
+                        // 桥边（`HandledBy` / `CallsHttp`）在此也被放行，但因其语法端点不可见，
+                        // 会在下方 `a == to` 分支降级进 `orphans` 记账，而非画成画布边。
+                        if !is_semantic_edge(e.kind.as_str()) && !is_bridge_edge(e.kind.as_str()) {
                             continue;
                         }
                         let to = e.to_id.get();
@@ -2542,6 +2541,14 @@ fn node_is_semantic(n: &gt_domain::model::Node) -> bool {
 /// 语义边判定（权威来源：`kinds.rs` 的语义边集合）。
 fn is_semantic_edge(kind: &str) -> bool {
     gt_domain::model::kinds::is_semantic_edge(kind)
+}
+
+/// 桥边判定（语义 ↔ 语法之间的发现连接器，权威来源：`kinds.rs::is_bridge_edge`）。
+///
+/// 折叠逻辑用它与 [`is_semantic_edge`] 共同决定：桥边可被绘制闸门放行、但其语法端点
+/// 最终降级进 `orphans` 记账（不画成语法节点）。
+fn is_bridge_edge(kind: &str) -> bool {
+    gt_domain::model::kinds::is_bridge_edge(kind)
 }
 
 /// 是否为**传播得来**的间接边（P8 沿 `Calls` 调用链复刻，见 `propagate.rs`）。

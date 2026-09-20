@@ -461,14 +461,20 @@ fn orphan_access_is_accounted_not_drawn() {
     eprintln!("校验孤儿记账 {checked} 条（数量取决于工程，为 0 亦合法）");
 }
 
-/// 事件视角：① `HandledBy` 的方向必须跟着原始边（**事件 --由…处理--> 监听器**）；
-/// ② `Triggers` 这类只有 1 跳的直接边必须给出**触发点**（`to_call_site`）。
+/// 事件视角：画布恒为语义节点 —— `HandledBy`（`事件 --由…处理--> 监听器`）与
+/// `Triggers`（`触发方 --触发--> 事件`）这类"语义 ↔ 语法"桥边的**语法端点必须折叠**，
+/// 降级进 `ObjectView.orphans` 记账（带接触点位置），而**绝不画成画布边**。
 ///
-/// 反向视角原本一律画成「使用者 --语义边--> 中心」，于是 `HandledBy` 被翻成
-/// "监听器 --由…处理--> 事件"，读起来正好相反；同时语义边此前把 `evidence` 存成**字符串**
-/// （没有 `location`），触发点取不到，前端抽屉只剩一句"没有逐跳证据可查"。
+/// 该视角真正画在画布上的是事件经监听器/触发方**间接触及的资源依赖**（如
+/// `事件 --ReadsDb(via 监听器X)--> 表`）—— 证明语法节点虽不画出来，却仍把它的
+/// 下游语义资源带上了图，信息没丢，只是从"画节点"降级成"记账 + via 接触点"。
+///
+/// 曾把监听器/触发方 `force_visible` 直接画出来，破坏"画布只画语义节点"原则；
+/// 现在统一折叠。本条同时验证：① 画布上没有 `HandledBy`/`Triggers` 边；
+/// ② 它们如实出现在 `orphans` 里（且 `Triggers` 带触发点 `location`）；
+/// ③ 视图确有可画的内容（资源边或直连记账，二选一）。
 #[test]
-fn event_view_handled_by_points_outward_and_triggers_have_call_site() {
+fn event_view_syntactic_accessors_collapse_to_orphans() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
         return;
@@ -486,48 +492,53 @@ fn event_view_handled_by_points_outward_and_triggers_have_call_site() {
         .expect("object_view");
     assert_eq!(ov.center.kind, "Event", "事件视角中心应是 Event");
 
-    let mut triggers = 0usize;
-    let mut handled = 0usize;
-    for e in &ov.edges {
-        match e.kind.as_str() {
-            "Triggers" => {
-                // 触发方 --触发--> 事件：主语在触发方，事件是终点。
-                assert_eq!(
-                    e.to.get(),
-                    ov.center.id.get(),
-                    "Triggers 边应指向事件中心，实际 {} -> {}",
-                    e.from.get(),
-                    e.to.get()
-                );
-                // 只有 1 跳的直接边也要给出触发点（`event('X')` 那一行）：
-                // 没有它，前端抽屉只能说"没有逐跳证据可查"，其实那一行就在图里。
-                if e.via.is_empty() {
-                    assert!(
-                        e.to_call_site.is_some(),
-                        "直接 Triggers 边 #{} -> #{} 应给出触发点（to_call_site）",
-                        e.from.get(),
-                        e.to.get()
-                    );
-                    triggers += 1;
-                }
-            }
-            "HandledBy" => {
-                // 事件 --由…处理--> 监听器：主语是事件自己，不能反过来。
-                assert_eq!(
-                    e.from.get(),
-                    ov.center.id.get(),
-                    "HandledBy 边应从事件中心出发（事件由监听器处理），实际 {} -> {}",
-                    e.from.get(),
-                    e.to.get()
-                );
-                handled += 1;
-            }
-            _ => {}
-        }
-    }
+    // ① 画布上绝不能出现桥边（语法端点不可见，画出来即违反"画布只画语义节点"）。
     assert!(
-        triggers + handled > 0,
-        "事件视角应给出触发方或监听方，否则就是一张空图"
+        !ov.edges
+            .iter()
+            .any(|e| e.kind == "HandledBy" || e.kind == "Triggers"),
+        "事件视角不应画出 HandledBy/Triggers 这类桥边，应折叠进 orphans：{:?}",
+        ov.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    // ② 直连的语法访问方必须降级进 orphans，且带"它对事件做了什么"。
+    let handled = ov
+        .orphans
+        .iter()
+        .filter(|o| o.edge_kind == "HandledBy")
+        .count();
+    let triggers = ov
+        .orphans
+        .iter()
+        .filter(|o| o.edge_kind == "Triggers")
+        .count();
+    assert!(
+        handled + triggers > 0,
+        "事件视角应把直连监听方/触发方记进 orphans，否则就是静默省略：{:?}",
+        ov.orphans
+            .iter()
+            .map(|o| &o.edge_kind)
+            .collect::<Vec<_>>()
+    );
+
+    // `Triggers` 这类只有 1 跳的直接边必须给出触发点（接触点位置），否则抽屉只剩
+    // "没有逐跳证据可查"，其实 `event('X')` 那一行就在图里。
+    for o in ov.orphans.iter().filter(|o| o.edge_kind == "Triggers") {
+        assert!(
+            !o.name.is_empty(),
+            "Triggers orphan 必须带名字（触发方）"
+        );
+        assert!(
+            o.location.is_some(),
+            "Triggers orphan {} 应给出触发点（location）",
+            o.name
+        );
+    }
+
+    // ③ 视图不空：要么经监听器画出了资源边，要么至少有直连记账 —— 总之不能是一张空图。
+    assert!(
+        !ov.edges.is_empty() || !ov.orphans.is_empty(),
+        "事件视角不应是一张空图"
     );
 }
 

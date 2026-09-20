@@ -182,13 +182,15 @@ declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
 }
 
 impl EdgeKind {
-    /// 语义边：Synthesize / Resolve 建立的业务依赖（读库 / 读配置 / 缓存 / 事件 / 跨服务…）。
+    /// 语义边（业务资源依赖）：Synthesize / Resolve 建立的业务依赖（读库 / 读配置 /
+    /// 缓存 / 事件 / 跨服务…）。折叠视图默认只展示这些；它们**两端都应是语义节点**，
+    /// 因此既可在画布上绘制，也计入候选徽标「语义入边 N」。
     ///
-    /// 折叠视图默认只展示这些；其余（Contains / Declares / Calls / HasCallSite…）
-    /// 是实现结构，属于语法链路。
+    /// 注意：`HandledBy` / `CallsHttp` **不在此列**——它们是「桥边」（见 [`Self::BRIDGE`]），
+    /// 一端是语义节点、另一端是语法节点（handler / 前端函数），不是资源依赖，不计入
+    /// 「入边 N」，也绝不画成画布边；其语法端点降级进 `orphans` 记账（前端抽屉 / Inspector
+    /// 可展开查看）。其余（Contains / Declares / Calls / HasCallSite …）是实现结构，属语法链路。
     pub const SEMANTIC: &'static [&'static str] = &[
-        Self::HANDLED_BY,
-        Self::CALLS_HTTP,
         Self::TRIGGERS,
         Self::PUBLISHES_TO,
         Self::READS_DB,
@@ -204,9 +206,20 @@ impl EdgeKind {
         "ReadsCache",
     ];
 
-    /// 是否为"对人类有意义的语义边"。
+    /// 桥边（语义 ↔ 语法之间的发现连接器）：`HandledBy`（契约 → handler）、
+    /// `CallsHttp`（前端函数 → 契约）。它们不是业务资源依赖——不计入「入边 N」、
+    /// 不当画布边——但必须留在 `is_chain_edge` 里供发现遍历把语法实现连通到语义资源；
+    /// 其语法端点（handler / 调用方）降级进 `orphans` 记账，画布恒为语义节点。
+    pub const BRIDGE: &'static [&'static str] = &[Self::HANDLED_BY, Self::CALLS_HTTP];
+
+    /// 是否为"对人类有意义的语义边"（业务资源依赖，见 [`Self::SEMANTIC`]）。
     pub fn is_semantic(&self) -> bool {
         Self::SEMANTIC.iter().any(|k| self.0 == *k)
+    }
+
+    /// 是否为"桥边"（语义 ↔ 语法之间的发现连接器，见 [`Self::BRIDGE`]）。
+    pub fn is_bridge(&self) -> bool {
+        Self::BRIDGE.iter().any(|k| self.0 == *k)
     }
 }
 
@@ -218,6 +231,15 @@ impl EdgeKind {
 /// 也读不出任何业务含义。
 pub fn is_semantic_edge(kind: &str) -> bool {
     EdgeKind(kind.to_string()).is_semantic()
+}
+
+/// 桥边判定（权威来源：[`EdgeKind::BRIDGE`]）。
+///
+/// 桥边连接"语义节点 ↔ 语法节点"，不是业务资源依赖：不计入「入边 N」、不当画布边，
+/// 但保留在发现遍历里。折叠逻辑用它与 `is_semantic_edge` 共同决定"是否可被绘制闸门放行、
+/// 但仍降级进 `orphans` 记账"——详见 `gt_application::view_service`。
+pub fn is_bridge_edge(kind: &str) -> bool {
+    EdgeKind(kind.to_string()).is_bridge()
 }
 
 /// 调用链边：折叠视图沿这些边做"正向发现"，把语法节点当透传。
