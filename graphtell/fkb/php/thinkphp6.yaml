@@ -459,7 +459,9 @@ rules:
           node: HttpContract
           identity:
             kind: ContractId
-            method: { method_name: true, normalize: [upper] }
+            # `Route::rule` 在 ThinkPHP 语义是"不限 HTTP 方法"，与 `Route::any` 同义；
+            # 方法名 `rule` 大写成 `RULE` 后归一为 `ANY`，避免 UI 出现无意义的 `RULE` 动词。
+            method: { method_name: true, normalize: [upper, { replace: { from: "RULE", to: "ANY" } }] }
             path:
               arg: 0
               normalize:
