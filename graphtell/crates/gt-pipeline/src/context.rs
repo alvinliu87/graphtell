@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use gt_domain::model::{
-    HandlerSpec, Language, MagicDelegationSpec, NamespacePolicy, NodeId, Phase, Project,
-    ProjectConfig, Rule, SourceFile, SubProject, SubProjectId,
+    DbVerbsSpec, HandlerSpec, Language, MagicDelegationSpec, NamespacePolicy, NodeId, Phase,
+    Project, ProjectConfig, Rule, SourceFile, SubProject, SubProjectId,
 };
 
 use crate::workspace::GraphWorkspace;
@@ -45,6 +45,10 @@ pub struct PipelineContext {
     pub magic_delegation: HashMap<i64, MagicDelegationSpec>,
     /// 全局兜底的转发目标（同 `handler_spec_default` 的取法）。
     pub magic_delegation_default: Option<MagicDelegationSpec>,
+    /// 子工程 → 数据模型读 / 写动词（FKB `db_verbs`）。
+    pub db_verbs: HashMap<i64, DbVerbsSpec>,
+    /// 全局兜底的读 / 写动词。
+    pub db_verbs_default: Option<DbVerbsSpec>,
     /// 语言 → 命名空间 / 成员书写规则（P0 从解析器注册表抽取）。
     pub lang_policies: HashMap<String, NamespacePolicy>,
     /// 兜底书写规则（单语言工程 / 语言未知时使用）。
@@ -75,6 +79,8 @@ impl PipelineContext {
             handler_spec_default: None,
             magic_delegation: HashMap::new(),
             magic_delegation_default: None,
+            db_verbs: HashMap::new(),
+            db_verbs_default: None,
             lang_policies: HashMap::new(),
             lang_policy_default: NamespacePolicy::default(),
             entry_methods: HashMap::new(),

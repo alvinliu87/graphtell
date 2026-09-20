@@ -125,6 +125,30 @@ impl IdentityKey {
     pub fn key(&self) -> String {
         format!("{}:{}", self.kind, self.value)
     }
+
+    /// 仅对 `ContractId` 有效：拆出 `(METHOD, /path)`。
+    ///
+    /// 身份值为 `"{METHOD} {path}"`（见 [`IdentityKey::contract`]），
+    /// method 已是大写；path 不含空格。
+    pub fn contract_parts(&self) -> Option<(String, String)> {
+        if self.kind.as_str() != SynthesizedKind::CONTRACT_ID {
+            return None;
+        }
+        let mut it = self.value.splitn(2, ' ');
+        let method = it.next()?;
+        let path = it.next()?;
+        Some((method.to_string(), path.to_string()))
+    }
+}
+
+/// 通配 HTTP 方法：代表「不限方法」。
+///
+/// ThinkPHP 自动路由（PATH_INFO 约定）与 `Route::rule` 在源码里没有绑定具体
+/// 方法，等价于"接受任意 HTTP 方法"。这类契约桥应被视为可匹配任意前端调用方法，
+/// 而非一个具体动词 —— 建图时与前端 `POST`/`GET` 调用汇聚到同一个节点，读写
+/// 启发式也据此跳过"未知→读"的误判。
+pub fn is_wildcard_http_method(method: &str) -> bool {
+    matches!(method.to_ascii_uppercase().as_str(), "ANY" | "RULE")
 }
 
 impl std::fmt::Display for IdentityKey {

@@ -135,6 +135,33 @@ fn trim_leading(s: String) -> String {
     s.trim_start_matches('\\').to_string()
 }
 
+/// 沿对象链回溯，取出「目标表名」：`Db::name('goods')->where()->insert()` 里，
+/// 对象的对象…是 `Db::name('goods')` —— 这是个 `name('goods')` 调用，其首个实参是
+/// 字符串字面量 `goods`。命中即返回它，供 P7 把末端动词落成 `WritesDb` / `ReadsDb`。
+///
+/// 只认 `name` / `table` 两个表名动词（其它如 `Route::name` 是路由命名，不在此列，
+/// 但因我们只在「方法本身是读 / 写动词」时才使用这个值，所以不会误用）。
+fn db_table_of(node: Node, ctx: &Ctx) -> Option<String> {
+    let object = node.child_by_field_name("object")?;
+    match object.kind() {
+        "scoped_call_expression" => {
+            let m = object.child_by_field_name("name").map(|n| text(n, ctx.src))?;
+            if m.eq_ignore_ascii_case("name") || m.eq_ignore_ascii_case("table") {
+                let args = args_of(object, ctx);
+                if let Some(gt_domain::model::FactValue::String(t)) = args.first() {
+                    return Some(t.clone());
+                }
+            }
+            None
+        }
+        // 继续往链上游回溯（`$q->name('x')->find()` 这类写法）
+        "member_call_expression" | "nullsafe_member_call_expression" | "function_call_expression" => {
+            db_table_of(object, ctx)
+        }
+        _ => None,
+    }
+}
+
 fn find_child_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     node.named_children(&mut node.walk()).find(|c| c.kind() == kind)
 }
@@ -703,6 +730,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                 let args = args_of(child, ctx);
                 if let (Some(object), Some(method)) = (object, method) {
                     let snippet = snippet_of(child, ctx.src);
+                    let db_table = db_table_of(child, ctx);
                     ctx.facts.call_sites.push(CallSiteFact {
                         owner_fqn: owner_fqn.to_string(),
                         owner_class: None,
@@ -712,6 +740,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         method: Some(method),
                         args,
                         span: span_of(child),
+                        db_table,
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);
@@ -731,6 +760,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         receiver: Some(scope),
                         method: Some(method),
                         args,
+                        db_table: None,
                         span: span_of(child),
                     });
                 }
@@ -750,6 +780,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         receiver: None,
                         method: Some(f),
                         args,
+                        db_table: None,
                         span: span_of(child),
                     });
                 }
@@ -771,6 +802,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         receiver: None,
                         method: Some(cls),
                         args,
+                        db_table: None,
                         span: span_of(child),
                     });
                 }

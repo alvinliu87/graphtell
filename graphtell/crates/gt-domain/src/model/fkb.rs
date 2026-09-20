@@ -56,6 +56,15 @@ pub struct FrameworkKnowledge {
     /// 内核不该猜 —— 由 FKB 指明属性名即可，其余（注解解析、类型来源、继承回溯）都是通用能力。
     #[serde(default)]
     pub magic_delegation: Option<MagicDelegationSpec>,
+    /// 数据模型 CRUD 动词 → 读 / 写分类（与 `MapsTo` 配合）。
+    ///
+    /// 「模型映射到表」是**静态结构**；`$model->save()` / `$model->find()` 才是
+    /// **动作**。哪些方法名算读、哪些算写是框架 API 约定（ThinkPHP 的 `save` /
+    /// `find`、Laravel 的 `create`…），由 FKB 声明后，P7 就能把
+    /// `入口 → 模型 → 表` 的边标成真正的 `WritesDb` / `ReadsDb`，
+    /// 而不是一路传播含糊的 `MapsTo`。
+    #[serde(default)]
+    pub db_verbs: Option<DbVerbsSpec>,
     /// 「消费入口方法名」候选：连向一个类时，优先连到它的哪个方法。
     ///
     /// 各框架约定不同：Laravel/队列 Job 是 `handle`、Symfony 是 `__invoke`、
@@ -127,6 +136,18 @@ pub struct HandlerSpec {
     pub app_anchor_dir: Option<String>,
     /// 推断不出时 `{app}` 的兜底值。
     pub app_fallback: String,
+}
+
+/// 数据模型的读 / 写动词清单（方法名，大小写不敏感）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DbVerbsSpec {
+    /// 写动词：`save` / `insert` / `update` / `delete` …
+    #[serde(default)]
+    pub write: Vec<String>,
+    /// 读动词：`find` / `select` / `value` / `count` …
+    #[serde(default)]
+    pub read: Vec<String>,
 }
 
 /// 魔法方法（`@method` 注解）的转发目标。

@@ -1272,6 +1272,7 @@ mod tests {
             receiver: receiver.map(|s| s.to_string()),
             method: method.map(|s| s.to_string()),
             args: vec![],
+            db_table: None,
             span: Span::default(),
             file: String::new(),
             sub: None,

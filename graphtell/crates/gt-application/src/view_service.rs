@@ -1459,6 +1459,21 @@ impl ViewService {
                             .push(e);
                     }
                 }
+                // 同一「提拉祖先 → 表」若同时被 `WritesDb` / `ReadsDb` 命中，则把 `MapsTo`
+                // （模型类的结构映射，不是"如何访问"）压掉 —— 否则路由视图里同一张表既画
+                // 「写库 / 读库」又画「映射」，后者纯属噪声（CRMEB / yoshop 的残留「映射」多源于此）。
+                // 仅当该表没有任何读 / 写动作时才保留 `MapsTo`（如实反映"只映射、没动作"）。
+                {
+                    let mut action_pairs: HashSet<(i64, i64)> = HashSet::new();
+                    for (k, a, to) in groups.keys() {
+                        if k.as_str() == "ReadsDb" || k.as_str() == "WritesDb" {
+                            action_pairs.insert((*a, *to));
+                        }
+                    }
+                    groups.retain(|(k, a, to), _| {
+                        !(k.as_str() == "MapsTo" && action_pairs.contains(&(*a, *to)))
+                    });
+                }
                 // 同一对 `(kind, a, to)` 上最多画几条**不同路径**：再多会糊成一片，
                 // 超出部分计入 `hidden` 诚实记账。
                 const MAX_PATHS: usize = 4;
@@ -2549,17 +2564,111 @@ fn better_path(
     new_eid < old_eid
 }
 
-/// 按 HTTP 契约名（如 `POST /product`、`GET /products`）首词判定读/写，
+/// 按 HTTP 契约名（如 `POST /product`、`GET /products`）判定读/写，
 /// 作为"路由访问表"是读库还是写库的启发式。
 ///
-/// 静态分析无法总判定某条调用链最终执行的是 `SELECT` 还是 `INSERT/UPDATE/DELETE`；
-/// 这里用温水动词兜底：写类动词（`POST`/`PUT`/`DELETE`/`PATCH`）判为写库（`WritesDb`），
-/// 其余（含 `GET`/`HEAD`/`OPTIONS` 与未知）判为读库（`ReadsDb`）。
+/// 判定优先级：
+/// 1. **具体动词**：写类动词（`POST`/`PUT`/`DELETE`/`PATCH`）判为写库（`WritesDb`），
+///    其余（含 `GET`/`HEAD`/`OPTIONS`）判为读库（`ReadsDb`）。
+/// 2. **通配方法**（`ANY` / `RULE`，不限方法，源自 ThinkPHP 自动路由 / `Route::rule`）：
+///    没有绑定具体动词，按 path 末段（PATH_INFO 约定里即控制器方法名，如
+///    `submit` / `delete` / `get`）做二级推断；命中已知动作词根才下结论，
+///    否则回退到"未知→读"兜底。
 fn is_write_http_method(route_name: &str) -> bool {
-    let verb = route_name
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_uppercase();
-    matches!(verb.as_str(), "POST" | "PUT" | "DELETE" | "PATCH")
+    let mut parts = route_name.splitn(2, ' ');
+    let verb = parts.next().unwrap_or("").to_ascii_uppercase();
+    let path = parts.next().unwrap_or("");
+    if !gt_domain::model::is_wildcard_http_method(&verb) {
+        return matches!(verb.as_str(), "POST" | "PUT" | "DELETE" | "PATCH");
+    }
+    // 通配端点：按控制器方法名（path 末段）二级推断读/写。
+    if let Some(write) = infer_write_by_action(path) {
+        return write;
+    }
+    false
+}
+
+/// 通配（不限方法）的自动路由端点，按 path 末段（ThinkPHP 约定里即控制器方法名）
+/// 推断读/写。命中已知动作词根返回 `Some(读/写)`，否则 `None`（交回"未知→读"兜底）。
+///
+/// 末段可能带前后缀（`rechargeSubmit` / `getQRCodePath`），故按非字母数字切词后
+/// 逐词匹配（不区分大小写）。
+fn infer_write_by_action(path: &str) -> Option<bool> {
+    let action = path.rsplit('/').next()?;
+    let write = [
+        "save", "submit", "add", "create", "insert", "update", "edit", "delete", "remove", "set",
+        "store", "upsert", "publish", "import",
+    ];
+    let read = [
+        "get", "detail", "index", "list", "read", "info", "show", "query", "search", "select",
+        "view", "find", "page", "export", "check",
+    ];
+    for token in action_words(action) {
+        if write.iter().any(|w| token == *w) {
+            return Some(true);
+        }
+        if read.iter().any(|w| token == *w) {
+            return Some(false);
+        }
+    }
+    None
+}
+
+/// 把控制器方法名切成小写词（按非字母数字 + 驼峰边界），如
+/// `rechargeSave` → `["recharge","save"]`，`getQRCodePath` → `["get","qrcode","path"]`。
+fn action_words(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if !c.is_alphanumeric() {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            prev_lower = false;
+        } else if c.is_uppercase() && prev_lower {
+            // 驼峰边界：上一词结束，当前大写字母开启新词
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            cur.push(c.to_ascii_lowercase());
+            prev_lower = false;
+        } else {
+            cur.push(c.to_ascii_lowercase());
+            prev_lower = c.is_lowercase();
+        }
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concrete_verbs_drive_read_write() {
+        assert!(is_write_http_method("POST /product"));
+        assert!(is_write_http_method("DELETE /order"));
+        assert!(!is_write_http_method("GET /products"));
+        assert!(!is_write_http_method("HEAD /health"));
+    }
+
+    #[test]
+    fn wildcard_falls_back_to_action_name() {
+        // 自动路由（不限方法）：按控制器方法名末段推断
+        assert!(is_write_http_method("ANY /api/recharge/submit"));
+        assert!(is_write_http_method("RULE /api/recharge/delete"));
+        assert!(is_write_http_method("ANY /user/rechargeSave")); // 驼峰带前后缀
+        assert!(!is_write_http_method("ANY /api/order/detail"));
+        assert!(!is_write_http_method("ANY /goods/getQRCodePath"));
+    }
+
+    #[test]
+    fn wildcard_unknown_action_stays_read() {
+        // 命中不了已知动作词根时回退"未知→读"，不误判
+        assert!(!is_write_http_method("ANY /api/recharge/config"));
+    }
 }

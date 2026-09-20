@@ -58,6 +58,11 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
     //      的调用链真正连通（否则语义边孤立在被调方法上，视图只能靠结构边绕路）。
     resolve_calls(ctx, &phase);
 
+    // ①.6 门面链式读 / 写动词：`Db::name('x')->insert()/find()`。末端动词落在未标注
+    //      类型的 Query 上推不出表，但链内 `name('x')` 已透传表名（parser 取得），
+    //      直接落成 `WritesDb` / `ReadsDb`，避免这类入口退回含糊的「映射到」。
+    classify_facade_db_calls(ctx);
+
     // ② 收集 FKB 声明的动态调用
     let resolvers: Vec<(String, ResolveStrategy)> = ctx
         .frameworks
@@ -84,10 +89,14 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                 else {
                     continue;
                 };
-                // PHP：接收者须为 `$var` / `$this->prop`（静态 `Foo::m()` 交给 Facade）；
-                // Java：字段是裸标识符，直接按字段声明类型解析。
+                // PHP：接收者须为 `$var` / `$this->prop` / `(new X)`（链式 builder
+                // `(new static)->select()` 的接收者被 parser 记成整个 `new` 表达式，
+                // 需当作变量类型解析，才能把末端读 / 写动词落成 `ReadsDb` / `WritesDb`）；
+                // 静态 `Foo::m()` 交给 Facade。Java：字段是裸标识符，按字段声明类型解析。
                 let is_java = call.language.as_str() == Language::JAVA;
-                if (!recv.starts_with('$') && !is_java) || method.is_empty() {
+                if (!recv.starts_with('$') && !recv.starts_with("(new ") && !is_java)
+                    || method.is_empty()
+                {
                     continue;
                 }
                 let raw = format!("{}::{recv}::{method}", call.owner_fqn);
@@ -216,6 +225,10 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
             format!("{t}.{method}"),
         ];
         if let Some(id) = candidates.iter().find_map(|f| ctx.ws.find_by_name(f)) {
+            // 调用落在数据模型的读 / 写动词上时，把「模型映射到表」升级成真正的动作边：
+            // `$goodsModel->save()` 不是含糊的「映射到 goods」，而是 `WritesDb → goods`。
+            // 边与传播种子都在这里落（P8 才能把动作沿调用链带到入口）。
+            classify_db_action(ctx, loc, &type_fqn, method);
             return Resolution::resolved(
                 ResolveTier::Convention,
                 id,
@@ -230,8 +243,46 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
     // 实际由 `__call` 转发给 FKB 声明的属性（CRMEB 是 `$this->dao`）。
     // 不解析它，`$this->services->getList()` 只能退回"类级命中"，服务这一跳就断了
     // （CRMEB 的 20 多个 `get*` / `count*` / `delete*` 全是这种情况）。
-    resolve_magic_delegation(ctx, &type_fqn, method, loc.sub)
-        .unwrap_or_else(|| Resolution::unknown(format!("{type_fqn}::{method} 未找到")))
+    let magic = resolve_magic_delegation(ctx, loc, &type_fqn, method);
+    // 即便调用本身没解析出目标方法，只要它命中了 FKB 声明的读 / 写动词，也应落成动作边。
+    // 接收者类型优先用「解析出的接收者类型」（`(new X)->value()` 里 X 是模型、`$this`
+    // 是模型），回退到「所在类」—— 典型如模型方法里的 `$this->where()->find()`：
+    // `where()` 返回未标注类型的 Query，链式末端动词推不出接收者类型，但 owner 类就是
+    // 被映射的模型。（之前只用 owner 类会漏掉 `(new ModelX)->value()` 这类接收者是模型、
+    // 但方法写在 service 里的读 / 写，导致路由退回含糊的「映射到」。）
+    if magic.is_none() && is_db_verb(ctx, loc, method).is_some() {
+        classify_db_action(ctx, loc, &type_fqn, method);
+    }
+    magic.unwrap_or_else(|| Resolution::unknown(format!("{type_fqn}::{method} 未找到")))
+}
+
+/// 取 `app\model\User::login` 这样的 FQN 里的「类部分」。
+fn owner_class_fqn(owner_fqn: &str) -> String {
+    match owner_fqn.rfind("::") {
+        Some(i) => owner_fqn[..i].to_string(),
+        None => owner_fqn.to_string(),
+    }
+}
+
+/// 方法名是否命中 FKB 声明的读 / 写动词；命中则返回应落的边种类。
+fn is_db_verb(
+    ctx: &PipelineContext,
+    loc: &Locator,
+    method: &str,
+) -> Option<(EdgeKind, &'static str)> {
+    let spec = loc
+        .sub
+        .and_then(|s| ctx.db_verbs.get(&s.get()).cloned())
+        .or_else(|| ctx.db_verbs_default.clone())
+        .filter(|s| !s.write.is_empty() || !s.read.is_empty())?;
+    let m = method.to_ascii_lowercase();
+    if spec.write.iter().any(|v| v.eq_ignore_ascii_case(&m)) {
+        Some((EdgeKind(EdgeKind::WRITES_DB.to_string()), "写"))
+    } else if spec.read.iter().any(|v| v.eq_ignore_ascii_case(&m)) {
+        Some((EdgeKind(EdgeKind::READS_DB.to_string()), "读"))
+    } else {
+        None
+    }
 }
 
 /// 魔法方法转发：`Services::getList` → `Services` 的 `dao` 属性类型上的 `getList`。
@@ -240,13 +291,19 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
 /// * FKB 声明了转发属性名（`magic_delegation.property`）；
 /// * 该类或其祖先用 `@method` 声明了这个方法名；
 /// * 转发属性的类型可静态确定（构造器注入 / 类型化属性 / 赋值推断）。
+///
+/// 顺带：若被转发的方法本身是 FKB 声明的读 / 写动词（CRMEB 的 `$this->save()` 经
+/// `__call` 转发给 `dao->save`；`dao` 映射到表），则把转发落点（`dep` 类型）当成数据模型
+/// 分类，直接落成 `WritesDb` / `ReadsDb` —— 否则这类写操作只能退回含糊的「映射到」
+/// （CRMEB 的 156 条「映射」几乎都来自此）。
 fn resolve_magic_delegation(
-    ctx: &PipelineContext,
+    ctx: &mut PipelineContext,
+    loc: &Locator,
     type_fqn: &str,
     method: &str,
-    sub: Option<gt_domain::model::SubProjectId>,
 ) -> Option<Resolution> {
-    let spec = sub
+    let spec = loc
+        .sub
         .and_then(|s| ctx.magic_delegation.get(&s.get()).cloned())
         .or_else(|| ctx.magic_delegation_default.clone())?;
     if spec.property.is_empty() || !ctx.ws.declares_magic_method(type_fqn, method) {
@@ -263,6 +320,10 @@ fn resolve_magic_delegation(
         }
         if let Some(dep) = ctx.ws.prop_type(&c, &spec.property) {
             let dep = dep.to_string();
+            // 被转发的方法若是读 / 写动词，把 `dep`（它的真实类型，映射到表）当数据模型分类。
+            if is_db_verb(ctx, loc, method).is_some() {
+                classify_db_action(ctx, loc, &dep, method);
+            }
             // 目标方法同样沿继承链回溯（Dao 的方法多定义在 `BaseDao`）。
             let mut stack = vec![dep.clone()];
             let mut seen: HashSet<String> = HashSet::new();
@@ -293,6 +354,176 @@ fn resolve_magic_delegation(
         cur = ctx.ws.parents_of(&c).into_iter().next();
     }
     None
+}
+
+/// 数据模型的读 / 写动作分类（`$model->save()` → `WritesDb → goods`）。
+///
+/// 三个输入都是「知识」而非硬编码：
+/// * 动词清单来自 FKB（`db_verbs`，ThinkPHP / Laravel 的 Model & Query API 各自声明）；
+/// * 「这个类型是数据模型」由 **`MapsTo` 边**证明（P5 的模型约定规则产出的静态身份）；
+/// * 两个候选类型来源都被尝试：变量类型解析得到的 `type_fqn`（如 `$this->where()` 链
+///   末端推不出时退化为调用方所在的 `owner` 类 —— 模型方法里的 `$this->find()` 就是这样）。
+///
+/// 直接落一条 `方法 → 表` 的动作边，并登记传播种子 —— P8 会沿 `Calls` 链把它带到
+/// 控制器 / 入口，路由视角于是显示「写库 / 读库」而不是含糊的「映射到」。
+fn classify_db_action(
+    ctx: &mut PipelineContext,
+    loc: &Locator,
+    type_fqn: &str,
+    method: &str,
+) {
+    let Some((kind, _)) = is_db_verb(ctx, loc, method) else {
+        return;
+    };
+    // 候选「数据模型类型」：
+    // 1. 变量类型解析出的接收者类型（如 `$this->save` 落在模型类上）；
+    // 2. 调用方所在类（模型方法里的 `$this->find` 接收者推不出时退化到这里）；
+    // 3. 经 FKB 声明的魔法转发属性（service → `dao`）可达的类型 —— service 类本身
+    //    不映射到表，但它的 `dao` 属性类型（继承链上）映射到了表。CRMEB 的
+    //    `$this->save()` 正是这种情况：接收者是 service，真正的表在 `dao` 上。
+    // 三者都试一遍（去重交给 `add_edge`）。
+    let mut candidates: Vec<String> = vec![type_fqn.to_string(), owner_class_fqn(&loc.owner_fqn)];
+    if let Some(spec) = loc
+        .sub
+        .and_then(|s| ctx.magic_delegation.get(&s.get()).cloned())
+        .or_else(|| ctx.magic_delegation_default.clone())
+    {
+        if !spec.property.is_empty() {
+            for t in [type_fqn.to_string(), owner_class_fqn(&loc.owner_fqn)] {
+                if let Some(dep) = ctx.ws.prop_type(&t, &spec.property) {
+                    candidates.push(dep.to_string());
+                }
+            }
+        }
+    }
+    let mut tried = HashSet::new();
+    for t in candidates {
+        if !tried.insert(t.clone()) {
+            continue;
+        }
+        for table in ctx.ws.mapped_tables(&t, EdgeKind::MAPS_TO) {
+            emit_db_edge(ctx, loc.owner, loc.sub, &loc.owner_fqn, table, &kind, method, 0.85);
+        }
+        // 回退：该类型自身没映射表，但它可能是「基类」，读 / 写动词写在基类里、
+        // 实例却是映射到表的子类（`$this->select()` 在 `app\common\model\X` 基类，
+        // 表挂在 `app\api\model\X` 子类）。向上查不到就向下（子类型）补查，把动词
+        // 落成真正动作边，否则这些路由只能退回含糊的「映射到」。
+        //
+        // 但有界：CRMEB / yoshop 的「泛型基类」（`BaseModel`）被几十个模型继承，
+        // 向下 BFS 会瞬间展开到几十张表，让每个调用方都「读」几十张表 —— 这是失真，
+        // 不可取。所以**只有可达子类的映射表很少（≤6，典型的「每实体一个基类」）时才
+        // 落边**；子类表过多说明是共享泛型基类、无法在静态分析里判明具体实例表，
+        // 直接放弃（退回「映射到」，如实标注），避免动作边爆炸。
+        if ctx.ws.mapped_tables(&t, EdgeKind::MAPS_TO).is_empty() {
+            let mut subtype_tables: Vec<NodeId> = Vec::new();
+            let mut seen_tbl: HashSet<i64> = HashSet::new();
+            for sub in ctx.ws.subtypes_bfs(&t, 6, 60) {
+                for table in ctx.ws.mapped_tables(&sub, EdgeKind::MAPS_TO) {
+                    if seen_tbl.insert(table.get()) {
+                        subtype_tables.push(table);
+                    }
+                }
+            }
+            if subtype_tables.len() <= 6 {
+                for table in subtype_tables {
+                    emit_db_edge(
+                        ctx, loc.owner, loc.sub, &loc.owner_fqn, table, &kind, method, 0.7,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// 门面链式写 / 读：`Db::name('goods')->insert()` / `Db::name('goods')->where()->find()`。
+///
+/// 末端动词（`insert` / `find`）落在未标注类型的 Query 上，变量类型解析推不出表；
+/// 但链内的 `name('goods')` / `table('goods')` 已把表名透传到 `CallRecord.db_table`
+/// （parser 沿对象链回溯取得）。这里直接用该表名反查 P5 合成出的 Table 节点，
+/// 把动词落成 `WritesDb` / `ReadsDb` —— 否则这类入口只能退回含糊的「映射到」。
+fn classify_facade_db_calls(ctx: &mut PipelineContext) {
+    // 先收集（只读）再落边（可变），避开「迭代 `calls` 同时改 `ctx`」的借用冲突。
+    // `table_id` 是 `Copy`，直接收进 vec，落边阶段无需再查。
+    let mut pending: Vec<(NodeId, Option<SubProjectId>, String, String, EdgeKind, NodeId)> = Vec::new();
+    for call in ctx.ws.calls.iter() {
+        let (Some(table_name), Some(method)) = (&call.db_table, call.method.as_deref()) else {
+            continue;
+        };
+        let spec = call
+            .sub
+            .and_then(|s| ctx.db_verbs.get(&s.get()).cloned())
+            .or_else(|| ctx.db_verbs_default.clone())
+            .filter(|s| !s.write.is_empty() || !s.read.is_empty());
+        let Some(spec) = spec else {
+            continue;
+        };
+        let m = method.to_ascii_lowercase();
+        let kind = if spec.write.iter().any(|v| v.eq_ignore_ascii_case(&m)) {
+            EdgeKind(EdgeKind::WRITES_DB.to_string())
+        } else if spec.read.iter().any(|v| v.eq_ignore_ascii_case(&m)) {
+            EdgeKind(EdgeKind::READS_DB.to_string())
+        } else {
+            continue;
+        };
+        let Some(table_id) = ctx.ws.find_table_by_name(table_name) else {
+            continue;
+        };
+        pending.push((
+            call.owner,
+            call.sub,
+            call.owner_fqn.clone(),
+            method.to_string(),
+            kind,
+            table_id,
+        ));
+    }
+    for (owner, sub, owner_fqn, method, kind, table_id) in pending {
+        emit_db_edge(ctx, owner, sub, &owner_fqn, table_id, &kind, &method, 0.9);
+    }
+}
+
+/// 落成一条 `方法 → 表` 的读 / 写动作边，并登记 P8 传播种子（去重交给 `add_edge`）。
+fn emit_db_edge(
+    ctx: &mut PipelineContext,
+    owner: NodeId,
+    sub: Option<SubProjectId>,
+    owner_fqn: &str,
+    table_id: NodeId,
+    kind: &EdgeKind,
+    method: &str,
+    confidence: f32,
+) {
+    let added = ctx.ws.add_edge(NewEdge {
+        project_id: ctx.project.id,
+        kind: kind.clone(),
+        from_id: owner,
+        to_id: table_id,
+        phase: Phase(Phase::RESOLVE.to_string()),
+        confidence,
+        properties: serde_json::json!({
+            "evidence": format!("{} 调用 {}（{} 动词，门面链式）", owner_fqn, method, kind_label(kind)),
+            "verb": method,
+        }),
+    });
+    if added {
+        ctx.propagation_seeds.push(crate::context::PropSeed {
+            source: owner,
+            target: table_id,
+            kind: kind.0.clone(),
+            confidence,
+            sub,
+            phase: Phase(Phase::RESOLVE.to_string()),
+        });
+    }
+}
+
+/// `WritesDb` / `ReadsDb` 的中文标签（仅用于边证据文案）。
+fn kind_label(kind: &EdgeKind) -> &'static str {
+    match kind.0.as_str() {
+        EdgeKind::WRITES_DB => "写",
+        EdgeKind::READS_DB => "读",
+        _ => "",
+    }
 }
 
 /// 容器解析：L1 字面 → L2 注册表 → L4 约定 → L6 与类全集求交。
@@ -817,6 +1048,75 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
 /// * `$this->prop` → 属性类型（沿继承链回溯，`WechatServices` 找不到就看父类）；
 /// * `$var` → 所在方法的参数类型。
 fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Option<String> {
+    // 裸 `$this`：类型就是定义该方法的类（`$this->save()` 即当前模型类）。
+    // 此前漏掉这一支 —— `$this->X` 解析后 `receiver` 是裸 `$this`，走到下面 `$var` 分支
+    // 因没有名为 `this` 的参数 / 局部变量而返回 `None`，于是 `resolve_variable_type`
+    // 提前 `unknown` 退出，**模型类里的读写动词（`$this->save` / `$this->paginate`）永远
+    // 落不出 WritesDb / ReadsDb**（yoshop 的 545 条「映射」基本都源于此）。
+    if recv == "$this" {
+        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        return if class_fqn.is_empty() {
+            None
+        } else {
+            Some(class_fqn.to_string())
+        };
+    }
+    // `static` / `self`：静态上下文里的「当前类」（如 `static::deleteAll()` /
+    // `self::detail()`），类型同样是定义该方法的类。yoshop 大量写操作走 `static::*`，
+    // 不处理这一支这些写动词永远落不出 `WritesDb`。
+    if recv == "static" || recv == "self" {
+        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        return if class_fqn.is_empty() {
+            None
+        } else {
+            Some(class_fqn.to_string())
+        };
+    }
+    // `parent::method()`：接收者类型是「定义该方法的类的直接父类」，让父类上的
+    // `Model --MapsTo--> Table` 类级语义边能沿调用链浮现（与上面的 target 解析配套）。
+    if recv == "parent" {
+        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        if !class_fqn.is_empty() {
+            if let Some(p) = ctx.ws.parents_of(class_fqn).into_iter().next() {
+                return Some(p);
+            }
+        }
+        return None;
+    }
+    // `(new static)->select()` / `(new Foo)->save()`：链式 builder 的接收者被 parser 记成
+    // 整个 `new` 表达式。括号里的类就是实例类型 —— `static`/`self` 即「当前类」，
+    // 普通类名则按已知类解析；都推不出时退回定义该方法的类。否则模型里的
+    // `(new static)->where()->select()`（yoshop 的 `getList`/`getAll` 全是这种写法）
+    // 永远推不出接收者类型，读 / 写动词落不出 `ReadsDb` / `WritesDb`，路由只能退回「映射到」。
+    if let Some(inner) = recv.strip_prefix("(new ") {
+        let class = inner.trim_end_matches(')').trim().trim_start_matches('\\');
+        if class == "static" || class == "self" || class.is_empty() {
+            let c = owner_fqn.split("::").next().unwrap_or("");
+            return if c.is_empty() { None } else { Some(c.to_string()) };
+        }
+        if !class.is_empty() && ctx.ws.find_by_name(class).is_some() {
+            return Some(class.to_string());
+        }
+        // 短名按所属文件 `use` 表还原（`use App\Model\X as XModel`）：
+        // yoshop / CRMEB 大量 `XxxModel::getX()` / `(new XxxModel)` 用的就是导入别名，
+        // 不还原就推不出接收者类型，读 / 写动词落不出动作边。
+        if !class.is_empty() {
+            if let Some(owner_id) = ctx.ws.find_by_name(owner_fqn) {
+                if let Some(fqn) = file_import_of(ctx, owner_id, class) {
+                    if ctx.ws.find_by_name(&fqn).is_some() {
+                        return Some(fqn);
+                    }
+                }
+                if let Some(fqn) = ctx.ws.resolve_name_at(owner_id, class) {
+                    if ctx.ws.find_by_name(&fqn).is_some() {
+                        return Some(fqn);
+                    }
+                }
+            }
+        }
+        let c = owner_fqn.split("::").next().unwrap_or("");
+        return if c.is_empty() { None } else { Some(c.to_string()) };
+    }
     if let Some(prop) = recv.strip_prefix("$this->") {
         let class_fqn = owner_fqn.split("::").next().unwrap_or("");
         let mut cur = Some(class_fqn.to_string());
@@ -834,11 +1134,34 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
     } else if recv.starts_with('$') {
         let var = recv.trim_start_matches('$');
         // 先按**参数类型提示**（DI 注入），再按方法内的赋值推断（`$x = new Y()`）。
-        ctx.ws
+        let t = ctx
+            .ws
             .param_type(owner_fqn, var)
-            .or_else(|| ctx.ws.local_type(owner_fqn, var))
-            .map(|s| resolve_impl(ctx, s))
+            .or_else(|| ctx.ws.local_type(owner_fqn, var));
+        if let Some(s) = t {
+            return Some(resolve_impl(ctx, &s));
+        }
+        // `$model` 是 ThinkPHP / yoshop 里极其稳固的约定变量：模型方法里它指代「当前模型
+        // 实例」（`$model->save()` / `$model->detail()` 即操作本表）。其类型提示 / 局部赋值
+        // 常常缺失，类型推不出时退回「定义该方法的类」（即被映射的模型），让写 / 读动词
+        // 能落成 `WritesDb` / `ReadsDb`——否则这类路由只能退回含糊的「映射到」。
+        if var == "model" {
+            let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+            if !class_fqn.is_empty() {
+                return Some(class_fqn.to_string());
+            }
+        }
+        None
     } else {
+        // PHP 静态类调用 `ApiModel::detail()`：接收者就是该类本身（`ApiModel` 是类
+        // 全名，作为方法调用的接收者）。先按「已知类」尝试，命中即把类型定为该类，
+        // 于是 `ApiModel::save` / `ApiModel::detail` 这类写 / 读动词能落成 WritesDb /
+        // ReadsDb（yoshop 的 `XxxModel::detail` / `XxxModel::save` 全走这种形态）。
+        // 非类名的裸标识符（Java 字段 `mapper`）在这里 `find_by_name` 必然落空，
+        // 自然落到下面的 Java 字段分支，不影响 Java 解析。
+        if !recv.is_empty() && ctx.ws.find_by_name(recv).is_some() {
+            return Some(recv.to_string());
+        }
         // Java 字段（裸标识符）：从所属类（含父类）的字段类型推断
         // `service.mapper.findX()` 中 `mapper` 是 `@Autowired` 注入字段。
         let class_fqn = owner_class_of(owner_fqn);
@@ -915,31 +1238,70 @@ fn resolve_call_target(ctx: &PipelineContext, call: &CallRecord) -> Option<NodeI
                 return None;
             }
             let recv = recv.trim_start_matches('\\');
+            // `parent::method()`：调用定义在「当前类的直接父类」上的同名方法。
+            // yoshop 模型大量 `override` 后 `parent::getList()` / `parent::getInfo()`，
+            // 真正的读库动词落在父类方法体里 —— 不解析这一支，路由到表只能退回含糊的
+            // 「映射」。先替换成父类 FQN 再按 `Class::method` 处理。
+            let recv = if recv == "parent" {
+                let owner_class = call.owner_fqn.split("::").next().unwrap_or("");
+                match ctx.ws.parents_of(owner_class).into_iter().next() {
+                    Some(p) => p,
+                    None => return None,
+                }
+            } else if recv == "self" || recv == "static" {
+                // `self::` / `static::` 指向「定义该方法的类」：`static::detail()` 即
+                // 当前模型类的 `detail()`。不替换成 owner 类，这类读 / 写动词调用永远
+                // 解析不到目标方法（`static::detail` 字面量查无此节点），动作边落不出。
+                let owner_class = call.owner_fqn.split("::").next().unwrap_or("");
+                if owner_class.is_empty() {
+                    return None;
+                }
+                owner_class.to_string()
+            } else {
+                recv.to_string()
+            };
             if let Some(id) = ctx.ws.find_by_name(&format!("{recv}::{m}")) {
                 return Some(id);
             }
-            // 先按**本文件的 `use`** 还原 FQN —— 这才是 PHP 的真实解析规则。
+            // 把接收者类名还原成 FQN：先按本文件 `use` 表（PHP 真实解析规则），
+            // 再按命名空间解析。
             //
             // 关键：若文件导入的这个类**不在图里**（框架类，如 `think\facade\Cache`，
             // vendor 已被 P0 排除），就必须**放弃解析**，绝不能退回全局短名索引去猜
             // 一个同名的项目类。`Cache` 会被猜成 `app\model\other\Cache`（一个 Model），
             // 于是每次 `Cache::xxx()` 都凭空多出一条 `Calls` 边，并把
             // `Model --MapsTo--> Table(cache)` 这类类级语义边拖到路由上。
-            if let Some(fqn) = file_import_of(ctx, call.owner, recv) {
-                if let Some(id) = ctx.ws.find_by_name(&format!("{fqn}::{m}")) {
-                    return Some(id);
+            let recv_fqn = if let Some(fqn) = file_import_of(ctx, call.owner, &recv) {
+                fqn
+            } else if let Some(fqn) = ctx.ws.resolve_name_at(call.owner, &recv) {
+                fqn
+            } else {
+                recv.clone()
+            };
+            // 在 `recv_fqn` 及其祖先类里找方法：方法常**只声明在基类**（如 yoshop 的
+            // `app\store\model\GoodsSpecRel` extends `app\common\model\GoodsSpecRel`，
+            // `getSpecList` 只在基类声明）。不沿继承链回溯，子类 `XxxModel::getSpecList`
+            // 就只能落到「类」上，读 / 写动词永远落不出动作边。框架父类（vendor）不在图里，
+            // `find_by_name` 自然落空，不会误连。
+            {
+                let mut cur = Some(recv_fqn.clone());
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut depth = 0usize;
+                while let Some(c) = cur {
+                    if depth > 20 || !seen.insert(c.clone()) {
+                        break;
+                    }
+                    if let Some(id) = ctx.ws.find_by_name(&format!("{c}::{m}")) {
+                        return Some(id);
+                    }
+                    cur = ctx.ws.parents_of(&c).into_iter().next();
+                    depth += 1;
                 }
-                return ctx.ws.find_by_name(&fqn);
             }
-            if let Some(fqn) = ctx.ws.resolve_name_at(call.owner, recv) {
-                if let Some(id) = ctx.ws.find_by_name(&format!("{fqn}::{m}")) {
-                    return Some(id);
-                }
-                // 方法不在图内（框架方法如 `User::where`）→ 连到**类本身**，
-                // 从而让 Model --MapsTo--> Table 这类"类级语义边"能沿调用链浮现。
-                if let Some(id) = ctx.ws.find_by_name(&fqn) {
-                    return Some(id);
-                }
+            // 方法不在图内（框架方法如 `User::where`）→ 连到**类本身**，
+            // 从而让 Model --MapsTo--> Table 这类"类级语义边"能沿调用链浮现。
+            if let Some(id) = ctx.ws.find_by_name(&recv_fqn) {
+                return Some(id);
             }
         }
         return None;

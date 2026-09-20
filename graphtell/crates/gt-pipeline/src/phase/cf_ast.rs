@@ -469,6 +469,7 @@ fn build_file(
             receiver: call.receiver.clone(),
             method: call.method.clone(),
             args: call.args.clone(),
+            db_table: call.db_table.clone(),
             span: call.span,
             file: file.path.clone(),
             sub: file.sub_project_id,

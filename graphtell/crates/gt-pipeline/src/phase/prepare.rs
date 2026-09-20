@@ -73,6 +73,19 @@ pub fn run(
             }
             ctx.magic_delegation.insert(sub.id.get(), spec);
         }
+        // 数据模型读 / 写动词：同样是 FKB 知识（框架的 Model/Query API 叫什么）。
+        if let Some(spec) = frameworks
+            .iter()
+            .chain(projects.iter())
+            .filter_map(|id| kb.by_id(id))
+            .find_map(|fk| fk.db_verbs.clone())
+            .filter(|s| !s.write.is_empty() || !s.read.is_empty())
+        {
+            if ctx.db_verbs_default.is_none() {
+                ctx.db_verbs_default = Some(spec.clone());
+            }
+            ctx.db_verbs.insert(sub.id.get(), spec);
+        }
         if let Some(methods) = frameworks
             .iter()
             .chain(projects.iter())

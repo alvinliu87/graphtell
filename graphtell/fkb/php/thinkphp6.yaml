@@ -94,6 +94,17 @@ handler:
 #   `run` TP5 行为类（Behavior）。声明后内核的默认集不再生效。
 entry_methods: ["handle", "doJob", "fire", "run", "__invoke"]
 
+# 数据模型 CRUD 动词 → 读 / 写分类（与 MapsTo 配合，见 P7 的动词分类）。
+#
+# ThinkPHP 的 Model / Query API：`$model->save()` 是写、`$model->find()` 是读。
+# 没有这份清单，`入口 → 模型 → 表` 只能一路传播含糊的「映射到」——
+# 用户在视图上看到「映射到 goods」时无从判断这条入口到底是读还是写（实测反馈）。
+# 方法名大小写不敏感；名单是框架 API 约定，内核不认识任何一个名字。
+db_verbs:
+  write: ["save", "saveAll", "insert", "insertAll", "insertGetId", "update", "updateAll",
+          "delete", "deleteAll", "replace", "setInc", "setDec"]
+  read:  ["find", "select", "value", "column", "count", "sum", "max", "min", "avg", "paginate", "cursor", "findOrEmpty", "selectOrFail", "findOrFail", "detail", "getInfo", "getList", "getAll", "getTree", "getData", "getDetail", "getTreeData"]
+
 # ---------------------------------------------------------------- P3 装载
 loaders:
   # FacadeMap：由框架知识给出（权威），不靠猜
@@ -203,6 +214,13 @@ resolvers:
   - id: tp6-accessor
     call: "*->get*Attr"
     strategy: accessor
+  # 静态上下文里的「当前类」调用：`self::detail()` / `static::deleteAll()`。
+  # 语法上是 `::`（不是 `->`），原 `*->*` resolver 匹配不到，导致这类读 / 写动词
+  # 永远落不出 `ReadsDb` / `WritesDb`。`receiver_type_fqn` 已把 `self` / `static` 当成
+  # 定义该方法的类，这里只负责让它们也走 VariableType 解析路径。
+  - id: tp6-static-self-call
+    call: "self::*|static::*|Self::*|Static::*"
+    strategy: variable_type
   # 实例方法调用：`$services->appAuth()`。类型来自方法参数类型提示与构造器属性注入
   # （`__construct(T $x){ $this->p = $x; }`），是 ThinkPHP 的 DI 约定。
   # 未知类型不建边 —— 宁可缺边，不可错边。
@@ -669,8 +687,9 @@ rules:
   #     → /adminapi/v1/agent/agent_level/delete
   # 与 TP6 的 URL 转换（`Url` 把 `goods_category` 折成 `GoodsCategory`）一致。
   #
-  # method 取 `RULE`：`Route::rule` 的语义是"不限 HTTP 方法"，与本纯粹仪表里
-  # `RULE /mobile/:*` 这类既有契约保持同一种写法，避免编造 GET/POST。
+  # method 取 `ANY`（通配）：自动路由与 `Route::rule` 一样"不限 HTTP 方法"，
+  # 内核把 `ANY` / `RULE` 都识别为通配方法 —— 与前端具体方法（POST / GET…）
+  # 的契约桥汇聚到同一个节点，避免编造 GET/POST。
   # 置信度刻意压到 0.5 —— 这是**约定推断**而非源码明文（语义可能因工程配置
   # `url_route_must`、中间件、继承的 `__call` 而失效），节点上带 `auto_route: true`
   # 供上层区分。
@@ -693,7 +712,7 @@ rules:
           node: HttpContract
           identity:
             kind: ContractId
-            method: { literal: "RULE", normalize: [upper] }
+            method: { literal: "ANY", normalize: [upper] }
             path:
               self: true
               transform: { snake: true }

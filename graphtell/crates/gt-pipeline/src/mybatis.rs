@@ -192,6 +192,7 @@ pub fn run(ctx: &mut PipelineContext) {
                         receiver: Some("mybatis".to_string()),
                         method: Some(kind.clone()),
                         args: vec![FactValue::String(table.clone())],
+                        db_table: None,
                         span,
                         file: rel.clone(),
                         sub: Some(SubProjectId(sub.id.get())),

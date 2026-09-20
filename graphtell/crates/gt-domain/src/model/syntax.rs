@@ -96,6 +96,12 @@ pub struct CallSiteFact {
     /// 该调用点所在行的源码文本（由 parser 从 `span` 提取，供 UI 直接显示语句）。
     #[serde(default)]
     pub snippet: Option<String>,
+    /// 链式调用里透传下来的「目标表名」：`Db::name('goods')->insert()` 里末端动词
+    /// `insert` 落在未标注类型的 Query 上，变量类型解析推不出表，但链内的
+    /// `name('goods')` / `table('goods')` 已给出表名。由 parser 在收集调用点时
+    /// 沿对象链回溯取得，供 P7 把这类门面链式动词落成 `WritesDb` / `ReadsDb`。
+    #[serde(default)]
+    pub db_table: Option<String>,
 }
 
 /// 字段声明与类型：`class -> field -> type`。

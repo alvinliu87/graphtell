@@ -11,7 +11,7 @@ pub mod view;
 pub use fkb::{
     Action, AliasSpec, AnnotateAction, AnnotateTarget, AnnotationSpec, CallContext, Detector,
     Direction, ExpandSpec, ExpandVariant, FanInThresholds, FieldSpec, FileFormat,
-    FrameworkKnowledge, HandlerSpec, MagicDelegationSpec,
+    FrameworkKnowledge, HandlerSpec, MagicDelegationSpec, DbVerbsSpec,
     IdentitySpec, KnowledgeScope, LinkAction, LinkSpec, LoaderSource, LoaderSpec, NormalizeStep,
     PickStrategy, Predicate,
     ResolveAs, ResolveStrategy, ResolveTier, Resolution, ResolverSpec, RootRule, RootSource, Rule,
@@ -21,6 +21,7 @@ pub use graph::{
     AliasEntry, Annotation, Diagnostic, Edge, IdentityKey, MergeStrategy, NewAnnotation, NewEdge,
     NewNode, Node, PhaseReport, Severity, Span, SymbolEntry,
 };
+pub use graph::is_wildcard_http_method;
 pub use ids::{EdgeId, FileId, NodeId, ProjectId, SubProjectId};
 pub use kinds::{AnnotationChannel, EdgeKind, Language, NodeKind, Phase, SynthesizedKind};
 pub use project::{

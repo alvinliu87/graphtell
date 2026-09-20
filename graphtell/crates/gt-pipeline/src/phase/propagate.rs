@@ -88,6 +88,20 @@ pub fn run(ctx: &mut PipelineContext) {
     let mut keys: Vec<(EdgeKind, i64, i64)> = edge_seeds.keys().cloned().collect();
     keys.sort_by(|a, b| (a.0.as_str(), a.1, a.2).cmp(&(b.0.as_str(), b.1, b.2)));
 
+    // **「映射到」让位于真正的动作**：同一 `(from, to)` 上既有 `MapsTo` 又有
+    // `ReadsDb` / `WritesDb` 时，丢掉 `MapsTo`。
+    //
+    // 为什么：`MapsTo` 是模型类的**静态身份**（`GoodsModel` 映射到 `goods`），它本身
+    // 不是入口发生的动作。P7 的读 / 写动词分类（FKB `db_verbs`）已经把同一个事实标成
+    // 了更精确的 `WritesDb` / `ReadsDb` —— 两张边并排画，用户看到「映射到 goods」
+    // 自然要问"到底是读还是写"（这正是实测反馈）。丢掉弱信息，保留强信息。
+    let action_pairs: HashSet<(i64, i64)> = keys
+        .iter()
+        .filter(|(k, _, _)| k.as_str() == EdgeKind::READS_DB || k.as_str() == EdgeKind::WRITES_DB)
+        .map(|(_, f, t)| (*f, *t))
+        .collect();
+    keys.retain(|(k, f, t)| k.as_str() != EdgeKind::MAPS_TO || !action_pairs.contains(&(*f, *t)));
+
     let mut added = 0usize;
     for key in keys {
         let seeds: Vec<i64> = edge_seeds[&key].iter().copied().collect();

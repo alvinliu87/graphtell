@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use gt_domain::model::{
     AliasEntry, Annotation, Diagnostic, Edge, EdgeKind, FactValue, GraphDelta, IdentityKey,
     Language, MergeStrategy, NewAnnotation, NewEdge, NewNode, Node, NodeId, NodeKind, Phase,
-    ProjectId, Severity, Span, SubProjectId,
+    ProjectId, Severity, Span, SubProjectId, SynthesizedKind,
 };
 use serde_json::Value;
 
@@ -27,6 +27,9 @@ pub struct CallRecord {
     pub receiver: Option<String>,
     pub method: Option<String>,
     pub args: Vec<FactValue>,
+    /// 链式门面调用里透传下来的目标表名（`Db::name('goods')->insert()`），
+    /// 供 P7 把末端动词落成 `WritesDb` / `ReadsDb`。
+    pub db_table: Option<String>,
     pub span: Span,
     pub file: String,
     pub sub: Option<SubProjectId>,
@@ -120,6 +123,10 @@ pub struct GraphWorkspace {
     annotations: Vec<Annotation>,
     by_fqn: HashMap<String, i64>,
     by_identity: HashMap<String, i64>,
+    /// 契约桥（HttpContract）按 `path` 索引到节点 id，并标记该节点是否为通配方法
+    /// （`ANY` / `RULE`）。用于把"不限方法"的自动路由端点与前端具体方法
+    /// （`POST` / `GET`…）汇聚到同一个节点，否则路由视角里前后端对不齐。
+    contract_path_index: HashMap<String, (i64, bool)>,
     by_alias: BTreeMap<(String, String, String), i64>,
     fan_in: HashMap<i64, u32>,
     fan_out: HashMap<i64, u32>,
@@ -167,6 +174,9 @@ pub struct GraphWorkspace {
     in_edges: HashMap<i64, Vec<(String, i64)>>,
     /// 短名索引：`短名(小写) → [node_id]`，替代全表线性扫描。
     by_short: HashMap<String, Vec<i64>>,
+    /// 表名索引：`(归一化)表名 → Table 节点 id`，供 P7 按 `Db::name('x')` 透传的
+    /// 表名反查合成出的 Table 节点（合成节点没有 fqn，不能走 `by_fqn`）。
+    by_table_name: HashMap<String, i64>,
     /// 数据库表前缀（来自工程配置，用于 identity 归一化与符号表查找）。
     table_prefixes: Vec<String>,
     /// 父类型名索引：`子 FQN → [父 FQN]`。
@@ -175,6 +185,13 @@ pub struct GraphWorkspace {
     /// `StoreOrder → crmeb\basic\BaseModel → think\Model`，
     /// 而 `think\Model` 在 vendor 里（P0 已排除），图上没有这条边。
     supertypes: HashMap<String, Vec<String>>,
+    /// 子类型名索引（继承链下游）：`父 FQN → [子 FQN]`，由 `supertypes` 反转得到。
+    ///
+    /// 用于「基类方法里的读 / 写动词」反查其实例（子类）映射到的表：yoshop / CRMEB 的
+    /// 读库动词（`$this->select` / `getAll`）常写在 `app\common\model\X` 这类基类里，
+    /// 而 `MapsTo` 边只挂在具体子类（`app\api\model\X`）上 —— 不反向走到子类，这些动词
+    /// 永远落不出 `ReadsDb`，路由只能退回含糊的「映射到」。
+    subtypes: HashMap<String, Vec<String>>,
     /// 方法参数类型：`方法 FQN → [(变量名, 类型 FQN)]`，供 P7 解析 `$var->method()`。
     param_types: HashMap<String, Vec<(String, String)>>,
     /// 类属性类型：`类 FQN → {属性名 → 类型 FQN}`（来自构造器注入 `$this->p = $param`、
@@ -206,6 +223,7 @@ impl GraphWorkspace {
             annotations: Vec::new(),
             by_fqn: HashMap::new(),
             by_identity: HashMap::new(),
+            contract_path_index: HashMap::new(),
             by_alias: BTreeMap::new(),
             fan_in: HashMap::new(),
             fan_out: HashMap::new(),
@@ -224,7 +242,9 @@ impl GraphWorkspace {
             out_edges: HashMap::new(),
             in_edges: HashMap::new(),
             by_short: HashMap::new(),
+            by_table_name: HashMap::new(),
             supertypes: HashMap::new(),
+            subtypes: HashMap::new(),
             param_types: HashMap::new(),
             prop_types: HashMap::new(),
             magic_methods: HashMap::new(),
@@ -327,6 +347,47 @@ impl GraphWorkspace {
             .extend(names.iter().cloned());
     }
 
+    /// 该类（含祖先）通过 `MapsTo` 映射到的全部表节点。
+    ///
+    /// 「类映射到表」是模型类的静态身份；P7 据此把 `$model->save()` 这类
+    /// FKB 声明的读 / 写动词调用升级成真正的 `WritesDb` / `ReadsDb`。
+    pub fn mapped_tables(&self, class_fqn: &str, maps_to_kind: &str) -> Vec<NodeId> {
+        let mut out: Vec<NodeId> = Vec::new();
+        let mut stack = vec![class_fqn.to_string()];
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut steps = 0;
+        while let Some(c) = stack.pop() {
+            steps += 1;
+            if steps > 50 || !visited.insert(c.clone()) {
+                continue;
+            }
+            if let Some(edges) = self.out_edges.get(&{
+                // 类 FQN → 节点 id：走短名/全名索引
+                self.find_by_name(&c).map(|id| id.get()).unwrap_or(0)
+            }) {
+                for (k, to) in edges {
+                    if k == maps_to_kind {
+                        out.push(NodeId(*to));
+                    } else if k == EdgeKind::RESOLVES_TO {
+                        // 数据访问对象（如 CRMEB 的 `app\dao\X`）本身不映射到表，
+                        // 但它 `ResolvesTo` 到真正的模型类（`app\model\X`），模型类才
+                        // 有 `MapsTo`。顺着这条边找到表，才能把 service 的 `save` 落成
+                        // `WritesDb`（否则 CRMEB 的写操作全退回「映射到」）。
+                        if let Some(tf) = self.node(NodeId(*to)).and_then(|n| n.fqn.clone()) {
+                            stack.push(tf);
+                        }
+                    }
+                }
+            }
+            for p in self.parents_of(&c) {
+                stack.push(p);
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// 该类（或它的祖先）是否声明了名为 `method` 的魔法方法。
     pub fn declares_magic_method(&self, class_fqn: &str, method: &str) -> bool {
         let mut stack = vec![class_fqn.to_string()];
@@ -420,6 +481,11 @@ impl GraphWorkspace {
                 }
             }
         }
+        // 合成节点（Table / HttpContract / ConfigKey / I18nKey）没有 fqn，按 name 建索引，
+        // 供 P7 按 `Db::name('x')` 透传的表名反查。只有 Table 需要反查，其余忽略。
+        if new.kind.as_str() == NodeKind::TABLE && !new.name.is_empty() {
+            self.by_table_name.entry(new.name.clone()).or_insert(id.get());
+        }
         new.id = Some(id);
         self.delta.nodes.push(new);
         self.nodes.insert(id.get(), node);
@@ -427,25 +493,63 @@ impl GraphWorkspace {
     }
 
     /// 新增或复用合成节点（**幂等合并**：相同 identity 只建一次）。
+    ///
+    /// 合并分两层：
+    /// 1. **精确身份**（`Method /path`）：同端点同方法只建一个节点。
+    /// 2. **通配方法感知**：后端「自动路由 / `Route::rule`」不限方法（method = `ANY`
+    ///    / `RULE`），应与前端具体方法（`POST` / `GET`…）汇聚到同一个契约桥节点，
+    ///    否则路由视角里"前端调用方 ↔ 后端 handler"会落在两张节点上、对不齐。
+    ///    只要一侧是通配方法就复用同一节点（无论谁先建）。
     pub fn get_or_create_synthesized(&mut self, new: NewNode) -> (NodeId, bool) {
         if let Some(identity) = &new.identity {
             let key = identity.key();
+            // 1) 精确身份合并
             if let Some(existing) = self.by_identity.get(&key).copied() {
-                // 置信度取 max，并合并 properties
-                if let Some(node) = self.nodes.get_mut(&existing) {
-                    if new.confidence > node.confidence {
-                        node.confidence = new.confidence;
-                    }
-                    merge_properties(&mut node.properties, &new.properties);
-                }
+                self.merge_synthesized(existing, &new);
                 return (NodeId(existing), false);
             }
+            // 2) 通配方法感知合并
+            if new.kind.as_str() == NodeKind::HTTP_CONTRACT
+                && identity.kind.as_str() == SynthesizedKind::CONTRACT_ID
+            {
+                if let Some((method, path)) = identity.contract_parts() {
+                    let new_is_wild = gt_domain::model::is_wildcard_http_method(&method);
+                    if let Some(&(eid, e_is_wild)) = self.contract_path_index.get(&path) {
+                        if e_is_wild || new_is_wild {
+                            self.merge_synthesized(eid, &new);
+                            return (NodeId(eid), false);
+                        }
+                    }
+                }
+            }
+            // 把契约桥登记进路径索引（通配或具体都登记，供通配合并命中）。
+            // 必须在 `add_node` 移动 `new` 之前算好（path 与通配标志都是 owned 值）。
+            let contract_entry = if new.kind.as_str() == NodeKind::HTTP_CONTRACT {
+                identity
+                    .contract_parts()
+                    .map(|(method, path)| (path, gt_domain::model::is_wildcard_http_method(&method)))
+            } else {
+                None
+            };
             let id = self.add_node(new);
             self.by_identity.insert(key, id.get());
-            return (id, true);
+            if let Some((path, is_wild)) = contract_entry {
+                self.contract_path_index.entry(path).or_insert((id.get(), is_wild));
+            }
+            return (NodeId(id.get()), true);
         }
         let id = self.add_node(new);
         (id, true)
+    }
+
+    /// 复用已有合成节点时合并置信度（取 max）与 properties。
+    fn merge_synthesized(&mut self, existing: i64, new: &NewNode) {
+        if let Some(node) = self.nodes.get_mut(&existing) {
+            if new.confidence > node.confidence {
+                node.confidence = new.confidence;
+            }
+            merge_properties(&mut node.properties, &new.properties);
+        }
     }
 
     pub fn node(&self, id: NodeId) -> Option<&Node> {
@@ -484,6 +588,41 @@ impl GraphWorkspace {
 
     pub fn find_by_name(&self, fqn: &str) -> Option<NodeId> {
         self.by_fqn.get(fqn).copied().map(NodeId)
+    }
+
+    /// 按表名反查合成出的 Table 节点。
+    ///
+    /// `Db::name('goods')` 这类写法在 P5 经 `strip_prefix → singularize → ...` 归一化后，
+    /// 表节点的 `name` 可能与原始字面量不同（`goods` → `good`）。这里对齐同一套归一化：
+    /// 依次尝试原串、singularize、去前缀、去前缀后 singularize，命中即返回。
+    pub fn find_table_by_name(&self, raw: &str) -> Option<NodeId> {
+        use crate::normalize::{singularize, strip_prefixes};
+        let prefixes = self.table_prefixes();
+        let candidates = [
+            raw.to_string(),
+            singularize(raw),
+            strip_prefixes(raw, &prefixes),
+            singularize(&strip_prefixes(raw, &prefixes)),
+        ];
+        for c in candidates {
+            let key = c.trim();
+            if key.is_empty() {
+                continue;
+            }
+            if let Some(id) = self.by_table_name.get(key) {
+                return Some(NodeId(*id));
+            }
+            // 大小写不敏感兜底
+            if let Some(id) = self
+                .by_table_name
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, v)| *v)
+            {
+                return Some(NodeId(id));
+            }
+        }
+        None
     }
 
     /// 短名解析：`StoreOrderServices` → `app\services\order\StoreOrderServices`。
@@ -807,11 +946,50 @@ impl GraphWorkspace {
             .entry(child_fqn.to_string())
             .or_default()
             .push(base.to_string());
+        // 同步维护反向索引（子类 → 父类方向），供基类方法反查子类映射表。
+        self.subtypes
+            .entry(base.to_string())
+            .or_default()
+            .push(child_fqn.to_string());
     }
 
     /// 直接父类型名列表（`子 FQN → [父 FQN]`）。
     pub fn parents_of(&self, fqn: &str) -> Vec<String> {
         self.supertypes.get(fqn).cloned().unwrap_or_default()
+    }
+
+    /// 直接子类型名列表（`父 FQN → [子 FQN]`），继承链下游。
+    pub fn children_of(&self, fqn: &str) -> Vec<String> {
+        self.subtypes.get(fqn).cloned().unwrap_or_default()
+    }
+
+    /// 以 `root` 为起点沿继承链下游（子类型）做有界 BFS，返回所有可达的子类 FQN。
+    ///
+    /// `max_depth` 限制下探深度、`max_nodes` 限制访问节点总数，避免共享泛型基类
+    /// （如 `BaseModel`）瞬间展开到几十张表造成动作边爆炸。命中 `MapsTo` 的子类
+    /// 才真正有用，这里只负责把候选子类交出去。
+    pub fn subtypes_bfs(&self, root: &str, max_depth: usize, max_nodes: usize) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<(String, usize)> = vec![(root.to_string(), 0)];
+        while let Some((cur, depth)) = stack.pop() {
+            if out.len() >= max_nodes {
+                break;
+            }
+            if !visited.insert(cur.clone()) {
+                continue;
+            }
+            if depth > 0 {
+                out.push(cur.clone());
+            }
+            if depth >= max_depth {
+                continue;
+            }
+            for c in self.children_of(&cur) {
+                stack.push((c, depth + 1));
+            }
+        }
+        out
     }
 
     /// `child` 是否（传递地）继承/实现了与 `base` 同名的类型。

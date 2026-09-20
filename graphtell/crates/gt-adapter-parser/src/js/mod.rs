@@ -682,6 +682,7 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
         method: method_field,
         args,
         span: span_of(call, ctx.src),
+        db_table: None,
     });
 }
 

@@ -348,6 +348,7 @@ fn collect_one_annotation(
         args,
         span: span_of(child),
         snippet: None,
+        db_table: None,
     });
 }
 
@@ -411,6 +412,7 @@ fn collect_call(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String])
         args: vec![FactValue::Unknown(None)],
         span: span_of(node),
         snippet: None,
+        db_table: None,
     });
 }
 
