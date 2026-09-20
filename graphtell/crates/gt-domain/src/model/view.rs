@@ -271,6 +271,27 @@ pub struct UnresolvedInfo {
     pub location: Option<String>,
 }
 
+/// 无法归因到任何语义入口的**直接**访问（孤儿访问）。
+///
+/// 资源视角只画语义节点：当访问方是语法节点（Method / Function …）且沿调用链上溯
+/// 找不到任何语义发起者（路由 / 契约 / 定时任务）时，它既画不成语义用户，也不会出现在
+/// 任何提拉边的 `via` 链里 —— 曾是"点亮成语法节点"的理由，但那把资源视角退化成了调用图。
+///
+/// 现在的处理是**降级而非省略**：不占画布（语法节点信息量低、会挤掉语义节点的额度），
+/// 但如实记账并给出接触点位置 —— 静默省略会让「语义入边 N」与空白画布自相矛盾。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrphanAccess {
+    pub id: NodeId,
+    /// 访问方的节点种类（通常是 `Method` / `Function`）。
+    pub kind: String,
+    pub name: String,
+    /// 它对中心资源做的事（`ReadsDb` / `WritesCache` …）。
+    pub edge_kind: String,
+    /// 接触点位置（`文件:行`），可跳转核对。
+    #[serde(default)]
+    pub location: Option<SourceLocation>,
+}
+
 /// 对象类视角：以**一个**对象为中心的链路子图。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectView {
@@ -282,6 +303,9 @@ pub struct ObjectView {
     pub rings: Vec<Vec<NodeView>>,
     pub edges: Vec<EdgeView>,
     pub hidden: HiddenInfo,
+    /// 无语义入口的直接访问（孤儿）—— 不画在画布上，但必须记账、可逐条核对。
+    #[serde(default)]
+    pub orphans: Vec<OrphanAccess>,
     pub unresolved: Vec<UnresolvedInfo>,
     /// 视角专属结论（表视角=引用数/PII/关键度；路由视角=鉴权/死端点…）。
     pub conclusions: Value,

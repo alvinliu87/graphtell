@@ -189,6 +189,10 @@ const dict: Record<Lang, Record<string, string>> = {
     ' 个语法节点': ' syntax nodes',
     '单击任意边可查看它经由的每一跳及调用处':
       'Click any edge to inspect every hop and call site along its path',
+    // 孤儿直连访问记账：不占画布（语法节点信息量低），但必须给出条目与位置。
+    '另有直连访问 ': 'Also ',
+    ' 处找不到语义入口': ' direct accesses with no semantic entry (CLI / cron / event) — listed here, not drawn',
+    '其它直连访问 ': 'orphan access: ',
     '代码': 'Code',
     '说明': 'Description',
     '位置': 'Location',

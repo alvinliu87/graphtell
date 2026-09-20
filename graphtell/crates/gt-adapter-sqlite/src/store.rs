@@ -773,7 +773,11 @@ impl GraphQuery for SqliteStore {
     fn chain_adjacency(
         &self,
         project_id: ProjectId,
-    ) -> Result<(HashMap<i64, Vec<i64>>, HashMap<i64, Vec<i64>>)> {
+    ) -> Result<(
+        HashMap<i64, Vec<i64>>,
+        HashMap<i64, Vec<i64>>,
+        HashMap<i64, Vec<i64>>,
+    )> {
         let conn = self.conn.lock().unwrap();
         // 只取链边的整数邻接，不含 `properties` 等重列；一次取全工程，内存里分桶。
         let mut stmt = conn
@@ -786,6 +790,9 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?;
         let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
         let mut inc: HashMap<i64, Vec<i64>> = HashMap::new();
+        // 只含**语义边**的入边邻接：给候选徽标按"语义入边"计数（语法调用边不计）。
+        // 同一次查询顺手分桶，不额外往返（kind 本来就在结果行里）。
+        let mut sem_inc: HashMap<i64, Vec<i64>> = HashMap::new();
         for r in rows
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(DomainError::infra)?
@@ -794,8 +801,11 @@ impl GraphQuery for SqliteStore {
                 out.entry(r.0).or_default().push(r.1);
                 inc.entry(r.1).or_default().push(r.0);
             }
+            if gt_domain::model::kinds::is_semantic_edge(&r.2) {
+                sem_inc.entry(r.1).or_default().push(r.0);
+            }
         }
-        Ok((out, inc))
+        Ok((out, inc, sem_inc))
     }
 
     fn annotations_of(&self, node: NodeId) -> Result<Vec<Annotation>> {

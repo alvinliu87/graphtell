@@ -210,6 +210,16 @@ impl EdgeKind {
     }
 }
 
+/// 语义边判定（权威来源：[`EdgeKind::SEMANTIC`]）。
+///
+/// 与 `is_chain_edge` 的区别：链边是"沿调用链能否走通"（含 `Calls` / `HasCallSite`
+/// 这类语法调用边），语义边才是"这条边本身对人类有意义"（读写表 / 触发事件…）。
+/// 计数口径要按语义边 —— 否则 `Calls` 会混进"入边 N"，数字既不与画布对得上，
+/// 也读不出任何业务含义。
+pub fn is_semantic_edge(kind: &str) -> bool {
+    EdgeKind(kind.to_string()).is_semantic()
+}
+
 /// 调用链边：折叠视图沿这些边做"正向发现"，把语法节点当透传。
 /// 与 `gt_application::view_service::is_chain_edge` 同义，集中在此作为唯一权威来源。
 pub fn is_chain_edge(kind: &str) -> bool {

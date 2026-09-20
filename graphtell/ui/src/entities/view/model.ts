@@ -122,6 +122,25 @@ export interface Candidate {
   badge: string | null;
 }
 
+/**
+ * 无法归因到任何语义入口的**直接**访问（孤儿访问）。
+ *
+ * 访问方是语法节点且沿调用链上溯找不到任何语义发起者（路由 / 契约 / 定时任务）时，
+ * 它既画不成语义用户、也不会出现在任何提拉边的 `via` 里。
+ *
+ * 处理是**降级而非省略**：不占画布（语法节点信息量低、会挤掉语义节点的额度），
+ * 但如实记账并给出接触点位置 —— 静默省略会让「语义入边 N」与空白画布自相矛盾。
+ */
+export interface OrphanAccess {
+  id: number;
+  /** 访问方的节点种类（通常是 `Method` / `Function`）。 */
+  kind: string;
+  name: string;
+  /** 它对中心资源做的事（`ReadsDb` / `WritesCache`…）。 */
+  edge_kind: string;
+  location: SourceLocation | null;
+}
+
 export interface ObjectView {
   project_id: number;
   perspective: string;
@@ -130,6 +149,8 @@ export interface ObjectView {
   rings: NodeView[][];
   edges: EdgeView[];
   hidden: HiddenInfo;
+  /** 无语义入口的直接访问（孤儿）：不画在画布上，但必须记账、可逐条核对。 */
+  orphans?: OrphanAccess[];
   unresolved: UnresolvedInfo[];
   conclusions: Record<string, unknown>;
 }

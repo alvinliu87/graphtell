@@ -51,7 +51,7 @@ import {
 //   resolveProjectRoot,
 // } from '@/shared/lib/ide';
 import { formatNumber } from '@/shared/lib/format';
-import { useLocale } from '@/shared/lib/i18n';
+import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 import { FullscreenOutlined, InfoCircleOutlined } from '@ant-design/icons';
 
 /** 图视图页：两级筛选 → 单对象链路子图 → 可跳转的结论面板。 */
@@ -109,6 +109,8 @@ export function GraphPage() {
   const [inspectEdgeView, setInspectEdgeView] = useState<EdgeView | null>(null);
   /** 右侧"结论/导航"面板：默认收起为抽屉浮层，不占用图的横向空间。 */
   const [drawerOpen, setDrawerOpen] = useState(false);
+  /** 孤儿直连访问列表是否展开（默认收起，只露一行计数）。 */
+  const [orphansOpen, setOrphansOpen] = useState(false);
   const lastPushed = useRef<string>('');
   /**
    * 下一次写 URL 是否要**跳过**：state 刚从 URL 同步过来时不许回写。
@@ -790,6 +792,48 @@ export function GraphPage() {
             </div>
           ) : null}
 
+          {/* 孤儿直连访问记账：访问方是语法节点、上溯又找不到任何语义入口（CLI / 定时 /
+              事件处理器是常态）。它**不占画布**——语法节点名字不可寻址、不回答"谁触发"、
+              还会吃掉本该留给语义节点的画布额度；但**绝不静默省略**：单列计数 + 逐条位置，
+              点名字开 Inspector 可继续核对。 */}
+          {view && (view.orphans?.length ?? 0) > 0 ? (
+            <div style={{ marginTop: 6, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                onClick={() => setOrphansOpen((v) => !v)}
+              >
+                {t('另有直连访问 ') + (view.orphans?.length ?? 0) + t(' 处找不到语义入口')}
+                {orphansOpen ? ' ▾' : ' ▸'}
+              </Button>
+              {orphansOpen ? (
+                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {(view.orphans ?? []).map((o) => (
+                    <div key={o.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                      <Typography.Text
+                        style={{ fontSize: 12, cursor: 'pointer' }}
+                        onClick={() => {
+                          setInspectNode(o.id);
+                          setInspectEdge(null);
+                          setState((s) => ({ ...s, i: o.id, e: null }));
+                        }}
+                      >
+                        {o.name || `#${o.id}`}
+                      </Typography.Text>
+                      <Tag style={{ marginInlineEnd: 0 }}>{edgeKindLabel(t, o.edge_kind)}</Tag>
+                      {o.location ? (
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          {`${o.location.file}:${o.location.line}`}
+                        </Typography.Text>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {view && view.unresolved.length > 0 ? (
             <Card
               variant="borderless"
@@ -832,7 +876,15 @@ export function GraphPage() {
           extra={
             view ? (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('入边 ') + fmt(view.conclusions['入边']) + ' · ' + t('出边 ') + fmt(view.conclusions['出边'])}
+                {t('入边 ') +
+                  fmt(view.conclusions['入边']) +
+                  ' · ' +
+                  t('出边 ') +
+                  fmt(view.conclusions['出边']) +
+                  // 孤儿直连访问：不占画布，但要在"结论"里留一个可查的数字。
+                  (view.conclusions['其它直连访问']
+                    ? ' · ' + t('其它直连访问 ') + fmt(view.conclusions['其它直连访问'])
+                    : '')}
               </Typography.Text>
             ) : aggView ? (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>

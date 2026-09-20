@@ -206,28 +206,36 @@ fn frontend_chain_visible_in_folded_route_view() {
     };
     dump_view(&ov, &names);
 
-    // ---- 1) 折叠视图里必须看得到前端发起的那条 CallsHttp ----
-    let fe: Vec<_> = ov.edges.iter().filter(|e| e.kind == "CallsHttp").collect();
+    // ---- 1) 前端发起的那条 CallsHttp 必须**有交代**（降级记账，不占画布）----
+    //
+    // 画布恒为语义节点：前端 `Function --CallsHttp--> 契约` 的起点是语法节点，
+    // 不再点亮成画布上的药丸，而是降级进 `orphans` —— 名字 + 关系 + 接触点位置都在，
+    // 一条不少，只是不占据"只画语义节点"的画布额度。
+    let fe: Vec<_> = ov.orphans.iter().filter(|o| o.edge_kind == "CallsHttp").collect();
     assert!(
         !fe.is_empty(),
-        "前端 → 契约的 CallsHttp 应在折叠视图里可见，实际边：{:?}",
-        ov.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        "前端 → 契约的 CallsHttp 应记在 orphans 里，实际 orphans：{:?}",
+        ov.orphans.iter().map(|o| &o.edge_kind).collect::<Vec<_>>()
     );
 
     // ---- 2) 发起方是**函数节点**（语法节点），不是 File ----
-    // 折叠视图默认只画语义节点；非语义节点能出现只有一种正当理由：
-    // 它与中心有**直接语义边**且上游再无语义发起者（塌缩兜底）——前端正是这种情形。
-    for e in &fe {
-        let from = ov
+    for o in &fe {
+        assert_eq!(
+            o.kind, "Function",
+            "CallsHttp 起点应是前端函数节点（与后端 Method 同构），实际 kind = {}",
+            o.kind
+        );
+        // 画布上不许再出现它：既不进环，也不是任何边的端点。
+        let on_canvas = ov
             .rings
             .iter()
             .flatten()
-            .find(|n| n.id == e.from)
-            .unwrap_or_else(|| panic!("CallsHttp 的起点应在可见环里：{}", e.from));
-        assert_eq!(
-            from.kind, "Function",
-            "CallsHttp 起点应是前端函数节点（与后端 Method 同构），实际 kind = {}",
-            from.kind
+            .any(|n| n.id == o.id)
+            || ov.edges.iter().any(|e| e.from == o.id || e.to == o.id);
+        assert!(
+            !on_canvas,
+            "前端调用方 {} 已降级记账，不应再出现在画布上",
+            o.name
         );
     }
 
@@ -247,20 +255,20 @@ fn frontend_chain_visible_in_folded_route_view() {
             }
         }
     }
-    assert!(
-        hops > 0,
-        "折叠视图应折叠掉若干语法跳（前端函数 / 调用点），实际一条 via 都没有"
-    );
+    // 不再断言 `hops > 0`：前端调用方已降级记账，这条最小路由（契约没有任何资源依赖）
+    // 画布上**本来就该是 0 条边** —— 事实全在 orphans 里，不是"折叠坏了"。
     assert_eq!(
         hops, hops_with_site,
         "被折叠的每一跳都要给出调用处（drawer 逐跳链路），实际 {hops_with_site}/{hops}"
     );
 
-    // ---- 4) 终点调用处：前端真正发出 axios 的那一行 ----
-    for e in &fe {
+    // ---- 4) 降级记账也要给出接触点：前端真正发出 axios 的那一行 ----
+    // 记账不是"消失"：点开列表要能看到 `文件:行`，否则"谁在调这个接口"成了空话。
+    for o in &fe {
         assert!(
-            e.to_call_site.is_some(),
-            "前端 CallsHttp 应给出「本链路发出该请求的位置」"
+            o.location.is_some(),
+            "前端 CallsHttp 记账应给出接触点位置，实际缺失：{}",
+            o.name
         );
     }
 }

@@ -32,8 +32,8 @@ pub use crate::port::persistence::GraphDelta;
 
 pub use view::{
     AggregateView, Candidate, Cluster, EdgeEvidence, EdgeView, GroupBy, HiddenInfo, LayoutMode,
-    MatrixView, NodeLocationEntry, NodeLocations, NodeView, ObjectView, PerspectiveSpec,
-    SourceLocation, UnresolvedInfo, ViaNode, ViewMode, ViewRegistry,
+    MatrixView, NodeLocationEntry, NodeLocations, NodeView, ObjectView, OrphanAccess,
+    PerspectiveSpec, SourceLocation, UnresolvedInfo, ViaNode, ViewMode, ViewRegistry,
 };
 
 pub use syntax::{

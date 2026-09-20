@@ -11,7 +11,7 @@ use gt_app::{AppConfig, Container};
 use gt_application::{PipelineService, ProjectService, ViewService};
 use gt_domain::model::{NewProject, NodeKind};
 use gt_domain::port::{
-    EdgeDirection, GraphQuery, NoopObserver, NodeFilter, Persistence, SystemClock,
+    EdgeDirection, GraphQuery, NodeFilter, NoopObserver, Persistence, SystemClock,
 };
 
 /// 在 `dir/samples` 下定位 CRMEB 样本：先试 `samples/CRMEB-master`，再遍历一层子目录
@@ -160,7 +160,11 @@ fn container_assembles_adapters() {
     let views_provider = b.container.views();
     let registry = views_provider.registry();
     assert!(!registry.perspectives.is_empty(), "应装载到视角声明");
-    let ids: Vec<&str> = registry.perspectives.iter().map(|p| p.id.as_str()).collect();
+    let ids: Vec<&str> = registry
+        .perspectives
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect();
     assert!(
         ids.iter().any(|i| *i == "route" || *i == "table"),
         "视角应至少含 route/table"
@@ -227,10 +231,7 @@ fn aggregate_platform_matrix() {
     assert!(!m.rows.is_empty(), "矩阵应有行");
     assert!(!m.cols.is_empty(), "矩阵应有列");
     assert_eq!(m.cells.len(), m.rows.len());
-    assert_eq!(
-        m.cells.first().map(|r| r.len()).unwrap_or(0),
-        m.cols.len()
-    );
+    assert_eq!(m.cells.first().map(|r| r.len()).unwrap_or(0), m.cols.len());
     for (i, row) in m.cells.iter().enumerate() {
         assert_eq!(row.iter().sum::<u32>(), m.row_totals[i]);
     }
@@ -259,21 +260,20 @@ fn object_view_chain_and_hidden() {
     // 在每次对象视图里重算「5000 个候选逐个 BFS 打分」纯属浪费（见 `ObjectView` 注释）。
 }
 
-/// 折叠视图允许出现的节点：语义节点，或"塌缩兜底"——与中心有**直接语义边**的
-/// 直接访问方（其调用链上游无任何语义发起者，不画就永远不可见、与候选徽标矛盾）。
-fn assert_visible_node_ok(ov: &gt_domain::model::ObjectView, n: &gt_domain::model::NodeView) {
+/// 折叠视图允许出现的节点：**只能是语义节点**，一个例外都不留。
+///
+/// 两类"塌缩兜底"曾让语法节点上网开一面：
+/// * 资源视角：与中心直连、上游无语义发起者的访问方（Seeder / 迁移脚本 / Console 命令…）
+///   —— 把资源视角降解成了调用图（名字不可寻址、不回答"谁触发"、吃掉画布额度）；
+/// * 入口视角：前端 `Function --CallsHttp--> 契约` 的调用方。
+///
+/// 二者现在一律降级为 `ObjectView.orphans` 记账：不占画布，但带名字、关系与接触点
+/// 位置，绝不静默省略。画布因此严格等于"语义节点 + 语义边"。
+fn assert_visible_node_ok(_ov: &gt_domain::model::ObjectView, n: &gt_domain::model::NodeView) {
     let semantic = gt_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some();
-    if semantic {
-        return;
-    }
-    let direct_accessor = ov.edges.iter().any(|e| {
-        gt_domain::model::EdgeKind(e.kind.clone()).is_semantic()
-            && (e.from.get() == n.id.get() || e.to.get() == n.id.get())
-            && (e.from.get() == ov.center.id.get() || e.to.get() == ov.center.id.get())
-    });
     assert!(
-        direct_accessor,
-        "默认视图只允许语义节点或与中心直连的塌缩兜底节点：{} ({})",
+        semantic,
+        "默认视图只允许语义节点（语法访问方应降级进 orphans 记账）：{} ({})",
         n.name, n.kind
     );
 }
@@ -282,9 +282,12 @@ fn assert_visible_node_ok(ov: &gt_domain::model::ObjectView, n: &gt_domain::mode
 fn object_view_default_is_semantic_only() {
     // 折叠（默认）视图必须「只显示对人类有意义的语义节点 / 语义边」：
     // * 不出现 Method / CallSite / Class 等语法节点与 Calls / HasCallSite 等语法边；
-    //   **唯一例外**是"塌缩兜底"的直接访问方：上游不存在任何语义发起者时
-    //   （Seeder / DataGrid / 迁移脚本…），折叠提拉永远到不了它们，只能如实画出
-    //   `访问方 --ReadsDb/WritesDb…--> 资源`，否则画布空图、与候选徽标的「入边 N」矛盾。
+    //   上游找不到语义发起者的直接访问方（Seeder / 迁移脚本 / Console 命令…）
+    //   **也不再点亮**：它们降级进 `orphans` 记账（带接触点位置），不占画布。
+    //   曾把它们画成直连的语法节点，理由是"不画就空图、与徽标矛盾"——
+    //   代价是资源视角降解成调用图；现在矛盾由 orphans 这一行记账消解。
+    //   入口视角的前端 HTTP 调用方（`Function --CallsHttp--> 契约`）同样降级记账，
+    //   于是画布**严格**只剩语义节点 + 语义边。
     // * 不出现指向不可见节点的悬空边；
     // * 二级候选按"价值"降序（前端默认打开价值最高的那个）。
     let Some(b) = built() else {
@@ -318,7 +321,11 @@ fn object_view_default_is_semantic_only() {
     let is_semantic = |n: &gt_domain::model::NodeView| {
         gt_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some()
     };
-    assert!(is_semantic(&ov.center), "中心应是语义节点，实际 {}", ov.center.kind);
+    assert!(
+        is_semantic(&ov.center),
+        "中心应是语义节点，实际 {}",
+        ov.center.kind
+    );
     let mut visible = std::collections::HashSet::new();
     visible.insert(ov.center.id.get());
     for n in ov.rings.iter().flatten() {
@@ -409,6 +416,51 @@ fn object_view_resource_center_shows_its_users() {
     }
 }
 
+/// 孤儿访问（上游找不到任何语义入口的直接访问方）必须**降级记账而非点亮**：
+/// * 不出现在画布上（既不进 `rings`，也不是任何边的端点）；
+/// * 但必须出现在 `orphans` 里，且带名字与"它对资源做了什么"——
+///   否则"徽标说有访问、图里查无此人"的静默省略又回来了。
+#[test]
+fn orphan_access_is_accounted_not_drawn() {
+    let Some(b) = built() else {
+        eprintln!("{}", skip());
+        return;
+    };
+    let views = view_svc(&b);
+    let cands = views
+        .candidates(b.project_id, "table", 30, None, None)
+        .expect("candidates");
+    let mut checked = 0usize;
+    for c in cands {
+        let Ok(ov) = views.object_view(b.project_id, "table", c.id, Some(2)) else {
+            continue;
+        };
+        let drawn: std::collections::HashSet<i64> = ov
+            .rings
+            .iter()
+            .flatten()
+            .map(|n| n.id.get())
+            .chain(ov.edges.iter().flat_map(|e| [e.from.get(), e.to.get()]))
+            .collect();
+        for o in &ov.orphans {
+            assert!(
+                !drawn.contains(&o.id.get()),
+                "孤儿不应出现在画布上：{} ({})",
+                o.name,
+                o.kind
+            );
+            assert!(!o.name.is_empty(), "孤儿记账必须带名字");
+            assert!(
+                !o.edge_kind.is_empty(),
+                "孤儿记账必须说明它对资源做了什么：{}",
+                o.name
+            );
+            checked += 1;
+        }
+    }
+    eprintln!("校验孤儿记账 {checked} 条（数量取决于工程，为 0 亦合法）");
+}
+
 /// 事件视角：① `HandledBy` 的方向必须跟着原始边（**事件 --由…处理--> 监听器**）；
 /// ② `Triggers` 这类只有 1 跳的直接边必须给出**触发点**（`to_call_site`）。
 ///
@@ -492,10 +544,7 @@ fn node_locations_returns_sources() {
     };
     let locs = views.node_locations(nid).expect("node_locations");
     assert_eq!(locs.id, nid);
-    assert!(
-        !locs.locations.is_empty(),
-        "语法节点应至少有一条定义位置"
-    );
+    assert!(!locs.locations.is_empty(), "语法节点应至少有一条定义位置");
 }
 
 #[test]
@@ -562,7 +611,9 @@ fn folded_semantic_edges_end_at_real_contact() {
         };
         for e in &ov.edges {
             // 只看经过折叠的（`via` 非空的）语义边；直连边由起点自己负责。
-            let Some(contact) = e.via.last() else { continue };
+            let Some(contact) = e.via.last() else {
+                continue;
+            };
             checked += 1;
             let outs = store
                 .edges_of(contact.id, EdgeDirection::Outgoing)
@@ -607,7 +658,9 @@ fn cache_view_folded_edges_end_at_real_contact() {
     };
     let views = view_svc(&b);
     let store = &b.container.store;
-    let cands = views.candidates(b.project_id, "cache", 50, None, None).expect("cache 候选");
+    let cands = views
+        .candidates(b.project_id, "cache", 50, None, None)
+        .expect("cache 候选");
     assert!(!cands.is_empty(), "cache 视角应有候选");
 
     let mut checked = 0usize;
@@ -618,7 +671,9 @@ fn cache_view_folded_edges_end_at_real_contact() {
         };
         for e in &ov.edges {
             // 只看经过折叠的（`via` 非空的）语义边；直连边由起点自己负责。
-            let Some(contact) = e.via.last() else { continue };
+            let Some(contact) = e.via.last() else {
+                continue;
+            };
             checked += 1;
             let outs = store
                 .edges_of(contact.id, EdgeDirection::Outgoing)
@@ -854,16 +909,20 @@ fn object_view_characterization_invoice_detail() {
     }
     via_len.sort_unstable();
 
-    // 30 → 32：门面链式的 `Db::name('store_order')->count()` 被 P7 落成 `ReadsDb`
-    // （`tidyOrder` 里确实读了库），另增一条 `ReadsConfig`。二者都是真阳性，
-    // 特征测试的意义正在于**显式**接受这类行为变更，而不是让它悄悄溜过去。
-    assert_eq!(ov.edges.len(), 32, "边总数变了：{:?}", by_kind);
+    // 32 → 31：前端 `Function --CallsHttp--> 契约` 这条**直连**边从画布撤下、降级进
+    // `orphans` 记账（画布严格只留语义节点）。特征测试的意义正在于**显式**接受这类
+    // 行为变更，而不是让它悄悄溜过去 —— 事实没丢，换了呈现位置（见下方 orphans 断言）。
+    assert_eq!(ov.edges.len(), 31, "边总数变了：{:?}", by_kind);
     // 前端契约桥：uni-app 的 `` request.get(`v2/order/invoice_detail/${id}`) ``
-    // （模板串 URL）已能与该后端路由按**参数形状**汇聚，`CallsHttp` 由此入图。
+    // （模板串 URL）已能与该后端路由按**参数形状**汇聚，这条 `CallsHttp` 改记在
+    // `orphans` 里（画布不再出现前端函数这个语法节点）。
     assert_eq!(
-        by_kind.get("CallsHttp").copied().unwrap_or(0),
+        ov.orphans
+            .iter()
+            .filter(|o| o.edge_kind == "CallsHttp")
+            .count(),
         1,
-        "前端调用该契约的 CallsHttp 应可见，变了说明契约桥被改坏"
+        "前端调用该契约的 CallsHttp 应记在 orphans 里，变了说明契约桥被改坏"
     );
     assert_eq!(
         by_kind.get("ReadsCache").copied().unwrap_or(0),
@@ -875,14 +934,18 @@ fn object_view_characterization_invoice_detail() {
         28,
         "ReadsConfig 边数变了"
     );
-    // 除了一条：前端 `CallsHttp` 是**直接**语义边（前端函数 → 契约），不走提拉/传播；
-    // 其余 31 条都是沿后端调用链间接得到的资源读写。
+    // `CallsHttp` 已从画布撤下，现在画布上的每一条边都是沿后端调用链**间接**得来的
+    // 资源读写（提拉 / 传播），不再有直连边混入。
     assert_eq!(
         indirect,
-        ov.edges.len() - 1,
-        "除前端 CallsHttp 外都应是提拉/传播得来的间接边，变了说明 indirect 判定被改坏"
+        ov.edges.len(),
+        "画布上的边都应是提拉/传播得来的间接边，变了说明 indirect 判定被改坏"
     );
-    assert_eq!(with_loc, ov.edges.len(), "每条边都应能给出资源访问位置，变了说明证据选取被改坏");
+    assert_eq!(
+        with_loc,
+        ov.edges.len(),
+        "每条边都应能给出资源访问位置，变了说明证据选取被改坏"
+    );
     // 关键：**最长链必须到 5 跳**（detail → getQRCodePath → init → more → remember），
     // 若折叠/回溯被改坏，最长链会退回 2~3 跳。
     assert_eq!(
@@ -911,11 +974,17 @@ fn schedule_view_follows_outgoing_chain() {
     let cands = views
         .candidates(b.project_id, "schedule", 30, None, None)
         .expect("candidates");
-    assert!(!cands.is_empty(), "计划任务视角应有候选（CRMEB 的 crontab 路由）");
+    assert!(
+        !cands.is_empty(),
+        "计划任务视角应有候选（CRMEB 的 crontab 路由）"
+    );
 
     // 具体回归：`crontab/set_open/:id/:is_open` 经 `SystemCrontab::setTimerStatus`
     // → `SystemCrontabServices::setTimerStatus` 读缓存，视图里必须看得见这条依赖。
-    if let Some(c) = cands.iter().find(|c| c.name.starts_with("crontab/set_open")) {
+    if let Some(c) = cands
+        .iter()
+        .find(|c| c.name.starts_with("crontab/set_open"))
+    {
         let ov = views
             .object_view(b.project_id, "schedule", c.id, Some(2))
             .expect("object_view");
@@ -1066,7 +1135,6 @@ fn empty_entry_view_carries_hint() {
         assert!(empty_seen > 0, "应至少命中一个空依赖入口以验证提示内容");
     }
 }
-
 
 /// 「读 + 写」必须一起报，不能只报一边。
 ///

@@ -146,12 +146,20 @@ pub trait GraphQuery: Send + Sync {
     /// 批量取「入边」：返回 `to_id -> 边列表`，内部按 `to_id IN (...)` 分块查询。
     fn edges_incoming(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>>;
     /// 链式边邻接（仅 `from_id, to_id`，已过滤为调用链边），供候选打分 BFS 在内存里跑。
-    /// 返回 `(outgoing: from_id -> [to_id], incoming: to_id -> [from_id])`，
+    /// 返回 `(outgoing: from_id -> [to_id], incoming: to_id -> [from_id], semantic_incoming: to_id -> [from_id])`，
     /// 一次性取整个工程的链边，避免逐节点查库、也避开完整 `Edge`（含 `properties` JSON）的沉重传输。
+    ///
+    /// 第三份 `semantic_incoming` **只含语义边**（见 [`crate::model::kinds::is_semantic_edge`]）：
+    /// 徽标里的"入边"必须按语义口径计数 —— 链边里的 `Calls` / `HasCallSite` 是语法调用边，
+    /// 把它们数进"入边 N"会让数字既不与画布（只画语义边）对得上，也不承载业务含义。
     fn chain_adjacency(
         &self,
         project_id: ProjectId,
-    ) -> Result<(HashMap<i64, Vec<i64>>, HashMap<i64, Vec<i64>>)>;
+    ) -> Result<(
+        HashMap<i64, Vec<i64>>,
+        HashMap<i64, Vec<i64>>,
+        HashMap<i64, Vec<i64>>,
+    )>;
     fn annotations_of(&self, node: crate::model::NodeId) -> Result<Vec<Annotation>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
     /// 按主键取边（供"边证据链"查询）。
