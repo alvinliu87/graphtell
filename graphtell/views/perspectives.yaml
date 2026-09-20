@@ -29,7 +29,11 @@ perspectives:
     node_kind: HttpContract
     # 路由是"一条 HTTP 入口的调用流"，自顶向下的层 = 跳数，比径向更能体现调用顺序与流向。
     layout: layered
-    depth: 2
+    # 为什么是 4 而不是 2：视图**只渲染语义节点**，中间的语法层（Controller / Services /
+    # Dao / Model）全部折叠。四层架构（CRMEB：Controller → Services → Dao → Model → Table）
+    # 里第一张表要第 4 跳才出现，depth=2 时路由视角几乎全空 —— 实测 CRMEB 抽样 60 个契约，
+    # 「无任何语义邻居」从 43/60 降到 28/60（depth=5 为 26/60，之后饱和）。
+    depth: 4
     collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
     description: 以一个 HTTP 契约为中心，看它被谁处理、被谁调用、读写了哪些表
 
@@ -71,7 +75,9 @@ perspectives:
     node_kind: Schedule
     # 定时任务是"一条执行链路"，自顶向下的层 = 跳数，比径向更能体现执行流向。
     layout: layered
-    depth: 2
+    # 与路由视角同理：定时任务同样是"入口 → 控制器 → 服务 → Dao → 表"的调用流，
+    # 折叠掉语法层后要 4 跳才够得着语义资源。
+    depth: 4
     description: 定时任务的执行链路（由项目级 FKB 合成 Schedule 节点，如 CRMEB 的 crontab 路由）
 
   - id: topic

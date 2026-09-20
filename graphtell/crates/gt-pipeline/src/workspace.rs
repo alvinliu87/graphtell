@@ -91,6 +91,16 @@ pub struct PendingLink {
     pub from: NodeId,
     pub kind: EdgeKind,
     pub raw: String,
+    /// **目标成员名**（可选）：FKB 在 `link.to_method` 里显式给出的入口方法，
+    /// 典型如资源路由 `{ expand_entry: true }` 展开出的 `index` / `delete`。
+    ///
+    /// 为什么必须带到 P7：`handler` 常常只写到类（`Route::resource('level','v1.agent.AgentLevel')`），
+    /// 真实入口方法来自**展开变体**（框架知识），P5 链接阶段还不知道该类的 FQN
+    /// （要按 FKB 的 `class_templates` 拼出来），于是把 `to_method` 直接传给
+    /// `find_target_node` 是查不中的，只能降级成 PendingLink。若不把方法名带上，
+    /// P7 拿到的 `raw` 就只剩类名 —— 无论该类有没有对应方法，边都会退化到类级
+    /// （实测 CRMEB 有 164 条资源路由因此落到 `Class`，但 `AgentLevel::delete` 明明在图内）。
+    pub method: Option<String>,
     pub resolve: gt_domain::model::ResolveAs,
     pub confidence: f32,
     pub sub: Option<SubProjectId>,
@@ -134,6 +144,12 @@ pub struct GraphWorkspace {
     file_nodes: HashMap<String, i64>,
     /// 文件路径 → 源文件 id（`resolve_name_in_file` 按路径查导入表用）。
     file_id_by_path: HashMap<String, i64>,
+    /// 源文件 id → 路径（`file_id_by_path` 的反查表）。
+    ///
+    /// P6 的选择器作用在**图节点**上，节点的 `file_id` 要还原成 `文件:行号`
+    /// 才能给解析节点 / 合成节点记上可跳转的出处
+    /// （此前返回的是 identity 字符串，前端跳转会拿到一条假路径）。
+    source_path_by_id: HashMap<i64, String>,
     /// **每个文件自己的** `use` 导入表：`源文件 id → (短名小写 → FQN)`。
     ///
     /// 为什么必须按文件存：PHP 的短名是按**文件**解析的（`use think\facade\Cache;`
@@ -144,6 +160,11 @@ pub struct GraphWorkspace {
     file_imports: HashMap<i64, HashMap<String, String>>,
     /// 出边邻接表：`from → [(kind, to)]`，用于祖先链判定。
     out_edges: HashMap<i64, Vec<(String, i64)>>,
+    /// 入边邻接表：`to → [(kind, from)]`。
+    ///
+    /// 约定类规则要据此判断「这个节点是不是已经有权威来源了」：已显式注册的路由
+    /// 指向某个控制器方法时，就不该再为它兜一条按约定推断的契约（显式优先于推断）。
+    in_edges: HashMap<i64, Vec<(String, i64)>>,
     /// 短名索引：`短名(小写) → [node_id]`，替代全表线性扫描。
     by_short: HashMap<String, Vec<i64>>,
     /// 数据库表前缀（来自工程配置，用于 identity 归一化与符号表查找）。
@@ -156,8 +177,16 @@ pub struct GraphWorkspace {
     supertypes: HashMap<String, Vec<String>>,
     /// 方法参数类型：`方法 FQN → [(变量名, 类型 FQN)]`，供 P7 解析 `$var->method()`。
     param_types: HashMap<String, Vec<(String, String)>>,
-    /// 类属性类型：`类 FQN → {属性名 → 类型 FQN}`（来自构造器注入 `$this->p = $param`）。
+    /// 类属性类型：`类 FQN → {属性名 → 类型 FQN}`（来自构造器注入 `$this->p = $param`、
+    /// 类型化属性声明、以及 `$this->p = new Y()` 这类右侧自带类型的赋值）。
     prop_types: HashMap<String, HashMap<String, String>>,
+    /// 类用 `@method` 声明的魔法方法名（`类 FQN → {方法名}`，供 `__call` 转发解析）。
+    magic_methods: HashMap<String, HashSet<String>>,
+    /// 方法内局部变量类型：`方法 FQN → {变量名 → 类型 FQN}`（`$x = new Y()` / `Y::make()`）。
+    ///
+    /// 服务于 `$x->m()` 这类"临时对象调用"：它们既不是参数类型提示也不是字段，
+    /// 没有这一层就整条链断在最常见的一句上。
+    local_types: HashMap<String, HashMap<String, String>>,
     /// 子工程事实（app_root 等），键为 sub_project_id。
     pub facts: BTreeMap<i64, BTreeMap<String, Value>>,
     pub diagnostics: Vec<Diagnostic>,
@@ -190,12 +219,16 @@ impl GraphWorkspace {
             prop_values: HashMap::new(),
             file_nodes: HashMap::new(),
             file_id_by_path: HashMap::new(),
+            source_path_by_id: HashMap::new(),
             file_imports: HashMap::new(),
             out_edges: HashMap::new(),
+            in_edges: HashMap::new(),
             by_short: HashMap::new(),
             supertypes: HashMap::new(),
             param_types: HashMap::new(),
             prop_types: HashMap::new(),
+            magic_methods: HashMap::new(),
+            local_types: HashMap::new(),
             table_prefixes: Vec::new(),
             facts: BTreeMap::new(),
             diagnostics: Vec::new(),
@@ -280,6 +313,58 @@ impl GraphWorkspace {
         self.prop_types
             .get(class_fqn)
             .and_then(|m| m.get(prop))
+            .map(|s| s.as_str())
+    }
+
+    /// 登记一个类的 `@method` 魔法方法名。
+    pub fn set_magic_methods(&mut self, class_fqn: &str, names: &[String]) {
+        if names.is_empty() {
+            return;
+        }
+        self.magic_methods
+            .entry(class_fqn.to_string())
+            .or_default()
+            .extend(names.iter().cloned());
+    }
+
+    /// 该类（或它的祖先）是否声明了名为 `method` 的魔法方法。
+    pub fn declares_magic_method(&self, class_fqn: &str, method: &str) -> bool {
+        let mut stack = vec![class_fqn.to_string()];
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut steps = 0;
+        while let Some(c) = stack.pop() {
+            steps += 1;
+            if steps > 50 || !visited.insert(c.clone()) {
+                continue;
+            }
+            if self
+                .magic_methods
+                .get(&c)
+                .map(|s| s.contains(method))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            for p in self.parents_of(&c) {
+                stack.push(p);
+            }
+        }
+        false
+    }
+
+    /// 记一个方法内局部变量的类型（`$x = new Y()`）。
+    pub fn set_local_type(&mut self, owner_fqn: &str, var: &str, type_fqn: &str) {
+        self.local_types
+            .entry(owner_fqn.to_string())
+            .or_default()
+            .insert(var.to_string(), type_fqn.to_string());
+    }
+
+    /// 查某方法内局部变量的类型（供 `$x->method()` 解析）。
+    pub fn local_type(&self, owner_fqn: &str, var: &str) -> Option<&str> {
+        self.local_types
+            .get(owner_fqn)
+            .and_then(|m| m.get(var))
             .map(|s| s.as_str())
     }
 
@@ -442,6 +527,10 @@ impl GraphWorkspace {
         let id = self.next_edge;
         self.next_edge += 1;
         self.out_edges.entry(new.from_id.get()).or_default().push((new.kind.to_string(), new.to_id.get()));
+        self.in_edges
+            .entry(new.to_id.get())
+            .or_default()
+            .push((new.kind.to_string(), new.from_id.get()));
         *self.fan_out.entry(new.from_id.get()).or_insert(0) += 1;
         *self.fan_in.entry(new.to_id.get()).or_insert(0) += 1;
         self.delta.edges.push(new.clone());
@@ -808,7 +897,65 @@ impl GraphWorkspace {
         imports: HashMap<String, String>,
     ) {
         self.file_id_by_path.insert(path.to_string(), file_id);
+        self.source_path_by_id.insert(file_id, path.to_string());
         self.file_imports.insert(file_id, imports);
+    }
+
+    /// 源文件 id → 路径。
+    pub fn source_path_of(&self, file_id: i64) -> Option<String> {
+        self.source_path_by_id.get(&file_id).cloned()
+    }
+
+    /// 该节点是否**已经被认领**：已有该种类的入边，或有该种类的待定链接指向它。
+    ///
+    /// 为什么单看入边不够：路由 handler 的边大多在 **P7** 才落成（P5 只能排个
+    /// `PendingLink`，因为类名要按 FKB 的模板拼），而"约定推断"规则跑在 **P6**，
+    /// 此时边还不存在，只看入边会把显式注册的路由也让 before/after 约定重复兜一遍。
+    ///
+    /// handler 的形状是通用的 `Class/method`（写方法名）或 `Class`（REST 资源路由，
+    /// 等价于认领整个类的标准动作），故按形状比对即可，内核不需要认识具体框架。
+    pub fn claimed_by(&self, node: NodeId, kind: &str) -> bool {
+        if self
+            .in_edges
+            .get(&node.get())
+            .map(|v| v.iter().any(|(k, _)| k == kind))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        let Some(n) = self.node(node) else { return false };
+        let Some(fqn) = n.fqn.clone() else { return false };
+        let (class_part, member) = match fqn.rfind("::") {
+            Some(i) => (&fqn[..i], Some(fqn[i + 2..].to_string())),
+            None => (fqn.as_str(), None),
+        };
+        let short_name_of = |fqn: &str| -> String {
+            fqn.rsplit(['\\', '.', '/', ':'])
+                .next()
+                .unwrap_or(fqn)
+                .to_string()
+        };
+        let self_class = short_name_of(class_part).to_ascii_lowercase();
+        if self_class.is_empty() {
+            return false;
+        }
+        self.pending_links.iter().filter(|p| p.kind.0 == kind).any(|p| {
+            let raw = p.raw.trim_start_matches('\\');
+            let (head, tail_method) = match raw.rsplit_once('/') {
+                Some((h, m)) => (h, Some(m.to_ascii_lowercase())),
+                None => (raw, None),
+            };
+            let claimed_class = short_name_of(head).to_ascii_lowercase();
+            if claimed_class != self_class {
+                return false;
+            }
+            match tail_method {
+                // 写了方法名 → 只认领这一个方法
+                Some(m) => member.as_ref().map(|x| x.to_ascii_lowercase()) == Some(m),
+                // 没写方法名（资源路由） → 整个控制器都被显式路由接管
+                None => true,
+            }
+        })
     }
 
     /// 取**某个文件**的 `use` 导入表：短名(小写) → FQN。

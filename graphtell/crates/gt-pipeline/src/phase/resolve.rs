@@ -226,7 +226,73 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
             stack.push(parent);
         }
     }
-    Resolution::unknown(format!("{type_fqn}::{method} 未找到"))
+    // 兜底：**魔法方法转发** —— 接收者类型（或其祖先）用 `@method` 声明了这个方法，
+    // 实际由 `__call` 转发给 FKB 声明的属性（CRMEB 是 `$this->dao`）。
+    // 不解析它，`$this->services->getList()` 只能退回"类级命中"，服务这一跳就断了
+    // （CRMEB 的 20 多个 `get*` / `count*` / `delete*` 全是这种情况）。
+    resolve_magic_delegation(ctx, &type_fqn, method, loc.sub)
+        .unwrap_or_else(|| Resolution::unknown(format!("{type_fqn}::{method} 未找到")))
+}
+
+/// 魔法方法转发：`Services::getList` → `Services` 的 `dao` 属性类型上的 `getList`。
+///
+/// 前置条件（都由 FKB / 解析器给出，内核不认识任何框架）：
+/// * FKB 声明了转发属性名（`magic_delegation.property`）；
+/// * 该类或其祖先用 `@method` 声明了这个方法名；
+/// * 转发属性的类型可静态确定（构造器注入 / 类型化属性 / 赋值推断）。
+fn resolve_magic_delegation(
+    ctx: &PipelineContext,
+    type_fqn: &str,
+    method: &str,
+    sub: Option<gt_domain::model::SubProjectId>,
+) -> Option<Resolution> {
+    let spec = sub
+        .and_then(|s| ctx.magic_delegation.get(&s.get()).cloned())
+        .or_else(|| ctx.magic_delegation_default.clone())?;
+    if spec.property.is_empty() || !ctx.ws.declares_magic_method(type_fqn, method) {
+        return None;
+    }
+    // 转发属性的类型按**具体接收者类型**取（子类构造器注入的是它自己的 Dao）。
+    let mut cur = Some(type_fqn.to_string());
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut steps = 0;
+    while let Some(c) = cur {
+        steps += 1;
+        if steps > 50 || !visited.insert(c.clone()) {
+            break;
+        }
+        if let Some(dep) = ctx.ws.prop_type(&c, &spec.property) {
+            let dep = dep.to_string();
+            // 目标方法同样沿继承链回溯（Dao 的方法多定义在 `BaseDao`）。
+            let mut stack = vec![dep.clone()];
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut n = 0;
+            while let Some(t) = stack.pop() {
+                n += 1;
+                if n > 50 || !seen.insert(t.clone()) {
+                    continue;
+                }
+                for cand in [format!("{t}::{method}"), format!("{t}.{method}")] {
+                    if let Some(id) = ctx.ws.find_by_name(&cand) {
+                        return Some(Resolution {
+                            candidates: vec![id],
+                            tier: ResolveTier::Convention,
+                            confidence: spec.confidence,
+                            evidence: format!(
+                                "魔法方法转发 {type_fqn}::{method} → {dep}::{method}（经 {}）",
+                                spec.property
+                            ),
+                        });
+                    }
+                }
+                for p in ctx.ws.parents_of(&t) {
+                    stack.push(p);
+                }
+            }
+        }
+        cur = ctx.ws.parents_of(&c).into_iter().next();
+    }
+    None
 }
 
 /// 容器解析：L1 字面 → L2 注册表 → L4 约定 → L6 与类全集求交。
@@ -384,7 +450,7 @@ fn resolve_accessor(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
 
 /// 路由 handler：`'Login/appleLogin'` → `app\api\controller\Login::appleLogin`。
 fn resolve_handler(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
-    match resolve_handler_target(ctx, &loc.raw, &loc.file, loc.sub) {
+    match resolve_handler_target(ctx, &loc.raw, &loc.file, loc.sub, None) {
         Some((id, note)) => Resolution::resolved(
             ResolveTier::Convention,
             id,
@@ -398,11 +464,16 @@ fn resolve_handler(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
 ///
 /// 关键：**方法不存在时回退到类**。控制器方法常常继承自基类，
 /// 要求 `Controller::method` 一定存在会让整条路由链断掉。
+///
+/// `method` 是**框架知识额外给出的入口方法**（如资源路由展开出的 `index` / `delete`，
+/// 见 `PendingLink.method`）。handler 串里自带方法名时应以串里的为准（那是源码明文），
+/// 串里只有类名（资源路由）时才用外部给的。
 pub fn resolve_handler_target(
     ctx: &PipelineContext,
     raw: &str,
     file: &str,
     sub: Option<gt_domain::model::SubProjectId>,
+    method: Option<&str>,
 ) -> Option<(NodeId, &'static str)> {
     // handler 的形态（分隔符 / 类名模板 / 应用段）全部由 FKB 声明 —— 内核不认识任何框架。
     let spec = sub
@@ -417,8 +488,14 @@ pub fn resolve_handler_target(
         return Some((id, "完全限定名直接命中"));
     }
 
-    // ① 按 FKB 声明的分隔符拆 controller / method
-    let (controller_part, method) = split_handler(raw, &spec.method_separators);
+    // ① 按 FKB 声明的分隔符拆 controller / method。
+    //    拆不出方法名时才用 FKB 额外给的入口方法（资源路由的 `expand_entry`）。
+    let (controller_part, inline_method) = split_handler(raw, &spec.method_separators);
+    let method = if inline_method.is_empty() {
+        method.unwrap_or("").to_string()
+    } else {
+        inline_method
+    };
 
     // ② controller 内部的层级字符 → 命名空间分隔符
     //    例：ThinkPHP 的 `v1.agent.AgentManage` → `v1\agent\AgentManage`
@@ -616,7 +693,8 @@ fn resolve_pending_links(ctx: &mut PipelineContext, phase: &Phase) {
         let target = match link.resolve {
             gt_domain::model::ResolveAs::HandlerPattern => {
                 let (file, _) = link.file.split_once(':').unwrap_or((link.file.as_str(), "0"));
-                resolve_handler_target(ctx, &link.raw, file, link.sub).map(|(id, _)| id)
+                resolve_handler_target(ctx, &link.raw, file, link.sub, link.method.as_deref())
+                    .map(|(id, _)| id)
                     .or_else(|| {
                         ctx.ws
                             .resolve_name_in_file(Some(file), &link.raw)
@@ -755,8 +833,10 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
         None
     } else if recv.starts_with('$') {
         let var = recv.trim_start_matches('$');
+        // 先按**参数类型提示**（DI 注入），再按方法内的赋值推断（`$x = new Y()`）。
         ctx.ws
             .param_type(owner_fqn, var)
+            .or_else(|| ctx.ws.local_type(owner_fqn, var))
             .map(|s| resolve_impl(ctx, s))
     } else {
         // Java 字段（裸标识符）：从所属类（含父类）的字段类型推断

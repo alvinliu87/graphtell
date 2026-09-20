@@ -81,6 +81,10 @@ handler:
   class_templates:
     - "app\\{app}\\controller\\{controller}"
     - "app\\{app}\\controller\\v1\\{controller}"
+    # 单应用形态（TP6 官方 skeleton / 未开启多应用的项目）：控制器直接躺在
+    # `app/controller/` 下，FQN 里**没有 `{app}` 段**，候选必须单独列一条。
+    # 只有该类真的在图上才会命中，故多列模板不会带来误边。
+    - "app\\controller\\{controller}"
   app_segments: ["api", "adminapi", "outapi", "kefuapi", "index"]
   app_anchor_dir: "route"
   app_fallback: "api"
@@ -648,6 +652,72 @@ rules:
             - kind: listener
               confidence: 0.9
           merge: MaxByKind
+
+  # ===== P6 Synthesize：ThinkPHP 自动路由（PATH_INFO 约定）=====
+  #
+  # 大量 ThinkPHP 工程**不写** `Route::get(...)`：请求 `/api/goods/detail` 由框架
+  # 直接落到 `app\api\controller\Goods::detail`。这类工程在旧模型下"路由视角"会空掉 ——
+  # 实测 yoshop 只剩脚手架 demo、shopxo **一个契约都没有**，但它们的真实端点有数百个。
+  #
+  # 之所以放在 P6：这条规则的选择器作用在**图节点**（控制器方法）上，而"\controller\
+  # 下的 public 方法"要在 P2 建完语法节点、P6 才能稳定地按 FQN 筛。
+  #
+  # URL 推导完全走 FKB 定义的 three-step 归一化（内核不认识 ThinkPHP 的 URL 规则）：
+  #   app\adminapi\controller\v1\agent\AgentLevel::delete
+  #     → snake:  app\adminapi\controller\v1\agent\agent_level::delete
+  #     → 去前缀/去 controller 层/`\`→`/`/`::`→`/`
+  #     → /adminapi/v1/agent/agent_level/delete
+  # 与 TP6 的 URL 转换（`Url` 把 `goods_category` 折成 `GoodsCategory`）一致。
+  #
+  # method 取 `RULE`：`Route::rule` 的语义是"不限 HTTP 方法"，与本纯粹仪表里
+  # `RULE /mobile/:*` 这类既有契约保持同一种写法，避免编造 GET/POST。
+  # 置信度刻意压到 0.5 —— 这是**约定推断**而非源码明文（语义可能因工程配置
+  # `url_route_must`、中间件、继承的 `__call` 而失效），节点上带 `auto_route: true`
+  # 供上层区分。
+  - id: tp6-auto-route-contract
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Method
+      where:
+        # 只有落在 controller 命名空间下的方法才可能是 HTTP 入口
+        - fqn_matches: "\\controller\\"
+        - property_is: { name: visibility, value: public }
+        # 语言构造器与框架钩子不是端点（`initialize` 是 TP 的前置钩子）
+        - name_not_in: ["__construct", "__destruct", "__call", "__callStatic", "initialize"]
+        # **显式注册优先**：已经被 `Route::get/post/resource` 的契约认领过的方法不再兜；
+        # 否则 CRMEB 这类全量注册路由的工程，每个方法都会多出一份同义契约。
+        - not_claimed_by: "HandledBy"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { literal: "RULE", normalize: [upper] }
+            path:
+              self: true
+              transform: { snake: true }
+              normalize:
+                - strip_prefix: ["app\\"]
+                - replace: { from: "\\", to: "/" }
+                - replace: { from: "controller/", to: "" }
+                - replace: { from: "::", to: "/" }
+                - lower
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { self: true }
+            - name: handler
+              value: { self: true }
+            - name: side
+              value: { literal: "backend" }
+            - name: auto_route
+              value: { literal: "true" }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { self: true, resolve: as_is }
+          confidence: 0.5
 
   # ===== P5 Synthesize：I18nKey（多 locale 合并成一个节点）=====
   - id: tp6-i18n-key

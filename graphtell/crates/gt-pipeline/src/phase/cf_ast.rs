@@ -252,6 +252,41 @@ fn build_file(
                     }
                 }
             }
+            // 右侧自带类型的属性赋值：`$this->model = new OrderModel;` /
+            // `$this->orderInfo = OrderModel::getDetail(...)` / `$this->x = app(Y::class)`。
+            // 只在**还没有更权威来源**（参数类型提示 / 属性声明类型）时才补，
+            // 让"显式声明 > 构造器注入 > 赋值推断"这条优先级成立。
+            if let Some(assigns) = d.extra.get("this_assign_types").and_then(|v| v.as_array()) {
+                let Some(class_fqn) = d.parent_fqn.as_deref() else {
+                    continue;
+                };
+                for a in assigns {
+                    let (Some(prop), Some(cls)) = (
+                        a.get("prop").and_then(|v| v.as_str()),
+                        a.get("class").and_then(|v| v.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    if ctx.ws.prop_type(class_fqn, prop).is_some() {
+                        continue;
+                    }
+                    let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls);
+                    ctx.ws.set_prop_type(class_fqn, prop, &fqn);
+                }
+            }
+            // 方法内局部变量：`$model = new OrderModel();` → `$model->where(...)` 可解析。
+            if let Some(list) = d.extra.get("local_assign_types").and_then(|v| v.as_array()) {
+                for a in list {
+                    let (Some(var), Some(cls)) = (
+                        a.get("var").and_then(|v| v.as_str()),
+                        a.get("class").and_then(|v| v.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls);
+                    ctx.ws.set_local_type(&d.fqn, var, &fqn);
+                }
+            }
             // `return X::class;` → 声明式联系：所属类 → X（如 `Dao::setModel()` → Model）。
             // 跨文件引用交给 P7 统一解析（此时目标类可能尚未建节点）。
             if let Some(list) = d.extra.get("returns_class").and_then(|v| v.as_array()) {
@@ -263,6 +298,7 @@ fn build_file(
                             from: owner_id,
                             kind: EdgeKind(EdgeKind::RESOLVES_TO.to_string()),
                             raw: fqn,
+                            method: None,
                             resolve: ResolveAs::ClassConst,
                             confidence: 0.85,
                             sub: file.sub_project_id,
@@ -357,6 +393,26 @@ fn build_file(
             confidence: 1.0,
             properties: serde_json::Value::Null,
         });
+    }
+
+    // `@method` 魔法方法：类用 phpdoc 声明、由 `__call` 转发的方法名。
+    // 它们没有方法节点，但调用点上写的是真实方法名 —— P7 据此把它转给 FKB 声明的委派属性。
+    for d in &facts.declarations {
+        if d.kind.as_str() != NodeKind::CLASS {
+            continue;
+        }
+        let names: Vec<String> = d
+            .extra
+            .get("magic_methods")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        ctx.ws.set_magic_methods(&d.fqn, &names);
     }
 
     // 字段声明类型：按 import 还原成 FQN，写入 `prop_types`（供 P7 按字段类型解析

@@ -115,14 +115,19 @@ pub fn strip_namespace(s: &str) -> String {
 }
 
 /// `CamelCase` → `snake_case`。
+///
+/// 按**字母数字段**处理：分隔符（`\` / `/` / `:`）之后的大写字母**不补下划线** ——
+/// `app\admin\Store` 是 `app\admin\store` 而不是 `app\admin\_store`。
+/// 这条不成立时，自动路由的 URL 推导会凭空多出 `_` 前缀段（`RULE /admin/_store/index`）。
 pub fn to_snake(s: &str) -> String {
     let mut out = String::new();
     let chars: Vec<char> = s.chars().collect();
     for (i, c) in chars.iter().enumerate() {
         if c.is_uppercase() {
+            let prev_alnum = i > 0 && chars[i - 1].is_alphanumeric();
             let prev_lower = i > 0 && chars[i - 1].is_lowercase();
             let next_lower = i + 1 < chars.len() && chars[i + 1].is_lowercase();
-            if i > 0 && (prev_lower || next_lower) {
+            if prev_alnum && (prev_lower || next_lower) {
                 out.push('_');
             }
             out.extend(c.to_lowercase());
@@ -191,5 +196,13 @@ mod tests {
     fn model_convention_table() {
         assert_eq!(snake_plural("app\\model\\StoreOrder"), "store_orders");
         assert_eq!(class_to_topic("app\\job\\OrderJob"), "order_job");
+    }
+
+    #[test]
+    fn snake_keeps_segments() {
+        // 分隔符之后的大写字母不补 `_`：否则自动路由会推导出 `/admin/_store/index`
+        assert_eq!(to_snake("app\\admin\\controller\\Store"), "app\\admin\\controller\\store");
+        assert_eq!(to_snake("AgentLevel::delete"), "agent_level::delete");
+        assert_eq!(to_snake("SaveInfo"), "save_info");
     }
 }

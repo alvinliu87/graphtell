@@ -370,6 +370,16 @@ pub fn eval_predicate(
             Some(n) => n.properties.get(name).and_then(|v| v.as_str()) == Some(value.as_str()),
             None => false,
         },
+        Predicate::FqnMatches(sub) => {
+            let Some(n) = ws.node(node) else { return false };
+            let hay = n.fqn.clone().unwrap_or_else(|| n.name.clone());
+            hay.to_ascii_lowercase().contains(&sub.to_ascii_lowercase())
+        }
+        Predicate::NameNotIn(names) => match ws.node(node) {
+            Some(n) => !names.iter().any(|x| x.eq_ignore_ascii_case(&n.name)),
+            None => false,
+        },
+        Predicate::NotClaimedBy(kind) => !ws.claimed_by(node, kind),
         Predicate::ArgCount(n) => match mctx {
             Some(MatchCtx::Call(c)) => c.args.len() == *n,
             _ => false,
@@ -523,12 +533,13 @@ fn location_of(ctx: &PipelineContext, m: MatchCtx) -> Option<String> {
         MatchCtx::Call(c) => Some(format!("{}:{}", c.file, c.span.start_line)),
         MatchCtx::Config(c) => Some(format!("{}:{}", c.file, c.span.start_line)),
         MatchCtx::Inherit(i) => Some(format!("{}:{}", i.file, i.span.start_line)),
-        MatchCtx::Node(id) => ctx.ws.node(id).and_then(|n| {
-            n.identity
-                .as_ref()
-                .map(|i| i.value.clone())
-                .or_else(|| n.fqn.clone())
-        }),
+        // P6 的选择器作用在**图节点**上：此时"出处"是节点自己的声明位置，而不是
+        // identity / FQN 字符串（那会让 `locations[].file` 塞进一个 FQN，前端跳转失效）。
+        MatchCtx::Node(id) => {
+            let n = ctx.ws.node(id)?;
+            let file = n.file_id.and_then(|fid| ctx.ws.source_path_of(fid.get()))?;
+            Some(format!("{}:{}", file, n.span.start_line))
+        }
     }
 }
 
@@ -973,6 +984,9 @@ fn exec_synthesize_one(
                                 from: node_id,
                                 kind: link.kind.clone(),
                                 raw: resolved.clone(),
+                                // 带上 FKB 显式给出的入口方法（资源路由的 `expand_entry`），
+                                // 否则 P7 只有类名可用，会退化到「类级回退」。
+                                method: method.clone(),
                                 // `resolve` 既可以写在 link 上，也可以写在 to 的值来源里
                                 resolve: link
                                     .resolve
@@ -1153,6 +1167,7 @@ fn push_to_target_edges(
                 from: node_id,
                 kind: link.kind.clone(),
                 raw: resolved.clone(),
+                method: method.clone(),
                 resolve: link
                     .resolve
                     .clone()

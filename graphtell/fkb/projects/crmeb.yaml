@@ -24,6 +24,15 @@ detectors:
     path: app/services/system/crontab/SystemCrontabServices.php
     confidence: 0.9
 
+# 魔法方法转发：`BaseServices` 用 `@method` 声明了 20 多个 `get` / `getOne` /
+# `getList` / `count` / `delete` …，实际由 `__call` 转发给 `$this->dao`
+# （dao 的类型由各子类构造器注入，如 `AgentLevelServices(AgentLevelDao $dao)`）。
+# 没有这条约定，`$this->services->getList()` 只能退回"类级命中"，
+# 「路由 → 控制器 → Services → Dao → 表」的链路就在 Services 这一跳断掉。
+magic_delegation:
+  property: dao
+  confidence: 0.7
+
 rules:
   # ===== P5 Synthesize：计划任务（Schedule）=====
   - id: crmeb-schedule-task

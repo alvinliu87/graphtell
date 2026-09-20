@@ -6,8 +6,8 @@ use std::cell::RefCell;
 
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
-    CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, ImportFact, InheritanceFact,
-    Language, NodeKind, SyntaxFacts,
+    CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
+    InheritanceFact, Language, NodeKind, SyntaxFacts,
 };
 use serde_json::json;
 use tree_sitter::{Language as TsLanguage, Node, Parser};
@@ -231,6 +231,11 @@ fn collect_type(node: Node, ctx: &mut Ctx) {
         .map(|n| text(n, ctx.src))
         .unwrap_or_else(|| "<anonymous>".into());
     let fqn = qualify(ctx.ns.as_deref(), &name);
+    // `@method` 注解：类用 phpdoc 声明了一批**由 `__call` 转发**的方法
+    // （CRMEB `BaseServices` 的 `get` / `getList` / `delete` … 全靠它）。
+    // 这些方法没有方法体、没有节点，但在调用点上是真实方法名 —— 不记下来，
+    // `$this->services->getList()` 就只能退回"类级命中"，链到服务这一跳就断了。
+    let magic_methods = docblock_method_names(node, ctx.src);
 
     ctx.facts.declarations.push(Declaration {
         kind: NodeKind(kind.to_string()),
@@ -238,7 +243,11 @@ fn collect_type(node: Node, ctx: &mut Ctx) {
         fqn: fqn.clone(),
         parent_fqn: ctx.ns.clone(),
         span: span_of(node),
-        extra: json!({ "abstract": has_modifier(node, "abstract_modifier"), "final": has_modifier(node, "final_modifier") }),
+        extra: json!({
+            "abstract": has_modifier(node, "abstract_modifier"),
+            "final": has_modifier(node, "final_modifier"),
+            "magic_methods": magic_methods,
+        }),
     });
 
     // 继承 / 实现
@@ -280,6 +289,39 @@ fn collect_type(node: Node, ctx: &mut Ctx) {
         }
     }
     ctx.class_stack.pop();
+}
+
+/// 从类声明**前面**的 phpdoc 里抽出 `@method <name>(...)` 的方法名。
+///
+/// 只取名字：返回类型与形参对解析无用（真正要做的是把调用转发给 FKB 声明的委派属性），
+/// 且返回类型里可能带 `|` `?` `\` 等符号，贪心匹配容易把 `array|Model|null` 当方法名。
+fn docblock_method_names(node: Node, src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = node.prev_sibling();
+    // 只向前看紧邻的几个注释 / 空白节点（`use_trait` 之类不会夹在中间）。
+    for _ in 0..4 {
+        let Some(n) = cur else { break };
+        if n.kind() == "comment" {
+            for line in text(n, src).lines() {
+                let line = line.trim().trim_start_matches('*').trim_start_matches('/').trim();
+                let Some(rest) = line.strip_prefix("@method ") else {
+                    continue;
+                };
+                // `array|Model|null get($id, ...)` → 取 `(` 之前的最后一个标识符
+                let before_paren = rest.split('(').next().unwrap_or(rest);
+                let name = before_paren
+                    .split([' ', '\t'])
+                    .last()
+                    .unwrap_or("")
+                    .trim();
+                if !name.is_empty() && !out.iter().any(|x| x == name) {
+                    out.push(name.to_string());
+                }
+            }
+        }
+        cur = n.prev_sibling();
+    }
+    out
 }
 
 fn find_type_body<'a>(node: Node<'a>) -> Option<Node<'a>> {
@@ -344,10 +386,20 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
 
     // 构造器注入：`$this->services = $services;` → 属性 services 的类型 = 参数 services 的类型。
     let mut this_assigns: Vec<serde_json::Value> = Vec::new();
+    // 右侧自带类型的赋值：`$this->x = new Y` / `Y::make()` / `app(Y::class)`。
+    let mut this_assign_types: Vec<serde_json::Value> = Vec::new();
+    // 方法内局部变量：`$x = new Y(...)` → `$x->m()` 可解析。
+    let mut local_assign_types: Vec<serde_json::Value> = Vec::new();
     // `return X::class;` → 供给 P7 建「所属类 → X」的声明式联系（如 Dao::setModel() → Model）。
     let mut returns_class: Vec<serde_json::Value> = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
-        collect_this_assigns(body, ctx, &mut this_assigns);
+        collect_assigns(
+            body,
+            ctx,
+            &mut this_assigns,
+            &mut this_assign_types,
+            &mut local_assign_types,
+        );
         collect_return_classes(body, ctx, &mut returns_class);
     }
 
@@ -363,6 +415,8 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
             "abstract": has_modifier(node, "abstract_modifier"),
             "parameters": params,
             "this_assigns": this_assigns,
+            "this_assign_types": this_assign_types,
+            "local_assign_types": local_assign_types,
             "returns_class": returns_class,
         }),
     });
@@ -372,11 +426,21 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
     }
 }
 
-/// 收集 `$this->prop = $var;` 形式的属性赋值（构造器注入常见写法）。
+/// 收集方法体内的赋值，一次遍历服务三条类型推断来源（避免对每个方法体重复递归）：
 ///
-/// ThinkPHP 的控制器/服务常写成 `__construct(LoginServices $services) { $this->services = $services; }`，
-/// 这里把「属性 → 局部变量」记下来；类型由 P7 结合参数类型推断。
-fn collect_this_assigns(node: Node, ctx: &Ctx, out: &mut Vec<serde_json::Value>) {
+/// 1. `$this->prop = $var;` —— 构造器注入，类型来自**参数类型提示**（`this_out` 的
+///    `{prop, var}`）。ThinkPHP 的控制器/服务常写成
+///    `__construct(LoginServices $services) { $this->services = $services; }`。
+/// 2. `$this->prop = <可静态确定类型的表达式>` —— `new Y` / `Y::make()` / `app(Y::class)`（
+///    `type_out` 的 `{prop, class}`）。
+/// 3. `$x = <同上>` —— 方法内局部变量（`local_out` 的 `{var, class}`），供 `$x->m()` 解析。
+fn collect_assigns(
+    node: Node,
+    ctx: &Ctx,
+    this_out: &mut Vec<serde_json::Value>,
+    type_out: &mut Vec<serde_json::Value>,
+    local_out: &mut Vec<serde_json::Value>,
+) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "assignment_expression" {
@@ -385,21 +449,70 @@ fn collect_this_assigns(node: Node, ctx: &Ctx, out: &mut Vec<serde_json::Value>)
                 child.child_by_field_name("right"),
             ) {
                 let lt = text(l, ctx.src).trim().to_string();
-                let rt = text(r, ctx.src).trim().to_string();
-                if lt.starts_with("$this->")
-                    && rt.starts_with('$')
-                    && !rt.contains("->")
-                    && !rt.contains('[')
-                {
-                    let prop = lt.trim_start_matches("$this->").to_string();
-                    let var = rt.trim_start_matches('$').to_string();
-                    if !prop.is_empty() && !var.is_empty() {
-                        out.push(json!({ "prop": prop, "var": var }));
+                if lt.starts_with("$this->") {
+                    // ① 参数类型提示（更权威，先记；P2 侧遇到已推断的类型会跳过 ②）
+                    let rt = text(r, ctx.src).trim().to_string();
+                    if rt.starts_with('$') && !rt.contains("->") && !rt.contains('[') {
+                        let prop = lt.trim_start_matches("$this->").to_string();
+                        let var = rt.trim_start_matches('$').to_string();
+                        if !prop.is_empty() && !var.is_empty() {
+                            this_out.push(json!({ "prop": prop, "var": var }));
+                        }
+                    } else if let Some(cls) = rhs_class_of(r, ctx.src) {
+                        let prop = lt.trim_start_matches("$this->").to_string();
+                        if !prop.is_empty() {
+                            type_out.push(json!({ "prop": prop, "class": cls }));
+                        }
+                    }
+                } else if lt.starts_with('$') && !lt.contains("->") {
+                    if let Some(cls) = rhs_class_of(r, ctx.src) {
+                        let var = lt.trim_start_matches('$').to_string();
+                        if !var.is_empty() {
+                            local_out.push(json!({ "var": var, "class": cls }));
+                        }
                     }
                 }
             }
         }
-        collect_this_assigns(child, ctx, out);
+        collect_assigns(child, ctx, this_out, type_out, local_out);
+    }
+}
+
+/// 从赋值右侧文本里读出**可静态确定的类名**（`new` / 静态工厂 / 容器取实例）。
+///
+/// 只接受一眼可见的形状，其它一律 `None` —— 宁可缺边，不可错边。
+fn rhs_class_of(node: Node, src: &str) -> Option<String> {
+    let raw = text(node, src).trim().to_string();
+    match node.kind() {
+        // `new Foo(...)` / `new Foo`（`object_creation_expression`）
+        "object_creation_expression" => node
+            .named_children(&mut node.walk())
+            .find(|c| matches!(c.kind(), "name" | "qualified_name"))
+            .map(|c| trim_leading(text(c, src))),
+        // `Foo::getDetail(...)` / `Foo::getInstance()` —— 返回同类的静态工厂
+        "scoped_call_expression" => node
+            .child_by_field_name("scope")
+            .map(|s| trim_leading(text(s, src)))
+            .filter(|s| !s.is_empty() && !s.contains('$') && !s.contains("->")),
+        // `app(Foo::class)` / `app()->make(Foo::class, [...])`
+        _ => {
+            let cls = raw
+                .split([',', '(']) // 取 `Foo::class` 所在的片段
+                .find(|seg| seg.contains("::class"))?
+                .trim();
+            let cls = cls
+                .split_whitespace()
+                .last()
+                .unwrap_or(cls)
+                .trim_end_matches("::class")
+                .trim()
+                .trim_start_matches('\\');
+            if cls.is_empty() || cls.contains('$') || cls.contains("->") {
+                None
+            } else {
+                Some(cls.to_string())
+            }
+        }
     }
 }
 
@@ -443,6 +556,16 @@ fn collect_function(node: Node, ctx: &mut Ctx) {
 }
 
 fn collect_property(node: Node, ctx: &mut Ctx, class_fqn: &str) {
+    // 类型化属性（PHP 7.4+）：`private OrderModel $orderInfo;`
+    //
+    // 这是**静态可确定**的属性类型来源，必须记进 `field_types` → `prop_types`：
+    // yoshop 这类工程几乎全靠它注入依赖（`protected UserModel $user;` 而**不写**
+    // 构造器参数类型提示），漏掉它，`$this->user->xxx()` 就永远推不出类型，
+    // 「路由 → 服务 → 表」的整条调用链在服务这一跳断掉。
+    let declared_type = node
+        .child_by_field_name("type")
+        .map(|t| text(t, ctx.src).trim().trim_start_matches('?').to_string())
+        .filter(|t| !t.is_empty());
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "property_element" {
@@ -452,6 +575,14 @@ fn collect_property(node: Node, ctx: &mut Ctx, class_fqn: &str) {
             .child_by_field_name("name")
             .map(|n| text(n, ctx.src).trim_start_matches('$').to_string())
             .unwrap_or_default();
+        if let Some(t) = declared_type.as_deref() {
+            ctx.facts.field_types.push(FieldTypeFact {
+                class_fqn: class_fqn.to_string(),
+                field: name.clone(),
+                type_name: t.to_string(),
+                span: span_of(child),
+            });
+        }
         let default_value = child
             .child_by_field_name("default_value")
             .map(|v| eval_expr(v, ctx.src))

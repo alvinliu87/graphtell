@@ -60,6 +60,19 @@ pub fn run(
             }
             ctx.handler_specs.insert(sub.id.get(), spec);
         }
+        // `@method` 魔法方法的转发目标：同样是 FKB 知识（转发给哪个属性是框架/项目约定）。
+        if let Some(spec) = frameworks
+            .iter()
+            .chain(projects.iter())
+            .filter_map(|id| kb.by_id(id))
+            .find_map(|fk| fk.magic_delegation.clone())
+            .filter(|s| !s.property.is_empty())
+        {
+            if ctx.magic_delegation_default.is_none() {
+                ctx.magic_delegation_default = Some(spec.clone());
+            }
+            ctx.magic_delegation.insert(sub.id.get(), spec);
+        }
         if let Some(methods) = frameworks
             .iter()
             .chain(projects.iter())

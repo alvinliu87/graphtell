@@ -49,6 +49,13 @@ pub struct FrameworkKnowledge {
     /// 这是**框架知识**而非内核知识 —— 见 [`HandlerSpec`]。
     #[serde(default)]
     pub handler: Option<HandlerSpec>,
+    /// 魔法方法委派：类用 `@method getList(...)` 声明、由 `__call` 转发到某个属性。
+    ///
+    /// PHP 生态里"注解声明 + `__call` 转发"很常见（CRMEB 的 `BaseServices` 把 20 多个
+    /// `get*` / `count*` / `delete*` 转发给 `$this->dao`），但**转发给谁**是项目约定，
+    /// 内核不该猜 —— 由 FKB 指明属性名即可，其余（注解解析、类型来源、继承回溯）都是通用能力。
+    #[serde(default)]
+    pub magic_delegation: Option<MagicDelegationSpec>,
     /// 「消费入口方法名」候选：连向一个类时，优先连到它的哪个方法。
     ///
     /// 各框架约定不同：Laravel/队列 Job 是 `handle`、Symfony 是 `__invoke`、
@@ -120,6 +127,22 @@ pub struct HandlerSpec {
     pub app_anchor_dir: Option<String>,
     /// 推断不出时 `{app}` 的兜底值。
     pub app_fallback: String,
+}
+
+/// 魔法方法（`@method` 注解）的转发目标。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MagicDelegationSpec {
+    /// 转发目标属性名（如 CRMEB 的 `dao`）。类型由该属性的注入方式按既有规则推断。
+    pub property: String,
+    /// 转发解析的置信度（低于"方法精确命中"，因为它是注解声明而非源码）。
+    pub confidence: f32,
+}
+
+impl Default for MagicDelegationSpec {
+    fn default() -> Self {
+        Self { property: String::new(), confidence: 0.7 }
+    }
 }
 
 impl Default for HandlerSpec {
@@ -362,6 +385,24 @@ pub enum Predicate {
     /// 本谓词只放行数组条目：既排除掉展开出的标量叶子，也顺带滤掉
     /// `app_init => []` 这类框架级空标签。
     EntryArityGte(usize),
+    /// 节点 **FQN** 包含给定子串（大小写不敏感）。
+    ///
+    /// 为什么需要它：很多约定是按**命名空间位置**成立的，节点短名看不出来 ——
+    /// 控制器方法 `detail` 的语义来自它的 FQN `app\api\controller\Goods::detail`，
+    /// 自动路由规则只能靠 `\controller\` 这一段筛出来。
+    FqnMatches(String),
+    /// 节点名**不在**给定列表内（大小写不敏感）。
+    ///
+    /// 约定的适用面总要剔掉语言 / 框架钩子：`__construct` / `initialize` 同样落在
+    /// controller 命名空间里，但绝不是 HTTP 入口。名单由 FKB 给出，内核不认识具体名字。
+    NameNotIn(Vec<String>),
+    /// 节点**尚未被认领**：既没有指定种类的入边，也没有该种类的待定链接指向它
+    /// （详见 [`crate::GraphWorkspace::claimed_by`] 的形态比对）。
+    ///
+    /// 「显式声明优先于约定推断」：已经写在 `Route::get` / `Route::resource` 里的某个
+    /// 方法，不该再被目录约定兜出第二个契约 —— 否则 CRMEB 这类全量注册路由的工程会
+    /// 凭空多出上千个重复端点。与"宁可缺边，不可错边"是同一条记账原则。
+    NotClaimedBy(String),
 }
 
 /// 绑定动作。

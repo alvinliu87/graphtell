@@ -2144,13 +2144,10 @@ impl ViewService {
             }
         }
         // 2) 回退：from 的 HasCallSite 调用点里，被调名与 to 匹配的那一个
-        let to_name = match self.cached_node(c, to) {
-            Some(n) => {
-                let raw = n.fqn.as_deref().filter(|s| !s.is_empty()).unwrap_or(&n.name);
-                self.short_name_str(raw)
-            }
-            None => String::new(),
-        };
+        let to_name = self
+            .cached_node(c, to)
+            .map(|n| self.short_name_of(&n))
+            .unwrap_or_default();
         if to_name.is_empty() {
             return None;
         }
@@ -2195,16 +2192,13 @@ impl ViewService {
     }
 
     /// 取节点名（方法名 / 类名）的"短名"：去掉命名空间与前缀，仅保留最后一段。
-    fn short_name_of(&self, id: i64) -> String {
-        if let Some(n) = self.store.get_node(NodeId(id)).ok().flatten() {
-            let raw = n
-                .fqn
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(&n.name);
-            return self.short_name_str(raw);
-        }
-        String::new()
+    fn short_name_of(&self, n: &gt_domain::model::Node) -> String {
+        let raw = n
+            .fqn
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&n.name);
+        self.short_name_str(raw)
     }
 
     /// 从 "App\X\Foo::bar" / "obj->bar" / "new Foo" 中提取 "bar" / "Foo"。

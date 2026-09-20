@@ -757,7 +757,7 @@ fn literal_url_expr(expr: &str) -> Option<String> {
             }
         } else if bytes[0] == b'`' {
             // 模板串：`${expr}` 一律折成 `:param`（参数名不重要，形状才重要）。
-            let inner = &t[1..t.len() - 1];
+            let inner = strip_ends(t, '`', '`');
             let mut s = String::with_capacity(inner.len());
             let mut rest: &str = inner;
             while let Some(pos) = rest.find("${") {
@@ -821,8 +821,10 @@ fn js_value(raw: &str) -> FactValue {
         b'"' | b'\'' | b'`' => decode_string(raw).map(FactValue::String).unwrap_or_else(|| {
             FactValue::Unknown(Some(raw.to_string()))
         }),
+        // 用 `strip_*` 而不是 `&raw[1..len-1]`：实参有可能不带右括号，或末尾落在多字节字符上，
+        // 裸切会切在 char 边界中间直接 panic（DSShop / likeshop 前端的中文实参踩到过）。
         b'[' => {
-            let inner = &raw[1..raw.len().saturating_sub(1)];
+            let inner = strip_ends(raw, '[', ']');
             let items = split_top_commas(inner)
                 .into_iter()
                 .enumerate()
@@ -831,7 +833,7 @@ fn js_value(raw: &str) -> FactValue {
             FactValue::Array(items)
         }
         b'{' => {
-            let inner = &raw[1..raw.len().saturating_sub(1)];
+            let inner = strip_ends(raw, '{', '}');
             let items = split_top_commas(inner)
                 .into_iter()
                 .filter_map(|s| s.split_once(':'))
@@ -848,6 +850,15 @@ fn js_value(raw: &str) -> FactValue {
         _ if raw.parse::<i64>().is_ok() => FactValue::Int(raw.parse().unwrap_or(0)),
         _ => FactValue::Unknown(Some(raw.to_string())),
     }
+}
+
+/// 剥掉一对包裹字符（如 `[...]` / `{...}` / `` `...` ``）。
+///
+/// 等价于 `&raw[1..raw.len()-1]`，但**不会切在多字节字符中间**：实参文本有可能不带右
+/// 半符号、或以中文结尾，裸切会 panic。缺右半符号时退化为「只剥左半」，由调用方继续尽力解析。
+fn strip_ends(raw: &str, open: char, close: char) -> &str {
+    let s = raw.strip_prefix(open).unwrap_or(raw);
+    s.strip_suffix(close).unwrap_or(s)
 }
 
 /// 按顶层 `,` 切分（跳过字符串字面量与括号内部），返回去空白后的片段。
