@@ -1,8 +1,11 @@
 //! gt-app 视角层集成测试（组装根 → 建图 → 视角切片）。
 //!
-//! 以真实的 `samples/thinkphp-projects/CRMEB-master` 为原料，经由 `Container` 装配全部适配器，
-//! 跑一遍完整建图，再用 `ViewService` 验证一/二级筛选器与各视角切片。
-//! 样本缺失时整组跳过（可用 `GRAPHTELL_SAMPLE_DIR` 指定）。
+//! 以真实的 `samples/CRMEB-master`（3 个子工程、2178 个源文件）为原料，经由 `Container`
+//! 装配全部适配器，跑一遍完整建图，再用 `ViewService` 验证一/二级筛选器与各视角切片。
+//!
+//! **这组测试依赖体积过大的真实样本（不入库），整组标了 `#[ignore]`**：默认 `cargo test`
+//! 不会执行，需先设置 `GRAPHTELL_SAMPLE_DIR` 指向样本根，再 `cargo test -- --ignored`。
+//! 这是预期行为 —— CI 里看到 `ignored: N` 不是漏跑（见 `.github/workflows/ci.yml`）。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -153,6 +156,7 @@ fn first_object_target(
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn container_assembles_adapters() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -176,6 +180,7 @@ fn container_assembles_adapters() {
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn perspectives_reported_with_counts() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -191,6 +196,7 @@ fn perspectives_reported_with_counts() {
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn aggregate_deploy_unit_clusters() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -216,6 +222,7 @@ fn aggregate_deploy_unit_clusters() {
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn aggregate_platform_matrix() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -240,6 +247,7 @@ fn aggregate_platform_matrix() {
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn object_view_chain_and_hidden() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -281,6 +289,7 @@ fn assert_visible_node_ok(_ov: &gt_domain::model::ObjectView, n: &gt_domain::mod
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn object_view_default_is_semantic_only() {
     // 折叠（默认）视图必须「只显示对人类有意义的语义节点 / 语义边」：
     // * 不出现 Method / CallSite / Class 等语法节点与 Calls / HasCallSite 等语法边；
@@ -351,6 +360,7 @@ fn object_view_default_is_semantic_only() {
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn object_view_resource_center_shows_its_users() {
     // 资源类中心（Table / ConfigKey / Cache…）的关系方向是**反向**的：
     // 语义边由使用者指向资源，所以视图必须回答"谁在用它"，而不是给出一张空图。
@@ -423,6 +433,7 @@ fn object_view_resource_center_shows_its_users() {
 /// * 但必须出现在 `orphans` 里，且带名字与"它对资源做了什么"——
 ///   否则"徽标说有访问、图里查无此人"的静默省略又回来了。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn orphan_access_is_accounted_not_drawn() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -476,6 +487,7 @@ fn orphan_access_is_accounted_not_drawn() {
 /// ② 它们如实出现在 `orphans` 里（且 `Triggers` 带触发点 `location`）；
 /// ③ 视图确有可画的内容（资源边或直连记账，二选一）。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn event_view_syntactic_accessors_collapse_to_orphans() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -545,6 +557,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn node_locations_returns_sources() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -561,6 +574,7 @@ fn node_locations_returns_sources() {
 }
 
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn edge_evidence_verifies_chain() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -600,6 +614,7 @@ fn edge_evidence_verifies_chain() {
 /// 链路就断在发现深度上，画出"路由自己读了缓存"这种伪路径（真实接触点在几跳之外）。
 /// 这条不变量与边的种类（读库 / 读缓存 / 投递…）无关，对任何仓库都应成立。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn folded_semantic_edges_end_at_real_contact() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -664,6 +679,7 @@ fn folded_semantic_edges_end_at_real_contact() {
 /// `DataMigrationServices.php:53` 的 `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)`
 /// 当作"本链路访问缓存的位置" —— 该路由根本没碰那个键。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn cache_view_folded_edges_end_at_real_contact() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -763,6 +779,7 @@ fn cache_view_folded_edges_end_at_real_contact() {
 ///   detail → tidyOrder → SystemConfigService::more → CacheService::remember
 ///   detail → getQRCodePath → UploadService::init → SystemConfigService::more → CacheService::remember
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn invoice_detail_route_cache_edges_have_complete_paths() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -834,6 +851,7 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
 /// `HttpContract` 是合成节点（无 `file_id`），`node_source_location` 返回 `None`，
 /// 故 `call_site_between` 改用 `node_locations` 取它汇聚的路由文件+行号。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn invoice_detail_route_first_hop_has_call_site() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -882,6 +900,7 @@ fn invoice_detail_route_first_hop_has_call_site() {
 ///
 /// 它不是"正确性"断言（正确性是下面两个用例的事），而是**行为不变**的护栏。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn object_view_characterization_invoice_detail() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -978,6 +997,7 @@ fn object_view_characterization_invoice_detail() {
 /// 画布上只剩一个孤零零的中心节点（外加一圈空的"1 跳"参考环）；而二级候选的徽标按 3 跳评分
 /// 却写着"语义依赖 1" —— 列表说有、图里没有，两处自相矛盾。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn schedule_view_follows_outgoing_chain() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -1101,6 +1121,7 @@ fn schedule_view_follows_outgoing_chain() {
 /// 不变量：**空图 ⇔ 带提示**，二者必须同时出现 / 同时消失 ——
 /// 否则要么空图没解释（看着像坏了），要么有链路还硬塞提示（误导）。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn empty_entry_view_carries_hint() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -1158,6 +1179,7 @@ fn empty_entry_view_carries_hint() {
 /// 契约：被压掉的另一半必须记在 `EdgeView::also_kinds` 上，且**只能**是同一资源的
 /// 另一半（库 ↔ 库、缓存 ↔ 缓存），不许跨资源混搭（那说明标签张冠李戴）。
 #[test]
+#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn read_write_at_same_contact_is_reported_together() {
     let Some(b) = built() else {
         eprintln!("{}", skip());

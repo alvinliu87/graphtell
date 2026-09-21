@@ -259,14 +259,47 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 | 名称 | `name_contains` / `name_starts_with` / `fqn_contains` / `identity_contains` / `text_contains` |
 | 组合 | `all_of` / `any_of` / `not` |
 
-内置 11 条规则，分四类：`contract`（契约桥：幽灵调用 / 死端点 / 缺 handler）、`security`（写端点缺鉴权 / 裸 SQL / PII 表）、`architecture`（热点表）、`deadcode`（无人使用的表 / 从未触发的事件 / 从未投递的队列）。
+规则按**适用环境**分两层目录装载，内核不认识任何具体规则 —— 加一条规则只需加一份 YAML：
+
+| 目录 | 适用 | 内容 |
+| --- | --- | --- |
+| `rules/global/` | 跨语言通用 | 只依赖**图拓扑**（扇入扇出、语义边）的规则：契约桥（`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`）、热点表（`hot-table`）、死表（`dead-table`） |
+| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 事件总线 / 队列（`orphan-event` / `orphan-eventbus` / `orphan-queue`） |
+
+内置 12 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持 Java / JS / TS，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
+
+### 规则怎么知道"该在哪跑"：环境闸门 + 判据校验
+
+规则最常见的两种失效**都不表现为报错**，而是表现为"0 条违规"（比误报更危险）：
+
+1. **环境不匹配** —— PHP 专属事件语义（`Triggers` / `Emits`）在 Java 工程里压根不存在，把 `orphan-event` 放到纯 Java 工程会把每个事件节点都报成"没人触发"。
+   → 规则用 `applies_to.languages` / `applies_to.frameworks` **先验声明**适用范围（如 `languages: [php]`），环境不匹配直接跳过，计入报告的 `rules_not_applicable`。
+2. **判据恒真** —— 反向谓词在"证据不存在"时恒真：`no_annotation: pii` 在图上没有任何 `pii` 标注时对每个表都成立。
+   → 跑规则前从谓词**自动推导**依赖（边 / 标注 / 能力），确认图里真的存在过这些事实；否则停用，计入 `rules_unavailable`。无需手写 `requires`，推导结果永远和 `when` 一致。
+
+报告因此有三态（都表现为 0 命中，但性质完全不同）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `rules_run` | 实际执行、正常出结论 |
+| `rules_not_applicable` | 环境不匹配跳过（**预期行为**，不是故障） |
+| `rules_unavailable` | 判据不成立，跑了会恒真误报，宁可不跑 |
+| `rules_silent` | 跑了但 0 命中，需确认是"代码真干净"还是"规则瞎了" |
+
+### 建图后自动跑，不需要手动
+
+`create` 建图成功后，`PipelineService` 会**自动**跑一遍检查并把违规写进诊断表（`rule:` 前缀），用户建完图立刻能在 DiagnosticsPage 看到结论，无需手动 `check`。
+
+自动检查刻意**吞掉错误**：检查引擎出错只记一条 `warn`，不能让"结论"算不出来就判定"图"建失败（图是贵得多的资产）；改一条规则 YAML 也**不触发重新建图** —— 重跑检查约 1 秒，重跑解析要几十秒到几分钟。
 
 两条刻意的设计约定：
 
 1. **不做污点可达性分析** —— MVP 只报"已确认的事实"（图上识别到了 sink、写端点没识别到鉴权），文案一律写成"未识别到 / 需确认"，而不是"存在漏洞"。路径可达计算的代价与误报率都太高，做一半不如不做。
 2. **部分规则同时也是图的验收装置** —— 比如"幽灵调用"跑出一大片，通常不是代码真错了，而是**前端 baseURL 前缀没参与 identity 归一**（当前已知限制）。因此这类规则的文案会写明两种可能，级别也相应下调。规则不只能挑代码的错，也在暴露图自身的缺口。
 
-重跑语义：跑全量清空整个 `rule:` 前缀；只跑某几条则**只替换这几条** —— 单独重跑 A 不会抹掉 B/C 的结论。
+### 重跑语义
+
+跑全量清空整个 `rule:` 前缀；只跑某几条则**只替换这几条**（含被判据停用的规则） —— 单独重跑 A 不会抹掉 B/C 的结论。
 
 ## 代码召回：按提示词查图
 

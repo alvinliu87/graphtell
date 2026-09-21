@@ -33,6 +33,44 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// 取一批节点所属的工程集合（去重）。
+    ///
+    /// # 为什么必须**只在批量查询开头算一次**
+    ///
+    /// 原来这个过滤是写在每个 chunk 的 SQL 里的子查询
+    /// `project_id IN (SELECT project_id FROM nodes WHERE id IN (<本 chunk 的 400 个 id>))`。
+    /// chunk 数随规模线性增长，于是这个子查询被**重复执行 N/400 次**；
+    /// 更要命的是 SQLite 对 `IN (SELECT …)` 会为每次执行重建一张临时表，
+    /// 代价与子查询结果集大小相关 —— 实测让批量取边退化到约 **N^1.5~1.7**
+    /// （16k 节点：取入边 156ms / 出边 131ms，是 `query_nodes` 的 4~5 倍）。
+    ///
+    /// 调用方总是传同一工程的 id 集合，所以这里一次性求出工程集合、
+    /// 再以极短的常量列表（通常只有 1 个值）下发给每个 chunk 即可。
+    /// 语义完全不变，代价从"每 chunk 一次子查询"降为"总共一次查询"。
+    fn project_ids_of(&self, ids: &[NodeId]) -> Result<Vec<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut out: Vec<i64> = Vec::new();
+        // 900 是 SQLite 默认变量上限的保守取值（默认 999，留点余量）
+        for chunk in ids.chunks(900) {
+            let ph = vec!["?"; chunk.len()].join(",");
+            let sql = format!("SELECT DISTINCT project_id FROM nodes WHERE id IN ({ph})");
+            let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params_from_iter(chunk.iter().map(|n| n.get())),
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(DomainError::infra)?;
+            for p in rows {
+                let p = p.map_err(DomainError::infra)?;
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// 打开（或创建）数据库并执行迁移。
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -712,6 +750,11 @@ impl GraphQuery for SqliteStore {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
+        let projects = self.project_ids_of(ids)?;
+        if projects.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let proj_ph = vec!["?"; projects.len()].join(",");
         let conn = self.conn.lock().unwrap();
         let mut out: HashMap<i64, Vec<Edge>> = HashMap::new();
         for chunk in ids.chunks(400) {
@@ -719,13 +762,11 @@ impl GraphQuery for SqliteStore {
             // 同 `edges_of`：按端点节点所属工程过滤，挡掉历史工程的残留边。
             let sql = format!(
                 "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
-                 FROM edges WHERE from_id IN ({placeholders}) \
-                 AND project_id IN (SELECT project_id FROM nodes WHERE id IN ({placeholders}))"
+                 FROM edges WHERE from_id IN ({placeholders}) AND project_id IN ({proj_ph})"
             );
             let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
-            // 占位符出现两份（端点列表 + 工程过滤子查询），参数也要绑两份。
             let mut params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
-            params.extend(chunk.iter().map(|n| n.get()));
+            params.extend(projects.iter().copied());
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(params.iter()), row_to_edge)
                 .map_err(DomainError::infra)?;
@@ -743,6 +784,12 @@ impl GraphQuery for SqliteStore {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
+        // 工程集合**只算一次**（见 `project_ids_of` 的说明）。
+        let projects = self.project_ids_of(ids)?;
+        if projects.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let proj_ph = vec!["?"; projects.len()].join(",");
         let conn = self.conn.lock().unwrap();
         let mut inc: HashMap<i64, Vec<Edge>> = HashMap::new();
         for chunk in ids.chunks(400) {
@@ -750,13 +797,11 @@ impl GraphQuery for SqliteStore {
             // 同 `edges_of`：按端点节点所属工程过滤，挡掉历史工程的残留边。
             let sql = format!(
                 "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
-                 FROM edges WHERE to_id IN ({placeholders}) \
-                 AND project_id IN (SELECT project_id FROM nodes WHERE id IN ({placeholders}))"
+                 FROM edges WHERE to_id IN ({placeholders}) AND project_id IN ({proj_ph})"
             );
             let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
-            // 占位符出现两份（端点列表 + 工程过滤子查询），参数也要绑两份。
             let mut params: Vec<i64> = chunk.iter().map(|n| n.get()).collect();
-            params.extend(chunk.iter().map(|n| n.get()));
+            params.extend(projects.iter().copied());
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(params.iter()), row_to_edge)
                 .map_err(DomainError::infra)?;

@@ -81,6 +81,20 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_project ON edges(project_id);
+-- 复合索引：**批量取边的性能关键**，不要删。
+--
+-- `edges_incoming` / `edges_outgoing` 的查询形如
+--   WHERE to_id IN (<400 个 id>) AND project_id IN (?)
+-- 只有单列索引时，SQLite 的规划器会选 `idx_edges_project` ——
+-- 也就是**扫描该工程的全部边**再逐行过滤 `to_id IN (...)`，
+-- 代价 = chunk 数 × 工程边数 = O(N²)：实测 16k 节点取入边 156ms，
+-- 且随规模按约 N^1.5 增长（而 `query_nodes` 是线性）。
+--
+-- 有了 (project_id, to_id) 后，规划器改为
+--   SEARCH edges USING INDEX idx_edges_proj_to (project_id=? AND to_id=?)
+-- 两个条件都走索引 —— 同上实测 9.8ms，且规模 ×4 耗时 ×3.4（线性）。
+CREATE INDEX IF NOT EXISTS idx_edges_proj_to ON edges(project_id, to_id);
+CREATE INDEX IF NOT EXISTS idx_edges_proj_from ON edges(project_id, from_id);
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS node_annotations (

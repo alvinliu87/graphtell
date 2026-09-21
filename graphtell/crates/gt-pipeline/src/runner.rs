@@ -70,7 +70,7 @@ pub fn run(
     observer.on_phase_start(project.id, &Phase(Phase::INGEST.to_string()));
     let root = ingest::validate_root(&project.root_path)?;
     let _ = root;
-    let ingested = ingest::run(project, infra.scanner(), infra.parsers())?;
+    let ingested = ingest::run(project, infra.scanner(), infra.parsers(), infra.fs())?;
     let subs: Vec<SubProject> = infra
         .projects()
         .replace_sub_projects(project.id, ingested.sub_projects.clone())?;

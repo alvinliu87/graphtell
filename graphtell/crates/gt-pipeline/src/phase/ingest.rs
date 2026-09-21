@@ -29,11 +29,35 @@ pub struct IngestResult {
     pub files: Vec<NewSourceFile>,
 }
 
+/// 计算文件指纹。
+///
+/// # 为什么必须是**内容**哈希
+///
+/// 早期这里是 `hash("路径:文件大小")` —— 完全没读文件内容。
+/// 于是"改了一行但字节数不变"（`a = 1` → `b = 1`、调换语句顺序、
+/// 改的字符串长度刚好相同）**检测不到变化**。
+/// 这会让任何基于该指纹的增量更新静默漏掉改动 —— 比不做增量更危险，
+/// 因为用户会以为图是最新的。
+///
+/// 读不到的文件（已被删除 / 无权限 / 二进制）退化为 `路径:大小` 指纹，
+/// 保证 Ingest 不会因为个别文件失败而中断。
+pub fn fingerprint(
+    fs: &dyn gt_domain::port::FileSystem,
+    path: &Path,
+    fallback: &str,
+) -> String {
+    match fs.read_to_string(path) {
+        Ok(text) => hash(&text),
+        Err(_) => hash(fallback),
+    }
+}
+
 /// 执行 Ingest。
 pub fn run(
     project: &Project,
     scanner: &dyn FileScanner,
     parsers: &dyn ParserRegistry,
+    fs: &dyn gt_domain::port::FileSystem,
 ) -> Result<IngestResult> {
     let markers: Vec<&str> = MARKERS.iter().map(|m| m.0).collect();
     let found = scanner.find_markers(&project.root_path, &markers, 4)?;
@@ -104,13 +128,16 @@ pub fn run(
 
     let mut files = Vec::with_capacity(scanned.len());
     for f in scanned {
+        let fallback = format!("{}:{}", f.relative, f.size_bytes);
+        let abs = project.root_path.join(&f.relative);
         files.push(NewSourceFile {
             project_id: project.id,
             sub_project_id: None,
             path: f.relative.clone(),
             language: f.language,
             size_bytes: f.size_bytes,
-            content_hash: hash(&format!("{}:{}", f.relative, f.size_bytes)),
+            // 真·内容哈希：只有这样才能检出"改了但大小不变"的情况
+            content_hash: fingerprint(fs, &abs, &fallback),
         });
     }
 

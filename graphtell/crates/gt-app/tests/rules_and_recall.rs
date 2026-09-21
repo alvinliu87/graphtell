@@ -1523,6 +1523,9 @@ fn seed_many_tables(f: &Fixture, n: usize) {
 }
 
 /// 一次检查的耗时（毫秒）；规则命中全部表，确保真的对每个候选做了求值。
+///
+/// 先跑一次**预热**再计时：首次运行要编译 SQL 语句、填充页缓存，
+/// 把冷启动算进去会让测量值被固定开销主导，缩放比就失去意义了。
 fn time_check_on_tables(f: &Fixture) -> (u128, usize) {
     const YAML: &str = r#"
 rules:
@@ -1539,16 +1542,34 @@ rules:
 "#;
     let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
+    svc.check(f.project, None, false).expect("预热检查不应失败");
+
     let t = std::time::Instant::now();
     let report = svc.check(f.project, None, false).expect("检查不应失败");
     (t.elapsed().as_millis(), report.violations.len())
 }
 
-/// 规模 ×4 时耗时不得爆炸 —— 挡住 O(N²) 回归（线性 ×4，二次 ×16）。
+/// 规模 ×8 时耗时不得爆炸 —— 挡住 O(N²) 回归。
+///
+/// # 阈值是实测校准的，不是随手写的倍数
+///
+/// 用探针量过真实曲线（n = 1k/2k/4k/8k/16k）：
+///   优化前 `8 → 18 → 47 → 112 → 344 ms`，约 **N^1.35**（超线性）
+///   优化后 `…  → 16000 节点 135 ms`，×8 规模耗时 ×6.1 —— **线性**（理论 8.0）
+/// 根因是批量取边的 SQL 让 SQLite 选了 `idx_edges_project`（扫描工程全部边），
+/// 代价 O(N²)；补 `(project_id, to_id/from_id)` 复合索引后回到线性
+/// （见 `gt-adapter-sqlite/src/schema.rs` 的注释）。
+///
+/// 于是 ×8 规模下：现在约 ×6，纯二次约 ×64。
+/// 预算取 `t_small × 16 + 100ms`：对当前实现留约 3 倍余量（不 flaky），
+/// 同时能挡住 ≥N^1.4 的增长。
+///
+/// 也就是说：这条用例守的是**量级退化**，不是"比昨天快 10%"。
+/// 真要做精细性能回归，应该上 criterion 基准，而不是单测。
 #[test]
 fn check_does_not_degenerate_quadratically() {
-    const SMALL: usize = 400;
-    const BIG: usize = 1600;
+    const SMALL: usize = 2_000;
+    const BIG: usize = 16_000;
 
     let fs = fixture();
     seed_many_tables(&fs, SMALL);
@@ -1558,29 +1579,30 @@ fn check_does_not_degenerate_quadratically() {
     seed_many_tables(&fb, BIG);
     let (t_big, hit_big) = time_check_on_tables(&fb);
 
-    eprintln!("[perf] {} 节点 {} ms / {} 节点 {} ms", SMALL, t_small, BIG, t_big);
+    let budget = t_small * 16 + 100;
+    eprintln!(
+        "[perf] {SMALL} 节点 {t_small} ms / {BIG} 节点 {t_big} ms（预算 {budget} ms，倍数 {:.1}）",
+        t_big as f64 / t_small.max(1) as f64
+    );
 
     assert_eq!(hit_small, SMALL, "小规模应全部命中");
     assert_eq!(hit_big, BIG, "大规模应全部命中");
-
-    // 宽松倍数 10：线性是 4，留足机器抖动与固定开销的余量；
-    // 二次退化是 16，会被这条挡住。
-    let budget = t_small * 10 + 2_000;
     assert!(
         t_big <= budget,
-        "规模 ×4 耗时从 {t_small}ms 涨到 {t_big}ms（预算 {budget}ms）—— \
+        "规模 ×8 耗时从 {t_small}ms 涨到 {t_big}ms（预算 {budget}ms）—— \
          疑似退化成超线性；检查是否引入了逐节点查库或嵌套扫描"
     );
 }
 
-/// 绝对上限兜底：抓 N+1 这类"线性但常数极大"的退化。
+/// 绝对上限兜底：抓 N+1 这类"线性但常数极大"的退化
+/// —— 它仍是线性的，缩放比看不出来，只能靠绝对耗时。
 ///
-/// 阈值取得很松（真机实测远低于此），只用于挡住数量级的爆炸，
-/// 不用于做精细的性能比较 —— 那在不同机器上必然 flaky。
+/// 真机实测远低于此（约 26ms），取 2s 留约 75 倍余量：
+/// 既不可能在正常机器上 flaky，又能挡住"每个节点多一次 DB 往返"这种量级。
 #[test]
 fn check_completes_within_budget() {
-    const N: usize = 2000;
-    const BUDGET_MS: u128 = 10_000;
+    const N: usize = 2_000;
+    const BUDGET_MS: u128 = 2_000;
 
     let f = fixture();
     seed_many_tables(&f, N);
