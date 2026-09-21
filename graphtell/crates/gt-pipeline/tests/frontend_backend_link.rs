@@ -33,10 +33,14 @@ fn synth_root() -> PathBuf {
 #[test]
 fn frontend_calls_backend_merge_into_contract() {
     let root = synth_root();
-    if !root.is_dir() {
-        eprintln!("跳过：未找到合成样本 {}", root.display());
-        return;
-    }
+    // 合成样本随仓库分发（见 .gitignore 的 `!**/samples/frontend-backend-link/`），
+    // 缺失只可能是仓库被破坏 —— 必须**失败**而不是跳过。
+    // 曾经这里是 `return`，新机器 clone 下来三个用例全部静默不跑，CI 全绿但零覆盖。
+    assert!(
+        root.is_dir(),
+        "合成样本缺失：{}。它随仓库分发，不应被 .gitignore 排除",
+        root.display()
+    );
     let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
 
     // 两个子工程应被正确识别：后端 php / 前端 javascript。
@@ -176,10 +180,11 @@ fn frontend_calls_backend_merge_into_contract() {
 #[test]
 fn member_style_request_bridges() {
     let root = synth_root();
-    if !root.is_dir() {
-        eprintln!("跳过：未找到合成样本 {}", root.display());
-        return;
-    }
+    assert!(
+        root.is_dir(),
+        "合成样本缺失：{}。它随仓库分发，不应被 .gitignore 排除",
+        root.display()
+    );
     let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
 
     let all = b
@@ -443,10 +448,11 @@ fn member_style_request_bridges() {
 #[test]
 fn backend_cache_node_tagged_backend() {
     let root = synth_root();
-    if !root.is_dir() {
-        eprintln!("跳过：未找到合成样本 {}", root.display());
-        return;
-    }
+    assert!(
+        root.is_dir(),
+        "合成样本缺失：{}。它随仓库分发，不应被 .gitignore 排除",
+        root.display()
+    );
     let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
 
     let all = b

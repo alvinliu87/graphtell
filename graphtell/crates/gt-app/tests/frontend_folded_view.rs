@@ -54,6 +54,7 @@ fn built() -> Option<Arc<Built>> {
                 data_dir,
                 fkb_dir: Some(workspace_root().join("fkb")),
                 views_dir: Some(workspace_root().join("views")),
+                rules_dir: Some(workspace_root().join("rules")),
                 bind: "127.0.0.1".into(),
                 port: 0,
             };
@@ -66,6 +67,8 @@ fn built() -> Option<Arc<Built>> {
             let pipeline = PipelineService::new(
                 container.store.clone() as Arc<dyn gt_domain::port::Persistence>,
                 Arc::clone(&container.deps),
+                Arc::clone(&container.rules)
+                    as Arc<dyn gt_domain::port::RuleProvider>,
             );
 
             let project = projects

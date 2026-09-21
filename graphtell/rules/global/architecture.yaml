@@ -1,0 +1,21 @@
+# 架构类规则：**只依赖图拓扑**，因此跨语言通用。
+#
+# 这里能放进来的前提是判据里没有语言特有的边或标注 ——
+# 扇入（fan_in）是归一化的：PHP 和 Java 都产出语义入边，口径一致。
+# 一旦某条规则用到了某个 FKB 才产出的标注（如 pii / sink），
+# 它就必须搬到 rules/<language>/ 下并声明 languages。
+
+rules:
+  - id: hot-table
+    title: 热点表（高扇入）
+    description: >-
+      一张表被图上 50 处以上引用。它通常是性能瓶颈与改不动的耦合点：
+      改一个字段要评估几十处调用。
+    severity: info
+    category: architecture
+    applies_to:
+      kinds: [Table]
+    when:
+      - fan_in_gte: 50
+    message: "表 {name} 是热点表（语义入边 ≥ 50），建议评估缓存 / 读写分离 / 拆分"
+    remediation: "用表视角看它的扇入来源，判断是否需要收敛访问入口"

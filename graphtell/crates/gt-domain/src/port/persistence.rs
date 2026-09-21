@@ -160,7 +160,31 @@ pub trait GraphQuery: Send + Sync {
         HashMap<i64, Vec<i64>>,
         HashMap<i64, Vec<i64>>,
     )>;
+    /// 工程内出现过的全部**边种类**。
+    ///
+    /// 规则引擎用它校验判据是否成立（见 [`crate::model::RuleRequirements`]）：
+    /// 图上从来没有 `Triggers` 边时，`no_incoming: Triggers` 对每个节点都成立，
+    /// 会把全部事件节点报成"没人触发"。跑之前先确认这个边种类真的存在过。
+    fn edge_kinds(&self, project_id: ProjectId) -> Result<Vec<String>>;
+    /// 工程内出现过的全部标注 `(channel, kind)`。
+    ///
+    /// 与 [`Self::edge_kinds`] 同理，用于挡住"标注压根没产出"导致的恒真误报；
+    /// 带上 `channel` 是因为 `NoCapability` 只认 `Capability` 通道的标注。
+    fn annotation_kinds(&self, project_id: ProjectId) -> Result<Vec<(String, String)>>;
     fn annotations_of(&self, node: crate::model::NodeId) -> Result<Vec<Annotation>>;
+    /// 批量取工程全部标注（`node_id -> 标注列表`）。
+    ///
+    /// 规则引擎要对成千上万个节点判断 `HasAnnotation` / `NoAnnotation`，
+    /// 逐节点 `annotations_of` 是 N+1 往返（实测万级节点即秒级抖动）。
+    /// 一次预装载后，规则求值全程在内存里完成。
+    fn annotations_of_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<HashMap<i64, Vec<Annotation>>>;
+    /// 批量取工程内全部源文件路径（`file_id -> path`）。
+    ///
+    /// 违规与召回都要把节点还原成 `path:line`；同样是避免逐文件往返。
+    fn file_paths(&self, project_id: ProjectId) -> Result<HashMap<i64, String>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
     /// 按主键取边（供"边证据链"查询）。
     fn find_edge(&self, id: crate::model::EdgeId) -> Result<Option<Edge>>;
@@ -189,6 +213,18 @@ pub trait DiagnosticSink: Send + Sync {
         project_id: ProjectId,
         limit: u32,
     ) -> Result<Vec<Diagnostic>>;
+    /// 按 code 前缀列出诊断（如 `rule:` 取全部规则违规）。
+    fn list_diagnostics_by_code(
+        &self,
+        project_id: ProjectId,
+        code_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<Diagnostic>>;
+    /// 按 code 前缀清理诊断，返回删除条数。
+    ///
+    /// 规则可反复执行，若不清理上一轮的 `rule:*` 违规，诊断表会无限堆积、
+    /// 且用户看到的会是"历史结论"而非当前代码的结论。
+    fn clear_diagnostics(&self, project_id: ProjectId, code_prefix: &str) -> Result<u64>;
 }
 
 /// 组合端口：一次拿到全部持久化能力。

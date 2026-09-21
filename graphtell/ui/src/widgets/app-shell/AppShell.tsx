@@ -6,6 +6,8 @@ import {
   FundProjectionScreenOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  SafetyCertificateOutlined,
+  SearchOutlined,
   // 暂时注释：设置入口已隐藏
   // SettingOutlined,
   WarningOutlined,
@@ -44,6 +46,8 @@ export function AppShell() {
       ? [
           { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('图视图') },
           { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
+          { key: withProject('/recall'), icon: <SearchOutlined />, label: t('代码召回') },
+          { key: withProject('/check'), icon: <SafetyCertificateOutlined />, label: t('合规检查') },
           { key: withProject('/diagnostics'), icon: <WarningOutlined />, label: t('诊断') },
         ]
       : []),

@@ -11,7 +11,7 @@ use gt_app::{AppConfig, Container};
 use gt_application::{PipelineService, ProjectService, ViewService};
 use gt_domain::model::{NewProject, NodeKind};
 use gt_domain::port::{
-    EdgeDirection, GraphQuery, NodeFilter, NoopObserver, Persistence, SystemClock,
+    EdgeDirection, GraphQuery, NodeFilter, NoopObserver, Persistence, RuleProvider, SystemClock,
 };
 
 /// 在 `dir/samples` 下定位 CRMEB 样本：先试 `samples/CRMEB-master`，再遍历一层子目录
@@ -75,6 +75,7 @@ fn built() -> Option<Arc<Built>> {
                 data_dir,
                 fkb_dir: Some(workspace_root().join("fkb")),
                 views_dir: Some(workspace_root().join("views")),
+                rules_dir: Some(workspace_root().join("rules")),
                 bind: "127.0.0.1".into(),
                 port: 0,
             };
@@ -87,6 +88,7 @@ fn built() -> Option<Arc<Built>> {
             let pipeline = PipelineService::new(
                 container.store.clone() as Arc<dyn Persistence>,
                 Arc::clone(&container.deps),
+                Arc::clone(&container.rules) as Arc<dyn RuleProvider>,
             );
 
             let project = projects

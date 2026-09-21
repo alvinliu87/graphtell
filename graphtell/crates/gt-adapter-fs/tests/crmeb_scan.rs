@@ -44,10 +44,10 @@ fn sample_root() -> Option<PathBuf> {
 }
 
 #[test]
+#[ignore = "需要未入库的 CRMEB 样本（体积过大，不随仓库分发）"]
 fn finds_sub_project_markers() {
     let Some(root) = sample_root() else {
-        eprintln!("跳过：未找到 CRMEB 样本");
-        return;
+        panic!("CRMEB 样本缺失：该测试已标记 #[ignore]，用 --ignored 运行时需要设置 GRAPHTELL_SAMPLE_DIR 或放置 samples/**/CRMEB-master");
     };
     let scanner = WalkDirScanner::new(Vec::new());
     let markers = scanner
@@ -68,10 +68,10 @@ fn finds_sub_project_markers() {
 }
 
 #[test]
+#[ignore = "需要未入库的 CRMEB 样本（体积过大，不随仓库分发）"]
 fn scan_excludes_vendor_and_assets() {
     let Some(root) = sample_root() else {
-        eprintln!("跳过：未找到 CRMEB 样本");
-        return;
+        panic!("CRMEB 样本缺失：该测试已标记 #[ignore]，用 --ignored 运行时需要设置 GRAPHTELL_SAMPLE_DIR 或放置 samples/**/CRMEB-master");
     };
     let scanner = WalkDirScanner::new(Vec::new());
     let files = scanner

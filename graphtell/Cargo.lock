@@ -405,6 +405,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gt-adapter-rules"
+version = "0.1.0"
+dependencies = [
+ "gt-domain",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "gt-adapter-sqlite"
 version = "0.1.0"
 dependencies = [
@@ -438,6 +450,7 @@ dependencies = [
  "gt-adapter-fs",
  "gt-adapter-http",
  "gt-adapter-parser",
+ "gt-adapter-rules",
  "gt-adapter-sqlite",
  "gt-adapter-views",
  "gt-application",

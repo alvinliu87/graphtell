@@ -4,7 +4,7 @@
 #   crates/gt-domain            领域内核：实体 / 值对象 / 端口 trait（零外部 IO 依赖）
 #   crates/gt-application       用例编排：只依赖 domain 端口
 #   crates/gt-pipeline          阶段实现（P0..P7 领域服务），只依赖 domain 端口
-#   crates/em-adapter-*         适配器：文件扫描 / tree-sitter / FKB / SQLite / HTTP
+#   crates/gt-adapter-*         适配器：文件扫描 / tree-sitter / FKB / SQLite / HTTP / 规则
 #   crates/gt-app               组装根（Composition Root）+ CLI
 #   src-tauri                   Tauri 常驻界面（inbound 适配器）
 [workspace]
@@ -17,6 +17,7 @@ members = [
     "crates/gt-adapter-parser",
     "crates/gt-adapter-fkb",
     "crates/gt-adapter-views",
+    "crates/gt-adapter-rules",
     "crates/gt-adapter-sqlite",
     "crates/gt-adapter-http",
     "crates/gt-app",
@@ -69,6 +70,7 @@ gt-adapter-fs = { path = "crates/gt-adapter-fs" }
 gt-adapter-parser = { path = "crates/gt-adapter-parser" }
 gt-adapter-fkb = { path = "crates/gt-adapter-fkb" }
 gt-adapter-views = { path = "crates/gt-adapter-views" }
+gt-adapter-rules = { path = "crates/gt-adapter-rules" }
 gt-adapter-sqlite = { path = "crates/gt-adapter-sqlite" }
 gt-adapter-http = { path = "crates/gt-adapter-http" }
 

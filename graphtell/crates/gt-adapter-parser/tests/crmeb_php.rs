@@ -58,10 +58,10 @@ fn parse_php(rel: &str) -> Option<SyntaxFacts> {
 }
 
 #[test]
+#[ignore = "需要未入库的 CRMEB 样本（体积过大，不随仓库分发）"]
 fn parses_model_namespace_and_fqn() {
     let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
-        eprintln!("跳过：未找到 CRMEB 样本");
-        return;
+        panic!("CRMEB 样本缺失：该测试已标记 #[ignore]，用 --ignored 运行时需要设置 GRAPHTELL_SAMPLE_DIR 或放置 samples/**/CRMEB-master");
     };
     let class = facts
         .declarations
@@ -87,10 +87,10 @@ fn parses_model_namespace_and_fqn() {
 /// 表前缀由配置另给）；`$pk` 同理给出主键。P5 识别「模型 → 表」依赖这两个属性，
 /// 这里守住"属性值必须被提取"——只断言属性存在是不够的，空值等于没识别到表名。
 #[test]
+#[ignore = "需要未入库的 CRMEB 样本（体积过大，不随仓库分发）"]
 fn parses_model_name_and_pk_properties() {
     let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
-        eprintln!("跳过：未找到 CRMEB 样本");
-        return;
+        panic!("CRMEB 样本缺失：该测试已标记 #[ignore]，用 --ignored 运行时需要设置 GRAPHTELL_SAMPLE_DIR 或放置 samples/**/CRMEB-master");
     };
     let class = facts
         .declarations
@@ -126,10 +126,10 @@ fn parses_model_name_and_pk_properties() {
 }
 
 #[test]
+#[ignore = "需要未入库的 CRMEB 样本（体积过大，不随仓库分发）"]
 fn parses_event_php_config_entries() {
     let Some(facts) = parse_php("crmeb/app/event.php") else {
-        eprintln!("跳过：未找到 CRMEB 样本");
-        return;
+        panic!("CRMEB 样本缺失：该测试已标记 #[ignore]，用 --ignored 运行时需要设置 GRAPHTELL_SAMPLE_DIR 或放置 samples/**/CRMEB-master");
     };
     // 顶层 `return [...]` 里的 'listen' 应被提取成 config_entry。
     // CRMEB 的 listen 是**平铺**的：`'事件名' => [监听器类...]`（不是 `listen.order.pay_success`
@@ -155,10 +155,10 @@ fn parses_event_php_config_entries() {
 }
 
 #[test]
+#[ignore = "需要未入库的 CRMEB 样本（体积过大，不随仓库分发）"]
 fn parses_provider_php_bindings() {
     let Some(facts) = parse_php("crmeb/app/provider.php") else {
-        eprintln!("跳过：未找到 CRMEB 样本");
-        return;
+        panic!("CRMEB 样本缺失：该测试已标记 #[ignore]，用 --ignored 运行时需要设置 GRAPHTELL_SAMPLE_DIR 或放置 samples/**/CRMEB-master");
     };
     // 容器绑定是**顶层**的 `'think\Request' => Request::class`（不是包在 `bind` / `providers`
     // 子数组里）——ThinkPHP 的 provider.php 直接返回接口 → 实现的映射表。
@@ -183,10 +183,10 @@ fn parses_provider_php_bindings() {
 }
 
 #[test]
+#[ignore = "需要未入库的 CRMEB 样本（体积过大，不随仓库分发）"]
 fn parses_route_call_sites_inside_closures() {
     let Some(facts) = parse_php("crmeb/app/api/route/v1.php") else {
-        eprintln!("跳过：未找到 CRMEB 样本");
-        return;
+        panic!("CRMEB 样本缺失：该测试已标记 #[ignore]，用 --ignored 运行时需要设置 GRAPHTELL_SAMPLE_DIR 或放置 samples/**/CRMEB-master");
     };
     // 路由注册写在闭包内：`Route::post('apple_login', 'Login/appleLogin')`
     let route_calls = facts

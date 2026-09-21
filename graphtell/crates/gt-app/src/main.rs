@@ -62,6 +62,37 @@ enum Command {
         #[arg(long)]
         project: i64,
     },
+    /// 列出已装载的检查规则。
+    Rules,
+    /// 按规则检查工程是否违规。
+    Check {
+        #[arg(long)]
+        project: i64,
+        /// 只跑指定规则（可重复）。
+        #[arg(long)]
+        rule: Vec<String>,
+        /// 只预览不写库。
+        #[arg(long)]
+        dry_run: bool,
+        /// 以 JSON 输出完整报告。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 按提示词在图上召回相关代码。
+    Recall {
+        #[arg(long)]
+        project: i64,
+        /// 提示词（自然语言 + 标识符混写）。
+        #[arg(long)]
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 2)]
+        hops: u32,
+        /// 只输出可直接粘给 LLM 的 Markdown 上下文包。
+        #[arg(long)]
+        markdown: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -102,6 +133,8 @@ fn main() -> anyhow::Result<()> {
             let pipeline = gt_application::PipelineService::new(
                 container.store.clone(),
                 std::sync::Arc::clone(&container.deps),
+                std::sync::Arc::clone(&container.rules)
+                    as std::sync::Arc<dyn gt_domain::port::RuleProvider>,
             );
 
             match other {
@@ -140,10 +173,141 @@ fn main() -> anyhow::Result<()> {
                         println!("  [{}] {} {}", d.phase, d.code, d.message);
                     }
                 }
+                Command::Rules => {
+                    for r in container.rule_service().rules() {
+                        println!(
+                            "{:<32} {:<8} {:<14} {}",
+                            r.id,
+                            severity_name(r.severity),
+                            r.category,
+                            r.title
+                        );
+                    }
+                }
+                Command::Check { project, rule, dry_run, json } => {
+                    let only = if rule.is_empty() { None } else { Some(rule.clone()) };
+                    let report = container.rule_service().check(
+                        gt_domain::model::ProjectId(project),
+                        only.as_deref(),
+                        !dry_run,
+                    )?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                        return Ok(());
+                    }
+                    println!(
+                        "规则 {}/{}，命中 {} 条违规，耗时 {}ms{}",
+                        report.rules_run,
+                        report.rules_total,
+                        report.violations.len(),
+                        report.duration_ms,
+                        if dry_run { "（预览，未写库）" } else { "" }
+                    );
+                    for (sev, n) in &report.by_severity {
+                        println!("  {:<10} {}", sev, n);
+                    }
+                    if !report.rules_silent.is_empty() {
+                        println!();
+                        println!(
+                            "  ⚠ {} 条规则跑了但 0 命中 —— 在排除\"代码真干净\"之前，先怀疑规则瞎了：",
+                            report.rules_silent.len()
+                        );
+                        for s in &report.rules_silent {
+                            println!("      - {}", s);
+                        }
+                    }
+                    if !report.rules_unavailable.is_empty() {
+                        println!();
+                        println!(
+                            "  ⊘ {} 条规则判据不成立，已停用（跑下去只会产出恒真误报）：",
+                            report.rules_unavailable.len()
+                        );
+                        for s in &report.rules_unavailable {
+                            println!("      - {}", s);
+                        }
+                    }
+                    if !report.rules_not_applicable.is_empty() {
+                        println!();
+                        println!(
+                            "  · {} 条规则不适用于本工程技术栈（预期行为，非故障）：",
+                            report.rules_not_applicable.len()
+                        );
+                        for s in &report.rules_not_applicable {
+                            println!("      - {}", s);
+                        }
+                    }
+                    println!();
+                    for v in report.violations.iter().take(50) {
+                        let loc = v
+                            .location()
+                            .unwrap_or_else(|| v.node_id.get().to_string());
+                        println!("  [{}] {} · {}", severity_name(v.severity), v.rule_id, loc);
+                        println!("        {}", v.message);
+                    }
+                    if report.violations.len() > 50 {
+                        println!("  … 另有 {} 条未显示（用 --json 查看全部）", report.violations.len() - 50);
+                    }
+                }
+                Command::Recall { project, query, limit, hops, markdown } => {
+                    let result = container.recall_service().recall(
+                        gt_domain::model::ProjectId(project),
+                        &gt_application::RecallQuery {
+                            query: query.clone(),
+                            limit,
+                            hops,
+                            kinds: Vec::new(),
+                            with_snippets: true,
+                        },
+                    )?;
+                    if markdown {
+                        println!("{}", result.markdown);
+                        return Ok(());
+                    }
+                    println!(
+                        "查询词：{}   结构提示：{}   种子 {} 个   命中 {} 条",
+                        if result.terms.is_empty() {
+                            "（无）".to_string()
+                        } else {
+                            result.terms.join(", ")
+                        },
+                        if result.kind_hints.is_empty() {
+                            "（无）".to_string()
+                        } else {
+                            result.kind_hints.join(", ")
+                        },
+                        result.seeds.len(),
+                        result.hits.len()
+                    );
+                    for (i, h) in result.hits.iter().enumerate() {
+                        let loc = match (&h.file, h.line) {
+                            (Some(f), Some(l)) => format!("{f}:{l}"),
+                            (Some(f), None) => f.clone(),
+                            _ => "—".to_string(),
+                        };
+                        println!(
+                            "  {:>2}. {:<14} {:<40} {:>8.1}  跳数 {}  {}",
+                            i + 1,
+                            h.kind,
+                            h.name,
+                            h.score,
+                            h.hop,
+                            loc
+                        );
+                    }
+                }
                 Command::Serve { .. } => unreachable!(),
             }
             Ok(())
         }
+    }
+}
+
+fn severity_name(s: gt_domain::model::Severity) -> &'static str {
+    match s {
+        gt_domain::model::Severity::Critical => "critical",
+        gt_domain::model::Severity::Error => "error",
+        gt_domain::model::Severity::Warning => "warning",
+        gt_domain::model::Severity::Info => "info",
     }
 }
 

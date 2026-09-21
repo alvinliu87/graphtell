@@ -1,5 +1,12 @@
-# ===== 排除的大目录（samples / references / 第三方副本）=====
-samples/
+# ===== 排除的大目录（真实样本 / references / 第三方副本）=====
+#
+# 注意必须写 `**/samples/*` 而不是 `samples/`：
+# `samples/` 会把目录**本身**整个排除，git 规范规定父目录被排除时
+# 其子路径无法再被 `!` 包含 —— 合成 fixture 就这样被静默吞掉过，
+# 导致新机器上契约桥测试直接不跑、CI 全绿但零覆盖。
+# `**/samples/*` 只排除内容，父目录还在，下面的例外才能生效。
+**/samples/*
+!**/samples/frontend-backend-link/
 references/
 codebase-memory-mcp-main/
 codebase-memory-mcp-main.zip

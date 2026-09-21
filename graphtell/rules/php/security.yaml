@@ -1,0 +1,78 @@
+# PHP 专属的安全类规则。
+#
+# 刻意不做"污点可达性分析"（source 是否真的流到 sink）—— 那需要路径可达计算，
+# 代价与误报率都高。MVP 只报**已确认的事实**：图上识别到了 sink、写端点没识别到鉴权。
+# 措辞也因此一律写成"未识别到 / 需确认"，而不是"存在漏洞"。
+
+rules:
+  # ⚠️ 已停用（enabled: false）—— 不要轻易打开。
+  #
+  # 停用原因：这条规则的判据是**反向证据**（`no_capability` + `no_annotation`），
+  # 而反向证据只在"正面证据确实存在过"时才成立。实测 8 个工程的 `Capability`
+  # 通道**全为空**（连一个能力标注都没有），且工程 5 的 RouteGroup 节点数为 0，
+  # 于是 FKB 的 `crmeb-public-endpoint` 把 1603 个契约里的 1529 个标成了
+  # `auth.public`（`none_of_capability` 恒真 = 恒等真命题）。
+  # 结果：这条规则永远报 0 条 —— 不是"代码没问题"，而是"规则瞎了"。
+  # 一条**永远报干净**的安全规则比没有这条规则更危险（制造虚假安全感），
+  # 因此在能力推断真正跑通之前必须停用。恢复条件见 remediation。
+  #
+  # 注：现在即使打开也会被 `rules_unavailable` 自动拦下（Capability 通道为空），
+  # 停用是双保险 —— 不为"能跑"留任何侥幸空间。
+  - id: write-endpoint-without-auth
+    title: 写端点未识别到鉴权能力
+    description: >-
+      POST / PUT / PATCH / DELETE 这类会改变状态的端点，图上既没有
+      Authentication 能力标注，也没有被标为公开端点。
+      （当前停用：Capability 通道尚无产出，判据不成立。）
+    severity: warning
+    category: security
+    enabled: false
+    applies_to:
+      kinds: [HttpContract]
+      languages: [php]
+    when:
+      - any_of:
+          - identity_contains: "post "
+          - identity_contains: "put "
+          - identity_contains: "patch "
+          - identity_contains: "delete "
+      - no_capability: [Authentication]
+      - no_annotation: auth.public
+    message: "写端点 {name} 未识别到鉴权能力（可能确实没做，也可能是图没解析出中间件）"
+    remediation: "确认该端点是否应当鉴权；若中间件已在 FKB 支持范围内仍未被识别，补一条 capability 规则"
+
+  - id: raw-sql-sink
+    title: 存在原始 SQL 执行点
+    description: >-
+      图上被 Taint 通道标为 sink 的调用点（whereRaw / query / execute / Db::raw …）。
+      只报事实，不判断入参是否来自用户。
+    severity: warning
+    category: security
+    applies_to:
+      kinds: [CallSite]
+      limit: 5000
+      # Taint 标注目前只有 PHP 的 FKB 产出（Java 工程实测 0 条 Taint 标注），
+      # 不声明语言的话会在 Java 工程上被 `rules_unavailable` 拦下——
+      # 声明出来更能表达"这条规则属于 PHP 生态"这个先验事实。
+      languages: [php]
+    when:
+      - has_annotation: sink
+    message: "原始 SQL 执行点 {name}（位于 {file}:{line}）—— 需确认入参是否被参数化"
+    remediation: "改用参数化查询；若入参来自用户输入，这是 SQL 注入风险"
+
+  - id: pii-table-needs-review
+    title: 含 PII 的表需复核
+    description: >-
+      表被标注为含个人信息（手机号 / 身份证等）。MVP 只提示复核，
+      不判断加密与脱敏是否做到位。
+      （注：`pii` 标注由 fkb/php/crmeb.yaml 产出，其余工程暂无此标注，
+      届时会被 `rules_unavailable` 拦下而不是硬报 0 条。）
+    severity: warning
+    category: security
+    applies_to:
+      kinds: [Table]
+      languages: [php]
+    when:
+      - has_annotation: pii
+    message: "表 {name} 被识别为含 PII 字段，需确认加密 / 脱敏 / 访问审计是否到位"
+    remediation: "核对列的存储方式与导出路径；必要时加脱敏中间件"

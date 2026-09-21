@@ -5,7 +5,14 @@
 - 后端：Rust（**六边形架构** + SOLID），SQLite 持久化
 - 前端：React + TypeScript + Ant Design（**Feature Sliced Design**）
 - 桌面常驻：Tauri（后端在**进程内**启动 HTTP 服务，桌面端与 Web 端共用同一套 `/api` 契约）
-- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Uni-app 前端契约）
+- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Uni-app 前端契约）与 **Java**（Spring Boot）
+
+图建完之后还能回答两个问题：
+
+| 能力 | 输入 | 输出 |
+| --- | --- | --- |
+| **合规检查**（[见下](#合规检查在图上跑规则)） | `rules/*.yaml` 里声明的规则 | 违规清单（`path:line` 可跳转） |
+| **代码召回**（[见下](#代码召回按提示词查图)） | 一段提示词 | 该看哪些代码 + 可直接粘给 LLM 的上下文包 |
 
 ---
 
@@ -35,6 +42,16 @@ cd ui && npm run tauri dev
 ./target/debug/graphtell run    --project 1
 ./target/debug/graphtell stats  --project 1
 ./target/debug/graphtell delete --project 1
+
+# 合规检查
+./target/debug/graphtell rules
+./target/debug/graphtell check  --project 1                 # 全量检查并写库
+./target/debug/graphtell check  --project 1 --rule hot-table  # 只跑一条规则
+./target/debug/graphtell check  --project 1 --dry-run --json  # 预览，输出完整报告
+
+# 代码召回
+./target/debug/graphtell recall --project 1 --query "store_order 订单表"
+./target/debug/graphtell recall --project 1 --query "优惠券相关代码" --markdown  # 输出 LLM 上下文包
 ```
 
 ---
@@ -217,6 +234,62 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 （覆盖 CI / Web / 无 IDE / 远程容器）。定位用 **path + symbol + line 三元组**以防行号漂移。
 `SecretLocation` 只跳键名位置、绝不显示值 —— 分析工具不能成为泄露源。
 
+## 合规检查：在图上跑规则
+
+规则声明在 `rules/*.yaml`，由 `gt-adapter-rules` 装载，**内核不认识任何具体规则** —— 加一条规则只需加一份 YAML。
+
+```yaml
+- id: http-contract-without-handler
+  title: HTTP 契约没有处理者
+  severity: error
+  category: contract
+  applies_to: { kinds: [HttpContract] }
+  when:
+    - no_outgoing: HandledBy     # 契约 --HandledBy--> handler，是**出边**
+  message: "契约 {name} 没有解析到 handler，请求它会在运行时失败"
+```
+
+**违规直接落成 `Diagnostic`**（code 前缀 `rule:`）。诊断已经是一等产物（有 `severity` / `location` / `payload`），所以规则引擎**不需要新的存储、也不引新的数据结构**。可用谓词：
+
+| 类别 | 谓词 |
+| --- | --- |
+| 拓扑 | `no_incoming` / `has_incoming` / `no_outgoing` / `has_outgoing` / `fan_in_gte` / `fan_in_lte` / `fan_out_gte` |
+| 标注 | `has_annotation` / `no_annotation` / `no_capability`（`Authentication` / `RateLimiting`） |
+| 属性 | `property_is` / `property_missing` |
+| 名称 | `name_contains` / `name_starts_with` / `fqn_contains` / `identity_contains` / `text_contains` |
+| 组合 | `all_of` / `any_of` / `not` |
+
+内置 11 条规则，分四类：`contract`（契约桥：幽灵调用 / 死端点 / 缺 handler）、`security`（写端点缺鉴权 / 裸 SQL / PII 表）、`architecture`（热点表）、`deadcode`（无人使用的表 / 从未触发的事件 / 从未投递的队列）。
+
+两条刻意的设计约定：
+
+1. **不做污点可达性分析** —— MVP 只报"已确认的事实"（图上识别到了 sink、写端点没识别到鉴权），文案一律写成"未识别到 / 需确认"，而不是"存在漏洞"。路径可达计算的代价与误报率都太高，做一半不如不做。
+2. **部分规则同时也是图的验收装置** —— 比如"幽灵调用"跑出一大片，通常不是代码真错了，而是**前端 baseURL 前缀没参与 identity 归一**（当前已知限制）。因此这类规则的文案会写明两种可能，级别也相应下调。规则不只能挑代码的错，也在暴露图自身的缺口。
+
+重跑语义：跑全量清空整个 `rule:` 前缀；只跑某几条则**只替换这几条** —— 单独重跑 A 不会抹掉 B/C 的结论。
+
+## 代码召回：按提示词查图
+
+全文检索回答"哪个文件出现了这个字符串"；召回回答"这个主题涉及哪些代码"。后者必须靠图。
+
+```
+命中种子后，沿 Calls / HandledBy / WritesDb / ReadsDb … 链边向外扩展，
+因此召回结果里会出现**名字中没有关键词、但确实相关**的代码：
+
+  提示词 "store_order 订单表"
+    1. Table  store_order                    ← 直接命中（hop 0）
+    6. Method createOrder                    ← 图扩展带出（hop 1，它写了这张表）
+    7. Method userDaoSelect                  ← 图扩展带出（hop 1，它读了这张表）
+```
+
+每条结果都标明 `direct`（直接命中）与 `hop`（距种子的跳数）—— 用户必须能看出一条结果为什么在这里，否则召回和全文检索毫无区别。
+
+打分 = 关键词匹配（精确 > 前缀 > 子串）× 多词加成 × 种类权重（语义节点优先）+ 扇入加成，扩展按 `0.5^hop` 衰减。
+
+中文支持的方式是**结构提示词**："表"/"接口"/"事件"/"配置"/"队列"/"定时任务"会被识别成 `Table`/`HttpContract`/`Event`/… 的种类加成，并把这一结论显式回显给用户。**已知限制**：纯中文且不含标识符时无法召回（没有向量、不调 LLM）——这是刻意的取舍，先把"图能召回"这件事做可验证。
+
+输出 `markdown` 字段是一份可直接粘给 LLM 的上下文包（种子 + 相关代码 + `path:line` + 源码片段 + 图上关系）。
+
 ## 在 CRMEB 样本上的实测
 
 `samples/CRMEB-master`（3 个子工程、2178 个源文件）全量建图约 **6 秒**：
@@ -248,10 +321,12 @@ crates/
 ├── gt-adapter-fkb       FKB YAML 装载
 ├── gt-adapter-sqlite    SQLite 持久化
 ├── gt-adapter-http      axum REST API
+├── gt-adapter-rules     规则 YAML 装载（CheckRule）
 └── gt-app               组装根 + CLI
 src-tauri/               Tauri 桌面端（独立 workspace）
 ui/                      React + TS + antd（FSD）
 fkb/                     预置框架知识
+rules/                   检查规则（合规检查）
 views/                   视角声明（两级筛选器的一级选项）
 ```
 

@@ -808,6 +808,37 @@ impl GraphQuery for SqliteStore {
         Ok((out, inc, sem_inc))
     }
 
+    fn edge_kinds(&self, project_id: ProjectId) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT kind FROM edges WHERE project_id = ?1 ORDER BY kind")
+            .map_err(DomainError::infra)?;
+        let rows = stmt
+            .query_map(params![project_id.get()], |r| r.get::<_, String>(0))
+            .map_err(DomainError::infra)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
+
+    fn annotation_kinds(&self, project_id: ProjectId) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT a.channel, a.kind FROM node_annotations a
+                 JOIN nodes n ON n.id = a.node_id
+                 WHERE n.project_id = ?1
+                 ORDER BY a.channel, a.kind",
+            )
+            .map_err(DomainError::infra)?;
+        let rows = stmt
+            .query_map(params![project_id.get()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(DomainError::infra)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
+
     fn annotations_of(&self, node: NodeId) -> Result<Vec<Annotation>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -833,6 +864,62 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(DomainError::infra)
+    }
+
+    fn annotations_of_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<std::collections::HashMap<i64, Vec<Annotation>>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.id, a.node_id, a.channel, a.kind, a.subkind, a.confidence, a.evidence, a.phase
+                 FROM node_annotations a
+                 JOIN nodes n ON n.id = a.node_id
+                 WHERE n.project_id = ?1
+                 ORDER BY a.id",
+            )
+            .map_err(DomainError::infra)?;
+        let rows = stmt
+            .query_map(params![project_id.get()], |row| {
+                Ok(Annotation {
+                    id: row.get(0)?,
+                    node_id: NodeId(row.get(1)?),
+                    channel: AnnotationChannel(row.get(2)?),
+                    kind: row.get(3)?,
+                    subkind: row.get(4)?,
+                    confidence: row.get::<_, f64>(5)? as f32,
+                    evidence: parse_json(&row.get::<_, String>(6).unwrap_or_else(|_| "null".into()))
+                        .unwrap_or(Value::Null),
+                    phase: Phase(row.get(7)?),
+                })
+            })
+            .map_err(DomainError::infra)?;
+        let mut map: std::collections::HashMap<i64, Vec<Annotation>> =
+            std::collections::HashMap::new();
+        for ann in rows {
+            let ann = ann.map_err(DomainError::infra)?;
+            map.entry(ann.node_id.get()).or_default().push(ann);
+        }
+        Ok(map)
+    }
+
+    fn file_paths(&self, project_id: ProjectId) -> Result<std::collections::HashMap<i64, String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, path FROM source_files WHERE project_id = ?1")
+            .map_err(DomainError::infra)?;
+        let rows = stmt
+            .query_map(params![project_id.get()], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(DomainError::infra)?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let (id, path) = r.map_err(DomainError::infra)?;
+            map.insert(id, path);
+        }
+        Ok(map)
     }
 
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats> {
@@ -981,6 +1068,59 @@ impl DiagnosticSink for SqliteStore {
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(DomainError::infra)
     }
+
+    fn list_diagnostics_by_code(
+        &self,
+        project_id: ProjectId,
+        code_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<Diagnostic>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT project_id, phase, code, severity, message, location, payload
+                 FROM diagnostics
+                 WHERE project_id = ?1 AND code LIKE ?2 ESCAPE '\\'
+                 ORDER BY id DESC LIMIT ?3",
+            )
+            .map_err(DomainError::infra)?;
+        let pattern = format!("{}%", like_escape(code_prefix));
+        let rows = stmt
+            .query_map(params![project_id.get(), pattern, limit as i64], |r| {
+                Ok(Diagnostic {
+                    project_id: ProjectId(r.get(0)?),
+                    phase: Phase(r.get(1)?),
+                    code: r.get(2)?,
+                    severity: parse_json::<Severity>(
+                        &r.get::<_, String>(3).unwrap_or_else(|_| "\"info\"".into()),
+                    )
+                    .unwrap_or(Severity::Info),
+                    message: r.get(4)?,
+                    location: r.get(5)?,
+                    payload: parse_json(&r.get::<_, String>(6).unwrap_or_else(|_| "null".into()))
+                        .unwrap_or(Value::Null),
+                })
+            })
+            .map_err(DomainError::infra)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
+
+    fn clear_diagnostics(&self, project_id: ProjectId, code_prefix: &str) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "DELETE FROM diagnostics WHERE project_id = ?1 AND code LIKE ?2 ESCAPE '\\'",
+                params![project_id.get(), format!("{}%", like_escape(code_prefix))],
+            )
+            .map_err(DomainError::infra)?;
+        Ok(n as u64)
+    }
+}
+
+/// 转义 `LIKE` 通配符，避免规则 id 里的 `%` / `_` 被当成通配符。
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 // ---------------------------------------------------------------- 辅助

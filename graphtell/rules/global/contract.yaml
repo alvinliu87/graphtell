@@ -1,0 +1,53 @@
+# 契约桥规则：前后端是否真的对上了。
+#
+# 这三条是**最有价值也最容易验证**的规则：它们同时是产品价值（幽灵调用 / 死端点
+# 是真 bug）和图的验收装置（跑出 0 条，说明很可能是边没建出来）。
+
+rules:
+  - id: http-contract-without-handler
+    title: HTTP 契约没有处理者
+    description: >-
+      图上存在 HTTP 契约节点，但它没有 HandledBy 出边指向任何 handler 方法。
+      真实含义是"路由表里有，但控制器方法没解析到" —— 点击即 500。
+      （方向说明：契约桥的边是 `契约 --HandledBy--> handler 方法`，是**出边**。）
+    severity: error
+    category: contract
+    applies_to:
+      kinds: [HttpContract]
+    when:
+      - no_outgoing: HandledBy
+    message: "契约 {name} 没有解析到 handler（无 HandledBy 出边），请求它会在运行时失败"
+    remediation: "确认路由注册与控制器方法是否真实存在；若存在，说明图的解析有缺口（FKB 的 handler 规则需要补充）"
+
+  - id: frontend-calls-missing-backend
+    title: 前端调用了后端不存在的接口（幽灵调用）
+    description: >-
+      契约节点被前端 FKB 标记为 side=frontend，却没有 HandledBy 出边指向后端 handler。
+      **已知限制**：当前前端 axios/request 的 baseURL 前缀（如 `/adminapi/v1`）
+      尚未参与 identity 归一，因此大量命中其实来自"前缀没拼上"而非真幽灵调用 ——
+      故定为 warning 而非 error，文案里两种可能都写明。
+    severity: warning
+    category: contract
+    applies_to:
+      kinds: [HttpContract]
+    when:
+      - property_is: { name: "side", value: "frontend" }
+      - no_outgoing: HandledBy
+    message: "前端调用了 {name}，图上没有对应后端路由（可能是真幽灵调用，也可能是前端 baseURL 前缀未参与归一）"
+    remediation: "人工抽样核对；若确为前缀问题，需在前端 FKB 里补 baseURL 解析规则"
+
+  - id: backend-endpoint-never-called
+    title: 后端端点没有任何调用方（死端点）
+    description: >-
+      后端有 handler，但图上没有任何前端 CallsHttp 指向它。注意：被外部系统 /
+      App / 第三方调用的端点也会命中，因此只作提示级别。
+    severity: info
+    category: contract
+    applies_to:
+      kinds: [HttpContract]
+    when:
+      - has_outgoing: HandledBy
+      - no_incoming: CallsHttp
+      - not: { property_is: { name: "side", value: "frontend" } }
+    message: "端点 {name} 有 handler 但没有任何前端调用方，可能是死端点"
+    remediation: "确认是否仍有调用方（App / 第三方 / 定时任务）；确无则下线"

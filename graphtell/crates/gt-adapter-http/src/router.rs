@@ -13,11 +13,13 @@ use serde::Deserialize;
 use gt_application::{
     pipeline_runner::{PipelineDeps, PipelineService},
     project_service::ProgressObserver,
-    GraphQueryService, ProjectService, ViewService,
+    GraphQueryService, ProjectService, RecallQuery, RecallService, RuleService, ViewService,
 };
 use gt_domain::error::DomainError;
-use gt_domain::model::{NodeId, ProjectId, SubProjectId};
-use gt_domain::port::{EdgeDirection, ParserRegistry, Persistence, ViewRegistryProvider};
+use gt_domain::model::{CheckRule, NodeId, ProjectId, SubProjectId, Violation};
+use gt_domain::port::{
+    EdgeDirection, ParserRegistry, Persistence, RuleProvider, ViewRegistryProvider,
+};
 
 use crate::dto::{
     ApiResponse, CreateProjectRequest, DirEntryDto, HealthDto, ProjectDto, RunAcceptedDto,
@@ -30,6 +32,8 @@ pub struct AppState {
     pub pipeline: Arc<PipelineService>,
     pub graphs: Arc<GraphQueryService>,
     pub views: Arc<ViewService>,
+    pub checks: Arc<RuleService>,
+    pub recall: Arc<RecallService>,
     pub parsers: Arc<dyn ParserRegistry>,
     pub frameworks: usize,
     /// 最近一次建图进度（工程 id → 观察者）。
@@ -44,19 +48,33 @@ pub fn state(
     deps: Arc<PipelineDeps>,
     frameworks: usize,
     view_registry: Arc<dyn ViewRegistryProvider>,
+    rules: Arc<dyn RuleProvider>,
 ) -> Shared {
     let projects = Arc::new(ProjectService::new(
         Arc::clone(&store),
         Arc::new(gt_domain::port::SystemClock),
     ));
-    let pipeline = Arc::new(PipelineService::new(Arc::clone(&store), Arc::clone(&deps)));
+    // 建图完成后会自动跑合规检查，因此流水线也要拿到规则集。
+    let pipeline = Arc::new(PipelineService::new(
+        Arc::clone(&store),
+        Arc::clone(&deps),
+        Arc::clone(&rules),
+    ));
     let graphs = Arc::new(GraphQueryService::new(Arc::clone(&store)));
     let views = Arc::new(ViewService::new(Arc::clone(&store), view_registry));
+    let checks = Arc::new(RuleService::new(Arc::clone(&store), rules));
+    let recall = Arc::new(RecallService::new(
+        Arc::clone(&store),
+        Arc::clone(&deps.fs),
+        Arc::clone(&deps.scanner),
+    ));
     Arc::new(AppState {
         projects,
         pipeline,
         graphs,
         views,
+        checks,
+        recall,
         parsers: Arc::clone(&deps.parsers),
         frameworks,
         progress: Mutex::new(std::collections::HashMap::new()),
@@ -93,6 +111,12 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/projects/{id}/aggregate/{perspective}", get(aggregate_view))
         .route("/api/nodes/{id}/locations", get(node_locations))
         .route("/api/edges/{id}/evidence", get(edge_evidence))
+        // 合规检查（规则 → 违规）
+        .route("/api/rules", get(list_rules))
+        .route("/api/projects/{id}/check", post(run_check))
+        .route("/api/projects/{id}/violations", get(list_violations))
+        // 代码召回（提示词 → 相关代码）
+        .route("/api/projects/{id}/recall", get(recall_get).post(recall_post))
         .with_state(state)
 }
 
@@ -466,6 +490,98 @@ async fn edge_evidence(
 ) -> Json<ApiResponse<Option<gt_domain::model::EdgeEvidence>>> {
     match state.views.edge_evidence(id) {
         Ok(v) => Json(ApiResponse::success(v)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+// ---------------------------------------------------------------- 合规检查
+
+/// 列出全部已装载规则（供 UI 展示"能检查什么"）。
+async fn list_rules(State(state): State<Shared>) -> Json<ApiResponse<Vec<CheckRule>>> {
+    Json(ApiResponse::success(state.checks.rules()))
+}
+
+/// 检查请求体；`rule_ids` 为空表示跑全部启用规则。
+#[derive(Debug, Deserialize, Default)]
+pub struct CheckRequest {
+    pub rule_ids: Option<Vec<String>>,
+}
+
+async fn run_check(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+    body: Option<Json<CheckRequest>>,
+) -> Json<ApiResponse<gt_application::CheckReport>> {
+    let only = body.and_then(|Json(b)| b.rule_ids);
+    match state.checks.check(ProjectId(id), only.as_deref(), true) {
+        Ok(r) => Json(ApiResponse::success(r)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ViolationQuery {
+    pub limit: Option<u32>,
+}
+
+/// 读取上一次检查落库的违规（不重跑规则）。
+async fn list_violations(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+    Query(q): Query<ViolationQuery>,
+) -> Json<ApiResponse<Vec<Violation>>> {
+    match state.checks.violations(ProjectId(id), q.limit.unwrap_or(500)) {
+        Ok(v) => Json(ApiResponse::success(v)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+// ---------------------------------------------------------------- 代码召回
+
+/// GET 形式的召回参数（供 UI 简单调用）。
+#[derive(Debug, Deserialize)]
+pub struct RecallGetQuery {
+    pub q: String,
+    pub limit: Option<usize>,
+    pub hops: Option<u32>,
+    /// 逗号分隔的节点种类，如 `Table,HttpContract`。
+    pub kinds: Option<String>,
+    pub snippets: Option<bool>,
+}
+
+impl RecallGetQuery {
+    fn into_query(self) -> RecallQuery {
+        RecallQuery {
+            query: self.q,
+            limit: self.limit.unwrap_or(20),
+            hops: self.hops.unwrap_or(2),
+            kinds: self
+                .kinds
+                .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+                .unwrap_or_default(),
+            with_snippets: self.snippets.unwrap_or(true),
+        }
+    }
+}
+
+async fn recall_get(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+    Query(q): Query<RecallGetQuery>,
+) -> Json<ApiResponse<gt_application::RecallResult>> {
+    match state.recall.recall(ProjectId(id), &q.into_query()) {
+        Ok(r) => Json(ApiResponse::success(r)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+async fn recall_post(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+    Json(req): Json<RecallQuery>,
+) -> Json<ApiResponse<gt_application::RecallResult>> {
+    match state.recall.recall(ProjectId(id), &req) {
+        Ok(r) => Json(ApiResponse::success(r)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }
 }

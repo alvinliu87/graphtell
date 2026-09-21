@@ -1,0 +1,20 @@
+# 跨语言通用的死代码规则。
+#
+# 只保留"纯拓扑"判据的部分；依赖语言特有边（Triggers / Emits / PublishesTo）
+# 的那几条在 rules/php/deadcode.yaml —— 那些边目前只有 PHP 的 FKB 会产出，
+# 放到 Java 工程上跑会把每个事件节点都报成"没人触发"。
+
+rules:
+  - id: dead-table
+    title: 没有任何读写引用的表
+    description: >-
+      表被建出来（SQL 建表 / Model 的 $table）但图上没有任何读写边。
+      两种可能：真未使用，或图缺边。
+    severity: info
+    category: deadcode
+    applies_to:
+      kinds: [Table]
+    when:
+      - fan_in_lte: 0
+    message: "表 {name} 在图上没有任何读写引用（可能真未使用，也可能是图缺边）"
+    remediation: "抽样人工确认；若确实有代码在读写它，说明 FKB 的读写动词规则需要补充"

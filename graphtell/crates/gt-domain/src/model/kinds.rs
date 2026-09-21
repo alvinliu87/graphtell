@@ -276,6 +276,7 @@ declare_open_kind! { Phase => "流水线阶段";
     ANNOTATE_POST = "AnnotatePost"  => "P6 在汇聚结果上打标 / 注册别名",
     RESOLVE       = "Resolve"       => "P7 动态解析（漏斗 + 不动点）",
     PROPAGATE     = "Propagate"     => "P8 语义沿调用链向上传播（通用，不绑定框架）",
+    CHECK         = "Check"         => "合规检查（图建完后只读跑规则，产出违规，诊断 code 前缀 rule:）",
 }
 
 declare_open_kind! { AnnotationChannel => "标注通道（不同通道互不干扰，可共存）";

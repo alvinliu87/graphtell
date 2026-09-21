@@ -6,12 +6,14 @@ use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
 use gt_adapter_http::build_router;
 use gt_adapter_parser::DefaultParserRegistry;
+use gt_adapter_rules::YamlRuleSet;
 use gt_adapter_sqlite::SqliteStore;
 use gt_adapter_views::YamlViewRegistry;
 use gt_application::pipeline_runner::PipelineDeps;
 use gt_domain::error::Result;
 use gt_domain::port::{
-    FileScanner, FileSystem, KnowledgeProvider, ParserRegistry, Persistence, ViewRegistryProvider,
+    FileScanner, FileSystem, KnowledgeProvider, ParserRegistry, Persistence, RuleProvider,
+    ViewRegistryProvider,
 };
 use tracing::info;
 
@@ -23,6 +25,7 @@ pub struct Container {
     pub store: Arc<SqliteStore>,
     pub deps: Arc<PipelineDeps>,
     pub views: Arc<YamlViewRegistry>,
+    pub rules: Arc<YamlRuleSet>,
 }
 
 impl Container {
@@ -37,6 +40,9 @@ impl Container {
         let views = Arc::new(YamlViewRegistry::load_dir(&config.resolve_views_dir())?);
         info!("已装载 {} 个视角声明", views.registry().perspectives.len());
 
+        let rules = Arc::new(YamlRuleSet::load_dir(&config.resolve_rules_dir())?);
+        info!("已装载 {} 条检查规则", rules.len());
+
         let deps = Arc::new(PipelineDeps {
             fs: Arc::new(StdFileSystem::new()),
             scanner: Arc::new(WalkDirScanner::new(Vec::new())),
@@ -44,7 +50,7 @@ impl Container {
             kb: Arc::new(kb),
         });
 
-        Ok(Self { config, store, deps, views })
+        Ok(Self { config, store, deps, views, rules })
     }
 
     /// 支持的编程语言。
@@ -74,8 +80,26 @@ impl Container {
             Arc::clone(&self.deps),
             self.framework_count(),
             Arc::clone(&self.views) as Arc<dyn ViewRegistryProvider>,
+            Arc::clone(&self.rules) as Arc<dyn RuleProvider>,
         );
         build_router(state)
+    }
+
+    /// 合规检查服务（供 Tauri / CLI 直接使用）。
+    pub fn rule_service(&self) -> gt_application::RuleService {
+        gt_application::RuleService::new(
+            self.store.clone() as Arc<dyn Persistence>,
+            Arc::clone(&self.rules) as Arc<dyn RuleProvider>,
+        )
+    }
+
+    /// 代码召回服务（供 Tauri / CLI 直接使用）。
+    pub fn recall_service(&self) -> gt_application::RecallService {
+        gt_application::RecallService::new(
+            self.store.clone() as Arc<dyn Persistence>,
+            Arc::clone(&self.deps.fs),
+            Arc::clone(&self.deps.scanner),
+        )
     }
 
     /// 各端口的只读引用（供 Tauri / CLI 直接使用）。

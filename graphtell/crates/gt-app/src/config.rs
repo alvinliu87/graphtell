@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub fkb_dir: Option<PathBuf>,
     /// 视角声明目录；为空时使用内置默认位置。
     pub views_dir: Option<PathBuf>,
+    /// 合规规则目录；为空时使用内置默认位置。
+    pub rules_dir: Option<PathBuf>,
     /// HTTP 监听地址。
     pub bind: String,
     pub port: u16,
@@ -22,6 +24,7 @@ impl Default for AppConfig {
             data_dir: PathBuf::from("./data"),
             fkb_dir: None,
             views_dir: None,
+            rules_dir: None,
             bind: "127.0.0.1".into(),
             port: 5177,
         }
@@ -83,5 +86,35 @@ impl AppConfig {
             }
         }
         PathBuf::from("fkb")
+    }
+
+    /// 解析规则目录：显式指定 → 环境变量 → 内置目录 → 当前目录下的 `rules`。
+    pub fn resolve_rules_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.rules_dir {
+            return dir.clone();
+        }
+        if let Ok(dir) = std::env::var("GRAPHTELL_RULES_DIR") {
+            return PathBuf::from(dir);
+        }
+        if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
+            let candidate = PathBuf::from(manifest).join("rules");
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                for up in [
+                    parent.join("rules"),
+                    parent.join("../rules"),
+                    parent.join("../../rules"),
+                ] {
+                    if up.is_dir() {
+                        return up;
+                    }
+                }
+            }
+        }
+        PathBuf::from("rules")
     }
 }

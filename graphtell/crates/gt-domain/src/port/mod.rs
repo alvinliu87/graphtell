@@ -8,9 +8,11 @@ pub mod knowledge;
 pub mod observability;
 pub mod parsing;
 pub mod persistence;
+pub mod rules;
 
 pub use filesystem::{FileScanner, FileSystem, ScanRequest, ScannedFile};
 pub use knowledge::KnowledgeProvider;
+pub use rules::RuleProvider;
 pub use observability::{Clock, NoopObserver, PipelineObserver, SystemClock};
 pub use parsing::{LanguageParser, ParserRegistry};
 pub use views::ViewRegistryProvider;

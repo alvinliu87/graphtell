@@ -1,0 +1,16 @@
+# PHP 专属的架构类规则（判据依赖 PHP FKB 产出的标注）。
+
+rules:
+  - id: pii-table-hot
+    title: 含 PII 的热点表
+    description: "既是热点表又含个人信息 —— 影响面与安全敏感度同时拉满，优先治理。"
+    severity: warning
+    category: architecture
+    applies_to:
+      kinds: [Table]
+      languages: [php]
+    when:
+      - has_annotation: pii
+      - fan_in_gte: 20
+    message: "表 {name} 含 PII 且被 20 处以上引用，属于高影响面敏感资产"
+    remediation: "优先收敛访问入口并统一脱敏出口"

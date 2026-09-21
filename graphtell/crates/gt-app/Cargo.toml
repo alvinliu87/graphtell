@@ -13,6 +13,7 @@ gt-adapter-fs = { workspace = true }
 gt-adapter-parser = { workspace = true }
 gt-adapter-fkb = { workspace = true }
 gt-adapter-views = { workspace = true }
+gt-adapter-rules = { workspace = true }
 gt-adapter-sqlite = { workspace = true }
 gt-adapter-http = { workspace = true }
 anyhow = { workspace = true }

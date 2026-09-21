@@ -5,6 +5,7 @@ pub mod graph;
 pub mod ids;
 pub mod kinds;
 pub mod project;
+pub mod rules;
 pub mod syntax;
 pub mod view;
 
@@ -34,6 +35,11 @@ pub use view::{
     AggregateView, Candidate, Cluster, EdgeEvidence, EdgeView, GroupBy, HiddenInfo, LayoutMode,
     MatrixView, NodeLocationEntry, NodeLocations, NodeView, ObjectView, OrphanAccess,
     PerspectiveSpec, SourceLocation, UnresolvedInfo, ViaNode, ViewMode, ViewRegistry,
+};
+
+pub use rules::{
+    check_phase, CheckPredicate, CheckReport, CheckRule, RuleRequirements, RuleScope, Violation,
+    RULE_CODE_PREFIX,
 };
 
 pub use syntax::{
