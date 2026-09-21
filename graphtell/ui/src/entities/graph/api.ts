@@ -1,5 +1,5 @@
 import { http } from '@/shared/api/http';
-import type { Annotation, Diagnostic, Edge, GraphStats, Node, SymbolEntry } from './model';
+import type { Annotation, Diagnostic, DiagnosticSummary, Edge, GraphStats, Node, SymbolEntry } from './model';
 
 export interface NodeQuery {
   kind?: string;
@@ -31,4 +31,7 @@ export const graphApi = {
   symbols: (projectId: number, table: string) =>
     http.get<SymbolEntry[]>(`/api/symbols/${table}${qs({ project_id: projectId })}`),
   diagnostics: (projectId: number) => http.get<Diagnostic[]>(`/api/projects/${projectId}/diagnostics`),
+  /** 非规则诊断的严重度汇总（菜单角标用，排除 `rule:` 前缀）。 */
+  diagnosticsSummary: (projectId: number) =>
+    http.get<DiagnosticSummary>(`/api/projects/${projectId}/diagnostics/summary`),
 };

@@ -14,7 +14,12 @@ import {
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useHealth } from '@/entities/pipeline';
+import { checkApi, type CheckSummary } from '@/entities/check';
+import { graphApi, type DiagnosticSummary } from '@/entities/graph';
+import { useAsync } from '@/shared/lib/useAsync';
 import { useLocale, type Lang } from '@/shared/lib/i18n';
+
+type SeverityCounts = { critical: number; error: number; warning: number; info: number };
 
 const { Sider, Content, Header } = Layout;
 
@@ -25,6 +30,48 @@ export function AppShell() {
   const { projectId } = useParams();
   const { health } = useHealth();
   const { lang, setLang, t } = useLocale();
+
+  // 菜单角标：自动检查落库的违规汇总（建图后自动跑，这里只读不重跑）。
+  const summaryRes = useAsync<CheckSummary | null>(
+    () => (projectId ? checkApi.summary(Number(projectId)) : Promise.resolve(null)),
+    [projectId],
+  );
+  const summary = summaryRes.data ?? null;
+
+  // 诊断角标：非规则诊断（根缺失、断链、identity 冲突等）按严重度汇总。
+  const diagRes = useAsync<DiagnosticSummary | null>(
+    () => (projectId ? graphApi.diagnosticsSummary(Number(projectId)) : Promise.resolve(null)),
+    [projectId],
+  );
+  const diagSummary = diagRes.data ?? null;
+
+  // 把严重度汇总渲染成菜单右对齐角标：error/critical 红、warning 橙，全清则无。
+  const severityBadge = (s: SeverityCounts | null) => {
+    if (!s || s.critical + s.error + s.warning === 0) return null;
+    const alarm = s.critical + s.error;
+    return (
+      <Badge
+        count={s.critical + s.error + s.warning}
+        color={alarm > 0 ? '#ff4d4f' : '#fa8c16'}
+        overflowCount={99}
+        style={{ boxShadow: 'none' }}
+      />
+    );
+  };
+
+  // 合规检查 / 诊断的菜单标签：带严重度角标，让菜单本身成为质量仪表盘。
+  const checkLabel = (
+    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+      <span>{t('合规检查')}</span>
+      {severityBadge(summary)}
+    </span>
+  );
+  const diagnosticsLabel = (
+    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+      <span>{t('诊断')}</span>
+      {severityBadge(diagSummary)}
+    </span>
+  );
 
   // 左侧栏是否收起：图视图路由默认收起（进入即最大化，让出横向空间给图），
   // 其余路由默认展开。仅在 pathname 变化时按路由重置；页面内的手动折叠/展开在路由内持续有效。
@@ -44,11 +91,33 @@ export function AppShell() {
     { key: '/', icon: <FundProjectionScreenOutlined />, label: t('工程总览') },
     ...(projectId
       ? [
-          { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('图视图') },
-          { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
-          { key: withProject('/recall'), icon: <SearchOutlined />, label: t('代码召回') },
-          { key: withProject('/check'), icon: <SafetyCertificateOutlined />, label: t('合规检查') },
-          { key: withProject('/diagnostics'), icon: <WarningOutlined />, label: t('诊断') },
+          {
+            type: 'group' as const,
+            key: 'group-explore',
+            label: t('探索'),
+            children: [
+              { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('图视图') },
+              { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
+              { key: withProject('/recall'), icon: <SearchOutlined />, label: t('代码召回') },
+            ],
+          },
+          {
+            type: 'group' as const,
+            key: 'group-quality',
+            label: t('质量门禁'),
+            children: [
+              {
+                key: withProject('/check'),
+                icon: <SafetyCertificateOutlined />,
+                label: checkLabel,
+              },
+              {
+                key: withProject('/diagnostics'),
+                icon: <WarningOutlined />,
+                label: diagnosticsLabel,
+              },
+            ],
+          },
         ]
       : []),
     // 暂时注释：设置页路由已停用，导航入口一并隐藏（以后再考虑加回）。
@@ -155,7 +224,7 @@ export function AppShell() {
           </Space>
         </Header>
         <Content style={{ padding: 24, background: '#f7f8fa' }}>
-          <Outlet />
+          <Outlet context={{ refreshCheckSummary: summaryRes.silentReload }} />
         </Content>
       </Layout>
     </Layout>

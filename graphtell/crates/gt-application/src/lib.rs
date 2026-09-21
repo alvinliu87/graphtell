@@ -11,10 +11,10 @@ pub mod project_service;
 pub mod rule_service;
 pub mod recall_service;
 
-pub use graph_query::GraphQueryService;
+pub use graph_query::{DiagnosticSummary, GraphQueryService};
 pub use view_service::ViewService;
 pub use pipeline_runner::PipelineService;
 pub use project_service::ProjectService;
-pub use rule_service::RuleService;
+pub use rule_service::{CheckSummary, RuleService};
 pub use recall_service::{RecallHit, RecallQuery, RecallResult, RecallService, SeedInfo};
 pub use gt_domain::model::{CheckReport, CheckRule, Violation};

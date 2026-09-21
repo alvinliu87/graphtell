@@ -28,7 +28,8 @@ export function shortName(fqn: string | null | undefined): string {
 }
 
 export function truncate(text: string, max = 60): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+  const s = text == null ? '' : String(text);
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
 /**
@@ -46,11 +47,12 @@ function charUnits(s: string): number {
 }
 
 export function truncateMiddle(text: string, max = 40): string {
-  if (charUnits(text) <= max) return text;
+  const s = text == null ? '' : String(text);
+  if (charUnits(s) <= max) return s;
   const half = (max - 1) / 2; // 头尾各半，中间留 1 位给省略号
   let head = '';
   let hu = 0;
-  for (const ch of text) {
+  for (const ch of s) {
     const cu = (ch.codePointAt(0) ?? 0) > WIDE_CP ? 1.8 : 1;
     if (hu + cu > half) break;
     head += ch;
@@ -58,8 +60,8 @@ export function truncateMiddle(text: string, max = 40): string {
   }
   let tail = '';
   let tu = 0;
-  for (let i = text.length - 1; i >= 0; i -= 1) {
-    const ch = text[i];
+  for (let i = s.length - 1; i >= 0; i -= 1) {
+    const ch = s[i];
     const cu = (ch.codePointAt(0) ?? 0) > WIDE_CP ? 1.8 : 1;
     if (tu + cu > half) break;
     tail = ch + tail;

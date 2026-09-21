@@ -81,7 +81,7 @@ export function ExplorerPage() {
             {
               title: t('完全限定名 / Identity'),
               width: 340,
-              render: (_, n) => truncate(n.fqn ?? n.identity ?? '-', 64),
+              render: (_, n) => truncate(n.fqn ?? n.identity?.value ?? '-', 64),
             },
             { title: t('语言'), dataIndex: 'language', width: 90 },
             { title: t('阶段'), dataIndex: 'phase', width: 120 },

@@ -98,6 +98,7 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/projects/{id}/stats", get(stats))
         .route("/api/projects/{id}/nodes", get(query_nodes))
         .route("/api/projects/{id}/diagnostics", get(diagnostics))
+        .route("/api/projects/{id}/diagnostics/summary", get(diagnostics_summary))
         // 文件系统浏览（供目录选择器使用，WSL 下可访问 /mnt/c 等挂载路径）
         .route("/api/fs/browse", get(browse_fs))
         .route("/api/nodes/{id}", get(get_node))
@@ -115,6 +116,7 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/rules", get(list_rules))
         .route("/api/projects/{id}/check", post(run_check))
         .route("/api/projects/{id}/violations", get(list_violations))
+        .route("/api/projects/{id}/check/summary", get(check_summary))
         // 代码召回（提示词 → 相关代码）
         .route("/api/projects/{id}/recall", get(recall_get).post(recall_post))
         .with_state(state)
@@ -403,6 +405,17 @@ async fn diagnostics(
     }
 }
 
+/// 非规则诊断的严重度汇总（菜单角标用，排除 `rule:` 前缀避免与合规检查重复计数）。
+async fn diagnostics_summary(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+) -> Json<ApiResponse<gt_application::DiagnosticSummary>> {
+    match state.graphs.diagnostics_summary(ProjectId(id)) {
+        Ok(s) => Json(ApiResponse::success(s)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
 
 async fn list_perspectives(
     State(state): State<Shared>,
@@ -532,6 +545,17 @@ async fn list_violations(
 ) -> Json<ApiResponse<Vec<Violation>>> {
     match state.checks.violations(ProjectId(id), q.limit.unwrap_or(500)) {
         Ok(v) => Json(ApiResponse::success(v)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+/// 合规检查严重度汇总（菜单角标用，不重跑规则）。
+async fn check_summary(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+) -> Json<ApiResponse<gt_application::CheckSummary>> {
+    match state.checks.summary(ProjectId(id)) {
+        Ok(s) => Json(ApiResponse::success(s)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }
 }

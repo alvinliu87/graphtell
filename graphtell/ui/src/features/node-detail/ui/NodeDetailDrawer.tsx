@@ -31,7 +31,7 @@ export function NodeDetailDrawer({
             </Descriptions.Item>
             <Descriptions.Item label={t('名称')}>{node.name}</Descriptions.Item>
             <Descriptions.Item label={t('完全限定名')}>{node.fqn ?? '-'}</Descriptions.Item>
-            <Descriptions.Item label="Identity">{node.identity ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="Identity">{node.identity?.value ?? '-'}</Descriptions.Item>
             <Descriptions.Item label={t('位置')}>
               {node.file_id ? `file#${node.file_id}` : '-'}
               {node.start_line ? ` : ${node.start_line}-${node.end_line}` : ''}

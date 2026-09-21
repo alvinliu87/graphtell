@@ -90,3 +90,11 @@ export const SEVERITY_COLOR: Record<Severity, string> = {
   warning: 'orange',
   info: 'blue',
 };
+
+/** 合规检查的严重度汇总（菜单角标用，来自后端按 code 前缀的聚合计数）。 */
+export interface CheckSummary {
+  critical: number;
+  error: number;
+  warning: number;
+  info: number;
+}

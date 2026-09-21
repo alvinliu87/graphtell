@@ -225,6 +225,23 @@ pub trait DiagnosticSink: Send + Sync {
     /// 规则可反复执行，若不清理上一轮的 `rule:*` 违规，诊断表会无限堆积、
     /// 且用户看到的会是"历史结论"而非当前代码的结论。
     fn clear_diagnostics(&self, project_id: ProjectId, code_prefix: &str) -> Result<u64>;
+    /// 按 code 前缀 + 严重度聚合计数，返回 `(severity_snake_case, count)` 列表。
+    ///
+    /// 用于菜单角标这类轻量汇总：不拉全量违规，只取分组计数。
+    fn count_diagnostics_by_code(
+        &self,
+        project_id: ProjectId,
+        code_prefix: &str,
+    ) -> Result<Vec<(String, u64)>>;
+    /// 按 code **排除**某前缀 + 严重度聚合计数，返回 `(severity_snake_case, count)` 列表。
+    ///
+    /// 诊断页展示的是"非规则"的诊断（根缺失、断链、identity 冲突等），
+    /// 规则违规已单独归到合规检查，这里排除 `rule:` 前缀避免重复计数。
+    fn count_diagnostics_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+    ) -> Result<Vec<(String, u64)>>;
 }
 
 /// 组合端口：一次拿到全部持久化能力。

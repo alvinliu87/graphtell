@@ -1,5 +1,10 @@
 /** 图实体：节点、边、标注、符号表、诊断。 */
 
+export interface IdentityKey {
+  kind: string;
+  value: string;
+}
+
 export interface Node {
   id: number;
   project_id: number;
@@ -7,7 +12,7 @@ export interface Node {
   kind: string;
   name: string;
   fqn: string | null;
-  identity: string | null;
+  identity: IdentityKey | null;
   file_id: number | null;
   start_line: number;
   end_line: number;
@@ -58,6 +63,14 @@ export interface Diagnostic {
   message: string;
   location: string | null;
   payload: Record<string, unknown> | null;
+}
+
+/** 非规则诊断的严重度汇总（菜单角标用，排除 `rule:` 前缀以免与合规检查重复）。 */
+export interface DiagnosticSummary {
+  critical: number;
+  error: number;
+  warning: number;
+  info: number;
 }
 
 export interface GraphStats {

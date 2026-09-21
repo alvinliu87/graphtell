@@ -21,7 +21,7 @@ import {
   PlayCircleOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
-import { useParams } from 'react-router-dom';
+import { useOutletContext, useParams } from 'react-router-dom';
 import { useAsync } from '@/shared/lib/useAsync';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { StatCard } from '@/shared/ui/StatCard';
@@ -55,6 +55,8 @@ export function CheckPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
   const { t } = useLocale();
+  // 手动跑完后刷新侧边栏「合规检查」角标（建图自动跑时由菜单自身读取，无需此处）。
+  const { refreshCheckSummary } = useOutletContext<{ refreshCheckSummary: () => void }>();
 
   const [report, setReport] = useState<CheckReport | null>(null);
   const [running, setRunning] = useState(false);
@@ -74,6 +76,7 @@ export function CheckPage() {
     try {
       const r = await checkApi.check(id, []);
       setReport(r);
+      refreshCheckSummary();
       // 有静默规则时不能报"没问题" —— 那会把"规则瞎了"说成"代码干净"。
       if (r.violations.length === 0 && r.rules_silent.length === 0) {
         message.success(t('检查完成，没有命中任何违规'));
@@ -91,6 +94,7 @@ export function CheckPage() {
     try {
       const r = await checkApi.check(id, [ruleId]);
       setReport(r);
+      refreshCheckSummary();
       setRuleFilter(ruleId);
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e));

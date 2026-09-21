@@ -4,14 +4,25 @@ use std::sync::Arc;
 
 use gt_domain::error::Result;
 use gt_domain::model::{
-    Annotation, Diagnostic, Edge, Node, NodeId, NodeKind, ProjectId, SymbolEntry,
+    Annotation, Diagnostic, Edge, Node, NodeId, NodeKind, ProjectId, RULE_CODE_PREFIX,
+    SymbolEntry,
 };
 use gt_domain::port::{EdgeDirection, GraphStats, NodeFilter, Persistence};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// 图查询服务。
 pub struct GraphQueryService {
     store: Arc<dyn Persistence>,
+}
+
+/// 非规则诊断的严重度汇总（菜单角标用）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DiagnosticSummary {
+    pub critical: u64,
+    pub error: u64,
+    pub warning: u64,
+    pub info: u64,
 }
 
 impl GraphQueryService {
@@ -58,6 +69,25 @@ impl GraphQueryService {
 
     pub fn diagnostics(&self, project_id: ProjectId, limit: u32) -> Result<Vec<Diagnostic>> {
         self.store.list_diagnostics(project_id, limit)
+    }
+
+    /// 非规则诊断的严重度汇总（菜单角标用）。
+    ///
+    /// 诊断页展示的是"非规则"诊断（根缺失、断链、identity 冲突等），
+    /// 规则违规已单独归到合规检查，这里排除 `rule:` 前缀避免重复计数。
+    pub fn diagnostics_summary(&self, project_id: ProjectId) -> Result<DiagnosticSummary> {
+        let counts = self.store.count_diagnostics_excluding(project_id, RULE_CODE_PREFIX)?;
+        let mut s = DiagnosticSummary::default();
+        for (sev, n) in counts {
+            match sev.as_str() {
+                "critical" => s.critical = n,
+                "error" => s.error = n,
+                "warning" => s.warning = n,
+                "info" => s.info = n,
+                _ => {}
+            }
+        }
+        Ok(s)
     }
 
     /// 子图（BFS，限制规模，供图形化展示）。

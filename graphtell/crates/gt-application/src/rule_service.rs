@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
 use gt_domain::error::Result;
 use gt_domain::model::{
     Annotation, CheckPredicate, CheckReport, CheckRule, Diagnostic, Edge, Node, NodeId, NodeKind,
@@ -234,6 +236,35 @@ impl RuleService {
             .list_diagnostics_by_code(project_id, RULE_CODE_PREFIX, limit)?;
         Ok(diags.iter().filter_map(Violation::from_diagnostic).collect())
     }
+
+    /// 已落库违规的轻量汇总（按严重度计数），供菜单角标这类场景使用。
+    ///
+    /// 不重跑规则、不拉全量违规，只取分组计数；建图后会自动跑检查并落库，
+    /// 因此这里看到的是上一次自动（或手动）检查的结论。
+    pub fn summary(&self, project_id: ProjectId) -> Result<CheckSummary> {
+        let counts = self.store.count_diagnostics_by_code(project_id, RULE_CODE_PREFIX)?;
+        let mut s = CheckSummary::default();
+        for (sev, n) in counts {
+            match sev.as_str() {
+                "critical" => s.critical = n,
+                "error" => s.error = n,
+                "warning" => s.warning = n,
+                "info" => s.info = n,
+                _ => {}
+            }
+        }
+        Ok(s)
+    }
+}
+
+/// 合规检查的严重度汇总（菜单角标用）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckSummary {
+    pub critical: u64,
+    pub error: u64,
+    pub warning: u64,
+    pub info: u64,
 }
 
 /// 工程的技术栈环境 + 图上真实存在的图事实种类。

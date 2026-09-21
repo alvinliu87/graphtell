@@ -1161,6 +1161,72 @@ impl DiagnosticSink for SqliteStore {
             .map_err(DomainError::infra)?;
         Ok(n as u64)
     }
+
+    fn count_diagnostics_by_code(
+        &self,
+        project_id: ProjectId,
+        code_prefix: &str,
+    ) -> Result<Vec<(String, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT severity, COUNT(*) FROM diagnostics
+                 WHERE project_id = ?1 AND code LIKE ?2 ESCAPE '\\'
+                 GROUP BY severity",
+            )
+            .map_err(DomainError::infra)?;
+        let pattern = format!("{}%", like_escape(code_prefix));
+        let rows = stmt
+            .query_map(params![project_id.get(), pattern], |r| {
+                let raw_sev: String = r.get(0)?;
+                let sev = parse_json::<Severity>(&raw_sev).unwrap_or(Severity::Info);
+                let label = match sev {
+                    Severity::Critical => "critical",
+                    Severity::Error => "error",
+                    Severity::Warning => "warning",
+                    Severity::Info => "info",
+                }
+                .to_string();
+                let n: i64 = r.get(1)?;
+                Ok((label, n as u64))
+            })
+            .map_err(DomainError::infra)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
+
+    fn count_diagnostics_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+    ) -> Result<Vec<(String, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT severity, COUNT(*) FROM diagnostics
+                 WHERE project_id = ?1 AND code NOT LIKE ?2 ESCAPE '\\'
+                 GROUP BY severity",
+            )
+            .map_err(DomainError::infra)?;
+        let pattern = format!("{}%", like_escape(exclude_prefix));
+        let rows = stmt
+            .query_map(params![project_id.get(), pattern], |r| {
+                let raw_sev: String = r.get(0)?;
+                let sev = parse_json::<Severity>(&raw_sev).unwrap_or(Severity::Info);
+                let label = match sev {
+                    Severity::Critical => "critical",
+                    Severity::Error => "error",
+                    Severity::Warning => "warning",
+                    Severity::Info => "info",
+                }
+                .to_string();
+                let n: i64 = r.get(1)?;
+                Ok((label, n as u64))
+            })
+            .map_err(DomainError::infra)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
 }
 
 /// 转义 `LIKE` 通配符，避免规则 id 里的 `%` / `_` 被当成通配符。
