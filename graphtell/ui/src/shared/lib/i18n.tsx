@@ -485,7 +485,26 @@ const dict: Record<Lang, Record<string, string>> = {
     '（空）': '(empty)',
     '已覆盖': 'Overridden',
     '留空 = 不过滤': 'Empty = no filter',
-    '这条规则没有可调参数': 'This rule has no tunable parameters',
+    '参数设置': 'Parameters',
+    '已改': 'changed',
+    '参数恢复默认': 'Reset parameters',
+    '已恢复规则默认参数，点「保存并重跑」生效':
+      'Parameters reset to rule defaults; click "Save & re-run" to apply',
+    '改动只进草稿：关掉这个窗口后，点右上角「保存并重跑」才会写库并重跑检查':
+      'Changes stay in the draft: after closing, click "Save & re-run" at the top-right to persist and re-run',
+    '完成': 'Done',
+    '搜索规则 id / 名称 / 说明': 'Search rule id / name / description',
+    '全部': 'All',
+    '已启用': 'Enabled',
+    '已停用': 'Disabled',
+    '本工程改过': 'Overridden here',
+    '清除筛选': 'Clear filters',
+    '没有匹配的规则': 'No matching rules',
+    '只对当前筛选出的规则生效': 'Applies only to the currently filtered rules',
+    '不适用': 'N/A here',
+    '需要': 'requires',
+    '本工程不是该规则的适用环境，检查时会被自动跳过':
+      'This project is not in the rule’s target environment; the check will skip it automatically',
     '工程级覆盖只记「与全局默认不同的那部分」：恢复默认 = 删除覆盖行，规则随 YAML 演进':
       'Project overrides only store what differs from the global default: "reset to default" deletes the override row, so rules keep evolving with YAML.',
   },
