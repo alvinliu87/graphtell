@@ -38,7 +38,9 @@ pub use view::{
 };
 
 pub use rules::{
-    check_phase, CheckPredicate, CheckReport, CheckRule, RuleRequirements, RuleScope, Violation,
+    check_phase, CheckPredicate, CheckReport, CheckRule, NumOrParam, ParamKind, ParamValues,
+    ProjectRuleConfig, resolve_num, resolve_param_values, resolve_str, resolve_str_opt,
+    RuleConfigPatch, RuleParam, RuleRequirements, RuleScope, StrOrParam, Violation,
     RULE_CODE_PREFIX,
 };
 

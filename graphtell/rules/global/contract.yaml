@@ -12,8 +12,17 @@ rules:
       （方向说明：契约桥的边是 `契约 --HandledBy--> handler 方法`，是**出边**。）
     severity: error
     category: contract
+    params:
+      - key: name_filter
+        label: 只看匹配的契约
+        description: >-
+          名称子串过滤（大小写不敏感）。留空 = 全部契约；
+          只想盯某批路由时填前缀（如 /adminapi），可大幅缩小范围。
+        kind: string
+        default: ""
     applies_to:
       kinds: [HttpContract]
+      name_contains: "$name_filter"
     when:
       - no_outgoing: HandledBy
     message: "契约 {name} 没有解析到 handler（无 HandledBy 出边），请求它会在运行时失败"
@@ -28,8 +37,15 @@ rules:
       故定为 warning 而非 error，文案里两种可能都写明。
     severity: warning
     category: contract
+    params:
+      - key: name_filter
+        label: 只看匹配的契约
+        description: 名称子串过滤（大小写不敏感），留空 = 全部前端契约。
+        kind: string
+        default: ""
     applies_to:
       kinds: [HttpContract]
+      name_contains: "$name_filter"
     when:
       - property_is: { name: "side", value: "frontend" }
       - no_outgoing: HandledBy
@@ -43,8 +59,15 @@ rules:
       App / 第三方调用的端点也会命中，因此只作提示级别。
     severity: info
     category: contract
+    params:
+      - key: name_filter
+        label: 只看匹配的端点
+        description: 名称子串过滤（大小写不敏感），留空 = 全部后端端点。
+        kind: string
+        default: ""
     applies_to:
       kinds: [HttpContract]
+      name_contains: "$name_filter"
     when:
       - has_outgoing: HandledBy
       - no_incoming: CallsHttp

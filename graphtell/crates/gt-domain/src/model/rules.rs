@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::model::graph::{Diagnostic, Severity};
 use crate::model::ids::{NodeId, ProjectId};
@@ -29,6 +29,197 @@ pub const RULE_CODE_PREFIX: &str = "rule:";
 /// 违规诊断所处的阶段。
 pub fn check_phase() -> Phase {
     Phase(Phase::CHECK.to_string())
+}
+
+/// 参数引用的前缀：`$key` 表示"取 `params` 里 key 的值"。
+///
+/// 必须显式带前缀，不能靠"是不是纯数字"来猜 —— 字符串型参数尤其如此：
+/// `"50"` 既可能是字面量也可能是引用，猜错就是静默的错误结果。
+pub const PARAM_PREFIX: char = '$';
+
+/// 规则参数可取的值：字面量，或引用 `params` 里声明的参数（写 `$key`）。
+///
+/// 序列化刻意**不是** untagged：untagged 对字符串无从区分字面量与引用
+/// （`Str` 变体会吃掉 `"$x"`），而数值侧会把 `$` 一起留在键名里，
+/// 于是 `params.get("$x")` 永远取不到值、静默退化成 0。
+/// 手写 impl 把 `$` 前缀在**解析时**就吃掉，`Param` 里只留干净的键。
+#[derive(Debug, Clone)]
+pub enum NumOrParam {
+    Num(u64),
+    Param(String),
+}
+
+impl Default for NumOrParam {
+    fn default() -> Self {
+        NumOrParam::Num(0)
+    }
+}
+
+impl Serialize for NumOrParam {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            NumOrParam::Num(n) => n.serialize(s),
+            NumOrParam::Param(k) => format!("{PARAM_PREFIX}{k}").serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NumOrParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        Ok(match v {
+            Value::Number(n) => NumOrParam::Num(n.as_u64().unwrap_or(0)),
+            Value::String(s) => match s.strip_prefix(PARAM_PREFIX) {
+                Some(k) => NumOrParam::Param(k.to_string()),
+                None => NumOrParam::Num(s.parse().unwrap_or(0)),
+            },
+            _ => NumOrParam::Num(0),
+        })
+    }
+}
+
+/// 同上，针对字符串型参数（名称前缀、忽略名单等）。
+#[derive(Debug, Clone)]
+pub enum StrOrParam {
+    Str(String),
+    Param(String),
+}
+
+impl Default for StrOrParam {
+    fn default() -> Self {
+        StrOrParam::Str(String::new())
+    }
+}
+
+impl Serialize for StrOrParam {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            StrOrParam::Str(v) => v.serialize(s),
+            StrOrParam::Param(k) => format!("{PARAM_PREFIX}{k}").serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StrOrParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        Ok(match v {
+            Value::String(s) => match s.strip_prefix(PARAM_PREFIX) {
+                Some(k) => StrOrParam::Param(k.to_string()),
+                None => StrOrParam::Str(s),
+            },
+            other => StrOrParam::Str(other.to_string()),
+        })
+    }
+}
+
+/// 一条规则可暴露给用户调节的参数种类。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamKind {
+    Number,
+    String,
+    Enum,
+    Bool,
+}
+
+/// 一条规则暴露给用户的可调参数（在 YAML `params:` 下声明）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleParam {
+    /// 参数键（在 `when` / `applies_to` 里用 `$key` 引用）。
+    pub key: String,
+    /// 展示名（UI 用）。
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub kind: ParamKind,
+    /// 默认值（与 `kind` 对应的 JSON 标量）。
+    pub default: Value,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+    /// `kind = enum` 时的候选值。
+    #[serde(default)]
+    pub choices: Vec<String>,
+}
+
+/// 工程级对单条规则的配置覆盖。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRuleConfig {
+    pub project_id: ProjectId,
+    pub rule_id: String,
+    /// `None` = 继承 YAML 里的全局 `enabled`；`Some(b)` = 工程级覆盖。
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// 参数覆盖（`param_key -> value`），未覆盖的取规则 `params` 的默认。
+    #[serde(default)]
+    pub options: Value,
+}
+
+/// 配置写入请求（部分字段可省略 = 不改动该项）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleConfigPatch {
+    pub rule_id: String,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub options: Option<Value>,
+}
+
+/// 解析后的参数表：`param_key -> value`（全局默认 + 工程覆盖已合并）。
+pub type ParamValues = std::collections::HashMap<String, Value>;
+
+/// 把规则的 `params` 默认值与工程覆盖合并成求值可用的参数表。
+pub fn resolve_param_values(rule: &CheckRule, overrides: &Value) -> ParamValues {
+    let mut m = ParamValues::new();
+    for p in &rule.params {
+        m.insert(p.key.clone(), p.default.clone());
+    }
+    if let Some(obj) = overrides.as_object() {
+        for (k, v) in obj {
+            m.insert(k.clone(), v.clone());
+        }
+    }
+    m
+}
+
+/// 取出一个数值参数（字面量直接返回，引用则从参数表取；缺失回退 0）。
+pub fn resolve_num(v: &NumOrParam, params: &ParamValues) -> u64 {
+    match v {
+        NumOrParam::Num(n) => *n,
+        NumOrParam::Param(key) => match params.get(key) {
+            Some(Value::Number(n)) => n.as_u64().unwrap_or(0),
+            Some(Value::String(s)) => s.parse().unwrap_or(0),
+            _ => 0,
+        },
+    }
+}
+
+/// 取出一个字符串参数（字面量直接返回，引用则从参数表取；缺失回退空串）。
+pub fn resolve_str(v: &StrOrParam, params: &ParamValues) -> String {
+    match v {
+        StrOrParam::Str(s) => s.clone(),
+        StrOrParam::Param(key) => match params.get(key) {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        },
+    }
+}
+
+/// `Option<StrOrParam>` 的便捷解析：空串视为 `None`。
+pub fn resolve_str_opt(v: &Option<StrOrParam>, params: &ParamValues) -> Option<String> {
+    match v {
+        None => None,
+        Some(s) => {
+            let r = resolve_str(s, params);
+            if r.is_empty() {
+                None
+            } else {
+                Some(r)
+            }
+        }
+    }
 }
 
 /// 一条检查规则。
@@ -63,6 +254,9 @@ pub struct CheckRule {
     /// 规则作用的节点范围（决定候选集，也决定求值成本）。
     #[serde(default)]
     pub applies_to: RuleScope,
+    /// 暴露给用户调节的参数（在 `when` / `applies_to` 里用 `$key` 引用）。
+    #[serde(default)]
+    pub params: Vec<RuleParam>,
     /// 命中条件：**全部满足**才判违规（`when` 为空表示范围内全部命中）。
     #[serde(default)]
     pub when: Vec<CheckPredicate>,
@@ -98,6 +292,36 @@ impl CheckRule {
         out
     }
 
+    /// 判据里以 `$key` 形式引用的参数键（去重、保持出现顺序）。
+    pub fn referenced_params(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |k: &str| {
+            if !out.iter().any(|x| x == k) {
+                out.push(k.to_string());
+            }
+        };
+        if let Some(StrOrParam::Param(k)) = &self.applies_to.name_contains {
+            push(k);
+        }
+        if let NumOrParam::Param(k) = &self.applies_to.limit {
+            push(k);
+        }
+        collect_params(&self.when, &mut out);
+        out
+    }
+
+    /// 被引用、却没在 `params` 里声明的参数键。
+    ///
+    /// 这类引用在求值时会静默退化成 `0` / `""` —— 用在 `limit` 上就是
+    /// **候选集直接变空**（规则静默 0 命中），正是本项目最想避免的失效方式。
+    /// 因此它必须在装载阶段就被发现，而不是等用户把"0 违规"读成"代码干净"。
+    pub fn undeclared_params(&self) -> Vec<String> {
+        self.referenced_params()
+            .into_iter()
+            .filter(|k| !self.params.iter().any(|p| &p.key == k))
+            .collect()
+    }
+
     /// 环境是否匹配：语言的**任一**子工程命中即可，框架同理。
     ///
     /// 一个工程往往是多语言的（CRMEB = php + javascript，litemall = java + javascript），
@@ -130,13 +354,53 @@ impl CheckRule {
         file: Option<&str>,
         line: Option<u32>,
     ) -> String {
-        self.message
+        self.render_with(
+            node_name, node_kind, fqn, identity, file, line, None,
+        )
+    }
+
+    // 占位符有 6 个（节点名 / 种类 / FQN / identity / 文件 / 行号），加参数表就是 8 个；
+    // 硬拆成结构体只会让调用点更难读，这里选择保留平铺签名。
+    #[allow(clippy::too_many_arguments)]
+    /// 渲染违规文案（带参数表）。
+    ///
+    /// 除 `{name}` / `{file}` 等节点占位符外，还支持 `{param:key}` ——
+    /// 把工程调过的阈值写进文案。否则用户把"热点表阈值"调成 200 之后，
+    /// 报告里仍然写着"≥ 50"，读起来像规则没生效。
+    pub fn render_with(
+        &self,
+        node_name: &str,
+        node_kind: &str,
+        fqn: Option<&str>,
+        identity: Option<&str>,
+        file: Option<&str>,
+        line: Option<u32>,
+        params: Option<&ParamValues>,
+    ) -> String {
+        let mut out = self
+            .message
             .replace("{name}", node_name)
             .replace("{kind}", node_kind)
             .replace("{fqn}", fqn.unwrap_or(""))
             .replace("{identity}", identity.unwrap_or(""))
             .replace("{file}", file.unwrap_or(""))
-            .replace("{line}", &line.map(|l| l.to_string()).unwrap_or_default())
+            .replace("{line}", &line.map(|l| l.to_string()).unwrap_or_default());
+        if let Some(p) = params {
+            for param in &self.params {
+                let ph = format!("{{param:{}}}", param.key);
+                if out.contains(&ph) {
+                    let v = match p.get(&param.key) {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(Value::Number(n)) => n.to_string(),
+                        Some(Value::Bool(b)) => b.to_string(),
+                        Some(other) => other.to_string(),
+                        None => param.default.to_string(),
+                    };
+                    out = out.replace(&ph, &v);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -146,12 +410,12 @@ pub struct RuleScope {
     /// 节点种类白名单；为空表示不限制种类（慎用，成本高）。
     #[serde(default)]
     pub kinds: Vec<String>,
-    /// 名字预筛选（大小写不敏感子串），可显著降低候选集规模。
+    /// 名字预筛选（大小写不敏感子串），可显著降低候选集规模。支持 `$param` 引用。
     #[serde(default)]
-    pub name_contains: Option<String>,
-    /// 候选集上限，防止规则扫全图拖垮一次检查。
+    pub name_contains: Option<StrOrParam>,
+    /// 候选集上限，防止规则扫全图拖垮一次检查。支持 `$param` 引用。
     #[serde(default = "default_scope_limit")]
-    pub limit: u32,
+    pub limit: NumOrParam,
     /// **适用语言白名单**（`php` / `java` / `javascript` / `typescript` …）。
     ///
     /// 为空表示跨语言通用 —— 这类规则的判据必须只依赖**图拓扑**
@@ -171,8 +435,8 @@ pub struct RuleScope {
     pub frameworks: Vec<String>,
 }
 
-fn default_scope_limit() -> u32 {
-    20_000
+fn default_scope_limit() -> NumOrParam {
+    NumOrParam::Num(20_000)
 }
 
 /// 检查谓词。
@@ -184,16 +448,16 @@ fn default_scope_limit() -> u32 {
 pub enum CheckPredicate {
     /// 节点种类属于给定集合。
     KindIn(Vec<String>),
-    /// 名字包含子串（大小写不敏感）。
-    NameContains(String),
-    /// 名字以给定前缀开头（大小写不敏感）。
-    NameStartsWith(String),
-    /// FQN 包含子串。
-    FqnContains(String),
-    /// identity 值包含子串（如 `POST /api/xxx`）。
-    IdentityContains(String),
-    /// `name` / `fqn` / `identity` 任一包含子串。
-    TextContains(String),
+    /// 名字包含子串（大小写不敏感）。支持 `$param` 引用。
+    NameContains(StrOrParam),
+    /// 名字以给定前缀开头（大小写不敏感）。支持 `$param` 引用。
+    NameStartsWith(StrOrParam),
+    /// FQN 包含子串。支持 `$param` 引用。
+    FqnContains(StrOrParam),
+    /// identity 值包含子串（如 `POST /api/xxx`）。支持 `$param` 引用。
+    IdentityContains(StrOrParam),
+    /// `name` / `fqn` / `identity` 任一包含子串。支持 `$param` 引用。
+    TextContains(StrOrParam),
     /// 节点上有给定种类的标注。
     HasAnnotation(String),
     /// 节点上**没有**给定种类的标注。
@@ -204,12 +468,12 @@ pub enum CheckPredicate {
     PropertyMissing(String),
     /// 作用域链上没有给定能力（如 `Authentication` / `RateLimiting`）。
     NoCapability(Vec<String>),
-    /// 扇入（语义入边数）不小于阈值。
-    FanInGte(u64),
-    /// 扇入不大于阈值（`0` = 没有任何语义入边）。
-    FanInLte(u64),
-    /// 扇出不小于阈值。
-    FanOutGte(u64),
+    /// 扇入（语义入边数）不小于阈值。支持 `$param` 引用。
+    FanInGte(NumOrParam),
+    /// 扇入不大于阈值（`0` = 没有任何语义入边）。支持 `$param` 引用。
+    FanInLte(NumOrParam),
+    /// 扇出不小于阈值。支持 `$param` 引用。
+    FanOutGte(NumOrParam),
     /// **没有**给定种类的入边（如契约没有 `HandledBy`）。
     NoIncoming(String),
     /// 有给定种类的入边。
@@ -268,6 +532,38 @@ impl RuleRequirements {
     }
     pub fn is_empty(&self) -> bool {
         self.edges.is_empty() && self.annotations.is_empty() && self.capabilities.is_empty()
+    }
+}
+
+/// 递归收集谓词里引用的参数键。
+fn collect_params(predicates: &[CheckPredicate], out: &mut Vec<String>) {
+    fn push(out: &mut Vec<String>, k: &str) {
+        if !out.iter().any(|x| x == k) {
+            out.push(k.to_string());
+        }
+    }
+    for p in predicates {
+        match p {
+            CheckPredicate::NameContains(v)
+            | CheckPredicate::NameStartsWith(v)
+            | CheckPredicate::FqnContains(v)
+            | CheckPredicate::IdentityContains(v)
+            | CheckPredicate::TextContains(v) => {
+                if let StrOrParam::Param(k) = v {
+                    push(out, k);
+                }
+            }
+            CheckPredicate::FanInGte(v)
+            | CheckPredicate::FanInLte(v)
+            | CheckPredicate::FanOutGte(v) => {
+                if let NumOrParam::Param(k) = v {
+                    push(out, k);
+                }
+            }
+            CheckPredicate::AllOf(list) | CheckPredicate::AnyOf(list) => collect_params(list, out),
+            CheckPredicate::Not(inner) => collect_params(std::slice::from_ref(inner), out),
+            _ => {}
+        }
     }
 }
 
@@ -427,5 +723,77 @@ impl CheckReport {
                 .then(a.rule_id.cmp(&b.rule_id))
                 .then(a.node_name.cmp(&b.node_name))
         });
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule_with_params() -> CheckRule {
+        // 走一遍反序列化：参数体系的价值就在于"规则作者写的声明能被正确读进来"。
+        let v = json!({
+            "id": "hot-table",
+            "title": "热点表",
+            "severity": "info",
+            "category": "architecture",
+            "params": [
+                { "key": "min_fan_in", "label": "扇入阈值", "kind": "number", "default": 50 },
+                { "key": "name_filter", "label": "名称过滤", "kind": "string", "default": "" }
+            ],
+            "applies_to": {
+                "kinds": ["Table"],
+                "name_contains": "$name_filter",
+                "limit": "$max_nodes"
+            },
+            "when": [{ "fan_in_gte": "$min_fan_in" }],
+            "message": "表 {name} 热（入边 ≥ {param:min_fan_in}）"
+        });
+        serde_json::from_value(v).expect("规则声明应能解析")
+    }
+
+    #[test]
+    fn 参数声明与默认解析() {
+        let r = rule_with_params();
+        assert_eq!(r.params.len(), 2);
+        assert_eq!(r.params[0].key, "min_fan_in");
+        assert!(matches!(r.params[0].kind, ParamKind::Number));
+
+        let params = resolve_param_values(&r, &Value::Null);
+        assert_eq!(resolve_num(&NumOrParam::Param("min_fan_in".into()), &params), 50);
+        // 字符串参数默认空串 → `name_contains` 退化为"不过滤"。
+        assert_eq!(resolve_str_opt(&r.applies_to.name_contains, &params), None);
+    }
+
+    #[test]
+    fn 工程覆盖优先于默认值() {
+        let r = rule_with_params();
+        let params = resolve_param_values(&r, &json!({ "min_fan_in": 5, "name_filter": "order" }));
+        assert_eq!(resolve_num(&NumOrParam::Param("min_fan_in".into()), &params), 5);
+        assert_eq!(
+            resolve_str_opt(&r.applies_to.name_contains, &params),
+            Some("order".to_string())
+        );
+        // 覆盖里没给的键仍然取默认。
+        let defaults = resolve_param_values(&r, &json!({ "min_fan_in": 5 }));
+        assert_eq!(resolve_str_opt(&r.applies_to.name_contains, &defaults), None);
+    }
+
+    #[test]
+    fn 未声明的参数引用会被发现() {
+        let r = rule_with_params();
+        // `limit: "$max_nodes"` 引用了没声明的参数 —— 求值时退化成 0，
+        // 候选集直接变空（规则静默 0 命中），必须在装载阶段暴露。
+        assert_eq!(r.undeclared_params(), vec!["max_nodes".to_string()]);
+    }
+
+    #[test]
+    fn 文案里的参数占位符按生效值渲染() {
+        let r = rule_with_params();
+        let params = resolve_param_values(&r, &json!({ "min_fan_in": 8 }));
+        let msg = r.render_with("users", "Table", None, None, None, None, Some(&params));
+        assert!(msg.contains("入边 ≥ 8"), "实际文案: {msg}");
+        // 不传参数表时保持原样（老调用点不受影响）。
+        let raw = r.render("users", "Table", None, None, None, None);
+        assert!(raw.contains("{param:min_fan_in}"), "实际文案: {raw}");
     }
 }

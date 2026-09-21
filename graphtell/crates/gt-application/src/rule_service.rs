@@ -21,8 +21,10 @@ use serde::{Deserialize, Serialize};
 use gt_domain::error::Result;
 use gt_domain::model::{
     Annotation, CheckPredicate, CheckReport, CheckRule, Diagnostic, Edge, Node, NodeId, NodeKind,
-    ProjectId, RuleRequirements, Severity, Violation, RULE_CODE_PREFIX,
+    ParamValues, ProjectId, ProjectRuleConfig, RuleConfigPatch, RuleRequirements, Severity,
+    Violation, resolve_num, resolve_param_values, resolve_str, resolve_str_opt, RULE_CODE_PREFIX,
 };
+use serde_json::Value;
 use gt_domain::model::kinds::{is_semantic_edge, AnnotationChannel};
 use gt_domain::port::{NodeFilter, Persistence, RuleProvider};
 
@@ -56,12 +58,19 @@ impl RuleService {
     ) -> Result<CheckReport> {
         let started = Instant::now();
         let all = self.rules.rules();
+        // 工程级规则配置：覆盖全局 enabled、以及规则参数（options）。
+        let configs = self.store.get_rule_configs(project_id)?;
+        // 生效的启用态：配置覆盖 ?? YAML 全局默认。
+        let is_enabled = |r: &CheckRule| -> bool {
+            configs.get(&r.id).and_then(|c| c.enabled).unwrap_or(r.enabled)
+        };
         let selected: Vec<&CheckRule> = all
             .iter()
-            .filter(|r| r.enabled)
             .filter(|r| match only {
+                // 显式指定只跑某些规则（如"只跑这条规则"）时忽略启用开关，
+                // 因为那是用户的临时预览意图。
                 Some(ids) => ids.iter().any(|id| id == &r.id),
-                None => true,
+                None => is_enabled(r),
             })
             .collect();
 
@@ -76,13 +85,19 @@ impl RuleService {
         //     Capability:Authentication），此时 `no_annotation` / `no_capability` 恒真，
         //     跑出来的全是恒真误报。
         let env = ProjectEnv::load(&*self.store, project_id)?;
-        let mut runnable: Vec<&CheckRule> = Vec::new();
+        let mut runnable: Vec<(&CheckRule, ParamValues)> = Vec::new();
         let mut not_applicable: Vec<String> = Vec::new();
         let mut unavailable: Vec<String> = Vec::new();
         // 环境对得上、但判据不成立的规则：显式重跑时要一并清掉它们的旧违规，
         // 否则"这次跑不了"会被读成"上次的结果是当前的"。
         let mut unavailable_rules: Vec<&CheckRule> = Vec::new();
         for rule in selected {
+            // 合并全局默认与工程覆盖，得到本条规则的最终参数。
+            let opts = configs
+                .get(&rule.id)
+                .map(|c| c.options.clone())
+                .unwrap_or(Value::Null);
+            let params = resolve_param_values(rule, &opts);
             if !rule.applies_to_env(&env.languages, &env.frameworks) {
                 not_applicable.push(format!(
                     "{}（需要 {}，本工程为 {}）",
@@ -97,7 +112,7 @@ impl RuleService {
                 unavailable_rules.push(rule);
                 continue;
             }
-            runnable.push(rule);
+            runnable.push((rule, params));
         }
 
         let mut report = CheckReport {
@@ -120,9 +135,11 @@ impl RuleService {
             .map(|p| std::path::PathBuf::from(p.root_path));
         let mut facts = Facts::new(root);
         let mut cache: HashMap<(String, Option<String>), Vec<Node>> = HashMap::new();
-        for rule in &runnable {
+        for (rule, params) in &runnable {
+            let limit = resolve_num(&rule.applies_to.limit, params);
+            let name_contains = resolve_str_opt(&rule.applies_to.name_contains, params);
             for kind in scope_kinds(rule) {
-                let key = (kind.clone(), rule.applies_to.name_contains.clone());
+                let key = (kind.clone(), name_contains.clone());
                 if cache.contains_key(&key) {
                     continue;
                 }
@@ -137,8 +154,8 @@ impl RuleService {
                     } else {
                         Some(NodeKind::new(kind.clone()))
                     },
-                    name_contains: rule.applies_to.name_contains.clone(),
-                    limit: Some(rule.applies_to.limit),
+                    name_contains: name_contains.clone(),
+                    limit: Some(limit as u32),
                     offset: None,
                 })?;
                 cache.insert(key, nodes);
@@ -163,19 +180,20 @@ impl RuleService {
         // 都要显式暴露（见 CheckReport::rules_silent 的说明）。
         let mut violations: Vec<Violation> = Vec::new();
         let mut silent: Vec<String> = Vec::new();
-        for rule in &runnable {
+        for (rule, params) in &runnable {
+            let name_contains = resolve_str_opt(&rule.applies_to.name_contains, params);
             let mut hit = 0usize;
             let mut candidates = 0usize;
             for kind in scope_kinds(rule) {
-                let key = (kind.clone(), rule.applies_to.name_contains.clone());
+                let key = (kind.clone(), name_contains.clone());
                 let Some(nodes) = cache.get(&key) else { continue };
                 candidates += nodes.len();
                 for node in nodes {
-                    if !matches_all(&rule.when, node, &facts) {
+                    if !matches_all(&rule.when, node, &facts, params) {
                         continue;
                     }
                     hit += 1;
-                    violations.push(build_violation(project_id, rule, node, &facts));
+                    violations.push(build_violation(project_id, rule, node, &facts, params));
                 }
             }
             if hit == 0 {
@@ -198,7 +216,11 @@ impl RuleService {
                     self.store.clear_diagnostics(project_id, RULE_CODE_PREFIX)?;
                 }
                 Some(_) => {
-                    for rule in runnable.iter().chain(unavailable_rules.iter()) {
+                    // `runnable` 现在是 (规则, 参数) 二元组，与 `unavailable_rules`
+                    // 的 `&CheckRule` 类型不同，先统一成规则引用再串联遍历。
+                    let runnable_rules: Vec<&CheckRule> =
+                        runnable.iter().map(|(r, _)| *r).collect();
+                    for rule in runnable_rules.iter().chain(unavailable_rules.iter()) {
                         self.store.clear_diagnostics(project_id, &rule.code())?;
                     }
                 }
@@ -254,6 +276,73 @@ impl RuleService {
             }
         }
         Ok(s)
+    }
+
+    /// 取某工程全部规则配置覆盖。
+    pub fn rule_configs(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<std::collections::HashMap<String, ProjectRuleConfig>> {
+        self.store.get_rule_configs(project_id)
+    }
+
+    /// 写入单条规则配置（整行覆盖）。
+    pub fn set_rule_config(&self, cfg: ProjectRuleConfig) -> Result<()> {
+        self.store.set_rule_config(&cfg)
+    }
+
+    /// 应用一条**补丁**：省略的字段继承已有覆盖。
+    ///
+    /// 直接整行覆盖会踩一个真实的坑：UI 上「启用/停用」和「调参数」是两个独立操作，
+    /// 若每次都写整行，先调好阈值再点开关，参数就被悄悄清空了。
+    pub fn apply_rule_config(&self, project_id: ProjectId, patch: RuleConfigPatch) -> Result<()> {
+        let existing = self
+            .store
+            .get_rule_configs(project_id)?
+            .get(&patch.rule_id)
+            .cloned();
+        let mut enabled = patch.enabled;
+        let mut options = patch.options.unwrap_or(Value::Object(Default::default()));
+        if let Some(old) = existing {
+            if enabled.is_none() {
+                enabled = old.enabled;
+            }
+            // 补丁里没带 options 时保留旧值；带了的按 key 合并（只覆盖出现的键）。
+            if let (Some(old_obj), Some(new_obj)) = (old.options.as_object(), options.as_object()) {
+                if new_obj.is_empty() {
+                    options = old.options;
+                } else {
+                    let mut merged = old_obj.clone();
+                    for (k, v) in new_obj {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                    options = Value::Object(merged);
+                }
+            }
+        }
+        self.store.set_rule_config(&ProjectRuleConfig {
+            project_id,
+            rule_id: patch.rule_id,
+            enabled,
+            options,
+        })
+    }
+
+    /// 重置某条规则的工程覆盖（回归 YAML 全局默认 + 默认参数）。
+    pub fn reset_rule_config(&self, project_id: ProjectId, rule_id: &str) -> Result<()> {
+        self.store.delete_rule_config(project_id, rule_id)
+    }
+
+    /// 批量应用配置补丁（启用/停用整组、整分类时用）。
+    pub fn batch_rule_config(
+        &self,
+        project_id: ProjectId,
+        items: Vec<RuleConfigPatch>,
+    ) -> Result<()> {
+        for it in items {
+            self.apply_rule_config(project_id, it)?;
+        }
+        Ok(())
     }
 }
 
@@ -380,16 +469,18 @@ fn build_violation(
     rule: &CheckRule,
     node: &Node,
     facts: &Facts,
+    params: &ParamValues,
 ) -> Violation {
     let (file, line) = crate::location::node_location(node, &facts.files, facts.root.as_deref());
     let identity = node.identity.as_ref().map(|i| i.value.clone());
-    let message = rule.render(
+    let message = rule.render_with(
         &node.name,
         node.kind.as_str(),
         node.fqn.as_deref(),
         identity.as_deref(),
         file.as_deref(),
         line,
+        Some(params),
     );
     Violation {
         project_id,
@@ -502,33 +593,34 @@ fn property_value(node: &Node, name: &str) -> Option<String> {
 }
 
 /// 全部谓词满足才算命中（`when` 为空 = 范围内全部命中）。
-fn matches_all(when: &[CheckPredicate], node: &Node, facts: &Facts) -> bool {
-    when.iter().all(|p| eval(p, node, facts))
+fn matches_all(when: &[CheckPredicate], node: &Node, facts: &Facts, params: &ParamValues) -> bool {
+    when.iter().all(|p| eval(p, node, facts, params))
 }
 
-fn eval(p: &CheckPredicate, node: &Node, facts: &Facts) -> bool {
+fn eval(p: &CheckPredicate, node: &Node, facts: &Facts, params: &ParamValues) -> bool {
     match p {
         CheckPredicate::KindIn(kinds) => kinds
             .iter()
             .any(|k| node.kind.as_str().eq_ignore_ascii_case(k)),
         CheckPredicate::NameContains(sub) => {
-            node.name.to_lowercase().contains(&sub.to_lowercase())
+            node.name.to_lowercase().contains(&resolve_str(sub, params).to_lowercase())
         }
-        CheckPredicate::NameStartsWith(prefix) => {
-            node.name.to_lowercase().starts_with(&prefix.to_lowercase())
-        }
+        CheckPredicate::NameStartsWith(prefix) => node
+            .name
+            .to_lowercase()
+            .starts_with(&resolve_str(prefix, params).to_lowercase()),
         CheckPredicate::FqnContains(sub) => node
             .fqn
             .as_deref()
-            .map(|f| f.to_lowercase().contains(&sub.to_lowercase()))
+            .map(|f| f.to_lowercase().contains(&resolve_str(sub, params).to_lowercase()))
             .unwrap_or(false),
         CheckPredicate::IdentityContains(sub) => node
             .identity
             .as_ref()
-            .map(|i| i.value.to_lowercase().contains(&sub.to_lowercase()))
+            .map(|i| i.value.to_lowercase().contains(&resolve_str(sub, params).to_lowercase()))
             .unwrap_or(false),
         CheckPredicate::TextContains(sub) => {
-            node_text(node).contains(&sub.to_lowercase())
+            node_text(node).contains(&resolve_str(sub, params).to_lowercase())
         }
         CheckPredicate::HasAnnotation(kind) => facts.has_annotation(node.id, kind),
         CheckPredicate::NoAnnotation(kind) => !facts.has_annotation(node.id, kind),
@@ -539,15 +631,15 @@ fn eval(p: &CheckPredicate, node: &Node, facts: &Facts) -> bool {
         CheckPredicate::NoCapability(caps) => {
             !caps.iter().any(|c| facts.has_capability(node.id, c))
         }
-        CheckPredicate::FanInGte(n) => facts.fan_in(node.id) >= *n,
-        CheckPredicate::FanInLte(n) => facts.fan_in(node.id) <= *n,
-        CheckPredicate::FanOutGte(n) => facts.fan_out(node.id) >= *n,
+        CheckPredicate::FanInGte(n) => facts.fan_in(node.id) >= resolve_num(n, params),
+        CheckPredicate::FanInLte(n) => facts.fan_in(node.id) <= resolve_num(n, params),
+        CheckPredicate::FanOutGte(n) => facts.fan_out(node.id) >= resolve_num(n, params),
         CheckPredicate::NoIncoming(kind) => !facts.has_incoming_kind(node.id, kind),
         CheckPredicate::HasIncoming(kind) => facts.has_incoming_kind(node.id, kind),
         CheckPredicate::NoOutgoing(kind) => !facts.has_outgoing_kind(node.id, kind),
         CheckPredicate::HasOutgoing(kind) => facts.has_outgoing_kind(node.id, kind),
-        CheckPredicate::AllOf(list) => list.iter().all(|p| eval(p, node, facts)),
-        CheckPredicate::AnyOf(list) => list.iter().any(|p| eval(p, node, facts)),
-        CheckPredicate::Not(inner) => !eval(inner, node, facts),
+        CheckPredicate::AllOf(list) => list.iter().all(|p| eval(p, node, facts, params)),
+        CheckPredicate::AnyOf(list) => list.iter().any(|p| eval(p, node, facts, params)),
+        CheckPredicate::Not(inner) => !eval(inner, node, facts, params),
     }
 }

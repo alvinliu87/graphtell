@@ -10,12 +10,28 @@ rules:
     title: 热点表（高扇入）
     description: >-
       一张表被图上 50 处以上引用。它通常是性能瓶颈与改不动的耦合点：
-      改一个字段要评估几十处调用。
+      改一个字段要评估几十处调用。阈值可按工程调节：小库的"热点"门槛更低。
     severity: info
     category: architecture
+    params:
+      - key: min_fan_in
+        label: 扇入阈值
+        description: 语义入边数 ≥ 该值才报热点；调低更敏感，调高只报真正的中心表。
+        kind: number
+        default: 50
+        min: 1
+        max: 100000
+      - key: max_nodes
+        label: 候选表上限
+        description: 参与检查的表节点数量上限，防止超大库把一次检查拖垮。
+        kind: number
+        default: 20000
+        min: 100
+        max: 200000
     applies_to:
       kinds: [Table]
+      limit: "$max_nodes"
     when:
-      - fan_in_gte: 50
-    message: "表 {name} 是热点表（语义入边 ≥ 50），建议评估缓存 / 读写分离 / 拆分"
+      - fan_in_gte: "$min_fan_in"
+    message: "表 {name} 是热点表（语义入边 ≥ {param:min_fan_in}），建议评估缓存 / 读写分离 / 拆分"
     remediation: "用表视角看它的扇入来源，判断是否需要收敛访问入口"

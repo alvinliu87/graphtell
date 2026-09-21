@@ -6,11 +6,19 @@ rules:
     description: "既是热点表又含个人信息 —— 影响面与安全敏感度同时拉满，优先治理。"
     severity: warning
     category: architecture
+    params:
+      - key: min_fan_in
+        label: 扇入阈值
+        description: 含 PII 的表被 ≥ 该值处引用才报；调低更早发现敏感资产扩散。
+        kind: number
+        default: 20
+        min: 1
+        max: 100000
     applies_to:
       kinds: [Table]
       languages: [php]
     when:
       - has_annotation: pii
-      - fan_in_gte: 20
-    message: "表 {name} 含 PII 且被 20 处以上引用，属于高影响面敏感资产"
+      - fan_in_gte: "$min_fan_in"
+    message: "表 {name} 含 PII 且被 {param:min_fan_in} 处以上引用，属于高影响面敏感资产"
     remediation: "优先收敛访问入口并统一脱敏出口"

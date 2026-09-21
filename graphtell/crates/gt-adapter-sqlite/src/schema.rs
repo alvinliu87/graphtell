@@ -162,4 +162,13 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     started_at  INTEGER NOT NULL DEFAULT 0
 );
 "#,
+    r#"
+CREATE TABLE IF NOT EXISTS project_rule_config (
+    project_id  INTEGER NOT NULL,
+    rule_id     TEXT NOT NULL,
+    enabled     INTEGER,
+    options     TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (project_id, rule_id)
+);
+"#,
 ];

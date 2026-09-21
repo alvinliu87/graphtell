@@ -48,9 +48,17 @@ rules:
       只报事实，不判断入参是否来自用户。
     severity: warning
     category: security
+    params:
+      - key: max_nodes
+        label: 候选调用点上限
+        description: 参与检查的 CallSite 数量上限；超大库可调低以避免一次检查过慢。
+        kind: number
+        default: 5000
+        min: 100
+        max: 200000
     applies_to:
       kinds: [CallSite]
-      limit: 5000
+      limit: "$max_nodes"
       # Taint 标注目前只有 PHP 的 FKB 产出（Java 工程实测 0 条 Taint 标注），
       # 不声明语言的话会在 Java 工程上被 `rules_unavailable` 拦下——
       # 声明出来更能表达"这条规则属于 PHP 生态"这个先验事实。

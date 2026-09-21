@@ -461,6 +461,33 @@ const dict: Record<Lang, Record<string, string>> = {
       'Matrix layout: rows × columns; cell shade shows quantity, 0 means that combination truly has no output.',
     'ER 布局：表与表之间用 90° 正交连线，用于看同事务关联。':
       'ER layout: tables linked by 90° orthogonal lines; for viewing same-transaction relations.',
+
+    // ---- 规则集页：按工程覆盖启用态与可调参数 ----
+    '规则由后端 YAML 声明，前端只渲染；可在本工程内覆盖启用态与阈值，保存后自动重跑':
+      'Rules are declared in backend YAML and only rendered here; you can override enabled state and thresholds per project — saving triggers a re-check.',
+    '放弃修改': 'Discard changes',
+    '保存并重跑': 'Save & re-run',
+    '将对 {{n}} 条规则写入覆盖，并重跑一次全量检查':
+      'Will write overrides for {{n}} rule(s) and re-run a full check',
+    '已保存并重跑：命中 {{n}} 条违规（跑 {{run}}/{{total}} 条规则）':
+      'Saved & re-run: {{n}} violation(s) ({{run}}/{{total}} rules executed)',
+    '已放弃未保存的修改': 'Unsaved changes discarded',
+    '只跑这条规则': 'Run this rule only',
+    '恢复默认': 'Reset to default',
+    '清除本工程的覆盖，回到 YAML 全局默认':
+      'Clear this project override and fall back to the YAML global default',
+    '继承默认': 'Inherits default',
+    '工程覆盖': 'Project override',
+    '启用': 'On',
+    '停用': 'Off',
+    '可调参数': 'Tunable parameters',
+    '默认': 'Default',
+    '（空）': '(empty)',
+    '已覆盖': 'Overridden',
+    '留空 = 不过滤': 'Empty = no filter',
+    '这条规则没有可调参数': 'This rule has no tunable parameters',
+    '工程级覆盖只记「与全局默认不同的那部分」：恢复默认 = 删除覆盖行，规则随 YAML 演进':
+      'Project overrides only store what differs from the global default: "reset to default" deletes the override row, so rules keep evolving with YAML.',
   },
 };
 

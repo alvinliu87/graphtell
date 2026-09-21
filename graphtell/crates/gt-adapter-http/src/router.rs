@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -16,7 +16,9 @@ use gt_application::{
     GraphQueryService, ProjectService, RecallQuery, RecallService, RuleService, ViewService,
 };
 use gt_domain::error::DomainError;
-use gt_domain::model::{CheckRule, NodeId, ProjectId, SubProjectId, Violation};
+use gt_domain::model::{
+    CheckRule, NodeId, ProjectId, ProjectRuleConfig, RuleConfigPatch, SubProjectId, Violation,
+};
 use gt_domain::port::{
     EdgeDirection, ParserRegistry, Persistence, RuleProvider, ViewRegistryProvider,
 };
@@ -117,6 +119,14 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/projects/{id}/check", post(run_check))
         .route("/api/projects/{id}/violations", get(list_violations))
         .route("/api/projects/{id}/check/summary", get(check_summary))
+        // 工程级规则配置（按工程覆盖启用态与参数）
+        .route("/api/projects/{id}/rules/config", get(list_rule_configs))
+        .route("/api/projects/{id}/rules/config", put(put_rule_config))
+        .route("/api/projects/{id}/rules/config/batch", post(batch_rule_config))
+        .route(
+            "/api/projects/{id}/rules/config/{rule_id}",
+            delete(reset_rule_config),
+        )
         // 代码召回（提示词 → 相关代码）
         .route("/api/projects/{id}/recall", get(recall_get).post(recall_post))
         .with_state(state)
@@ -556,6 +566,60 @@ async fn check_summary(
 ) -> Json<ApiResponse<gt_application::CheckSummary>> {
     match state.checks.summary(ProjectId(id)) {
         Ok(s) => Json(ApiResponse::success(s)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+/// 工程级规则配置批量写入请求体。
+#[derive(Debug, Deserialize)]
+pub struct RuleConfigBatch {
+    pub items: Vec<RuleConfigPatch>,
+}
+
+/// 列出某工程全部规则配置覆盖。
+async fn list_rule_configs(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+) -> Json<ApiResponse<std::collections::HashMap<String, ProjectRuleConfig>>> {
+    match state.checks.rule_configs(ProjectId(id)) {
+        Ok(v) => Json(ApiResponse::success(v)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+/// 写入单条规则配置（部分字段可省 = 不改该项）。
+async fn put_rule_config(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+    Json(patch): Json<RuleConfigPatch>,
+) -> Json<ApiResponse<bool>> {
+    // 返回 `bool` 而不是 `()`：`()` 序列化成 `null`，前端统一响应解析会把
+    // `data: null` 当成失败（它无法区分"无数据"和"出错了"）。
+    match state.checks.apply_rule_config(ProjectId(id), patch) {
+        Ok(_) => Json(ApiResponse::success(true)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+/// 重置某条规则的工程覆盖（回归 YAML 全局默认）。
+async fn reset_rule_config(
+    State(state): State<Shared>,
+    Path((id, rule_id)): Path<(i64, String)>,
+) -> Json<ApiResponse<bool>> {
+    match state.checks.reset_rule_config(ProjectId(id), &rule_id) {
+        Ok(_) => Json(ApiResponse::success(true)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+/// 批量写入规则配置（启用/停用整组、整分类时用）。
+async fn batch_rule_config(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+    Json(body): Json<RuleConfigBatch>,
+) -> Json<ApiResponse<bool>> {
+    match state.checks.batch_rule_config(ProjectId(id), body.items) {
+        Ok(_) => Json(ApiResponse::success(true)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }
 }

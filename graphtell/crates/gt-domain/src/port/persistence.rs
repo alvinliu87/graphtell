@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::model::{
     AliasEntry, Annotation, Diagnostic, Edge, NewAnnotation, NewEdge, NewNode, NewProject,
     NewSourceFile, NewSubProject, Node, NodeId, NodeKind, Project, ProjectId, ProjectPatch,
-    ProjectStatus, SourceFile, SubProject, SubProjectId, SymbolEntry,
+    ProjectRuleConfig, ProjectStatus, SourceFile, SubProject, SubProjectId, SymbolEntry,
 };
 use crate::model::graph::NodeSummary;
 
@@ -244,6 +244,19 @@ pub trait DiagnosticSink: Send + Sync {
     ) -> Result<Vec<(String, u64)>>;
 }
 
+/// 工程级规则配置端口（按工程覆盖规则的启用态与参数）。
+pub trait RuleConfigStore: Send + Sync {
+    /// 取某工程全部规则配置覆盖（key = rule_id）。
+    fn get_rule_configs(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<std::collections::HashMap<String, ProjectRuleConfig>>;
+    /// 写入（或清除）单条规则配置。覆盖为空（enabled=None 且 options 为空）= 删除该行。
+    fn set_rule_config(&self, cfg: &ProjectRuleConfig) -> Result<()>;
+    /// 删除某工程单条规则的配置（恢复继承默认）。
+    fn delete_rule_config(&self, project_id: ProjectId, rule_id: &str) -> Result<()>;
+}
+
 /// 组合端口：一次拿到全部持久化能力。
 pub trait Persistence:
     ProjectReader
@@ -252,6 +265,7 @@ pub trait Persistence:
     + GraphQuery
     + SymbolTableReader
     + DiagnosticSink
+    + RuleConfigStore
     + Send
     + Sync
 {
@@ -264,6 +278,7 @@ impl<T> Persistence for T where
         + GraphQuery
         + SymbolTableReader
         + DiagnosticSink
+        + RuleConfigStore
         + Send
         + Sync,
 {

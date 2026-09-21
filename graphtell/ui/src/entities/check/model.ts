@@ -11,11 +11,28 @@ export type Severity = 'info' | 'warning' | 'error' | 'critical';
 export interface RuleScope {
   kinds: string[];
   name_contains?: string | null;
-  limit: number;
+  /** 候选集上限：字面量数字，或 `"$paramKey"` 形式引用可调参数。 */
+  limit: number | string;
   /** 适用语言白名单（php / java / javascript / typescript）；为空 = 跨语言通用。 */
   languages?: string[];
   /** 适用框架白名单（thinkphp6 / spring-boot …）；为空 = 不限框架。 */
   frameworks?: string[];
+}
+
+/** 可调参数的种类。 */
+export type RuleParamKind = 'number' | 'string' | 'enum' | 'bool';
+
+/** 一条规则暴露给用户的可调参数（在 YAML `params:` 下声明）。 */
+export interface RuleParam {
+  key: string;
+  label: string;
+  description?: string | null;
+  kind: RuleParamKind;
+  /** 默认值（与 kind 对应的 JSON 标量）。 */
+  default: unknown;
+  min?: number | null;
+  max?: number | null;
+  choices?: string[];
 }
 
 /** 一条检查规则（来自 `rules/*.yaml`）。 */
@@ -25,10 +42,33 @@ export interface CheckRule {
   description?: string | null;
   severity: Severity;
   category: string;
+  /** YAML 里的**全局默认**启用态；工程级覆盖见 `ProjectRuleConfig`。 */
   enabled: boolean;
   applies_to: RuleScope;
+  /** 可调参数声明；为空表示这条规则没有可调项。 */
+  params?: RuleParam[];
   message: string;
   remediation?: string | null;
+}
+
+/**
+ * 工程级对单条规则的配置覆盖。
+ *
+ * `enabled === null/undefined` 表示**继承** YAML 全局默认；
+ * `options` 只放被覆盖过的键，未覆盖的取 `params` 的默认。
+ */
+export interface ProjectRuleConfig {
+  project_id: number;
+  rule_id: string;
+  enabled?: boolean | null;
+  options?: Record<string, unknown> | null;
+}
+
+/** 配置写入请求（省略的字段 = 不改该项）。 */
+export interface RuleConfigPatch {
+  rule_id: string;
+  enabled?: boolean | null;
+  options?: Record<string, unknown> | null;
 }
 
 /** 一次命中的违规。 */

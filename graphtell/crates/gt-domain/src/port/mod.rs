@@ -18,6 +18,6 @@ pub use parsing::{LanguageParser, ParserRegistry};
 pub use views::ViewRegistryProvider;
 pub use persistence::{
     DiagnosticSink, EdgeDirection, GraphDelta, GraphQuery, GraphSink, GraphStats, NodeFilter,
-    Persistence, ProjectReader, ProjectWriter, SymbolTableReader,
+    Persistence, ProjectReader, ProjectWriter, RuleConfigStore, SymbolTableReader,
 };
 pub mod views;

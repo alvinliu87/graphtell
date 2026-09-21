@@ -12,9 +12,17 @@ rules:
       两种可能：真未使用，或图缺边。
     severity: info
     category: deadcode
+    params:
+      - key: max_fan_in
+        label: 扇入上限
+        description: 语义入边数 ≤ 该值才报；0 = 完全没人引用，调到 1~2 可容忍少量引用。
+        kind: number
+        default: 0
+        min: 0
+        max: 100
     applies_to:
       kinds: [Table]
     when:
-      - fan_in_lte: 0
-    message: "表 {name} 在图上没有任何读写引用（可能真未使用，也可能是图缺边）"
+      - fan_in_lte: "$max_fan_in"
+    message: "表 {name} 在图上最多只有 {param:max_fan_in} 处读写引用（可能真未使用，也可能是图缺边）"
     remediation: "抽样人工确认；若确实有代码在读写它，说明 FKB 的读写动词规则需要补充"
