@@ -1222,6 +1222,7 @@ impl GraphWorkspace {
     ) {
         self.diagnostics.push(Diagnostic {
             project_id: self.project_id,
+            sub_project_id: None,
             phase: phase.clone(),
             code: code.to_string(),
             severity,

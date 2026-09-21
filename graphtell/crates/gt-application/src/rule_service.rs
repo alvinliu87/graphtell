@@ -22,7 +22,8 @@ use gt_domain::error::Result;
 use gt_domain::model::{
     Annotation, CheckPredicate, CheckReport, CheckRule, Diagnostic, Edge, Node, NodeId, NodeKind,
     ParamValues, ProjectId, ProjectRuleConfig, RuleConfigPatch, RuleRequirements, Severity,
-    Violation, resolve_num, resolve_param_values, resolve_str, resolve_str_opt, RULE_CODE_PREFIX,
+    SubProjectId, Violation, resolve_num, resolve_param_values, resolve_str, resolve_str_opt,
+    RULE_CODE_PREFIX,
 };
 use serde_json::Value;
 use gt_domain::model::kinds::{is_semantic_edge, AnnotationChannel};
@@ -252,10 +253,15 @@ impl RuleService {
     }
 
     /// 读取已落库的违规（不重跑规则）。
-    pub fn violations(&self, project_id: ProjectId, limit: u32) -> Result<Vec<Violation>> {
+    pub fn violations(
+        &self,
+        project_id: ProjectId,
+        limit: u32,
+        sub_project_id: Option<&[SubProjectId]>,
+    ) -> Result<Vec<Violation>> {
         let diags = self
             .store
-            .list_diagnostics_by_code(project_id, RULE_CODE_PREFIX, limit)?;
+            .list_diagnostics_by_code(project_id, RULE_CODE_PREFIX, sub_project_id, limit)?;
         Ok(diags.iter().filter_map(Violation::from_diagnostic).collect())
     }
 
@@ -263,8 +269,14 @@ impl RuleService {
     ///
     /// 不重跑规则、不拉全量违规，只取分组计数；建图后会自动跑检查并落库，
     /// 因此这里看到的是上一次自动（或手动）检查的结论。
-    pub fn summary(&self, project_id: ProjectId) -> Result<CheckSummary> {
-        let counts = self.store.count_diagnostics_by_code(project_id, RULE_CODE_PREFIX)?;
+    pub fn summary(
+        &self,
+        project_id: ProjectId,
+        sub_project_id: Option<&[SubProjectId]>,
+    ) -> Result<CheckSummary> {
+        let counts = self
+            .store
+            .count_diagnostics_by_code(project_id, RULE_CODE_PREFIX, sub_project_id)?;
         let mut s = CheckSummary::default();
         for (sev, n) in counts {
             match sev.as_str() {
@@ -491,6 +503,7 @@ fn build_violation(
         node_id: node.id,
         node_name: node.name.clone(),
         node_kind: node.kind.to_string(),
+        sub_project_id: node.sub_project_id,
         message,
         remediation: rule.remediation.clone(),
         file,

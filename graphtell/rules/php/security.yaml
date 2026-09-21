@@ -84,3 +84,59 @@ rules:
       - has_annotation: pii
     message: "表 {name} 被识别为含 PII 字段，需确认加密 / 脱敏 / 访问审计是否到位"
     remediation: "核对列的存储方式与导出路径；必要时加脱敏中间件"
+
+  # ⚠️ 由 P9 Taint 阶段产出 `tainted_raw` 标注（原始 SQL 执行点的 SQL 字符串里直接拼了变量）。
+  # 与 `raw-sql-sink`（只报 sink、warning）互补：这条是"用户数据真的流进去了"的确证，故 critical。
+  - id: sql-injection-raw
+    title: 原始 SQL 中拼接了用户数据（SQL 注入）
+    description: >-
+      调用点执行原始 SQL（Db::query / Db::execute / Db::raw / whereRaw / whereExp），
+      且 SQL 字符串里直接拼接了变量（来自请求或外部）。无论变量是插值进字符串，
+      还是整段 SQL 由变量传入，都属于高危 SQL 注入。由 P9 Taint 阶段判出。
+    severity: critical
+    category: security
+    params:
+      - key: max_nodes
+        label: 候选调用点上限
+        description: 参与检查的 CallSite 数量上限；大库需调高以覆盖全部调用点。
+        kind: number
+        default: 200000
+        min: 100
+        max: 500000
+    applies_to:
+      kinds: [CallSite]
+      limit: "$max_nodes"
+      languages: [php]
+    when:
+      - has_annotation: tainted_raw
+    message: "原始 SQL 执行点 {name} 的 SQL 直接拼接了变量（位于 {file}:{line}）—— 高危 SQL 注入"
+    remediation: >-
+      改用参数化查询（? / :name 占位符，或 ->where('col = ?', [$var])），
+      不要将用户输入拼进 SQL 字符串；若必须拼表名/列名，走白名单校验。
+
+  # ⚠️ 由 P9 Taint 阶段产出 `tainted_where` 标注（where 条件字符串里直接拼了变量）。
+  # 区别于参数化的 ->where('col = ?', [$var])：这里变量被塞进了条件字符串本身。
+  - id: sql-injection-where-interp
+    title: where 条件字符串中拼接了用户数据（SQL 注入）
+    description: >-
+      where / whereOr 的条件字符串里直接拼接了变量（如
+      ->where("CONCAT(',',roles,',') LIKE '%,$roles,%'")）。这属于 SQL 注入，
+      与参数化写法（占位符 + 绑定数组）有本质区别。由 P9 Taint 阶段判出。
+    severity: critical
+    category: security
+    params:
+      - key: max_nodes
+        label: 候选调用点上限
+        description: 参与检查的 CallSite 数量上限；大库需调高以覆盖全部调用点。
+        kind: number
+        default: 200000
+        min: 100
+        max: 500000
+    applies_to:
+      kinds: [CallSite]
+      limit: "$max_nodes"
+      languages: [php]
+    when:
+      - has_annotation: tainted_where
+    message: "where 条件 {name} 直接拼接了变量（位于 {file}:{line}）—— SQL 注入风险"
+    remediation: "改用 ->where('col = ?', [$var]) 参数化写法；绝不要把变量写进 SQL 字符串。"

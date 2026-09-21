@@ -545,6 +545,20 @@ async fn run_check(
 #[derive(Debug, Deserialize)]
 pub struct ViolationQuery {
     pub limit: Option<u32>,
+    /// 逗号分隔的子工程 id；为空表示不过滤（返回全部子工程）。
+    pub sub_project_id: Option<String>,
+}
+
+/// 把 `?sub_project_id=1,2` 解析成 `Option<Vec<SubProjectId>>`；空串视为不过滤。
+fn parse_sub_project_ids(raw: &Option<String>) -> Option<Vec<SubProjectId>> {
+    raw.as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.split(',')
+                .filter_map(|p| p.trim().parse::<i64>().ok())
+                .map(SubProjectId)
+                .collect()
+        })
 }
 
 /// 读取上一次检查落库的违规（不重跑规则）。
@@ -553,7 +567,8 @@ async fn list_violations(
     Path(id): Path<i64>,
     Query(q): Query<ViolationQuery>,
 ) -> Json<ApiResponse<Vec<Violation>>> {
-    match state.checks.violations(ProjectId(id), q.limit.unwrap_or(500)) {
+    let sub = parse_sub_project_ids(&q.sub_project_id);
+    match state.checks.violations(ProjectId(id), q.limit.unwrap_or(500), sub.as_deref()) {
         Ok(v) => Json(ApiResponse::success(v)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }
@@ -563,8 +578,10 @@ async fn list_violations(
 async fn check_summary(
     State(state): State<Shared>,
     Path(id): Path<i64>,
+    Query(q): Query<ViolationQuery>,
 ) -> Json<ApiResponse<gt_application::CheckSummary>> {
-    match state.checks.summary(ProjectId(id)) {
+    let sub = parse_sub_project_ids(&q.sub_project_id);
+    match state.checks.summary(ProjectId(id), sub.as_deref()) {
         Ok(s) => Json(ApiResponse::success(s)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }

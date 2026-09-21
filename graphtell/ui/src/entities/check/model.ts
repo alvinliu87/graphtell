@@ -85,6 +85,8 @@ export interface Violation {
   remediation?: string | null;
   file?: string | null;
   line?: number | null;
+  /** 命中节点所属子工程 id；`null` 表示共享资源（如跨子工程的表 / 队列）。 */
+  sub_project_id?: number | null;
 }
 
 /** 一次检查的报告。 */

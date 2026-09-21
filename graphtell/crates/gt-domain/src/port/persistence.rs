@@ -213,11 +213,28 @@ pub trait DiagnosticSink: Send + Sync {
         project_id: ProjectId,
         limit: u32,
     ) -> Result<Vec<Diagnostic>>;
+    /// 列诊断，**排除**给定 code 前缀。
+    ///
+    /// 与 [`DiagnosticSink::count_diagnostics_excluding`] 必须成对使用：
+    /// 页面上的角标按"排除 rule:"统计，列表却按"全部"取的话，
+    /// 用户会看到角标写着 0 error、表格里却全是别的东西 —— 两个口径不一致
+    /// 比任何一条具体错误都更能摧毁信任。
+    fn list_diagnostics_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<Diagnostic>>;
     /// 按 code 前缀列出诊断（如 `rule:` 取全部规则违规）。
+    ///
+    /// `sub_project_id` 为 `Some(ids)` 时只返回归属这些子工程的诊断，
+    /// 且**共享诊断（`sub_project_id IS NULL`，如跨子工程的表/队列）始终保留**——
+    /// 与图视图的"共享节点在任一过滤下都显示"语义一致。为 `None` 时不限制。
     fn list_diagnostics_by_code(
         &self,
         project_id: ProjectId,
         code_prefix: &str,
+        sub_project_id: Option<&[SubProjectId]>,
         limit: u32,
     ) -> Result<Vec<Diagnostic>>;
     /// 按 code 前缀清理诊断，返回删除条数。
@@ -232,6 +249,7 @@ pub trait DiagnosticSink: Send + Sync {
         &self,
         project_id: ProjectId,
         code_prefix: &str,
+        sub_project_id: Option<&[SubProjectId]>,
     ) -> Result<Vec<(String, u64)>>;
     /// 按 code **排除**某前缀 + 严重度聚合计数，返回 `(severity_snake_case, count)` 列表。
     ///

@@ -17,9 +17,14 @@ export const checkApi = {
     http.post<CheckReport>(`/api/projects/${projectId}/check`, {
       rule_ids: ruleIds && ruleIds.length > 0 ? ruleIds : null,
     }),
-  /** 读取上一次落库的违规（不重跑）。 */
-  violations: (projectId: number, limit = 500) =>
-    http.get<Violation[]>(`/api/projects/${projectId}/violations?limit=${limit}`),
+  /** 读取上一次落库的违规（不重跑）。`subProjectIds` 非空时按子工程筛选。 */
+  violations: (projectId: number, limit = 500, subProjectIds?: number[]) =>
+    http.get<Violation[]>(
+      `/api/projects/${projectId}/violations?limit=${limit}` +
+        (subProjectIds && subProjectIds.length
+          ? `&sub_project_id=${subProjectIds.join(',')}`
+          : ''),
+    ),
   /** 上一次检查的严重度汇总（菜单角标用，不重跑规则）。 */
   summary: (projectId: number) =>
     http.get<CheckSummary>(`/api/projects/${projectId}/check/summary`),

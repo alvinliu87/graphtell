@@ -470,6 +470,7 @@ fn build_runs_check_automatically() {
         .store
         .push_diagnostics(&[gt_domain::model::Diagnostic {
             project_id: f.project,
+            sub_project_id: None,
             phase: Phase(Phase::CHECK.to_string()),
             code: "rule:stale-should-be-cleared".into(),
             severity: Severity::Info,
@@ -491,7 +492,7 @@ fn build_runs_check_automatically() {
     let left = f
         .container
         .store
-        .list_diagnostics_by_code(f.project, "rule:", 100)
+        .list_diagnostics_by_code(f.project, "rule:", None, 100)
         .expect("诊断应可读回");
     assert!(
         left.iter().all(|d| d.code != "rule:stale-should-be-cleared"),
@@ -523,10 +524,11 @@ fn set_stack(f: &Fixture, language: &str, frameworks: &[&str]) {
         .expect("子工程应可写入");
 }
 
-/// 环境闸门：PHP 专属规则**不能**在纯 Java 工程上跑。
+/// 环境闸门：语言专属规则**不能**在不适配的工程上跑。
 ///
-/// 这不是洁癖 —— PHP FKB 才产出的边（Triggers / Emits / PublishesTo）在 Java
-/// 工程里一条都没有，`no_incoming: Triggers` 会把每个事件节点都报成"没人触发"。
+/// 这不是洁癖 —— PHP FKB 才产出的边（Triggers / PublishesTo）在 Java 工程里一条都没有，
+/// `no_incoming: Triggers` 会把每个事件节点都报成"没人触发"；同理 JS 才产出的边
+/// （Emits / ListensTo，前端事件总线）在纯 Java 工程上也不存在。
 #[test]
 fn php_only_rules_are_skipped_on_java_project() {
     let f = fixture();
@@ -539,7 +541,7 @@ fn php_only_rules_are_skipped_on_java_project() {
     );
     let report = svc.check(f.project, None, false).expect("检查不应失败");
 
-    for id in ["orphan-event", "orphan-eventbus", "orphan-queue", "raw-sql-sink"] {
+    for id in ["orphan-event", "orphan-queue", "raw-sql-sink", "eventbus-orphan"] {
         assert!(
             report.rules_not_applicable.iter().any(|s| s.starts_with(id)),
             "{id} 是 PHP 专属规则，在 Java 工程上应被判为不适用，实际 not_applicable={:?}",
@@ -583,6 +585,39 @@ fn php_only_rules_run_on_php_project() {
         "PHP 工程上 orphan-event 不应被判为不适用，实际 {:?}",
         report.rules_not_applicable
     );
+}
+
+/// 环境闸门：前端（JS）专属规则**不能**在纯后端工程上跑。
+///
+/// `EventBus` 节点与 `Emits` / `ListensTo` 边是前端事件总线的语义。
+/// 纯后端工程上它们一个都没有，规则会以"0 命中"收场 —— 而 0 命中会被读成
+/// "没有死代码"，正是本项目最想避免的失效方式。
+#[test]
+fn js_only_rules_are_skipped_on_backend_only_project() {
+    let f = fixture();
+    seed_graph(&f);
+    set_stack(&f, "java", &["spring-boot"]);
+
+    let svc = RuleService::new(
+        f.container.store.clone() as Arc<dyn Persistence>,
+        f.container.rules.clone() as Arc<dyn RuleProvider>,
+    );
+    let report = svc.check(f.project, None, false).expect("检查不应失败");
+
+    for id in [
+        "eventbus-emitted-without-listener",
+        "eventbus-listened-without-emitter",
+    ] {
+        assert!(
+            report.rules_not_applicable.iter().any(|s| s.starts_with(id)),
+            "{id} 是前端规则，在纯后端工程上应被判为不适用，实际 not_applicable={:?}",
+            report.rules_not_applicable
+        );
+        assert!(
+            !report.violations.iter().any(|v| v.rule_id == id),
+            "{id} 不应在纯后端工程上产出任何违规"
+        );
+    }
 }
 
 /// 判据校验：判据里的边在图上一个都没有时，规则必须**停用**而不是硬跑。

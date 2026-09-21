@@ -259,14 +259,35 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 | 名称 | `name_contains` / `name_starts_with` / `fqn_contains` / `identity_contains` / `text_contains` |
 | 组合 | `all_of` / `any_of` / `not` |
 
-规则按**适用环境**分两层目录装载，内核不认识任何具体规则 —— 加一条规则只需加一份 YAML：
+规则按**适用环境**分目录装载，内核不认识任何具体规则 —— 加一条规则只需加一份 YAML：
 
 | 目录 | 适用 | 内容 |
 | --- | --- | --- |
-| `rules/global/` | 跨语言通用 | 只依赖**图拓扑**（扇入扇出、语义边）的规则：契约桥（`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`）、热点表（`hot-table`）、死表（`dead-table`） |
-| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 事件总线 / 队列（`orphan-event` / `orphan-eventbus` / `orphan-queue`） |
+| `rules/global/` | 跨语言通用 | 只依赖**图拓扑**（扇入扇出、语义边）的规则：契约桥（`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`）、热点表（`hot-table`）、配置读取热点（`config-read-hotspot`）、死表（`dead-table`）、只写不读 / 只读不写表（`write-only-table` / `read-only-table`）、高扇出方法（`hotspot-method`） |
+| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 队列（`orphan-event` / `orphan-queue`） |
+| `rules/js/` | 仅含前端子工程的工程 | 前端事件总线的死代码（`eventbus-emitted-without-listener` / `eventbus-listened-without-emitter` / `eventbus-orphan`）—— `EventBus` 与 `Emits` / `ListensTo` 是前端语义，纯后端工程上不存在 |
 
-内置 12 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持 Java / JS / TS，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
+内置 15 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持更多语言，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
+
+### 新规则怎么才算"能发货"：先量后写
+
+写规则的成本很低，**验证它不产噪声的成本很高**。每条候选都先在样本库（8 个已建图工程：5 个 ThinkPHP + 3 个 Spring Boot）上量一遍再决定是否发货，标准只有两条：命中数**不能是 0**（静默失效），**也不能是刷屏**（噪声）。
+
+下面这批候选就是这么被**否决**的（留档，避免以后重新讨论一遍）：
+
+| 候选 | 实测 | 结论 |
+| --- | --- | --- |
+| 私有方法从未被调用 | 抽取 8 个样本核验：`$this->resultError()` 在源码里被调用 4 次却无 `Calls` 边 —— 方法级 `Calls` 解析覆盖率不足（约 44% 调用只解析到类级） | **否决**。所有"从未被调用"类规则在当前图覆盖下都是误报主导 |
+| 配置键没有任何读取方 | 后端侧 250 个配置键**全部**有读取方；唯一命中的 110 个是前端语言包键被误识别成 `ConfigKey` | **否决**（命中为 0 或纯噪声）。已改为正向的 `config-read-hotspot` |
+| 缓存键写了从不读 | 抽样 `comGoodsId` / `diyVersionNav`：源码里 `getStorageSync` 明明存在，图上却无 `ReadsCache` 边 | **否决**（读侧解析有缺口） |
+| 事件总线有发无听 / 有听无发 | 12 条命中抽样核验，约 7 成是真死代码 | **发货**，级别 `info` 且文案写明两种可能（沿用 `frontend-calls-missing-backend` 的诚实写法） |
+| 表被写但不被读 | 命中的是 `system_event` / `wechat_message` 这类日志 / 审计表 | **否决**（"只写不读"对日志表是正常设计） |
+| 表被写但无模型映射（`MapsTo`） | Java 工程 100% 命中（该边 Java 侧根本不产出），PHP 侧命中里混着 `goods g` 这种带别名的脏表名 | **否决**（是图的缺口，不是代码的问题） |
+| 一个方法读写 N 张以上表（"上帝方法"） | shopxo 上阈值 15 时命中 215 个方法，Top 是 `Index` / `Add`（同一方法连 48 张表更像过连接） | **否决**（噪声主导） |
+| 队列被投递但无消费者 | 命中名 `app` / `rule` / `module` 是动态队列名产物；`product_stock_job` 在源码里 grep 不到 | **否决**（无法验证） |
+| GET 契约但名字含 `create` / `edit` | 命中的是 `GET /agent/level/create` —— ThinkPHP 后台里这是**渲染表单页面**，GET 合理 | **否决**（命名启发式在后台框架上必然误报） |
+| 页面没有任何跳转入口 | 7 个工程全部 0 命中 | **否决**（静默失效） |
+| 国际化缺语言 / 高重要性表 / 运行时可变配置 | 三条都只能按 `kind` 匹配、无法按 `subkind` 过滤，实测命中 = 全部节点（358 / 156 / 248） | **否决**（谓词缺 `subkind`，命中即刷屏） |
 
 ### 规则怎么知道"该在哪跑"：环境闸门 + 判据校验
 
@@ -322,7 +343,7 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 四条约定：
 
-1. **`$` 前缀必须显式写**。不靠"像不像数字"猜——字符串型参数里 `"50"` 既可能是字面量也可能是引用，猜错的代价是静默的错误结论。
+1. **`$` 前缀必须显式写**。不靠"像不像数字"猜——字符串型参数里 `"50"` 既可能是字面量也可能是引用，猜错的代价是静默的错误结论。`$` 本身要当字面量时写作 `$$x`（孤立的 `$` 也算字面量），所以 `name_starts_with: "$"` 匹配的是**名字以 `$` 开头**，不会被引擎误认成空参数引用。
 2. **未声明的引用在装载阶段就报错**。引用了没声明的参数会退化成 `0` / `""`；用在 `limit` 上就是**候选集直接变空**（规则静默 0 命中），正是本项目最想避免的失效方式 —— 所以它必须是装载错误，而不是运行时惊喜。
 3. 文案里的 `{param:key}` 按**生效值**渲染。否则用户把阈值调成 200 之后，报告里仍然写着"≥ 50"，读起来像规则没生效。
 4. 内置规则已为"阈值类"判据补上参数：`hot-table` / `pii-table-hot` 的扇入阈值、`dead-table` 的扇入上限、契约三条的名称过滤、`raw-sql-sink` 的候选上限。

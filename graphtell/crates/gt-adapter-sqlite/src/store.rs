@@ -83,6 +83,22 @@ impl SqliteStore {
         for sql in MIGRATIONS {
             conn.execute_batch(sql).map_err(DomainError::infra)?;
         }
+        // 老库兼容：诊断表在加入 `sub_project_id` 列之前可能已存在；
+        // 用 pragma_table_info 判断是否缺列，缺则 ALTER 补上（幂等）。
+        let has_sub_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('diagnostics') WHERE name = 'sub_project_id'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(DomainError::infra)?;
+        if has_sub_col == 0 {
+            conn.execute_batch("ALTER TABLE diagnostics ADD COLUMN sub_project_id INTEGER;")
+                .map_err(DomainError::infra)?;
+        }
+        // 列补好后索引也要补（新建库在 MIGRATIONS 里建，这里幂等兜底）。
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_diag_sub ON diagnostics(sub_project_id);")
+            .map_err(DomainError::infra)?;
         info!("SQLite 已打开: {}", path.display());
         Ok(Self { conn: Mutex::new(conn), path })
     }
@@ -93,6 +109,19 @@ impl SqliteStore {
         for sql in MIGRATIONS {
             conn.execute_batch(sql).map_err(DomainError::infra)?;
         }
+        let has_sub_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('diagnostics') WHERE name = 'sub_project_id'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(DomainError::infra)?;
+        if has_sub_col == 0 {
+            conn.execute_batch("ALTER TABLE diagnostics ADD COLUMN sub_project_id INTEGER;")
+                .map_err(DomainError::infra)?;
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_diag_sub ON diagnostics(sub_project_id);")
+            .map_err(DomainError::infra)?;
         Ok(Self { conn: Mutex::new(conn), path: PathBuf::from(":memory:") })
     }
 
@@ -584,13 +613,14 @@ impl GraphSink for SqliteStore {
         {
             let mut stmt = tx
                 .prepare(
-                    "INSERT INTO diagnostics (project_id, phase, code, severity, message, location, payload, created_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    "INSERT INTO diagnostics (project_id, sub_project_id, phase, code, severity, message, location, payload, created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 )
                 .map_err(DomainError::infra)?;
             for d in &delta.diagnostics {
                 stmt.execute(params![
                     d.project_id.get(),
+                    d.sub_project_id.map(|s| s.get()),
                     d.phase.as_str(),
                     d.code,
                     serde_json::to_string(&d.severity).unwrap_or_else(|_| "\"info\"".into()),
@@ -1089,7 +1119,7 @@ impl DiagnosticSink for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT project_id, phase, code, severity, message, location, payload
+                "SELECT project_id, sub_project_id, phase, code, severity, message, location, payload
                  FROM diagnostics WHERE project_id = ?1 ORDER BY id DESC LIMIT ?2",
             )
             .map_err(DomainError::infra)?;
@@ -1097,15 +1127,54 @@ impl DiagnosticSink for SqliteStore {
             .query_map(params![project_id.get(), limit as i64], |r| {
                 Ok(Diagnostic {
                     project_id: ProjectId(r.get(0)?),
-                    phase: Phase(r.get(1)?),
-                    code: r.get(2)?,
+                    sub_project_id: r.get::<_, Option<i64>>(1)?.map(SubProjectId),
+                    phase: Phase(r.get(2)?),
+                    code: r.get(3)?,
                     severity: parse_json::<Severity>(
-                        &r.get::<_, String>(3).unwrap_or_else(|_| "\"info\"".into()),
+                        &r.get::<_, String>(4).unwrap_or_else(|_| "\"info\"".into()),
                     )
                     .unwrap_or(Severity::Info),
-                    message: r.get(4)?,
-                    location: r.get(5)?,
-                    payload: parse_json(&r.get::<_, String>(6).unwrap_or_else(|_| "null".into()))
+                    message: r.get(5)?,
+                    location: r.get(6)?,
+                    payload: parse_json(&r.get::<_, String>(7).unwrap_or_else(|_| "null".into()))
+                        .unwrap_or(Value::Null),
+                })
+            })
+            .map_err(DomainError::infra)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
+
+    fn list_diagnostics_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<Diagnostic>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT project_id, sub_project_id, phase, code, severity, message, location, payload
+                 FROM diagnostics
+                 WHERE project_id = ?1 AND code NOT LIKE ?2 ESCAPE '\\'
+                 ORDER BY id DESC LIMIT ?3",
+            )
+            .map_err(DomainError::infra)?;
+        let pattern = format!("{}%", like_escape(exclude_prefix));
+        let rows = stmt
+            .query_map(params![project_id.get(), pattern, limit as i64], |r| {
+                Ok(Diagnostic {
+                    project_id: ProjectId(r.get(0)?),
+                    sub_project_id: r.get::<_, Option<i64>>(1)?.map(SubProjectId),
+                    phase: Phase(r.get(2)?),
+                    code: r.get(3)?,
+                    severity: parse_json::<Severity>(
+                        &r.get::<_, String>(4).unwrap_or_else(|_| "\"info\"".into()),
+                    )
+                    .unwrap_or(Severity::Info),
+                    message: r.get(5)?,
+                    location: r.get(6)?,
+                    payload: parse_json(&r.get::<_, String>(7).unwrap_or_else(|_| "null".into()))
                         .unwrap_or(Value::Null),
                 })
             })
@@ -1118,31 +1187,50 @@ impl DiagnosticSink for SqliteStore {
         &self,
         project_id: ProjectId,
         code_prefix: &str,
+        sub_project_id: Option<&[SubProjectId]>,
         limit: u32,
     ) -> Result<Vec<Diagnostic>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT project_id, phase, code, severity, message, location, payload
-                 FROM diagnostics
-                 WHERE project_id = ?1 AND code LIKE ?2 ESCAPE '\\'
-                 ORDER BY id DESC LIMIT ?3",
-            )
-            .map_err(DomainError::infra)?;
-        let pattern = format!("{}%", like_escape(code_prefix));
+        let mut sql = String::from(
+            "SELECT project_id, sub_project_id, phase, code, severity, message, location, payload
+             FROM diagnostics WHERE project_id = ?1 AND code LIKE ?2 ESCAPE '\\'",
+        );
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(project_id.get()),
+            Box::new(format!("{}%", like_escape(code_prefix))),
+        ];
+        if let Some(ids) = sub_project_id {
+            if !ids.is_empty() {
+                let placeholders: Vec<String> =
+                    ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 3)).collect();
+                // 共享诊断（sub_project_id IS NULL，如跨子工程的表/队列）在任一过滤下都保留，
+                // 与图视图「共享节点始终显示」的语义一致。
+                sql.push_str(&format!(
+                    " AND (sub_project_id IS NULL OR sub_project_id IN ({}))",
+                    placeholders.join(", ")
+                ));
+                for s in ids {
+                    binds.push(Box::new(s.get()));
+                }
+            }
+        }
+        sql.push_str(&format!(" ORDER BY id DESC LIMIT ?{}", binds.len() + 1));
+        binds.push(Box::new(limit as i64));
+        let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
         let rows = stmt
-            .query_map(params![project_id.get(), pattern, limit as i64], |r| {
+            .query_map(rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), |r| {
                 Ok(Diagnostic {
                     project_id: ProjectId(r.get(0)?),
-                    phase: Phase(r.get(1)?),
-                    code: r.get(2)?,
+                    sub_project_id: r.get::<_, Option<i64>>(1)?.map(SubProjectId),
+                    phase: Phase(r.get(2)?),
+                    code: r.get(3)?,
                     severity: parse_json::<Severity>(
-                        &r.get::<_, String>(3).unwrap_or_else(|_| "\"info\"".into()),
+                        &r.get::<_, String>(4).unwrap_or_else(|_| "\"info\"".into()),
                     )
                     .unwrap_or(Severity::Info),
-                    message: r.get(4)?,
-                    location: r.get(5)?,
-                    payload: parse_json(&r.get::<_, String>(6).unwrap_or_else(|_| "null".into()))
+                    message: r.get(5)?,
+                    location: r.get(6)?,
+                    payload: parse_json(&r.get::<_, String>(7).unwrap_or_else(|_| "null".into()))
                         .unwrap_or(Value::Null),
                 })
             })
@@ -1166,18 +1254,34 @@ impl DiagnosticSink for SqliteStore {
         &self,
         project_id: ProjectId,
         code_prefix: &str,
+        sub_project_id: Option<&[SubProjectId]>,
     ) -> Result<Vec<(String, u64)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT severity, COUNT(*) FROM diagnostics
-                 WHERE project_id = ?1 AND code LIKE ?2 ESCAPE '\\'
-                 GROUP BY severity",
-            )
-            .map_err(DomainError::infra)?;
-        let pattern = format!("{}%", like_escape(code_prefix));
+        let mut sql = String::from(
+            "SELECT severity, COUNT(*) FROM diagnostics
+             WHERE project_id = ?1 AND code LIKE ?2 ESCAPE '\\'",
+        );
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(project_id.get()),
+            Box::new(format!("{}%", like_escape(code_prefix))),
+        ];
+        if let Some(ids) = sub_project_id {
+            if !ids.is_empty() {
+                let placeholders: Vec<String> =
+                    ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 3)).collect();
+                sql.push_str(&format!(
+                    " AND (sub_project_id IS NULL OR sub_project_id IN ({}))",
+                    placeholders.join(", ")
+                ));
+                for s in ids {
+                    binds.push(Box::new(s.get()));
+                }
+            }
+        }
+        sql.push_str(" GROUP BY severity");
+        let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
         let rows = stmt
-            .query_map(params![project_id.get(), pattern], |r| {
+            .query_map(rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), |r| {
                 let raw_sev: String = r.get(0)?;
                 let sev = parse_json::<Severity>(&raw_sev).unwrap_or(Severity::Info);
                 let label = match sev {

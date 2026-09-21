@@ -293,6 +293,7 @@ pub struct SymbolEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub project_id: ProjectId,
+    pub sub_project_id: Option<SubProjectId>,
     pub phase: Phase,
     pub code: String,
     pub severity: Severity,

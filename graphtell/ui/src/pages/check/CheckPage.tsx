@@ -21,6 +21,7 @@ import { useAsync } from '@/shared/lib/useAsync';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { StatCard } from '@/shared/ui/StatCard';
 import { checkApi } from '@/entities/check';
+import { projectApi, type SubProject } from '@/entities/project';
 import {
   SEVERITY_COLOR,
   SEVERITY_RANK,
@@ -35,6 +36,11 @@ const SEVERITY_LABEL: Record<Severity, string> = {
   error: '错误',
   warning: '警告',
   info: '提示',
+};
+
+const SUB_ROLE_LABEL: Record<string, string> = {
+  frontend: '前端',
+  backend: '后端',
 };
 
 /**
@@ -58,15 +64,33 @@ export function CheckPage() {
   const [runError, setRunError] = useState<string | null>(null);
   const [severity, setSeverity] = useState<Severity | 'all'>('all');
   const [ruleFilter, setRuleFilter] = useState<string | 'all'>('all');
+  const [subFilter, setSubFilter] = useState<number[]>([]);
   const [limit] = useState(20);
 
-  // 进入即加载上一次落库结果（自动检查已写入），不重跑。
-  const stored = useAsync(() => checkApi.violations(id, 500), [id]);
+  // 子工程列表（供子项目筛选器）。
+  const { data: subsData } = useAsync(() => projectApi.subProjects(id), [id]);
+  const subs: SubProject[] = subsData ?? [];
+
+  // 进入即加载上一次落库结果（自动检查已写入），不重跑；按子项目筛选时服务端已过滤。
+  const stored = useAsync(
+    () => checkApi.violations(id, 500, subFilter.length ? subFilter : undefined),
+    [id, subFilter],
+  );
   // 规则列表用于严重度筛选下拉与「已装载规则」计数。
   const rules = useAsync(() => checkApi.rules(), []);
 
   const violations = report?.violations ?? stored.data ?? [];
-  const hasResults = violations.length > 0 || report !== null;
+  // 子项目筛选：命中任一所选子工程，或归属为空（共享资源，如图视图「共享节点始终显示」）。
+  const scoped = useMemo(
+    () =>
+      subFilter.length === 0
+        ? violations
+        : violations.filter(
+            (v) => v.sub_project_id == null || subFilter.includes(v.sub_project_id),
+          ),
+    [violations, subFilter],
+  );
+  const hasResults = scoped.length > 0 || report !== null;
 
   const refresh = async () => {
     setRunning(true);
@@ -87,13 +111,13 @@ export function CheckPage() {
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { critical: 0, error: 0, warning: 0, info: 0 };
-    for (const v of violations) c[v.severity] = (c[v.severity] ?? 0) + 1;
+    for (const v of scoped) c[v.severity] = (c[v.severity] ?? 0) + 1;
     return c;
-  }, [violations]);
+  }, [scoped]);
 
   const filtered = useMemo(
     () =>
-      violations
+      scoped
         .filter((v) => severity === 'all' || v.severity === severity)
         .filter((v) => ruleFilter === 'all' || v.rule_id === ruleFilter)
         .slice()
@@ -102,7 +126,7 @@ export function CheckPage() {
             SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
             a.rule_id.localeCompare(b.rule_id),
         ),
-    [violations, severity, ruleFilter],
+    [scoped, severity, ruleFilter],
   );
 
   const copyLocation = (v: Violation) => {
@@ -263,6 +287,19 @@ export function CheckPage() {
                   { label: t('全部规则'), value: 'all' },
                   ...(rules.data ?? []).map((r) => ({ label: r.title, value: r.id })),
                 ]}
+              />
+              <Select
+                size="small"
+                mode="multiple"
+                allowClear
+                style={{ minWidth: 200 }}
+                placeholder={t('全部子工程')}
+                value={subFilter}
+                onChange={(v) => setSubFilter(v ?? [])}
+                options={subs.map((s) => ({
+                  label: `${s.name}（${SUB_ROLE_LABEL[s.role] ?? s.role}）`,
+                  value: s.id,
+                }))}
               />
             </Space>
             <Table<Violation>

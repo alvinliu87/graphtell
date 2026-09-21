@@ -139,6 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols ON symbol_tables(project_id, table_name);
 CREATE TABLE IF NOT EXISTS diagnostics (
     id          INTEGER PRIMARY KEY,
     project_id  INTEGER NOT NULL,
+    sub_project_id INTEGER,
     phase       TEXT NOT NULL DEFAULT '',
     code        TEXT NOT NULL,
     severity    TEXT NOT NULL DEFAULT 'info',

@@ -1,0 +1,44 @@
+# 接口卫生（REST 语义）规则。
+#
+# 这批规则只依赖 HttpContract 节点的 name / identity —— 而 name 是跨语言
+# 归一化后的（PHP 的路由、Java 的 @RequestMapping、JS 的前端契约都汇成
+# "GET /api/xxx" 这种形状），所以放在 global 层、不声明 languages 也能跑。
+#
+# 为什么动词表只用强动词：edit / update / modify 常被用作「编辑表单」这种
+# GET 视图（返回 HTML 表单、本身只读），算进来会把一批正常页面报成违规；
+# delete / remove / destroy / truncate / insert / reset / purge / clear / wipe
+# 才是无歧义的写动作。要放宽就改下面的 any_of 列表。
+
+rules:
+  - id: get-with-write-verb
+    title: GET 接口却在做写操作
+    description: >-
+      名字以 GET 开头、却包含写动词（delete / remove / destroy / truncate /
+      insert / reset / purge / clear / wipe）的 HTTP 契约。REST 语义里 GET
+      必须是只读的：带删除 / 清空动作的 GET 既破坏缓存与重试安全，也容易被
+      爬虫或浏览器预取误触发写操作。
+    severity: warning
+    category: api-hygiene
+    params:
+      - key: name_filter
+        label: 只看匹配的契约
+        description: 名称子串过滤（大小写不敏感），留空 = 全部契约。
+        kind: string
+        default: ""
+    applies_to:
+      kinds: [HttpContract]
+      name_contains: "$name_filter"
+    when:
+      - name_starts_with: "get "
+      - any_of:
+          - name_contains: delete
+          - name_contains: remove
+          - name_contains: destroy
+          - name_contains: truncate
+          - name_contains: insert
+          - name_contains: reset
+          - name_contains: purge
+          - name_contains: clear
+          - name_contains: wipe
+    message: "契约 {name} 是 GET 却包含写动词，违反 REST 只读语义（可能被重试 / 预取误触发写操作）"
+    remediation: "把该接口改成 POST / DELETE 等写方法；若确为只读的清空 / 删除预览，改名避开写动词"

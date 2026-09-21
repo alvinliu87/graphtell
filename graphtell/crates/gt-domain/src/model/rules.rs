@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::model::graph::{Diagnostic, Severity};
-use crate::model::ids::{NodeId, ProjectId};
+use crate::model::ids::{NodeId, ProjectId, SubProjectId};
 use crate::model::kinds::Phase;
 
 /// 违规诊断的 code 前缀（用于与建图期诊断区分、以及重跑时清理）。
@@ -36,6 +36,25 @@ pub fn check_phase() -> Phase {
 /// 必须显式带前缀，不能靠"是不是纯数字"来猜 —— 字符串型参数尤其如此：
 /// `"50"` 既可能是字面量也可能是引用，猜错就是静默的错误结果。
 pub const PARAM_PREFIX: char = '$';
+
+/// 解析一个可能是"字面量 / 参数引用"的字符串。
+///
+/// * `"$key"` → 引用参数 `key`
+/// * `"$$x"` → 字面量 `$x`（转义：先吞一个 `$`）
+/// * `"$"` 或 `"50"` → 字面量（孤立的 `$` 不构成引用）
+fn parse_param_ref(s: String) -> Result<String, String> {
+    if let Some(rest) = s.strip_prefix("$$") {
+        Ok(format!("{PARAM_PREFIX}{rest}"))
+    } else if let Some(rest) = s.strip_prefix(PARAM_PREFIX) {
+        if rest.is_empty() {
+            Ok(s)
+        } else {
+            Err(rest.to_string())
+        }
+    } else {
+        Ok(s)
+    }
+}
 
 /// 规则参数可取的值：字面量，或引用 `params` 里声明的参数（写 `$key`）。
 ///
@@ -69,9 +88,9 @@ impl<'de> Deserialize<'de> for NumOrParam {
         let v = Value::deserialize(d)?;
         Ok(match v {
             Value::Number(n) => NumOrParam::Num(n.as_u64().unwrap_or(0)),
-            Value::String(s) => match s.strip_prefix(PARAM_PREFIX) {
-                Some(k) => NumOrParam::Param(k.to_string()),
-                None => NumOrParam::Num(s.parse().unwrap_or(0)),
+            Value::String(s) => match parse_param_ref(s) {
+                Ok(literal) => NumOrParam::Num(literal.parse().unwrap_or(0)),
+                Err(key) => NumOrParam::Param(key),
             },
             _ => NumOrParam::Num(0),
         })
@@ -104,9 +123,9 @@ impl<'de> Deserialize<'de> for StrOrParam {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = Value::deserialize(d)?;
         Ok(match v {
-            Value::String(s) => match s.strip_prefix(PARAM_PREFIX) {
-                Some(k) => StrOrParam::Param(k.to_string()),
-                None => StrOrParam::Str(s),
+            Value::String(s) => match parse_param_ref(s) {
+                Ok(literal) => StrOrParam::Str(literal),
+                Err(key) => StrOrParam::Param(key),
             },
             other => StrOrParam::Str(other.to_string()),
         })
@@ -609,6 +628,8 @@ pub struct Violation {
     pub file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_project_id: Option<SubProjectId>,
 }
 
 impl Violation {
@@ -630,6 +651,7 @@ impl Violation {
     pub fn to_diagnostic(&self) -> Diagnostic {
         Diagnostic {
             project_id: self.project_id,
+            sub_project_id: self.sub_project_id,
             phase: check_phase(),
             code: self.code(),
             severity: self.severity,
@@ -645,6 +667,7 @@ impl Violation {
                 "remediation": self.remediation,
                 "file": self.file,
                 "line": self.line,
+                "sub_project_id": self.sub_project_id.map(|s| s.get()),
             }),
         }
     }
@@ -668,6 +691,7 @@ impl Violation {
                 .map(|s| s.to_string()),
             file: p.get("file").and_then(|v| v.as_str()).map(|s| s.to_string()),
             line: p.get("line").and_then(|v| v.as_u64()).map(|v| v as u32),
+            sub_project_id: d.sub_project_id,
         })
     }
 }
@@ -784,6 +808,17 @@ mod tests {
         // `limit: "$max_nodes"` 引用了没声明的参数 —— 求值时退化成 0，
         // 候选集直接变空（规则静默 0 命中），必须在装载阶段暴露。
         assert_eq!(r.undeclared_params(), vec!["max_nodes".to_string()]);
+    }
+
+    #[test]
+    fn 美元符号的字面量与引用可以区分() {
+        // `$` 既是参数引用前缀，也可能是**名字本身的一部分**（PHP 变量、
+        // 配置键名）。转义规则：`$$x` 表示字面量 `$x`，孤立的 `$` 也是字面量。
+        let as_str = |v: serde_json::Value| -> StrOrParam { serde_json::from_value(v).unwrap() };
+        assert!(matches!(as_str(json!("$key")), StrOrParam::Param(k) if k == "key"));
+        assert!(matches!(as_str(json!("$$key")), StrOrParam::Str(s) if s == "$key"));
+        assert!(matches!(as_str(json!("$")), StrOrParam::Str(s) if s == "$"));
+        assert!(matches!(as_str(json!("plain")), StrOrParam::Str(s) if s == "plain"));
     }
 
     #[test]

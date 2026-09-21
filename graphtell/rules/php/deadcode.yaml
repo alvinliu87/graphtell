@@ -2,13 +2,14 @@
 #
 # 为什么必须声明 `languages: [php]`：
 # 这几条的判据是 PHP FKB 才产出的边 —— `Triggers`（事件触发）、
-# `Emits` / `ListensTo`（事件总线）、`PublishesTo`（队列投递）。
-# 实测 8 个工程：这些边**只存在于 PHP 工程**（p1~p5），
-# Java 工程（p6/p7/p8）一条都没有。若不在环境上挡住，
+# `PublishesTo`（队列投递）。实测 8 个工程：这些边只在 PHP 工程（p1~p5）出现，
+# Java 工程（p6~p8）一条都没有。若不在环境上挡住，
 # 在纯 Java 工程上跑会把每个事件 / 队列节点都报成"没人用"—— 全是恒真误报。
 #
-# 以后 Java / JS 的 FKB 产出同名边时，把对应规则复制到 rules/java/ 即可，
-# global 层不需要改动。
+# 注意：`Emits` / `ListensTo`（前端事件总线）是 **JS** 边，不在本文件 ——
+# 它们已经搬到 `rules/js/deadcode.yaml`。`orphan-eventbus` 那类规则曾误标成 php，
+# 在 php 工程上因 Emits 边不存在被 `rules_unavailable` 静默跳过，等于没生效；
+# 现已改成在 `rules/js` 里按 javascript 语言声明。
 
 rules:
   # 注意：Event 与 EventBus 的边种类不同，**不能合并成一条规则**。
@@ -28,19 +29,6 @@ rules:
       - no_incoming: Triggers
     message: "事件 {name} 没有任何触发方（无 Triggers 入边）"
     remediation: "确认事件是否仍在用；若已废弃则删除声明"
-
-  - id: orphan-eventbus
-    title: 从未被发布的事件总线
-    description: "EventBus 节点没有任何 Emits 入边 —— 声明了但没有发布方。"
-    severity: info
-    category: deadcode
-    applies_to:
-      kinds: [EventBus]
-      languages: [php]
-    when:
-      - no_incoming: Emits
-    message: "事件总线 {name} 没有任何发布方（无 Emits 入边）"
-    remediation: "确认总线是否仍在用；若已废弃则删除声明"
 
   - id: orphan-queue
     title: 从未被投递的队列

@@ -3,14 +3,22 @@
 # 这三条是**最有价值也最容易验证**的规则：它们同时是产品价值（幽灵调用 / 死端点
 # 是真 bug）和图的验收装置（跑出 0 条，说明很可能是边没建出来）。
 
+# 为什么这两条都不是 `error`：
+#
+# CRMEB 上这条规则曾报出 128 条 error，逐条核验后**没有一条是真 bug** ——
+# 它们的 `handler` 属性都写着 `v1.marketing.liveGoods/setShow` 这类路由字符串
+# 或闭包，路由在 `route.php` 里真实存在、运行时可用，是 FKB 没把它解析成
+# Method 节点。图上无法区分"路由真的没有 handler"和"FKB 没解析出来"，
+# 而 `error` 是最强的信号：它一旦不可信，用户学会的就是忽略整份报告。
+# 因此在 FKB 补上路由字符串解析之前，这两条一律 `warning`。
 rules:
-  - id: http-contract-without-handler
-    title: HTTP 契约没有处理者
+  - id: http-contract-handler-unresolved
+    title: 契约写了 handler 但没解析到方法
     description: >-
-      图上存在 HTTP 契约节点，但它没有 HandledBy 出边指向任何 handler 方法。
-      真实含义是"路由表里有，但控制器方法没解析到" —— 点击即 500。
-      （方向说明：契约桥的边是 `契约 --HandledBy--> handler 方法`，是**出边**。）
-    severity: error
+      契约节点带有 `handler` 属性（路由注册里写明了`控制器/方法`或闭包），
+      却没有 HandledBy 出边 —— 说明**路由是存在的，只是图没把它解析到方法节点**。
+      这首先是一条"图不完整"的信号：基于它做的下游结论都不能当定论。
+    severity: warning
     category: contract
     params:
       - key: name_filter
@@ -25,8 +33,37 @@ rules:
       name_contains: "$name_filter"
     when:
       - no_outgoing: HandledBy
-    message: "契约 {name} 没有解析到 handler（无 HandledBy 出边），请求它会在运行时失败"
-    remediation: "确认路由注册与控制器方法是否真实存在；若存在，说明图的解析有缺口（FKB 的 handler 规则需要补充）"
+      - not: { property_missing: handler }
+    message: "契约 {name} 注册了 handler 但图没解析到方法（无 HandledBy 出边）—— 路由多半是好的，是图的解析有缺口"
+    remediation: "补 FKB 的路由字符串 / 闭包 handler 解析规则；在此之前不要把它当成'接口坏了'的结论"
+
+  - id: http-contract-without-handler
+    title: HTTP 契约没有 handler
+    description: >-
+      契约节点连 `handler` 属性都没有，也没有 HandledBy 出边 ——
+      来源不明（自动路由推断、前端拼出来的路径、或对端压根没注册）。
+      可能是真死链，也可能是图没识别出来，因此只作警告。
+
+      只看**后端**契约：前端契约（`side=frontend`）命中它时，会和「幽灵调用」
+      那条规则**对同一批节点重复报一遍**（实测 p7/p8 上 123 / 162 条全部重叠），
+      等于把同一件事说两次、把警告数翻倍。
+    severity: warning
+    category: contract
+    params:
+      - key: name_filter
+        label: 只看匹配的契约
+        description: 名称子串过滤（大小写不敏感），留空 = 全部契约。
+        kind: string
+        default: ""
+    applies_to:
+      kinds: [HttpContract]
+      name_contains: "$name_filter"
+    when:
+      - no_outgoing: HandledBy
+      - property_missing: handler
+      - property_is: { name: side, value: backend }
+    message: "契约 {name} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由"
+    remediation: "确认该路径是否真的有服务端实现；前端侧调用还要同时看「幽灵调用」那条规则"
 
   - id: frontend-calls-missing-backend
     title: 前端调用了后端不存在的接口（幽灵调用）

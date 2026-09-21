@@ -1,0 +1,68 @@
+# 前端（JS / TS）生态的死代码规则。
+#
+# 为什么必须单开 `rules/js/` 并声明 `languages: [javascript]`：
+# `EventBus` 节点与 `Emits` / `ListensTo` 边是**前端事件总线**的语义，
+# 由 js/uni-app 的 FKB 产出。放到 global 层会在纯后端工程上跑，
+# 那时图上根本没有这些节点 —— 规则会以"0 命中"收场，被读成"没问题"。
+#
+# `orphan-*` 那三条是 PHP 的**事件 / 队列**语义（Triggers / PublishesTo），
+# 与本文件的事件总线不是一回事，两者分目录放置。
+
+rules:
+  # 方向一：有人发、没人听 —— 广播发出后被丢弃。
+  - id: eventbus-emitted-without-listener
+    title: 事件被发布但没人监听
+    description: >-
+      EventBus 节点有 Emits 入边（发布方）但没有任何 ListensTo 入边（监听方）。
+      典型成因是重构时把监听方删了、emit 那行忘了删 —— 这类代码不会报错，
+      只是**静默失效**，往往几个月后才发现。
+    severity: info
+    category: deadcode
+    applies_to:
+      kinds: [EventBus]
+      languages: [javascript]
+    when:
+      - has_incoming: Emits
+      - no_incoming: ListensTo
+    message: "事件 {name} 有发布方但图上没有监听者 —— 广播发出后无人处理（也可能是监听方用动态名注册、图没解析到）"
+    remediation: "确认监听方是否仍存在；若已废弃则删除 emit，别留一个永远没人接的广播"
+
+  # 方向二：有人听、没人发 —— 监听方成了死代码。
+  # 与方向一**不能合并**成一条：两者修法相反（删 emit vs 删 listener），
+  # 合并后文案只能写成含糊的"不匹配"，等于把判断推回给用户。
+  - id: eventbus-listened-without-emitter
+    title: 事件被监听但从未发布
+    description: >-
+      EventBus 节点有 ListensTo 入边（监听方）但没有任何 Emits 入边（发布方）。
+      监听方因此永远不会触发 —— 它是**死代码**，删掉它不会有任何行为变化。
+    severity: info
+    category: deadcode
+    applies_to:
+      kinds: [EventBus]
+      languages: [javascript]
+    when:
+      - has_incoming: ListensTo
+      - no_incoming: Emits
+    message: "事件 {name} 有监听方但图上没有任何发布者 —— 该监听永远不会触发（也可能是发布方用动态名、图没解析到）"
+    remediation: "确认发布方是否已被删除；若是，删掉这段监听（它不可能被执行）"
+
+  # 方向三：两端都没有 —— 彻底孤儿。前两条要求"至少一端存在"才能判断修法
+  # （删 emit vs 删 listener），这条则两端皆空，整条总线在图上孤立。
+  # 与 `orphan-event`（PHP 的 Triggers 事件）/ `orphan-queue`（PHP 的 PublishesTo 队列）
+  # 不是一回事：这里是前端事件总线（Emits / ListensTo）。
+  - id: eventbus-orphan
+    title: 既没人发也没人听的事件总线
+    description: >-
+      EventBus 节点既没有 Emits 入边（发布方）也没有 ListensTo 入边（监听方）。
+      与另外两条"方向不对称"的规则不同，这条是**彻底孤儿**：两端都没有，
+      整条总线在图上孤立 —— 多半是重构遗留，或发布 / 监听都用了动态名导致图没解析到。
+    severity: info
+    category: deadcode
+    applies_to:
+      kinds: [EventBus]
+      languages: [javascript]
+    when:
+      - no_incoming: Emits
+      - no_incoming: ListensTo
+    message: "事件总线 {name} 既没有任何发布方也没有任何监听者 —— 图上的彻底孤儿（也可能是动态名导致未解析）"
+    remediation: "确认该事件总线是否还在用；若已废弃则整体删除，别留一条两端都空的总线"

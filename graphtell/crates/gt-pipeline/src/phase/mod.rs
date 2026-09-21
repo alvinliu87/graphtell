@@ -6,3 +6,4 @@ pub mod ingest;
 pub mod prepare;
 pub mod propagate;
 pub mod resolve;
+pub mod taint;

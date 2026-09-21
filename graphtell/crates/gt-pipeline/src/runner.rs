@@ -15,7 +15,7 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::context::PipelineContext;
-use crate::phase::{annotate, cf_ast, ingest, prepare, propagate, resolve};
+use crate::phase::{annotate, cf_ast, ingest, prepare, propagate, resolve, taint};
 
 /// 流水线所需的基础设施集合（依赖倒置：由组装根注入）。
 pub trait PipelineInfrastructure {
@@ -174,6 +174,15 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     propagate::run(&mut ctx);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+
+    // ---------------------------------------------------------- P9 Taint
+    // 必须在 P7 之后：依赖已解析的调用点（ctx.ws.calls）与各调用点的参数文本。
+    // 与 P4 的 `Taint(sink)` 标注互补 —— 这里进一步判定"用户数据是否真的流入了 SQL 字符串"。
+    let phase = Phase("Taint".to_string());
+    let started = Instant::now();
+    observer.on_phase_start(project.id, &phase);
+    taint::run(&mut ctx);
     flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
 
     Ok(outcome)

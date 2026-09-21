@@ -26,3 +26,32 @@ rules:
       - fan_in_lte: "$max_fan_in"
     message: "表 {name} 在图上最多只有 {param:max_fan_in} 处读写引用（可能真未使用，也可能是图缺边）"
     remediation: "抽样人工确认；若确实有代码在读写它，说明 FKB 的读写动词规则需要补充"
+
+  # 为什么用 `no_incoming: ReadsDb` 配合 `fan_in_gte` 而不是另写一个"写入处数"谓词：
+  # `fan_in` 数的是**语义入边**（ReadsDb + WritesDb）。既然 `no_incoming: ReadsDb`
+  # 已经把读取边排除干净，剩下的语义入边就**全是写入**，`fan_in_gte` 自然等价于
+  # "写入处数 ≥ 阈值" —— 不用新增谓词种类就能精确表达。
+  - id: write-only-table
+    title: 只写不读的表
+    description: >-
+      表有写入（WritesDb 入边）但图上没有任何读取（ReadsDb 入边）。
+      写进去的数据从不被读：要么是审计 / 日志类表的预期形态，要么是"写错地方"
+      或"读路径未被 FKB 识别"的缺陷。阈值可按工程调节，只盯"确实在被写"的表。
+    severity: info
+    category: deadcode
+    params:
+      - key: min_writes
+        label: 最少写入处数
+        description: 写入该表的调用点数量 ≥ 该值才报；调到 2~3 可只看"确实在被写"的表，过滤掉偶发单次写入。
+        kind: number
+        default: 1
+        min: 1
+        max: 1000
+    applies_to:
+      kinds: [Table]
+    when:
+      - no_incoming: ReadsDb
+      - has_incoming: WritesDb
+      - fan_in_gte: "$min_writes"
+    message: "表 {name} 被写入（≥ {param:min_writes} 处）但从不被读取 —— 写进去的数据没人用，可能是死写路径或读路径未被识别"
+    remediation: "确认这是否为审计 / 日志类表的预期形态；否则检查是否写错了表，或读它的代码未被 FKB 识别"

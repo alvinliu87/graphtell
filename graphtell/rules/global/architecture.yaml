@@ -35,3 +35,86 @@ rules:
       - fan_in_gte: "$min_fan_in"
     message: "表 {name} 是热点表（语义入边 ≥ {param:min_fan_in}），建议评估缓存 / 读写分离 / 拆分"
     remediation: "用表视角看它的扇入来源，判断是否需要收敛访问入口"
+
+  # 为什么这条用**正向**判据（fan_in_gte）而不是"没人读/没人写"：
+  # 实测 8 个工程里"配置键没有任何读取方"的命中数为 0（后端侧 250 个键全部有读取方），
+  # 反向判据在图上只会得到静默 0 命中 —— 那是最没用的结果。
+  - id: config-read-hotspot
+    title: 配置键被到处直接读取
+    description: >-
+      一个配置键被图上 50 处以上直接读取。它不是 bug，是**改动成本的信号**：
+      改这个键名要同步改几十上百处调用，且任何一处漏改都要到运行时才发现。
+    severity: info
+    category: architecture
+    params:
+      - key: min_reads
+        label: 读取处阈值
+        description: 读取该键的调用点数量 ≥ 该值才报；调低更敏感，调高只看真正散落的键。
+        kind: number
+        default: 50
+        min: 1
+        max: 100000
+    applies_to:
+      kinds: [ConfigKey]
+    when:
+      - fan_in_gte: "$min_reads"
+      # 排除 `$` 开头的键：那是 FKB 把 PHP 变量（如 `config('$name')` 的动态键）
+      # 当成字面键名建出来的节点，不是配置键。留着它只会产出一条看不懂的违规，
+      # 掩盖真正该看的键。
+      - not: { name_starts_with: "$" }
+    message: "配置项 {name} 被 {param:min_reads} 处以上直接读取（共散布在多处调用点），改键名要同步改这么多处"
+    remediation: "收敛到一个配置服务 / 常量，业务代码不要直接散读配置键"
+
+  # 与 write-only-table 是镜像关系，但性质更"软"：只读表在很多工程里是**合法的**
+  # 维表 / 种子表 / 外部系统写入的表。所以这里只作提示，文案也写成"确认写入方是谁"
+  # 而不是"这是 bug"。同样用 `no_incoming: WritesDb` 把写入边排除后，`fan_in` 就只剩读取。
+  - id: read-only-table
+    title: 只读不写的表
+    description: >-
+      表被读取（ReadsDb 入边）但图上没有任何写入（WritesDb 入边）。
+      应用从不写它：数据可能来自外部系统 / ETL / 种子脚本，也可能写路径用了 FKB 没识别的链路。
+      多数情况是合法的只读维表，重点在于"确认写入方是谁"。
+    severity: info
+    category: architecture
+    params:
+      - key: min_reads
+        label: 最少读取处数
+        description: 读取该表的调用点数量 ≥ 该值才报；调高可只看"被大量读取"的只读表，过滤掉偶发查询。
+        kind: number
+        default: 1
+        min: 1
+        max: 1000
+    applies_to:
+      kinds: [Table]
+    when:
+      - no_incoming: WritesDb
+      - has_incoming: ReadsDb
+      - fan_in_gte: "$min_reads"
+    message: "表 {name} 被读取（≥ {param:min_reads} 处）但从不被应用写入 —— 确认写入方（外部 / ETL / 种子）或写路径未被识别"
+    remediation: "确认数据来源；若写入其实发生在应用内，补 FKB 的写表动词识别"
+
+  # 语义扇出 = 方法直接读写的资源（表 / 配置 / 缓存）数。注意 `Calls` 不是语义边，
+  # 不计入这里 —— 所以"扇出高"指的是"搅动大量资源"，不是"调用很多子方法"。
+  # 一个方法同时读写几十个资源，通常是"上帝方法"：难测试、难改、易出回归。
+  - id: hotspot-method
+    title: 高扇出方法（资源耦合热点）
+    description: >-
+      方法的语义扇出（它直接读写的表 / 配置 / 缓存等资源数）很高。
+      一个方法同时搅动大量资源，通常是"上帝方法"：难测试、难改、易出回归。
+      阈值可按工程调节：小库门槛更低。
+    severity: info
+    category: architecture
+    params:
+      - key: min_fan_out
+        label: 语义扇出阈值
+        description: 方法直接触碰的资源（表 / 配置 / 缓存）数 ≥ 该值才报热点；调高只报真正失控的方法。
+        kind: number
+        default: 20
+        min: 1
+        max: 100000
+    applies_to:
+      kinds: [Method]
+    when:
+      - fan_out_gte: "$min_fan_out"
+    message: "方法 {name} 直接读写 {param:min_fan_out} 个以上资源（语义扇出 ≥ 阈值），属于高耦合热点"
+    remediation: "看它是否能按职责拆成多个方法；高扇出往往意味着一个方法包揽了多个用例"

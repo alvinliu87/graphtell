@@ -67,8 +67,15 @@ impl GraphQueryService {
         self.store.list_symbols(project_id, table)
     }
 
+    /// **建图期**诊断（根缺失、断链、identity 冲突等），排除合规违规。
+    ///
+    /// 必须排除 `rule:` 前缀，且与 [`Self::diagnostics_summary`] 同口径：
+    /// 建图诊断与合规违规混在同一张表、只靠 `LIMIT` 截断的话，
+    /// 谁露出来取决于**写入顺序**（合规违规后写、id 更大，会把建图诊断整段挤走），
+    /// 于是页面出现"角标 0 error、表格里也是一堆不相关的东西"。
     pub fn diagnostics(&self, project_id: ProjectId, limit: u32) -> Result<Vec<Diagnostic>> {
-        self.store.list_diagnostics(project_id, limit)
+        self.store
+            .list_diagnostics_excluding(project_id, RULE_CODE_PREFIX, limit)
     }
 
     /// 非规则诊断的严重度汇总（菜单角标用）。
