@@ -4,7 +4,6 @@ import {
   Button,
   Card,
   Col,
-  Collapse,
   Empty,
   Row,
   Segmented,
@@ -16,11 +15,7 @@ import {
   Typography,
   message,
 } from 'antd';
-import {
-  CopyOutlined,
-  PlayCircleOutlined,
-  SafetyCertificateOutlined,
-} from '@ant-design/icons';
+import { CopyOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useOutletContext, useParams } from 'react-router-dom';
 import { useAsync } from '@/shared/lib/useAsync';
 import { PageHeader } from '@/shared/ui/PageHeader';
@@ -43,19 +38,19 @@ const SEVERITY_LABEL: Record<Severity, string> = {
 };
 
 /**
- * 合规检查页：在图上按规则给出的结论。
+ * 合规检查结果页：建图后自动跑出的结论（来自持久化诊断表）。
  *
  * 设计要点：
- * * 规则集来自后端 YAML —— 页面不认识任何具体规则，后端加规则前端无需改动；
- * * 「运行检查」可反复执行，后端保证重跑会清空上一轮违规，UI 看到的永远是
- *   **当前代码**的结论，而不是历史堆积；
- * * 每条违规都给出 `path:line`，可一键复制去 IDE 定位 —— 结论必须可验证。
+ * * 进入页面即直接显示**上一次自动检查**的落库结果，无需手动触发；
+ * * 顶栏「刷新」用于回填/重算：对从未跑过的工程（如本功能上线前建好的工程）
+ *   一键重跑并写回，新工程建图已自动完成这步；
+ * * 规则集拆到独立的「规则集」页，本页只谈结论。
  */
 export function CheckPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
   const { t } = useLocale();
-  // 手动跑完后刷新侧边栏「合规检查」角标（建图自动跑时由菜单自身读取，无需此处）。
+  // 手动重跑/刷新后刷新侧边栏「合规检查」角标。
   const { refreshCheckSummary } = useOutletContext<{ refreshCheckSummary: () => void }>();
 
   const [report, setReport] = useState<CheckReport | null>(null);
@@ -65,37 +60,24 @@ export function CheckPage() {
   const [ruleFilter, setRuleFilter] = useState<string | 'all'>('all');
   const [limit] = useState(20);
 
-  const rules = useAsync(() => checkApi.rules(), []);
+  // 进入即加载上一次落库结果（自动检查已写入），不重跑。
   const stored = useAsync(() => checkApi.violations(id, 500), [id]);
+  // 规则列表用于严重度筛选下拉与「已装载规则」计数。
+  const rules = useAsync(() => checkApi.rules(), []);
 
   const violations = report?.violations ?? stored.data ?? [];
+  const hasResults = violations.length > 0 || report !== null;
 
-  const run = async () => {
+  const refresh = async () => {
     setRunning(true);
     setRunError(null);
     try {
       const r = await checkApi.check(id, []);
       setReport(r);
       refreshCheckSummary();
-      // 有静默规则时不能报"没问题" —— 那会把"规则瞎了"说成"代码干净"。
       if (r.violations.length === 0 && r.rules_silent.length === 0) {
-        message.success(t('检查完成，没有命中任何违规'));
+        message.success(t('刷新完成，没有命中任何违规'));
       }
-    } catch (e) {
-      setRunError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const runOne = async (ruleId: string) => {
-    setRunning(true);
-    setRunError(null);
-    try {
-      const r = await checkApi.check(id, [ruleId]);
-      setReport(r);
-      refreshCheckSummary();
-      setRuleFilter(ruleId);
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -109,17 +91,19 @@ export function CheckPage() {
     return c;
   }, [violations]);
 
-  const filtered = useMemo(() => {
-    return violations
-      .filter((v) => severity === 'all' || v.severity === severity)
-      .filter((v) => ruleFilter === 'all' || v.rule_id === ruleFilter)
-      .slice()
-      .sort(
-        (a, b) =>
-          SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
-          a.rule_id.localeCompare(b.rule_id),
-      );
-  }, [violations, severity, ruleFilter]);
+  const filtered = useMemo(
+    () =>
+      violations
+        .filter((v) => severity === 'all' || v.severity === severity)
+        .filter((v) => ruleFilter === 'all' || v.rule_id === ruleFilter)
+        .slice()
+        .sort(
+          (a, b) =>
+            SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+            a.rule_id.localeCompare(b.rule_id),
+        ),
+    [violations, severity, ruleFilter],
+  );
 
   const copyLocation = (v: Violation) => {
     const loc = v.file ? `${v.file}${v.line ? `:${v.line}` : ''}` : '';
@@ -128,72 +112,21 @@ export function CheckPage() {
     message.success(t('已复制定位'));
   };
 
-  const ruleItems = (rules.data ?? []).map((r) => ({
-    key: r.id,
-    label: (
-      <Space size={8} wrap>
-        <Tag color={SEVERITY_COLOR[r.severity]}>{SEVERITY_LABEL[r.severity]}</Tag>
-        <span style={{ fontWeight: 600 }}>{r.title}</span>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {r.category} · {r.id}
-        </Typography.Text>
-      </Space>
-    ),
-    children: (
-      <div style={{ color: 'rgba(0,0,0,0.65)', fontSize: 13 }}>
-        <div>{r.description ?? t('（无说明）')}</div>
-        <div style={{ marginTop: 8 }}>
-          <Typography.Text type="secondary">
-            {t('作用范围')}：{r.applies_to.kinds.join(', ')}
-          </Typography.Text>
-        </div>
-        <div style={{ marginTop: 6 }}>
-          <Typography.Text type="secondary">
-            {t('适用环境')}：
-            {r.applies_to.languages?.length
-              ? r.applies_to.languages.join(', ')
-              : t('跨语言通用')}
-            {r.applies_to.frameworks?.length
-              ? ` · ${r.applies_to.frameworks.join(', ')}`
-              : ''}
-          </Typography.Text>
-        </div>
-        {r.remediation ? (
-          <div style={{ marginTop: 6 }}>
-            <Typography.Text type="secondary">
-              {t('处理建议')}：{r.remediation}
-            </Typography.Text>
-          </div>
-        ) : null}
-        <Button
-          size="small"
-          style={{ marginTop: 10 }}
-          icon={<PlayCircleOutlined />}
-          loading={running}
-          onClick={() => void runOne(r.id)}
-        >
-          {t('只跑这条规则')}
-        </Button>
-      </div>
-    ),
-  }));
-
   return (
     <>
       <PageHeader
         title={t('合规检查')}
         subtitle={t(
-          '按 YAML 声明的规则在图上检测违规 —— 规则由后端知识库驱动，新增规则不需要改代码',
+          '建图后自动跑出的规则结论（持久化），规则集见「规则集」页 —— 新增规则无需改前端',
         )}
         extra={
           <Space>
             <Button
-              type="primary"
-              icon={<SafetyCertificateOutlined />}
+              icon={<ReloadOutlined />}
               loading={running}
-              onClick={() => void run()}
+              onClick={() => void refresh()}
             >
-              {t('运行检查')}
+              {t('刷新')}
             </Button>
           </Space>
         }
@@ -265,43 +198,34 @@ export function CheckPage() {
         />
       ) : null}
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12} md={6}>
-          <StatCard
-            title={t('已装载规则')}
-            value={report?.rules_total ?? rules.data?.length ?? 0}
-            accent="#7c5cff"
-          />
-        </Col>
-        <Col xs={12} md={6}>
-          <StatCard title={t('错误')} value={counts.error ?? 0} accent="#ff4d4f" />
-        </Col>
-        <Col xs={12} md={6}>
-          <StatCard title={t('警告')} value={counts.warning ?? 0} accent="#fa8c16" />
-        </Col>
-        <Col xs={12} md={6}>
-          <StatCard title={t('提示')} value={counts.info ?? 0} accent="#3d7eff" />
-        </Col>
-      </Row>
+      {!hasResults && !stored.loading ? (
+        <Empty
+          description={t('还没有检查结果 —— 点右上角「刷新」运行一次（新工程建图会自动跑）')}
+          style={{ marginBlock: 48 }}
+        />
+      ) : null}
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={9}>
-          <Card
-            variant="borderless"
-            title={t('规则集')}
-            style={{ borderRadius: 14 }}
-            styles={{ body: { paddingTop: 8 } }}
-          >
-            {rules.loading ? (
-              <Typography.Text type="secondary">{t('加载中…')}</Typography.Text>
-            ) : ruleItems.length === 0 ? (
-              <Empty description={t('没有装载任何规则')} />
-            ) : (
-              <Collapse ghost items={ruleItems} />
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} lg={15}>
+      {hasResults ? (
+        <>
+          <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+            <Col xs={12} md={6}>
+              <StatCard
+                title={t('已装载规则')}
+                value={report?.rules_total ?? rules.data?.length ?? 0}
+                accent="#7c5cff"
+              />
+            </Col>
+            <Col xs={12} md={6}>
+              <StatCard title={t('错误')} value={counts.error ?? 0} accent="#ff4d4f" />
+            </Col>
+            <Col xs={12} md={6}>
+              <StatCard title={t('警告')} value={counts.warning ?? 0} accent="#fa8c16" />
+            </Col>
+            <Col xs={12} md={6}>
+              <StatCard title={t('提示')} value={counts.info ?? 0} accent="#3d7eff" />
+            </Col>
+          </Row>
+
           <Card
             variant="borderless"
             style={{ borderRadius: 14 }}
@@ -309,12 +233,11 @@ export function CheckPage() {
             extra={
               report ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('耗时')} {report.duration_ms}ms · {t('跑了')} {report.rules_run}{' '}
-                  {t('条规则')}
+                  {t('耗时')} {report.duration_ms}ms · {t('跑了')} {report.rules_run} {t('条规则')}
                 </Typography.Text>
               ) : (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('显示上一次检查的结果，点「运行检查」可重新检测')}
+                  {t('显示上一次自动检查的结果，点「刷新」可重算')}
                 </Typography.Text>
               )
             }
@@ -396,8 +319,8 @@ export function CheckPage() {
               ]}
             />
           </Card>
-        </Col>
-      </Row>
+        </>
+      ) : null}
     </>
   );
 }

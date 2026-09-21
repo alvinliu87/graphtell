@@ -1,4 +1,4 @@
-import { Button, Card, Col, Row, Space, Tag } from 'antd';
+import { Button, Card, Col, Empty, Row, Space, Tag } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useProjects } from '@/entities/project';
@@ -35,32 +35,45 @@ export function ProjectsPage() {
         }
       />
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-        <Col xs={24} sm={8}>
-          <StatCard
-            title={t('工程总数')}
-            value={projects.length}
-            accent="#3d7eff"
-            icon={<FolderOpenOutlined />}
-          />
-        </Col>
-        <Col xs={24} sm={8}>
-          <StatCard title={t('已就绪')} value={ready} accent="#16a34a" icon={<DeploymentUnitOutlined />} />
-        </Col>
-        <Col xs={24} sm={8}>
-          {/* 转圈只在**真在跟进**时转（列表在建图期间静默轮询），不是装饰 */}
-          <StatCard title={t('建图中')} value={indexing} accent="#f59e0b" icon={<ReloadOutlined spin={building} />} />
-        </Col>
-      </Row>
+      {!loading && projects.length === 0 ? (
+        <Empty
+          style={{ marginTop: 96 }}
+          description={t('还没有工程 —— 新建一个开始图化分析')}
+        >
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
+            {t('新建工程')}
+          </Button>
+        </Empty>
+      ) : (
+        <>
+          <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+            <Col xs={24} sm={8}>
+              <StatCard
+                title={t('工程总数')}
+                value={projects.length}
+                accent="#3d7eff"
+                icon={<FolderOpenOutlined />}
+              />
+            </Col>
+            <Col xs={24} sm={8}>
+              <StatCard title={t('已就绪')} value={ready} accent="#16a34a" icon={<DeploymentUnitOutlined />} />
+            </Col>
+            <Col xs={24} sm={8}>
+              {/* 转圈只在**真在跟进**时转（列表在建图期间静默轮询），不是装饰 */}
+              <StatCard title={t('建图中')} value={indexing} accent="#f59e0b" icon={<ReloadOutlined spin={building} />} />
+            </Col>
+          </Row>
 
-      <Card
-        variant="borderless"
-        style={{ borderRadius: 14 }}
-        title={t('全部工程')}
-        extra={<Tag color="blue">{t('SQLite 持久化')}</Tag>}
-      >
-        <ProjectTable projects={projects} loading={loading} onDeleted={() => void reload()} />
-      </Card>
+          <Card
+            variant="borderless"
+            style={{ borderRadius: 14 }}
+            title={t('全部工程')}
+            extra={<Tag color="blue">{t('SQLite 持久化')}</Tag>}
+          >
+            <ProjectTable projects={projects} loading={loading} onDeleted={() => void reload()} />
+          </Card>
+        </>
+      )}
 
       <CreateProjectModal
         open={open}

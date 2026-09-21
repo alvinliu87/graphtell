@@ -145,6 +145,9 @@ const dict: Record<Lang, Record<string, string>> = {
 
     // ---- 界面文案（中文即键；zh-CN 回退为原串，en-US 提供英译）----
     '工程总览': 'Projects',
+    '质量门禁': 'Quality Gate',
+    '合规检查': 'Compliance',
+    '规则集': 'Rule Set',
     '图视图': 'Graph',
     '节点浏览': 'Explorer',
     '诊断': 'Diagnostics',

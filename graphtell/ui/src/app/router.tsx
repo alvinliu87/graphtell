@@ -5,6 +5,7 @@ import { GraphPage } from '@/pages/graph/GraphPage';
 import { ExplorerPage } from '@/pages/explorer/ExplorerPage';
 import { DiagnosticsPage } from '@/pages/diagnostics/DiagnosticsPage';
 import { CheckPage } from '@/pages/check/CheckPage';
+import { RulesPage } from '@/pages/check/RulesPage';
 import { RecallPage } from '@/pages/recall/RecallPage';
 // 暂时注释：设置页停用（IDE 打开入口已移除，相关设置无处可用），以后再考虑加回。
 // import { SettingsPage } from '@/pages/settings/SettingsPage';
@@ -20,6 +21,7 @@ export const router = createBrowserRouter([
       { path: 'projects/:projectId/explorer', element: <ExplorerPage /> },
       { path: 'projects/:projectId/diagnostics', element: <DiagnosticsPage /> },
       { path: 'projects/:projectId/check', element: <CheckPage /> },
+      { path: 'projects/:projectId/rules', element: <RulesPage /> },
       { path: 'projects/:projectId/recall', element: <RecallPage /> },
       // { path: 'settings', element: <SettingsPage /> },
     ],
