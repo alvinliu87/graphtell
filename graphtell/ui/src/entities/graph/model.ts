@@ -103,10 +103,12 @@ export const EDGE_COLORS: Record<string, string> = {
   UsesTrait: '#c4b5fd',
   Calls: '#60a5fa',
   HasCallSite: '#e2e8f0',
-  ReadsDb: '#f59e0b',
-  WritesDb: '#f97316',
+  // 读/写库：冷暖对比，避免琥珀/橙混成一片。
+  ReadsDb: '#3b82f6', // 读库：蓝色（冷、只读）
+  WritesDb: '#ea580c', // 写库：深橙色（暖、变更）
   MapsTo: '#64748b', // 结构映射（Model→Table），移出"读/写库"暖色族，改为中性石板色
   ReadsConfig: '#a78bfa',
+  ReadsCache: '#14b8a6', // 读缓存：青色，可见度足够且不与读配置紫冲突
   HandledBy: '#ef4444',
   CallsHttp: '#22c55e',
   Triggers: '#fb7185',

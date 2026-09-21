@@ -147,4 +147,59 @@ describe('GraphCanvas', () => {
     });
     expect(container.textContent).toContain('途经 6 跳');
   });
+
+  it('直接传 hiddenNodeKinds 可隐藏该类节点（过滤逻辑）', () => {
+    act(() => {
+      root.render(
+        <GraphCanvas
+          mode="radial"
+          center={center}
+          rings={rings}
+          edges={edges}
+          hiddenNodeKinds={['Table']}
+        />,
+      );
+    });
+    const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
+    expect(labels).not.toContain('wechat_user'); // 表节点被隐藏
+    expect(labels).toContain('h5_avatar'); // 其它类节点仍在
+  });
+
+  it('点击图例节点项会隐藏该类节点（点击接线 + 过滤端到端）', () => {
+    let hidden: string[] = [];
+    const onToggle = (k: string) => {
+      hidden = hidden.includes(k) ? hidden.filter((x) => x !== k) : [...hidden, k];
+    };
+    const render2 = () =>
+      act(() => {
+        root.render(
+          <GraphCanvas
+            mode="radial"
+            center={center}
+            rings={rings}
+            edges={edges}
+            hiddenNodeKinds={hidden}
+            onToggleNodeKind={onToggle}
+            onToggleEdgeKind={() => {}}
+          />,
+        );
+      });
+    render2();
+
+    // 图例默认展开，直接找「表」图例项并点击。
+    const tableRow = Array.from(container.querySelectorAll('span')).find(
+      (s) => s.textContent === 'node.Table',
+    );
+    expect(tableRow).toBeTruthy();
+    act(() => {
+      tableRow!.click();
+    });
+    expect(hidden).toContain('Table');
+
+    // 套用过滤后的 hiddenNodeKinds 重渲染，验证画布真的去掉了表节点。
+    render2();
+    const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
+    expect(labels).not.toContain('wechat_user'); // 表节点被隐藏
+    expect(labels).toContain('h5_avatar'); // 其它类节点仍在
+  });
 });

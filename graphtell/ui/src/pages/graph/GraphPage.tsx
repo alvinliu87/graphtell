@@ -145,6 +145,22 @@ export function GraphPage() {
   const [fitSignal, setFitSignal] = useState(0);
   /** 子工程过滤：按 `sub_project_id` 多选显示（空数组 = 全部）。多个前端 / 后端各自成一类。 */
   const [subFilter, setSubFilter] = useState<number[]>([]);
+  /**
+   * 图例即筛选：隐藏的节点 / 边 kind。空数组 = 不隐藏。
+   * URL 同步（见下方 effect），便于把"关掉了所有表节点"的视图分享给别人。
+   */
+  const [hiddenNodeKinds, setHiddenNodeKinds] = useState<string[]>([]);
+  const [hiddenEdgeKinds, setHiddenEdgeKinds] = useState<string[]>([]);
+  const toggleNodeKind = useCallback((k: string) => {
+    setHiddenNodeKinds((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
+  }, []);
+  const toggleEdgeKind = useCallback((k: string) => {
+    setHiddenEdgeKinds((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
+  }, []);
+  const resetLegendFilters = useCallback(() => {
+    setHiddenNodeKinds([]);
+    setHiddenEdgeKinds([]);
+  }, []);
   /** 子工程列表（id / name / role），供过滤器与画布着色 / 图例使用。 */
   const { data: subProjectsData } = useAsync(() => projectApi.subProjects(id), [id]);
   const subProjects: SubProject[] = subProjectsData ?? [];
@@ -242,6 +258,33 @@ export function GraphPage() {
   useEffect(() => {
     skipWrite.current = false;
   });
+
+  // 图例筛选 → URL：把隐藏的节点 / 边 kind 写进 `hnk` / `hek`，刷新 / 分享链接仍能还原。
+  useEffect(() => {
+    const hnk = hiddenNodeKinds.join(',');
+    const hek = hiddenEdgeKinds.join(',');
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (hnk) next.set('hnk', hnk);
+        else next.delete('hnk');
+        if (hek) next.set('hek', hek);
+        else next.delete('hek');
+        return next;
+      },
+      { replace: true },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenNodeKinds, hiddenEdgeKinds]);
+
+  // URL → 图例筛选（外部链接 / 前进后退）：仅在挂载时读一次。
+  useEffect(() => {
+    const hnk = params.get('hnk');
+    const hek = params.get('hek');
+    if (hnk) setHiddenNodeKinds(hnk.split(',').filter(Boolean));
+    if (hek) setHiddenEdgeKinds(hek.split(',').filter(Boolean));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 视角未指定 / 非法 → 选第一个有数据的视角
   useEffect(() => {
@@ -753,6 +796,11 @@ export function GraphPage() {
             fitSignal={fitSignal}
             subProjects={subProjects}
             subFilter={subFilter}
+            hiddenNodeKinds={hiddenNodeKinds}
+            hiddenEdgeKinds={hiddenEdgeKinds}
+            onToggleNodeKind={toggleNodeKind}
+            onToggleEdgeKind={toggleEdgeKind}
+            onResetLegendFilters={resetLegendFilters}
             />
 
           {/* 入口类视角（路由 / 定时任务）无链路时给出说明，避免"画面空了 = 坏了"的错觉 */}

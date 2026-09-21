@@ -241,6 +241,23 @@ export interface GraphCanvasProps {
   subFilter?: number[];
   /** 当前工程的子工程列表（含 id / name / role），用于着色与图例。 */
   subProjects?: SubProject[];
+  /**
+   * 图例即筛选：被隐藏的节点 kind 列表（按节点种类显隐）。
+   * 中心节点永远保留作锚点，即使它的 kind 在列表里。空数组（默认）表示不隐藏。
+   * 状态由父组件持有以便 URL 同步。
+   */
+  hiddenNodeKinds?: string[];
+  /**
+   * 图例即筛选：被隐藏的边 kind 列表（按边种类显隐，如关掉全部「读库」即去掉所有
+   * `ReadsDb` 边）。空数组（默认）表示不隐藏。
+   */
+  hiddenEdgeKinds?: string[];
+  /** 点击图例节点项：切换该 kind 的显隐。 */
+  onToggleNodeKind?: (kind: string) => void;
+  /** 点击图例边项：切换该 kind 的显隐。 */
+  onToggleEdgeKind?: (kind: string) => void;
+  /** 一键清空所有图例筛选。 */
+  onResetLegendFilters?: () => void;
 }
 
 /**
@@ -275,6 +292,11 @@ export function GraphCanvas(props: GraphCanvasProps) {
     fitSignal,
     subFilter = [],
     subProjects = [],
+    hiddenNodeKinds = [],
+    hiddenEdgeKinds = [],
+    onToggleNodeKind,
+    onToggleEdgeKind,
+    onResetLegendFilters,
   } = props;
 
   const { t } = useLocale();
@@ -341,6 +363,43 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return { fCenter: center, fRings, fEdges };
   }, [center, rings, edges, subFilter]);
 
+  // 图例即筛选：在「子工程过滤」结果上，再按节点 kind / 边 kind 显隐。
+  // 中心节点永远保留（锚点）；隐藏边时连同被隐藏端点的边一并移除，避免悬空边。
+  const { vCenter, vRings, vEdges } = useMemo(() => {
+    const hn = hiddenNodeKinds ?? [];
+    const he = hiddenEdgeKinds ?? [];
+    if (hn.length === 0 && he.length === 0) {
+      return { vCenter: fCenter, vRings: fRings, vEdges: fEdges };
+    }
+    const hiddenNodeK = new Set(hn);
+    const hiddenEdgeK = new Set(he);
+    const visibleNodeIds = new Set<number>();
+    if (fCenter) visibleNodeIds.add(fCenter.id);
+    for (const ring of fRings) {
+      for (const n of ring) {
+        if (!hiddenNodeK.has(n.kind)) visibleNodeIds.add(n.id);
+      }
+    }
+    const vRings = fRings.map((ring) => ring.filter((n) => !hiddenNodeK.has(n.kind)));
+    const vEdges = fEdges.filter(
+      (e) => !hiddenEdgeK.has(e.kind) && visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to),
+    );
+    return { vCenter: fCenter, vRings, vEdges };
+  }, [fCenter, fRings, fEdges, hiddenNodeKinds, hiddenEdgeKinds]);
+
+  // 图例项取「未过滤」的全集：即便某 kind 已被隐藏也要留在图例里，才能重新点开。
+  const legendNodeKinds = useMemo(
+    () => usedKinds([...(fCenter ? [fCenter.kind] : []), ...(fRings ?? []).flat().map((n) => n.kind)]),
+    [fCenter, fRings],
+  );
+  const legendEdgeKinds = useMemo(
+    () => usedKinds((fEdges ?? []).map((e) => e.kind)),
+    [fEdges],
+  );
+  const hiddenNodeSet = new Set(hiddenNodeKinds ?? []);
+  const hiddenEdgeSet = new Set(hiddenEdgeKinds ?? []);
+  const hasLegendFilter = hiddenNodeSet.size > 0 || hiddenEdgeSet.size > 0;
+
   // 子工程配色：按 id 排序后稳定映射到调色板，同一子工程颜色恒定、多个前端各自不同色。
   const subProjectColors = useMemo(() => {
     const m = new Map<number, string>();
@@ -368,10 +427,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const layout: LayoutResult | null = useMemo(() => {
     if (!fCenter && !clusters?.length && !matrix) return null;
     const input: LayoutInput = {
-      center: fCenter ?? { id: -1, kind: 'Unknown', name: '', ring: 0 },
-      rings: fCenter ? fRings : [],
+      center: vCenter ?? { id: -1, kind: 'Unknown', name: '', ring: 0 },
+      rings: vCenter ? vRings : [],
       // 带上 `seq`（下标）：同一 (id, from, to) 的多条路径靠它区分，见 `edgeKey` 的说明。
-      edges: fEdges.map((e, i) => ({ id: e.id, from: e.from, to: e.to, seq: i })),
+      edges: vEdges.map((e, i) => ({ id: e.id, from: e.from, to: e.to, seq: i })),
       clusters: clusters?.map((c) => ({
         key: c.key,
         label: c.label,
@@ -384,7 +443,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       showIcons: showNodeIcons,
     };
     return layoutOf(mode)(input);
-  }, [mode, fCenter, fRings, fEdges, clusters, matrix, renderW, height]);
+  }, [mode, vCenter, vRings, vEdges, clusters, matrix, renderW, height]);
 
   // 节点尺寸表：箭头回退量 / 选中描边要按节点实际形状（矩形药丸需按半宽，而非固定 12px）。
   // x/y 也要存：箭头边界求交必须以**节点中心**为靶点（clipToRect 的约定），
@@ -1135,6 +1194,23 @@ export function GraphCanvas(props: GraphCanvasProps) {
           >
             <span>图例</span>
             <span style={{ color: 'rgba(0,0,0,0.35)' }}>{legendOpen ? '▾' : '▸'}</span>
+            {hasLegendFilter ? (
+              <span
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onResetLegendFilters?.();
+                }}
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 11,
+                  fontWeight: 400,
+                  color: '#2563eb',
+                  cursor: 'pointer',
+                }}
+              >
+                {t('重置')}
+              </span>
+            ) : null}
           </div>
           {legendOpen ? (
             <div
@@ -1143,27 +1219,88 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 display: 'grid',
                 gridTemplateColumns: 'auto 1fr',
                 gap: '4px 8px',
-                maxHeight: 220,
+                maxHeight: 248,
                 overflow: 'auto',
               }}
             >
-              {usedKinds(layout.nodes.map((n) => n.kind)).map((k) => {
+              {/* 节点类型：点击 = 在画布显隐该类节点（中心节点恒保留作锚点） */}
+              {legendNodeKinds.map((k) => {
                 const Icon = nodeIcon(k);
+                const hidden = hiddenNodeSet.has(k);
                 return (
-                  <Fragment key={k}>
+                  <Fragment key={`n:${k}`}>
                     <span
+                      onClick={() => onToggleNodeKind?.(k)}
+                      title={t('点击显隐此类节点')}
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
                         color: nodeColor(k),
+                        cursor: 'pointer',
+                        opacity: hidden ? 0.3 : 1,
+                        textDecoration: hidden ? 'line-through' : 'none',
                       }}
                     >
                       <Icon style={{ fontSize: 14 }} />
                     </span>
-                    <span style={{ lineHeight: '18px' }}>{t(`node.${k}`)}</span>
+                    <span
+                      onClick={() => onToggleNodeKind?.(k)}
+                      style={{
+                        lineHeight: '18px',
+                        cursor: 'pointer',
+                        opacity: hidden ? 0.3 : 1,
+                        textDecoration: hidden ? 'line-through' : 'none',
+                      }}
+                    >
+                      {t(`node.${k}`)}
+                    </span>
                   </Fragment>
                 );
               })}
+              {/* 边类型：点击 = 在画布显隐该类边（如关掉全部「读库」即去除所有 ReadsDb 边） */}
+              {legendEdgeKinds.length > 0 ? (
+                <Fragment>
+                  <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
+                  {legendEdgeKinds.map((k) => {
+                    const hidden = hiddenEdgeSet.has(k);
+                    return (
+                      <Fragment key={`e:${k}`}>
+                        <span
+                          onClick={() => onToggleEdgeKind?.(k)}
+                          title={t('点击显隐此类边')}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            cursor: 'pointer',
+                            opacity: hidden ? 0.3 : 1,
+                            textDecoration: hidden ? 'line-through' : 'none',
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 14,
+                              height: 0,
+                              borderTop: `2px solid ${edgeColor(k)}`,
+                              display: 'inline-block',
+                            }}
+                          />
+                        </span>
+                        <span
+                          onClick={() => onToggleEdgeKind?.(k)}
+                          style={{
+                            lineHeight: '18px',
+                            cursor: 'pointer',
+                            opacity: hidden ? 0.3 : 1,
+                            textDecoration: hidden ? 'line-through' : 'none',
+                          }}
+                        >
+                          {t(`edge.${k}`)}
+                        </span>
+                      </Fragment>
+                    );
+                  })}
+                </Fragment>
+              ) : null}
               {subProjects && subProjects.length > 0 ? (
                 <Fragment>
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
