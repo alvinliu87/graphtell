@@ -206,22 +206,21 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('宽扇出星形（> LAYERED_FAN_MAX）→ 改走中心辐射单列，两条硬约束仍成立', () => {
+  it('宽扇出星形（> LAYERED_FAN_MAX）→ 改走中心辐射（非同心环），两条硬约束仍成立', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = Array.from({ length: 24 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
 
     const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
 
-    // 中心在左（唯一的最小 x），叶子单列在右：**左边缘**对齐（x = colLeft + w/2，宽度不同中心 x 略异）
+    // 是中心辐射而非同心环：没有环引导线
+    expect(r.guides).toBeUndefined();
+    // 中心是唯一的最左节点，所有邻居都在中心右侧（无论单列还是等长扇形都如此）
     const centerX = r.nodes.find((n) => n.id === center.id)!.x;
-    const lefts = [
-      ...new Set(fanout.map((n) => {
-        const p = r.nodes.find((x) => x.id === n.id)!;
-        return Math.round(p.x - (p.w ?? 0) / 2);
-      })),
-    ];
-    expect(lefts.length).toBe(1);
+    const minLeft = Math.min(
+      ...r.nodes.filter((n) => n.id !== center.id).map((n) => n.x - (n.w ?? 0) / 2),
+    );
+    expect(centerX).toBeLessThan(minLeft);
     fanout.forEach((n) => {
       expect(r.nodes.find((x) => x.id === n.id)!.x).toBeGreaterThan(centerX);
     });
@@ -278,7 +277,7 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('截图中那种规模（契约读 32 个配置键）仍满足两条硬约束，且同类聚在单列两端', () => {
+  it('截图中那种规模（契约读 32 个配置键）仍满足两条硬约束，且同类聚在弧的一端不被埋没', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = [
       ...Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1)),
@@ -291,11 +290,74 @@ describe('可读性硬约束', () => {
 
     expect(crossings(r.edges)).toBe(0);
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
-    // 同类聚在一起：中心辐射单列按「跳数 → 种类 → 名字」排序，
-    // Cache 排最上、Table 排最下，都不被埋在 30 个配置键中间
-    const col = r.nodes.filter((n) => n.id !== center.id).sort((a, b) => a.y - b.y);
-    expect(col[0].kind).toBe('Cache');
-    expect(col[col.length - 1].kind).toBe('Table');
+    // 「同类聚在一起」在等长扇形下表现为：沿弧按角度排序后，Cache / Table 分居弧的两
+    // 端（头 / 尾），中间整段都是配置键，不被埋在中间
+    const hub = r.nodes.find((n) => n.id === center.id)!;
+    const ordered = r.nodes
+      .filter((n) => n.id !== center.id)
+      .map((n) => ({ kind: n.kind, ang: Math.atan2(n.y - hub.y, n.x - hub.x) }))
+      .sort((a, b) => a.ang - b.ang);
+    const ends = [ordered[0].kind, ordered[ordered.length - 1].kind].sort();
+    expect(ends).toEqual(['Cache', 'Table']);
+    expect(ordered.slice(1, ordered.length - 1).every((n) => n.kind === 'Method')).toBe(true);
+  });
+
+  /**
+   * 回归：适中扇出（截图的 30 个规模）走**等长扇形**——邻居到中心的半径相等，且
+   * 弧上相邻药丸不重叠（限角 110° 的几何保证），两条硬约束仍成立。超大扇出（80）则
+   * 退回单列（圆弧面积会反超单列）。
+   */
+  it('适中扇出（30）→ 等长扇形：邻居到中心半径相等、相邻药丸不重叠', () => {
+    const center = node(1, 'GET /v2/order/invoice_detail', 0);
+    const fanout = Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+
+    const hub = r.nodes.find((n) => n.id === center.id)!;
+    const spokes = r.nodes.filter((n) => n.id !== center.id);
+    // 弧上每个邻居到中心**圆心**的距离应一致（结构上的"等边"）
+    const radii = spokes.map((n) => Math.hypot(n.x - hub.x, n.y - hub.y));
+    const maxR = Math.max(...radii);
+    const minR = Math.min(...radii);
+    expect(maxR - minR).toBeLessThan(1);
+    // 相邻（按角度排序）药丸矩形不重叠：限角保证法向间距 ≥ 药丸高
+    const byAng = spokes
+      .map((n) => ({ n, ang: Math.atan2(n.y - hub.y, n.x - hub.x) }))
+      .sort((a, b) => a.ang - b.ang)
+      .map((x) => x.n);
+    const overlap = (p: typeof byAng[number], q: typeof byAng[number]) => {
+      const ax1 = p.x - (p.w ?? 0) / 2;
+      const ax2 = p.x + (p.w ?? 0) / 2;
+      const ay1 = p.y - (p.h ?? 0) / 2;
+      const ay2 = p.y + (p.h ?? 0) / 2;
+      const bx1 = q.x - (q.w ?? 0) / 2;
+      const bx2 = q.x + (q.w ?? 0) / 2;
+      const by1 = q.y - (q.h ?? 0) / 2;
+      const by2 = q.y + (q.h ?? 0) / 2;
+      return ax1 < bx2 && bx1 < ax2 && ay1 < by2 && by1 < ay2;
+    };
+    for (let i = 1; i < byAng.length; i += 1) {
+      expect(overlap(byAng[i - 1], byAng[i])).toBe(false);
+    }
+
+    expect(crossings(r.edges)).toBe(0);
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+  });
+
+  it('超大扇出（80）→ 退回单列（左边缘对齐），等长弧面积反而更大不应启用', () => {
+    const center = node(1, 'cache_order_summary', 0);
+    const fanout = Array.from({ length: 80 }, (_, i) => node(100 + i, `user_${i}`, 1));
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: n.id, to: center.id }));
+
+    const r = radialLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+
+    const lefts = new Set(
+      fanout.map((n) => Math.round(r.nodes.find((x) => x.id === n.id)!.x - (r.nodes.find((x) => x.id === n.id)!.w ?? 0) / 2)),
+    );
+    expect(lefts.size).toBe(1);
+    expect(crossings(r.edges)).toBe(0);
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
   it('同一对端点的多条路径必须错开，不能画成完全重叠的一条线', () => {

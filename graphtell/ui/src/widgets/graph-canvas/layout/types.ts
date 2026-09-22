@@ -687,28 +687,42 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
   const rightCol = twoSided ? rightNodes : fanout.slice().sort(byRingKindName);
   const leftCol = twoSided ? callers : [];
   const leftW = leftCol.length ? Math.max(...leftCol.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true))) : 0;
-  const rightW = rightCol.length
-    ? Math.max(...rightCol.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true)))
-    : centerW;
 
   // 通道（中心到列的横向间距）= 边的主要水平长度。**不与列高同步无限增长**：
-  // 数据量大时优先让画布「变高」（靠 ROW_GAP）而非「边变长」，因为边太长既难读又
-  // 让发源处更挤。通道 = min(列半高 × 0.6, MAX_GUTTER) 封顶 —— 超出后边沿曲线呈
-  // 放射扇形张开（相邻夹角 = 行距 / 通道宽，通道有上限 ⇒ 间隔反而更大、发源处更疏），
-  // 画布随数据量在纵向上增长。MAX_GUTTER 太小会让曲线到达目标时过于竖直、失去转平
-  // 落地的弧感，故取 ~420px 的折中。
+  // 见下方「等长扇形」分支——扇出适中（约 12~60 个邻居）时直接改用限角圆弧，
+  // 让每个邻居到中心的边等长，从而把单列形态下"顶部 / 底部节点拖出超长边"的问题消除；
+  // 超大扇出（> ~60）时圆弧会撑成又大又圆的画布、面积反超单列，仍退回单列。
   const MAX_GUTTER = 420;
   const rows = Math.max(leftCol.length, rightCol.length);
   const colHalfSpan = (rows * (PILL_H + ROW_GAP)) / 2;
   const gapX = Math.max(HUB_GAP_X, Math.min(Math.round(colHalfSpan * 0.6), MAX_GUTTER));
 
+  // 等长扇形分支：把右列邻居摆到「以中心为圆心、半径 arcR 的圆弧」上（限角 SPAN_MAX，
+  // 避免弧两端药丸因法向间距不足而重叠）。相邻节点弦距恒为 ROW_GAP+PILL_H，故 arcR 由
+  // 弦长与限角唯一确定；所有边从中心辐射、长度都 ≈ arcR。当 arcR 比单列最长边（中心右缘 →
+  // 顶/底节点近侧缘）更短、且邻居数达到 ARC_MIN 时启用；否则维持旧的单列。
+  const SPAN_MAX = (110 * Math.PI) / 180; // 限角 110°：弧端法向间距 ≥ 药丸高，保证不重叠
+  const ARC_MIN = 12;
+  const rightN = rightCol.length;
+  const arcDelta = rightN > 1 ? SPAN_MAX / (rightN - 1) : 0;
+  const arcR = rightN > 1 ? (ROW_GAP + PILL_H) / (2 * Math.sin(arcDelta / 2)) : 0;
+  const colMaxEdge = Math.hypot(gapX, (rightN * (PILL_H + ROW_GAP)) / 2);
+  const useArc = rightN >= ARC_MIN && arcR <= colMaxEdge;
+
   // 双列时中心居中，左→右对称；单侧时退化为旧形态（中心在最左）。
   const hubCx = twoSided ? PAD + leftW + gapX + centerW / 2 : PAD + centerW / 2;
   const leftColLeft = PAD; // 左列药丸左缘
-  const leftColRight = PAD + leftW; // 左列药丸右缘
   const rightColLeft = hubCx + centerW / 2 + gapX;
-  const contentW = Math.max(width, rightColLeft + rightW + PAD);
-  const contentH = Math.max(height, PAD * 2 + rows * (PILL_H + ROW_GAP) - ROW_GAP);
+  const rightW = rightCol.length
+    ? Math.max(...rightCol.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true)))
+    : centerW;
+
+  const contentW = useArc
+    ? Math.max(width, hubCx + centerW / 2 + arcR + rightW / 2 + PAD)
+    : Math.max(width, rightColLeft + rightW + PAD);
+  const contentH = useArc
+    ? Math.max(height, 2 * (arcR * Math.sin(SPAN_MAX / 2) + PILL_H / 2) + 2 * PAD)
+    : Math.max(height, PAD * 2 + rows * (PILL_H + ROW_GAP) - ROW_GAP);
   const cy = Math.round(contentH / 2);
 
   /** 一列药丸的纵向起点：以画布中线为轴上下居中，返回第 i 个的 y。 */
@@ -723,19 +737,38 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     const w = pillWidth(n.kind, n.name, false, input.showIcons ?? true);
     nodes.push({ ...n, x: leftColLeft + w / 2, y: colY(i, leftCol.length), shape: 'rect', w, h: PILL_H });
   });
-  rightCol.forEach((n, i) => {
-    const w = pillWidth(n.kind, n.name, false, input.showIcons ?? true);
-    nodes.push({ ...n, x: rightColLeft + w / 2, y: colY(i, rightCol.length), shape: 'rect', w, h: PILL_H });
-  });
+  if (useArc) {
+    // 右列邻居：以 (hubCx, cy) 为圆心、半径 arcR 等角距排布；中间（列表中央）的节点落在
+    // 最右侧（θ=0），两端向上 / 下张开。排序键仍保持「跳数 → 种类 → 名字」，相邻沿弧相邻。
+    const mid = (rightN - 1) / 2;
+    rightCol.forEach((n, i) => {
+      const w = pillWidth(n.kind, n.name, false, input.showIcons ?? true);
+      const theta = (i - mid) * arcDelta;
+      nodes.push({
+        ...n,
+        x: hubCx + arcR * Math.cos(theta),
+        y: cy + arcR * Math.sin(theta),
+        shape: 'rect',
+        w,
+        h: PILL_H,
+      });
+    });
+  } else {
+    rightCol.forEach((n, i) => {
+      const w = pillWidth(n.kind, n.name, false, input.showIcons ?? true);
+      nodes.push({ ...n, x: rightColLeft + w / 2, y: colY(i, rightCol.length), shape: 'rect', w, h: PILL_H });
+    });
+  }
 
   const pos = new Map(nodes.map((n) => [n.id, [n.x, n.y] as Pt]));
   const parallel = indexParallel(edges);
+  const hubCenter: Pt = [hubCx, cy];
 
   // 直线放射（单段直线，从中心药丸缘直接连到目标药丸缘）：用户要求"直接连直线"、不要
   // 90°/0° 的正交折线。关键纠正：单段直线**可以**零切节点——只要终点落在目标的*近侧边缘*
-  // 而非中心：线段 x 单调增到目标近侧缘，进入目标 x 区间时 y 恰为目标行，只经过目标自己那颗
-  // 药丸；通道区（hubX < x < 目标近侧缘）为空 ⇒ 也不碰中心药丸。各边出发点在中心药丸缘按列序
-  // 单调铺开（attachDy）⇒ 彼此不交叉。这是结构保证，与 gapX 取值无关。
+  // 而非中心。左列（调用方）保持旧逻辑（终点取左列药丸右缘）；右列若走等长扇形，则用
+  // `shrinkToRects` 从中心药丸边界连到目标药丸近侧边界——任意角度都正确，且出射点沿中心
+  // 药丸右缘按目标角度单调铺开 ⇒ 边互不相交（结构保证，与是否弧形无关）。
   // （注：终点若取药丸*中心*，远端浅线会在邻居行处扫入邻居药丸左半，故必须连到近侧边缘。）
   const ATTACH_MAX = PILL_H / 2 - 4;
   const ATTACH_K = ATTACH_MAX / Math.max(colHalfSpan, 1);
@@ -754,23 +787,32 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     const otherId = hubIsFrom ? e.to : e.from;
     const other = hubIsFrom ? b : a;
     const onLeft = twoSided && !hubIsFrom && callerIds.has(e.from);
-    const hubX = hubCx + (onLeft ? -centerW / 2 : centerW / 2);
     const otherNode = nodeById.get(otherId)!;
-    // 终点取目标药丸的近侧边缘：右列 → 左缘；左列 → 右缘。
-    const tgtEdgeX = onLeft ? otherNode.x + otherNode.w! / 2 : otherNode.x - otherNode.w! / 2;
     // 同一对端点的多条路径：单段直线没有「中段」可错开，改为**整条线沿 y 平移**。
     // 平移量把药丸可用高度均分给组内各条（总铺开 2×ATTACH_MAX=22px，两条平行边相隔 22px，
     // fit 缩放后仍有 ~11px），远宽于旧曲线方案的 fanOffset×0.6（仅 6.6px，缩放后糊成一束）。
-    // 终点侧 off 直接落在目标药丸近侧缘上；出发侧 attachDy 与 off 相加后钳回中心药丸缘内。
     const p = parallel.get(ei);
     const off =
       p && p.count > 1 ? -ATTACH_MAX + (p.idx * (ATTACH_MAX * 2)) / (p.count - 1) : 0;
-    const attachY =
-      cy + Math.max(-ATTACH_MAX, Math.min(ATTACH_MAX, attachDy(other[1]) + off));
-    const tgtY = other[1] + off;
+    let hubPt: Pt;
+    let tgtPt: Pt;
+    if (onLeft) {
+      // 左列（调用方）：终点取药丸右缘（旧逻辑）。
+      hubPt = [hubCx - centerW / 2, cy + Math.max(-ATTACH_MAX, Math.min(ATTACH_MAX, attachDy(other[1]) + off))];
+      tgtPt = [otherNode.x + otherNode.w! / 2, other[1] + off];
+    } else if (useArc) {
+      // 等长扇形：从中心药丸边界直接收缩到目标药丸近侧边界（任意角度正确）。
+      const shrink = shrinkToRects(hubCenter, centerW, PILL_H, other, otherNode.w ?? 120, PILL_H);
+      hubPt = shrink[0];
+      tgtPt = shrink[1];
+    } else {
+      // 右列单列：终点取药丸左缘（旧逻辑）。
+      hubPt = [hubCx + centerW / 2, cy + Math.max(-ATTACH_MAX, Math.min(ATTACH_MAX, attachDy(other[1]) + off))];
+      tgtPt = [otherNode.x - otherNode.w! / 2, other[1] + off];
+    }
     const line: Pt[] = [
-      [hubX, attachY],
-      [tgtEdgeX, tgtY],
+      [hubPt[0], hubPt[1] + off],
+      [tgtPt[0], tgtPt[1] + off],
     ];
     // 方向：中心出发 → 目标；目标出发 → 中心（箭头由末端点方向决定）。
     const pts = hubIsFrom ? line : line.slice().reverse();
@@ -779,7 +821,10 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
 
   const flowNote = twoSided
     ? `左列 ${leftCol.length} 个调用方 / 来源 → 中心 → 右列 ${rightCol.length} 个被依赖方，**箭头方向即请求 / 数据流向（自左向右）**；`
-    : `中心在左，${rightCol.length} 个邻居单列排在右侧；`;
+    : `中心在左，${rightCol.length} 个邻居排在右侧；`;
+  const arcNote = useArc
+    ? `邻居排成**限角等长扇形**（以中心为圆心的圆弧，相邻弦距固定、每条边长度≈${Math.round(arcR)}px），消除了单列形态下顶部 / 底部节点拖出的超长边；`
+    : '';
   return {
     nodes,
     edges: placed,
@@ -787,8 +832,8 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     height: contentH,
     content: boundsOf(nodes),
     note: viaStar
-      ? `径向入口判定本图为**星形**（每条边都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}两列均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`
-      : `中心辐射布局：${flowNote}两列均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`,
+      ? `径向入口判定本图为**星形**（每条边都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`
+      : `中心辐射布局：${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`,
   };
 }
 
