@@ -75,6 +75,9 @@ declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点�
     // 命名粒度与 Table / ConfigKey 一致，视角也直接按种类切换。
     EVENT      = "Event"       => "事件总线节点（进程外中介）",
     QUEUE      = "Queue"       => "消息队列节点（进程外中介）",
+    // 事件 / 队列视角的**消费方**语义角色：监听器 / 消费者类在画布上重标为此 kind，
+    // 与 Event / Queue 同族（仅视图层重标，DB 中仍存 `Class`，免重建）。
+    EVENT_HANDLER = "EventHandler" => "事件 / 队列处理器（监听器 / 消费者类）",
     CACHE      = "Cache"       => "缓存节点（进程外中介）",
     TOPIC      = "Topic"       => "消息主题节点（进程外中介）",
     SCHEDULE   = "Schedule"    => "定时任务节点（计划任务 / 调度）",

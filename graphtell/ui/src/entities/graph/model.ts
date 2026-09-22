@@ -102,6 +102,8 @@ export const NODE_COLORS: Record<string, string> = {
   Event: '#f97316',
   Queue: '#f97316',
   Topic: '#f97316',
+  // 事件 / 队列的消费者（监听器 / 消费者类）在画布上重标为此角色，与 Event / Queue 同族。
+  EventHandler: '#fb923c',
   Unknown: '#9ca3af',
 };
 

@@ -137,6 +137,7 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.Topic': 'Topic',
     'node.Page': 'Page',
     'node.EventBus': 'Event bus',
+    'node.EventHandler': '事件处理器',
     'node.Unknown': 'Unknown',
     'status.resolved': 'resolved',
     'status.unverified': 'unverified',

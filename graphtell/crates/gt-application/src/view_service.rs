@@ -378,6 +378,24 @@ impl ViewService {
         let center_view = self
             .build_node_view(center_id, 0, &d.in_edges, &d.out_edges)?
             .ok_or_else(|| DomainError::NotFound(format!("节点 {center_id}")))?;
+        // 事件 / 队列视角语义化（仅视图层重标，不改 DB、免重建图）：
+        //   · 消费方（沿 `HandledBy` / `PublishesTo` 连接的 `Class` 端点 —— 监听器 /
+        //     消费者类）重标为 `EventHandler`，与画布其它语义节点（Event / Table …）同族；
+        //   · 触发方（沿 `Triggers` 连入的 `Method` 起点）名显示「所属类::方法」，
+        //     否则裸方法名脱离类不可寻址（早期注释已记此坑）。
+        // 这两类边只出现在事件 / 队列视角，其它视角下集合为空，故无需显式加视角守卫。
+        let trigger_methods: HashSet<i64> = shown_edges
+            .iter()
+            .filter(|e| e.kind == "Triggers")
+            .map(|e| e.from.get())
+            .collect();
+        let consumer_classes: HashSet<i64> = shown_edges
+            .iter()
+            .filter(|e| e.kind == "HandledBy" || e.kind == "PublishesTo")
+            .flat_map(|e| [e.from.get(), e.to.get()])
+            .filter(|id| d.kind_of.get(id).map_or(false, |k| k == "Class"))
+            .collect();
+        let mut qname_cache: HashMap<i64, String> = HashMap::new();
         let ring_views: Vec<Vec<NodeView>> = visible_rings
             .iter()
             .enumerate()
@@ -388,6 +406,23 @@ impl ViewService {
                         self.build_node_view(*id, r as u32, &d.in_edges, &d.out_edges)
                             .ok()
                             .flatten()
+                            .map(|mut nv| {
+                                let idv = nv.id.get();
+                                if consumer_classes.contains(&idv) {
+                                    // 同族着色 + `category` 同步（前端按 category 决定端 / 点击切视角）。
+                                    nv.kind = NodeKind::EVENT_HANDLER.to_string();
+                                    nv.category = Some(NodeKind::EVENT_HANDLER.to_string());
+                                }
+                                if trigger_methods.contains(&idv) {
+                                    let qn = qname_cache
+                                        .entry(idv)
+                                        .or_insert_with(|| {
+                                            self.method_qualified_name(idv, &d, &summary)
+                                        });
+                                    nv.name = qn.clone();
+                                }
+                                nv
+                            })
                     })
                     .collect()
             })
@@ -526,25 +561,44 @@ impl ViewService {
                 if other == center_id.get() {
                     continue;
                 }
-                path_kind.entry(other).or_insert(e.kind.to_string());
+                // 消费者提升：`HandledBy` / `PublishesTo` 的对端可能是监听器类，也可能是其
+                // `handle` 方法（建图时边直接指向方法）。画布要显示的是**稳定的命名角色** ——
+                // 类。因此对端是方法时，沿 `Declares` 入边找到声明类，提升**类**为可见语义节点，
+                // 方法本身留在环内（ring 2、不点亮）仅作发现锚点。
+                // 触发者（`Triggers` 的 dispatch 调用点）不在此处升节点 —— 由折叠段的
+                // `collapsed` 循环统一处理：升为可见节点并画出富化的触发边。
+                let is_consumer =
+                    e.kind.as_str() == "HandledBy" || e.kind.as_str() == "PublishesTo";
+                let mut node = other;
+                if is_consumer && summary.get(&other).map_or(false, |m| m.kind == "Method") {
+                    if let Ok(m) = self.store.edges_incoming(&[NodeId(other)]) {
+                        if let Some(cls) = m.get(&other).and_then(|v| {
+                            v.iter()
+                                .find(|e| e.kind.as_str() == "Declares")
+                                .map(|e| e.from_id.get())
+                        }) {
+                            node = cls;
+                            ring_of.entry(other).or_insert(2);
+                            parent_of.entry(other).or_insert(node);
+                        }
+                    }
+                }
+                path_kind.entry(node).or_insert(e.kind.to_string());
                 // 中心的**出边**（如 `事件 --HandledBy--> 监听器`）：画边时不能反过来。
                 if center_side {
-                    path_from_center.insert(other);
+                    path_from_center.insert(node);
                 }
-                if !ring_of.contains_key(&other) {
-                    ring_of.insert(other, 1);
-                    parent_of.insert(other, center_id.get());
-                    // 消费者（`HandledBy` 的监听器 / `PublishesTo` 的消费者）是**稳定的命名角色**
-                    // （一个监听器类只处理一类事件），与 handler 不同：升为可见语义节点画在画布上，
-                    // 其 `HandledBy` 边也顺势成为可点击、可展开调用链的语义边。
-                    // 触发者（`Triggers` 的 dispatch 调用点）仍是任意业务方法、fan-in 高，
-                    // 不升节点、留作"直连访问"记账（下方 `collapsed_from` 会附上可展开的语义边）。
-                    let is_consumer =
-                        e.kind.as_str() == "HandledBy" || e.kind.as_str() == "PublishesTo";
-                    semantic_of.insert(other, is_consumer);
+                if !ring_of.contains_key(&node) {
+                    ring_of.insert(node, 1);
+                    parent_of.insert(node, center_id.get());
+                    semantic_of.insert(node, is_consumer);
+                    // 关键：同时补齐 kind / name。否则 BFS 收尾的「补齐」步骤会因
+                    // kind_of 缺失而按 kind 重算 semantic_of，把这里的提升覆盖回 false。
+                    if let Some(m) = summary.get(&node) {
+                        kind_of.insert(node, m.kind.clone());
+                        name_of.insert(node, m.name.clone());
+                    }
                 }
-                // 不再 `force_visible`：触发方（语法方法）不画成画布节点，
-                // 由下方 `collapsed_from` 分支降级进 `orphans` 记账（附可点击展开的语义边）。
             }
         }
 
@@ -1284,6 +1338,10 @@ impl ViewService {
                 // 共享资源（如 Cache）可能有上千个使用者：按环序取前 N 个画出来，
                 // 其余计入 `hidden` —— 保证图可读，同时诚实记账。
                 const MAX_USERS: usize = 80;
+                // 触发侧画布节点登记暂存：富化边的起点（最远调用方）可能落在发现树之外，
+                // 而 `chain_to` 闭包此刻还捕获着 `d.ring_of` / `d.parent_of` —— 这里只暂存 id，
+                // 待 users 循环用完 `chain_to` 后再补登记进第 1 环并点亮。
+                let mut pending_trigger_vis: Vec<i64> = Vec::new();
                 let mut users: Vec<i64> = d
                     .ring_of
                     .keys()
@@ -1292,10 +1350,11 @@ impl ViewService {
                         *id != center_id.get() && d.semantic_of.get(id).copied().unwrap_or(false)
                     })
                     .collect();
-                // 画布恒为语义节点：事件 / 队列 / 缓存等中介节点的直接生产/消费方
-                // （监听器 / 触发方，语法节点）不再强制可见，而是作为「直连访问」降级进
-                // `orphans` 记账（见 `upstream_reaches_semantic` 与 `collapsed` 分支），
-                // 由前端抽屉 / Inspector 展开查看。
+                // 画布以语义节点为主：事件 / 队列 / 缓存等中介节点的一般直连访问方
+                // （语法节点）不强制可见，而是作为「直连访问」降级进 `orphans` 记账
+                // （见 `upstream_reaches_semantic` 与 `collapsed` 分支）。
+                // **唯一例外是触发者**（`Triggers`）：它是事件视角的核心事实，
+                // 在下方 `collapsed` 循环里升为可见节点并画出富化的语义边。
                 // 孤儿访问：资源的**直接**访问方（第 1 环、父即中心）是语法节点、且沿调用链
                 // 上溯不存在任何语义用户（上游没有路由 / 契约等语义发起者 —— Seeder / 迁移
                 // 脚本 / Console 命令 / 事件处理器是常态）时，它既画不成语义用户，也永远不会
@@ -1415,22 +1474,57 @@ impl ViewService {
                         .keys()
                         .copied()
                         .filter(|id| {
+                            let is_producer = d
+                                .path_kind
+                                .get(id)
+                                .map_or(false, |k| k == "Triggers");
                             *id != center_id.get()
                                 && d.parent_of.get(id) == Some(&center_id.get())
                                 && !d.semantic_of.get(id).copied().unwrap_or(false)
-                                && !covered.contains(id)
-                                && !upstream_reaches_semantic(*id)
                                 && d.path_kind.get(id).map_or(false, |k| !k.is_empty())
+                                // 触发者必须记账：即使它上游有语义入口（路由经服务方法
+                                // dispatch）——「谁触发事件」是事件视角的核心事实，不能被
+                                // 上游归因吞掉；其余直连访问仍按原规则降级。
+                                && (is_producer
+                                    || (!covered.contains(id)
+                                        && !upstream_reaches_semantic(*id)))
                         })
                         .collect();
                     collapsed.sort_unstable();
-                    // 降级为记账：不点亮、不占画布，但把接触点位置一并带出供前端逐条核对。
                     for id in collapsed {
+                        let ek = d.path_kind.get(&id).cloned().unwrap_or_default();
+                        if ek == "Triggers" {
+                            // 触发者直接画上画布：`触发点 --Triggers--> 事件`。事件视角的
+                            // 核心事实就是「谁触发 / 谁消费」——消费侧的监听器类已提升为
+                            // 可见节点，触发侧若只留在记账里，画布就残缺一半。触发点是
+                            // dispatch 调用处（每事件通常 1~3 个），不会淹没画布。
+                            // 边用 `triggers_edge_view` 富化（起点 = 调用链上游 / 语义入口、
+                            // `via` = 中间调用方 … 触发点、`to_call_site` = dispatch 调用处），
+                            // 点击可像路由视角的语义边一样逐跳展开。
+                            if let Some(ev) =
+                                self.triggers_edge_view(id, center_id.get(), d, &summary, &cs_cache)
+                            {
+                                let path: Vec<i64> = ev.via.iter().map(|v| v.id.get()).collect();
+                                let key = (ev.kind.clone(), ev.from.get(), ev.to.get(), path);
+                                if shown_keys.insert(key) {
+                                    // 画布上要出现的是**边的起点**（最远调用方 / 语义入口），
+                                    // 不是 dispatch 点 —— dispatch 点已作为 via 末跳进抽屉，
+                                    // 而它不是边的端点，点亮也会被 `touched` 过滤掉。
+                                    // 起点可能被 depth 截在发现树之外：先暂存，等 users 循环
+                                    // 用完 `chain_to`（捕获 ring_of/parent_of）后再补登记进第 1 环。
+                                    pending_trigger_vis.push(ev.from.get());
+                                    shown_edges.push(ev);
+                                }
+                                // 重复（同起点同链路已画过）即已可见，无需记账。
+                                continue;
+                            }
+                            // 富化失败（原始边证据缺失等）：退回 orphans 记账，绝不静默省略。
+                        }
                         orphans.push(OrphanAccess {
                             id: NodeId(id),
                             kind: d.kind_of.get(&id).cloned().unwrap_or_default(),
                             name: d.name_of.get(&id).cloned().unwrap_or_default(),
-                            edge_kind: d.path_kind.get(&id).cloned().unwrap_or_default(),
+                            edge_kind: ek,
                             location: self.node_source_location_cached(NodeId(id), &cs_cache),
                             edge: None,
                         });
@@ -1479,6 +1573,15 @@ impl ViewService {
                     if let Some(k) = d.kind_of.get(id) {
                         *hidden_by_kind.entry(k.clone()).or_insert(0) += 1;
                     }
+                }
+                // 触发侧画布节点：users 循环已用完 `chain_to`，此处补登记并点亮。
+                // 起点本就在发现树里的（如多级调用链的末跳在环内）仍按原环号，只差点亮；
+                // 被 depth 截在树外的补进第 1 环、父即中心，使 `visible_rings` 有环可放。
+                for from in pending_trigger_vis {
+                    d.force_visible.insert(from);
+                    let ring = d.ring_of.get(&from).copied().unwrap_or(1);
+                    d.ring_of.entry(from).or_insert(ring);
+                    d.parent_of.entry(from).or_insert(center_id.get());
                 }
             } else {
                 // 环外语义目标先暂存，等 `push_edge`/`chain_to`（捕获了这些 map）用完后
@@ -2247,23 +2350,53 @@ impl ViewService {
             None => (0, self.node_source_location_cached(NodeId(producer), c)),
         };
 
-        // 沿发现树父链上溯：producer → … → 紧贴中心的调用方（不含中心本身）。
-        let mut chain: Vec<i64> = Vec::new();
+        // 沿 `Calls` 入边向上回溯调用链（由近及远）：producer 的直接调用方 → … →
+        // 语义入口（路由 / 契约等）即停。事件视角是反向 BFS，producer 的上层调用方
+        // 大多不在发现树里（它的 parent 直接就是中心），必须按需查库补全 —— 否则抽屉
+        // 里的「调用过程」永远只有两跳，与路由视角点开语义边的体验不一致。
+        let sem = |id: i64| -> bool {
+            summary
+                .get(&id)
+                .map(|m| NodeKind(m.kind.clone()).is_semantic())
+                .unwrap_or(false)
+        };
+        let mut callers: Vec<i64> = Vec::new(); // 由近及远：[直接调用方, …, 最远]
+        let mut seen_up: HashSet<i64> = HashSet::new();
+        seen_up.insert(producer);
         let mut cur = producer;
-        while let Some(p) = d.parent_of.get(&cur) {
-            if *p == center {
-                break;
+        for _ in 0..4 {
+            let ins = match d.in_edges.get(&cur) {
+                Some(v) => Some(v.clone()),
+                None => self
+                    .store
+                    .edges_incoming(&[NodeId(cur)])
+                    .ok()
+                    .map(|m| m.get(&cur).cloned().unwrap_or_default()),
+            };
+            let Some(ins) = ins else { break };
+            let next = ins
+                .iter()
+                .filter(|e| e.kind.as_str() == "Calls")
+                .find(|e| seen_up.insert(e.from_id.get()))
+                .map(|e| e.from_id.get());
+            match next {
+                Some(p) => {
+                    callers.push(p);
+                    if sem(p) {
+                        break; // 到达语义入口（路由等），链路到此封顶
+                    }
+                    cur = p;
+                }
+                None => break,
             }
-            chain.push(*p);
-            cur = *p;
         }
-        // chain 由近及远：[紧贴中心的调用方, …, 直接调用 producer 的上层]。
-        // 无上层调用方时（producer 即第 1 环）：起点 = producer、via 为空（仅 起点↔终点 两跳）。
-        let (from, via_ids): (i64, Vec<i64>) = if chain.is_empty() {
+        // 起点 = 最远调用方（通常是语义入口）；via = [中间调用方…, producer（接触点）]。
+        // 无任何调用方时：起点 = producer、via 为空（仅 起点↔终点 两跳）。
+        let (from, via_ids): (i64, Vec<i64>) = if callers.is_empty() {
             (producer, Vec::new())
         } else {
-            let top = *chain.last().unwrap();
-            let mut v: Vec<i64> = chain.iter().rev().copied().collect(); // [直接上层, …, 最远]
+            let top = *callers.last().unwrap();
+            let mut v: Vec<i64> = callers[..callers.len() - 1].iter().rev().copied().collect();
             v.push(producer); // 接触点作为 via 末跳
             (top, v)
         };
@@ -2301,6 +2434,44 @@ impl ViewService {
             also_kinds: Vec::new(),
             node_locations: Vec::new(),
         })
+    }
+
+    /// 方法的「可寻址全名」：`所属类::方法`。裸方法名脱离类后无法定位（早期注释已记此坑），
+    /// 事件视角把触发方方法画上画布时，套上所属类才可读、可点。所属类由 `Declares`
+    /// 入边回溯（监听器 / 服务方法都挂在某个 `Class` 上）。
+    fn method_qualified_name(
+        &self,
+        method: i64,
+        d: &Discovery,
+        summary: &HashMap<i64, NodeSummary>,
+    ) -> String {
+        let raw = d
+            .name_of
+            .get(&method)
+            .cloned()
+            .or_else(|| summary.get(&method).map(|m| m.name.clone()))
+            .unwrap_or_default();
+        let class = self
+            .store
+            .edges_incoming(&[NodeId(method)])
+            .ok()
+            .and_then(|m| m.get(&method).cloned())
+            .and_then(|edges| {
+                edges
+                    .iter()
+                    .find(|e| e.kind.as_str() == "Declares")
+                    .map(|e| e.from_id.get())
+            })
+            .and_then(|cid| {
+                d.name_of
+                    .get(&cid)
+                    .cloned()
+                    .or_else(|| self.store.get_node(NodeId(cid)).ok().flatten().map(|n| n.name))
+            });
+        match class {
+            Some(c) => format!("{}::{}", c, raw),
+            None => raw,
+        }
     }
 
     /// 请求级缓存取节点：同一节点在折叠 / 内联链路里会被查很多次，

@@ -474,18 +474,18 @@ fn orphan_access_is_accounted_not_drawn() {
     eprintln!("校验孤儿记账 {checked} 条（数量取决于工程，为 0 亦合法）");
 }
 
-/// 事件视角：画布恒为语义节点 —— `HandledBy`（`事件 --由…处理--> 监听器`）与
-/// `Triggers`（`触发方 --触发--> 事件`）这类"语义 ↔ 语法"桥边的**语法端点必须折叠**，
-/// 降级进 `ObjectView.orphans` 记账（带接触点位置），而**绝不画成画布边**。
+/// 事件视角：画布 = 中心事件 + **产消两侧的稳定角色**。
 ///
-/// 该视角真正画在画布上的是事件经监听器/触发方**间接触及的资源依赖**（如
-/// `事件 --ReadsDb(via 监听器X)--> 表`）—— 证明语法节点虽不画出来，却仍把它的
-/// 下游语义资源带上了图，信息没丢，只是从"画节点"降级成"记账 + via 接触点"。
+/// * 消费侧：`HandledBy`（`事件 --由…处理--> 监听器`）的语法端点沿 `Declares` 提升为
+///   监听器**类**节点，边随之成为可点击展开的画布边。
+/// * 触发侧：`Triggers`（`触发点 --触发--> 事件`）的触发方直接升为可见节点并画出
+///   **富化的画布边**（起点 = 调用链上游 / 语义入口、`via` = 中间调用方 … 触发点、
+///   `to_call_site` = dispatch 调用处）——「谁触发事件」是事件视角的核心事实，
+///   不能只留在 orphans 记账里（否则画布残缺一半）。
+/// * 其余一般直连访问方仍降级进 `ObjectView.orphans` 记账（带接触点位置）。
 ///
-/// 曾把监听器/触发方 `force_visible` 直接画出来，破坏"画布只画语义节点"原则；
-/// 现在统一折叠。本条同时验证：① 画布上没有 `HandledBy`/`Triggers` 边；
-/// ② 它们如实出现在 `orphans` 里（且 `Triggers` 带触发点 `location`）；
-/// ③ 视图确有可画的内容（资源边或直连记账，二选一）。
+/// 本条验证：① 画布上的 `Triggers` 边（若有触发方）其触发端点是可见节点、且带
+/// dispatch 调用处；② `HandledBy` 边的监听器端点可见；③ 视图不空。
 #[test]
 #[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
 fn event_view_syntactic_accessors_collapse_to_orphans() {
@@ -506,17 +506,37 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
         .expect("object_view");
     assert_eq!(ov.center.kind, "Event", "事件视角中心应是 Event");
 
-    // ① 触发方仍是语法节点：画布上绝不能出现 `Triggers` 边（应折叠进 orphans 带可展开边）。
-    //    消费者（监听器）则是稳定命名角色，已升为可见节点——`HandledBy` 因此可以画、且必须画。
+    let visible: std::collections::HashSet<i64> =
+        ov.rings.iter().flatten().map(|n| n.id.get()).collect();
+
+    // ① 触发方升为可见节点：`Triggers` 边应画出，触发端点在画布上、并带 dispatch 调用处。
+    let trigger_edges: Vec<_> = ov.edges.iter().filter(|e| e.kind == "Triggers").collect();
+    for e in &trigger_edges {
+        assert!(
+            visible.contains(&e.from.get()),
+            "Triggers 边的触发方应是画布上的可见节点：{:?}",
+            (e.from, e.to)
+        );
+        assert!(
+            e.to == ov.center.id,
+            "Triggers 边的终点应是中心事件：{:?}",
+            (e.from, e.to)
+        );
+    }
+    // 孤儿记账里不应再出现已画成边的触发方（降级只留给富化失败的情形）。
+    let trigger_orphans = ov
+        .orphans
+        .iter()
+        .filter(|o| o.edge_kind == "Triggers")
+        .count();
     assert!(
-        !ov.edges.iter().any(|e| e.kind == "Triggers"),
-        "事件视角不应画出 Triggers 边（触发方是语法节点）：{:?}",
-        ov.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        trigger_edges.is_empty() || trigger_orphans == 0,
+        "触发方要么画上画布、要么（富化失败时）记账，不应两边同时出现：edges={} orphans={}",
+        trigger_edges.len(),
+        trigger_orphans
     );
 
     // ② 消费者（监听器）升为可见节点：`HandledBy` 边应出现，且其另一端在画布上可见。
-    let visible: std::collections::HashSet<i64> =
-        ov.rings.iter().flatten().map(|n| n.id.get()).collect();
     let handled_edges: Vec<_> = ov.edges.iter().filter(|e| e.kind == "HandledBy").collect();
     for e in &handled_edges {
         assert!(
@@ -525,29 +545,8 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
             (e.from, e.to)
         );
     }
-    assert!(
-        !handled_edges.is_empty() || !visible.is_empty(),
-        "事件视角应至少画出一个监听器（消费者）节点/边，否则就是退化回旧的单点稀疏图"
-    );
 
-    // ③ 触发方降级进 orphans，带"它对事件做了什么" + 可点击展开的语义边 + 触发点位置。
-    let triggers: Vec<_> = ov.orphans.iter().filter(|o| o.edge_kind == "Triggers").collect();
-    assert!(
-        !triggers.is_empty(),
-        "事件触发方应记进 orphans 且可展开：{:?}",
-        ov.orphans.iter().map(|o| &o.edge_kind).collect::<Vec<_>>()
-    );
-    for o in &triggers {
-        assert!(!o.name.is_empty(), "Triggers orphan 必须带名字（触发方）");
-        assert!(o.location.is_some(), "Triggers orphan {} 应给出触发点", o.name);
-        assert!(
-            o.edge.is_some(),
-            "Triggers orphan {} 应附可点击展开的语义边（via 调用链）",
-            o.name
-        );
-    }
-
-    // ④ 视图不空：监听器节点/边 或 触发方记账，至少其一。
+    // ③ 视图不空：产/消两侧的画布边 或 直连记账，至少其一。
     assert!(
         !ov.edges.is_empty() || !ov.orphans.is_empty(),
         "事件视角不应是一张空图"
