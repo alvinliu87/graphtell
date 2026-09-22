@@ -5,14 +5,14 @@ use std::time::Instant;
 use gt_domain::error::Result;
 use gt_domain::model::{
     GraphDelta, NamespacePolicy, NewSourceFile, NewSubProject, Phase, PhaseReport, Project,
-    Severity, SourceFile, SubProject, SubProjectId,
+    SourceFile, SubProject, SubProjectId,
 };
 use gt_domain::port::{
     FileScanner, FileSystem, GraphSink, KnowledgeProvider, ParserRegistry, PipelineObserver,
     ProjectWriter,
 };
 use serde_json::Value;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::context::PipelineContext;
 use crate::phase::{
@@ -45,11 +45,9 @@ pub fn run(
     observer: &dyn PipelineObserver,
 ) -> Result<PipelineOutcome> {
     let mut ctx = PipelineContext::new(project.clone());
-    // 跨工程唯一分配节点 id：从全局最大 id 起算，避免后建工程用 `INSERT OR REPLACE`
-    // 覆盖先建工程的节点行（节点的 `id` 主键跨工程共享）。
-    if let Ok(max) = infra.graph().max_node_id() {
-        ctx.ws.seed_node_id(max);
-    }
+    // 节点 id 由 `GraphWorkspace` 按工程分段分配（`NODE_ID_STRIDE`），不再依赖
+    // "启动时读一次全局 MAX(id)" —— 那样并发建图时多条流水线会读到同一个起点，
+    // 分配出重叠 id 并互相 `INSERT OR REPLACE` 掉对方的节点。
     ctx.ws.set_table_prefixes(project.config.table_prefixes.clone());
     let mut outcome = PipelineOutcome::default();
 
@@ -91,7 +89,7 @@ pub fn run(
         started,
         observer,
         project.id,
-    );
+    )?;
 
     // 新一次建图：清掉上一轮的图数据
     infra.graph().apply(&GraphDelta {
@@ -112,7 +110,7 @@ pub fn run(
         started,
         observer,
         project.id,
-    );
+    )?;
 
     // ---------------------------------------------------------- P3 Prepare
     let started = Instant::now();
@@ -137,7 +135,7 @@ pub fn run(
         started,
         observer,
         project.id,
-    );
+    )?;
 
     if !project.config.full_pipeline {
         return Ok(outcome);
@@ -161,14 +159,14 @@ pub fn run(
             started,
             observer,
             project.id,
-        );
+        )?;
     }
 
     let phase = Phase(Phase::RESOLVE.to_string());
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     resolve::run(&mut ctx, infra.kb());
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     // ---------------------------------------------------------- P8 Propagate
     // 必须在 P7 之后：依赖 P7 建好的 `Calls` 边；种子在 P5 收集、暂存于 ctx。
@@ -176,7 +174,7 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     propagate::run(&mut ctx);
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     // ---------------------------------------------------------- P9 Taint
     // 必须在 P7 之后：依赖已解析的调用点（ctx.ws.calls）与各调用点的参数文本。
@@ -185,7 +183,7 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     taint::run(&mut ctx);
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     // ---------------------------------------------------------- P10 Cors
     // 必须在 P9 之后（亦仅依赖 ctx.ws.calls 与解析期捕获的 header_assignments）。
@@ -194,7 +192,7 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     cors::run(&mut ctx);
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     // ---------------------------------------------------------- P11 Sign
     // 必须在 P9 之后（同样只依赖 ctx.ws.calls 与解析期捕获的 sign_compares）。
@@ -204,7 +202,7 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     sign::run(&mut ctx);
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     // ---------------------------------------------------------- P12 External
     // 依赖 P2 的 `in_loop` 与 P3 装载的 FKB `external_calls`（名单在 FKB，内核不认识名字）。
@@ -213,7 +211,7 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     external::run(&mut ctx);
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     // ---------------------------------------------------------- P13 Tx
     // 必须在 P7 之后：写动词名单来自 FKB `db_verbs`（与读 / 写分类同源）。
@@ -222,7 +220,7 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     tx::run(&mut ctx);
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     Ok(outcome)
 }
@@ -236,7 +234,7 @@ fn flush(
     started: Instant,
     observer: &dyn PipelineObserver,
     project_id: gt_domain::model::ProjectId,
-) {
+) -> Result<()> {
     let mut delta = ctx.ws.take_delta();
     delta.diagnostics.extend(ctx.ws.remaining_diagnostics());
     let report = PhaseReport {
@@ -248,17 +246,17 @@ fn flush(
         diagnostics: delta.diagnostics.clone(),
         duration_ms: started.elapsed().as_millis() as u64,
     };
+    // 落库失败必须让整条流水线失败，而不是继续往下跑。
+    //
+    // 曾经这里只记一条内存诊断就继续：后续阶段照常把边/标注写进库，工程状态
+    // 也照常置为 ready，于是"节点 0 / 边 3 万"看起来像一次成功的建图。
+    // 半个图比没有图更难发现 —— 直接让上层把工程标成 failed。
     if let Err(e) = sink.apply(&delta) {
-        ctx.ws.diagnose(
-            phase,
-            "PersistFailed",
-            Severity::Error,
-            format!("阶段 {} 落库失败: {e}", phase),
-            None,
+        error!(
+            "阶段 {} 落库失败（工程 {}）: {e} —— 丢弃本阶段 {} 节点 / {} 边",
+            phase, project_id, report.nodes_created, report.edges_created
         );
-        let mut retry = ctx.ws.take_delta();
-        retry.diagnostics.extend(ctx.ws.remaining_diagnostics());
-        report_diagnostics_only(sink, &retry);
+        return Err(e);
     }
     info!(
         "阶段 {}: {} 节点 / {} 边 / {} 标注 / {}ms",
@@ -266,15 +264,7 @@ fn flush(
     );
     observer.on_phase_end(project_id, &report);
     outcome.reports.push(report);
-}
-
-fn report_diagnostics_only(sink: &dyn GraphSink, delta: &GraphDelta) {
-    let only = GraphDelta {
-        project_id: delta.project_id,
-        diagnostics: delta.diagnostics.clone(),
-        ..Default::default()
-    };
-    let _ = sink.apply(&only);
+    Ok(())
 }
 
 /// 供外部引用，避免未使用告警。

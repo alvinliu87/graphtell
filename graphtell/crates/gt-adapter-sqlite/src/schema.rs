@@ -71,8 +71,14 @@ CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY,
     project_id  INTEGER NOT NULL,
     kind        TEXT NOT NULL,
-    from_id     INTEGER NOT NULL,
-    to_id       INTEGER NOT NULL,
+    -- 外键：指向 `nodes(id)`。
+    --
+    -- 没有它时"节点没了、边还在"这种脏数据完全无法被发现 —— 曾经并发建图
+    -- 让 10 个工程的节点互相覆盖，UI 上却是"边 3.6 万 / 节点 0"，
+    -- 看起来像一次成功的建图（边的唯一键含 `project_id`、且无外键，插入一路畅通）。
+    -- 老库由 `SqliteStore::ensure_node_fks` 重建本表补上约束。
+    from_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    to_id       INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     phase       TEXT NOT NULL DEFAULT '',
     confidence  REAL NOT NULL DEFAULT 1.0,
     properties  TEXT,
@@ -98,8 +104,13 @@ CREATE INDEX IF NOT EXISTS idx_edges_proj_from ON edges(project_id, from_id);
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS node_annotations (
+    -- 冗余一份 `project_id`：注解天然属于某个工程，但表里原本只有 `node_id`，
+    -- 按工程清理/统计只能靠 `node_id IN (SELECT id FROM nodes WHERE project_id=?)`。
+    -- 一旦节点先被删掉（重跑建图就是先清节点），这个子查询就为空，
+    -- 注解再也删不掉 —— 历史库里因此堆了近万条永远清不掉的悬空注解。
+    project_id   INTEGER NOT NULL DEFAULT 0,
     id          INTEGER PRIMARY KEY,
-    node_id     INTEGER NOT NULL,
+    node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     channel     TEXT NOT NULL,
     kind        TEXT NOT NULL,
     subkind     TEXT,
@@ -109,6 +120,9 @@ CREATE TABLE IF NOT EXISTS node_annotations (
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_node ON node_annotations(node_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_kind ON node_annotations(kind);
+-- `idx_annotations_project` 不在这里建：老库的 `node_annotations` 没有 `project_id` 列，
+-- 而 `CREATE TABLE IF NOT EXISTS` 会安静跳过、索引语句却会直接报错（no such column），
+-- 导致整个库打不开。该索引由 `SqliteStore::ensure_annotation_project` 补列后再建。
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS aliases (
@@ -117,7 +131,7 @@ CREATE TABLE IF NOT EXISTS aliases (
     namespace   TEXT NOT NULL,
     key         TEXT NOT NULL,
     qualifier   TEXT NOT NULL DEFAULT '',
-    node_id     INTEGER NOT NULL,
+    node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     confidence  REAL NOT NULL DEFAULT 1.0,
     evidence    TEXT,
     UNIQUE(project_id, namespace, key, qualifier)

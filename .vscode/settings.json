@@ -1,4 +1,8 @@
 {
+    "rust-analyzer.server.path": "/home/alvin/.cargo/bin/rust-analyzer",
+    "rust-analyzer.linkedProjects": [
+        "graphtell/Cargo.toml"
+    ],
     "search.useIgnoreFiles": false,
     "search.exclude": {
         "**/node_modules/**": true,

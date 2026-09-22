@@ -93,13 +93,10 @@ pub trait ProjectWriter: Send + Sync {
 /// 图写入端口。
 pub trait GraphSink: Send + Sync {
     /// 应用一批变更。
-    fn apply(&self, delta: &GraphDelta) -> Result<()>;
-    /// 当前库中节点的最大 id。
     ///
-    /// 节点的 `id` 主键跨工程共享，而内存工作区的 `next_node` 计数器每轮从 1 起算，
-    /// 若不抬升，后建工程会用 `INSERT OR REPLACE` 把先建工程的节点行覆盖掉。
-    /// 流水线在启动时用此值把计数器抬到全局最大之上。
-    fn max_node_id(&self) -> Result<i64>;
+    /// 节点 id 由流水线按工程分段分配（`gt_pipeline::NODE_ID_STRIDE` 的设计约定），
+    /// 因此这里不需要"当前最大 id"之类的全局协调：并发建图也不会互相覆盖。
+    fn apply(&self, delta: &GraphDelta) -> Result<()>;
 }
 
 /// 节点过滤条件。

@@ -115,6 +115,24 @@ pub struct PendingLink {
     pub line: u32,
 }
 
+/// 每个工程独占的节点 id 段大小。
+///
+/// 节点的 `id` 是跨工程共享的主键，落库用 `INSERT OR REPLACE`（`SqliteStore::apply`）。
+/// 原先靠「流水线启动时读一次全局 `MAX(id)`」来避免撞车：单条流水线没问题，
+/// 但并发建图时多条流水线会在同一起点读到同一个 MAX —— 此时谁都还没 flush 过，
+/// 于是分配出完全重叠的 id 区间，后提交的工程把先提交的节点行逐个 REPLACE 掉。
+/// （实测：连续创建 10 个工程后，`nodes` 只剩最后提交的那个工程有数据，
+///  而 `edges` 因为唯一键含 `project_id` 且无外键，看起来一切正常。）
+///
+/// 改成按工程分段后，id 区间只由 `project_id` 决定，与运行时序和并发度无关，
+/// 因此既不会冲突，也不需要把建图串行化。单工程上限 10 亿个节点。
+const NODE_ID_STRIDE: i64 = 1_000_000_000;
+
+/// 该工程节点 id 段的起点（段内 local id 从 1 起算）。
+fn node_id_base(project_id: ProjectId) -> i64 {
+    project_id.get().saturating_mul(NODE_ID_STRIDE) + 1
+}
+
 /// 图工作区。
 pub struct GraphWorkspace {
     project_id: ProjectId,
@@ -222,7 +240,8 @@ impl GraphWorkspace {
     pub fn new(project_id: ProjectId) -> Self {
         Self {
             project_id,
-            next_node: 1,
+            // 节点 id 按工程分段，不再依赖"启动时读一次全局 MAX"（见 `NODE_ID_STRIDE`）。
+            next_node: node_id_base(project_id),
             next_edge: 1,
             next_ann: 1,
             nodes: BTreeMap::new(),
@@ -441,15 +460,9 @@ impl GraphWorkspace {
 
     // ------------------------------------------------------------ 节点
 
-    /// 跨工程唯一分配：把节点 id 计数器抬到全局最大值之上。
-    ///
-    /// 节点的 `id` 主键跨工程共享，而 `next_node` 每轮从 1 起算；若不抬升，
-    /// 后建工程会用 `INSERT OR REPLACE` 覆盖先建工程的节点行（见 `GraphSink::max_node_id`）。
-    pub fn seed_node_id(&mut self, max: i64) {
-        self.next_node = self.next_node.max(max) + 1;
-    }
-
     /// 新增语法节点。
+    ///
+    /// id 来自本工程独占的号段（见 [`NODE_ID_STRIDE`]），跨工程、跨进程都不会撞。
     pub fn add_node(&mut self, mut new: NewNode) -> NodeId {
         let id = NodeId(self.next_node);
         self.next_node += 1;

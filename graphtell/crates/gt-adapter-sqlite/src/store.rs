@@ -20,9 +20,174 @@ use gt_domain::port::{
 use gt_domain::model::graph::NodeSummary;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::schema::MIGRATIONS;
+
+/// 把引用 `nodes(id)` 的表升级为带外键的版本（老库没有外键）。
+///
+/// # 为什么必须重建表
+///
+/// SQLite 的 `ALTER TABLE` 加不了外键约束，只能：建新表 → 拷数据 → 删旧表 → 改名 → 补索引。
+/// 拷贝时用 `JOIN nodes` 过滤，顺带**丢掉指向不存在节点的悬空行** ——
+/// 它们正是"节点被覆盖后残留的边/标注/别名"，留着只会让脏数据看起来像正常数据。
+///
+/// `PRAGMA foreign_keys` 不能在事务内切换，所以它在事务外单独开关。
+fn ensure_node_fks(conn: &Connection) -> Result<()> {
+    for table in ["edges", "node_annotations", "aliases"] {
+        let has_fk: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_foreign_key_list('{table}')"),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(DomainError::infra)?;
+        if has_fk > 0 {
+            continue;
+        }
+        let before: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .map_err(DomainError::infra)?;
+
+        let (create, copy, indexes) = rebuild_sql(table);
+        conn.execute_batch("PRAGMA foreign_keys=OFF;")
+            .map_err(DomainError::infra)?;
+        conn.execute_batch(&format!(
+            "BEGIN;
+             {create}
+             {copy}
+             DROP TABLE {table};
+             ALTER TABLE {table}__new RENAME TO {table};
+             {indexes}
+             COMMIT;"
+        ))
+        .map_err(DomainError::infra)?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(DomainError::infra)?;
+
+        let after: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .map_err(DomainError::infra)?;
+        if before != after {
+            warn!(
+                "外键迁移：{table} 丢弃 {} 条悬空记录（指向不存在的节点），保留 {after} 条",
+                before - after
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 返回 (建新表, 拷数据, 补索引) 三段 SQL。新表带 `REFERENCES nodes(id)`。
+fn rebuild_sql(table: &str) -> (&'static str, &'static str, &'static str) {
+    match table {
+        "edges" => (
+            "CREATE TABLE edges__new (
+                id          INTEGER PRIMARY KEY,
+                project_id  INTEGER NOT NULL,
+                kind        TEXT NOT NULL,
+                from_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                to_id       INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                phase       TEXT NOT NULL DEFAULT '',
+                confidence  REAL NOT NULL DEFAULT 1.0,
+                properties  TEXT,
+                UNIQUE(project_id, kind, from_id, to_id)
+             );",
+            "INSERT INTO edges__new (id, project_id, kind, from_id, to_id, phase, confidence, properties)
+             SELECT e.id, e.project_id, e.kind, e.from_id, e.to_id, e.phase, e.confidence, e.properties
+             FROM edges e
+             JOIN nodes nf ON nf.id = e.from_id
+             JOIN nodes nt ON nt.id = e.to_id;",
+            "CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
+             CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
+             CREATE INDEX IF NOT EXISTS idx_edges_project ON edges(project_id);
+             CREATE INDEX IF NOT EXISTS idx_edges_proj_to ON edges(project_id, to_id);
+             CREATE INDEX IF NOT EXISTS idx_edges_proj_from ON edges(project_id, from_id);",
+        ),
+        "node_annotations" => (
+            "CREATE TABLE node_annotations__new (
+                id          INTEGER PRIMARY KEY,
+                node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                channel     TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                subkind     TEXT,
+                confidence  REAL NOT NULL DEFAULT 1.0,
+                evidence    TEXT,
+                phase       TEXT NOT NULL DEFAULT ''
+             );",
+            "INSERT INTO node_annotations__new (id, node_id, channel, kind, subkind, confidence, evidence, phase)
+             SELECT a.id, a.node_id, a.channel, a.kind, a.subkind, a.confidence, a.evidence, a.phase
+             FROM node_annotations a
+             JOIN nodes n ON n.id = a.node_id;",
+            "CREATE INDEX IF NOT EXISTS idx_annotations_node ON node_annotations(node_id);
+             CREATE INDEX IF NOT EXISTS idx_annotations_kind ON node_annotations(kind);",
+        ),
+        _ => (
+            "CREATE TABLE aliases__new (
+                id          INTEGER PRIMARY KEY,
+                project_id  INTEGER NOT NULL,
+                namespace   TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                qualifier   TEXT NOT NULL DEFAULT '',
+                node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                confidence  REAL NOT NULL DEFAULT 1.0,
+                evidence    TEXT,
+                UNIQUE(project_id, namespace, key, qualifier)
+             );",
+            "INSERT INTO aliases__new (id, project_id, namespace, key, qualifier, node_id, confidence, evidence)
+             SELECT a.id, a.project_id, a.namespace, a.key, a.qualifier, a.node_id, a.confidence, a.evidence
+             FROM aliases a
+             JOIN nodes n ON n.id = a.node_id;",
+            "CREATE INDEX IF NOT EXISTS idx_alias_lookup ON aliases(project_id, namespace, key);",
+        ),
+    }
+}
+
+/// 给 `node_annotations` 补 `project_id` 列并回填。
+///
+/// 表里原本只有 `node_id`，按工程清理只能写成
+/// `node_id IN (SELECT id FROM nodes WHERE project_id=?)`；节点先被清掉时这个
+/// 子查询为空，注解就永远删不掉（历史库里堆了近万条）。补列之后按工程删/查
+/// 都是一次直查，也不再依赖"节点还在"这个前提。
+fn ensure_annotation_project(conn: &Connection) -> Result<()> {
+    let has_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('node_annotations') WHERE name = 'project_id'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(DomainError::infra)?;
+    if has_col == 0 {
+        conn.execute_batch(
+            "ALTER TABLE node_annotations ADD COLUMN project_id INTEGER NOT NULL DEFAULT 0;",
+        )
+        .map_err(DomainError::infra)?;
+    }
+    // 回填：此刻外键已生效（`ensure_node_fks` 先跑），每条注解都能查到工程号。
+    let stale: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM node_annotations WHERE project_id = 0",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(DomainError::infra)?;
+    if stale > 0 {
+        let backfilled = conn
+            .execute(
+                "UPDATE node_annotations
+                 SET project_id = (SELECT project_id FROM nodes WHERE id = node_id)
+                 WHERE project_id = 0",
+                [],
+            )
+            .map_err(DomainError::infra)?;
+        warn!("注解补工程号：回填 {backfilled} 条历史标注的 project_id");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_project ON node_annotations(project_id);",
+    )
+    .map_err(DomainError::infra)?;
+    Ok(())
+}
 
 /// SQLite 仓储。
 ///
@@ -78,8 +243,12 @@ impl SqliteStore {
             std::fs::create_dir_all(parent).map_err(DomainError::infra)?;
         }
         let conn = Connection::open(&path).map_err(DomainError::infra)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")
-            .map_err(DomainError::infra)?;
+        // busy_timeout：建图可能并发（HTTP 后台线程 + CLI），且 CLI 与服务端是两个进程，
+        // 共用同一个 SQLite 文件。没有它，写冲突会立刻返回 SQLITE_BUSY 而不是等锁。
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;",
+        )
+        .map_err(DomainError::infra)?;
         for sql in MIGRATIONS {
             conn.execute_batch(sql).map_err(DomainError::infra)?;
         }
@@ -99,13 +268,23 @@ impl SqliteStore {
         // 列补好后索引也要补（新建库在 MIGRATIONS 里建，这里幂等兜底）。
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_diag_sub ON diagnostics(sub_project_id);")
             .map_err(DomainError::infra)?;
+        // 老库补外键（edges / node_annotations / aliases → nodes）。
+        ensure_node_fks(&conn)?;
+        // 再给注解补 `project_id`：回填要靠 `node_id → nodes`，
+        // 所以必须排在补外键之后（悬空记录已在上面被清掉）。
+        ensure_annotation_project(&conn)?;
         info!("SQLite 已打开: {}", path.display());
         Ok(Self { conn: Mutex::new(conn), path })
     }
 
     /// 内存库（测试用）。
+    ///
+    /// 同样开 `foreign_keys`：测试写脏数据时应当**当场报错**，
+    /// 而不是等它静悄悄流进真实库。
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(DomainError::infra)?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(DomainError::infra)?;
         for sql in MIGRATIONS {
             conn.execute_batch(sql).map_err(DomainError::infra)?;
         }
@@ -408,14 +587,6 @@ impl ProjectWriter for SqliteStore {
 // ---------------------------------------------------------------- 图
 
 impl GraphSink for SqliteStore {
-    fn max_node_id(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        let m: i64 = conn
-            .query_row("SELECT COALESCE(MAX(id), 0) FROM nodes", [], |r| r.get(0))
-            .map_err(DomainError::infra)?;
-        Ok(m)
-    }
-
     fn apply(&self, delta: &GraphDelta) -> Result<()> {
         if delta.is_empty() {
             return Ok(());
@@ -425,15 +596,19 @@ impl GraphSink for SqliteStore {
 
         if delta.reset_project {
             if let Some(pid) = delta.project_id {
-                // 顺序重要：注解要**先于** nodes 删除 —— 它靠 `node_id IN (SELECT id FROM nodes …)`
-                // 定位，若 nodes 已被清空，子查询为空，注解就永远删不掉，每次重跑都会叠加一层。
+                // 顺序重要：引用 `nodes(id)` 的表必须**先于** nodes 删除。
+                //
+                // 这些表现在都有外键并配了 `ON DELETE CASCADE` 兜底，但显式先删子表
+                // 能让"级联是否真的生效"不成为正确性前提。注解已经自带 `project_id`，
+                // 不必再绕 `node_id IN (SELECT id FROM nodes …)` —— 那种写法在节点
+                // 先被清掉时会退化成"一条都删不掉"。
                 for sql in [
-                    "DELETE FROM node_annotations WHERE node_id IN (SELECT id FROM nodes WHERE project_id = ?1)",
-                    "DELETE FROM nodes WHERE project_id = ?1",
+                    "DELETE FROM node_annotations WHERE project_id = ?1",
                     "DELETE FROM edges WHERE project_id = ?1",
                     "DELETE FROM aliases WHERE project_id = ?1",
                     "DELETE FROM symbol_tables WHERE project_id = ?1",
                     "DELETE FROM diagnostics WHERE project_id = ?1",
+                    "DELETE FROM nodes WHERE project_id = ?1",
                 ] {
                     tx.execute(sql, params![pid.get()]).map_err(DomainError::infra)?;
                 }
@@ -553,12 +728,15 @@ impl GraphSink for SqliteStore {
         {
             let mut stmt = tx
                 .prepare(
-                    "INSERT INTO node_annotations (node_id, channel, kind, subkind, confidence, evidence, phase)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    // `project_id` 随注解一起落库；delta 没带工程号时回落到节点自身的
+                    // 所属工程（外键保证该节点一定在库里，不会取到空）。
+                    "INSERT INTO node_annotations (project_id, node_id, channel, kind, subkind, confidence, evidence, phase)
+                     VALUES (COALESCE(?1, (SELECT project_id FROM nodes WHERE id = ?2)), ?2,?3,?4,?5,?6,?7,?8)",
                 )
                 .map_err(DomainError::infra)?;
             for a in &delta.annotations {
                 stmt.execute(params![
+                    delta.project_id.map(|p| p.get()),
                     a.node_id.get(),
                     a.channel.as_str(),
                     a.kind,
@@ -899,10 +1077,9 @@ impl GraphQuery for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT DISTINCT a.channel, a.kind FROM node_annotations a
-                 JOIN nodes n ON n.id = a.node_id
-                 WHERE n.project_id = ?1
-                 ORDER BY a.channel, a.kind",
+                "SELECT DISTINCT channel, kind FROM node_annotations
+                 WHERE project_id = ?1
+                 ORDER BY channel, kind",
             )
             .map_err(DomainError::infra)?;
         let rows = stmt
@@ -948,11 +1125,10 @@ impl GraphQuery for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.node_id, a.channel, a.kind, a.subkind, a.confidence, a.evidence, a.phase
-                 FROM node_annotations a
-                 JOIN nodes n ON n.id = a.node_id
-                 WHERE n.project_id = ?1
-                 ORDER BY a.id",
+                "SELECT id, node_id, channel, kind, subkind, confidence, evidence, phase
+                 FROM node_annotations
+                 WHERE project_id = ?1
+                 ORDER BY id",
             )
             .map_err(DomainError::infra)?;
         let rows = stmt
@@ -1007,8 +1183,7 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?;
         let annotations: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM node_annotations WHERE node_id IN
-                 (SELECT id FROM nodes WHERE project_id = ?1)",
+                "SELECT COUNT(*) FROM node_annotations WHERE project_id = ?1",
                 params![project_id.get()],
                 |r| r.get(0),
             )

@@ -1,6 +1,6 @@
 //! 建图用例：编排流水线并处理状态流转与后台执行。
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{PhaseReport, Project, ProjectId, ProjectStatus};
@@ -48,6 +48,13 @@ impl<'a> gt_pipeline::runner::PipelineInfrastructure for Infra<'a> {
     }
 }
 
+/// 同时进行的建图任务上限。
+///
+/// 每条流水线都要把整个工程的节点驻留在内存工作区里（大工程十万级节点），
+/// 并且写操作最终都挤在同一条 SQLite 连接上。并发本身在号段分配修好之后
+/// 已经安全，这里只是给资源上界：超出的工程排队等待，而不是一拥而上。
+const MAX_CONCURRENT_BUILDS: usize = 2;
+
 /// 建图用例服务。
 pub struct PipelineService {
     store: Arc<dyn Persistence>,
@@ -56,6 +63,8 @@ pub struct PipelineService {
     checks: RuleService,
     /// 同一工程同时只允许一个建图任务。
     running: Arc<Mutex<std::collections::HashSet<i64>>>,
+    /// 跨工程的并发名额（计数 + 条件变量）。
+    slots: Arc<(Mutex<usize>, Condvar)>,
 }
 
 impl PipelineService {
@@ -70,7 +79,28 @@ impl PipelineService {
             checks,
             deps,
             running: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            slots: Arc::new((Mutex::new(0), Condvar::new())),
         }
+    }
+
+    /// 占一个建图名额；满则等待。
+    ///
+    /// 用 `unwrap_or_else(poisoned.into_inner())`：持锁线程 panic 后锁会中毒，
+    /// 若继续 `unwrap()`，后续每一次建图都会连带 panic，故障会一直扩散下去。
+    fn acquire_slot(&self) {
+        let (lock, cv) = &*self.slots;
+        let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
+        while *n >= MAX_CONCURRENT_BUILDS {
+            n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+        }
+        *n += 1;
+    }
+
+    fn release_slot(&self) {
+        let (lock, cv) = &*self.slots;
+        let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
+        *n = n.saturating_sub(1);
+        cv.notify_one();
     }
 
     /// 同步执行建图。
@@ -80,15 +110,20 @@ impl PipelineService {
         observer: &dyn PipelineObserver,
     ) -> Result<PipelineOutcome> {
         {
-            let mut guard = self.running.lock().unwrap();
+            let mut guard = self.running.lock().unwrap_or_else(|e| e.into_inner());
             if !guard.insert(project_id.get()) {
                 return Err(DomainError::Conflict(format!(
                     "工程 {project_id} 正在建图中"
                 )));
             }
         }
+        self.acquire_slot();
         let result = self.run_inner(project_id, observer);
-        self.running.lock().unwrap().remove(&project_id.get());
+        self.running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&project_id.get());
+        self.release_slot();
         result
     }
 
