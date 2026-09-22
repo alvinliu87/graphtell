@@ -862,9 +862,18 @@ export function GraphPage() {
                       <Typography.Text
                         style={{ fontSize: 12, cursor: 'pointer' }}
                         onClick={() => {
-                          setInspectNode(o.id);
-                          setInspectEdge(null);
-                          setState((s) => ({ ...s, i: o.id, e: null }));
+                          if (o.edge) {
+                            // 这条直连访问本身是可点击展开的语义边（如事件触发点）：
+                            // 打开边证据链抽屉，逐跳核对调用过程，而非只开节点详情。
+                            setInspectNode(null);
+                            setInspectEdge(o.edge.id);
+                            setInspectEdgeView(o.edge);
+                            setState((s) => ({ ...s, i: null, e: o.edge.id }));
+                          } else {
+                            setInspectNode(o.id);
+                            setInspectEdge(null);
+                            setState((s) => ({ ...s, i: o.id, e: null }));
+                          }
                         }}
                       >
                         {o.name || `#${o.id}`}

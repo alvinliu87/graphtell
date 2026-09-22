@@ -86,6 +86,24 @@ pub fn run(
             }
             ctx.db_verbs.insert(sub.id.get(), spec);
         }
+        // 外部系统调用 / 事务标记：与 db_verbs 同理属于知识库内容，但这两份名单
+        // **不含框架假设**（curl 是 PHP 内置、`transaction` 两家都这么写），所以取
+        // **同语言的全部 FKB** 而不只是本子工程识别到的框架 —— 否则声明在
+        // `fkb/php/common.yaml`（`apply_without_detection`、永不被"识别"）里的名单
+        // 永远加载不到，实测 P12/P13 会静默变成 0 命中。
+        // 不做子工程分桶：合并成一份全局集合即可。
+        for fk in kb.all().iter().filter(|fk| fk.language == sub.language) {
+            for c in &fk.external_calls {
+                if !ctx.external_calls.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+                    ctx.external_calls.push(c.clone());
+                }
+            }
+            for c in &fk.tx_calls {
+                if !ctx.tx_calls.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+                    ctx.tx_calls.push(c.clone());
+                }
+            }
+        }
         if let Some(methods) = frameworks
             .iter()
             .chain(projects.iter())

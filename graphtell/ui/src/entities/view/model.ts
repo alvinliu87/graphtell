@@ -139,6 +139,12 @@ export interface OrphanAccess {
   /** 它对中心资源做的事（`ReadsDb` / `WritesCache`…）。 */
   edge_kind: string;
   location: SourceLocation | null;
+  /**
+   * 可选：当这次"直连访问"本身是**一条可点击展开的语义边**时（如事件视角的 `Triggers`
+   * 触发点），带上折叠后的边视图（含 `via` 调用链）。前端据此打开边证据链抽屉，
+   * 而不是只打开节点详情。语义节点（消费者）不走这里——它们已升为可见节点画在画布上。
+   */
+  edge?: EdgeView | null;
 }
 
 export interface ObjectView {

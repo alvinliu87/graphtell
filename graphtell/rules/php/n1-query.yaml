@@ -39,6 +39,13 @@ rules:
     when:
       - property_is: { name: in_loop, value: "true" }
       - has_annotation: db-query
+      # 排除迁移 / 种子脚本：那里循环写库是**一次性的安装行为**，不是线上热路径。
+      # 不排的话 bagisto 实测 11 条命中里 9 条来自 `Database/Migrations` 与
+      # `Database/Seeders` —— 噪声会把真正的运行时 N+1 淹没。
+      - not:
+          any_of:
+            - fqn_contains: migration
+            - fqn_contains: seeder
     message: "循环体内逐条查库（{name}）—— N 条记录 = N 次查询，建议改为循环外批量查询"
     remediation: "把循环内的单条查询提到循环外一次性取回（whereIn / 预加载关联），再在内存里按 key 配对"
 
@@ -67,5 +74,10 @@ rules:
     when:
       - property_is: { name: in_loop, value: "true" }
       - has_annotation: db-write
+      # 同 `n1-query-in-loop`：迁移 / 种子脚本里的循环写是一次性安装行为。
+      - not:
+          any_of:
+            - fqn_contains: migration
+            - fqn_contains: seeder
     message: "循环体内逐条写库（{name}）—— N 条记录 = N 次写入，建议改为批量写或把更新合并成一次"
     remediation: "改用批量写入（saveAll / insertAll / whereIn 一次更新）；若每条都需单独校验，则把整个循环包进一个事务"

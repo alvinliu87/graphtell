@@ -264,10 +264,10 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 | 目录 | 适用 | 内容 |
 | --- | --- | --- |
 | `rules/global/` | 跨语言通用 | 只依赖**图拓扑**（扇入扇出、语义边）的规则：契约桥（`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`）、热点表（`hot-table`）、配置读取热点（`config-read-hotspot`）、死表（`dead-table`）、只写不读 / 只读不写表（`write-only-table` / `read-only-table`）、高扇出方法（`hotspot-method`） |
-| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 队列（`orphan-event` / `orphan-queue`）、**循环内逐条读 / 写库**（`n1-query-in-loop` / `n1-write-in-loop`，见下）、**验签质量**（`sign-compare-loose` / `sign-weak-hash`，见下） |
+| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 队列（`orphan-event` / `orphan-queue`）、**循环内逐条读 / 写库**（`n1-query-in-loop` / `n1-write-in-loop`，见下）、**循环内外部调用**（`ext-call-in-loop`）、**多写无事务**（`multi-write-without-tx`）、**验签质量**（`sign-compare-loose` / `sign-weak-hash`，见下） |
 | `rules/js/` | 仅含前端子工程的工程 | 前端事件总线的死代码（`eventbus-emitted-without-listener` / `eventbus-listened-without-emitter` / `eventbus-orphan`）—— `EventBus` 与 `Emits` / `ListensTo` 是前端语义，纯后端工程上不存在 |
 
-内置 28 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持更多语言，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
+内置 30 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持更多语言，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
 
 #### N+1（`循环内逐条读 / 写库`）用到的两个新图事实
 
@@ -280,7 +280,7 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 挂在调用点而不是方法上，是因为方法粒度的 `ReadsDb` 经 P8 沿调用链传播后会覆盖所有上游调用方 —— 那样只能得到"这个方法的调用链上读过库"，分不清"循环里查 N 次"与"循环外查一次"，噪声与被否决的"上帝方法"同源。
 
-已知边界：`db-query` 依赖 FKB 的 `db_verbs`，目前只有 `thinkphp6` 声明了它 —— 纯 Laravel 工程上这两条规则会被判为 `rules_unavailable`（"图上没有任何 db-query 标注"）而非静默 0 命中，补 `fkb/php/laravel.yaml` 的 `db_verbs` 即可启用。Java 侧同理（`mapper.xxx()` 需 Java 的 `db_verbs` + java parser 的循环识别，均未做）。
+已知边界：`db-query` 依赖 FKB 的 `db_verbs`。`thinkphp6` 与 `laravel` 都已声明它，所以 N+1 在两类 PHP 工程上都能跑（Laravel 的 Eloquent / Query Builder 动词清单见 `fkb/php/laravel.yaml` 的 `db_verbs`）。Java 侧没做（`mapper.xxx()` 需 Java 的 `db_verbs` + java parser 的循环识别）。
 
 #### 验签规则（`sign-compare-loose` / `sign-weak-hash`）判什么、不判什么
 
@@ -291,6 +291,19 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 需要的图事实同样是 parser 新增的：比较表达式不是调用点，图上原本看不到 `==`，因此加了 [`SignCompareFact`](crates/gt-domain/src/model/syntax.rs)（只收 `==` / `!=` 且至少一侧像签名值），由 P11 `phase::sign` 判定后打 `weak_sign_compare` / `weak_sign_hash` 标注。
 
 噪声闸口在 parser 里：**电商代码的 `sign` 绝大多数是"签到"**（`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`）。实测 32 处"含 sign 的 == 比较"里 24 处是签到，因此要求比较两侧都不是字符串字面量、且排除 `sign_type` / `sign_mode` 等签到词。
+
+#### 运行时坏味：`ext-call-in-loop` / `multi-write-without-tx`
+
+这两条是「循环 / 批量」主题下 N+1 的自然延伸，都**只报确凿事实、不判漏洞**，改法留给人和上下文。
+
+- **`ext-call-in-loop`（循环内外部调用）**：一次网络往返比一次 DB 查询贵一个量级，放进循环（`curl_exec` / `Http::get` / `GuzzleHttp\Client::request` / `Mail::send` …）等于把接口耗时串行放大 N 倍。判据完全复用 N+1 的 `in_loop` 事实，只是动词名单换成 `external_calls`（在 `fkb/php/common.yaml`，跨框架通用）。由 P12 `phase::external` 打 `ext-call-in-loop` 标注。
+- **`multi-write-without-tx`（多写无事务）**：同一方法对 ≥2 张不同表直接写（`WritesDb` 边去重后的目标数，只数 P7 落下的**直接**边、不含 P8 传播来的间接边），且方法内无任何事务标记（`transaction` / `startTrans` / `commit` …）。中间任一步失败会留部分成功的脏数据。由 P13 `phase::tx` 打 `multi-write-without-tx` 标注（落在**方法节点**上，因为是方法级边界问题）。
+
+| 规则 | 为什么用「表数」而不是「写动词数」 | 为什么可能漏报 |
+| --- | --- | --- |
+| `multi-write-without-tx` | 用「调用点 ≥2 次写动词」会把同一张表的 `if/else` 两分支各写一次（`CartLogic::add` 的 `update`/`insert`）算成两次写 —— 那是互斥分支，不存在部分成功。换成「≥2 张表」后这类误报自然消失（likeshop 从 105 降到 20） | 事务可能开在更外层调用方（跨过程），图上判不到 → 文案写"未识别到事务边界"，不写"没有事务" |
+
+实测（12 样本）：`ext-call-in-loop` 大多工程 0 命中（循环里发远程调用在成熟电商代码里确实少见，bagisto 仅 1 处），`multi-write-without-tx` 在 likeshop / beikeshop / shopxo / bagisto / CRMEB 上有 14–65 处，且多落在退款 / 扣库存 / 提现这类真实需要事务的入口（`OrderGoodsLogic::decStock`、`WithdrawLogic::confirm`）。
 
 ### 新规则怎么才算"能发货"：先量后写
 

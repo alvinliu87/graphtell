@@ -216,6 +216,7 @@ mod tests {
             language: Language::new("php"),
             sub: None,
             db_table: None,
+            in_loop: false,
         }
     }
 

@@ -1,18 +1,38 @@
 {
-  "search.useIgnoreFiles": false,
-  "search.exclude": {
-    "**/node_modules": true,
-    "**/target": true,
-    "**/dist": true,
-    "**/.vite": true,
-    "**/.turbo": true,
-    "**/src-tauri/gen": true,
-    "**/__pycache__": true,
-    "**/data": true,
-    "**/fkb": true,
-    "references": true,
-    "codebase-memory-mcp-main": true,
-    "CRMEB-master": true,
-    ".git": true
-  }
+    "search.useIgnoreFiles": false,
+    "search.exclude": {
+        "**/node_modules/**": true,
+        "**/target/**": true,
+        "**/dist/**": true,
+        "**/.vite/**": true,
+        "**/.turbo/**": true,
+        "**/src-tauri/gen/**": true,
+        "**/__pycache__/**": true,
+        "**/data/**": true,
+        "**/fkb/**": true,
+        "**/.gitnexus/**": true,
+        "**/.understand-anything/**": true,
+        "**/graphify-out/**": true,
+        "**/references/**": true,
+        "**/.references/**": true,
+        "**/codebase-memory-mcp-main/**": true,
+        "CRMEB-master": true,
+        ".git": true
+    },
+    "files.exclude": {
+        "**/.gitnexus": true,
+        "**/.understand-anything": true,
+        "**/graphify-out": true,
+        "**/references": true,
+        "**/.references": true,
+        "**/codebase-memory-mcp-main": true
+    },
+    "files.watcherExclude": {
+        "**/.gitnexus/**": true,
+        "**/.understand-anything/**": true,
+        "**/graphify-out/**": true,
+        "**/references/**": true,
+        "**/.references/**": true,
+        "**/codebase-memory-mcp-main/**": true
+    }
 }

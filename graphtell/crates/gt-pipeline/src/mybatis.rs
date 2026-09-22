@@ -193,6 +193,8 @@ pub fn run(ctx: &mut PipelineContext) {
                         method: Some(kind.clone()),
                         args: vec![FactValue::String(table.clone())],
                         db_table: None,
+                        // MyBatis 的伪调用点来自 XML，没有"循环体内"这个概念。
+                        in_loop: false,
                         span,
                         file: rel.clone(),
                         sub: Some(SubProjectId(sub.id.get())),

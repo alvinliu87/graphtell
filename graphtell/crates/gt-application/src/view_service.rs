@@ -534,10 +534,17 @@ impl ViewService {
                 if !ring_of.contains_key(&other) {
                     ring_of.insert(other, 1);
                     parent_of.insert(other, center_id.get());
-                    semantic_of.insert(other, false);
+                    // 消费者（`HandledBy` 的监听器 / `PublishesTo` 的消费者）是**稳定的命名角色**
+                    // （一个监听器类只处理一类事件），与 handler 不同：升为可见语义节点画在画布上，
+                    // 其 `HandledBy` 边也顺势成为可点击、可展开调用链的语义边。
+                    // 触发者（`Triggers` 的 dispatch 调用点）仍是任意业务方法、fan-in 高，
+                    // 不升节点、留作"直连访问"记账（下方 `collapsed_from` 会附上可展开的语义边）。
+                    let is_consumer =
+                        e.kind.as_str() == "HandledBy" || e.kind.as_str() == "PublishesTo";
+                    semantic_of.insert(other, is_consumer);
                 }
-                // 不再 `force_visible`：语法监听器 / 生产方不画成画布节点，
-                // 由下方 `collapsed` 分支降级进 `orphans` 记账（见 `upstream_reaches_semantic`）。
+                // 不再 `force_visible`：触发方（语法方法）不画成画布节点，
+                // 由下方 `collapsed_from` 分支降级进 `orphans` 记账（附可点击展开的语义边）。
             }
         }
 
@@ -1425,6 +1432,7 @@ impl ViewService {
                             name: d.name_of.get(&id).cloned().unwrap_or_default(),
                             edge_kind: d.path_kind.get(&id).cloned().unwrap_or_default(),
                             location: self.node_source_location_cached(NodeId(id), &cs_cache),
+                            edge: None,
                         });
                     }
                 }
@@ -1505,7 +1513,11 @@ impl ViewService {
                         let to_is_sem = summary
                             .get(&to)
                             .map(|m| NodeKind(m.kind.clone()).is_semantic())
-                            .unwrap_or(false);
+                            .unwrap_or(false)
+                            // 事件 / 队列 / 缓存视角里被提升为可见节点的消费者（监听器 / 消费者类）
+                            // 其 kind 仍是 `Class`（未改动建图流水线），靠 `semantic_of` 显式登记为可见；
+                            // 这里一并放行，使 `中心 --HandledBy/PublishesTo--> 消费者` 成为可绘制的语义边。
+                            || d.semantic_of.get(&to).copied().unwrap_or(false);
                         if !to_is_sem {
                             continue;
                         }
@@ -1567,18 +1579,29 @@ impl ViewService {
                             name: d.name_of.get(&a).cloned().unwrap_or_default(),
                             edge_kind: kind,
                             location: self.node_source_location_cached(NodeId(a), &cs_cache),
+                            edge: None,
                         });
                     }
                     groups.retain(|(_k, a, _to), _| is_visible(*a));
                 }
                 // `a == to` 那批（主语是语法节点的直接语义边）同样进记账。
                 for (id, kind) in collapsed_from {
+                    // 事件视角的 `Triggers` 触发点：除记账外，再附一条**可点击展开的语义边**
+                    // （与路由视角点语义边展开抽屉同构）——起点 = 触发它的方法、终点 = 中心事件、
+                    // `via` = 该方法的调用链（上层调用方…接触点）、`to_call_site` = 触发调用处。
+                    // 这样"每一处触发"既看得到、也点得开调用过程，而不只是孤零零一个位置。
+                    let edge = if kind == "Triggers" {
+                        self.triggers_edge_view(id, center_id.get(), d, &summary, &cs_cache)
+                    } else {
+                        None
+                    };
                     orphans.push(OrphanAccess {
                         id: NodeId(id),
                         kind: d.kind_of.get(&id).cloned().unwrap_or_default(),
                         name: d.name_of.get(&id).cloned().unwrap_or_default(),
                         edge_kind: kind,
                         location: self.node_source_location_cached(NodeId(id), &cs_cache),
+                        edge,
                     });
                 }
                 // 同一对 `(kind, a, to)` 上最多画几条**不同路径**：再多会糊成一片，
@@ -2175,6 +2198,108 @@ impl ViewService {
                 .get("snippet")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+        })
+    }
+
+    /// 为事件视角的 `Triggers` 触发点构造一条**可点击展开的语义边**视图（与路由视角
+    /// 点语义边展开抽屉同构）：起点 = 触发它的方法、终点 = 中心事件、`via` = 该方法的
+    /// 调用链（上层调用方 … 接触点）、`to_call_site` = 触发调用处。
+    ///
+    /// 触发点是任意业务方法（fan-in 高），不升为画布节点、只作为"直连访问"记账；但附上
+    /// 这条边后，前端孤儿列表点开即可逐跳核对"谁 dispatch 了这个事件、处在哪条调用链上"。
+    fn triggers_edge_view(
+        &self,
+        producer: i64,
+        center: i64,
+        d: &Discovery,
+        summary: &HashMap<i64, NodeSummary>,
+        c: &NodeCache,
+    ) -> Option<EdgeView> {
+        // 找到 `producer --Triggers--> center` 的原始边，取其证据（触发调用处）与 id。
+        let trig = d
+            .out_edges
+            .get(&producer)
+            .into_iter()
+            .flatten()
+            .chain(d.in_edges.get(&center).into_iter().flatten())
+            .find(|e| {
+                e.kind.as_str() == "Triggers"
+                    && e.to_id.get() == center
+                    && e.from_id.get() == producer
+            })
+            .or_else(|| {
+                d.out_edges
+                    .get(&producer)
+                    .into_iter()
+                    .flatten()
+                    .find(|e| e.kind.as_str() == "Triggers" && e.to_id.get() == center)
+            });
+        let (src, to_call_site) = match trig {
+            Some(e) => {
+                let loc = e
+                    .properties
+                    .get("evidence")
+                    .and_then(|v| v.get("location"))
+                    .and_then(|l| serde_json::from_value::<SourceLocation>(l.clone()).ok())
+                    .or_else(|| self.node_source_location_cached(NodeId(producer), c));
+                (e.id.get(), loc)
+            }
+            None => (0, self.node_source_location_cached(NodeId(producer), c)),
+        };
+
+        // 沿发现树父链上溯：producer → … → 紧贴中心的调用方（不含中心本身）。
+        let mut chain: Vec<i64> = Vec::new();
+        let mut cur = producer;
+        while let Some(p) = d.parent_of.get(&cur) {
+            if *p == center {
+                break;
+            }
+            chain.push(*p);
+            cur = *p;
+        }
+        // chain 由近及远：[紧贴中心的调用方, …, 直接调用 producer 的上层]。
+        // 无上层调用方时（producer 即第 1 环）：起点 = producer、via 为空（仅 起点↔终点 两跳）。
+        let (from, via_ids): (i64, Vec<i64>) = if chain.is_empty() {
+            (producer, Vec::new())
+        } else {
+            let top = *chain.last().unwrap();
+            let mut v: Vec<i64> = chain.iter().rev().copied().collect(); // [直接上层, …, 最远]
+            v.push(producer); // 接触点作为 via 末跳
+            (top, v)
+        };
+        let via: Vec<ViaNode> = via_ids
+            .iter()
+            .map(|&vid| ViaNode {
+                id: NodeId(vid),
+                kind: d
+                    .kind_of
+                    .get(&vid)
+                    .cloned()
+                    .or_else(|| summary.get(&vid).map(|m| m.kind.clone()))
+                    .unwrap_or_default(),
+                name: d
+                    .name_of
+                    .get(&vid)
+                    .cloned()
+                    .or_else(|| summary.get(&vid).map(|m| m.name.clone()))
+                    .unwrap_or_default(),
+                call_site: None,
+            })
+            .collect();
+        let hops = if via.is_empty() { None } else { Some(via.len() as u32) };
+        Some(EdgeView {
+            id: if src == 0 { -1 } else { src },
+            kind: "Triggers".to_string(),
+            from: NodeId(from),
+            to: NodeId(center),
+            resolved: true,
+            confidence: 0.8,
+            hops,
+            via,
+            to_call_site,
+            indirect: false,
+            also_kinds: Vec::new(),
+            node_locations: Vec::new(),
         })
     }
 

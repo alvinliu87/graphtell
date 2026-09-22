@@ -53,6 +53,10 @@ pub struct PipelineContext {
     pub lang_policies: HashMap<String, NamespacePolicy>,
     /// 兜底书写规则（单语言工程 / 语言未知时使用）。
     pub lang_policy_default: NamespacePolicy,
+    /// 外部系统调用名单（FKB `external_calls`）；跨框架差异小，只需一份全局合并结果。
+    pub external_calls: Vec<String>,
+    /// 事务边界标记（FKB `tx_calls`）；同上，全局合并即可。
+    pub tx_calls: Vec<String>,
     /// 子工程 → 消费入口方法名候选（FKB `entry_methods`）。
     pub entry_methods: HashMap<i64, Vec<String>>,
     /// 全局兜底的入口方法名（取第一个声明了 `entry_methods` 的框架）。
@@ -81,6 +85,8 @@ impl PipelineContext {
             magic_delegation_default: None,
             db_verbs: HashMap::new(),
             db_verbs_default: None,
+            external_calls: Vec::new(),
+            tx_calls: Vec::new(),
             lang_policies: HashMap::new(),
             lang_policy_default: NamespacePolicy::default(),
             entry_methods: HashMap::new(),

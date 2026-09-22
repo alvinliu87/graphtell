@@ -65,6 +65,15 @@ pub struct FrameworkKnowledge {
     /// 而不是一路传播含糊的 `MapsTo`。
     #[serde(default)]
     pub db_verbs: Option<DbVerbsSpec>,
+    /// **外部系统调用**的 callee 名单（HTTP / 短信 / 邮件 / RPC）：`curl_exec`、
+    /// `Http::get` … 由 FKB 声明，供「循环内外部调用」判定（一次网络往返比一次
+    /// 查询贵得多，放进循环里比 N+1 更容易拖垮接口）。
+    #[serde(default)]
+    pub external_calls: Vec<String>,
+    /// **事务边界标记**：`transaction` / `startTrans` / `beginTransaction` …
+    /// 供「同一方法多次写库但未识别到事务」判定（部分成功会留下脏数据）。
+    #[serde(default)]
+    pub tx_calls: Vec<String>,
     /// 「消费入口方法名」候选：连向一个类时，优先连到它的哪个方法。
     ///
     /// 各框架约定不同：Laravel/队列 Job 是 `handle`、Symfony 是 `__invoke`、

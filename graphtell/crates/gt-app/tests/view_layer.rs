@@ -506,50 +506,48 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
         .expect("object_view");
     assert_eq!(ov.center.kind, "Event", "事件视角中心应是 Event");
 
-    // ① 画布上绝不能出现桥边（语法端点不可见，画出来即违反"画布只画语义节点"）。
+    // ① 触发方仍是语法节点：画布上绝不能出现 `Triggers` 边（应折叠进 orphans 带可展开边）。
+    //    消费者（监听器）则是稳定命名角色，已升为可见节点——`HandledBy` 因此可以画、且必须画。
     assert!(
-        !ov.edges
-            .iter()
-            .any(|e| e.kind == "HandledBy" || e.kind == "Triggers"),
-        "事件视角不应画出 HandledBy/Triggers 这类桥边，应折叠进 orphans：{:?}",
+        !ov.edges.iter().any(|e| e.kind == "Triggers"),
+        "事件视角不应画出 Triggers 边（触发方是语法节点）：{:?}",
         ov.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 
-    // ② 直连的语法访问方必须降级进 orphans，且带"它对事件做了什么"。
-    let handled = ov
-        .orphans
-        .iter()
-        .filter(|o| o.edge_kind == "HandledBy")
-        .count();
-    let triggers = ov
-        .orphans
-        .iter()
-        .filter(|o| o.edge_kind == "Triggers")
-        .count();
+    // ② 消费者（监听器）升为可见节点：`HandledBy` 边应出现，且其另一端在画布上可见。
+    let visible: std::collections::HashSet<i64> =
+        ov.rings.iter().flatten().map(|n| n.id.get()).collect();
+    let handled_edges: Vec<_> = ov.edges.iter().filter(|e| e.kind == "HandledBy").collect();
+    for e in &handled_edges {
+        assert!(
+            visible.contains(&e.to.get()) || visible.contains(&e.from.get()),
+            "HandledBy 边的端点应是画布上的可见监听器节点：{:?}",
+            (e.from, e.to)
+        );
+    }
     assert!(
-        handled + triggers > 0,
-        "事件视角应把直连监听方/触发方记进 orphans，否则就是静默省略：{:?}",
-        ov.orphans
-            .iter()
-            .map(|o| &o.edge_kind)
-            .collect::<Vec<_>>()
+        !handled_edges.is_empty() || !visible.is_empty(),
+        "事件视角应至少画出一个监听器（消费者）节点/边，否则就是退化回旧的单点稀疏图"
     );
 
-    // `Triggers` 这类只有 1 跳的直接边必须给出触发点（接触点位置），否则抽屉只剩
-    // "没有逐跳证据可查"，其实 `event('X')` 那一行就在图里。
-    for o in ov.orphans.iter().filter(|o| o.edge_kind == "Triggers") {
+    // ③ 触发方降级进 orphans，带"它对事件做了什么" + 可点击展开的语义边 + 触发点位置。
+    let triggers: Vec<_> = ov.orphans.iter().filter(|o| o.edge_kind == "Triggers").collect();
+    assert!(
+        !triggers.is_empty(),
+        "事件触发方应记进 orphans 且可展开：{:?}",
+        ov.orphans.iter().map(|o| &o.edge_kind).collect::<Vec<_>>()
+    );
+    for o in &triggers {
+        assert!(!o.name.is_empty(), "Triggers orphan 必须带名字（触发方）");
+        assert!(o.location.is_some(), "Triggers orphan {} 应给出触发点", o.name);
         assert!(
-            !o.name.is_empty(),
-            "Triggers orphan 必须带名字（触发方）"
-        );
-        assert!(
-            o.location.is_some(),
-            "Triggers orphan {} 应给出触发点（location）",
+            o.edge.is_some(),
+            "Triggers orphan {} 应附可点击展开的语义边（via 调用链）",
             o.name
         );
     }
 
-    // ③ 视图不空：要么经监听器画出了资源边，要么至少有直连记账 —— 总之不能是一张空图。
+    // ④ 视图不空：监听器节点/边 或 触发方记账，至少其一。
     assert!(
         !ov.edges.is_empty() || !ov.orphans.is_empty(),
         "事件视角不应是一张空图"

@@ -31,6 +31,9 @@ pub struct CallRecord {
     /// 链式门面调用里透传下来的目标表名（`Db::name('goods')->insert()`），
     /// 供 P7 把末端动词落成 `WritesDb` / `ReadsDb`。
     pub db_table: Option<String>,
+    /// 该调用点是否位于循环体内（parser 事实，与 CallSite 节点的 `in_loop` 属性同源）。
+    /// 供 P12/P13 这类"循环 / 批量"判定使用 —— 规则侧读节点属性，阶段侧读这里。
+    pub in_loop: bool,
     pub span: Span,
     pub file: String,
     pub sub: Option<SubProjectId>,

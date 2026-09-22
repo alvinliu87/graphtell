@@ -1273,6 +1273,7 @@ mod tests {
             method: method.map(|s| s.to_string()),
             args: vec![],
             db_table: None,
+            in_loop: false,
             span: Span::default(),
             file: String::new(),
             sub: None,

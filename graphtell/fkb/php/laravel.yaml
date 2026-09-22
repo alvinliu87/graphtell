@@ -83,6 +83,28 @@ handler:
 # `__invoke` 是单动作控制器（Single Action Controller）。
 entry_methods: ["handle", "__invoke"]
 
+# Eloquent / Query Builder 的 CRUD 动词 → 读 / 写分类（与 `MapsTo` 配合，见 P7 动词分类）。
+#
+# 为什么 Laravel 必须有这一份：之前只有 `thinkphp6` 声明了 `db_verbs`，于是
+# 三个 Laravel 工程（aimeos / bagisto / beikeshop）**一条 `WritesDb` 边都没有** ——
+# `n1-query-in-loop` / `n1-write-in-loop` / `read-only-table` / `write-only-table`
+# 全部被判 `rules_unavailable`（bagisto 实测：28 条规则里 11 条不可用）。
+#
+# 只列**会真正落库**的动词，且刻意不列 `where` / `select` / `orderBy` 这类
+# 只构造查询、不执行的中间方法 —— 否则同一个链式调用会被重复落成多条动作边。
+# 判据与 ThinkPHP 侧一致：接收者类型有 `MapsTo`，或门面链里已经拿到了表名
+# （`DB::table('x')->...->get()`），所以 `Collection::get()` 这类同名方法不会被误判。
+db_verbs:
+  write: ["save", "saveQuietly", "saveMany", "create", "createMany", "firstOrCreate",
+          "updateOrCreate", "updateOrInsert", "upsert", "update", "increment", "decrement",
+          "incrementEach", "decrementEach", "delete", "destroy", "forceDelete", "insert",
+          "insertGetId", "insertOrIgnore", "truncate", "restore", "attach", "detach",
+          "sync", "syncWithoutDetaching", "toggle"]
+  read: ["find", "findOrFail", "findMany", "findOrNew", "first", "firstOrFail", "firstWhere",
+         "sole", "value", "pluck", "count", "sum", "avg", "max", "min", "exists",
+         "doesntExist", "get", "all", "paginate", "simplePaginate", "cursor", "chunk",
+         "chunkById"]
+
 loaders:
   # FacadeMap：Laravel 的门面（真实类名取自 Illuminate 组件）。
   - id: laravel-facade-map

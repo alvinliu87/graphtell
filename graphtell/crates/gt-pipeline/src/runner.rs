@@ -15,7 +15,9 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::context::PipelineContext;
-use crate::phase::{annotate, cf_ast, cors, ingest, prepare, propagate, resolve, sign, taint};
+use crate::phase::{
+    annotate, cf_ast, cors, external, ingest, prepare, propagate, resolve, sign, taint, tx,
+};
 
 /// 流水线所需的基础设施集合（依赖倒置：由组装根注入）。
 pub trait PipelineInfrastructure {
@@ -202,6 +204,24 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     sign::run(&mut ctx);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+
+    // ---------------------------------------------------------- P12 External
+    // 依赖 P2 的 `in_loop` 与 P3 装载的 FKB `external_calls`（名单在 FKB，内核不认识名字）。
+    // 检测「循环内发起远程调用」：网络往返比查询贵一个量级，串行 N 次更致命。
+    let phase = Phase("External".to_string());
+    let started = Instant::now();
+    observer.on_phase_start(project.id, &phase);
+    external::run(&mut ctx);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+
+    // ---------------------------------------------------------- P13 Tx
+    // 必须在 P7 之后：写动词名单来自 FKB `db_verbs`（与读 / 写分类同源）。
+    // 检测「同一方法多次写库但未识别到事务边界」—— 部分成功会留下脏数据。
+    let phase = Phase("Tx".to_string());
+    let started = Instant::now();
+    observer.on_phase_start(project.id, &phase);
+    tx::run(&mut ctx);
     flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
 
     Ok(outcome)

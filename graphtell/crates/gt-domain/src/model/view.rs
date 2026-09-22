@@ -290,6 +290,12 @@ pub struct OrphanAccess {
     /// 接触点位置（`文件:行`），可跳转核对。
     #[serde(default)]
     pub location: Option<SourceLocation>,
+    /// 可选：当这次"直连访问"本身是**一条可点击展开的语义边**时（如事件视角的
+    /// `Triggers` 触发点），带上折叠后的边视图（含 `via` 调用链），前端据此打开
+    /// 边证据链抽屉，而不是只打开节点详情。语义节点（消费者）不走这里——它们
+    /// 已升为可见节点、直接画在画布上。
+    #[serde(default)]
+    pub edge: Option<EdgeView>,
 }
 
 /// 对象类视角：以**一个**对象为中心的链路子图。
