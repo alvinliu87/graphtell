@@ -10,6 +10,7 @@ use gt_domain::model::{
     Language, MergeStrategy, NewAnnotation, NewEdge, NewNode, Node, NodeId, NodeKind, Phase,
     ProjectId, Severity, Span, SubProjectId, SynthesizedKind,
 };
+use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact};
 use serde_json::Value;
 
 /// 一次调用点在工作区中的记录。
@@ -140,6 +141,10 @@ pub struct GraphWorkspace {
     /// 故在 P2 建调用点时顺手登记（只有带实参的调用才占空间）。
     chained: HashMap<(String, u32), Vec<(String, Vec<String>)>>,
     pub configs: Vec<ConfigRecord>,
+    /// CORS 头赋值（由 `cf_ast` 从解析事实灌入），供 `phase::cors` 判定反射源站。
+    pub header_assignments: Vec<HeaderAssignFact>,
+    /// 签名值的相等性比较（由 `cf_ast` 从解析事实灌入），供 `phase::sign` 判定验签质量。
+    pub sign_compares: Vec<SignCompareFact>,
     pub inherits: Vec<InheritRecord>,
     pub pending_links: Vec<PendingLink>,
     /// 路由组区间（`Route::group('v2', ...)`），供契约 ID 补齐组前缀。
@@ -230,6 +235,8 @@ impl GraphWorkspace {
             calls: Vec::new(),
             chained: HashMap::new(),
             configs: Vec::new(),
+            header_assignments: Vec::new(),
+            sign_compares: Vec::new(),
             inherits: Vec::new(),
             pending_links: Vec::new(),
             route_groups: Vec::new(),

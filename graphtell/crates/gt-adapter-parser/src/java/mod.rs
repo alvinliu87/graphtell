@@ -349,6 +349,9 @@ fn collect_one_annotation(
         span: span_of(child),
         snippet: None,
         db_table: None,
+        // Java 侧暂不识别循环语句（且 FKB 尚无 Java 的 `db_verbs`，
+        // N+1 规则本就只在 PHP 上跑）。
+        in_loop: false,
     });
 }
 
@@ -413,6 +416,7 @@ fn collect_call(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String])
         span: span_of(node),
         snippet: None,
         db_table: None,
+        in_loop: false,
     });
 }
 

@@ -3,12 +3,14 @@
 pub mod value;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
     CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
     InheritanceFact, Language, NodeKind, SyntaxFacts,
 };
+use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact};
 use serde_json::json;
 use tree_sitter::{Language as TsLanguage, Node, Parser};
 use value::{eval_expr, span_of, text};
@@ -73,7 +75,13 @@ impl LanguageParser for PhpParser {
 
         let mut facts = SyntaxFacts::default();
         let root = tree.root_node();
-        let mut ctx = Ctx { src: source, facts: &mut facts, ns: None, class_stack: Vec::new() };
+        let mut ctx = Ctx {
+            src: source,
+            facts: &mut facts,
+            ns: None,
+            class_stack: Vec::new(),
+            loop_depth: 0,
+        };
 
         // 命名空间（取第一个 namespace_definition）
         if let Some(ns) = find_child_kind(root, "namespace_definition") {
@@ -108,6 +116,11 @@ struct Ctx<'a> {
     ns: Option<String>,
     /// 当前所处的类/接口/trait 的 FQN 栈。
     class_stack: Vec<String>,
+    /// 当前嵌套在几层 `for` / `foreach` / `while` / `do-while` 的**循环体内**。
+    /// 收集调用点时写入 [`CallSiteFact::in_loop`] —— 循环是图里唯一没有建模的
+    /// 控制流概念，而 N+1 检测全靠它。用深度而非布尔：嵌套循环体内层退出后，
+    /// 外层剩余的语句仍要算「在循环内」。
+    loop_depth: u32,
 }
 
 /// 链式调用的根对象：`a()->b()->c()` 返回 `a`。
@@ -164,6 +177,31 @@ fn db_table_of(node: Node, ctx: &Ctx) -> Option<String> {
 
 fn find_child_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     node.named_children(&mut node.walk()).find(|c| c.kind() == kind)
+}
+
+/// 取带指定**字段名**的子节点（`for` 的 `body` 在语法里可以出现多次）。
+///
+/// `child_by_field_name` 只返回第一个，这里用游标遍历取全部。
+fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return out;
+    }
+    loop {
+        let child = cursor.node();
+        if child.is_named() && cursor.field_name() == Some(field) {
+            out.push(child);
+        }
+        if !cursor.goto_next_sibling() {
+            return out;
+        }
+    }
+}
+
+/// 当前收集位置是否在循环体内（供 [`CallSiteFact::in_loop`] 使用）。
+fn in_loop_of(ctx: &Ctx) -> bool {
+    ctx.loop_depth > 0
 }
 
 fn walk_program(root: Node, ctx: &mut Ctx) {
@@ -741,6 +779,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         args,
                         span: span_of(child),
                         db_table,
+                        in_loop: in_loop_of(ctx),
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);
@@ -762,6 +801,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         args,
                         db_table: None,
                         span: span_of(child),
+                        in_loop: in_loop_of(ctx),
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);
@@ -782,6 +822,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         args,
                         db_table: None,
                         span: span_of(child),
+                        in_loop: in_loop_of(ctx),
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);
@@ -804,7 +845,55 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         args,
                         db_table: None,
                         span: span_of(child),
+                        in_loop: in_loop_of(ctx),
                     });
+                }
+                recurse_calls(child, ctx, owner_fqn);
+            }
+            // 循环语句：**只有 body 内的调用算「循环体内」**。
+            // 条件 / 初始化表达式（`while ($this->hasNext())`、`for ($i=0; $i<count($x); $i++)`）
+            // 不是每条记录都执行一次，标成 `in_loop` 会把「循环前查一次」误报成 N+1。
+            // 用深度而不是布尔：嵌套循环退出内层后，外层的后续语句仍在循环内。
+            "for_statement" | "foreach_statement" | "while_statement" | "do_statement" => {
+                let bodies: HashSet<usize> =
+                    field_children(child, "body").iter().map(|n| n.id()).collect();
+                let mut cursor = child.walk();
+                for inner in child.named_children(&mut cursor) {
+                    if bodies.contains(&inner.id()) {
+                        ctx.loop_depth += 1;
+                        collect_call_sites(inner, ctx, owner_fqn);
+                        ctx.loop_depth -= 1;
+                    } else {
+                        collect_call_sites(inner, ctx, owner_fqn);
+                    }
+                }
+            }
+            // CORS 反射源站：`$header['Access-Control-Allow-Origin'] = <请求 Origin>`。
+            // 仅捕获左侧是 Allow-Origin 下标键的赋值，反射判定留给 `phase::cors`。
+            // 签名值的相等性比较：`$sign == $ipay_signature` /
+            // `$this->CreatedSign($params) != $params['sign']`。
+            // 只收**松散**比较（== / !=）且至少一侧像签名值 —— 见 SignCompareFact 的文档。
+            "binary_expression" => {
+                if let Some(fact) = sign_compare_of(child, ctx, owner_fqn) {
+                    ctx.facts.sign_compares.push(fact);
+                }
+                recurse_calls(child, ctx, owner_fqn);
+            }
+            // CORS 反射源站：`$header['Access-Control-Allow-Origin'] = <请求 Origin>`。
+            // 仅捕获左侧是 Allow-Origin 下标键的赋值，反射判定留给 `phase::cors`。
+            "assignment_expression" => {
+                if let (Some(l), Some(r)) = (
+                    child.child_by_field_name("left"),
+                    child.child_by_field_name("right"),
+                ) {
+                    if let Some(key) = cors_header_key(l, ctx.src) {
+                        ctx.facts.header_assignments.push(HeaderAssignFact {
+                            key,
+                            rhs_snippet: text(r, ctx.src),
+                            file: String::new(),
+                            span: span_of(child),
+                        });
+                    }
                 }
                 recurse_calls(child, ctx, owner_fqn);
             }
@@ -816,6 +905,228 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
 fn recurse_calls(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
     // 闭包/匿名函数内部的调用归属外层方法
     collect_call_sites(node, ctx, owner_fqn);
+}
+
+/// 若赋值左侧是 `['Access-Control-Allow-Origin']` 这类下标访问，返回归一化头名；否则 `None`。
+///
+/// 只关心会触发反射型 CORS 的 `Access-Control-Allow-Origin` 头（大小写不敏感、忽略引号）。
+fn cors_header_key(node: Node, src: &str) -> Option<String> {
+    if node.kind() != "subscript_expression" {
+        return None;
+    }
+    // 取下标键：优先按字段名 `index`，回退到第二个命名子节点（兼容不同 tree-sitter-php 版本）。
+    let idx = node
+        .child_by_field_name("index")
+        .or_else(|| node.named_children(&mut node.walk()).nth(1))?;
+    let raw = text(idx, src).trim().to_string();
+    let key = raw.trim_matches('\'').trim_matches('"').to_string();
+    let lower = key.to_ascii_lowercase();
+    if lower == "access-control-allow-origin" {
+        Some(lower)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captures_cors_header_assignment() {
+        let src = "<?php
+Route::miss(function () {
+    $header['Access-Control-Allow-Origin'] = app()->request->header('origin');
+    $header['Access-Control-Allow-Credentials'] = 'true';
+});";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("route/route.php", src).unwrap();
+        // 只捕获 Allow-Origin，不捕获 Allow-Credentials（非反射型头）。
+        assert_eq!(facts.header_assignments.len(), 1);
+        let ha = &facts.header_assignments[0];
+        assert_eq!(ha.key, "access-control-allow-origin");
+        let lower = ha.rhs_snippet.to_ascii_lowercase();
+        assert!(lower.contains("header(") && lower.contains("origin"));
+        // 同行应存在一个读取请求 origin 的调用点（CORS 阶段据此定位标注落点）。
+        let origin_call = facts.call_sites.iter().any(|c| {
+            c.method.as_deref() == Some("header")
+                && c.args
+                    .first()
+                    .and_then(|a| a.as_str())
+                    .map(|s| s.eq_ignore_ascii_case("origin"))
+                    .unwrap_or(false)
+        });
+        assert!(origin_call, "应捕获同行的 ->header('origin') 调用点");
+    }
+
+    /// 按调用点原文片段取它的 `in_loop` 标记（同一段源码里动词会重名，只能按行区分）。
+    fn in_loop_of<'a>(facts: &'a SyntaxFacts, needle: &str) -> Option<&'a CallSiteFact> {
+        facts
+            .call_sites
+            .iter()
+            .find(|c| c.snippet.as_deref().is_some_and(|s| s.contains(needle)))
+    }
+
+    #[test]
+    fn marks_call_sites_inside_loop_body() {
+        let src = "<?php
+class S {
+    public function run($list) {
+        $conf = Db::name('config')->find();
+        foreach ($list as $item) {
+            $user = Db::name('user')->where('id', $item['id'])->find();
+            foreach ($item['tags'] as $tag) {
+                Tag::get($tag);
+            }
+        }
+        while ($row = $q->fetch()) {
+            $this->dao->save($row);
+        }
+        return $conf;
+    }
+}";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("app/S.php", src).unwrap();
+        // 循环外：只执行一次
+        assert_eq!(in_loop_of(&facts, "'config'").unwrap().in_loop, false);
+        // foreach 体内：每条记录一次（这才是 N+1）
+        assert_eq!(in_loop_of(&facts, "'user'").unwrap().in_loop, true);
+        // 嵌套循环体内
+        assert_eq!(in_loop_of(&facts, "Tag::get").unwrap().in_loop, true);
+        // 循环**条件**里的调用每次进入前求值，不算循环体内
+        assert_eq!(in_loop_of(&facts, "fetch()").unwrap().in_loop, false);
+        // while 体内
+        assert_eq!(in_loop_of(&facts, "save(").unwrap().in_loop, true);
+    }
+
+    #[test]
+    fn captures_signature_comparison() {
+        let src = "<?php
+class P {
+    public function respond($params) {
+        if ($this->CreatedSign($params) != $params['sign']) {
+            return -1;
+        }
+        if ($sign === $signature) {
+            return -1;
+        }
+        return 0;
+    }
+}";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("extend/payment/P.php", src).unwrap();
+        // 只收松散比较：`===` 不算问题，不该进来。
+        assert_eq!(facts.sign_compares.len(), 1);
+        let c = &facts.sign_compares[0];
+        assert_eq!(c.operator, "!=");
+        assert!(c.left.contains("CreatedSign"));
+        assert!(c.right.contains("['sign']"));
+        assert_eq!(c.owner_fqn, "P::respond");
+    }
+
+    /// 电商代码里 `sign` 绝大多数是**签到** —— 这是整条规则最大的噪声源，必须挡在解析期。
+    #[test]
+    fn ignores_checkin_comparison() {
+        let src = "<?php
+class S {
+    public function run($user) {
+        if ($sign_mode == 1) { return 1; }
+        if ($signMode == 2) { return 1; }
+        if ($sign_last_date != date('Y-m-d')) { return 1; }
+        if ($sign_total_days == 3) { return 1; }
+        if ($points_sign_enabled != 1) { return 1; }
+        if ($assignedCouponMoney == 0) { return 1; }
+        return 0;
+    }
+}";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("app/service/Sign.php", src).unwrap();
+        assert!(
+            facts.sign_compares.is_empty(),
+            "签到类比较不应被收进签名比较事实，实际 {:?}",
+            facts.sign_compares.iter().map(|c| &c.left).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ignores_non_cors_assignment() {
+        let src = "<?php
+$header['Content-Type'] = 'application/json';
+$list['X-Foo'] = $request->header('origin');";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("x.php", src).unwrap();
+        assert!(facts.header_assignments.is_empty());
+    }
+}
+
+/// 抽取「签名值的相等性比较」：`$sign == $ipay_signature` /
+/// `$this->CreatedSign($params) != $params['sign']`。
+///
+/// 只收 `==` / `!=`：`===` / `!==` 是严格比较，不是这里要找的问题。
+/// 且至少一侧要像"一个签名值" —— 一个工程里有几万条 `==`，全收会撑爆事实集
+/// （与 CORS 只收 Allow-Origin 一个头同理）。
+fn sign_compare_of(node: Node, ctx: &Ctx, owner_fqn: &str) -> Option<SignCompareFact> {
+    let op = node.child_by_field_name("operator").map(|o| text(o, ctx.src))?;
+    if op != "==" && op != "!=" {
+        return None;
+    }
+    let left = node.child_by_field_name("left").map(|n| text(n, ctx.src))?;
+    let right = node.child_by_field_name("right").map(|n| text(n, ctx.src))?;
+    if !looks_like_signature(&left) && !looks_like_signature(&right) {
+        return None;
+    }
+    // 一侧是**字符串字面量**时不是验签：那是在比对算法名之类的常量
+    // （实测误报：`$ssl[$i]['signatureTypeLN'] == "sha1WithRSAEncryption"`）。
+    // 验签比较的两侧都应当是变量 / 计算表达式。
+    if is_string_literal(&left) || is_string_literal(&right) {
+        return None;
+    }
+    Some(SignCompareFact {
+        left,
+        right,
+        operator: op,
+        owner_fqn: owner_fqn.to_string(),
+        file: String::new(),
+        span: span_of(node),
+    })
+}
+
+/// 文本是否像**一个签名值**（而不是签到 / 赋值之类的同形词）。
+///
+/// 这是整条规则唯一的噪声闸口：电商代码里 `sign` 绝大多数是**签到**
+/// （`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`），
+/// 实测 32 处"含 sign 的 == 比较"里 24 处是签到。不排掉它们，规则就刷屏。
+fn looks_like_signature(s: &str) -> bool {
+    let t = s.trim();
+    // 必须引用变量：`$sign`、`$params['sign']`、`$ipay_signature`，
+    // 也包括被函数包起来的 `strtolower($sign)`（CRMEB 的 allinpay 验签就是这么写的）。
+    if !t.contains('$') {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    if !lower.contains("sign") {
+        return false;
+    }
+    // `assign` / `design` / `resign` 里同样含 `sign` —— 先排除同形词。
+    if lower.contains("assign") || lower.contains("design") || lower.contains("resign") {
+        return false;
+    }
+    // 去下划线后比对，一次覆盖 `$sign_mode` 与 `$signMode` 两种写法。
+    let flat: String = lower.chars().filter(|c| !matches!(c, '_' | '-')).collect();
+    const NOISE: &[&str] = &[
+        "signtype", "signmode", "signlast", "signtotal", "signdays", "signnum", "signcount",
+        "signdate", "signenabled", "signstatus", "signrule", "signconfig", "signset", "signin",
+        "signup", "pointsign", "usersign", "signrecord", "signlog", "signremind", "signpoints",
+        // 证书里也有 `signatureTypeLN` / 签名算法名，那是元数据不是待验的签名值
+        "signaturetype", "signalg", "signmethod",
+    ];
+    !NOISE.iter().any(|n| flat.contains(n))
+}
+
+/// 是否是裸字符串字面量（`'x'` / `"x"`）。
+fn is_string_literal(s: &str) -> bool {
+    let t = s.trim();
+    (t.starts_with('\'') && t.ends_with('\'')) || (t.starts_with('"') && t.ends_with('"'))
 }
 
 /// 取调用点所在**行**的源码文本，供 UI 直接显示"调用语句"，便于人工核验。

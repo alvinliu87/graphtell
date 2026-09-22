@@ -264,10 +264,33 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 | 目录 | 适用 | 内容 |
 | --- | --- | --- |
 | `rules/global/` | 跨语言通用 | 只依赖**图拓扑**（扇入扇出、语义边）的规则：契约桥（`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`）、热点表（`hot-table`）、配置读取热点（`config-read-hotspot`）、死表（`dead-table`）、只写不读 / 只读不写表（`write-only-table` / `read-only-table`）、高扇出方法（`hotspot-method`） |
-| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 队列（`orphan-event` / `orphan-queue`） |
+| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 队列（`orphan-event` / `orphan-queue`）、**循环内逐条读 / 写库**（`n1-query-in-loop` / `n1-write-in-loop`，见下）、**验签质量**（`sign-compare-loose` / `sign-weak-hash`，见下） |
 | `rules/js/` | 仅含前端子工程的工程 | 前端事件总线的死代码（`eventbus-emitted-without-listener` / `eventbus-listened-without-emitter` / `eventbus-orphan`）—— `EventBus` 与 `Emits` / `ListensTo` 是前端语义，纯后端工程上不存在 |
 
-内置 15 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持更多语言，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
+内置 28 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持更多语言，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
+
+#### N+1（`循环内逐条读 / 写库`）用到的两个新图事实
+
+循环是此前图里**完全没有建模**的控制流概念：`CallSite` 只记"谁调了谁"，不记"调了几次"。所以这条规则依赖两个新增事实，都落在 **CallSite 节点**上：
+
+| 事实 | 产出阶段 | 说明 |
+| --- | --- | --- |
+| `properties.in_loop` | P2 CfAst（值来自 PHP parser） | 调用点是否位于 `for` / `foreach` / `while` / `do-while` 的 **body** 内。循环**条件**里的调用只求值一次，不算 |
+| `db-query` / `db-write` 标注 | P7 Resolve | 该调用点被 FKB `db_verbs` 判成读 / 写并真正落成 `ReadsDb` / `WritesDb` 边时的**调用点级投影** |
+
+挂在调用点而不是方法上，是因为方法粒度的 `ReadsDb` 经 P8 沿调用链传播后会覆盖所有上游调用方 —— 那样只能得到"这个方法的调用链上读过库"，分不清"循环里查 N 次"与"循环外查一次"，噪声与被否决的"上帝方法"同源。
+
+已知边界：`db-query` 依赖 FKB 的 `db_verbs`，目前只有 `thinkphp6` 声明了它 —— 纯 Laravel 工程上这两条规则会被判为 `rules_unavailable`（"图上没有任何 db-query 标注"）而非静默 0 命中，补 `fkb/php/laravel.yaml` 的 `db_verbs` 即可启用。Java 侧同理（`mapper.xxx()` 需 Java 的 `db_verbs` + java parser 的循环识别，均未做）。
+
+#### 验签规则（`sign-compare-loose` / `sign-weak-hash`）判什么、不判什么
+
+**判**：签名算完之后怎么比 —— `$sign == $calc` / `$this->CreatedSign($params) != $params['sign']`。PHP 的 `==` / `!=` 是松散比较（`0e...` 摘要互判相等）且非恒定时间，正确写法是 `hash_equals()`。以及签名用了 `md5` / `sha1`（`info` 级：微信 V2 / 支付宝旧版 / 部分快递网关官方就要求 MD5，报成"漏洞"就是误报）。
+
+**不判**：回调到底**有没有**验签。这条判据必须跨过程追到 SDK 内部，而 PHP 排除了 `vendor`、Java 不扫 Maven 依赖 —— EasyWeChat / yansongda-pay / 官方 SDK 的 `verify()` 根本不在图里，任何"链路上没有验签调用"的判据都会对每个回调成立（100% 误报）。
+
+需要的图事实同样是 parser 新增的：比较表达式不是调用点，图上原本看不到 `==`，因此加了 [`SignCompareFact`](crates/gt-domain/src/model/syntax.rs)（只收 `==` / `!=` 且至少一侧像签名值），由 P11 `phase::sign` 判定后打 `weak_sign_compare` / `weak_sign_hash` 标注。
+
+噪声闸口在 parser 里：**电商代码的 `sign` 绝大多数是"签到"**（`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`）。实测 32 处"含 sign 的 == 比较"里 24 处是签到，因此要求比较两侧都不是字符串字面量、且排除 `sign_type` / `sign_mode` 等签到词。
 
 ### 新规则怎么才算"能发货"：先量后写
 
@@ -287,6 +310,7 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 | 队列被投递但无消费者 | 命中名 `app` / `rule` / `module` 是动态队列名产物；`product_stock_job` 在源码里 grep 不到 | **否决**（无法验证） |
 | GET 契约但名字含 `create` / `edit` | 命中的是 `GET /agent/level/create` —— ThinkPHP 后台里这是**渲染表单页面**，GET 合理 | **否决**（命名启发式在后台框架上必然误报） |
 | 页面没有任何跳转入口 | 7 个工程全部 0 命中 | **否决**（静默失效） |
+| 外部回调未验签 | 判据需跨过程追到 SDK 内部，而 PHP 排除 `vendor`、Java 不扫 Maven 依赖 —— SDK 的 `verify()` 不在图里，判据对每个回调都成立 | **否决**（图缺口，100% 误报）。已改为只判**验签质量**：`sign-compare-loose` / `sign-weak-hash` |
 | 国际化缺语言 / 高重要性表 / 运行时可变配置 | 三条都只能按 `kind` 匹配、无法按 `subkind` 过滤，实测命中 = 全部节点（358 / 156 / 248） | **否决**（谓词缺 `subkind`，命中即刷屏） |
 
 ### 规则怎么知道"该在哪跑"：环境闸门 + 判据校验

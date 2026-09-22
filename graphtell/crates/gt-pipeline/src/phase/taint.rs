@@ -165,8 +165,49 @@ fn contains_sql_keyword(t: &str) -> bool {
         "WHERE", "FROM", "SHOW", "SET", "INTO", "VALUES", "JOIN", "ORDER", "GROUP", "HAVING",
         "LIKE", "LIMIT", "CONCAT", "AND", "OR", "NOT", "IN", "BY",
     ];
-    let up = t.to_uppercase();
-    KW.iter().any(|k| up.contains(k))
+    // 先剥掉变量引用（`$where`、`{$table}`）：变量名只是标识符，不是 SQL 语法，
+    // 否则 `$where` 会因名字里含 "where" 被误判成嵌了 WHERE 子句（BaseDao.php:580 误报根因）。
+    let cleaned = strip_var_refs(t);
+    let up = cleaned.to_uppercase();
+    // 关键字必须整词出现（按非字母数字切词后精确比较），避免子串误命中。
+    KW.iter()
+        .any(|k| up.split(|c: char| !c.is_ascii_alphabetic()).any(|w| w == *k))
+}
+
+/// 去掉文本里的变量引用（`$var` / `{$var}`），替换为空格占位。
+fn strip_var_refs(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut chars = t.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            // 跳过变量名本身
+            while let Some(&nc) = chars.peek() {
+                if nc.is_ascii_alphanumeric() || nc == '_' {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            out.push(' ');
+        } else if c == '{' && chars.peek() == Some(&'$') {
+            // `{$var}` 插值整体剥掉
+            chars.next();
+            while let Some(&nc) = chars.peek() {
+                if nc.is_ascii_alphanumeric() || nc == '_' {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if chars.peek() == Some(&'}') {
+                chars.next();
+            }
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn arg_text(fv: &FactValue) -> String {
@@ -204,5 +245,26 @@ mod tests {
         assert!(arg_is_embedded(&embedded));
         let bare = FactValue::Unknown(Some("$cond".to_string()));
         assert!(!arg_is_embedded(&bare));
+    }
+
+    /// 回归：数组参数化写法 `->where($where)` 不得因变量名含 SQL 关键字而误判
+    /// （BaseDao.php:580，`$where` 大写后含 "WHERE"）。
+    #[test]
+    fn bare_var_named_like_keyword_is_not_embedded() {
+        for name in ["$where", "$order", "$limit", "$group", "$values", "$map"] {
+            let bare = FactValue::Unknown(Some(name.to_string()));
+            assert!(!arg_is_embedded(&bare), "{name} 不应判为嵌 SQL");
+        }
+        // 变量名剥除后，真正的 SQL 片段仍能靠关键字/引号命中
+        let kw_only_in_var = FactValue::Unknown(Some("$orderBy . ' LIMIT 1'".to_string()));
+        assert!(arg_is_embedded(&kw_only_in_var));
+    }
+
+    #[test]
+    fn strip_var_refs_removes_vars_and_interpolation() {
+        assert_eq!(strip_var_refs("$where"), " ");
+        assert_eq!(strip_var_refs("{$table}"), " ");
+        assert_eq!(strip_var_refs("a.$order.b"), "a. .b");
+        assert_eq!(strip_var_refs("LIKE '%$kw%'"), "LIKE '% %'");
     }
 }

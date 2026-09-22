@@ -32,6 +32,15 @@ pub struct SyntaxFacts {
     pub field_types: Vec<FieldTypeFact>,
     /// 配置文件条目（如 `app/event.php` 的 `listen.*`）。
     pub config_entries: Vec<ConfigEntryFact>,
+    /// 响应头赋值（如 `$header['Access-Control-Allow-Origin'] = ...`），供 CORS 反射检测。
+    pub header_assignments: Vec<HeaderAssignFact>,
+    /// 签名值的**相等性比较**（`$sign == $calc` / `$params['sign'] != ...`），
+    /// 供验签质量判定（松散比较 / 非恒定时间）使用。
+    ///
+    /// 只收 `==` / `!=`（`===` / `!==` 是严格比较，不是这里要找的问题），
+    /// 且只有**至少一侧像签名值**时才收 —— 否则一个工程里几万条比较全进来，
+    /// 事实集体积爆炸（CORS 那条只收 Allow-Origin 一个头，同理）。
+    pub sign_compares: Vec<SignCompareFact>,
 }
 
 /// 声明。
@@ -102,6 +111,14 @@ pub struct CallSiteFact {
     /// 沿对象链回溯取得，供 P7 把这类门面链式动词落成 `WritesDb` / `ReadsDb`。
     #[serde(default)]
     pub db_table: Option<String>,
+    /// 该调用点是否位于 `for` / `foreach` / `while` / `do-while` 的**循环体内**。
+    ///
+    /// 由 parser 在下降时记录（只有循环 `body` 内的调用计为 `true`，条件 / 初始化
+    /// 表达式不算）。它是 N+1 检测的事实基础：图的其余部分完全没有「循环」概念 ——
+    /// `CallSite` 只记"谁调了谁"，不记"调了几次"，没有这个字段就无法区分
+    /// 「一次查一堆」与「循环里一条条查」。
+    #[serde(default)]
+    pub in_loop: bool,
 }
 
 /// 字段声明与类型：`class -> field -> type`。
@@ -129,6 +146,43 @@ pub struct ConfigEntryFact {
     /// 点分路径，如 `listen.order.pay_success`。
     pub key_path: String,
     pub value: FactValue,
+    pub span: Span,
+}
+
+/// 响应头赋值事实：用于检测「CORS 反射源站」。
+///
+/// 解析期只捕获「左侧是 `Access-Control-Allow-Origin` 这类响应头下标键」的赋值
+/// （如 `$header['Access-Control-Allow-Origin'] = app()->request->header('origin')`），
+/// 真正的反射判定放在 `phase::cors` —— 需结合右侧是否读取了请求 Origin。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeaderAssignFact {
+    /// 响应头名（数组键原文去引号、转小写），如 `access-control-allow-origin`。
+    pub key: String,
+    /// 赋值右侧源码片段（用于判断是否来自请求 Origin）。
+    pub rhs_snippet: String,
+    /// 文件（在 `cf_ast` 阶段由 `file.path` 填充）。
+    pub file: String,
+    pub span: Span,
+}
+
+/// 签名值的相等性比较：`$this->CreatedSign($params) != $params['sign']`。
+///
+/// 为什么需要单独一类事实：**比较不是调用点**，`CallSite` 里永远看不到 `==`。
+/// 而"验签是否做对"恰恰取决于这一步 —— 用 `==` / `!=` 比签名会引入 PHP 松散比较
+/// 的类型混淆（`0e...` 摘要互判相等）与非恒定时间（可计时侧信道）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignCompareFact {
+    /// 比较左侧源码文本。
+    pub left: String,
+    /// 比较右侧源码文本。
+    pub right: String,
+    /// 运算符原文（只可能是 `==` / `!=`）。
+    pub operator: String,
+    /// 所在方法 / 函数的 FQN：判定时要把它与"同函数内的签名计算调用"对齐
+    /// （`$sign == $ipay_signature` 这种两边都是变量的写法，签名计算在别处）。
+    pub owner_fqn: String,
+    /// 文件（在 `cf_ast` 阶段由 `file.path` 填充）。
+    pub file: String,
     pub span: Span,
 }
 

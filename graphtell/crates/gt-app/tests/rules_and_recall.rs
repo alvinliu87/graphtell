@@ -253,12 +253,12 @@ fn partial_rerun_only_replaces_its_own_violations() {
     );
 
     svc.check(f.project, None, true).expect("全量检查应成功");
-    assert_eq!(svc.violations(f.project, 500).expect("回读").len(), 3);
+    assert_eq!(svc.violations(f.project, 500, None).expect("回读").len(), 3);
 
     // 只重跑 pii 规则：其余两条必须还在
     svc.check(f.project, Some(&["demo-pii-table".to_string()]), true)
         .expect("部分检查应成功");
-    let left = svc.violations(f.project, 500).expect("回读");
+    let left = svc.violations(f.project, 500, None).expect("回读");
     assert_eq!(left.len(), 3, "部分重跑应保留其它规则的结论");
     assert!(
         left.iter().any(|v| v.rule_id == "demo-dead-table")
@@ -280,7 +280,7 @@ fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
     );
 
     svc.check(f.project, None, true).expect("首次检查应成功");
-    let first = svc.violations(f.project, 500).expect("应能回读违规");
+    let first = svc.violations(f.project, 500, None).expect("应能回读违规");
     assert_eq!(first.len(), 3, "落库后应能回读出 3 条违规");
     assert!(
         first.iter().all(|v| v.rule_id.starts_with("demo-")),
@@ -289,7 +289,7 @@ fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
 
     // 再跑一次：结果必须**还是 3 条**，而不是累加成 6 条
     svc.check(f.project, None, true).expect("重复检查应成功");
-    let second = svc.violations(f.project, 500).expect("应能回读违规");
+    let second = svc.violations(f.project, 500, None).expect("应能回读违规");
     assert_eq!(second.len(), 3, "重跑必须清空旧违规，而不是累加");
 }
 

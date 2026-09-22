@@ -44,6 +44,16 @@ const SUB_ROLE_LABEL: Record<string, string> = {
 };
 
 /**
+ * 读取落库违规的条数上限（与后端 `DEFAULT_VIOLATION_LIMIT` 一致）。
+ *
+ * 不能写小：它是"分页前的全量拉取"，页面自己按 20 条一页翻。曾经写 500，
+ * 而 likeshop 一次检查就有 996 条 —— 于是刚跑完看到的是完整结果，
+ * 刷新页面后只剩截断后的 500 条（且按写入顺序截断，critical 全被砍掉），
+ * 看起来就像"没持久化、回到了老数据"。
+ */
+const STORED_LIMIT = 5000;
+
+/**
  * 合规检查结果页：建图后自动跑出的结论（来自持久化诊断表）。
  *
  * 设计要点：
@@ -73,9 +83,12 @@ export function CheckPage() {
 
   // 进入即加载上一次落库结果（自动检查已写入），不重跑；按子项目筛选时服务端已过滤。
   const stored = useAsync(
-    () => checkApi.violations(id, 500, subFilter.length ? subFilter : undefined),
+    () => checkApi.violations(id, STORED_LIMIT, subFilter.length ? subFilter : undefined),
     [id, subFilter],
   );
+  // 落库总数（按严重度分组）。用于判断列表是否被上限截断 —— 截断却不说，
+  // 用户会以为"检查只跑出这么多"。
+  const summary = useAsync(() => checkApi.summary(id), [id]);
   // 规则列表用于严重度筛选下拉与「已装载规则」计数。
   const rules = useAsync(() => checkApi.rules(), []);
 
@@ -99,6 +112,10 @@ export function CheckPage() {
       const r = await checkApi.check(id, []);
       setReport(r);
       refreshCheckSummary();
+      // 落库结果必须同步重拉：它是页面重新挂载（切换页面 / 刷新浏览器）后
+      // 唯一的数据源 —— 不重拉的话，用户下次进来看到的仍是上一轮的落库内容。
+      void stored.reload();
+      void summary.reload();
       if (r.violations.length === 0 && r.rules_silent.length === 0) {
         message.success(t('刷新完成，没有命中任何违规'));
       }
@@ -109,11 +126,42 @@ export function CheckPage() {
     }
   };
 
+  /**
+   * 严重度计数优先取自**落库汇总**（`check/summary` 是全量 `COUNT`，与侧边栏角标同源），
+   * 而不是从已加载的列表里数 —— 列表带读取上限，数出来的是"载入了多少条"，
+   * 不是"有多少条违规"，两者在超限工程上差一个量级。
+   *
+   * 只有在**按子工程筛选**时才退回数列表：`summary` 是工程级的，筛选后它偏大。
+   */
   const counts = useMemo(() => {
-    const c: Record<string, number> = { critical: 0, error: 0, warning: 0, info: 0 };
+    const empty = (): Record<Severity, number> => ({ critical: 0, error: 0, warning: 0, info: 0 });
+    if (subFilter.length === 0) {
+      if (summary.data) {
+        return {
+          critical: summary.data.critical,
+          error: summary.data.error,
+          warning: summary.data.warning,
+          info: summary.data.info,
+        };
+      }
+      // 手动刷新后报告里也有一份全量分档（key 与 summary 一致），优先于数列表。
+      if (report) {
+        const c = empty();
+        for (const k of Object.keys(c) as Severity[]) c[k] = report.by_severity[k] ?? 0;
+        return c;
+      }
+    }
+    const c = empty();
     for (const v of scoped) c[v.severity] = (c[v.severity] ?? 0) + 1;
     return c;
-  }, [scoped]);
+  }, [summary.data, report, subFilter.length, scoped]);
+
+  // 落库总数 vs 实际列出条数：只在**没有子工程筛选**时比较（筛选后自然会更少）。
+  const storedTotal = summary.data
+    ? summary.data.critical + summary.data.error + summary.data.warning + summary.data.info
+    : null;
+  const truncated =
+    storedTotal != null && subFilter.length === 0 && scoped.length > 0 && scoped.length < storedTotal;
 
   const filtered = useMemo(
     () =>
@@ -158,6 +206,18 @@ export function CheckPage() {
 
       {runError ? (
         <Alert type="error" showIcon message={runError} style={{ marginBottom: 16 }} />
+      ) : null}
+
+      {truncated ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('列表已被读取上限截断')}
+          description={t(
+            `本工程共 ${storedTotal} 条违规，当前只列出 ${scoped.length} 条（读取上限 ${STORED_LIMIT}）。排序已按严重度优先，被截掉的是最不严重的提示级。`,
+          )}
+        />
       ) : null}
 
       {report && report.rules_silent.length > 0 ? (
@@ -232,20 +292,23 @@ export function CheckPage() {
       {hasResults ? (
         <>
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-            <Col xs={12} md={6}>
+            <Col xs={12} md={4}>
               <StatCard
                 title={t('已装载规则')}
                 value={report?.rules_total ?? rules.data?.length ?? 0}
                 accent="#7c5cff"
               />
             </Col>
-            <Col xs={12} md={6}>
-              <StatCard title={t('错误')} value={counts.error ?? 0} accent="#ff4d4f" />
+            <Col xs={12} md={4}>
+              <StatCard title={SEVERITY_LABEL.critical} value={counts.critical} accent="#a8071a" />
             </Col>
-            <Col xs={12} md={6}>
+            <Col xs={12} md={4}>
+              <StatCard title={t('错误')} value={counts.error} accent="#ff4d4f" />
+            </Col>
+            <Col xs={12} md={4}>
               <StatCard title={t('警告')} value={counts.warning ?? 0} accent="#fa8c16" />
             </Col>
-            <Col xs={12} md={6}>
+            <Col xs={12} md={4}>
               <StatCard title={t('提示')} value={counts.info ?? 0} accent="#3d7eff" />
             </Col>
           </Row>

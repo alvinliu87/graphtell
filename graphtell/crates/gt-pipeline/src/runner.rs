@@ -15,7 +15,7 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::context::PipelineContext;
-use crate::phase::{annotate, cf_ast, ingest, prepare, propagate, resolve, taint};
+use crate::phase::{annotate, cf_ast, cors, ingest, prepare, propagate, resolve, sign, taint};
 
 /// 流水线所需的基础设施集合（依赖倒置：由组装根注入）。
 pub trait PipelineInfrastructure {
@@ -183,6 +183,25 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     taint::run(&mut ctx);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+
+    // ---------------------------------------------------------- P10 Cors
+    // 必须在 P9 之后（亦仅依赖 ctx.ws.calls 与解析期捕获的 header_assignments）。
+    // 检测「CORS 反射源站」：Access-Control-Allow-Origin 被设为请求 Origin。
+    let phase = Phase("Cors".to_string());
+    let started = Instant::now();
+    observer.on_phase_start(project.id, &phase);
+    cors::run(&mut ctx);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
+
+    // ---------------------------------------------------------- P11 Sign
+    // 必须在 P9 之后（同样只依赖 ctx.ws.calls 与解析期捕获的 sign_compares）。
+    // 检测「验签质量」：签名被 == / != 松散比较、签名用 md5 / sha1。
+    // 注意：**不判**"有没有验签" —— 那样必须跨过程追 SDK，而 vendor 不在图里，必误报。
+    let phase = Phase("Sign".to_string());
+    let started = Instant::now();
+    observer.on_phase_start(project.id, &phase);
+    sign::run(&mut ctx);
     flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id);
 
     Ok(outcome)

@@ -1,0 +1,71 @@
+# N+1：循环体内逐条访问数据库。
+#
+# 判据是两个**跨阶段拼起来的事实**：
+#   1. `CallSite.properties.in_loop` —— PHP parser 在 `for` / `foreach` / `while` /
+#      `do-while` 的 `body` 内收集到该调用时打上的标记（图里唯一表达"这段代码会被
+#      执行 N 次"的地方）；
+#   2. `db-query` / `db-write` 标注 —— P7 把这次调用落成 `ReadsDb` / `WritesDb` 边时，
+#      顺带打在该调用点上的投影。复用 P7 的动词分类结果（FKB `db_verbs`），
+#      不在规则里另写动词名单。
+#
+# 为什么必须挂在 `CallSite` 而不是 `Method`：`ReadsDb` 边挂在方法上，且 P8 会沿调用
+# 链向上传播 —— 方法粒度只能得到"这个方法的调用链上读过库"，分不清"循环里查 N 次"
+# 与"循环外查一次"，噪声会比已否决的"上帝方法（方法读写 N 张表）"那条还大。
+#
+# 读与写分成两条：改法不同（批量读 / 批量写），文案也不同。
+
+rules:
+  - id: n1-query-in-loop
+    title: 循环内逐条查库（N+1）
+    description: >-
+      一次数据库**读**发生在循环体内：N 条记录就是 N 次往返，数据量一大就退化成
+      N+1 查询。修法是循环外一次批量取回（whereIn / 预加载关联）再在内存里配对。
+      两类例外要先排除：循环的是配置 / 字典这类**常数长度**的集合（N 很小，不必改），
+      以及按天 / 按枚举分桶的统计循环（N 有上界，属于可接受写法）。
+    severity: info
+    category: performance
+    params:
+      - key: max_nodes
+        label: 候选调用点上限
+        description: 参与检查的 CallSite 节点数量上限；超大库调低可加速（但会漏检靠后的调用点）。
+        kind: number
+        default: 200000
+        min: 1000
+        max: 2000000
+    applies_to:
+      kinds: [CallSite]
+      languages: [php]
+      limit: "$max_nodes"
+    when:
+      - property_is: { name: in_loop, value: "true" }
+      - has_annotation: db-query
+    message: "循环体内逐条查库（{name}）—— N 条记录 = N 次查询，建议改为循环外批量查询"
+    remediation: "把循环内的单条查询提到循环外一次性取回（whereIn / 预加载关联），再在内存里按 key 配对"
+
+  - id: n1-write-in-loop
+    title: 循环内逐条写库
+    description: >-
+      一次数据库**写**发生在循环体内：N 条记录就是 N 次 INSERT / UPDATE 往返。
+      与 N+1 读同源，但改法不同 —— 批量写（saveAll / insertAll / 一次 whereIn update）
+      或把多次更新合并成一次条件更新。
+      注意：循环体里带业务校验（每条要单独判断是否可写）时，逐条写是**合理**的，
+      此时应改的是事务边界（整体包一个事务）而不是强行批量。
+    severity: info
+    category: performance
+    params:
+      - key: max_nodes
+        label: 候选调用点上限
+        description: 参与检查的 CallSite 节点数量上限；超大库调低可加速（但会漏检靠后的调用点）。
+        kind: number
+        default: 200000
+        min: 1000
+        max: 2000000
+    applies_to:
+      kinds: [CallSite]
+      languages: [php]
+      limit: "$max_nodes"
+    when:
+      - property_is: { name: in_loop, value: "true" }
+      - has_annotation: db-write
+    message: "循环体内逐条写库（{name}）—— N 条记录 = N 次写入，建议改为批量写或把更新合并成一次"
+    remediation: "改用批量写入（saveAll / insertAll / whereIn 一次更新）；若每条都需单独校验，则把整个循环包进一个事务"

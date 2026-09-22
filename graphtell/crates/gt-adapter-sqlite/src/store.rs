@@ -1214,7 +1214,24 @@ impl DiagnosticSink for SqliteStore {
                 }
             }
         }
-        sql.push_str(&format!(" ORDER BY id DESC LIMIT ?{}", binds.len() + 1));
+        // 排序刻意**先按严重度、再按写入顺序**：这个查询带 `LIMIT`，一旦违规数超过
+        // 上限就会被截断 —— 若按 `id DESC`（写入顺序）截断，被砍掉的是"最后跑完的
+        // 规则"，留下来的可能全是 info，critical / error 整档消失，用户看到的
+        // 严重度分布与真实结果完全不符（实测：996 条里 59 条 critical，
+        // 取 500 条后 critical 为 0）。截断必须优先淘汰最不严重的。
+        //
+        // `severity` 存的是 JSON 字符串（如 `"critical"`，带引号），用 `LIKE` 匹配
+        // 而不是等号，避免依赖具体的序列化形式。
+        sql.push_str(
+            " ORDER BY CASE
+                WHEN severity LIKE '%critical%' THEN 0
+                WHEN severity LIKE '%error%' THEN 1
+                WHEN severity LIKE '%warning%' THEN 2
+                ELSE 3
+              END, id DESC
+              LIMIT ?",
+        );
+        sql.push_str(&format!("{}", binds.len() + 1));
         binds.push(Box::new(limit as i64));
         let mut stmt = conn.prepare(&sql).map_err(DomainError::infra)?;
         let rows = stmt

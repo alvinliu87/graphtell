@@ -17,8 +17,9 @@
 use std::collections::{HashMap, HashSet};
 
 use gt_domain::model::{
-    EdgeKind, FactValue, HandlerSpec, Language, NewEdge, NodeId, NodeKind, Phase, ResolveStrategy,
-    ResolveTier, Resolution, Severity, SubProjectId,
+    AnnotationChannel, EdgeKind, FactValue, HandlerSpec, Language, MergeStrategy, NewAnnotation,
+    NewEdge, NodeId, NodeKind, Phase, ResolveStrategy, ResolveTier, Resolution, Severity,
+    SubProjectId,
 };
 use gt_domain::port::KnowledgeProvider;
 use serde_json::Value;
@@ -31,6 +32,9 @@ use crate::workspace::CallRecord;
 #[derive(Debug, Clone)]
 struct Locator {
     owner: NodeId,
+    /// 该调用点自身的 `CallSite` 节点 —— 落 DB 边时顺便打 `db-query` 标注，
+    /// 供「循环内查库（N+1）」规则按**调用点**而不是整个方法来判定。
+    call_node: NodeId,
     /// 所属方法的 FQN（供按"变量类型"解析时查参数 / 属性类型）。
     owner_fqn: String,
     strategy: ResolveStrategy,
@@ -103,6 +107,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                 if keys.insert(format!("{strategy:?}:{raw}")) {
                     uniques.push(Locator {
                         owner: call.owner,
+                        call_node: call.node,
                         owner_fqn: call.owner_fqn.clone(),
                         strategy: *strategy,
                         raw,
@@ -130,6 +135,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
             if keys.insert(key) {
                 uniques.push(Locator {
                     owner: call.owner,
+                    call_node: call.node,
                     owner_fqn: call.owner_fqn.clone(),
                     strategy: *strategy,
                     raw,
@@ -405,6 +411,7 @@ fn classify_db_action(
             emit_db_edge(
                 ctx,
                 loc.owner,
+                Some(loc.call_node),
                 loc.sub,
                 &loc.owner_fqn,
                 table,
@@ -439,6 +446,7 @@ fn classify_db_action(
                     emit_db_edge(
                         ctx,
                         loc.owner,
+                        Some(loc.call_node),
                         loc.sub,
                         &loc.owner_fqn,
                         table,
@@ -464,6 +472,7 @@ fn classify_facade_db_calls(ctx: &mut PipelineContext) {
     // `table_id` 是 `Copy`，直接收进 vec，落边阶段无需再查。
     let mut pending: Vec<(
         NodeId,
+        Option<NodeId>,
         Option<SubProjectId>,
         String,
         String,
@@ -496,6 +505,7 @@ fn classify_facade_db_calls(ctx: &mut PipelineContext) {
         };
         pending.push((
             call.owner,
+            Some(call.node),
             call.sub,
             call.owner_fqn.clone(),
             method.to_string(),
@@ -504,10 +514,11 @@ fn classify_facade_db_calls(ctx: &mut PipelineContext) {
             call_line(call),
         ));
     }
-    for (owner, sub, owner_fqn, method, kind, table_id, location) in pending {
+    for (owner, call_node, sub, owner_fqn, method, kind, table_id, location) in pending {
         emit_db_edge(
             ctx,
             owner,
+            call_node,
             sub,
             &owner_fqn,
             table_id,
@@ -538,6 +549,8 @@ fn loc_line(loc: &Locator) -> String {
 fn emit_db_edge(
     ctx: &mut PipelineContext,
     owner: NodeId,
+    // 触发这条边的**调用点**节点（`CallSite`）—— 落边时给它打 `db-query` 标注。
+    call_node: Option<NodeId>,
     sub: Option<SubProjectId>,
     owner_fqn: &str,
     table_id: NodeId,
@@ -571,7 +584,48 @@ fn emit_db_edge(
             sub,
             phase: Phase(Phase::RESOLVE.to_string()),
         });
+        // 同一事实的**调用点级**投影：这条边确实落成于某一次 `->find()` / `->save()`。
+        // N+1 规则要的是「这一次调用是否发生在循环体内」，而 `owner`（方法）粒度
+        // 分不清"循环里查 N 次"和"循环外查一次"，所以必须落到 CallSite 上。
+        if let Some(node_id) = call_node {
+            ctx.ws.annotate(NewAnnotation {
+                node_id,
+                channel: AnnotationChannel(DbQuery::CHANNEL.to_string()),
+                // 读 / 写分开成两种标注：循环内"逐条读"与"逐条写"是两种不同的
+                // 改法（批量读 vs 批量写），规则文案也不同，各自独立成条。
+                kind: if kind.0 == EdgeKind::WRITES_DB {
+                    DbQuery::WRITE.to_string()
+                } else {
+                    DbQuery::READ.to_string()
+                },
+                subkind: Some(method.to_string()),
+                confidence,
+                evidence: serde_json::json!({
+                    "rule": "db-verb-classify",
+                    "location": location,
+                    "verb": method,
+                    "action": kind_label(kind),
+                }),
+                phase: Phase(Phase::RESOLVE.to_string()),
+                merge: MergeStrategy::Coexist,
+            });
+        }
     }
+}
+
+/// 调用点级「这是一次数据库读 / 写」标注。
+///
+/// 只有**真正落成了 `ReadsDb` / `WritesDb` 边**的调用点才会被打上 —— 判据复用
+/// P7 已有的动词分类结果，不在解析器里另写一份动词名单（否则 Laravel / ThinkPHP
+/// 各写一遍，图事实与规则判据必然漂移）。
+struct DbQuery;
+
+impl DbQuery {
+    const CHANNEL: &'static str = "DbQuery";
+    /// 一次读（`ReadsDb`）。
+    const READ: &'static str = "db-query";
+    /// 一次写（`WritesDb`）。
+    const WRITE: &'static str = "db-write";
 }
 
 /// `WritesDb` / `ReadsDb` 的中文标签（仅用于边证据文案）。

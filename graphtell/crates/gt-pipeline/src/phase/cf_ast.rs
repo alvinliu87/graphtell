@@ -446,9 +446,21 @@ fn build_file(
             phase: phase.clone(),
             confidence: 1.0,
             // 调用语句原文：供 UI 在链路的"调用处"直接显示，便于一眼核验。
-            properties: match &call.snippet {
-                Some(s) => serde_json::json!({ "snippet": s }),
-                None => serde_json::Value::Null,
+            // `in_loop`：parser 记录的「在循环体内」，N+1 规则的判据之一 —— 图里
+            // 没有别的地方表达"这段会被执行 N 次"。
+            properties: {
+                let mut props = match &call.snippet {
+                    Some(s) => serde_json::json!({ "snippet": s }),
+                    None => serde_json::json!({}),
+                };
+                if call.in_loop {
+                    props["in_loop"] = serde_json::json!(true);
+                }
+                if props.as_object().is_some_and(|o| o.is_empty()) {
+                    serde_json::Value::Null
+                } else {
+                    props
+                }
             },
         });
         ctx.ws.add_edge(NewEdge {
@@ -499,6 +511,28 @@ fn build_file(
             sub: file.sub_project_id,
             locale: locale.clone(),
             file_stem: file_stem.clone(),
+        });
+    }
+
+    // CORS 头赋值事实：补上文件路径，供 `phase::cors` 与调用点按 (文件, 行) 对齐。
+    for h in &facts.header_assignments {
+        ctx.ws.header_assignments.push(gt_domain::model::syntax::HeaderAssignFact {
+            key: h.key.clone(),
+            rhs_snippet: h.rhs_snippet.clone(),
+            file: file.path.clone(),
+            span: h.span,
+        });
+    }
+
+    // 签名比较事实：补上文件路径，供 `phase::sign` 与同函数内的签名计算对齐。
+    for c in &facts.sign_compares {
+        ctx.ws.sign_compares.push(gt_domain::model::syntax::SignCompareFact {
+            left: c.left.clone(),
+            right: c.right.clone(),
+            operator: c.operator.clone(),
+            owner_fqn: c.owner_fqn.clone(),
+            file: file.path.clone(),
+            span: c.span,
         });
     }
 }

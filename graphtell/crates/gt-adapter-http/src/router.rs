@@ -562,13 +562,24 @@ fn parse_sub_project_ids(raw: &Option<String>) -> Option<Vec<SubProjectId>> {
 }
 
 /// 读取上一次检查落库的违规（不重跑规则）。
+/// 读取落库违规的**默认条数**。
+///
+/// 曾经是 500，实测 likeshop 一次检查 996 条 —— 于是"刚跑完看到 996 / 严重 59"
+/// 与"刷新页面看到 500 / 严重 0"对不上，被读成"没持久化 / 回到老数据"。
+/// 违规表的读取是分页前的全量拉取（UI 自己按 20 条一页翻），这里只做**上限保护**，
+/// 不是分页参数，所以取一个明显够用的值；真超过它时，排序已保证淘汰的是最不严重的。
+const DEFAULT_VIOLATION_LIMIT: u32 = 5_000;
+
 async fn list_violations(
     State(state): State<Shared>,
     Path(id): Path<i64>,
     Query(q): Query<ViolationQuery>,
 ) -> Json<ApiResponse<Vec<Violation>>> {
     let sub = parse_sub_project_ids(&q.sub_project_id);
-    match state.checks.violations(ProjectId(id), q.limit.unwrap_or(500), sub.as_deref()) {
+    match state
+        .checks
+        .violations(ProjectId(id), q.limit.unwrap_or(DEFAULT_VIOLATION_LIMIT), sub.as_deref())
+    {
         Ok(v) => Json(ApiResponse::success(v)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }

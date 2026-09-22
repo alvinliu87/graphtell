@@ -58,7 +58,7 @@ rules:
         max: 200000
     applies_to:
       kinds: [CallSite]
-      limit: "$max_nodes"
+      limit: 9000000
       # Taint 标注目前只有 PHP 的 FKB 产出（Java 工程实测 0 条 Taint 标注），
       # 不声明语言的话会在 Java 工程上被 `rules_unavailable` 拦下——
       # 声明出来更能表达"这条规则属于 PHP 生态"这个先验事实。
@@ -95,17 +95,9 @@ rules:
       还是整段 SQL 由变量传入，都属于高危 SQL 注入。由 P9 Taint 阶段判出。
     severity: critical
     category: security
-    params:
-      - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 数量上限；大库需调高以覆盖全部调用点。
-        kind: number
-        default: 200000
-        min: 100
-        max: 500000
     applies_to:
       kinds: [CallSite]
-      limit: "$max_nodes"
+      limit: 9000000
       languages: [php]
     when:
       - has_annotation: tainted_raw
@@ -124,19 +116,99 @@ rules:
       与参数化写法（占位符 + 绑定数组）有本质区别。由 P9 Taint 阶段判出。
     severity: critical
     category: security
-    params:
-      - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 数量上限；大库需调高以覆盖全部调用点。
-        kind: number
-        default: 200000
-        min: 100
-        max: 500000
     applies_to:
       kinds: [CallSite]
-      limit: "$max_nodes"
+      limit: 9000000
       languages: [php]
     when:
       - has_annotation: tainted_where
     message: "where 条件 {name} 直接拼接了变量（位于 {file}:{line}）—— SQL 注入风险"
     remediation: "改用 ->where('col = ?', [$var]) 参数化写法；绝不要把变量写进 SQL 字符串。"
+
+  # ⚠️ 由 P10 Cors 阶段产出 `cors_origin_reflect` 标注（Access-Control-Allow-Origin 被设为
+  # 请求 Origin，反射源站）。再配合 `Access-Control-Allow-Credentials: true` 即泄露用户凭证，
+  # 属高危跨域配置。所有 PHP 工程通用的代码坏味。
+  - id: cors-reflect-origin
+    title: CORS 反射源站（Access-Control-Allow-Origin 设为请求 Origin）
+    description: >-
+      响应头 Access-Control-Allow-Origin 被直接设为请求的 Origin（或整段
+      Access-Control-Allow-Origin 头由变量拼接）。这会把任意站点的请求都当同源、
+      并（常配合 Access-Control-Allow-Credentials: true）泄露用户凭证，属高危跨域配置。
+      由 P10 Cors 阶段判出。
+    severity: error
+    category: security
+    applies_to:
+      kinds: [CallSite]
+      limit: 9000000
+      languages: [php]
+    when:
+      - has_annotation: cors_origin_reflect
+    message: "Access-Control-Allow-Origin 被设为请求 Origin（位于 {file}:{line}）—— 反射源站，凭证级跨域泄露"
+    remediation: >-
+      使用固定白名单来源，或按请求 Origin 做「白名单比对后回写」；绝不可把
+      request->header('origin') / $_SERVER['HTTP_ORIGIN'] 原样反射回去。
+
+  # ⚠️ 由 P11 Sign 阶段产出 `weak_sign_compare` 标注。
+  #
+  # 判的是「验签做得对不对」而不是「有没有验签」—— 后者判不了：PHP 排除了 vendor、
+  # Java 不扫 Maven 依赖，EasyWeChat / yansongda-pay / 官方 SDK 的 verify() 不在图里，
+  # 任何"链路上没有验签"的判据都会对每个回调成立（100% 误报）。
+  - id: sign-compare-loose
+    title: 签名用松散比较（== / !=）
+    description: >-
+      外部回调的签名值被 `==` / `!=` 比较。PHP 的松散比较会让 `0e...` 形式的摘要
+      互判相等（`md5('240610708') == md5('QNKCDZO')`），且逐字节短路退出构成
+      计时侧信道。由 P11 Sign 阶段判出：同一函数内存在签名计算（md5 / sha1 /
+      hash_hmac / *Sign()），且签名值被松散比较。
+    severity: warning
+    category: security
+    params:
+      - key: max_nodes
+        label: 候选调用点上限
+        description: 参与检查的 CallSite 数量上限；超大库可调低以避免一次检查过慢。
+        kind: number
+        default: 5000
+        min: 100
+        max: 200000
+    applies_to:
+      kinds: [CallSite]
+      limit: 9000000
+      languages: [php]
+    when:
+      - has_annotation: weak_sign_compare
+    message: "签名计算 {name} 的结果被用 == / != 比较（位于 {file}:{line}）—— 松散比较 + 非恒定时间"
+    remediation: >-
+      改用 hash_equals($expected, $actual) 做恒定时间比较；先用字符串比较会引入
+      `0e...` 类型混淆与计时侧信道。注意：`===` / `!==` 虽是严格比较，仍非恒定时间，
+      也建议换成 hash_equals。
+
+  # ⚠️ 由 P11 Sign 阶段产出 `weak_sign_hash` 标注。
+  #
+  # 只发 info：微信支付 V2、支付宝旧版、快递鸟等网关**官方就要求 MD5** ——
+  # 报成"漏洞"就是误报，文案必须写成"需确认是否为网关要求"。
+  - id: sign-weak-hash
+    title: 签名使用 md5 / sha1
+    description: >-
+      签名计算用了 md5 或 sha1。多数情况是网关官方要求的（微信支付 V2 的 MD5 签名、
+      支付宝旧版、部分快递 / 打印网关），此时无需改动；需要警惕的是**自研网关**
+      选了弱算法 —— 那意味着签名可被碰撞与伪造。
+    severity: info
+    category: security
+    params:
+      - key: max_nodes
+        label: 候选调用点上限
+        description: 参与检查的 CallSite 数量上限；超大库可调低以避免一次检查过慢。
+        kind: number
+        default: 5000
+        min: 100
+        max: 200000
+    applies_to:
+      kinds: [CallSite]
+      limit: 9000000
+      languages: [php]
+    when:
+      - has_annotation: weak_sign_hash
+    message: "签名使用弱哈希 {name}（位于 {file}:{line}）—— 若为网关官方要求可忽略，自研网关建议升级"
+    remediation: >-
+      确认网关文档要求的摘要算法；若是自研 / 可选，升级到 HMAC-SHA256 或 RSA-SHA256，
+      并确保密钥不参与明文拼接。
