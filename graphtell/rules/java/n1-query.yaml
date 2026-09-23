@@ -20,7 +20,7 @@
 #   * 字段声明类型按同包补成 FQN —— 否则 P7 拿短名查不到 `MapsTo`，落不出动作边。
 
 rules:
-  - id: n1-query-in-loop
+  - id: java-n1-query-in-loop
     title: 循环内逐条查库（N+1）
     description: >-
       一次数据库**读**发生在循环体内：N 条记录就是 N 次往返，数据量一大就退化成
@@ -47,7 +47,7 @@ rules:
     message: "循环体内逐条查库（{name}）—— N 条记录 = N 次查询，建议改为循环外批量查询"
     remediation: "把循环内的单条查询提到循环外一次性取回（findAllById / whereIn / 预加载关联），再在内存里按 key 配对"
 
-  - id: n1-write-in-loop
+  - id: java-n1-write-in-loop
     title: 循环内逐条写库
     description: >-
       一次数据库**写**发生在循环体内：N 条记录就是 N 次 INSERT / UPDATE 往返。

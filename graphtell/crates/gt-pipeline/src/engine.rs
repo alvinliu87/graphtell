@@ -305,6 +305,19 @@ pub fn matches_node(sel: &Selector, id: NodeId, ws: &GraphWorkspace) -> bool {
         .all(|p| eval_predicate(p, id, Some(MatchCtx::Node(id)), ws, &ev))
 }
 
+/// 把节点属性值转成用于 `property_is` 比较的字符串。
+///
+/// 同时支持字符串与布尔：解析器把 `in_loop` 写成 JSON 布尔（`true` / `false`），
+/// 而规则里写的是 `"true"` 字符串。若只用 `as_str()`，布尔值会返回 `None`，
+/// 导致 `property_is: { name: in_loop, value: "true" }` 永远不成立。
+fn node_prop_str(v: Option<&serde_json::Value>) -> Option<&str> {
+    match v {
+        Some(serde_json::Value::String(s)) => Some(s.as_str()),
+        Some(serde_json::Value::Bool(b)) => Some(if *b { "true" } else { "false" }),
+        _ => None,
+    }
+}
+
 /// 谓词求值。
 pub fn eval_predicate(
     pred: &Predicate,
@@ -367,7 +380,7 @@ pub fn eval_predicate(
             hay.to_ascii_lowercase().contains(&sub.to_ascii_lowercase())
         }
         Predicate::PropertyIs { name, value } => match ws.node(node) {
-            Some(n) => n.properties.get(name).and_then(|v| v.as_str()) == Some(value.as_str()),
+            Some(n) => node_prop_str(n.properties.get(name)) == Some(value.as_str()),
             None => false,
         },
         Predicate::FqnMatches(sub) => {

@@ -290,6 +290,36 @@ fn type_name_of(node: Node, src: &[u8]) -> Option<String> {
     text(node, src)
 }
 
+/// 把源码里的**裸类型名**还原成 FQN。
+///
+/// 顺序：① 带点号 → 原样；② 本文件的 `import`（含别名）→ 被导入的 FQN；
+/// ③ 同包（同包引用没有 import）→ `{所在类的包}.{名字}`。
+///
+/// 为什么必须在 parser 做：P7 的读 / 写动词分类拿接收者类型查 `MapsTo`，而 `MapsTo`
+/// 挂着的是 **FQN**；短名查不到 ⇒ `mapper.insert()` 落不出 `WritesDb`。
+/// 只按同包补会在「service 与 mapper 不同包」时拼出错误的 FQN（宁可缺不可猜，
+/// 但能靠 import 精确还原时就应该精确）。
+fn resolve_java_type(name: &str, out: &SyntaxFacts, class_fqn: &str) -> String {
+    if name.contains('.') {
+        return name.to_string();
+    }
+    for imp in out.imports.iter() {
+        if let Some(alias) = &imp.alias {
+            if alias == name {
+                return imp.name.clone();
+            }
+        }
+        let last = imp.name.rsplit('.').next().unwrap_or(&imp.name);
+        if last == name {
+            return imp.name.clone();
+        }
+    }
+    match class_fqn.rsplit_once('.') {
+        Some((pkg, _)) => format!("{}.{}", pkg, name),
+        None => name.to_string(),
+    }
+}
+
 /// 取子树里第一组 `type_arguments` 的首个类型标识符（`<User, Long>` → `User`）。
 fn first_generic_arg(node: Node, src: &[u8]) -> Option<String> {
     if node.kind() == "type_arguments" {
@@ -325,14 +355,7 @@ fn push_generic_entity(
     // 裸名（最常见：实体与 DAO **同包**，故没有 import）必须补成 FQN ——
     // 图里只有 FQN 能命中，而短名索引只收 import，同包引用根本不在里面
     // （这正是此前 `find_by_name` 落空、Link 不产边的原因）。
-    let entity = if entity.contains('.') {
-        entity.clone()
-    } else {
-        match fqn.rsplit_once('.') {
-            Some((pkg, _)) => format!("{}.{}", pkg, entity),
-            None => entity.clone(),
-        }
-    };
+    let entity = resolve_java_type(entity, out, fqn);
     out.call_sites.push(CallSiteFact {
         owner_fqn: fqn.to_string(),
         owner_class: Some(fqn.to_string()),
@@ -370,17 +393,7 @@ fn collect_field_type(node: Node, src: &[u8], class_fqn: &str, out: &mut SyntaxF
     if type_name.is_empty() {
         return;
     }
-    // 裸类型名按**所在类的包**补成 FQN（同包引用没有 import，短名索引里查不到）。
-    // 不补的话 P7 拿到的接收者类型是 `UserRepository`，而 `mapped_tables` 用 FQN 查
-    // `MapsTo`，于是 `repo.save()` 落不出 `WritesDb`（Java 的 N+1 缺的正是这一环）。
-    let type_name = if type_name.contains('.') {
-        type_name
-    } else {
-        match class_fqn.rsplit_once('.') {
-            Some((pkg, _)) => format!("{}.{}", pkg, type_name),
-            None => type_name,
-        }
-    };
+    let type_name = resolve_java_type(&type_name, out, class_fqn);
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "variable_declarator" {

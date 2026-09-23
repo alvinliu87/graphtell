@@ -985,6 +985,102 @@ rules:
     );
 }
 
+/// Java N+1 规则**真的能命中**：循环体内的 DAO 读调用点（CallSite）。
+///
+/// 这条把「语言闸门 + `property_is(in_loop)` + `has_annotation(db-query)`」三段拼起来，
+/// 任何一段断了都会让规则静默 0 命中（曾经 `in_loop` 写成 JSON 布尔、而 `PropertyIs`
+/// 只认字符串，导致 `property_is` 永远不成立）。现有用例只验证规则能装载、没验证能命中。
+#[test]
+fn java_n1_query_rule_fires_on_loop_db_read() {
+    let f = fixture();
+    set_stack(&f, "java", &["spring-boot"]);
+
+    let files = f
+        .container
+        .store
+        .replace_files(
+            f.project,
+            vec![NewSourceFile {
+                project_id: f.project,
+                sub_project_id: None,
+                path: "app/service/OrderService.java".into(),
+                language: Language::new("java"),
+                size_bytes: 256,
+                content_hash: "h-java-n1".into(),
+            }],
+        )
+        .expect("文件应可写入");
+    let file_id = files[0].id;
+
+    // 一个循环体内的数据库**读**调用点：
+    //   * `in_loop` 属性（解析器写成 JSON 布尔 `true`）；
+    //   * `db-query` 标注（P7 落成 `ReadsDb` 边时打的投影）。
+    f.container
+        .store
+        .apply(&GraphDelta {
+            project_id: Some(f.project),
+            nodes: vec![NewNode {
+                id: Some(NodeId(401)),
+                project_id: f.project,
+                sub_project_id: None,
+                kind: NodeKind::new("CallSite"),
+                name: "userRepository.findById".into(),
+                fqn: None,
+                identity: Some(gt_domain::model::IdentityKey::fqn("userRepository.findById")),
+                file_id: Some(file_id),
+                span: gt_domain::model::Span {
+                    start_line: 42,
+                    end_line: 42,
+                    start_byte: 0,
+                    end_byte: 0,
+                },
+                language: Language::new("java"),
+                phase: Phase(Phase::RESOLVE.to_string()),
+                confidence: 1.0,
+                properties: serde_json::json!({ "in_loop": true }),
+            }],
+            annotations: vec![NewAnnotation {
+                node_id: NodeId(401),
+                channel: AnnotationChannel("DbQuery".to_string()),
+                kind: "db-query".into(),
+                subkind: Some("findById".into()),
+                confidence: 0.9,
+                evidence: serde_json::json!({ "rule": "db-verb-classify" }),
+                phase: Phase(Phase::RESOLVE.to_string()),
+                merge: MergeStrategy::Coexist,
+            }],
+            ..Default::default()
+        })
+        .expect("图应可写入");
+
+    let svc = RuleService::new(
+        f.container.store.clone() as Arc<dyn Persistence>,
+        f.container.rules.clone() as Arc<dyn RuleProvider>,
+    );
+    let report = svc.check(f.project, None, false).expect("检查不应失败");
+
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "java-n1-query-in-loop"),
+        "java-n1-query-in-loop 应命中循环体内的数据库读调用点，实际违规：{:?}",
+        report
+            .violations
+            .iter()
+            .map(|v| &v.rule_id)
+            .collect::<Vec<_>>()
+    );
+    // 没打 `db-write` 标注，写库那条不应误命中。
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "java-n1-write-in-loop"),
+        "未打 db-write 标注时 java-n1-write-in-loop 不应误命中"
+    );
+}
+
 /// 文案模板的 `{file}` / `{line}` 必须渲染出来（`raw-sql-sink` 在用）。
 #[test]
 fn message_renders_file_and_line() {

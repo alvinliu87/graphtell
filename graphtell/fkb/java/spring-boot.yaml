@@ -176,6 +176,35 @@ rules:
           link: { kind: WritesDb, direction: incoming }
           confidence: 0.85
 
+  # **Mapper 接口 → 表**：上面两条只把动作边挂在「Mapper 接口**方法**」上，
+  # 而 P7 的读 / 写动词分类是拿**接收者类型**查 `MapsTo` 的
+  # （`umsAdminMapper.insert(x)` 的接收者类型是 `...mapper.UmsAdminMapper` 接口）。
+  # 接口自己没有 `MapsTo` ⇒ 这类调用落不出 `WritesDb` ⇒ Java 的 N+1 规则因
+  # 「图上没有任何 db-write 标注」被停用。这里补上接口 → 表这一跳。
+  #
+  # 用 `Project` 而不是 `Link`：`Link` 两端是 `find_by_name`，而 Table 节点的 **fqn 为
+  # NULL**（只有 name），按名字查必然落空。Project 沿边走，不受此限：
+  #   接口 --Declares--> 接口方法 --ReadsDb/WritesDb--> 表
+  #  ⇒ 接口 --MapsTo--> 表。只有真正挂了动作边的 Mapper 接口会产出，服务类接口无副作用。
+  - id: mybatis-mapper-maps-to-table
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Interface
+    binding:
+      - Project:
+          kind: MapsTo
+          along: Declares
+          from: []
+          to: [ReadsDb]
+          confidence: 0.8
+      - Project:
+          kind: MapsTo
+          along: Declares
+          from: []
+          to: [WritesDb]
+          confidence: 0.8
+
   # ===== P5 Synthesize：ConfigKey =====
   # `@Value("${app.name}")` —— 去掉 `${` 与 `}` 得到配置键。
   - id: spring-value-config
