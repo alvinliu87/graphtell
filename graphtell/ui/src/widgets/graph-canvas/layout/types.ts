@@ -171,23 +171,23 @@ function measureTextPx(text: string, px: number, weight: number): number | null 
 
 /**
  * 药丸节点宽度。必须与 GraphCanvas 的实际渲染对齐：
- * `图标 + 名称`，名称字号 13 / 字重 700（中心）或 11 / 500（其它），
+ * `图标 + 名称`，名称字号 13 / 字重 600（中心）或 11 / 500（其它），
  * 且渲染端按**视觉宽度**中间截断 40 位 —— 宽度计算同样先截断再测量，口径一致。
  * 文本宽度优先 `measureText` 实测；不可测量时按系数估算兜底。上限 300 防极端长名撑爆画布。
  */
-const ICON_AREA = 22; // 图标 14 + 左内边距 6 + 间隔 ≈ 2（文字起点 23）
+const ICON_AREA = 20; // 图标 12 + 左内边距 6 + 间隔 3（文字起点 21）
 const ICON_LEFT = 8; // 无图标时仅左内边距（文字起点 8）
 const RIGHT_PAD = 18; // 右内边距（含 1–2px 渲染误差缓冲）
 const MIN_NAME_UNITS = 4; // 至少保留约 4 个拉丁字符宽的文本区（保证可点 / 可读；CJK 一字 ≈ 1.8 位，自然更宽）
 function pillWidth(kind: string, name: string, center = false, icon = true): number {
   const px = center ? 13 : 11;
-  const weight = center ? 700 : 500;
+  const weight = center ? 600 : 500;
   // 先按渲染端同一规则截断，再量 —— 截断前的全名量出来只会虚宽。
   const shown = truncateMiddle(name, 40);
   const textPx =
     measureTextPx(shown, px, weight) ?? Math.min(units(name), 40) * (center ? 7.4 : 6.2);
   // 下限完全由内容推导：左内边距 + 右侧留白 + 至少 MIN_NAME_UNITS 字符的文本宽。
-  // 图标与否只改 `left`（有图标 23 / 无图标 8），分档常量因此被吸收、无需单独维护。
+  // 图标与否只改 `left`（有图标 21 / 无图标 8），分档常量因此被吸收、无需单独维护。
   const left = icon ? ICON_AREA + 1 : ICON_LEFT;
   const minNamePx = (center ? 7.4 : 6.2) * MIN_NAME_UNITS;
   return Math.min(300, Math.ceil(left + RIGHT_PAD + Math.max(minNamePx, textPx)));

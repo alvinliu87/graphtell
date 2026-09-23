@@ -1,4 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+} from 'react';
 import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
@@ -75,6 +84,46 @@ const LEGEND_SECTION_TITLE: CSSProperties = {
   color: '#94a3b8',
   cursor: 'help',
 };
+
+/**
+ * 图例项的勾选框：把「图例 = 筛选器」这件事直接画出来。
+ *
+ * 只靠"悬浮才出现 pointer + 变淡删除线"传达可点击太弱：第一次看图例的人会把它
+ * 当成配色说明（尤其下面还混着不可点的子工程配色行）。勾 / 空两态是筛选控件最
+ * 通用的视觉语法（ECharts / Grafana 图例同款），不悬浮也能一眼看出
+ * "这里能点"以及"当前是开还是关"。
+ *
+ * 为什么**不跟随 kind 色**、统一中性灰：
+ * * 浅色 kind（如 `HasCallSite: '#e2e8f0'`）填充后，白 ✓ 与边框在白底上都看不见，
+ *   "勾了像没勾" —— 控件状态不能依赖语义色的明度碰运气；
+ * * 颜色身份已由行内的节点图标 / 边线样承载，控件再上一次色只会让一行里同一颜色
+ *   重复两三次，面板更像色卡而不是筛选器；
+ * * 蓝色是调色板里的语义色（读库 `#3b82f6`、子工程 `#0ea5e9`），也是「重置」链接色，
+ *   蓝色勾选框会被误读成"读库"那类；中性灰 `#64748b` 不与任何语义色撞车，
+ *   与白 ✓ 的对比度约 4.8:1，可读。
+ */
+function LegendCheck({ checked }: { checked: boolean }): ReactElement {
+  return (
+    <span
+      style={{
+        width: 13,
+        height: 13,
+        borderRadius: 3,
+        border: `1px solid ${checked ? '#64748b' : '#cbd5e1'}`,
+        background: checked ? '#64748b' : '#fff',
+        color: '#fff',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 9,
+        lineHeight: 1,
+        flex: '0 0 auto',
+      }}
+    >
+      {checked ? '✓' : ''}
+    </span>
+  );
+}
 const DIM_EDGE_HIGH = 40; // 边数高于此取最深
 
 /**
@@ -943,6 +992,13 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const h = n.h ?? 26;
             const fill = nodeColor(n.kind);
             const isFrontendCaller = frontendCallerIds.has(n.id);
+            // 节点描述：种类 / 类别 / 名称。只挂 `aria-label` 给读屏，不做视觉 tooltip ——
+            // 悬浮详情卡已经给出这些信息（还更多），原生 `<title>` 会晚约 1 秒在光标处再弹一遍
+            // 同一份内容、叠在卡片上互相遮挡。见 `<g>` 上的注释。
+            const ariaLabel =
+              meta?.category && meta.category !== n.kind
+                ? `${t(`node.${n.kind}`)}（类别 ${meta.category}）· ${n.name}`
+                : `${t(`node.${n.kind}`)} · ${n.name}`;
             // 节点统一为 rect 药丸，文字内嵌于框内，无需外伸标签。
             // 前端 HTTP 调用方填充种类色（淡），从匿名白底语法药丸升级为「一等节点」观感；
             // 其余节点保持白底 + 种类色描边。
@@ -950,6 +1006,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
               <g
                 key={n.id}
                 transform={`translate(${n.x},${n.y})`}
+                aria-label={ariaLabel}
                 style={{
                   cursor: meta?.own_view ? 'pointer' : 'default',
                   opacity: focusing && !focus.nodes.has(n.id) ? dimOpacity : 1,
@@ -1009,22 +1066,23 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     from
                   </text>
                 ) : null}
-                {/* 原生 tooltip：种类 / 类别 / 名称 —— 便于分辨同名或含义不明的节点 */}
-                <title>
-                  {meta?.category && meta.category !== n.kind
-                    ? `${t(`node.${n.kind}`)}（类别 ${meta.category}）· ${n.name}`
-                    : `${t(`node.${n.kind}`)} · ${n.name}`}
-                </title>
+                {/* 这里**不**放原生 `<title>` 作 tooltip：悬浮详情卡（见下方）在悬浮瞬间就给出
+                    「种类 / 类别 / 名称 / 入出边 / 位置 / 下一步」，而原生 title 会在约 1 秒后
+                    在光标处再弹一遍同一份信息，正好压在卡片上互相遮挡（两套 tooltip 抢同一块地方）。
+                    同一份文案改挂 `aria-label`（见 `<g>`）：读屏仍可拿到，但零视觉副作用。 */}
                 {/* 种类图标：以 kind 色填充，替代原来的彩色 kind 文字前缀 —— 省下横向空间给名字，
-                    长路径（如路由）就能显示更完整。图标固定 14px，左对齐贴在药丸内。
+                    长路径（如路由）就能显示更完整。图标固定 12px：主体是名字，图标只是辅助认出种类；
+                    14px 时图标比 13px 的字还高，反而抢过名字（截图里最明显的观感问题）。
+                    12px 也是这类细描边图标的清晰下限，再小笔画会糊。
+                    `pillWidth` 的 `ICON_AREA` / 文字起点必须同步（21 = 左内边距 6 + 图标 12 + 间隔 3）。
                     仅当本次视图出现的 kind ≥ 3 时才画（同质视图退化为只靠颜色，见 `showNodeIcons`）。
                     必须包 `<foreignObject>`：antd 图标根元素是 HTML `<span>`，直接放进 SVG `<g>`
-                    会被浏览器按 SVG 命名空间丢弃（表现为图标消失、但 23px 图标位仍占着 —— 空白假象）。
+                    会被浏览器按 SVG 命名空间丢弃（表现为图标消失、但 21px 图标位仍占着 —— 空白假象）。
                     尺寸用 fontSize 控制（span 上的 width/height 属性无效），与图例渲染口径一致。 */}
                 {showNodeIcons ? (
                   (() => {
                     const Icon = nodeIcon(n.kind);
-                    const ICON = 14;
+                    const ICON = 12;
                     return (
                       <foreignObject
                         x={-w / 2 + 6}
@@ -1038,21 +1096,25 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     );
                   })()
                 ) : null}
+                {/* 名称字号 / 字重：中心 13px/600，其它 11px/500。
+                    中心已有三重强调 —— 位置（居中 / 左列锚点）、字号（13 vs 11）、颜色（#0f172a vs #475569），
+                    再加 700 就是第四重，13px 下字面又黑又挤，长路由名还更占宽度；600 仍明显重于 500，
+                    且与产品里其它强调保持一致（图例标题 / 聚类标签 / 悬浮卡名字都是 600，700 只留给角标级小字）。 */}
                 <text
-                  x={-w / 2 + (showNodeIcons ? 23 : 8)}
+                  x={-w / 2 + (showNodeIcons ? 21 : 8)}
                   y={4}
                   fontSize={isCenter ? 13 : 11}
-                  fontWeight={isCenter ? 700 : 400}
+                  fontWeight={isCenter ? 600 : 500}
                   fill={isCenter ? '#0f172a' : '#475569'}
                   textAnchor="start"
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 >
                   {/* 语义名（如 `store_order_refund_service` / `GET /v2/order/.../create`）才是人
                       真正在找的实体，做主。种类已由左侧图标 + 色表达，不再喧宾夺主。长名按**视觉宽度**
-                      中间截断 40 位（保头尾，CJK 一字计 1.8 位），与布局 `pillWidth` 估算一致，不会溢出药丸。 */}
-                  <tspan fontWeight={isCenter ? 700 : 500} fontSize={isCenter ? 13 : 11}>
-                    {truncateMiddle(n.name, 40)}
-                  </tspan>
+                      中间截断 40 位（保头尾，CJK 一字计 1.8 位），与布局 `pillWidth` 估算一致，不会溢出药丸。
+                      `tspan` 已删：它原本把父级同样的字号 / 字重再写一遍，还和父级不一致（400 vs 500），
+                      留下只有两个真相来源的风险。 */}
+                  {truncateMiddle(n.name, 40)}
                 </text>
                 {/* 选中环只给"非中心的选中节点"留（当前交互下不会出现，留作扩展点） */}
                 {selectedId === n.id && !isCenter ? (
@@ -1232,6 +1294,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
           >
             <span>图例</span>
             <span style={{ color: 'rgba(0,0,0,0.35)' }}>{legendOpen ? '▾' : '▸'}</span>
+            {/* 不常驻「点击筛选」字样：勾选框的勾/空两态已经把"可点"说清楚了，
+                再写一遍只会和「图例 ▾」「连带收起 N 点」「重置」抢这 240px 的标题行；
+                "点一下会发生什么"由每行的悬浮提示解释（一次就够的文案不占常驻位置）。 */}
             {/* 连带收起的点数：因为某些关系被关掉而失去全部可见连接的点。
                 给个可见反馈，否则用户点了图例却看到"点也少了"，会以为按钮失灵。 */}
             {cascadeHidden > 0 ? (
@@ -1283,32 +1348,43 @@ export function GraphCanvas(props: GraphCanvasProps) {
               {legendNodeKinds.map((k) => {
                 const Icon = nodeIcon(k);
                 const hidden = hiddenNodeSet.has(k);
+                const hint = t('点击显隐此类节点') + t('（连到它的边一并收起）');
                 return (
                   <Fragment key={`n:${k}`}>
                     <span
                       onClick={() => onToggleNodeKind?.(k)}
-                      title={t('点击显隐此类节点') + t('（连到它的边一并收起）')}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        color: nodeColor(k),
-                        cursor: 'pointer',
-                        opacity: hidden ? 0.3 : 1,
-                        textDecoration: hidden ? 'line-through' : 'none',
-                      }}
+                      title={hint}
+                      style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}
                     >
-                      <Icon style={{ fontSize: 14 }} />
+                      <LegendCheck checked={!hidden} />
                     </span>
                     <span
                       onClick={() => onToggleNodeKind?.(k)}
+                      title={hint}
                       style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
                         lineHeight: '18px',
                         cursor: 'pointer',
-                        opacity: hidden ? 0.3 : 1,
-                        textDecoration: hidden ? 'line-through' : 'none',
+                        opacity: hidden ? 0.45 : 1,
                       }}
                     >
-                      {t(`node.${k}`)}
+                      {/* 图标 12px 与画布药丸同尺寸；首列固定 14px 宽并居中，好让
+                          节点段（图标）与关系段（14px 线样）的文字列起点对齐。 */}
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          width: 14,
+                          justifyContent: 'center',
+                          color: nodeColor(k),
+                        }}
+                      >
+                        <Icon style={{ fontSize: 12 }} />
+                      </span>
+                      <span style={{ textDecoration: hidden ? 'line-through' : 'none' }}>
+                        {t(`node.${k}`)}
+                      </span>
                     </span>
                   </Fragment>
                 );
@@ -1323,17 +1399,26 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   </div>
                   {legendEdgeKinds.map((k) => {
                     const hidden = hiddenEdgeSet.has(k);
+                    const hint = t('点击显隐此类边') + t('（只经由它相连的点一并收起）');
                     return (
                       <Fragment key={`e:${k}`}>
                         <span
                           onClick={() => onToggleEdgeKind?.(k)}
-                          title={t('点击显隐此类边') + t('（只经由它相连的点一并收起）')}
+                          title={hint}
+                          style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}
+                        >
+                          <LegendCheck checked={!hidden} />
+                        </span>
+                        <span
+                          onClick={() => onToggleEdgeKind?.(k)}
+                          title={hint}
                           style={{
-                            display: 'inline-flex',
+                            display: 'flex',
                             alignItems: 'center',
+                            gap: 6,
+                            lineHeight: '18px',
                             cursor: 'pointer',
-                            opacity: hidden ? 0.3 : 1,
-                            textDecoration: hidden ? 'line-through' : 'none',
+                            opacity: hidden ? 0.45 : 1,
                           }}
                         >
                           <span
@@ -1344,17 +1429,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
                               display: 'inline-block',
                             }}
                           />
-                        </span>
-                        <span
-                          onClick={() => onToggleEdgeKind?.(k)}
-                          style={{
-                            lineHeight: '18px',
-                            cursor: 'pointer',
-                            opacity: hidden ? 0.3 : 1,
-                            textDecoration: hidden ? 'line-through' : 'none',
-                          }}
-                        >
-                          {t(`edge.${k}`)}
+                          <span style={{ textDecoration: hidden ? 'line-through' : 'none' }}>
+                            {t(`edge.${k}`)}
+                          </span>
                         </span>
                       </Fragment>
                     );
@@ -1364,24 +1441,30 @@ export function GraphCanvas(props: GraphCanvasProps) {
               {subProjects && subProjects.length > 0 ? (
                 <Fragment>
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
-                  <div style={LEGEND_SECTION_TITLE}>{t('子工程')}</div>
+                  {/* 子工程只作配色说明、不可点：首列留空（没有勾选框）本身就是
+                      "这段不参与筛选"的视觉区分，避免和上面两类筛选项混为一谈。 */}
+                  <div style={LEGEND_SECTION_TITLE} title={t('仅配色，不参与筛选')}>
+                    {t('子工程')}
+                  </div>
                   {subProjects.map((sp) => (
                     <Fragment key={sp.id}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span />
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, lineHeight: '18px' }}>
                         <span
                           style={{
                             width: 8,
                             height: 8,
                             borderRadius: 99,
                             background: subProjectColors.get(sp.id) ?? '#94a3b8',
+                            flex: '0 0 auto',
                           }}
                         />
-                      </span>
-                      <span style={{ lineHeight: '18px' }}>
-                        {sp.name}{' '}
-                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                          （{roleLabel(sp.role)}）
-                        </Typography.Text>
+                        <span>
+                          {sp.name}{' '}
+                          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                            （{roleLabel(sp.role)}）
+                          </Typography.Text>
+                        </span>
                       </span>
                     </Fragment>
                   ))}

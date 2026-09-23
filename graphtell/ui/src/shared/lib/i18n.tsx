@@ -304,6 +304,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '（只经由它相连的点一并收起）': ' (nodes reachable only via it collapse too)',
     '关系类型': 'Relation type',
     '子工程': 'Sub-project',
+    '仅配色，不参与筛选': 'Color key only — not clickable',
     '隐藏某类节点时，连到它的边一并收起': 'Hiding a node type also collapses the edges touching it',
     '隐藏某类关系时，只经由它相连的点一并收起':
       'Hiding a relation type also collapses nodes reachable only through it',
