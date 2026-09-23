@@ -24,7 +24,7 @@
 //!    与 Java 里「方法级注解的 owner 是该方法」一致。
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gt_domain::error::Result;
 use gt_domain::model::{
@@ -95,6 +95,7 @@ impl LanguageParser for PythonParser {
             owner_fqn: module,
             current_class: None,
             loop_depth: 0,
+            imports: HashMap::new(),
         };
         walk(tree.root_node(), &mut ctx);
         Ok(facts)
@@ -132,6 +133,11 @@ struct Ctx<'a> {
     /// 当前嵌套在几层 `for` / `while` 循环体内（同 PHP 的 `loop_depth`）：
     /// 用深度而非布尔，嵌套循环退出内层后外层剩余语句仍算「在循环内」。
     loop_depth: u32,
+    /// 本文件的**符号短名 → 完全限定名**（来自 `from x.y import z`）。
+    ///
+    /// 供形参默认值里的调用点把「被引用者」解析成 FQN（依赖注入 / 默认工厂这类
+    /// 语义写在**签名**里而非方法体内）。解析器不做任何框架假设。
+    imports: HashMap<String, String>,
 }
 
 impl Ctx<'_> {
@@ -175,7 +181,11 @@ fn walk(node: Node, ctx: &mut Ctx) {
         // 类体内的字面量赋值就是**类属性**（`__tablename__ = "users"`），
         // 与 PHP 的类属性同机制登记为 Property 声明。这里不做任何框架假设。
         "expression_statement" if ctx.current_class.is_some() => {
-            collect_class_attribute(node, ctx);
+            // 已完整处理（字面量属性 / 字段声明）则跳过 recurse，避免字段声明里的
+            // 调用点被重复抓取；否则照常递归（如方法体内的局部赋值）。
+            if collect_class_attribute(node, ctx) {
+                return;
+            }
         }
         _ => {}
     }
@@ -275,6 +285,10 @@ fn collect_function(node: Node, ctx: &mut Ctx) -> Option<String> {
         extra: json!({ "parameters": params_of(node, ctx.src) }),
     });
 
+    // 形参默认值里的调用（`db = Depends(get_db)`）：依赖注入 / 默认工厂这类语义
+    // 写在**签名**里而不是方法体内，不记下来就永远看不到。
+    collect_default_calls(node, ctx, &fqn);
+
     let prev_fqn = ctx.owner_fqn.clone();
     ctx.owner_fqn = fqn.clone();
     if let Some(body) = node.child_by_field_name("body") {
@@ -284,51 +298,146 @@ fn collect_function(node: Node, ctx: &mut Ctx) -> Option<String> {
     Some(fqn)
 }
 
-/// 类体里的**字面量赋值** → Property 声明（`__tablename__ = "users"`）。
+/// 类体里的赋值语句 → 要么是**字面量属性**，要么是 **ORM 字段声明**，二者都登记。
 ///
-/// Python 的类属性没有专门的声明语法，就是类体内的一条赋值语句。把它登记成
-/// Property 后，`cf_ast` 会把默认值记录到**类节点**上，FKB 即可用
-/// 「节点选择器 + `HasProperty`」命中 —— 解析器侧不需要认识任何 ORM 框架。
+/// 返回 `true` 表示已完整处理该语句、调用方无需再 `recurse`（避免字段声明里那个
+/// 调用点被递归遍历重复抓一遍）；返回 `false` 表示「不是类属性 / 字段声明」，
+/// 照常 `recurse`（例如方法体内的局部赋值、或左侧非裸标识符的 `self.x = ...`）。
 ///
-/// 只收**裸标识符左侧 + 字面量右侧**的组合：`self.x = 1`(属性式赋值)与
-/// `cols = Column(...)`(右值不是字面量)都不在此列，避免把赋值噪声混进属性表。
-fn collect_class_attribute(node: Node, ctx: &mut Ctx) {
+/// # 两种情形
+/// * **字面量属性**（`__tablename__ = "users"` 等）：登记为 Property 声明，供 FKB
+///   用「节点选择器 + `HasProperty`」命中（SQLAlchemy 的表映射即此路径）。解析器
+///   不认识任何 ORM 框架，只认「类属性 = 字面量」。
+/// * **字段声明**（`name = models.CharField(...)` / `author = models.ForeignKey(User)`）：
+///   与 Java 字段注解、JS 字段装饰器**同一机制** —— 把调用点的 owner 精确到
+///   「类.字段」，FKB 即可取 `owner_class.owner_member` 作列身份（`app.models.user.User.name`），
+///   `HasColumn` 也连到字段本身，字段级影响面可下钻。关系字段的首个位置实参若是个
+///   类名（标识符），按本文件 import 解析成 FQN 记入 `entity`，供 `References` 直接连到
+///   目标模型类（与 FastAPI 的 `Depends` 同机制）。解析器同样不认识 Django，只认
+///   「类体内裸标识符 = 调用」这一中性的语法形态。
+fn collect_class_attribute(node: Node, ctx: &mut Ctx) -> bool {
     // 只收**类体直接作用域**：方法体内的 `total = 5` 是局部变量（`owner_fqn` 是
     // `Class.method` 而非类本身），当成类属性会把局部变量污染进属性表。
     if ctx.current_class.as_deref() != Some(ctx.owner_fqn.as_str()) {
-        return;
+        return false;
     }
     let Some(assign) = node.named_child(0).filter(|n| n.kind() == "assignment") else {
-        return;
+        return false;
     };
     let (Some(left), Some(right)) = (
         assign.child_by_field_name("left"),
         assign.child_by_field_name("right"),
     ) else {
-        return;
+        return false;
     };
     if left.kind() != "identifier" {
-        return;
+        return false;
     }
-    let Some(name) = text(left, ctx.src) else { return };
-    let value = match right.kind() {
-        "string" => string_value(right, ctx.src).map(FactValue::String),
-        "integer" => text(right, ctx.src).map(FactValue::String),
-        "true" => Some(FactValue::Bool(true)),
-        "false" => Some(FactValue::Bool(false)),
-        "none" => Some(FactValue::Null),
+    let Some(name) = text(left, ctx.src) else { return false };
+    let Some(class_fqn) = ctx.current_class.clone() else { return false };
+    match right.kind() {
+        // 字面量属性 → Property 声明（语言中性的「类属性 = 字面量」）。
+        "string" | "integer" | "true" | "false" | "none" => {
+            let value = match right.kind() {
+                "string" => string_value(right, ctx.src).map(FactValue::String),
+                "integer" => text(right, ctx.src).map(FactValue::String),
+                "true" => Some(FactValue::Bool(true)),
+                "false" => Some(FactValue::Bool(false)),
+                "none" => Some(FactValue::Null),
+                _ => None,
+            };
+            let Some(value) = value else { return false };
+            ctx.facts.declarations.push(Declaration {
+                kind: NodeKind(NodeKind::PROPERTY.to_string()),
+                name: name.clone(),
+                fqn: format!("{}.{}", class_fqn, name),
+                parent_fqn: Some(class_fqn),
+                span: span_of(node),
+                extra: json!({ "default": value }),
+            });
+            true
+        }
+        // 字段声明：`name = SomeCallable(...)` —— 调用点的 owner 精确到「类.字段」，
+        // 关系字段的首个位置实参（类名标识符）解析成 FQN 记入 entity。
+        "call" => {
+            let field_fqn = format!("{}.{}", class_fqn, name);
+            // 先算关系目标（只读借用 ctx），再建调用点（独占借用），避开借用冲突。
+            let entity = right
+                .child_by_field_name("arguments")
+                .and_then(|a| a.named_child(0))
+                .filter(|first| first.kind() == "identifier")
+                .and_then(|first| resolve_symbol(first, ctx));
+            // owner_fqn = 类.字段（让 `owner_member` 取到字段名）；owner_class = 类
+            // （让 `owner_class` 取到模型类，供 `HasColumn` / `References` 链接）。
+            collect_call_like(right, ctx, &field_fqn, &class_fqn);
+            if let (Some(e), Some(last)) = (entity, ctx.facts.call_sites.last_mut()) {
+                last.entity = Some(e);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 形参**默认值**里的调用 → 调用点，并把被引用者解析成 FQN 记入 `entity`。
+///
+/// `def handler(db = Depends(get_db))` 这类「写在签名里的框架调用」不会出现在方法
+/// 体内，普通遍历抓不到。语言层只负责两件中立的事：① 这是个调用点；② 它的第一个
+/// 实参指向哪个名字（按本文件 import / 同模块解析成 FQN）。至于 `Depends` 意味着
+/// 「依赖注入」，完全交给 FKB 声明（见 fkb/python/fastapi.yaml）。
+fn collect_default_calls(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
+    let Some(params) = node.child_by_field_name("parameters") else { return };
+    let owner_class = ctx.class_or_module();
+    let mut cursor = params.walk();
+    for p in params.named_children(&mut cursor) {
+        let Some(default) = p.child_by_field_name("value") else { continue };
+        if default.kind() != "call" {
+            continue;
+        }
+        // 先算 entity（只读借用 ctx），再建调用点（独占借用），避开借用冲突。
+        let entity = default
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+            .and_then(|a| resolve_symbol(a, ctx));
+        let before = ctx.facts.call_sites.len();
+        collect_call_like(default, ctx, owner_fqn, &owner_class);
+        if let (Some(e), true) = (entity, ctx.facts.call_sites.len() > before) {
+            if let Some(last) = ctx.facts.call_sites.last_mut() {
+                last.entity = Some(e);
+            }
+        }
+    }
+}
+
+/// 把一个「被引用的名字」解析成完全限定名。
+///
+/// * `from app.dependencies import get_db` → `app.dependencies.get_db`
+/// * 未被导入的裸名字：只能是本模块或内建，按**当前模块**拼（`{module}.{name}`）
+fn resolve_symbol(node: Node, ctx: &Ctx) -> Option<String> {
+    match node.kind() {
+        "identifier" => {
+            let name = text(node, ctx.src)?;
+            Some(
+                ctx.imports
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{}.{}", ctx.module, name)),
+            )
+        }
+        // `deps.get_db` / `views.user_list` 这类属性引用：递归解析对象，把模块前缀
+        // 还原出来。仅当对象能解析成名字时才拼；否则退回原文，避免把表达式文本当语义身份。
+        // （实测：`from . import views` 后 `views.user_list` → `app.views.user_list`；
+        //  `import os` 后 `os.environ.get` 仍拼回 `os.environ.get`。）
+        "attribute" => {
+            let obj = node.child_by_field_name("object")?;
+            let attr = opt_text(node.child_by_field_name("attribute"), ctx.src)?;
+            match resolve_symbol(obj, ctx) {
+                Some(obj_fqn) => Some(format!("{}.{}", obj_fqn, attr)),
+                None => text(node, ctx.src).map(|s| s.to_string()),
+            }
+        }
         _ => None,
-    };
-    let Some(value) = value else { return };
-    let Some(class_fqn) = ctx.current_class.clone() else { return };
-    ctx.facts.declarations.push(Declaration {
-        kind: NodeKind(NodeKind::PROPERTY.to_string()),
-        name: name.clone(),
-        fqn: format!("{}.{}", class_fqn, name),
-        parent_fqn: Some(class_fqn),
-        span: span_of(node),
-        extra: json!({ "default": value }),
-    });
+    }
 }
 
 /// 形参列表 → `[{name, type}]`（类型缺失时为 `null`）。
@@ -418,6 +527,42 @@ fn collect_call_like(node: Node, ctx: &mut Ctx, owner_fqn: &str, owner_class: &s
     if callee_text.is_empty() {
         return;
     }
+    // Django 路由：`path(route, view)` 的**第二个位置实参**是视图（函数 / CBV）。
+    // 解析成 FQN 存入 `entity`，供 `HandledBy` 经 `resolve: class_const` 连到视图节点 ——
+    // 函数不在短名索引里（引擎 `by_short` 只收类型节点），必须给全 FQN 才能 `find_by_name`
+    // 命中；否则连不上（与 FastAPI 用 `owner_class` 全 FQN 命中同一机制）。
+    // 支持三种写法：① 裸名 `from .views import user_list` → `user_list`；② 模块属性
+    // `from . import views` 后 `views.user_list`（经 `resolve_symbol` 还原模块前缀）；
+    // ③ CBV `path("x/", UserListView.as_view())` —— 取被调对象 `UserListView` 的类名。
+    let view_entity = if matches!(callee_text.as_str(), "path" | "re_path" | "url") {
+        if let Some(args) = node.child_by_field_name("arguments") {
+            match args.named_child(1) {
+                Some(v) if matches!(v.kind(), "identifier" | "attribute") => {
+                    resolve_symbol(v, ctx)
+                }
+                // CBV：`UserListView.as_view()` —— 只认 `as_view()` 这一 Django 惯用法，
+                // 取被调对象（类名）本身，忽略 `.as_view()` 调用。
+                Some(v) if v.kind() == "call" => {
+                    let func = v.child_by_field_name("function");
+                    let is_as_view = func
+                        .and_then(|f| opt_text(f.child_by_field_name("attribute"), ctx.src))
+                        .as_deref()
+                        == Some("as_view");
+                    if is_as_view {
+                        func.and_then(|f| f.child_by_field_name("object"))
+                            .and_then(|o| resolve_symbol(o, ctx))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     // 实参**按位置**捕获（见 `positional_args`）：第 1 个实参若是字面量则取其值，
     // 否则占位 Unknown —— 保证 `arg:0` 始终对应「第 1 个实参」。
     let args = node
@@ -435,7 +580,7 @@ fn collect_call_like(node: Node, ctx: &mut Ctx, owner_fqn: &str, owner_class: &s
         snippet: snippet_of(node, ctx.src),
         db_table: None,
         in_loop: ctx.loop_depth > 0,
-        entity: None,
+        entity: view_entity,
     });
 }
 
@@ -504,6 +649,27 @@ fn literal_value(node: Node, src: &[u8]) -> FactValue {
         "true" => FactValue::Bool(true),
         "false" => FactValue::Bool(false),
         "none" => FactValue::Null,
+        // 列表 / 元组字面量：`["POST"]` → `[("0", "POST")]`。
+        //
+        // 按**下标字符串**作键（而非位置数组），是因为求值器的 `element` 只在顶层
+        // `arg` 上生效、嵌套取值只支持 `field` 按名取 —— 用下标作键即可
+        // `{ source: {arg: 1, field: "methods"}, field: "0" }` 取到首元素。
+        "list" | "tuple" => {
+            let mut items = Vec::new();
+            let mut cursor = node.walk();
+            for (i, child) in node.named_children(&mut cursor).enumerate() {
+                items.push((i.to_string(), literal_value(child, src)));
+            }
+            FactValue::Array(items)
+        }
+        // 标识符 / 属性：保留原名（如 `User` / `views.user_list`），供求值器的
+        // `resolve: class_const` 经短名 / 模块前缀还原成 FQN —— 这正是 Django 路由
+        // `path("users/", user_list)`、以及「位置实参里写类名」类场景所需要的。
+        // 其余表达式（调用 / 二元运算 / 索引…）仍不带原文，避免把表达式文本误当语义身份。
+        "identifier" | "attribute" => match text(node, src) {
+            Some(s) => FactValue::Unknown(Some(s)),
+            None => FactValue::Unknown(None),
+        },
         _ => FactValue::Unknown(None),
     }
 }
@@ -521,7 +687,9 @@ fn collect_import(node: Node, ctx: &mut Ctx) {
     }
     // `from app.core.config import settings`
     let module_node = node.child_by_field_name("module_name");
-    let module = opt_text(module_node, ctx.src).map(|m| m.trim_start_matches('.').to_string());
+    let module = module_node
+        .and_then(|n| text(n, ctx.src))
+        .map(|m| resolve_relative_module(&m, &ctx.module));
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         // 跳过 `module_name`：它本身也是个 `dotted_name`，当作导入项会凭空造出
@@ -539,29 +707,26 @@ fn collect_import(node: Node, ctx: &mut Ctx) {
 /// 这与 PHP 的 `use think\facade\Db` 还原成 `Db -> think\facade\Db` 同源。
 fn push_import(node: Node, from_module: Option<&str>, ctx: &mut Ctx) {
     let span = span_of(node);
-    match node.kind() {
-        "dotted_name" | "identifier" => {
-            if let Some(name) = text(node, ctx.src) {
-                let name = match from_module {
-                    Some(m) if !m.is_empty() => format!("{}.{}", m, name),
-                    _ => name,
-                };
-                ctx.facts.imports.push(ImportFact { alias: None, name, span });
-            }
-        }
-        "aliased_import" => {
-            let name = opt_text(node.child_by_field_name("name"), ctx.src);
-            let alias = opt_text(node.child_by_field_name("alias"), ctx.src);
-            if let Some(name) = name {
-                let name = match from_module {
-                    Some(m) if !m.is_empty() => format!("{}.{}", m, name),
-                    _ => name,
-                };
-                ctx.facts.imports.push(ImportFact { alias, name, span });
-            }
-        }
-        _ => {}
-    }
+    let (name, alias) = match node.kind() {
+        "dotted_name" | "identifier" => (text(node, ctx.src), None),
+        "aliased_import" => (
+            opt_text(node.child_by_field_name("name"), ctx.src),
+            opt_text(node.child_by_field_name("alias"), ctx.src),
+        ),
+        _ => (None, None),
+    };
+    let Some(name) = name else { return };
+    let name = match from_module {
+        Some(m) if !m.is_empty() => format!("{}.{}", m, name),
+        _ => name,
+    };
+    // 记录「绑定名 → 完全限定名」：签名默认值里引用到它时可反查回 FQN。
+    // 有别名时以别名为绑定名（`from x import y as z` → 用到的是 z）。
+    let bound = alias
+        .clone()
+        .unwrap_or_else(|| name.rsplit('.').next().unwrap_or(&name).to_string());
+    ctx.imports.entry(bound).or_insert(name.clone());
+    ctx.facts.imports.push(ImportFact { alias, name, span });
 }
 
 // ------------------------------------------------------------------ 循环
@@ -625,6 +790,29 @@ fn bare_typename(raw: String) -> String {
 fn string_value(node: Node, src: &[u8]) -> Option<String> {
     let raw = text(node, src)?;
     Some(unquote(&raw))
+}
+
+/// 把 `from ... import` 的模块名解析成绝对模块点分名。
+///
+/// Python 的相对导入用前导点表示层级：`from .views import x` 相对于当前模块的
+/// 父包。当前模块 `myapp.urls` 的父包是 `myapp`，故 `.views` → `myapp.views`；
+/// `..sub` 再上溯一层。`leading_dots == 0` 即绝对导入，原样返回（不能误拼父包）。
+fn resolve_relative_module(raw: &str, current_module: &str) -> String {
+    let leading_dots = raw.chars().take_while(|c| *c == '.').count();
+    if leading_dots == 0 {
+        return raw.to_string();
+    }
+    let rest = &raw[leading_dots..];
+    let cur_segs: Vec<&str> = current_module.split('.').collect();
+    // 当前模块的「父包」= 去掉末段（文件本身）。`myapp.urls` → 父包 `["myapp"]`。
+    let pkg_len = cur_segs.len().saturating_sub(1);
+    // 相对层数与父包层级对齐：`..` 再上溯一层。
+    let base_len = pkg_len.saturating_sub(leading_dots - 1);
+    let mut segs: Vec<&str> = cur_segs[..base_len].to_vec();
+    if !rest.is_empty() {
+        segs.extend(rest.split('.'));
+    }
+    segs.join(".")
 }
 
 fn unquote(raw: &str) -> String {
@@ -738,7 +926,9 @@ def remove_order():
         match del.args.get(1) {
             Some(FactValue::Array(items)) => {
                 assert_eq!(items[0].0, "tags");
-                assert!(matches!(items[0].1, FactValue::Unknown(None)));
+                // 值是列表字面量 → 捕成「下标为键」的嵌套数组（见
+                // `list_literal_is_captured_with_index_keys`）
+                assert!(matches!(items[0].1, FactValue::Array(_)));
             }
             other => panic!("关键字实参应捕成 Array，实际：{other:?}"),
         }
@@ -862,6 +1052,55 @@ def remove_order():
         assert_eq!(value, FactValue::String("users".to_string()));
     }
 
+    /// 类体内的「字段声明」`name = models.CharField(...)` 被记成调用点，
+    /// 且 owner 精确到「类.字段」、`owner_class` 退回模型类：
+    /// FKB 据此取 `owner_class.owner_member` 作列身份，与 JS 字段装饰器 / Java 字段注解同机制。
+    ///
+    /// 同时：关系字段（`author = models.ForeignKey(User, ...)`）首个位置实参是类名标识符时，
+    /// 按本文件 import 解析成 FQN 记入 `entity`，供 `References` 连到目标模型类。
+    #[test]
+    fn class_body_field_declaration_becomes_call_site_with_field_name() {
+        let facts = parse_src(
+            "app/models/blog.py",
+            r#"from app.models.user import User
+
+class Post(models.Model):
+    title = models.CharField(max_length=200)
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    tags = models.ManyToManyField("Tag")
+"#,
+        );
+        // 两条字段声明 → 两个调用点，且不应被 recurse 重复抓取。
+        let calls: Vec<&CallSiteFact> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text == "models.CharField" || c.callee_text == "models.ForeignKey")
+            .collect();
+        assert_eq!(calls.len(), 2, "不应有重复调用点");
+
+        let char = calls
+            .iter()
+            .find(|c| c.callee_text == "models.CharField")
+            .expect("应有 CharField 调用点");
+        // owner_fqn = 类.字段 → owner_member 取字段名；owner_class = 类。
+        assert_eq!(char.owner_fqn, "app.models.blog.Post.title");
+        assert_eq!(char.owner_class.as_deref(), Some("app.models.blog.Post"));
+        // 标量字段的实参是字面量（max_length=200），不应污染 entity。
+        assert_eq!(char.entity, None);
+
+        let fk = calls
+            .iter()
+            .find(|c| c.callee_text == "models.ForeignKey")
+            .expect("应有 ForeignKey 调用点");
+        assert_eq!(fk.owner_fqn, "app.models.blog.Post.author");
+        // 首个位置实参 `User` 是类名标识符 → 按 import 解析成 FQN 记入 entity。
+        assert_eq!(
+            fk.entity.as_deref(),
+            Some("app.models.user.User"),
+            "外键目标应按 import 解析成 FQN"
+        );
+    }
+
     /// 关键字实参按名可取：显式队列 / 显式任务名这类「写在 `k=v` 里」的语义，
     /// 全靠这一步才不会丢。位置语义同时保持 —— 实参下标仍是源码里的顺序。
     #[test]
@@ -879,11 +1118,79 @@ def remove_order():
         };
         assert_eq!(key, "queue");
         assert_eq!(value, FactValue::String("payments".to_string()));
-        // 非字面量的值仍是 Unknown（`args=[1]`），不会被误当成身份
+        // 列表值捕成「下标为键」的嵌套数组（`args=[1]` → [("0", "1")]）
         assert!(matches!(
             call.args.get(0),
-            Some(FactValue::Array(items)) if matches!(items[0].1, FactValue::Unknown(None))
+            Some(FactValue::Array(items)) if matches!(items[0].1, FactValue::Array(_))
         ));
+    }
+
+    /// 列表字面量按**下标**作键捕获 —— Flask 的 `methods=["POST"]` 要靠它解码。
+    #[test]
+    fn list_literal_is_captured_with_index_keys() {
+        let facts = parse_src(
+            "app.py",
+            "@app.route(\"/orders\", methods=[\"POST\", \"PUT\"])\ndef create_order():\n    pass\n",
+        );
+        let call = call_of(&facts, "app.route");
+        let methods = match call.args.get(1) {
+            Some(FactValue::Array(items)) => {
+                items.iter().find(|(k, _)| k == "methods").map(|(_, v)| v.clone())
+            }
+            _ => None,
+        };
+        let Some(FactValue::Array(inner)) = methods else {
+            panic!("methods 应是数组，实际：{:?}", call.args)
+        };
+        assert_eq!(inner[0], ("0".to_string(), FactValue::String("POST".to_string())));
+        assert_eq!(inner[1], ("1".to_string(), FactValue::String("PUT".to_string())));
+    }
+
+    /// 相对导入 `from .x import y` 必须还原成绝对模块名，否则 `y` 解析出的 FQN 是
+    /// 错的（曾直接拼成 `views.user_list` 而非 `app.views.user_list`），Django 路由 /
+    /// Flask 蓝图跨文件引用都会连不上。
+    #[test]
+    fn relative_import_resolves_to_absolute_module() {
+        let facts = parse_src(
+            "app/urls.py",
+            "from .views import user_list\nfrom ..core import helper\nfrom . import sibling\n",
+        );
+        let has = |want: &str| facts.imports.iter().any(|imp| imp.name == want);
+        // 当前模块是 `app.urls`，父包 `app`：`.views` → `app.views`
+        assert!(has("app.views.user_list"), "实际：{:?}", facts.imports);
+        // `..core` 再上溯一层（父包的父包 = 顶层）：→ `core`
+        assert!(has("core.helper"));
+        // `from . import sibling` → 父包 `app`
+        assert!(has("app.sibling"));
+    }
+
+    /// 形参**默认值**里的调用（`db = Depends(get_db)`）→ 调用点 + `entity`。
+    ///
+    /// 解析器不知道 `Depends` 是什么意思，它只负责两件中立的事：这是个调用点，
+    /// 以及被引用者解析成什么 FQN —— 语义交给 FKB（见 fkb/python/fastapi.yaml）。
+    #[test]
+    fn parameter_default_call_is_captured_with_entity() {
+        let facts = parse_src(
+            "app/api/users.py",
+            r#"from app.dependencies import get_db
+
+def get_user(user_id: int, db=Depends(get_db)):
+    pass
+"#,
+        );
+        let call = call_of(&facts, "Depends");
+        // 归属到**该函数**（签名里的调用不属于任何方法体）
+        assert_eq!(call.owner_fqn, "app.api.users.get_user");
+        assert_eq!(call.owner_class.as_deref(), Some("app.api.users"));
+        // 被注入的依赖按本文件 import 解析成 FQN，FKB 可直接连到该函数节点
+        assert_eq!(call.entity.as_deref(), Some("app.dependencies.get_db"));
+
+        // 未被 import 的裸名字：只能是本模块或内建，按当前模块拼
+        let same = parse_src("app/api/orders.py", "def make(x=Depends(local_dep)):\n    pass\n");
+        assert_eq!(
+            call_of(&same, "Depends").entity.as_deref(),
+            Some("app.api.orders.local_dep")
+        );
     }
 
     #[test]

@@ -23,6 +23,12 @@ pub struct DiagnosticSummary {
     pub error: u64,
     pub warning: u64,
     pub info: u64,
+    /// **暂无解析器的语言**（`go` / `rust` …），来自 P2 写入的 `unsupported_languages` 符号表。
+    ///
+    /// 建图诊断里也有一条 `NoParserForLanguage`，但语言名只写在文案里，
+    /// 界面要拿它出横幅就得反解字符串。这里给一份结构化的，供 UI 直接读。
+    #[serde(default)]
+    pub unsupported_languages: Vec<String>,
 }
 
 impl GraphQueryService {
@@ -94,6 +100,14 @@ impl GraphQueryService {
                 _ => {}
             }
         }
+        s.unsupported_languages = self
+            .store
+            .list_symbols(project_id, "unsupported_languages")?
+            .into_iter()
+            .map(|e| e.key)
+            .collect();
+        s.unsupported_languages.sort();
+        s.unsupported_languages.dedup();
         Ok(s)
     }
 

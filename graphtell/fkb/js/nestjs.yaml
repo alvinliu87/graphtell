@@ -1,0 +1,85 @@
+# NestJS 框架知识（Node / TypeScript）
+#
+# 前置：JS/TS 解析器新增了**装饰器 → 调用点**（与 Java 注解 / Python 装饰器同机制）。
+# 方法装饰器（`@Get(':username')`）的 owner 精确到**被修饰的方法**，因此这里能像
+# FastAPI / Spring 一样把 `HandledBy` 连到处理方法本身。
+#
+# 与前端 FKB 的关系：本文件只认 `@nestjs/*` 依赖，不会和 uni-app 的前端规则串味。
+
+id: nestjs
+display_name: NestJS
+language: javascript
+version_hint: "9.x / 10.x"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: "@nestjs/core"
+    confidence: 0.95
+
+exclude_globs:
+  - "**/node_modules/**"
+  - "**/dist/**"
+
+rules:
+  # ===== P5 Synthesize：HTTP 契约（方法装饰器）=====
+  # `@Get(':username')` / `@Post('users/login')` —— 方法名即 HTTP 动词，
+  # 路径取自第 1 个实参；`HandledBy` 连到被装饰的**控制器方法**。
+  #
+  # 诚缺：
+  # * **控制器前缀未拼接**：`@Controller('profiles')` + `@Get(':username')` 的真实
+  #   路径是 `/profiles/:username`，这里只建成 `/:username`。内核的路由组前缀机制
+  #   是 PHP `Route::group` 专用（P3 里写死 receiver == `Route`），复用需要改内核。
+  # * **无实参的装饰器（`@Get()`）不建契约**：取不到路径就不建，宁可缺不可猜
+  #   （`ContractId` 要求 path 非空，`ValueSource.default` 在 `raw` 返回 None 时不生效）。
+  - id: nestjs-route-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      # `@` 前缀 = 装饰器调用点（解析器刻意加的），以此与普通 `.get()` 区分 ——
+      # 否则 e2e 测试里的 HTTP 调用会被当成路由。
+      callee: "@Get|@Post|@Put|@Delete|@Patch|@Head|@Options|@All"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          link:
+            kind: HandledBy
+            direction: to_target
+            # JS 侧的类 / 方法 FQN 是「类名 / 类名.方法名」，故 owner_class 取到
+            # 控制器类、owner_member 取到方法名，拼回 `Controller.method` 命中方法节点。
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9
+
+  # ===== P5 Synthesize：依赖注入（构造器形参类型）=====
+  # `constructor(private readonly userService: UserService)` —— provider 即形参类型。
+  # 解析器把这种「带访问修饰符的形参」记成了 callee `@Inject`、entity = 类型短名的调用点
+  # （见 `gt-adapter-parser/src/js/mod.rs` 的 `collect_param_types`），语义只在本条规则里。
+  #
+  # 用 `Link`（仅建边、不造节点）：provider 本身就是图里的类节点。两端都按 FQN 解析，
+  # 解析不到（如泛型 / 接口 / 未导入的类型）就静默跳过，不建悬空边 —— 与 `fastapi-depends-injection` 同。
+  - id: nestjs-injectable-di
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "@Inject"
+    binding:
+      - Link:
+          kind: DependsOn
+          # 消费方：声明该构造器的类（`UserController`）
+          from: { path: [{ owner_class: true }] }
+          # 提供方：被注入的类型（`UserService` 类节点，`resolve_name` 按短名找回）
+          to: { entity: true, resolve: class_const }
+          confidence: 0.85

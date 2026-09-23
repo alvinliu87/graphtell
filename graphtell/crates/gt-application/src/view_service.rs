@@ -2728,6 +2728,7 @@ impl ViewService {
                 }
             }
         }
+        let columns = self.columns_of(id, in_cache, out_cache);
         Ok(Some(NodeView {
             id,
             kind: n.kind.to_string(),
@@ -2745,8 +2746,61 @@ impl ViewService {
             side,
             locations,
             annotations,
+            columns: if columns.is_empty() { None } else { Some(columns) },
             metrics: json!({ "fan_in": fan_in, "fan_out": fan_out }),
         }))
+    }
+
+    /// 取节点的表列（**裸列名**，列身份里的 `表名.列名` 前缀在此剥掉）。
+    ///
+    /// 列不作为独立节点画进折叠视图，但"点开一张表看看有哪些字段"是刚需，
+    /// 故在这里作为节点属性带出。两条来源路径：
+    /// * **PHP**：`Table --HasColumn--> Column`（列直接挂在表下，来自权威 schema）；
+    /// * **Node / TypeORM**：`Table <--MapsTo-- 实体类 --HasColumn--> Column`
+    ///   （`@Column` 挂在实体类上，表要经 `MapsTo` 反向绕一跳）。
+    fn columns_of(
+        &self,
+        id: NodeId,
+        in_cache: &HashMap<i64, Vec<gt_domain::model::Edge>>,
+        out_cache: &HashMap<i64, Vec<gt_domain::model::Edge>>,
+    ) -> Vec<String> {
+        let mut cols: Vec<String> = Vec::new();
+        let push = |raw: &str, cols: &mut Vec<String>| {
+            // 列身份是 `表名.列名`（带作用域防跨表撞名），展示只留列名
+            let bare = raw.rsplit('.').next().unwrap_or(raw).to_string();
+            if !bare.is_empty() && !cols.iter().any(|c| c == &bare) {
+                cols.push(bare);
+            }
+        };
+
+        // ① 列直接挂在本节点下（PHP 的表）
+        if let Some(es) = out_cache.get(&id.get()) {
+            for e in es.iter().filter(|e| e.kind.as_str() == "HasColumn") {
+                if let Ok(Some(n)) = self.store.get_node(e.to_id) {
+                    push(&n.name, &mut cols);
+                }
+            }
+        }
+        if !cols.is_empty() {
+            cols.sort();
+            return cols;
+        }
+
+        // ② 经 `MapsTo` 反向找到实体类，再取它挂的列（TypeORM：列在实体类上）
+        if let Some(es) = in_cache.get(&id.get()) {
+            for e in es.iter().filter(|e| e.kind.as_str() == "MapsTo") {
+                let Ok(outs) = self.store.edges_of(e.from_id, EdgeDirection::Outgoing) else {
+                    continue;
+                };
+                for o in outs.iter().filter(|o| o.kind.as_str() == "HasColumn") {
+                    if let Ok(Some(n)) = self.store.get_node(o.to_id) {
+                        push(&n.name, &mut cols);
+                    }
+                }
+            }
+        }
+        cols.sort();
+        cols
     }
 
     fn conclusions_for(

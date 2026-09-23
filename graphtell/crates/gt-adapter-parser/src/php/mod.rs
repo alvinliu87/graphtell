@@ -425,6 +425,110 @@ fn push_trait(ctx: &mut Ctx, owner: &str, base: &str, span: gt_domain::model::Sp
     });
 }
 
+/// Symfony 路由属性（`#[Route]` / `#[Get]` …）抽取。
+///
+/// 现代 Symfony 用 PHP 8 属性声明路由：
+/// ```php
+/// #[Route('/api/users', methods: ['GET'])]
+/// #[Get('/api/users')]
+/// public function list() {}
+/// ```
+/// 返回每个路由的 `(属性名, 路径, 方法列表)`；`Route` 未写 `methods` 时方法列表为空
+/// （视为不限制 → 由调用方降为通配 `ANY`）。非路由属性（如 `#[ORM\Entity]`）直接忽略。
+fn route_attributes_of(method: Node, src: &str) -> Vec<(String, String, Vec<String>)> {
+    let mut out = Vec::new();
+    // 方法节点上的 attribute_list / attribute_group / attribute（可能嵌套一层）
+    let mut attr_nodes: Vec<Node> = Vec::new();
+    let mut stack: Vec<Node> = method.named_children(&mut method.walk()).collect();
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "attribute" => attr_nodes.push(node),
+            "attribute_list" | "attribute_group" => {
+                let mut c2 = node.walk();
+                stack.extend(node.named_children(&mut c2));
+            }
+            _ => {}
+        }
+    }
+    for attr in attr_nodes {
+        // 按 **kind** 找名字（`attribute` 的 `name` 不是具名字段，`child_by_field_name` 取不到）
+        let name = attr
+            .named_children(&mut attr.walk())
+            .find(|c| c.kind() == "name")
+            .map(|n| text(n, src))
+            .unwrap_or_default();
+        let is_route = matches!(
+            name.as_str(),
+            "Route" | "Get" | "Post" | "Put" | "Delete" | "Patch" | "Options" | "Head"
+        );
+        if !is_route {
+            continue;
+        }
+        let mut path = String::new();
+        let mut methods: Vec<String> = Vec::new();
+        if let Some(args) = attr
+            .named_children(&mut attr.walk())
+            .find(|c| c.kind() == "arguments")
+        {
+            let mut c = args.walk();
+            for arg in args.named_children(&mut c) {
+                if arg.kind() != "argument" {
+                    continue;
+                }
+                let named = arg
+                    .named_children(&mut arg.walk())
+                    .find(|c| c.kind() == "name")
+                    .map(|n| text(n, src));
+                if named.is_none() {
+                    // 位置实参 = 路径
+                    if path.is_empty() {
+                        path = find_string_content(arg, src).unwrap_or_default();
+                    }
+                } else if named.as_deref() == Some("methods") {
+                    methods = collect_array_strings(arg, src);
+                }
+            }
+        }
+        // 快捷属性（Get/Post…）隐含方法；`Route` 无 methods 时留给调用方当 `ANY`
+        let methods = if name != "Route" && methods.is_empty() {
+            vec![name.to_uppercase()]
+        } else {
+            methods
+        };
+        out.push((name, path, methods));
+    }
+    out
+}
+
+/// 取节点子树里首个 `string_content` 文本（用于路径字符串）。
+fn find_string_content(node: Node, src: &str) -> Option<String> {
+    if node.kind() == "string_content" {
+        return Some(text(node, src));
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if let Some(s) = find_string_content(child, src) {
+            return Some(s);
+        }
+    }
+    None
+}
+
+/// 取数组字面量（`['GET', 'POST']`）里所有字符串元素（递归找 `array_element_initializer`）。
+fn collect_array_strings(node: Node, src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if node.kind() == "array_element_initializer" {
+        if let Some(s) = find_string_content(node, src) {
+            out.push(s);
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        out.extend(collect_array_strings(child, src));
+    }
+    out
+}
+
 fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
     let name = node
         .child_by_field_name("name")
@@ -485,6 +589,34 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
             "returns_class": returns_class,
         }),
     });
+
+    // Symfony 路由属性（`#[Route]` / `#[Get]` …）→ 合成调用点，交给 FKB 合成
+    // `HttpContract` + `HandledBy`。callee 用 `attr.` 前缀：既避开 Laravel 等
+    // `Route::get(...)` 真实调用，也避开 `$cache->Get()` 这类方法名（FKB 的 callee
+    // 模式是「裸名按方法名匹配」，用裸 `Get` 会误命中）；`entity` 指向控制器方法自身。
+    for (attr_name, path, methods) in route_attributes_of(node, ctx.src) {
+        let methods = if methods.is_empty() {
+            vec!["ANY".to_string()]
+        } else {
+            methods
+        };
+        for m in methods {
+            let snippet = snippet_of(node, ctx.src);
+            ctx.facts.call_sites.push(CallSiteFact {
+                owner_fqn: fqn.clone(),
+                owner_class: Some(class_fqn.to_string()),
+                callee_text: format!("attr.{}", attr_name),
+                receiver: None,
+                method: None,
+                args: vec![FactValue::String(path.clone()), FactValue::String(m.clone())],
+                span: span_of(node),
+                snippet,
+                db_table: None,
+                in_loop: false,
+                entity: Some(fqn.clone()),
+            });
+        }
+    }
 
     if let Some(body) = node.child_by_field_name("body") {
         collect_call_sites(body, ctx, &fqn);
@@ -1120,6 +1252,40 @@ $list['X-Foo'] = $request->header('origin');";
         let parser = PhpParser::new().unwrap();
         let facts = parser.parse("x.php", src).unwrap();
         assert!(facts.header_assignments.is_empty());
+    }
+
+    #[test]
+    fn captures_symfony_route_attributes_as_call_sites() {
+        let src = "<?php
+namespace App\\Controller;
+
+use Symfony\\Component\\HttpFoundation\\Response;
+use Symfony\\Component\\Routing\\Annotation\\Route;
+
+class UserController
+{
+    #[Route('/api/users', methods: ['GET'])]
+    public function listUsers(): Response { return new Response(); }
+
+    #[Route('/api/users/{id}', methods: ['GET', 'POST'])]
+    public function show(int $id): Response { return new Response(); }
+
+    #[Get('/api/ping')]
+    public function ping(): Response { return new Response(); }
+}
+";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("src/Controller/UserController.php", src).unwrap();
+        let route_calls: Vec<&CallSiteFact> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text.starts_with("attr."))
+            .collect();
+        // Route 无 methods → 1 条(ANY)；Route 带 methods[GET,POST] → 2 条；Get → 1 条
+        assert_eq!(route_calls.len(), 4, "应为 4 条路由合成调用点，实际：{:?}",
+            facts.call_sites.iter().map(|c| &c.callee_text).collect::<Vec<_>>());
+        // entity 指向控制器方法
+        assert!(route_calls.iter().all(|c| c.entity.as_deref() == Some("App\\Controller\\UserController::listUsers") || c.entity.as_deref() == Some("App\\Controller\\UserController::show") || c.entity.as_deref() == Some("App\\Controller\\UserController::ping")));
     }
 }
 

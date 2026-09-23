@@ -409,8 +409,62 @@ rules:
           link: { kind: Triggers, direction: outgoing }
           confidence: 0.85
 
+  # ===== P5：DAO 的泛型实参 → 实体 → 表 =====
+  # `interface UserRepository extends JpaRepository<User, Long>` 的泛型实参 `User` 就是
+  # 它操作的实体 —— parser 把它记成 `generic.JpaRepository` 合成调用点（`entity` = 实体名）。
+  # 这里先建 `References`（DAO → 实体），再由下一条沿实体的 `MapsTo` 投影成「DAO → 表」。
+  # 为什么要绕这一圈：P7 的读 / 写动词分类要求**接收者类型有 `MapsTo` 边**，而
+  # `@TableName` 只给了实体类这条边；不给 DAO 补上，`userRepository.save()` 就落不出
+  # `WritesDb`（Java 的 N+1、只读 / 只写表等规则全靠这一步）。
+  - id: spring-dao-references-entity
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "generic.JpaRepository|generic.CrudRepository|generic.ListCrudRepository|generic.BaseMapper|generic.Mapper"
+    binding:
+      - Link:
+          kind: References
+          # `resolve` 必须写在**每个 ValueSource 上**：`Action::Link` 是
+          # `ev.string(src)` 之后直接 `find_by_name`，顶层 `resolve` 不参与（写了无效）。
+          # 两端取到的都是名字：起点是 DAO 的 FQN，终点是实体**短名**（经短名索引还原）。
+          from: { owner_class: true, resolve: class_const }
+          to: { entity: true, resolve: class_const }
+          confidence: 0.8
+
+  # 把「DAO → 实体」投影成「DAO → 表」：终点那一端沿 `MapsTo` 走一跳。
+  # 只对 `Interface` 节点生效 —— 否则 PHP / TypeORM 的 `References`（模型 → 模型）
+  # 会被误投影成「模型 → 另一张表」的 `MapsTo`，污染已有图。
+  - id: spring-dao-maps-to-table
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Interface
+    binding:
+      - Project:
+          kind: MapsTo
+          along: References
+          from: []
+          to: [MapsTo]
+          confidence: 0.7
+
 resolvers:
   # `@Autowired` 字段注入：按字段声明类型解析实例调用。
   - id: spring-autowired-call
     call: "*->*"
     strategy: variable_type
+
+# JPA Repository / MyBatis-Plus 的 CRUD 动词 → 读 / 写分类（P7 用）。
+#
+# 判据与 PHP 侧一致：接收者类型须有 `MapsTo`（由上面的 `spring-dao-maps-to-table`
+# 给 DAO 补上）。只列**会真正落库**的动词，不列 `where` / `orderBy` 这类只构造
+# 查询的中间方法 —— 否则同一个链式调用会被重复落成多条动作边。
+#
+# 边界：JPA 的**派生查询**（`findByEmail` / `countByStatus`）名字不固定，无法枚举，
+# 故不在名单里 —— 这类调用不会落 `ReadsDb`，属于已知缺口。
+db_verbs:
+  write: ["save", "saveAll", "saveAndFlush", "insert", "updateById", "update",
+          "updateBatchById", "deleteById", "delete", "deleteBatchIds", "deleteByIds",
+          "deleteAll", "deleteAllById"]
+  read: ["findById", "findAll", "findAllById", "getById", "getOne", "getReferenceById",
+         "count", "existsById", "selectById", "selectList", "selectOne", "selectPage",
+         "selectByMap", "selectCount", "list", "page"]

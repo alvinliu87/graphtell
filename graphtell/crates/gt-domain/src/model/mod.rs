@@ -14,7 +14,7 @@ pub use fkb::{
     Direction, ExpandSpec, ExpandVariant, FanInThresholds, FieldSpec, FileFormat,
     FrameworkKnowledge, HandlerSpec, MagicDelegationSpec, DbVerbsSpec,
     IdentitySpec, KnowledgeScope, LinkAction, LinkSpec, LoaderSource, LoaderSpec, NormalizeStep,
-    PickStrategy, Predicate,
+    PickStrategy, Predicate, ProjectAction,
     ResolveAs, ResolveStrategy, ResolveTier, Resolution, ResolverSpec, RootRule, RootSource, Rule,
     Selector, SubkindSource, SynthesizeAction, TransformSpec, ValueSource,
 };

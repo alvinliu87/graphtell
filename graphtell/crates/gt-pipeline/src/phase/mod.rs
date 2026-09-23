@@ -2,6 +2,7 @@
 
 pub mod annotate;
 pub mod cf_ast;
+pub mod columns;
 pub mod cors;
 pub mod ingest;
 pub mod prepare;

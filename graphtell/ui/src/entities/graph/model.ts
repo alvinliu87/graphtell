@@ -71,6 +71,8 @@ export interface DiagnosticSummary {
   error: number;
   warning: number;
   info: number;
+  /** 暂无解析器的语言（`go` / `rust` …）：这些子工程只有文件结构，没有语义抽取。 */
+  unsupported_languages?: string[];
 }
 
 export interface GraphStats {

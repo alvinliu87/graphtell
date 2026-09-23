@@ -25,6 +25,14 @@ pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn Fil
     let root = ctx.project.root_path.clone();
     let files: Vec<SourceFile> = ctx.files.clone();
 
+    // 「语言 → 因无解析器而被跳过的文件数」。
+    //
+    // 必须显式报出来：`MARKERS` 里已有 go.mod / Cargo.toml 等标记，扩展名兜底表
+    // 也能把 `.go` / `.rs` 扫进来，于是这些工程会**被识别成子工程**，却在 P2 一个
+    // 语法事实都产不出 —— 工程图静默为空，而流水线照常成功。Python 在补上解析器
+    // 之前正是这个状态，且无人察觉（连一条 warn 都没有）。
+    let mut unsupported: HashMap<String, usize> = HashMap::new();
+
     for file in files {
         let abs = root.join(&file.path);
         let source = match fs.read_to_string(&abs) {
@@ -35,6 +43,13 @@ pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn Fil
             }
         };
         let Some(parser) = parsers.parser_for(&file.language) else {
+            *unsupported.entry(file.language.as_str().to_string()).or_insert(0) += 1;
+            // 降级而不是丢弃：仍建出 **File 节点**。
+            //
+            // 此前这里直接 `continue`，于是无解析器的子工程在图上**一个节点都没有**
+            // —— 用户看到空画布，无从判断是"工程本身没东西"还是"工具不支持"。
+            // 建出 File 节点后至少有文件清单（结构层）可看，语义层为空由诊断明确告知。
+            build_file(ctx, project_id, &file, &SyntaxFacts::default(), &phase);
             continue;
         };
         let facts: SyntaxFacts = match parser.parse(&file.path, &source) {
@@ -45,6 +60,30 @@ pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn Fil
             }
         };
         build_file(ctx, project_id, &file, &facts, &phase);
+    }
+
+    // 按语言**聚合**后各报一条（而不是每文件一条，避免刷屏）。
+    let mut langs: Vec<(String, usize)> = unsupported.into_iter().collect();
+    langs.sort();
+    for (lang, n) in langs {
+        ctx.ws.diagnose(
+            &phase,
+            "NoParserForLanguage",
+            Severity::Warning,
+            format!(
+                "语言 `{lang}` 暂无解析器：{n} 个源文件**只建出文件节点**（结构层），\
+                 没有类 / 函数 / 调用等语义抽取 —— 该子工程的图只有文件结构"
+            ),
+            None,
+        );
+        // 机器可读的同事实，供 UI 直接出横幅（诊断给人看，这条给界面查）。
+        ctx.ws.put_symbol(
+            ctx.project.id,
+            "unsupported_languages",
+            &lang,
+            serde_json::json!({ "files": n }),
+        );
+        warn!("语言 {lang} 暂无解析器：{n} 个文件只建结构层节点（无语义抽取）");
     }
 }
 
@@ -428,6 +467,15 @@ fn build_file(
             .get(&call.owner_fqn)
             .copied()
             .or_else(|| ctx.ws.find_by_name(&call.owner_fqn))
+            // 字段装饰器的 owner 是**字段 FQN**（`@Column() body` → `UserEntity.body`），
+            // 而字段本身不是节点。此时退回它所属的类，而不是整份退到文件节点：
+            // 否则这类调用点会挂在 File 下（`HasCallSite` 从文件发出），Synthesize 的
+            // `link`（起点取 owner）也就连不到实体类上。
+            .or_else(|| {
+                owner_parent(&call.owner_fqn).and_then(|p| {
+                    local.get(&p).copied().or_else(|| ctx.ws.find_by_name(&p))
+                })
+            })
             .unwrap_or(file_node);
         let call_node = ctx.ws.add_node(NewNode {
             id: None,
@@ -549,6 +597,20 @@ fn build_file(
                 file: file.path.clone(),
                 span: a.span,
             });
+    }
+}
+
+/// `Class.member` / `Ns\Class::member` → `Class`（无成员分隔符时返回 `None`）。
+///
+/// 成员分隔符随语言而变：PHP `::`、Java / JS `.`。只在**精确 FQN 查不到节点**时才用，
+/// 故不会把类 FQN（`com.example.MyClass`）误切成包名 —— 那种情况本就不会走到这里。
+fn owner_parent(fqn: &str) -> Option<String> {
+    let idx = fqn.rfind("::").or_else(|| fqn.rfind('.'))?;
+    let parent = &fqn[..idx];
+    if parent.is_empty() {
+        None
+    } else {
+        Some(parent.to_string())
     }
 }
 

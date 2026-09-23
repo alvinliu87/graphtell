@@ -1,0 +1,69 @@
+# Koa（Node.js）框架知识 —— 路由契约
+#
+# **解析器零改动**：`router.get('/users', handler)` 在 `JsFrontendParser` 眼里是普通的
+# 成员调用（receiver = `router`、method = `get`、arg0 = `/users`），与 Express 同形。
+#
+# 与 Express 的差异（同一门语言、同一套 DSL，纯数据差异）：
+#   | 概念         | Express                  | Koa                          |
+#   |--------------|--------------------------|------------------------------|
+#   | 路由注册     | `app.get(path, handler)` | `router.get(path, handler)`  |
+#   | 路由对象来源 | `express()` 即 app        | `new Router()`（@koa/router） |
+#   | 通配方法     | `app.all(path, h)`       | `router.all(path, h)`        |
+#   | 挂载         | `app.use('/x', router)`  | `app.use(router.routes())`   |
+#
+# 刻意**不含 `app`** 作接收者：Koa 的 `app` 是 Application、只用来 `app.use()`，
+# 路由一定挂在 Router（或它的具名实例）上。列进去只会多收噪声。
+#
+# 与 Express 一致：**不强行连 `HandledBy`** —— handler 常是另一个文件里的控制器方法
+# （或内联箭头函数），工程内没有可解析的节点，硬连会造出悬空 / 错误边。
+
+id: koa
+display_name: Koa
+language: javascript
+version_hint: "2+ / @koa/router 10+"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: "@koa/router"
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: koa
+    confidence: 0.8
+
+exclude_globs:
+  - "node_modules/**"
+  - "dist/**"
+  - "build/**"
+
+rules:
+  # ===== P5 Synthesize：HTTP 契约（路由）=====
+  # `router.get('/users', handler)` / `admin.post('/x', ...)`。
+  # 路径取第 1 个实参；方法由接收者属性名推导（`get` → GET）。
+  # `router.all(...)` 是 Koa 的通配写法，归一化成 ANY（与 Django 的 `ANY` 同一语义）。
+  - id: koa-route-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "router::{get,post,put,delete,patch,head,options,all}|koaRouter::{get,post,put,delete,patch,head,options,all}|api::{get,post,put,delete,patch,head,options,all}|admin::{get,post,put,delete,patch,head,options,all}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - upper
+                - replace: { from: "ALL", to: "ANY" }
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          confidence: 0.9

@@ -62,6 +62,7 @@ entry_methods: [...]      # 消费入口方法名候选（handle/fire/doJob/__in
   binding:                 # 命中后做什么（可多个动作）
     - Synthesize: {...}     # 造一个语义节点（最常用）
     # - Link: {...}        # 只建一条边
+    # - Project: {...}     # 把一类边投影到另一层（见 §3.4）
     # - Annotate: {...}     # 打标注
   confidence: 0.9
 ```
@@ -93,7 +94,30 @@ selector:
 
 - `Synthesize`：物化一个语义节点（见 §4）。
 - `Link`：只建一条边（`kind` + `from`/`to` 两个 `ValueSource` + `resolve`）。
+- `Project`：把**一类边投影到另一层**（见 §3.4）。
 - `Annotate`：打标注（合规/资产标记用）。
+
+### 3.4 Project 动作：把一类边投影到另一层
+
+`Link` 的两端只能各取**一个名字**，取不到"边的那一头"。当你要的是
+「A 关联 B，而 A、B 各自映射到 A'、B'，把关联搬到 A'、B' 之间」时，用 `Project`：
+
+```yaml
+- Project:
+    kind: ForeignKey      # 产出的边种类
+    along: References     # 遍历匹配节点的每条**此类**出边（一对多）
+    from: [MapsTo]        # 从边的**起点**沿此边种类链走到落点（空 = 起点自身）
+    to:   [MapsTo]        # 从边的**终点**沿此边种类链走到落点（空 = 终点自身）
+    confidence: 0.7
+```
+
+要点：
+
+- **一对多**：一个节点有几条 `along` 边就产出几条边。"一个实体有多个 `@ManyToOne`"
+  因此不会只建第一条（`Link` 会静默丢边）。
+- **落点走不到就跳过这条**：实体没有对应的 `Table` 时，它的外键不入图 —— 宁可缺不可猜。
+- 通常配 `phase: AnnotatePost` + `selector: { kind: node }`：投影需要 P5 建好的边都已就位。
+- 走哪条边完全由 FKB 声明，内核依旧不认识任何框架。
 
 ---
 
@@ -137,6 +161,18 @@ selector:
 `require_class`(解析结果须是真实类，否则整体 None) · `transform`(snake_plural/lower/…) · `normalize`(归一化链)。
 
 > `entity` 的典型用途是**类型级归并**：Spring 的 `@EventListener` 与 `publishEvent` 都用事件类型（而非收发方法名）作身份，使同一事件类型的发布方与订阅方归并到同一个 `Event` 节点（见 `fkb/java/spring-boot.yaml` 的 `spring-event-*` 规则 + 端到端测试 `tests/java_spring_features.rs`）。
+
+> **取关键字实参 / 列表元素**（Python 侧引入，机制上语言通用）：Python 解析器把关键字实参捕成
+> `[("queue", 值)]`、把列表 / 元组字面量捕成**以下标为键**的 `[("0", 值), ("1", 值)]`。于是：
+> * `{ arg: 1, field: "queue" }` —— 按名取关键字实参（如 Celery 的 `apply_async(queue=…)`）；
+> * `{ source: { arg: 1, field: "methods" }, field: "0" }` —— 取列表首元素（如 Flask 的 `methods=["POST"]`）。
+>
+> 注意 `element` 只对**顶层 `arg`** 生效；嵌套取值要用 `field` 按名取，这也是列表用下标作键的原因。
+
+> **`short_name` 归一化**：取点分 / 命名空间路径的最后一段（`app.tasks.send_email` → `send_email`）。
+> 用于「同一实体的完全限定名与短名要归并成同一个节点」——例如 Celery 任务的注册方只有短名、
+> 投递方却因 `import` 还原成了完全限定名。与 `strip_namespace` 的差别：它额外按 `.` 切分
+> （`strip_namespace` 刻意不拆 `.`，否则会把 Java 自动路由的包名一起拆掉）。
 
 ---
 

@@ -171,8 +171,12 @@ impl HttpStyle {
 /// * `class`：当前所处类的 FQN（方法归属用）。
 fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
     let mut c = node.walk();
+    // 装饰器修饰的是**紧随其后**的声明（`@Controller('cats') export class ...`），
+    // 而它得挂到那个声明的 FQN 上 —— 故先攒着，等声明登记完再统一挂上去。
+    let mut pending: Vec<Node> = Vec::new();
     for child in node.named_children(&mut c) {
         match child.kind() {
+            "decorator" => pending.push(child),
             "import_statement" => collect_imports(child, ctx),
             // `export default { ... }` / `module.exports = { ... }`：按配置条目采集，
             // 与 PHP 的 `return [...]` 同构（使 `kind: config_entry` 选择器对前端可用）。
@@ -189,9 +193,20 @@ fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
                 }
                 walk(child, ctx, owner, class);
             }
-            "class_declaration" => collect_class(child, ctx),
+            "class_declaration" => {
+                let fqn = collect_class(child, ctx);
+                for d in pending.drain(..) {
+                    collect_decorator(d, ctx, &fqn);
+                }
+            }
             "function_declaration" | "generator_function_declaration" => {
-                collect_named_function(child, ctx);
+                if let Some(fqn) = collect_named_function(child, ctx) {
+                    for d in pending.drain(..) {
+                        collect_decorator(d, ctx, &fqn);
+                    }
+                } else {
+                    pending.clear();
+                }
             }
             "lexical_declaration" | "variable_declaration" => {
                 let mut d = child.walk();
@@ -329,6 +344,45 @@ fn type_annotation_of(node: Node, src: &str) -> Option<String> {
     None
 }
 
+/// 取字段类型注解，**数组取元素类型**（`Comment[]` → `Comment`）。
+///
+/// 只服务于关系装饰器（`@OneToMany(…) comments: Comment[]`）：关系的一侧是实体，
+/// 数组只是"很多条"的载体。
+///
+/// **刻意不并入 [`type_annotation_of`]**：那份类型会写进 `FieldTypeFact`，供 P7 解析
+/// `field.method()` 实例调用；数组字段的真实类型是 `Array`，若记成元素类型，
+/// `comments.push(x)` 会被误解析成 `Comment.push(x)`，凭空造出一条错调用边。
+fn relation_type_of(node: Node, src: &str) -> Option<String> {
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        if child.kind() != "type_annotation" {
+            continue;
+        }
+        let mut t = child.walk();
+        for inner in child.named_children(&mut t) {
+            match inner.kind() {
+                "type_identifier" | "predefined_type" | "nested_type_identifier" | "generic_type" => {
+                    return Some(text(inner, src).to_string());
+                }
+                // `Comment[]` → 取元素类型
+                "array_type" => {
+                    let mut a = inner.walk();
+                    for e in inner.named_children(&mut a) {
+                        if matches!(
+                            e.kind(),
+                            "type_identifier" | "nested_type_identifier" | "generic_type"
+                        ) {
+                            return Some(text(e, src).to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// 构造器参数属性：`constructor(private readonly svc: UserService)` →
 /// `(svc, UserService)`，供 P7 解析 `this.svc.method()`。
 fn collect_param_types(ctor: Node, ctx: &mut Ctx, class_fqn: &str) {
@@ -359,21 +413,92 @@ fn collect_param_types(ctor: Node, ctx: &mut Ctx, class_fqn: &str) {
             ctx.facts.field_types.push(FieldTypeFact {
                 class_fqn: class_fqn.to_string(),
                 field: name,
-                type_name: t,
+                type_name: t.clone(),
                 span: span_of(p, ctx.src),
+            });
+            // 依赖注入点：`constructor(private readonly svc: UserService)` —— provider 即形参类型。
+            // 语言层只负责把"这是个注入点 + 被注入者类型"记成**调用点**（callee `@Inject`、
+            // `entity` = 类型短名），至于"依赖注入"的语义交给 FKB（见 `fkb/js/nestjs.yaml`）。
+            //
+            // 为什么用 `@Inject` 这个 callee：NestJS 没有「参数装饰器」被收集（见 `collect_decorator`
+            // 注释——`@Param('id')` 这类嵌在 `parameters` 里的装饰器不收），所以 `@Inject` 这个
+            // callee 不会与任何真实装饰器冲突；若将来有人写类级 `@Inject()`，其 `entity` 是 token
+            // 字符串而非类，FKB 的 Link 解析不到目标节点会静默跳过，安全。
+            ctx.facts.call_sites.push(CallSiteFact {
+                owner_fqn: class_fqn.to_string(),
+                owner_class: Some(class_fqn.to_string()),
+                callee_text: "@Inject".to_string(),
+                snippet: line_snippet(ctx.src, p.start_byte()),
+                receiver: None,
+                method: Some("Inject".to_string()),
+                args: Vec::new(),
+                span: span_of(p, ctx.src),
+                db_table: None,
+                in_loop: false,
+                entity: Some(t),
             });
         }
     }
 }
 
+/// 装饰器 → **调用点**（与 Java 注解 / Python 装饰器同机制）。
+///
+/// `@Get(':id')` 的装饰器内含一个 `call_expression`，直接复用普通调用的收集逻辑；
+/// 裸装饰器（`@UseGuards`）则只有标识符。参数装饰器（`@Param('id')`）嵌在
+/// `parameters` 里，不是这里的直接子节点，**不会**被误收。
+fn collect_decorator(node: Node, ctx: &mut Ctx, owner: &str) {
+    let Some(inner) = node.named_child(0) else { return };
+    // 装饰器的 callee 带 `@` 前缀。
+    //
+    // 为什么必须区分：TS 里 `@Get()` 与普通成员调用 `.get()` **同名**，而
+    // `callee_matches` 对方法名的比较是大小写不敏感的 —— 裸写 `Get` 会把
+    // e2e 测试里的 `request(app).get('/')` 之类 HTTP 调用全认成路由装饰器
+    // （实测在 typescript-starter 上就造出了指向测试文件的悬空 HandledBy）。
+    // 加 `@` 后 FKB 写 `@Get|@Post|…` 即可精确命中装饰器。
+    if inner.kind() == "call_expression" {
+        collect_invocation(inner, ctx, owner, false);
+        if let Some(last) = ctx.facts.call_sites.last_mut() {
+            last.callee_text = format!("@{}", last.callee_text);
+        }
+        return;
+    }
+    let t = text(inner, ctx.src).to_string();
+    if t.is_empty() {
+        return;
+    }
+    ctx.facts.call_sites.push(CallSiteFact {
+        owner_fqn: owner.to_string(),
+        owner_class: None,
+        callee_text: format!("@{t}"),
+        snippet: line_snippet(ctx.src, node.start_byte()),
+        receiver: None,
+        method: Some(t),
+        args: Vec::new(),
+        span: span_of(node, ctx.src),
+        db_table: None,
+        in_loop: false,
+        entity: None,
+    });
+}
+
+/// 把节点**直接子节点**里的装饰器都挂到 `owner` 上。
+fn collect_decorators_of(node: Node, ctx: &mut Ctx, owner: &str) {
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        if child.kind() == "decorator" {
+            collect_decorator(child, ctx, owner);
+        }
+    }
+}
+
 /// 顶层/类内具名函数声明：`function foo() {}` / `export function foo() {}`。
-fn collect_named_function(node: Node, ctx: &mut Ctx) {
+fn collect_named_function(node: Node, ctx: &mut Ctx) -> Option<String> {
     let name = node
         .child_by_field_name("name")
         .map(|n| text(n, ctx.src).to_string())
         .unwrap_or_default();
     if name.is_empty() {
-        return; // 匿名（如 `export default () => {}`）：不建节点，其体内调用归属外层。
+        return None; // 匿名（如 `export default () => {}`）：不建节点，其体内调用归属外层。
     }
     let fqn = name.clone();
     ctx.facts.declarations.push(Declaration {
@@ -387,6 +512,7 @@ fn collect_named_function(node: Node, ctx: &mut Ctx) {
     if let Some(body) = node.child_by_field_name("body") {
         walk(body, ctx, &fqn, None);
     }
+    Some(fqn)
 }
 
 /// `const foo = () => {}` / `const foo = function() {}` 这类赋值式函数。
@@ -419,8 +545,8 @@ fn collect_declarator(dec: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>
     }
 }
 
-/// 类声明：建 `Class` 节点，并逐个处理成员方法 / 字段方法。
-fn collect_class(node: Node, ctx: &mut Ctx) {
+/// 类声明：建 `Class` 节点，并逐个处理成员方法 / 字段方法。返回类 FQN。
+fn collect_class(node: Node, ctx: &mut Ctx) -> String {
     let name = node
         .child_by_field_name("name")
         .map(|n| text(n, ctx.src).to_string())
@@ -446,23 +572,34 @@ fn collect_class(node: Node, ctx: &mut Ctx) {
         });
     }
 
+    // 类级装饰器（未 export 的写法：`@Controller('cats') class X`）。
+    // 带 export 时装饰器挂在 `export_statement` 上，由 `walk` 的 pending 机制挂过来。
+    collect_decorators_of(node, ctx, &cfqn);
+
     let Some(body) = node.child_by_field_name("body") else {
-        return;
+        return cfqn;
     };
     let mut c = body.walk();
+    // 方法装饰器是 **class_body 的直接子节点**，且紧贴它所修饰的方法之前
+    // （`@Get(':id')` 排在 `findOne` 前面 —— 不是 method_definition 的子节点）。
+    // 与 export_statement 上类装饰器的形态一致，故同样先攒后挂。
+    let mut pending: Vec<Node> = Vec::new();
     for member in body.named_children(&mut c) {
         match member.kind() {
+            "decorator" => pending.push(member),
             "method_definition" | "constructor" => {
-                // 构造器参数属性注入：`constructor(private svc: UserService)`。
-                // 与 PHP 的 `private X $p` / Java 的 `@Autowired` 同义 —— 记下类型，
-                // 供 P7 解析 `$this->svc.method()` 这类实例调用。
-                if member.kind() == "constructor" {
-                    collect_param_types(member, ctx, &cfqn);
-                }
                 let mname = member
                     .child_by_field_name("name")
                     .map(|n| text(n, ctx.src).to_string())
                     .unwrap_or_else(|| member.kind().to_string());
+                // 构造器参数属性注入：`constructor(private svc: UserService)`。
+                // 与 PHP 的 `private X $p` / Java 的 `@Autowired` 同义 —— 记下类型，
+                // 供 P7 解析 `$this->svc.method()` 这类实例调用，以及 FKB 建 `DependsOn` 边。
+                // 注意：tree-sitter-typescript 把构造器解析成 `method_definition`
+                // （name = `constructor`），并非独立的 `constructor` 节点，故按名字识别。
+                if mname == "constructor" {
+                    collect_param_types(member, ctx, &cfqn);
+                }
                 let mfqn = format!("{cfqn}.{mname}");
                 ctx.facts.declarations.push(Declaration {
                     kind: NodeKind(NodeKind::METHOD.to_string()),
@@ -472,6 +609,11 @@ fn collect_class(node: Node, ctx: &mut Ctx) {
                     span: span_of(member, ctx.src),
                     extra: json!({}),
                 });
+                // 挂上该方法前面的装饰器（`@Get(':id')`）：owner 精确到方法，
+                // 于是 NestJS 的 `HandledBy` 能连到**处理方法**本身。
+                for d in pending.drain(..) {
+                    collect_decorator(d, ctx, &mfqn);
+                }
                 if let Some(b) = member.child_by_field_name("body") {
                     walk(b, ctx, &mfqn, Some(&cfqn));
                 }
@@ -481,6 +623,38 @@ fn collect_class(node: Node, ctx: &mut Ctx) {
                     .child_by_field_name("name")
                     .map(|n| text(n, ctx.src).to_string())
                     .unwrap_or_default();
+                // 字段装饰器（`@Column() body: string`）—— 与 Java 字段注解同机制，
+                // owner 精确到**字段 FQN**（`Class.field`），于是列身份能取到
+                // `owner_class.owner_member`（`UserEntity.body`），TypeORM 的
+                // `HasColumn` 也连到字段本身，让字段级影响面可下钻。
+                //
+                // 两条挂载路径都走一遍：tree-sitter-typescript 里装饰器既可能是
+                // class_body 的直接子节点（与方法的形态一致，先进 `pending`），也可能
+                // 挂在字段节点内部。另一条恒为空，故不会重复收集。
+                if !fname.is_empty() {
+                    let ffqn = format!("{cfqn}.{fname}");
+                    // 关系装饰器的目标实体：`@ManyToOne(type => ArticleEntity, …) article: ArticleEntity`。
+                    // 箭头函数实参**取不到字面量**（`js_value` 判为 `Unknown`），但**字段类型注解**
+                    // 就是目标实体 —— 把它填进该字段装饰器调用点的 `entity`，FKB 即可像 NestJS
+                    // 依赖注入一样用 `{ entity: true }` 连到目标实体类（见 `fkb/js/typeorm.yaml`）。
+                    let rel_ty = relation_type_of(member, ctx.src);
+                    let start = ctx.facts.call_sites.len();
+                    for d in pending.drain(..) {
+                        collect_decorator(d, ctx, &ffqn);
+                    }
+                    collect_decorators_of(member, ctx, &ffqn);
+                    // 只回填**本字段装饰器**产生的调用点：后面 `walk` 字段初值里的调用
+                    // 与关系无关，不能蹭到目标实体。
+                    if let Some(ty) = rel_ty {
+                        for c in ctx.facts.call_sites[start..].iter_mut() {
+                            if c.entity.is_none() {
+                                c.entity = Some(ty.clone());
+                            }
+                        }
+                    }
+                } else {
+                    pending.clear();
+                }
                 // 字段类型注解：`private svc: UserService;`（TS / Vue class 组件）
                 if !fname.is_empty() {
                     if let Some(t) = type_annotation_of(member, ctx.src) {
@@ -518,6 +692,7 @@ fn collect_class(node: Node, ctx: &mut Ctx) {
             _ => {}
         }
     }
+    cfqn
 }
 
 /// 导入语句：`import axios from 'axios'` / `import { agentGet } from './api'`。
@@ -1169,6 +1344,116 @@ mod tests {
             })
             .unwrap_or_default();
         (c.callee_text.clone(), url, method)
+    }
+
+    /// 装饰器 → 调用点（NestJS 路由的基础）：与 Java 注解 / Python 装饰器同机制。
+    #[test]
+    fn nestjs_decorators_become_call_sites() {
+        let facts = parse_src(
+            "@Controller('cats')\nexport class CatsController {\n  @Get(':id')\n  findOne(@Param('id') id: string) { return 1; }\n}\n",
+        );
+        // 类装饰器：owner 是类
+        let ctrl = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("Controller"))
+            .expect("应收集 @Controller");
+        assert_eq!(ctrl.owner_fqn, "CatsController");
+        assert_eq!(ctrl.args.first().and_then(|a| a.as_str()), Some("cats"));
+        // 方法装饰器：owner 精确到方法（NestJS 的 HandledBy 才能连到处理方法本身）
+        let get = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("Get"))
+            .expect("应收集 @Get");
+        assert_eq!(get.owner_fqn, "CatsController.findOne");
+        assert_eq!(get.args.first().and_then(|a| a.as_str()), Some(":id"));
+        // callee 带 `@` 前缀：与普通的 `.get()` 区分开（否则 FKB 会误命中）
+        assert_eq!(ctrl.callee_text, "@Controller");
+        assert_eq!(get.callee_text, "@Get");
+        // 参数装饰器（`@Param('id')`）嵌在 parameters 里，不应被收成调用点
+        assert!(
+            facts.call_sites.iter().all(|c| c.method.as_deref() != Some("Param")),
+            "参数装饰器不应被收作调用点，实际：{:?}",
+            facts.call_sites.iter().map(|c| &c.callee_text).collect::<Vec<_>>()
+        );
+    }
+
+    /// 构造器形参注入 → `@Inject` 调用点（NestJS 依赖注入的基础）。
+    ///
+    /// `constructor(private readonly userService: UserService)` 应产出一条
+    /// `callee_text = "@Inject"`、`entity = "UserService"`（被注入者类型）的调用点，
+    /// owner 是类本身 —— 供 FKB 建 `DependsOn` 边。
+    #[test]
+    fn constructor_param_injection_becomes_inject_call_site() {
+        let facts = parse_src(
+            "export class UserController {\n  constructor(private readonly userService: UserService) {}\n}\n",
+        );
+        let inject = facts
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text == "@Inject")
+            .expect("应收集构造器注入点");
+        assert_eq!(inject.owner_fqn, "UserController");
+        assert_eq!(inject.owner_class.as_deref(), Some("UserController"));
+        assert_eq!(inject.entity.as_deref(), Some("UserService"));
+        // 只有带访问修饰符的形参才算注入（普通参数不算）
+        let facts2 = parse_src(
+            "export class X {\n  constructor(plain: Foo, private svc: Bar) {}\n}\n",
+        );
+        let injects: Vec<&str> = facts2
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text == "@Inject")
+            .map(|c| c.entity.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(injects, vec!["Bar"], "只有带修饰符的 svc: Bar 算注入，plain: Foo 不算");
+    }
+
+    /// 字段装饰器 → 调用点（TypeORM `@Column` 的基础）：owner 精确到**字段 FQN**
+    /// （`Class.field`），于是 FKB 能取 `owner_class.owner_member` 作列身份
+    /// （`UserEntity.username`）—— 同名列在不同实体里才不会并成一个。
+    #[test]
+    fn field_decorators_become_call_sites_on_field_fqn() {
+        let facts = parse_src(
+            "export class UserEntity {\n  @PrimaryGeneratedColumn()\n  id: number;\n\n  @Column()\n  username: string;\n}\n",
+        );
+        let cols: Vec<&str> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text == "@Column" || c.callee_text == "@PrimaryGeneratedColumn")
+            .map(|c| c.owner_fqn.as_str())
+            .collect();
+        assert_eq!(
+            cols,
+            vec!["UserEntity.id", "UserEntity.username"],
+            "字段装饰器应挂到字段 FQN（Class.field），实际：{cols:?}"
+        );
+    }
+
+    /// 关系装饰器 → 目标实体写在调用点的 `entity`（TypeORM 关联的基础）。
+    ///
+    /// 箭头函数实参（`type => ArticleEntity`）取不到字面量，故取**字段类型注解**；
+    /// 数组字段（`comments: Comment[]`）取**元素类型**。
+    #[test]
+    fn relation_decorators_carry_target_entity() {
+        let facts = parse_src(
+            "export class ArticleEntity {\n  @ManyToOne(type => UserEntity, user => user.articles)\n  author: UserEntity;\n\n  @OneToMany(type => Comment, comment => comment.article)\n  comments: Comment[];\n}\n",
+        );
+        let rel: Vec<(&str, &str)> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text == "@ManyToOne" || c.callee_text == "@OneToMany")
+            .map(|c| (c.owner_fqn.as_str(), c.entity.as_deref().unwrap_or("<none>")))
+            .collect();
+        assert_eq!(
+            rel,
+            vec![
+                ("ArticleEntity.author", "UserEntity"),
+                ("ArticleEntity.comments", "Comment"),
+            ],
+            "关系装饰器应带上目标实体（数组取元素类型），实际：{rel:?}"
+        );
     }
 
     #[test]

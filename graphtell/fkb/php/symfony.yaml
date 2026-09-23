@@ -1,0 +1,65 @@
+# Symfony 框架知识
+#
+# 路由用 **PHP 8 属性**声明（`#[Route]` / `#[Get]` / `#[Post]` …），解析器在
+# `gt-adapter-parser/src/php/mod.rs` 的 `collect_method` 里把每个路由属性**合成成调用点**
+# （`callee_text` 带 `attr:` 前缀，避免与 Laravel 等 `Route::get()` 真实调用混淆），
+# 并把控制器方法 FQN 写进 `entity`。本文件据此合成 `HttpContract` + `HandledBy`。
+#
+# 与 Spring / FastAPI / Django 同属「后端路由 → HttpContract」语义族：
+#   | 框架     | 路由声明形式                         | 方法来源                |
+#   |----------|--------------------------------------|-------------------------|
+#   | Symfony  | `#[Route('/x', methods:['GET'])]`     | 属性 `methods` / 快捷名 |
+#   | Spring   | `@GetMapping("/x")`                   | 注解名                  |
+#   | FastAPI  | `@app.get("/x")`                      | 装饰器名                |
+#   | Django   | `path("x/", view)`                    | 无（通配 ANY）          |
+
+id: symfony
+display_name: Symfony
+language: php
+version_hint: "5.x / 6.x / 7.x"
+
+detectors:
+  - kind: manifest_dependency
+    manifest: composer.json
+    dependency: symfony/framework-bundle
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: composer.json
+    dependency: symfony/routing
+    confidence: 0.8
+  - kind: file_exists
+    path: bin/console
+    confidence: 0.6
+
+exclude_globs:
+  - "vendor/**"
+  - "node_modules/**"
+  - "var/cache/**"
+  - "var/log/**"
+  - "public/**"
+
+rules:
+  # ===== P5 Synthesize：路由（控制器方法上的 #[Route] / #[Get] …）=====
+  # 解析器已为每个路由属性合成调用点（含显式方法；`Route` 无 `methods` 时降为通配 ANY）。
+  # `entity` 指向控制器方法自身，经 `resolve: class_const` 连到方法节点。
+  - id: symfony-route
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "attr.Route|attr.Get|attr.Post|attr.Put|attr.Delete|attr.Patch|attr.Options|attr.Head"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { arg: 1 }
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { entity: true, resolve: class_const }
+          confidence: 0.7

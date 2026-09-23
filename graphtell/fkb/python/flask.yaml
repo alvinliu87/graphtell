@@ -1,0 +1,106 @@
+# Flask 框架知识（Python）
+#
+# **纯 YAML —— 解析器零改动**。这是「同一语言的第 N 个框架几乎免费」的直接验证：
+# Flask 的 `@app.route("/x")` 与 FastAPI 的 `@app.get("/x")` 在解析器眼里没有区别
+# （都是「属性式装饰器 + 字面量首参」），装饰器早在 Python 解析器里就被建模成了
+# 调用点。所以这里不需要任何新机制，只需要换一个 detector 和选择器。
+#
+# 与 FastAPI 的唯一实质差异：**HTTP 方法不在装饰器名里**。
+# `@app.route("/x")` 不声明方法（默认 GET，写了 `methods=[...]` 才是别的），
+# 故按 Spring `@RequestMapping` 的既有先例记为 `ANY`。
+
+id: flask
+display_name: Flask
+language: python
+version_hint: "2.x / 3.x"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: requirements.txt
+    dependency: flask
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: pyproject.toml
+    dependency: flask
+    confidence: 0.9
+
+exclude_globs:
+  - "__pycache__/**"
+  - "*/__pycache__/**"
+  - "*/.venv/**"
+  - "*/venv/**"
+
+rules:
+  # ===== P5 Synthesize：HTTP 契约（`@app.route`）=====
+  # 接收者：`app` / Flask 蓝图常用的 `bp` / `blueprint`。路径取自第 1 个实参。
+  #
+  # 方法：写了 `methods=["POST"]` 时取**第一个**方法 —— 解析器把列表字面量捕成了
+  # 以**下标为键**的数组，故按 `field: "0"` 取首元素。
+  #
+  # 未声明 `methods` 时这里取不到值（None），引擎对 ContractId 的兜底是 `GET`；
+  # 而 Flask 的默认行为正是「仅响应 GET」，两者恰好一致，故不需要再写默认 ANY。
+  # （注意：`ValueSource.default` 在这里**不会**生效 —— 求值在 `raw` 返回 None 时
+  # 已提前返回，default 只在"取到空串"时兜底。）
+  # 诚缺：① `methods=` 只在 arg1 时取到，写在更靠后的位置会退回 GET；
+  #       ② 多方法路由（["GET","POST"]）只取第一个。
+  - id: flask-route-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "app::route|bp::route|blueprint::route|api::route"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              source: { arg: 1, field: "methods" }
+              field: "0"
+              normalize:
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            # 与 FastAPI 侧相同：模块级函数的 `owner_class` 由解析器回填为模块点分名，
+            # 模块已登记为 Namespace 节点，于是可先定位模块、再按成员名连到函数本身。
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9
+
+  # ===== P5 Synthesize：Flask 2.x 的动词快捷方式 =====
+  # Flask 2.0 起提供 `@app.get/post/put/delete/patch(...)`，与 FastAPI 写法同形，
+  # 故方法可直接从装饰器名推导。
+  - id: flask-verb-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "app::{get,post,put,delete,patch}|bp::{get,post,put,delete,patch}|blueprint::{get,post,put,delete,patch}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9

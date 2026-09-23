@@ -398,6 +398,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
                                 s.link.as_ref().map(|l| l.kind.0.clone())
                             }
                             Action::Link(l) => Some(l.kind.0.clone()),
+                            Action::Project(p) => Some(p.kind.0.clone()),
                             Action::Annotate(_) => None,
                         };
                         if let Some(ek) = edge_kind {

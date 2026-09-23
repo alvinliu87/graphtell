@@ -1,0 +1,59 @@
+# Express 框架知识（Node.js）
+#
+# **解析器零改动**：`app.get('/login', handler)` 在 `JsFrontendParser` 眼里是普通的
+# 成员调用（receiver = `app`、method = `get`、arg0 = `/login`），与 Python FastAPI 的
+# 动词快捷方式 `@app.get` 形态一致 —— 只差一个 `@` 前缀（Express 没有）。
+#
+# 与 NestJS 的关键差异（已如实标注）：
+#   * 方法名本身即 HTTP 动词（`app.get` / `router.post`），故用 `method_name` 取；
+#     但 `get` / `post` 太通用，必须按**接收者变量名**收窄（`app` / `router` 等）。
+#   * 路由与处理器**解耦**：`handler` 是后续实参（常为 `userController.getLogin`，
+#     在另一个文件）。模块级路由（CommonJS 的 `app.js` 顶层）的 owner 是文件路径、
+#     没有对应节点，于是这里**不强行连 HandledBy** —— 否则会造出悬空或错误的边。
+#     若日后需要，可改为连 `to: { arg: 1 }` 指向 handler 实参（需 handler 在本工程
+#     内有可解析的 FQN 节点），目前先只落成契约节点。
+
+id: express
+display_name: Express
+language: javascript
+version_hint: "4+"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: express
+    confidence: 0.95
+
+exclude_globs:
+  - "node_modules/**"
+  - "dist/**"
+  - "build/**"
+
+rules:
+  # ===== P5 Synthesize：HTTP 契约（路由）=====
+  # `app.get('/login', handler)` / `router.post('/x', ...)`。
+  # 路径取自第 1 个实参；方法由接收者属性名（get/post/...）推导。
+  - id: express-route-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "app::{get,post,put,delete,patch,head,options}|router::{get,post,put,delete,patch,head,options}|api::{get,post,put,delete,patch,head,options}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          confidence: 0.9

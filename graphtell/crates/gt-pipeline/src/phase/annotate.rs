@@ -94,6 +94,10 @@ pub fn run_post(ctx: &mut PipelineContext) {
             exec_binding(ctx, rule, MatchCtx::Node(id), id, id, sub, &phase, &mut last);
         }
     }
+
+    // 规则跑完后，把权威 schema 的列沉淀成 `Column` 节点（`Table --HasColumn--> Column`）。
+    // 放在最后：它是"读图 + 补图"，不参与规则匹配，也不应被规则再命中一次。
+    crate::phase::columns::materialize(ctx);
 }
 
 fn sub_of(ctx: &PipelineContext, id: gt_domain::model::NodeId) -> Option<SubProjectId> {

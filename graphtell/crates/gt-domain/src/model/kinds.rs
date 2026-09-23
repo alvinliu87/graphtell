@@ -68,6 +68,11 @@ declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点�
     CALL_SITE  = "CallSite"   => "方法体内的一次调用点（P2 细化）",
     // ---- 合成节点（Synthesize 阶段按 FKB 规则物化）----
     TABLE      = "Table"         => "数据库表（Mediator，汇聚 200 处引用）",
+    // 表列：两个来源共用同一种类 —— ① FKB 从 ORM 字段声明合成（TypeORM `@Column`）；
+    // ② 内核把权威 schema（SQL DDL）的列沉淀成图节点（见 `phase::columns`）。
+    // 既然内核自己也物化它，就与 `Table` 一样进内核清单，免得只在声明了
+    // `semantic_kinds: [Column]` 的那一个 FKB 生效的工程里可见。
+    COLUMN     = "Column"        => "表列（字段级影响面的落点）",
     HTTP_CONTRACT = "HttpContract" => "HTTP 契约桥（前后端汇聚点）",
     CONFIG_KEY = "ConfigKey"   => "配置键",
     I18N_KEY   = "I18nKey"     => "国际化键",
@@ -100,6 +105,15 @@ impl NodeKind {
     /// 不再笼统地挂在 `ExternalSystem` 类别伞下——每个语义节点都以具体种类作为 kind。
     pub const SYNTHESIZED: &'static [&'static str] = &[
         Self::TABLE,
+        // ★ `Column` **刻意不在此列**：列是"表 × 列数"的量级（几十张表 × 十几列 =
+        // 几百个节点），一旦算语义节点就会撑爆折叠视图，还会吃掉可达语义节点统计的
+        // 400 节点预算。列节点照建、`HasColumn` 边照连，影响面照样能下到字段级，
+        // 只是**默认不画**。将来要做"列视角"再单独开。
+        //
+        // 注意：**不能靠 FKB 的 `semantic_kinds` 按语言开这个开关** ——
+        // `register_semantic_kinds` 在 `load_dir` 里对所有 FKB 无条件登记，语言过滤
+        // 只发生在"选规则"时。故任何一份 FKB 声明 `semantic_kinds: [Column]`，
+        // 会让**所有工程**（含 PHP）的列都变语义 —— 想按语言区分必须改装载逻辑。
         Self::HTTP_CONTRACT,
         Self::CONFIG_KEY,
         Self::I18N_KEY,
@@ -171,6 +185,10 @@ declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
     WRITES_DB     = "WritesDb"      => "写库",
     WRITES_CACHE  = "WritesCache"   => "写缓存",
     MAPS_TO       = "MapsTo"        => "模型映射到表",
+    // 拥有列：`表/模型 --HasColumn--> 列`。两端都是语义节点（Table / Column，
+    // 或模型类 → Column），与 `MapsTo` 同族的"结构映射"边。
+    // 内核沉淀 schema 列时也会建它（见 `phase::columns`），故进内核清单。
+    HAS_COLUMN    = "HasColumn"     => "拥有列（表 / 模型 → 列）",
     READS_CONFIG  = "ReadsConfig"   => "读配置",
     MUTATES       = "Mutates"       => "改变状态容器（前端 Store / Vuex、Pinia…）",
     // 前端页面跳转：`uni.navigateTo` / `redirectTo` / `reLaunch` / `switchTab` 等，
@@ -213,7 +231,13 @@ impl EdgeKind {
     /// `CallsHttp`（前端函数 → 契约）。它们不是业务资源依赖——不计入「入边 N」、
     /// 不当画布边——但必须留在 `is_chain_edge` 里供发现遍历把语法实现连通到语义资源；
     /// 其语法端点（handler / 调用方）降级进 `orphans` 记账，画布恒为语义节点。
-    pub const BRIDGE: &'static [&'static str] = &[Self::HANDLED_BY, Self::CALLS_HTTP];
+    /// `HasColumn`（表 / 模型 → 列）也归在此列，图的是它**不计入「语义入边 / 出边 N」，
+    /// 但仍留在 `is_chain_edge` 里可遍历**这一组合：
+    /// 它是**组成关系**而非资源依赖，若算语义边，一张 15 列的表出边数直接 +15，
+    /// 与旁边"读 / 写了几张表"的口径混在一起、数字失真。
+    /// 归入桥边后：fan 不计 ✓、影响面仍能从表下到字段级 ✓。
+    pub const BRIDGE: &'static [&'static str] =
+        &[Self::HANDLED_BY, Self::CALLS_HTTP, Self::HAS_COLUMN];
 
     /// 是否为"对人类有意义的语义边"（业务资源依赖，见 [`Self::SEMANTIC`]）。
     ///

@@ -59,12 +59,14 @@ impl LanguageParser for JavaParser {
         let src = source.as_bytes();
         let mut package: Option<String> = None;
         let mut stack: Vec<String> = Vec::new();
+        let mut loop_depth: u32 = 0;
         walk(
             tree.root_node(),
             src,
             &mut package,
             &mut out,
             &mut stack,
+            &mut loop_depth,
         );
         Ok(out)
     }
@@ -94,7 +96,26 @@ fn walk(
     package: &mut Option<String>,
     out: &mut SyntaxFacts,
     stack: &mut Vec<String>,
+    loop_depth: &mut u32,
 ) {
+    // 循环语句：只有 **body** 子树算「循环内」（与 PHP 侧一致 —— 条件 / 更新表达式
+    // 不算逐条执行的部分）。`in_loop` 是图里唯一表达「这段代码会被执行 N 次」的标记，
+    // N+1 规则依赖它。
+    if is_loop(node) {
+        let body_id = node.child_by_field_name("body").map(|b| b.id());
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let in_body = Some(child.id()) == body_id;
+            if in_body {
+                *loop_depth += 1;
+            }
+            walk(child, src, package, out, stack, loop_depth);
+            if in_body {
+                *loop_depth -= 1;
+            }
+        }
+        return;
+    }
     match node.kind() {
         "package_declaration" => {
             if let Some(name) = node.named_child(0).and_then(|n| text(n, src)) {
@@ -118,7 +139,7 @@ fn walk(
                 // owner_class 即类本身（类级注解的 owner_fqn 已是类，无需再切）。
                 collect_annotations(node, src, &fqn, &fqn, out);
                 stack.push(fqn);
-                recurse(node, src, package, out, stack);
+                recurse(node, src, package, out, stack, loop_depth);
                 stack.pop();
                 return;
             }
@@ -126,13 +147,13 @@ fn walk(
         "method_declaration" | "constructor_declaration" => {
             if let Some(fqn) = declare_member(node, src, out, stack) {
                 stack.push(fqn);
-                recurse(node, src, package, out, stack);
+                recurse(node, src, package, out, stack, loop_depth);
                 stack.pop();
                 return;
             }
         }
         "method_invocation" => {
-            collect_call(node, src, out, stack);
+            collect_call(node, src, out, stack, loop_depth);
         }
         "field_declaration" => {
             // 字段级注解（`@Value` / `@Autowired` / `@TableField` …）归属所属类：
@@ -144,7 +165,7 @@ fn walk(
         }
         _ => {}
     }
-    recurse(node, src, package, out, stack);
+    recurse(node, src, package, out, stack, loop_depth);
 }
 
 fn recurse(
@@ -153,11 +174,20 @@ fn recurse(
     package: &mut Option<String>,
     out: &mut SyntaxFacts,
     stack: &mut Vec<String>,
+    loop_depth: &mut u32,
 ) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        walk(child, src, package, out, stack);
+        walk(child, src, package, out, stack, loop_depth);
     }
+}
+
+/// Java 的循环语句（`for` / 增强 `for` / `while` / `do-while`）。
+fn is_loop(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "for_statement" | "enhanced_for_statement" | "while_statement" | "do_statement"
+    )
 }
 
 /// 登记类 / 接口 / 枚举 / record，返回其 FQN。
@@ -194,40 +224,130 @@ fn declare_type(
 }
 
 /// `extends` / `implements` → 继承事实。
+///
+/// 附带：JPA Repository / MyBatis Mapper 的**泛型实参**就是它操作的实体
+/// （`interface UserRepository extends JpaRepository<User, Long>` → `User`）。
+/// 这是「哪个 DAO 操作哪张表」的唯一静态线索，记成合成调用点交给 FKB 判定
+/// （哪些基类算 DAO、实体怎么映射到表，都是框架知识）。
 fn collect_supertypes(node: Node, src: &[u8], fqn: &str, out: &mut SyntaxFacts) {
-    if let Some(sup) = node.child_by_field_name("superclass") {
-        if let Some(base) = sup.named_child(0).and_then(|n| text(n, src)) {
-            out.inheritances.push(InheritanceFact {
-                child_fqn: fqn.to_string(),
-                base_name: base,
-                kind: EdgeKind(EdgeKind::EXTENDS.to_string()),
-                span: span_of(sup),
-            });
-        }
-    }
-    if let Some(ifs) = node.child_by_field_name("interfaces") {
-        let mut cursor = ifs.walk();
-        for child in ifs.named_children(&mut cursor) {
-            let base = match child.kind() {
-                "type_list" => {
-                    let mut c2 = child.walk();
-                    child
-                        .named_children(&mut c2)
-                        .filter_map(|n| text(n, src))
-                        .collect::<Vec<_>>()
+    // 整棵声明子树里第一组 `type_arguments`（`<User, Long>` → `User`）；
+    // 类自身的类型参数用的是 `type_parameters`，不会与此处混淆。
+    let entity = first_generic_arg(node, src);
+    // 一律按 **kind** 遍历，不用 `child_by_field_name`：接口的 `extends` 是
+    // `extends_interfaces` 节点且**不带字段名**，按字段取永远取不到 —— 这正是
+    // 「接口继承接口」（JPA Repository / MyBatis Mapper 的写法）此前整条丢失的原因。
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "superclass" => {
+                if let Some(base) = type_name_of(child, src) {
+                    out.inheritances.push(InheritanceFact {
+                        child_fqn: fqn.to_string(),
+                        base_name: base.clone(),
+                        kind: EdgeKind(EdgeKind::EXTENDS.to_string()),
+                        span: span_of(child),
+                    });
+                    push_generic_entity(&base, &entity, fqn, child, src, out);
                 }
-                _ => text(child, src).into_iter().collect(),
-            };
-            for base in base {
-                out.inheritances.push(InheritanceFact {
-                    child_fqn: fqn.to_string(),
-                    base_name: base,
-                    kind: EdgeKind(EdgeKind::IMPLEMENTS.to_string()),
-                    span: span_of(child),
-                });
             }
+            "interfaces" | "extends_interfaces" => {
+                let mut c2 = child.walk();
+                for t in child.named_children(&mut c2) {
+                    let bases: Vec<String> = if t.kind() == "type_list" {
+                        let mut c3 = t.walk();
+                        t.named_children(&mut c3)
+                            .filter_map(|n| type_name_of(n, src))
+                            .collect()
+                    } else {
+                        type_name_of(t, src).into_iter().collect()
+                    };
+                    for base in bases {
+                        out.inheritances.push(InheritanceFact {
+                            child_fqn: fqn.to_string(),
+                            base_name: base.clone(),
+                            kind: EdgeKind(EdgeKind::IMPLEMENTS.to_string()),
+                            span: span_of(t),
+                        });
+                        push_generic_entity(&base, &entity, fqn, t, src, out);
+                    }
+                }
+            }
+            _ => {}
         }
     }
+}
+
+/// 取一个类型节点的**裸名**：`generic_type`（`BaseMapper<Order>`）取其中的
+/// `type_identifier`（`BaseMapper`），避免把泛型实参混进基类名。
+fn type_name_of(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() == "generic_type" {
+        let mut c = node.walk();
+        return node
+            .named_children(&mut c)
+            .find(|c| c.kind() == "type_identifier")
+            .and_then(|c| text(c, src));
+    }
+    text(node, src)
+}
+
+/// 取子树里第一组 `type_arguments` 的首个类型标识符（`<User, Long>` → `User`）。
+fn first_generic_arg(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() == "type_arguments" {
+        let mut c = node.walk();
+        return node
+            .named_children(&mut c)
+            .find(|c| c.kind() == "type_identifier")
+            .and_then(|c| text(c, src));
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if let Some(v) = first_generic_arg(child, src) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// 把「DAO 泛型实参 = 实体」记成合成调用点。
+///
+/// `callee_text` 用 `generic.` 前缀（**不带冒号** —— FKB 的 callee 里单冒号会被
+/// 解释成 `receiver:method`），`entity` 存实体**短名**，由 FKB 的
+/// `resolve: class_const` 经 import 短名索引还原成 FQN。
+fn push_generic_entity(
+    base: &str,
+    entity: &Option<String>,
+    fqn: &str,
+    node: Node,
+    src: &[u8],
+    out: &mut SyntaxFacts,
+) {
+    let Some(entity) = entity else { return };
+    // 裸名（最常见：实体与 DAO **同包**，故没有 import）必须补成 FQN ——
+    // 图里只有 FQN 能命中，而短名索引只收 import，同包引用根本不在里面
+    // （这正是此前 `find_by_name` 落空、Link 不产边的原因）。
+    let entity = if entity.contains('.') {
+        entity.clone()
+    } else {
+        match fqn.rsplit_once('.') {
+            Some((pkg, _)) => format!("{}.{}", pkg, entity),
+            None => entity.clone(),
+        }
+    };
+    out.call_sites.push(CallSiteFact {
+        owner_fqn: fqn.to_string(),
+        owner_class: Some(fqn.to_string()),
+        callee_text: format!("generic.{}", base),
+        receiver: None,
+        // 刻意留空：FKB 的裸 callee 模式会**按方法名**匹配，留空才不会误命中
+        method: None,
+        args: Vec::new(),
+        span: span_of(node),
+        snippet: None,
+        db_table: None,
+        in_loop: false,
+        entity: Some(entity.clone()),
+    });
+    let _ = src;
 }
 
 /// 字段声明 `Type name;` / `Type a, b;` → 记录每条字段与其声明类型。
@@ -250,6 +370,17 @@ fn collect_field_type(node: Node, src: &[u8], class_fqn: &str, out: &mut SyntaxF
     if type_name.is_empty() {
         return;
     }
+    // 裸类型名按**所在类的包**补成 FQN（同包引用没有 import，短名索引里查不到）。
+    // 不补的话 P7 拿到的接收者类型是 `UserRepository`，而 `mapped_tables` 用 FQN 查
+    // `MapsTo`，于是 `repo.save()` 落不出 `WritesDb`（Java 的 N+1 缺的正是这一环）。
+    let type_name = if type_name.contains('.') {
+        type_name
+    } else {
+        match class_fqn.rsplit_once('.') {
+            Some((pkg, _)) => format!("{}.{}", pkg, type_name),
+            None => type_name,
+        }
+    };
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "variable_declarator" {
@@ -466,7 +597,13 @@ fn collect_literals(node: Node, src: &[u8], out: &mut Vec<FactValue>) {
 }
 
 /// `obj.method(args)` → 调用点。
-fn collect_call(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String]) {
+fn collect_call(
+    node: Node,
+    src: &[u8],
+    out: &mut SyntaxFacts,
+    stack: &[String],
+    loop_depth: &mut u32,
+) {
     let Some(method) = opt_text(node.child_by_field_name("name"), src) else {
         return;
     };
@@ -511,7 +648,8 @@ fn collect_call(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String])
         span: span_of(node),
         snippet: None,
         db_table: None,
-        in_loop: false,
+        // 循环体内（含嵌套）的调用：N+1 规则靠它判定「这段会被执行 N 次」。
+        in_loop: *loop_depth > 0,
         entity,
     });
 }
@@ -535,5 +673,105 @@ fn span_of(node: Node) -> Span {
         end_line: end.row as u32 + 1,
         start_byte: node.start_byte() as u32,
         end_byte: node.end_byte() as u32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 循环体内的调用要打上 `in_loop`（N+1 规则唯一能看出「这段代码会被执行 N 次」的地方）。
+    /// 与 PHP 侧一致：**只有 body 算循环内**，条件 / 更新表达式不算。
+    #[test]
+    fn marks_calls_in_loop_bodies() {
+        let src = r#"package com.demo;
+
+import java.util.List;
+
+class Svc {
+    private Repo repo;
+
+    void run(List<Long> ids) {
+        // ① 传统 for：body 内算、条件内不算
+        for (int i = 0; i < ids.size(); i++) {
+            repo.findById(ids.get(i));
+        }
+        // ② 增强 for
+        for (Long id : ids) {
+            repo.findById(id);
+        }
+        // ③ while
+        while (repo.hasNext()) {
+            repo.findById(1L);
+        }
+        // ④ do-while
+        do {
+            repo.findById(2L);
+        } while (repo.hasNext());
+        // ⑤ 循环外
+        repo.findAll();
+        // ⑥ 嵌套循环
+        for (Long a : ids) {
+            for (Long b : ids) {
+                repo.findById(a);
+            }
+        }
+    }
+}
+"#;
+        let parser = JavaParser::new().unwrap();
+        let facts = parser.parse("src/main/java/com/demo/Svc.java", src).unwrap();
+        let in_loop: Vec<&str> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.in_loop)
+            .map(|c| c.callee_text.as_str())
+            .collect();
+        // ① ~ ④ 各 1 条 + ⑥ 1 条 = 5 条 findById；另有 ① 实参里嵌套的 `ids.get(i)`
+        // 也算循环内（它同样被执行 N 次）。
+        assert_eq!(in_loop.len(), 6, "循环内调用应 6 条，实际：{in_loop:?}");
+        assert_eq!(
+            in_loop.iter().filter(|c| c.contains("findById")).count(),
+            5,
+            "findById 应 5 条，实际：{in_loop:?}"
+        );
+        assert!(
+            in_loop.iter().any(|c| c.contains("ids.get")),
+            "实参里嵌套的调用也算循环内，实际：{in_loop:?}"
+        );
+        // 循环外的 findAll 未被标记
+        assert!(!in_loop.iter().any(|c| c.contains("findAll")));
+        // 循环条件里的 hasNext 不算循环内
+        assert!(!in_loop.iter().any(|c| c.contains("hasNext")));
+    }
+
+    /// Repository / Mapper 的泛型实参 = 它操作的实体（JPA / MyBatis-Plus 的 DAO 约定）。
+    #[test]
+    fn captures_dao_generic_entity() {
+        let src = r#"package com.demo;
+
+interface UserRepository extends JpaRepository<User, Long> {
+}
+
+interface OrderMapper extends BaseMapper<Order> {
+}
+"#;
+        let parser = JavaParser::new().unwrap();
+        let facts = parser.parse("src/main/java/com/demo/Repos.java", src).unwrap();
+        let generic: Vec<(&str, Option<&str>)> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text.starts_with("generic."))
+            .map(|c| (c.callee_text.as_str(), c.entity.as_deref()))
+            .collect();
+        // 同包裸名会按 DAO 所在包补成 FQN（短名在图里命中不了节点）
+        assert!(
+            generic.contains(&("generic.JpaRepository", Some("com.demo.User"))),
+            "应捕获 JpaRepository<User> → com.demo.User，实际：{generic:?}"
+        );
+        assert!(
+            generic.contains(&("generic.BaseMapper", Some("com.demo.Order"))),
+            "应捕获 BaseMapper<Order> → com.demo.Order，实际：{generic:?}"
+        );
     }
 }

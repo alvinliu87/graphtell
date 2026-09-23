@@ -455,6 +455,8 @@ pub enum Action {
     Synthesize(SynthesizeAction),
     /// 仅建边。
     Link(LinkAction),
+    /// 把**一类边投影到另一层**。
+    Project(ProjectAction),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -901,6 +903,32 @@ pub struct LinkAction {
     pub from: Option<ValueSource>,
     pub to: Option<ValueSource>,
     pub resolve: Option<ResolveAs>,
+    pub confidence: Option<f32>,
+}
+
+/// 边投影动作：把**一类边**从它所在的层投影到另一层。
+///
+/// 遍历匹配节点的每条 `along` 出边，起点沿 `from` 边种类链走、终点沿 `to` 链走，
+/// 在两头的落点之间建一条 `kind` 边。**一对多**：一个实体有几条 `@ManyToOne`
+/// 就产出几条外键边（这是 `Link` 做不到的 —— 它的两端只能各取一个名字）。
+///
+/// 为什么需要内核给这条能力：「类 → 它映射的表」本质是**沿 `MapsTo` 走一跳**，
+/// 而 `ValueSource` 只认名字（`self_value` / `property`），取不到"边的那一头"。
+/// 走哪条边仍完全由 FKB 声明 —— 内核依旧不认识 TypeORM。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct ProjectAction {
+    /// 产出的边种类。
+    pub kind: EdgeKind,
+    /// 遍历匹配节点的每条**此类**出边（没有该类边 → 无产出，天然跳过无关节点）。
+    pub along: EdgeKind,
+    /// 从**边的起点**沿此边种类链走到落点；为空则落点就是起点自身。
+    #[serde(default)]
+    pub from: Vec<String>,
+    /// 从**边的终点**沿此边种类链走到落点；为空则落点就是终点自身。
+    #[serde(default)]
+    pub to: Vec<String>,
     pub confidence: Option<f32>,
 }
 

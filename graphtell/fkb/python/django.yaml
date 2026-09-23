@@ -1,0 +1,190 @@
+# Django 框架知识（Python）
+#
+# **复用既有能力，几乎只写 YAML** —— 与 TypeORM / Laravel / ThinkPHP 同一套边
+# （`References` / `ForeignKey` / `HasColumn` / `MapsTo`），`ForeignKey` 直接复用
+# `Project` 动作。`ForeignKey` 是表 → 表（两端语义）的业务资源依赖 → 语义边；
+# `References`（模型 → 模型）两端都是代码节点 → 桥边。
+#
+# 前置：Python 解析器把「类体内 `name = models.CharField(...)` 字段声明」翻成调用点，
+# owner 精确到「类.字段」（`owner_class` = 模型类，`owner_member` = 字段名），关系字段
+# 首个位置实参（类名标识符）解析成 FQN 记入 `entity` —— 见 `gt-adapter-parser/src/python`。
+
+id: django
+display_name: Django
+language: python
+version_hint: "4.x / 5.x"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: requirements.txt
+    dependency: "django"
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: pyproject.toml
+    dependency: "django"
+    confidence: 0.9
+
+exclude_globs:
+  - "__pycache__/**"
+  - "*/__pycache__/**"
+  - "*/.venv/**"
+  - "*/venv/**"
+  # Django 自动生成的迁移文件里是 `migrations.CreateModel` / `AddField`（字段以字典
+  # 形式给出，不是 `models.CharField` 类属性声明），且会重复描述模型结构，跳过以免
+  # 造出噪声调用点。
+  - "*/migrations/**"
+
+# `References`（模型 → 模型）两端都是**代码节点**，按桥边声明：能沿链遍历做影响面，
+# 但不计入「语义入边 N」、不当画布边（与 FastAPI 的 `DependsOn` 同一处理）。
+# `ForeignKey`（表 → 表）两端都是 `Table`（语义节点），是真正的业务资源依赖 → 语义边。
+semantic_edge_kinds: [ForeignKey]
+bridge_edge_kinds: [References]
+
+rules:
+  # ===== P5 Synthesize：模型 → 表 =====
+  # `class Post(models.Model)` —— 表名取类短名（snake_plural，与 Laravel 的
+  # `laravel-model-table` 同算法：`Post` → `posts`）。Django 的真实表名是
+  # `app_label_modelname`，这里取不到 app_label，先用类短名复数兜底；若项目用
+  # `class Meta: db_table = "x"` 显式指定，当前未读（见下方诚实边界）。
+  - id: django-model-table
+    phase: Synthesize
+    selector:
+      kind: inheritance
+      base: "models.Model|Model"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              self: true
+              transform: { snake_plural: true }
+              # `snake_plural` 内部的 `strip_namespace` 只认 `\ / :` 三种分隔符，不认
+              # Python 的点号，故这里再补一步 `short_name`（同样切 `.`）取末段类名。
+              normalize:
+                - short_name
+                - singularize
+                - trim
+          fields:
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.6
+
+  # ===== P5 Synthesize：模型字段 → 表列 =====
+  # `title = models.CharField(max_length=200)` —— 字段声明即列。落成 `Column` 节点，
+  # 并由模型类经 `HasColumn` 指向它（模型类已 `MapsTo` → `Table`，故「表 → 列」是
+  # 表 ←MapsTo— 模型 —HasColumn→ 列 两跳，字段级影响面可顺藤摸瓜，与 TypeORM 同构）。
+  #
+  # 身份取 `模型类.字段`（`owner_class.owner_member`）：同名列（`id`）在不同模型里
+  # 必须各算各的。`HasColumn` 连到 `owner_class`（模型类），再由 `MapsTo` 落到表。
+  #
+  # 只收**列**字段类型；`@ForeignKey` / `@OneToOneField` / `@ManyToManyField` 是关系，
+  # 由下面 `django-model-relation` 单独建模（避免把外键字段误当普通列）。
+  # 注意：Django 惯用法是 `from django.db import models` 后写 `models.CharField`；
+  # 若项目改成 `from django.db.models import CharField` 直接写 `CharField(...)`，
+  # 当前 callee 匹配不到（裸字段名太通用，不愿放宽以免误伤普通变量）。
+  - id: django-column
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "models::{CharField,TextField,IntegerField,BigIntegerField,SmallIntegerField,PositiveIntegerField,PositiveSmallIntegerField,EmailField,BooleanField,DateTimeField,DateField,TimeField,DecimalField,FloatField,JSONField,AutoField,BigAutoField,UUIDField,SlugField,URLField,FileField,ImageField,IPAddressField,GenericIPAddressField,PositiveBigIntegerField,PositiveBigIntegerField}"
+    binding:
+      - Synthesize:
+          node: Column
+          identity:
+            kind: Named
+            value:
+              path: [{ owner_class: true }, { owner_member: true }]
+              join: "."
+          link:
+            kind: HasColumn
+            direction: incoming
+            to: { owner_class: true, resolve: class_const }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：模型关联（外键持有方）=====
+  # `author = models.ForeignKey(User, on_delete=models.CASCADE)` —— Post 引用 User。
+  #
+  # 目标模型**不取自装饰器实参字面量**，而是解析器已填进调用点 `entity` 的首个位置
+  # 实参类名（与 FastAPI `Depends` 同机制：`{ entity: true }` 直接连到目标模型类）。
+  #
+  # 只建持有方（`ForeignKey` / `OneToOneField` / `ManyToManyField`）：Django 通常不写
+  # 反向 `related_name` 调用，只建持有方即可；双向声明罕见，若写了反向边会与配对边
+  # 冗余（真实样本里 `Article.author` 与 `User.articles` 正是如此），故只建持有方。
+  - id: django-model-relation
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "models::{ForeignKey,OneToOneField,ManyToManyField}"
+    binding:
+      - Link:
+          kind: References
+          # 引用方：声明该关系的模型类
+          from: { owner_class: true, resolve: class_const }
+          # 被引用方：首个位置实参的类（解析器已解析成 FQN 存入 entity）
+          to: { entity: true, resolve: class_const, require_class: true }
+          confidence: 0.75
+
+  # ===== P6 AnnotatePost：把模型关联投影成**表级外键** =====
+  # 上一条建的是「模型类 → 模型类」；表的视角里要能直接看到「表 → 表」的外键，
+  # 死表 / 影响面分析才不必每次绕道模型类。
+  #
+  # `Project` = 遍历匹配节点的每条 `along` 出边，两端各沿自己的边种类链走到落点，
+  # 在两落点之间建边。这里两端都沿 `MapsTo`（模型 → 表）走一跳，于是
+  # `References`（Post → User）被投影成 `ForeignKey`（post → user）。
+  #
+  # 落点走不到就跳过：没有 `Table` 的模型（如未被 `models.Model` 继承命中的）外键
+  # 不入图 —— 宁可缺不可猜。
+  - id: django-table-foreign-key
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Class
+    binding:
+      - Project:
+          kind: ForeignKey
+          along: References
+          from: [MapsTo]
+          to: [MapsTo]
+          confidence: 0.7
+
+  # ===== P5 Synthesize：URL 路由（urls.py 的 `path()`）=====
+  # `path("users/", user_list, name="user_list")` —— Django 把 URL 与视图写在 `urls.py`，
+  # 且**不编码 HTTP method**（一个视图处理所有方法），故契约方法用通配 `ANY`
+  # （`is_wildcard_http_method` 认定 `ANY` 匹配任意前端调用方法），避免把 Django 端点
+  # 误标成具体动词、也避免读写启发式对"未知方法 → 读"的误判。
+  #
+  # 路径取 route 字面量（arg0，规整成前导 `/`）；视图取 arg1 经 `resolve: class_const`
+  # 连到 Handler。`resolve: class_const` 不要求目标是类，故函数视图也能连上。
+  #
+  # 视图解析（语法端点，最坏情况只缺 handler 边、契约节点照常建立）：
+  # * 裸名引用：`from .views import user_list` 后 `path("users/", user_list)` —— 经短名
+  #   索引可连到 `user_list` 函数节点；
+  # * `views.user_list`（模块属性）与 `XView.as_view()`（CBV）—— 当前解析不到，留作边界；
+  # * `path("api/", include("api.urls"))` 这类「前缀 + include」会被当成一条端点契约
+  #   （无 handler 边），属于已知噪声（见 SUPPORTED.md 诚实边界）。
+  - id: django-route
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "path|re_path|url"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { literal: "ANY" }
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          link:
+            kind: HandledBy
+            direction: to_target
+            # 视图 FQN 由解析器解析进 `entity`（见 python/mod.rs 的 `path` 处理），
+            # 因函数不在短名索引里、必须用全 FQN 才能 `find_by_name` 命中。
+            to: { entity: true, resolve: class_const }
+          confidence: 0.7

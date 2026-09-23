@@ -197,6 +197,14 @@ pub struct NodeView {
     pub locations: Vec<SourceLocation>,
     /// 标注摘要（pii / auth.public / data.criticality …）。
     pub annotations: Vec<String>,
+    /// 该节点的**列**（表 / 模型的字段，裸列名，不带表前缀）。
+    ///
+    /// 列刻意**不作为独立节点画在折叠视图里**（`Column` 不是语义节点 —— 否则几十张表
+    /// × 十几列会把画布撑爆、还吃掉可达语义节点统计的 400 预算）。
+    /// 但"展开一张表看看它有哪些字段"是刚需，故把列作为**节点的属性**带出来：
+    /// 折叠视图里列不占位，点开表才看到。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<String>>,
     /// 视角相关的度量（如入边数）。
     pub metrics: Value,
 }

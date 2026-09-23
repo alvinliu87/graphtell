@@ -1,0 +1,152 @@
+# TypeORM 框架知识（Node / TypeScript）
+#
+# 前置：JS/TS 解析器把装饰器（`@Entity('user')`）翻成调用点，callee 带 `@` 前缀、
+# owner 精确到被修饰的实体类。本文件据此把 ORM 实体落成 `Table` 节点。
+#
+# 与 NestJS FKB 的关系：本文件只认 `typeorm` 依赖；NestJS 工程若用 TypeORM 即同时命中
+# 两者（路由契约 + 实体映射），互不冲突。
+
+id: typeorm
+display_name: TypeORM
+language: javascript
+version_hint: "0.3.x"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: "typeorm"
+    confidence: 0.95
+
+exclude_globs:
+  - "**/node_modules/**"
+  - "**/dist/**"
+
+# ★ 这里**刻意不声明** `semantic_kinds: [Column]` / `semantic_edge_kinds: [HasColumn]`。
+#
+# 列是「表数 × 列数」的量级（几十张表 × 十几列 = 几百个节点）：一旦算语义节点，
+# 折叠视图会被撑爆、还会吃掉可达语义节点统计的 400 节点预算；而 `HasColumn` 是
+# **组成关系**不是资源依赖，算语义边会让表的「语义出边 N」虚高。
+# 故两者都保持非语义：列节点照建、边照连、影响面照样能下到字段级，只是**默认不画**。
+#
+# 更关键的是**这里声明了也做不到"只对本框架生效"**：`register_semantic_kinds`
+# 在 `load_dir` 里对所有 FKB 无条件登记（语言过滤只发生在选规则时），
+# 因此任何一份 FKB 声明 `Column` 为语义，会让**所有工程**（含 PHP）的列都变语义。
+# 想按语言区分，必须先改装载逻辑按语言登记。
+#
+# `ForeignKey`（表 → 表）两端都是 `Table`（语义节点），是真正的业务资源依赖 → 声明为语义边。
+#
+# 附注：`gt-app validate` 会对 `Column` 报「节点种类不在内核清单、折叠视图会隐藏它」——
+# **这条警告是预期内的**，正是上面要的效果（列默认不画）。不要为消除它而把 Column 声明为语义。
+semantic_edge_kinds: [ForeignKey]
+# `References`（实体 → 实体）两端都是**代码节点**（`Class`），不是"两端语义"的业务资源依赖，
+# 故按**桥边**声明 —— 与 FastAPI 的 `DependsOn` 同构：能沿链遍历做影响面，但不计入
+# 「语义入边 N」、不当画布边，免得把实体类混进语义节点的折叠口径。
+bridge_edge_kinds: [References]
+
+rules:
+  # ===== P5 Synthesize：实体 → 表 =====
+  # `@Entity('user')` —— 表名取自第 1 个实参（字符串字面量）；无实参的 `@Entity()` / 对象式
+  # `@Entity({ name: 'user' })` 取不到字面量路径，按「宁可缺不可猜」跳过。
+  # 模型类 ——> 表（`MapsTo`，与 Spring `@TableName` / SQLAlchemy 声明式映射同构）。
+  - id: typeorm-entity
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "@Entity"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+                - singularize
+          link:
+            kind: MapsTo
+            direction: incoming
+            # 被修饰的实体类（JS 类 FQN = 类名）
+            to: { owner_class: true, resolve: class_const }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：实体字段 → 表列 =====
+  # `@Column() body: string` / `@PrimaryGeneratedColumn() id` —— 字段即列。
+  # 落成 `Column` 节点，并由实体类经 `HasColumn` 指向它（实体类已 `MapsTo` → `Table`，
+  # 故「表 → 列」是 表 ←MapsTo— 实体 —HasColumn→ 列 两跳，字段级影响面可顺藤摸瓜）。
+  #
+  # identity 取 `实体类.字段`（`owner_class.owner_member`）：同名列（`id` / `created`）在
+  # 不同实体里必须各算各的，否则会幂等合并成错节点 —— 故带实体作用域，不做裸字段名。
+  # 只收**列**装饰器；`@ManyToOne` / `@OneToMany` / `@JoinColumn` 是**关联**（外键），
+  # 由下面 `typeorm-relation` 单独建模（避免把关系误当列）。
+  - id: typeorm-column
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "@Column|@PrimaryGeneratedColumn|@CreateDateColumn|@UpdateDateColumn|@DeleteDateColumn"
+    binding:
+      - Synthesize:
+          node: Column
+          identity:
+            kind: Named
+            value:
+              path: [{ owner_class: true }, { owner_member: true }]
+              join: "."
+          link:
+            kind: HasColumn
+            direction: incoming
+            to: { owner_class: true, resolve: class_const }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：实体关联（外键持有方）=====
+  # `@ManyToOne(type => ArticleEntity, …) article: ArticleEntity` —— Comment 引用 Article。
+  #
+  # 目标实体**不取自装饰器实参**：`type => ArticleEntity` 是箭头函数，解析器判为
+  # `Unknown`（取不到字面量）。取的是**字段类型注解**（`article: ArticleEntity`）——
+  # 解析器已把它填进该字段装饰器调用点的 `entity`，故这里与 NestJS 依赖注入同机制：
+  # `{ entity: true }` 直接连到目标实体类，不造新节点。
+  #
+  # **只建持有方**（`ManyToOne` / `ManyToMany` / `OneToOne`）：`@OneToMany` 是反向声明，
+  # 与配对的那条 `@ManyToOne` 描述同一个关系，再建一条就是反向冗余边
+  # （真实样本里 `Article.comments` 与 `Comment.article` 正是如此配对）。
+  # 诚缺：单向 `@OneToMany`（没有配对的 ManyToOne）因此不建边。
+  - id: typeorm-relation
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "@ManyToOne|@ManyToMany|@OneToOne"
+    binding:
+      - Link:
+          kind: References
+          # 引用方：声明该关系的实体类
+          from: { owner_class: true, resolve: class_const }
+          # 被引用方：字段类型（目标实体类）
+          to: { entity: true, resolve: class_const }
+          confidence: 0.75
+
+  # ===== P6 AnnotatePost：把实体关联投影成**表级外键** =====
+  # 上一条建的是「实体类 → 实体类」；表的视角里要能直接看到「表 → 表」的外键，
+  # 死表 / 影响面分析才不必每次绕道实体类。
+  #
+  # `Project` = 遍历匹配节点的每条 `along` 出边，两端各沿自己的边种类链走到落点，
+  # 在两落点之间建边。这里两端都沿 `MapsTo`（实体 → 表）走一跳，于是
+  # `References`（Comment → ArticleEntity）被投影成 `ForeignKey`（comment → article）。
+  #
+  # **一对多**：一个实体有几条 `@ManyToOne` 就产出几条外键边 —— 这正是 `Link` 做不到的
+  # （它两端只能各取一个名字，多关系时会静默只建一条）。
+  # 落点走不到就跳过：无参 `@Entity()` 的实体没有 `Table`（真实样本里的 `Comment`），
+  # 它的外键因此不入图 —— 宁可缺不可猜。
+  - id: typeorm-foreign-key
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Class
+    binding:
+      - Project:
+          kind: ForeignKey
+          along: References
+          from: [MapsTo]
+          to: [MapsTo]
+          confidence: 0.7

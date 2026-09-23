@@ -37,6 +37,12 @@ exclude_globs:
   - "storage/framework/**"
   - "storage/logs/**"
 
+# `References`（模型 → 模型）两端都是**代码节点**，按桥边声明：能沿链遍历做影响面，
+# 但不计入「语义入边 N」、不当画布边（与 FastAPI 的 `DependsOn` 同一处理）。
+# `ForeignKey`（表 → 表）两端都是 `Table`（语义节点），是真正的业务资源依赖 → 语义边。
+semantic_edge_kinds: [ForeignKey]
+bridge_edge_kinds: [References]
+
 root_rules:
   - id: laravel-app-root
     key: app_root
@@ -120,6 +126,27 @@ loaders:
         - { facade: "Illuminate\\Support\\Facades\\Route", target: "Illuminate\\Routing\\Router" }
         - { facade: "Illuminate\\Support\\Facades\\Event", target: "Illuminate\\Events\\Dispatcher" }
         - { facade: "Illuminate\\Support\\Facades\\Storage", target: "Illuminate\\Filesystem\\FilesystemManager" }
+  # 数据库 schema（SQL 安装脚本里的 `CREATE TABLE` 列 + 源码中的表名调用点）。
+  # 与 ThinkPHP 的 `tp6-db-schema` 是同一个内置装载器（读 `.sql`、与框架无关），
+  # 只是**声明**要在每个框架 FKB 里各写一份（装载器按框架装载，不共享声明）。
+  # 没有它，Laravel 工程就没有权威列信息 —— `ColumnsMatch` 谓词与
+  # P6 的「schema 列 → `Column` 图节点」沉淀都会落空。
+  - id: laravel-db-schema
+    table: schema
+    from:
+      kind: builtin
+      name: php_db_schema
+      params: {}
+  # 数据库 migration（`database/migrations/*.php`）—— **Laravel 的列主要来源**。
+  # PHP ORM 的模型不声明字段，列只写在 migration 里；而 `$table->string('email')`
+  # 在闭包内、owner 是闭包，FKB 拿不到它属于哪张表，故只能由装载器直接解析。
+  # 与上面 `php_db_schema` 写同一张 `schema` 表，装载器内部做**并集**，装载顺序无关。
+  - id: laravel-migration-schema
+    table: schema
+    from:
+      kind: builtin
+      name: php_migration_schema
+      params: {}
 
 rules:
   # ===== P5 Synthesize：Table =====
@@ -169,6 +196,46 @@ rules:
               value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
+
+  # ===== P5 Synthesize：模型关联 =====
+  # `public function posts() { return $this->hasMany(Post::class); }`
+  #
+  # 与 Node 侧 TypeORM 的策略**刻意不同**：TypeORM 的 `@ManyToOne` / `@OneToMany`
+  # 通常**成对**写，故那边只建外键持有方以免反向冗余；Laravel / ThinkPHP
+  # **常只声明一侧**（最常见就是 `User hasMany Post`，不写反向 `belongsTo`），
+  # 只建一侧会大面积漏边 —— 故这里两侧都建，宁可冗余也不漏。
+  #
+  # 目标模型取 arg0 的 `Post::class`；取不到就静默跳过（`morphTo()` 无实参即如此）。
+  # 关系方法定义在**方法体内**，owner_fqn 是 `App\Models\User::posts`，
+  # 故 `owner_class` 取到的是模型类而非关系方法。
+  - id: laravel-model-relation
+    phase: Synthesize
+    selector:
+      kind: call
+      # 只认 `$this->` 接收者：关系定义恒在模型实例方法里，裸方法名会误伤同名普通方法。
+      callee: "$this->hasOne|$this->hasMany|$this->belongsTo|$this->belongsToMany|$this->hasOneThrough|$this->hasManyThrough|$this->morphOne|$this->morphMany|$this->morphToMany|$this->morphedByMany|$this->morphTo"
+    binding:
+      - Link:
+          kind: References
+          from: { owner_class: true, resolve: class_const }
+          to: { arg: 0, resolve: class_const, require_class: true }
+          confidence: 0.75
+
+  # ===== P6 AnnotatePost：模型关联 → 表级外键 =====
+  # 把「模型 → 模型」投影成「表 → 表」：两端各沿 `MapsTo` 走一跳落到自己的表。
+  # 一对多（一个模型有几条关系就产出几条外键边）；某端没有 `Table` 就跳过这条。
+  - id: laravel-table-foreign-key
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Class
+    binding:
+      - Project:
+          kind: ForeignKey
+          along: References
+          from: [MapsTo]
+          to: [MapsTo]
+          confidence: 0.7
 
   # ===== P5 Synthesize：ConfigKey / Cache =====
   # 已抽到语言通用层 `fkb/php/common.yaml`（`php-common-config` / `php-common-cache-*`），

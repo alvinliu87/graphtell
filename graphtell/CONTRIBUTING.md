@@ -43,11 +43,16 @@ cargo run -p gt-app -- create --name X --path /repo   # 建图
 5. 用真实样本建图，**肉眼确认图画得对**。
 
 ### 新语言
-1. 实现 `gt_domain::port::LanguageParser`，把 tree-sitter 语法树翻译成语言无关的 `SyntaxFacts`（参考 `gt-adapter-parser/src/java`——这是"第二语言"范本，验证语言层抽象确实可插拔）。
+1. 实现 `gt_domain::port::LanguageParser`，把 tree-sitter 语法树翻译成语言无关的 `SyntaxFacts`（范本：`src/java` 是"第二语言"，`src/python` 是"第三语言"——后者额外示范了装饰器建模、模块级函数的 `owner_class` 回填等动态语言问题）。
 2. 在 `DefaultParserRegistry` 注册，并在 `scanner::language_of_extension` 补扩展名。
 3. 在 `fkb/` 为该语言写框架 YAML（语义提取完全走 FKB，内核不认识任何框架）。
 
-> 参考范本：`fkb/java/spring-boot.yaml` + 端到端测试 `crates/gt-pipeline/tests/java_spring_features.rs`（合成样本，无需外部工程即可验证 cache/event/queue/topic/schedule 全部落成）。
+> **先 dump 语法树，别靠记忆写解析器**。加一个临时测试打印 `root_node().to_sexp()`，确认节点类型与**字段名**再动手。
+> 两次真实 bug 都是这么抓到的：`typed_parameter` 在 tree-sitter-python 里**没有** `name` 字段（形参类型全丢）、
+> `from x import y` 把 `module_name` 节点本身也当成了导入项（凭空造出 `fastapi.fastapi`）。
+> 两者都不报错，只会静默产出错误事实 —— 靠读代码是想不出来的。
+
+> 参考范本：`fkb/java/spring-boot.yaml` + 端到端测试 `crates/gt-pipeline/tests/java_spring_features.rs`（合成样本，无需外部工程即可验证 cache/event/queue/topic/schedule 全部落成）；Python 侧见 `fkb/python/fastapi.yaml` + `tests/python_fastapi_features.rs`。
 
 ---
 
@@ -67,7 +72,7 @@ cargo run -p gt-app -- create --name X --path /repo   # 建图
 ## 5. 测试与验证
 
 - **引擎 / 规则单测**：`cargo test -p gt-pipeline -p gt-domain -p gt-adapter-parser`。
-- **端到端建图测试**：`crates/gt-pipeline/tests/crmeb_pipeline.rs`（PHP 样本）、`crates/gt-pipeline/tests/java_spring_features.rs`（Java 合成样本）。
+- **端到端建图测试**：`crates/gt-pipeline/tests/crmeb_pipeline.rs`（PHP 样本）、`crates/gt-pipeline/tests/java_spring_features.rs`（Java 合成样本）、`tests/python_fastapi_features.rs` / `tests/python_flask_features.rs`（Python 合成样本）、`tests/node_real_samples.rs`（NestJS / Express 合成 + 真实样本）、`tests/unsupported_language.rs`（无解析器语言的可见性）。
 - **新增 Java 语义特征时**：优先在 `java_spring_features.rs` 的合成样本里加对应注解 / 调用，并断言节点与边（这是验证「FKB 真的把框架语义落成图」最便宜的方式）。
 - **FKB 改动**：`graphtell validate` 必须全绿；改 FKB **不触发重新建图**，但要让某条测试覆盖到你改的规则。
 - **解析器 / 引擎改动**：需要重建图，跑对应的 e2e 测试。

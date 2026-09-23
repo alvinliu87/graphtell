@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useAsync } from '@/shared/lib/useAsync';
 import { useProject, projectApi, type SubProject } from '@/entities/project';
+import { graphApi } from '@/entities/graph';
 import {
   useAggregateView,
   useObjectView,
@@ -633,6 +634,18 @@ export function GraphPage() {
         }
         extra={<RunPipelineButton projectId={id} onStarted={() => void reloadProject()} />}
       />
+
+      {/* 未支持语言的降级说明：这些子工程只有文件结构、没有语义抽取。
+          不说清楚，用户面对近乎空的图会以为是"工程本身没东西"，而不是"工具不支持"。 */}
+      {unsupportedLangs.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 10 }}
+          message={t('该工程含暂无解析器的语言')}
+          description={t('以下语言只建出文件结构，没有类 / 函数 / 调用等语义抽取') + `：${unsupportedLangs.join('、')}`}
+        />
+      )}
 
       <Card
         variant="borderless"

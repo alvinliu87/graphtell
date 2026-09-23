@@ -656,6 +656,7 @@ fn run_builtin(
 ) {
     match name {
         "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
+        "php_migration_schema" => load_migration_schema(ctx, params, project_root),
         "php_config_keys" => load_config_keys(ctx, sub),
         "php_routes" => load_routes(ctx, sub),
         "nginx_config" => load_nginx(ctx, sub, project_root, fs),
@@ -688,12 +689,7 @@ fn load_schema(
     for (path, text) in scan_text_files(project_root, &["sql"]) {
         for (table, columns) in parse_create_tables(&text) {
             let name = strip_prefixes(&table, &prefixes);
-            ctx.ws.put_symbol(
-                ctx.project.id,
-                "schema",
-                &name,
-                json!({ "columns": columns, "sources": [path], "raw_table": table }),
-            );
+            merge_schema_columns(ctx, &name, columns, &path);
         }
     }
 
@@ -739,6 +735,288 @@ fn load_schema(
         }
         ctx.ws.put_symbol(ctx.project.id, "schema", &name, value);
     }
+}
+
+/// Laravel migration：`Schema::create('users', function (Blueprint $table) { … })`。
+///
+/// 为什么必须有它：PHP ORM 的模型**不声明字段**，列只写在 migration 里；而
+/// `$table->string('email')` 位于闭包内、调用点 owner 是闭包而非模型类，
+/// FKB 拿不到"这一列属于哪张表"（这是 PHP 与 TypeORM `@Column` 的关键差别）。
+/// 故由装载器直接把列写进 `schema` 符号表，P6 再沉淀成 `Column` 图节点。
+fn load_migration_schema(ctx: &mut PipelineContext, params: &Value, project_root: &Path) {
+    let mut prefixes: Vec<String> = ctx.ws.table_prefixes().to_vec();
+    if let Some(extra) = params
+        .get("prefixes")
+        .and_then(|p| serde_json::from_value::<Vec<String>>(p.clone()).ok())
+    {
+        for x in extra {
+            if !prefixes.contains(&x) {
+                prefixes.push(x);
+            }
+        }
+    }
+    for (path, text) in scan_migration_files(project_root) {
+        for (table, columns) in parse_migration_tables(&text) {
+            let name = strip_prefixes(&table, &prefixes);
+            merge_schema_columns(ctx, &name, columns, &path);
+        }
+    }
+}
+
+/// 扫描 `database/migrations/*.php`（跳过依赖目录）。
+fn scan_migration_files(root: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut walker = walkdir::WalkDir::new(root).follow_links(false).into_iter();
+    while let Some(entry) = walker.next() {
+        let Ok(entry) = entry else { continue };
+        if entry.file_type().is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if matches!(
+                name.as_str(),
+                "vendor" | "node_modules" | "target" | ".git" | "dist" | "build" | "runtime"
+            ) {
+                walker.skip_current_dir();
+            }
+            continue;
+        }
+        let p = entry.path();
+        let is_php = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("php"))
+            .unwrap_or(false);
+        let is_migration = p.to_string_lossy().replace('\\', "/").contains("database/migrations/");
+        if !is_php || !is_migration {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(p) {
+            let rel = p
+                .strip_prefix(root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push((rel, text));
+        }
+    }
+    out
+}
+
+/// 解析 migration 的 `Schema::create` / `Schema::table`，取出「表名 → 列名」。
+fn parse_migration_tables(src: &str) -> Vec<(String, Vec<String>)> {
+    let Ok(re) = regex::Regex::new(
+        r#"Schema\s*::\s*(?:create|table)\s*\(\s*['"]([\w]+)['"]"#,
+    ) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for cap in re.captures_iter(src) {
+        let Some(m0) = cap.get(0) else { continue };
+        let table = cap[1].to_string();
+        // 配对 `Schema::create(` 的右括号（跳过字符串里的括号），取出整个调用块
+        let Some(rel) = m0.as_str().find('(') else { continue };
+        let open = m0.start() + rel;
+        let Some(close) = matching_paren(src, open) else { continue };
+        if close <= open + 1 {
+            continue;
+        }
+        out.push((table, columns_of_blueprint(&src[open + 1..close])));
+    }
+    out
+}
+
+/// 取 Blueprint 闭包体里的列声明：`$table->string('email')` → `email`。
+///
+/// **只认列声明方法（白名单）** —— 不能简单"取第一个字符串实参"：
+/// `->comment('说明')` / `->after('col')` / `->default('x')` 这类**修饰符**也带
+/// 字符串实参，会被误当成列名。
+fn columns_of_blueprint(body: &str) -> Vec<String> {
+    let b = body.as_bytes();
+    let mut cols: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let Some(rel) = body[i..].find("$table") else { break };
+        let at = i + rel;
+        let mut p = at + "$table".len();
+        p = skip_ws(b, p);
+        if !body[p..].starts_with("->") {
+            i = at + 1;
+            continue;
+        }
+        p = skip_ws(b, p + 2);
+        let ms = p;
+        while p < b.len() && (b[p].is_ascii_alphanumeric() || b[p] == b'_') {
+            p += 1;
+        }
+        let method = &body[ms..p];
+        // 跳到实参列表的左括号
+        while p < b.len() && b[p] != b'(' && b[p] != b';' && b[p] != b'{' {
+            p += 1;
+        }
+        if p >= b.len() || b[p] != b'(' {
+            i = at + 1;
+            continue;
+        }
+        if !is_column_method(method) {
+            i = at + 1;
+            continue;
+        }
+        let q = skip_ws(b, p + 1);
+        if q < b.len() && (b[q] == b'\'' || b[q] == b'"') {
+            if let Some(col) = read_quoted(b, q) {
+                push_col(&mut cols, &col);
+            }
+        } else if q < b.len() && b[q] == b')' {
+            // 无实参的列声明（`$table->id()` / `->timestamps()`）：按 Laravel 约定补列名
+            for c in implicit_columns(method) {
+                push_col(&mut cols, c);
+            }
+        }
+        i = at + 1;
+    }
+    cols
+}
+
+fn skip_ws(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i += 1;
+    }
+    i
+}
+
+/// 读 `i` 处的字符串字面量内容（不含引号）。
+fn read_quoted(b: &[u8], i: usize) -> Option<String> {
+    let quote = *b.get(i)?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let mut e = i + 1;
+    while e < b.len() && b[e] != quote {
+        if b[e] == b'\\' {
+            e += 1;
+        }
+        e += 1;
+    }
+    if e >= b.len() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&b[i + 1..e]).to_string())
+}
+
+fn push_col(cols: &mut Vec<String>, c: &str) {
+    if !c.is_empty() && !cols.iter().any(|x| x == c) {
+        cols.push(c.to_string());
+    }
+}
+
+/// Blueprint 里**真正声明列**的方法（白名单，见 [`columns_of_blueprint`]）。
+fn is_column_method(m: &str) -> bool {
+    matches!(
+        m,
+        "bigIncrements" | "bigInteger" | "binary" | "boolean" | "char" | "date" | "dateTime"
+        | "dateTimeTz" | "decimal" | "double" | "enum" | "float" | "foreignId" | "foreignUuid"
+        | "geography" | "geometry" | "id" | "increments" | "integer" | "ipAddress" | "json"
+        | "jsonb" | "longText" | "macAddress" | "mediumIncrements" | "mediumInteger"
+        | "mediumText" | "set" | "smallIncrements" | "smallInteger" | "string" | "text"
+        | "time" | "timeTz" | "timestamp" | "timestampTz" | "tinyIncrements" | "tinyInteger"
+        | "tinyText" | "unsignedBigInteger" | "unsignedDecimal" | "unsignedDouble"
+        | "unsignedFloat" | "unsignedInteger" | "unsignedMediumInteger" | "unsignedSmallInteger"
+        | "unsignedTinyInteger" | "ulid" | "uuid" | "year"
+        // 无实参、按约定补列名的方法
+        | "rememberToken" | "softDeletes" | "softDeletesTz" | "timestamps" | "timestampsTz"
+        | "nullableTimestamps" | "morphs" | "nullableMorphs" | "nullableUuidMorphs"
+        | "nullableUlidMorphs"
+    )
+}
+
+/// 无实参列声明的**隐含列名**（Laravel 约定）。
+///
+/// 刻意不含裸 `uuid()` / `ulid()`：它们默认列名就叫 `uuid` / `ulid`，
+/// 但代码里更常见的是 `$table->uuid('id')`（带实参已覆盖）—— 不猜。
+fn implicit_columns(m: &str) -> Vec<&'static str> {
+    match m {
+        "id" | "increments" | "bigIncrements" | "mediumIncrements" | "smallIncrements"
+        | "tinyIncrements" => vec!["id"],
+        "timestamps" | "timestampsTz" | "nullableTimestamps" => vec!["created_at", "updated_at"],
+        "softDeletes" | "softDeletesTz" => vec!["deleted_at"],
+        "rememberToken" => vec!["remember_token"],
+        _ => Vec::new(),
+    }
+}
+
+/// 找到与 `open` 处 `(` 配对的 `)`（跳过字符串字面量内的括号）。
+fn matching_paren(src: &str, open: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    if open >= b.len() || b[open] != b'(' {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'`' => {
+                let quote = b[i];
+                i += 1;
+                while i < b.len() && b[i] != quote {
+                    if b[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 把一批列并入 `schema` 符号表（**并集去重**，不整份覆盖）。
+///
+/// 同一张表可能有两个来源：SQL 安装脚本与 Laravel migration。两个装载器都写 `schema`，
+/// 若各自 `put_symbol` 整份覆盖，后跑的会抹掉先跑的（**装载顺序不保证**）——
+/// 故统一走这里做并集。
+fn merge_schema_columns(
+    ctx: &mut PipelineContext,
+    table: &str,
+    columns: Vec<String>,
+    source: &str,
+) {
+    if table.is_empty() || columns.is_empty() {
+        return;
+    }
+    let mut value = ctx
+        .ws
+        .get_symbol("schema", table)
+        .cloned()
+        .unwrap_or_else(|| json!({ "columns": [], "sources": [] }));
+    let mut cols: Vec<String> = value
+        .get("columns")
+        .and_then(|c| c.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for c in columns {
+        if !cols.iter().any(|x| x == &c) {
+            cols.push(c);
+        }
+    }
+    value["columns"] = json!(cols);
+    if let Some(srcs) = value.get_mut("sources").and_then(|s| s.as_array_mut()) {
+        if srcs.len() < 50 && !srcs.iter().any(|s| s.as_str() == Some(source)) {
+            srcs.push(json!(source));
+        }
+    }
+    ctx.ws.put_symbol(ctx.project.id, "schema", table, value);
 }
 
 fn load_config_keys(ctx: &mut PipelineContext, _sub: &gt_domain::model::SubProject) {

@@ -33,6 +33,15 @@ detectors:
     dependency: fastapi
     confidence: 0.9
 
+# 本 FKB 引入的**桥边**种类（`DependsOn`）—— 无需改内核 `kinds.rs` 的 BRIDGE 清单。
+#
+# 为什么归为桥边而不是语义边：语义边要求「两端都是语义节点」（读库 / 读配置这类
+# 业务资源依赖），而依赖注入的两端都是**语法节点**（处理函数 → 依赖函数）。桥边
+# 的语义是「发现连接器」：可沿调用链遍历，但不计入「语义入边 N」的业务指标 ——
+# 否则注入多少个依赖就会虚增多少条业务依赖。
+bridge_edge_kinds:
+  - DependsOn
+
 exclude_globs:
   - "__pycache__/**"
   - "*/__pycache__/**"
@@ -115,6 +124,30 @@ rules:
               normalize:
                 - trim
           link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：依赖注入（Depends）=====
+  # `def handler(db: Session = Depends(get_db))` —— 依赖写在**形参默认值**里，
+  # 不在方法体内，普通遍历抓不到。解析器把它记成了调用点，并把 `get_db` 按本文件
+  # import 解析成 FQN（`app.dependencies.get_db`）放进 `entity`；解析器并不知道
+  # `Depends` 是什么 —— 这个判断只存在于本条规则。
+  #
+  # 用 `Link`（仅建边，不造节点）：依赖本身就是图里的函数节点，不需要再合成语义节点。
+  # 注意 `Link` 要求两端都能按 **FQN** 解析（解析不到就静默跳过，不建悬空边）。
+  - id: fastapi-depends-injection
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Depends"
+    binding:
+      - Link:
+          kind: DependsOn
+          # 起点：处理函数（owner_fqn = 模块.函数，这里按需拼出来）
+          from:
+            path: [{ owner_class: true }, { owner_member: true }]
+            join: "."
+          # 终点：被注入的依赖函数（解析器解析出的 FQN）
+          to: { entity: true, resolve: class_const }
           confidence: 0.85
 
   # ===== P6 AnnotatePost：Table（SQLAlchemy 声明式映射）=====

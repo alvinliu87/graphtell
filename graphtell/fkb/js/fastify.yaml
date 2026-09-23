@@ -1,0 +1,60 @@
+# Fastify（Node.js）框架知识 —— 路由契约
+#
+# **解析器零改动**：`fastify.get('/users', handler)` 在 `JsFrontendParser` 眼里是普通的
+# 成员调用（receiver = `fastify`、method = `get`、arg0 = `/users`），与 Express / Koa 同形。
+#
+# 三个框架的接收者不同，故各写一份（判据是「哪个对象是路由注册者」）：
+#   | 框架    | 典型接收者                |
+#   |---------|---------------------------|
+#   | Express | `app` / `router` / `api`  |
+#   | Koa     | `router`（不含 `app`）    |
+#   | Fastify | `fastify` / `app` / `server` |
+#
+# 与 Express / Koa 一致：**不强行连 `HandledBy`**（handler 常在别的文件里）。
+#
+# 已知边界：`fastify.route({ method: 'GET', url: '/x', handler })` 这种**schema 写法**
+# 当前不成契约 —— 方法 / 路径藏在对象字面量里，需 parser 支持对象字段取值后再补。
+
+id: fastify
+display_name: Fastify
+language: javascript
+version_hint: "4+"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: fastify
+    confidence: 0.95
+
+exclude_globs:
+  - "node_modules/**"
+  - "dist/**"
+  - "build/**"
+
+rules:
+  # ===== P5 Synthesize：HTTP 契约（路由）=====
+  # `fastify.get('/users', handler)` / `app.post('/x', ...)` / `server.put(...)`。
+  - id: fastify-route-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "fastify::{get,post,put,delete,patch,head,options}|app::{get,post,put,delete,patch,head,options}|server::{get,post,put,delete,patch,head,options}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          confidence: 0.9

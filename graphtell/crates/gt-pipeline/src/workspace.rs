@@ -734,6 +734,33 @@ impl GraphWorkspace {
         self.fan_out.get(&id.get()).copied().unwrap_or(0)
     }
 
+    /// 节点的**出边**邻接表 `(边种类, 终点)`（只读视图）。
+    ///
+    /// 供 `Project` 遍历"匹配节点的每条某类出边" —— 一对多地投影，而不是只取第一条。
+    pub fn out_edges_of(&self, id: NodeId) -> &[(String, i64)] {
+        self.out_edges
+            .get(&id.get())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// 沿**边种类链**从 `from` 走到落点节点；每一跳取第一条匹配的出边。
+    ///
+    /// 链为空则落点就是 `from` 自身（"不投影"）。典型：`[MapsTo]` —— 从实体类走到它映射的表。
+    pub fn follow(&self, from: NodeId, kinds: &[String]) -> Option<NodeId> {
+        let mut cur = from;
+        for k in kinds {
+            let next = self
+                .out_edges
+                .get(&cur.get())?
+                .iter()
+                .find(|(kind, _)| kind == k)?
+                .1;
+            cur = NodeId(next);
+        }
+        Some(cur)
+    }
+
     /// 传递闭包判定：`child` 是否（直接或间接）继承/实现了 `base_fqn`。
     ///
     /// CRMEB 的模型是 `StoreOrder extends BaseModel extends Model`，

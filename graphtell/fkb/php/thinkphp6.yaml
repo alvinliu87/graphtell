@@ -27,6 +27,13 @@ exclude_globs:
   - "extend/**"
   - "thinkphp/**"
 
+# 与 `laravel.yaml` 同：模型关联是「代码节点 → 代码节点」按桥边，表外键是
+# 「表 → 表」（两端语义）按语义边。两个 PHP 框架的关系 API 同名同形，
+# 但关系方法属于 **ORM 强假设**，故按 `db_verbs` 的先例各框架各写一份，
+# 不抽到 `php-common`（那份对所有 PHP 工程无条件生效）。
+semantic_edge_kinds: [ForeignKey]
+bridge_edge_kinds: [References]
+
 # ---------------------------------------------------------------- 识别
 detectors:
   - kind: manifest_dependency
@@ -364,6 +371,39 @@ rules:
                 - trim
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
+
+  # ===== P5 Synthesize：模型关联 =====
+  # `public function profile() { return $this->hasOne(Profile::class); }`
+  # ThinkPHP 的关系 API 与 Eloquent **同名同形**（`hasOne` / `hasMany` / `belongsTo` /
+  # `belongsToMany` / `morphXxx`），故规则与 `laravel-model-relation` 一致；
+  # 两侧都建（Laravel / ThinkPHP 常只声明一侧，只建一侧会大面积漏边）。
+  - id: tp6-model-relation
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "$this->hasOne|$this->hasMany|$this->belongsTo|$this->belongsToMany|$this->hasOneThrough|$this->hasManyThrough|$this->morphOne|$this->morphMany|$this->morphToMany|$this->morphedByMany|$this->morphTo"
+    binding:
+      - Link:
+          kind: References
+          from: { owner_class: true, resolve: class_const }
+          to: { arg: 0, resolve: class_const, require_class: true }
+          confidence: 0.75
+
+  # ===== P6 AnnotatePost：模型关联 → 表级外键 =====
+  # 两端各沿 `MapsTo` 走一跳落到自己的表（`tp6-model-table-property` /
+  # `tp6-model-table-convention` 建的边）。一对多；某端无表就跳过这条。
+  - id: tp6-table-foreign-key
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Class
+    binding:
+      - Project:
+          kind: ForeignKey
+          along: References
+          from: [MapsTo]
+          to: [MapsTo]
+          confidence: 0.7
 
   # ===== P5 Synthesize：ConfigKey =====
   - id: tp6-sys-config

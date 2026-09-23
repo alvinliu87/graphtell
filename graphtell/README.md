@@ -5,7 +5,7 @@
 - 后端：Rust（**六边形架构** + SOLID），SQLite 持久化
 - 前端：React + TypeScript + Ant Design（**Feature Sliced Design**）
 - 桌面常驻：Tauri（后端在**进程内**启动 HTTP 服务，桌面端与 Web 端共用同一套 `/api` 契约）
-- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约）与 **Java**（Spring Boot）与 **JavaScript/TypeScript**（Uni-app 前端）。完整的支持矩阵与已知边界见 [`SUPPORTED.md`](./SUPPORTED.md)。
+- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约）与 **Java**（Spring Boot）与 **JavaScript/TypeScript**（Uni-app 前端 / NestJS·Express 后端 / TypeORM 实体映射）与 **Python**（FastAPI / Flask / Celery / SQLAlchemy）。完整的支持矩阵与已知边界见 [`SUPPORTED.md`](./SUPPORTED.md)。
 
 图建完之后还能回答两个问题：
 
@@ -454,7 +454,7 @@ crates/
 ├── gt-application       用例编排
 ├── gt-pipeline          P0/P2/P3/P4/P5/P6/P7
 ├── gt-adapter-fs        文件扫描（排除规则）
-├── gt-adapter-parser    tree-sitter（当前：PHP / Java）
+├── gt-adapter-parser    tree-sitter（当前：PHP / Java / JavaScript·TypeScript / Python）
 ├── gt-adapter-fkb       FKB YAML 装载
 ├── gt-adapter-sqlite    SQLite 持久化
 ├── gt-adapter-http      axum REST API
@@ -472,3 +472,5 @@ views/                   视角声明（两级筛选器的一级选项）
 * **新语言**：实现 `gt_domain::port::LanguageParser`（把语法树翻译成 `SyntaxFacts`），在 `DefaultParserRegistry` 注册；在 `scanner::language_of_extension` 补扩展名。
 * **新框架**：在 `fkb/` 加一份 YAML（detectors / root_rules / loaders / rules / resolvers）。
 * **新节点种类**：直接在 YAML 里写新的 `node:` 名称，无需改 Rust。
+* **新边种类**：在 YAML 里声明 `semantic_edge_kinds` / `bridge_edge_kinds` 即可（如 Python 侧的 `DependsOn`），无需改 `kinds.rs`。
+* **能力缺口不会静默**：某语言的文件被扫进来了却没有注册解析器时，P2 会产出 `NoParserForLanguage` 诊断并跳过 —— 不会出现「被识别成子工程、图却是空的」这种无声失败。

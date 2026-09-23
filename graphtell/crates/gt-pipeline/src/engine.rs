@@ -507,7 +507,49 @@ pub fn exec_binding(
                     });
                 }
             }
+            Action::Project(p) => {
+                exec_project(ctx, rule, p, matched, phase);
+            }
         }
+    }
+}
+
+/// 边投影：遍历匹配节点的每条 `along` 出边，两端各沿自己的边种类链走到落点，
+/// 在两落点之间建 `kind` 边。
+///
+/// **一对多**是它存在的理由：一个实体类有几条 `@ManyToOne` 就产出几条外键边，
+/// 而 `Link` 的两端只能各取一个名字、多关系时必然只建一条（静默丢边）。
+/// 落点走不到（如该实体没有对应的 `Table`）就跳过这一条 —— 宁可缺不可猜。
+fn exec_project(
+    ctx: &mut PipelineContext,
+    rule: &Rule,
+    p: &gt_domain::model::ProjectAction,
+    matched: NodeId,
+    phase: &Phase,
+) {
+    // 先拷一份邻接表：`add_edge` 要 &mut，不能同时借用 `out_edges_of` 的切片。
+    let outs: Vec<(String, i64)> = ctx.ws.out_edges_of(matched).to_vec();
+    for (kind, to) in outs {
+        if kind != p.along.as_str() {
+            continue;
+        }
+        let from_end = ctx.ws.follow(matched, &p.from);
+        let to_end = ctx.ws.follow(NodeId(to), &p.to);
+        let (Some(f), Some(t)) = (from_end, to_end) else {
+            continue;
+        };
+        if f == t {
+            continue; // 自环（自己引用自己）没有信息量
+        }
+        ctx.ws.add_edge(NewEdge {
+            project_id: ctx.project.id,
+            kind: p.kind.clone(),
+            from_id: f,
+            to_id: t,
+            phase: phase.clone(),
+            confidence: p.confidence.unwrap_or(rule.confidence),
+            properties: Value::Null,
+        });
     }
 }
 

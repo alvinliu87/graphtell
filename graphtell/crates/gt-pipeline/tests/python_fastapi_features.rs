@@ -41,10 +41,15 @@ dependencies = [
     )
     .expect("write pyproject");
 
+    // 依赖注入的被注入方（独立模块，用于验证按 import 解析成 FQN）
+    std::fs::write(dir.join("app/dependencies.py"), "def get_db():\n    return None\n")
+        .expect("write dependencies.py");
+
     std::fs::write(
         dir.join("app/api/users.py"),
-        r#"from fastapi import APIRouter
+        r#"from fastapi import APIRouter, Depends
 
+from app.dependencies import get_db
 from app.tasks import notify_slack, send_email
 
 router = APIRouter()
@@ -54,6 +59,12 @@ router = APIRouter()
 def list_users():
     cache.get("userCache")
     return []
+
+
+# 依赖注入：依赖写在形参默认值里（路径刻意与 /users 不前缀冲突）
+@router.get("/members/{user_id}")
+def get_user(user_id: int, db=Depends(get_db)):
+    return None
 
 
 @router.post("/orders/{order_id}")
@@ -259,6 +270,40 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
         mapped,
         vec!["user".to_string()],
         "UserModel 应经 MapsTo 连到表 user（表名经 singularize 归一）"
+    );
+}
+
+/// 依赖注入：`def get_user(..., db=Depends(get_db))` —— 依赖写在**形参默认值**里，
+/// 应建出 `处理函数 --DependsOn--> 依赖函数` 的边。
+#[test]
+fn fastapi_depends_injection_links_handler_to_dependency() {
+    let root = synthetic_fastapi_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("合成工程建图应成功");
+    };
+    let functions = nodes_of_kind(&b, "Function");
+    let handler = functions
+        .iter()
+        .find(|n| n.name == "get_user")
+        .unwrap_or_else(|| {
+            panic!(
+                "应有 get_user 函数节点，实际：{:?}",
+                functions.iter().map(|n| &n.name).collect::<Vec<_>>()
+            )
+        });
+    let deps: Vec<String> = b
+        .store
+        .edges_of(handler.id, EdgeDirection::Outgoing)
+        .expect("edges")
+        .iter()
+        .filter(|e| e.kind.as_str() == "DependsOn")
+        .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
+        .map(|n| n.name)
+        .collect();
+    assert_eq!(
+        deps,
+        vec!["get_db".to_string()],
+        "get_user 应 DependsOn 到依赖函数 get_db"
     );
 }
 
