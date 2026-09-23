@@ -198,6 +198,217 @@ rules:
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.85
 
+  # ===== P5 Synthesize：Cache（Spring Cache 抽象）=====
+  # `@Cacheable` 读缓存 / `@CachePut` `@CacheEvict` 写 / 失效缓存。
+  # 注解在内核里被建模为调用点（callee = 注解名），缓存名取自 value/value 实参（arg0）。
+  # 引擎对「全新」边种类无需改码：`ReadsCache` / `WritesCache` 已是内置语义边。
+  - id: spring-cacheable
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Cacheable"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  - id: spring-cache-put
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "CachePut"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
+
+  - id: spring-cache-evict
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "CacheEvict"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：Event（Spring ApplicationEvent）=====
+  # 消费：`@EventListener`（方法级注解，callee = EventListener）—— 事件类型取自
+  #   处理方法的**首个形参类型**（`onOrder(OrderPlacedEvent e)` → `OrderPlacedEvent`）。
+  # 发布：`X.publishEvent(new OrderPlacedEvent())`（callee = publishEvent）—— 事件类型
+  #   取自 `new` 出来的类型。两者身份都用 `entity`（事件类型），故同一事件类型的
+  # 发布方与订阅方**归并到同一个 Event 节点**，形成真正的发布 / 订阅闭环。
+  # `entity` 取不到（如 `publishEvent(var)`，或解析器未识别形参）时退回 `owner_member`
+  # （收发方法名），语义安全不丢边。
+  - id: spring-event-listener
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "EventListener"
+    binding:
+      - Synthesize:
+          node: Event
+          identity:
+            kind: Named
+            value:
+              entity: true
+            value_fallback:
+              owner_member: true
+          link: { kind: ListensTo, direction: incoming }
+          confidence: 0.8
+
+  - id: spring-event-publish
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "publishEvent"
+    binding:
+      - Synthesize:
+          node: Event
+          identity:
+            kind: Named
+            value:
+              entity: true
+            value_fallback:
+              owner_member: true
+          link: { kind: Emits, direction: incoming }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：Queue / Topic（Spring AMQP / Kafka，消费 + 生产端）=====
+  # 消费端：`@RabbitListener(queues = "q")` / `@KafkaListener(topics = "t")`：callee = 注解名，
+  # 目标名取自注解实参 arg0（队列名 / topic 名）。
+  # 生产端：`RabbitTemplate.convertAndSend("q", ...)`（见下）与 `KafkaTemplate.send("t", ...)`，
+  # destination 取自方法调用第 1 个实参（arg0，依赖解析器对方法调用实参的位置级捕获）。
+  - id: spring-rabbit-listener
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "RabbitListener"
+    binding:
+      - Synthesize:
+          node: Queue
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ListensTo, direction: incoming }
+          confidence: 0.85
+
+  - id: spring-kafka-listener
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "KafkaListener"
+    binding:
+      - Synthesize:
+          node: Topic
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ListensTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：Queue 生产端（消费端见上）=====
+  # `rabbitTemplate.convertAndSend("q", ...)`：callee = convertAndSend（匹配方法名，
+  # receiver 无关），目标名取自第 1 个实参（arg0）。本规则依赖解析器对「方法调用
+  # 实参字面量」的位置级捕获（否则 arg0 恒为 Unknown）。
+  # 注：`convertAndSend` 同样来自 RedisTemplate / JmsTemplate，故节点仍统一落成
+  # Queue；若需区分可后续按 receiver 伞名细化。
+  - id: spring-rabbit-produce
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "convertAndSend"
+    binding:
+      - Synthesize:
+          node: Queue
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: PublishesTo, direction: incoming }
+          confidence: 0.8
+
+  # 生产端（Kafka）：`kafkaTemplate.send("t", ...)`。
+  # 直接用裸方法名 `send` 会过度匹配（`response.sendError` / `email.send` 等都会误伤），
+  # 故按「接收者变量名约定」收窄：Spring 里 Kafka 生产者几乎都注入为 `kafkaTemplate` /
+  # `kafkaProducer` / `producer` 这类字段，用 `receiver::method` 形式精确命中其 `.send`。
+  # 另外 `KafkaTemplate.sendDefault(...)` 的 `sendDefault` 是 Kafka 专属方法名，用 `*::`
+  # 兜底任意接收者——误伤面极小。topic 名取自 arg0（第 1 个实参，需字面量）。
+  # 若项目用了别的字段名（如 `kt`），把变量名加进下面的备选即可。
+  - id: spring-kafka-produce
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "kafkaTemplate::send|kafkaProducer::send|producer::send|*::sendDefault"
+    binding:
+      - Synthesize:
+          node: Topic
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: PublishesTo, direction: incoming }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：Schedule（@Scheduled）=====
+  # 方法级注解，callee = Scheduled；cron/fixedRate 等取自注解实参 arg0。
+  # 调度器「触发」该方法：`Triggers` 出边（Schedule 节点 ——> 方法节点）。
+  - id: spring-scheduled
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Scheduled"
+    binding:
+      - Synthesize:
+          node: Schedule
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: Triggers, direction: outgoing }
+          confidence: 0.85
+
 resolvers:
   # `@Autowired` 字段注入：按字段声明类型解析实例调用。
   - id: spring-autowired-call

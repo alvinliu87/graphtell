@@ -202,4 +202,30 @@ describe('GraphCanvas', () => {
     expect(labels).not.toContain('wechat_user'); // 表节点被隐藏
     expect(labels).toContain('h5_avatar'); // 其它类节点仍在
   });
+
+  /**
+   * 回归：隐藏某类边时，只经由它相连的点要一并收起。
+   *
+   * 否则这些点没有任何可见边，却仍会被布局兜底排进列里占位（见 `layout/types.ts`
+   * 的右侧列兜底），看上去像"筛了但没筛掉"。
+   */
+  it('隐藏某类边时，只经由它相连的点一并收起', () => {
+    act(() => {
+      root.render(
+        <GraphCanvas
+          mode="radial"
+          center={center}
+          rings={rings}
+          edges={edges}
+          hiddenEdgeKinds={['ReadsConfig']}
+        />,
+      );
+    });
+    const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
+    expect(labels).not.toContain('h5_avatar'); // 只靠 ReadsConfig 连着的点被连带收起
+    expect(labels).toContain('wechat_user'); // 仍挂着 MapsTo 边的点保留
+    expect(labels).toContain('POST /apple_login'); // 中心恒保留作锚点
+    // 连带收起要有可见反馈，否则用户会以为图例按钮失灵。
+    expect(container.textContent).toContain('连带收起 1 点');
+  });
 });

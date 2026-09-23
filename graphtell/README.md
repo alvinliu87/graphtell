@@ -5,7 +5,7 @@
 - 后端：Rust（**六边形架构** + SOLID），SQLite 持久化
 - 前端：React + TypeScript + Ant Design（**Feature Sliced Design**）
 - 桌面常驻：Tauri（后端在**进程内**启动 HTTP 服务，桌面端与 Web 端共用同一套 `/api` 契约）
-- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Uni-app 前端契约）与 **Java**（Spring Boot）
+- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约）与 **Java**（Spring Boot）与 **JavaScript/TypeScript**（Uni-app 前端）。完整的支持矩阵与已知边界见 [`SUPPORTED.md`](./SUPPORTED.md)。
 
 图建完之后还能回答两个问题：
 
@@ -454,7 +454,7 @@ crates/
 ├── gt-application       用例编排
 ├── gt-pipeline          P0/P2/P3/P4/P5/P6/P7
 ├── gt-adapter-fs        文件扫描（排除规则）
-├── gt-adapter-parser    tree-sitter（当前：PHP）
+├── gt-adapter-parser    tree-sitter（当前：PHP / Java）
 ├── gt-adapter-fkb       FKB YAML 装载
 ├── gt-adapter-sqlite    SQLite 持久化
 ├── gt-adapter-http      axum REST API

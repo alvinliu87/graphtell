@@ -685,6 +685,7 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
         db_table: None,
         // JS 侧暂不识别循环语句 —— 缺事实好过给错事实（规则按语言闸门只在 PHP 上跑）。
         in_loop: false,
+        entity: None,
     });
 }
 

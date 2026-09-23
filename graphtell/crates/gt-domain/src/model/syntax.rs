@@ -141,6 +141,17 @@ pub struct CallSiteFact {
     /// 「一次查一堆」与「循环里一条条查」。
     #[serde(default)]
     pub in_loop: bool,
+    /// 该调用点关切的「主领域类型」（语义身份的来源之一）。
+    ///
+    /// 由 parser 按调用种类填入：
+    /// * `@EventListener` 处理方法的**首个形参类型**（`onOrder(OrderPlacedEvent e)` → `OrderPlacedEvent`）
+    /// * `publisher.publishEvent(new OrderPlacedEvent())` 里 `new` 出来的**事件类型**
+    ///
+    /// FKB 据此把「同一事件类型」的发布方与订阅方归并到同一个 `Event` 节点
+    /// （而非各自以方法名命名），形成真正的发布 / 订阅闭环。取值为 `Option`
+    /// —— 取不到（如 `publishEvent(var)`）时由规则的 `value_fallback` 兜底。
+    #[serde(default)]
+    pub entity: Option<String>,
 }
 
 /// 字段声明与类型：`class -> field -> type`。

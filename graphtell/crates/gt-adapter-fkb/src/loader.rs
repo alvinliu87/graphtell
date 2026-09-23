@@ -51,6 +51,17 @@ impl YamlKnowledgeBase {
                                 fk.semantic_kinds.iter().cloned(),
                             );
                         }
+                        // FKB 声明的**语义 / 桥边种类**在此登记：新增一种边种类
+                        // （如某框架的 `SendsWebhook`）无需再改 `kinds.rs` 的
+                        // `SEMANTIC` / `BRIDGE` 清单 —— 与节点的登记同构。
+                        if !fk.semantic_edge_kinds.is_empty()
+                            || !fk.bridge_edge_kinds.is_empty()
+                        {
+                            gt_domain::model::kinds::register_edge_kinds(
+                                fk.semantic_edge_kinds.iter().cloned(),
+                                fk.bridge_edge_kinds.iter().cloned(),
+                            );
+                        }
                         entries.push(fk);
                         sources.push(path);
                     }

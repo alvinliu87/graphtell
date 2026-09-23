@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 import { Empty, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
@@ -62,6 +62,19 @@ function roleLabel(r?: string | null): string {
   if (kind) return KIND_LABEL[kind] ?? kind;
   return ROLE_LABEL[tier] ?? tier;
 }
+/**
+ * 图例分区小标题（跨满两列网格）。
+ *
+ * 两个筛选维度（实体 / 关系）在链式视角下效果相近，光看图标列不出区别；
+ * 加标题 + 悬浮说明，把"这两个开关各管什么"讲清楚，避免被当成同义按钮。
+ */
+const LEGEND_SECTION_TITLE: CSSProperties = {
+  gridColumn: '1 / -1',
+  marginTop: 2,
+  fontSize: 11,
+  color: '#94a3b8',
+  cursor: 'help',
+};
 const DIM_EDGE_HIGH = 40; // 边数高于此取最深
 
 /**
@@ -250,6 +263,7 @@ export interface GraphCanvasProps {
   /**
    * 图例即筛选：被隐藏的边 kind 列表（按边种类显隐，如关掉全部「读库」即去掉所有
    * `ReadsDb` 边）。空数组（默认）表示不隐藏。
+   * 连带效果：只经由被隐藏的边才能到达的点会一并收起（派生，不进状态）。
    */
   hiddenEdgeKinds?: string[];
   /** 点击图例节点项：切换该 kind 的显隐。 */
@@ -364,27 +378,51 @@ export function GraphCanvas(props: GraphCanvasProps) {
   }, [center, rings, edges, subFilter]);
 
   // 图例即筛选：在「子工程过滤」结果上，再按节点 kind / 边 kind 显隐。
-  // 中心节点永远保留（锚点）；隐藏边时连同被隐藏端点的边一并移除，避免悬空边。
-  const { vCenter, vRings, vEdges } = useMemo(() => {
+  //
+  // 不变式：画面 = **可见边连成的子图**，中心恒保留作锚点。三步：
+  // 1. 按节点 kind 定候选点集，边两端有一个不在集合内就不画（避免悬空边）；
+  // 2. 按边 kind 剔除关系；
+  // 3. 收起「在可见边上度数为 0」的点 —— 只经由被隐藏的边才能到达的点（如关掉
+  //    「读缓存」后那些仅靠读缓存连着的点）在这张图里读不出任何信息，留着只会被
+  //    布局兜底排进列里占位（见 `layout/types.ts` 右列兜底），看上去像"筛了没筛掉"。
+  //    收起是**派生的**（不进状态），取消筛选即恢复。
+  const { vCenter, vRings, vEdges, cascadeHidden } = useMemo(() => {
     const hn = hiddenNodeKinds ?? [];
     const he = hiddenEdgeKinds ?? [];
     if (hn.length === 0 && he.length === 0) {
-      return { vCenter: fCenter, vRings: fRings, vEdges: fEdges };
+      return { vCenter: fCenter, vRings: fRings, vEdges: fEdges, cascadeHidden: 0 };
     }
     const hiddenNodeK = new Set(hn);
     const hiddenEdgeK = new Set(he);
-    const visibleNodeIds = new Set<number>();
-    if (fCenter) visibleNodeIds.add(fCenter.id);
+    // 候选点集：kind 未被隐藏的点；中心恒保留作锚点。
+    const candidates = new Set<number>();
+    if (fCenter) candidates.add(fCenter.id);
     for (const ring of fRings) {
       for (const n of ring) {
-        if (!hiddenNodeK.has(n.kind)) visibleNodeIds.add(n.id);
+        if (!hiddenNodeK.has(n.kind)) candidates.add(n.id);
       }
     }
-    const vRings = fRings.map((ring) => ring.filter((n) => !hiddenNodeK.has(n.kind)));
     const vEdges = fEdges.filter(
-      (e) => !hiddenEdgeK.has(e.kind) && visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to),
+      (e) => !hiddenEdgeK.has(e.kind) && candidates.has(e.from) && candidates.has(e.to),
     );
-    return { vCenter: fCenter, vRings, vEdges };
+    // 可见边 → 仍在图上的点（中心恒在）。
+    const linked = new Set<number>();
+    if (fCenter) linked.add(fCenter.id);
+    for (const e of vEdges) {
+      linked.add(e.from);
+      linked.add(e.to);
+    }
+    // 连带收起的点数：本身 kind 没被隐藏、却在可见边上已无任何连接的点。
+    let collapsed = 0;
+    const vRings = fRings.map((ring) =>
+      ring.filter((n) => {
+        if (linked.has(n.id)) return true;
+        if (hiddenNodeK.has(n.kind)) return false;
+        collapsed += 1;
+        return false;
+      }),
+    );
+    return { vCenter: fCenter, vRings, vEdges, cascadeHidden: collapsed };
   }, [fCenter, fRings, fEdges, hiddenNodeKinds, hiddenEdgeKinds]);
 
   // 图例项取「未过滤」的全集：即便某 kind 已被隐藏也要留在图例里，才能重新点开。
@@ -1194,6 +1232,21 @@ export function GraphCanvas(props: GraphCanvasProps) {
           >
             <span>图例</span>
             <span style={{ color: 'rgba(0,0,0,0.35)' }}>{legendOpen ? '▾' : '▸'}</span>
+            {/* 连带收起的点数：因为某些关系被关掉而失去全部可见连接的点。
+                给个可见反馈，否则用户点了图例却看到"点也少了"，会以为按钮失灵。 */}
+            {cascadeHidden > 0 ? (
+              <span
+                title={t('这些点只经由被隐藏的关系相连，已一并收起')}
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 11,
+                  fontWeight: 400,
+                  color: '#94a3b8',
+                }}
+              >
+                {t('连带收起 {{n}} 点').replace('{{n}}', String(cascadeHidden))}
+              </span>
+            ) : null}
             {hasLegendFilter ? (
               <span
                 onClick={(e) => {
@@ -1201,7 +1254,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   onResetLegendFilters?.();
                 }}
                 style={{
-                  marginLeft: 'auto',
+                  marginLeft: cascadeHidden > 0 ? 6 : 'auto',
                   fontSize: 11,
                   fontWeight: 400,
                   color: '#2563eb',
@@ -1223,6 +1276,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 overflow: 'auto',
               }}
             >
+              <div style={LEGEND_SECTION_TITLE} title={t('隐藏某类节点时，连到它的边一并收起')}>
+                {t('节点类型')}
+              </div>
               {/* 节点类型：点击 = 在画布显隐该类节点（中心节点恒保留作锚点） */}
               {legendNodeKinds.map((k) => {
                 const Icon = nodeIcon(k);
@@ -1231,7 +1287,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   <Fragment key={`n:${k}`}>
                     <span
                       onClick={() => onToggleNodeKind?.(k)}
-                      title={t('点击显隐此类节点')}
+                      title={t('点击显隐此类节点') + t('（连到它的边一并收起）')}
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
@@ -1257,17 +1313,21 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   </Fragment>
                 );
               })}
-              {/* 边类型：点击 = 在画布显隐该类边（如关掉全部「读库」即去除所有 ReadsDb 边） */}
+              {/* 边类型：点击 = 在画布显隐该类边（如关掉全部「读库」即去除所有 ReadsDb 边）。
+                  连带收起只经由它相连的点，保证画面 = 可见边连成的子图（见过滤 memo）。 */}
               {legendEdgeKinds.length > 0 ? (
                 <Fragment>
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
+                  <div style={LEGEND_SECTION_TITLE} title={t('隐藏某类关系时，只经由它相连的点一并收起')}>
+                    {t('关系类型')}
+                  </div>
                   {legendEdgeKinds.map((k) => {
                     const hidden = hiddenEdgeSet.has(k);
                     return (
                       <Fragment key={`e:${k}`}>
                         <span
                           onClick={() => onToggleEdgeKind?.(k)}
-                          title={t('点击显隐此类边')}
+                          title={t('点击显隐此类边') + t('（只经由它相连的点一并收起）')}
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
@@ -1304,6 +1364,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
               {subProjects && subProjects.length > 0 ? (
                 <Fragment>
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
+                  <div style={LEGEND_SECTION_TITLE}>{t('子工程')}</div>
                   {subProjects.map((sp) => (
                     <Fragment key={sp.id}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

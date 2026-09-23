@@ -217,6 +217,7 @@ mod tests {
             sub: None,
             db_table: None,
             in_loop: false,
+            entity: None,
         }
     }
 

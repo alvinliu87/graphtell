@@ -483,6 +483,7 @@ fn build_file(
             args: call.args.clone(),
             db_table: call.db_table.clone(),
             in_loop: call.in_loop,
+            entity: call.entity.clone(),
             span: call.span,
             file: file.path.clone(),
             sub: file.sub_project_id,

@@ -300,6 +300,16 @@ const dict: Record<Lang, Record<string, string>> = {
     '重置': 'Reset',
     '点击显隐此类节点': 'Click to show/hide this node type',
     '点击显隐此类边': 'Click to show/hide this edge type',
+    '（连到它的边一并收起）': ' (edges touching it collapse too)',
+    '（只经由它相连的点一并收起）': ' (nodes reachable only via it collapse too)',
+    '关系类型': 'Relation type',
+    '子工程': 'Sub-project',
+    '隐藏某类节点时，连到它的边一并收起': 'Hiding a node type also collapses the edges touching it',
+    '隐藏某类关系时，只经由它相连的点一并收起':
+      'Hiding a relation type also collapses nodes reachable only through it',
+    '连带收起 {{n}} 点': '{{n}} node(s) collapsed',
+    '这些点只经由被隐藏的关系相连，已一并收起':
+      'These nodes were only reachable through hidden relations, so they are collapsed too',
     '新建工程': 'New project',
     '工程总数': 'Total projects',
     '已就绪': 'Ready',

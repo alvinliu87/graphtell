@@ -780,6 +780,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         span: span_of(child),
                         db_table,
                         in_loop: in_loop_of(ctx),
+                        entity: None,
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);
@@ -802,6 +803,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         db_table: None,
                         span: span_of(child),
                         in_loop: in_loop_of(ctx),
+                        entity: None,
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);
@@ -823,6 +825,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         db_table: None,
                         span: span_of(child),
                         in_loop: in_loop_of(ctx),
+                        entity: None,
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);
@@ -846,6 +849,7 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                         db_table: None,
                         span: span_of(child),
                         in_loop: in_loop_of(ctx),
+                        entity: None,
                     });
                 }
                 recurse_calls(child, ctx, owner_fqn);

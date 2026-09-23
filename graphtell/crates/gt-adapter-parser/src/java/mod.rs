@@ -310,13 +310,14 @@ fn collect_annotations(
         }
         let mut c2 = mods.walk();
         for child in mods.named_children(&mut c2) {
-            collect_one_annotation(child, src, target_fqn, owner_class_fqn, out);
+            collect_one_annotation(child, node, src, target_fqn, owner_class_fqn, out);
         }
     }
 }
 
 fn collect_one_annotation(
     child: Node,
+    parent: Node,
     src: &[u8],
     target_fqn: &str,
     owner_class_fqn: &str,
@@ -339,6 +340,13 @@ fn collect_one_annotation(
             .find(|n| n.kind() == "annotation_argument_list"),
     };
     let args = args_node.map(|a| literal_args(a, src)).unwrap_or_default();
+    // `@EventListener` 处理方法的**首个形参类型**即事件类型（如 `OrderPlacedEvent`），
+    // 供 FKB 把同类事件的发布 / 订阅归并到同一 `Event` 节点（见 `first_param_type`）。
+    let entity = if name == "EventListener" {
+        first_param_type(parent, src)
+    } else {
+        None
+    };
     out.call_sites.push(CallSiteFact {
         owner_fqn: target_fqn.to_string(),
         owner_class: Some(owner_class_fqn.to_string()),
@@ -352,6 +360,7 @@ fn collect_one_annotation(
         // Java 侧暂不识别循环语句（且 FKB 尚无 Java 的 `db_verbs`，
         // N+1 规则本就只在 PHP 上跑）。
         in_loop: false,
+        entity,
     });
 }
 
@@ -361,6 +370,76 @@ fn collect_one_annotation(
 fn literal_args(node: Node, src: &[u8]) -> Vec<FactValue> {
     let mut out = Vec::new();
     collect_literals(node, src, &mut out);
+    out
+}
+
+/// 类型名脱去泛型 / 数组外壳，只留裸类型名。
+///
+/// `List<Order>` → `List`；`Order[]` → `Order`。用于实参 / 形参的类型归并。
+fn bare_type_name(raw: String) -> String {
+    raw.split(['<', '['])
+        .next()
+        .unwrap_or(&raw)
+        .trim()
+        .to_string()
+}
+
+/// 方法 / 构造器的首个形参类型（去泛型），供 `@EventListener` 取事件类型。
+///
+/// `onOrderPlaced(OrderPlacedEvent e)` → `OrderPlacedEvent`。非方法声明（类级 /
+/// 字段级注解）返回 `None`。
+fn first_param_type(node: Node, src: &[u8]) -> Option<String> {
+    if !matches!(node.kind(), "method_declaration" | "constructor_declaration") {
+        return None;
+    }
+    let params = node.child_by_field_name("parameters")?;
+    let first = (0..params.named_child_count())
+        .filter_map(|i| params.named_child(i as u32))
+        .find(|n| n.kind() == "formal_parameter")?;
+    let type_node = first.child_by_field_name("type")?;
+    text(type_node, src).map(bare_type_name)
+}
+
+/// 实参列表里首个 `new X(...)` 构造表达式的类型名（去泛型），供
+/// `publishEvent(new X())` 取事件类型 X，使发布方与订阅方归并到同一 `Event` 节点。
+fn constructed_entity_type(args_node: Node, src: &[u8]) -> Option<String> {
+    let mut cursor = args_node.walk();
+    for child in args_node.named_children(&mut cursor) {
+        if child.kind() == "object_creation_expression" {
+            if let Some(t) = child.child_by_field_name("type") {
+                return text(t, src).map(bare_type_name);
+            }
+        }
+    }
+    None
+}
+
+/// 方法调用的**直接实参**按位置捕获字面量。
+///
+/// 与注解用的 `literal_args`（递归、不保序）不同，这里保证位置语义：
+/// 第 i 个实参若是字符串 / 整数字面量取其值，否则占位 `Unknown`。这样
+/// `arg:0` 始终对应「第 1 个实参」，不会因前面有变量参数而错位。
+///
+/// 例：`rabbitTemplate.convertAndSend("orders.queue", msg)` → `["orders.queue", Unknown]`，
+/// FKB 即可据此把消息生产端落成 Queue 节点的 `PublishesTo` 边。
+fn positional_args(node: Node, src: &[u8]) -> Vec<FactValue> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "string_literal" => {
+                out.push(
+                    text(child, src)
+                        .map(|t| FactValue::String(t.trim_matches('"').to_string()))
+                        .unwrap_or(FactValue::Unknown(None)),
+                );
+            }
+            "decimal_integer_literal" => {
+                out.push(text(child, src).map(FactValue::String).unwrap_or(FactValue::Unknown(None)));
+            }
+            _ => out.push(FactValue::Unknown(None)),
+        }
+    }
     out
 }
 
@@ -406,17 +485,34 @@ fn collect_call(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String])
     } else {
         stack.last().cloned()
     };
+    // 实参字面量**按位置**捕获（见 `positional_args`）：首个实参若是字符串 /
+    // 整数字面量则取其值，否则占位 Unknown——保证 `arg:0` 对应「第 1 个实参」。
+    let args_node = match node.child_by_field_name("arguments") {
+        Some(a) => Some(a),
+        None => (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i as u32))
+            .find(|n| n.kind() == "argument_list"),
+    };
+    let args = args_node.map(|a| positional_args(a, src)).unwrap_or_default();
+    // 事件发布：`publishEvent(new X())` 取 `new` 出来的事件类型 X，使发布方与
+    // 订阅方按事件类型归并到同一 `Event` 节点（见 `constructed_entity_type`）。
+    let entity = if method == "publishEvent" {
+        args_node.and_then(|a| constructed_entity_type(a, src))
+    } else {
+        None
+    };
     out.call_sites.push(CallSiteFact {
         owner_fqn,
         owner_class,
         callee_text,
         receiver,
         method: Some(method),
-        args: vec![FactValue::Unknown(None)],
+        args,
         span: span_of(node),
         snippet: None,
         db_table: None,
         in_loop: false,
+        entity,
     });
 }
 

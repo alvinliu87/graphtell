@@ -90,6 +90,16 @@ pub struct FrameworkKnowledge {
     /// [`crate::model::kinds::register_semantic_kinds`]，折叠视图随即按语义节点渲染。
     #[serde(default)]
     pub semantic_kinds: Vec<String>,
+    /// 本 FKB 引入的**第一类语义边种类**（在 [`EdgeKind::SEMANTIC`] 内置清单之外追加）。
+    ///
+    /// 与 `semantic_kinds`（节点）同构：新增一种语义边不该以改内核为代价。
+    /// 例：某框架发明了 `SendsWebhook` 边，声明 `semantic_edge_kinds: [SendsWebhook]`
+    /// 后它就像 `ReadsDb` 一样被当语义边计数 / 绘制，无需改 `kinds.rs`。
+    #[serde(default)]
+    pub semantic_edge_kinds: Vec<String>,
+    /// 本 FKB 引入的**桥边种类**（在 [`EdgeKind::BRIDGE`] 内置清单之外追加）。
+    #[serde(default)]
+    pub bridge_edge_kinds: Vec<String>,
     /// 未识别到本框架时，是否仍应用其规则（默认 **false**）。
     ///
     /// 框架级规则带有强烈的框架假设（`Db::name` 是表名、`Route::get` 的第二个实参是
@@ -779,6 +789,11 @@ pub struct ValueSource {
     /// 与 `owner_class`（调用所在类）不同，这是「被调用方的接收者类」，
     /// 例如 `QueueThink::push()` 里 `QueueThink` 经别名还原成 `think\facade\Queue`。
     pub receiver_class: Option<bool>,
+    /// 取调用点关切的「主领域类型」（`CallSiteFact.entity`），如事件类型
+    /// `OrderPlacedEvent`。用于把「同一事件类型」的发布方与订阅方归并到同一个
+    /// `Event` 节点（而非各自以方法名命名）。取不到（parser 未识别）时整体返回
+    /// `None`，交给 `value_fallback`（如 `owner_member`）兜底。
+    pub entity: Option<bool>,
     /// 当 `resolve: class_const` 时，若解析结果在代码库中不存在为类节点，则整体返回
     /// `None`（而不是把变量名 / 字面量当类用）。用于「优先用实参里的 Job 类，否则
     /// 退回 `owner_class`」这类兜底，避免 `$action` 之类的字符串污染语义身份。

@@ -7,10 +7,13 @@
 //! graphtell stats  --project 1          查看图规模
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
+use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_app::{AppConfig, Container};
+use gt_domain::model::fkb::Action;
+use gt_domain::model::kinds::{EdgeKind, NodeKind};
 use gt_domain::model::NewProject;
 use gt_domain::port::{DiagnosticSink, GraphQuery};
 
@@ -93,6 +96,8 @@ enum Command {
         #[arg(long)]
         markdown: bool,
     },
+    /// 校验 FKB 目录（语法 + 约定），不连库、不建图。
+    Validate,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -124,6 +129,7 @@ fn main() -> anyhow::Result<()> {
                 gt_adapter_http::serve(container.router(), addr).await
             })
         }
+        Command::Validate => validate_fkbs(&config.resolve_fkb_dir()),
         other => {
             let container = Container::new(config)?;
             let projects = gt_application::ProjectService::new(
@@ -295,7 +301,7 @@ fn main() -> anyhow::Result<()> {
                         );
                     }
                 }
-                Command::Serve { .. } => unreachable!(),
+                _ => unreachable!(),
             }
             Ok(())
         }
@@ -320,4 +326,153 @@ fn print_outcome(out: &gt_pipeline::runner::PipelineOutcome, container: &Contain
         );
     }
     let _ = container;
+}
+
+/// 校验 FKB 目录：逐文件解析 + 约定检查，不连库、不建图。
+///
+/// 比单纯 `load_dir` 更有用的是**约定层**检查：
+/// * 某规则造出的节点种类既不在内核 `SYNTHESIZED` 清单、也不在 FKB 的 `semantic_kinds`
+///   里 —— 折叠视图会把它当语法节点藏起来（"写了没反应"的经典原因）；
+/// * 某条边种类不在内核 `SEMANTIC` / `BRIDGE` 清单、也不在**任何** FKB 的
+///   `semantic_edge_kinds` / `bridge_edge_kinds` 声明里 —— 不会被当语义/桥边渲染。
+fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
+    if !dir.exists() {
+        anyhow::bail!("FKB 目录不存在: {}", dir.display());
+    }
+    let mut files = Vec::new();
+    collect_yaml(dir, &mut files);
+    if files.is_empty() {
+        println!("未在 {} 找到任何 *.yaml/*.yml", dir.display());
+        return Ok(());
+    }
+
+    // 内核已知种类（开放字符串 newtype，常量即文档而非限制）。
+    let builtin_node: std::collections::HashSet<String> =
+        NodeKind::SYNTHESIZED.iter().map(|s| s.to_string()).collect();
+    let builtin_edge: std::collections::HashSet<String> = EdgeKind::SEMANTIC
+        .iter()
+        .chain(EdgeKind::BRIDGE.iter())
+        .map(|s| s.to_string())
+        .collect();
+
+    // 第一遍：加载所有文件，跨文件汇总「被某份 FKB 显式声明的边种类」。
+    // 边种类可在文件 A 声明、在文件 B 使用，所以必须汇总后才算「已知」。
+    let mut declared_edge: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for path in &files {
+        if let Ok(fk) = YamlKnowledgeBase::load_file(path) {
+            for k in fk.semantic_edge_kinds.iter().chain(fk.bridge_edge_kinds.iter()) {
+                declared_edge.insert(k.clone());
+            }
+        }
+    }
+
+    let mut ok = 0usize;
+    let mut broken = 0usize;
+    for path in &files {
+        match YamlKnowledgeBase::load_file(path) {
+            Ok(fk) => {
+                ok += 1;
+                let mut warns = Vec::new();
+                for r in &fk.rules {
+                    for a in &r.binding {
+                        // 合成节点的有效种类 = subtype（若有）否则 node。
+                        if let Action::Synthesize(s) = a {
+                            let kind = s
+                                .subtype
+                                .clone()
+                                .filter(|x| !x.is_empty())
+                                .unwrap_or_else(|| s.node.0.clone());
+                            let declared = fk
+                                .semantic_kinds
+                                .iter()
+                                .any(|k| k == &kind);
+                            if !builtin_node.contains(&kind) && !declared {
+                                warns.push(format!(
+                                    "节点种类 `{kind}` 既不在内核清单也不在 semantic_kinds —— 折叠视图会隐藏它"
+                                ));
+                            }
+                        }
+                        // 边种类是否在内核语义/桥清单。
+                        let edge_kind = match a {
+                            Action::Synthesize(s) => {
+                                s.link.as_ref().map(|l| l.kind.0.clone())
+                            }
+                            Action::Link(l) => Some(l.kind.0.clone()),
+                            Action::Annotate(_) => None,
+                        };
+                        if let Some(ek) = edge_kind {
+                            if !builtin_edge.contains(&ek) && !declared_edge.contains(&ek) {
+                                warns.push(format!(
+                                    "边种类 `{ek}` 不在内核 SEMANTIC/BRIDGE，也没被任何 FKB 的 semantic_edge_kinds/bridge_edge_kinds 声明 —— 不会被当语义/桥边渲染"
+                                ));
+                            }
+                        }
+                    }
+                }
+                let n_synth = fk
+                    .rules
+                    .iter()
+                    .filter(|r| {
+                        r.binding.iter().any(|a| matches!(a, Action::Synthesize(_)))
+                    })
+                    .count();
+                let extra = if fk.semantic_kinds.is_empty() {
+                    String::new()
+                } else {
+                    format!(", semantic_kinds={:?}", fk.semantic_kinds)
+                };
+                let edge_extra = if fk.semantic_edge_kinds.is_empty()
+                    && fk.bridge_edge_kinds.is_empty()
+                {
+                    String::new()
+                } else {
+                    format!(
+                        ", edge_kinds(sem={:?},bridge={:?})",
+                        fk.semantic_edge_kinds, fk.bridge_edge_kinds
+                    )
+                };
+                println!(
+                    "✓ {}  (id={}, 语言={}, 规则 {} 条, 合成 {} 条{}{})",
+                    path.display(),
+                    fk.id,
+                    fk.language.0,
+                    fk.rules.len(),
+                    n_synth,
+                    extra,
+                    edge_extra
+                );
+                for w in warns {
+                    println!("    ⚠ {w}");
+                }
+            }
+            Err(e) => {
+                broken += 1;
+                println!("✗ {}  —— 解析失败: {e}", path.display());
+            }
+        }
+    }
+    println!();
+    println!("共 {} 个文件: {} 通过, {} 失败", files.len(), ok, broken);
+    if broken > 0 {
+        anyhow::bail!("存在无法解析的 FKB 文件");
+    }
+    Ok(())
+}
+
+/// 递归收集目录下的 *.yaml / *.yml。
+fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_yaml(&p, out);
+        } else if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+            if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") {
+                out.push(p);
+            }
+        }
+    }
 }

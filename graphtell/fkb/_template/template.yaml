@@ -1,0 +1,74 @@
+# ============================================================================
+# GraphTell FKB 模板 —— 复制本文件，改名为 <framework>.yaml，放到 fkb/<语言>/ 下。
+# 详细规则见 docs/fkb-authoring.md。
+#
+# 最小可运行：id / display_name / language / rules 四项是骨架；
+# detectors 决定「对谁生效」；semantic_kinds 决定「新节点会不会被看见」。
+# 写完后跑 `graphtell validate --fkb-dir fkb` 校验。
+# ============================================================================
+
+id: my-framework            # 全局唯一；同名外部目录会覆盖内置
+display_name: My Framework
+language: php               # 开放字符串：php / java / javascript / … 决定应用到哪些子工程
+version_hint: "*"           # 仅展示
+
+# --- 如何识别本框架（命中后才生效；语言通用层才打开 apply_without_detection）---
+detectors:
+  - kind: manifest_dependency
+    manifest: composer.json
+    dependency: "my/framework"
+    confidence: 0.95
+  # - kind: file_exists
+  #   path: some-marker-file.php
+
+# --- 本 FKB 引入的「新语义节点种类」（不在内核清单时必须声明，否则折叠视图隐藏它）---
+# semantic_kinds: [MyKind]
+
+# --- 本 FKB 引入的「新边种类」（与 semantic_kinds 同构，无需改 kinds.rs）---
+# 大多数情况应复用内置边种类（ReadsDb/WritesCache/HandledBy…）；确实要新边才声明：
+# semantic_edge_kinds: [SendsWebhook]   # 新语义边
+# bridge_edge_kinds:   [MyBridge]       # 新桥边
+
+# --- 对同语言所有子工程生效（仅当本文件不含强框架假设时打开）---
+# apply_without_detection: true
+
+# --- 排除目录（叠加默认规则）---
+exclude_globs:
+  - "vendor/**"
+  - "node_modules/**"
+
+rules:
+  # 例：抽出「缓存读取」语义节点（记得 side，进程外中介必写）
+  - id: my-cache-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Cache::get|*Cache::get"      # `|`=或；`*`=通配（按语言分隔符）
+    binding:
+      - Synthesize:
+          node: Cache                       # 直接用具体种类（不要再写 ExternalSystem+subtype）
+          identity:
+            kind: Named                     # Fqn | Named | ContractId
+            value: { arg: 0, require_literal: true }   # 取第 0 实参且须为字面量
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side                    # ★ 进程外中介/资产类节点必写 side
+              value: { literal: "backend" } #   backend | frontend
+          link:
+            kind: ReadsCache                # 内置语义边（见指南 §5.4）
+            direction: incoming             # incoming | outgoing | to_target
+          confidence: 0.85
+
+  # 例：只建一条边（不造节点）
+  # - id: my-link
+  #   phase: Synthesize
+  #   selector:
+  #     kind: call
+  #     callee: "Something::fire"
+  #   binding:
+  #     - Link:
+  #         kind: Triggers
+  #         to: { arg: 0, require_literal: true }
+  #         direction: outgoing

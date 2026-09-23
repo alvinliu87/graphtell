@@ -216,13 +216,33 @@ impl EdgeKind {
     pub const BRIDGE: &'static [&'static str] = &[Self::HANDLED_BY, Self::CALLS_HTTP];
 
     /// 是否为"对人类有意义的语义边"（业务资源依赖，见 [`Self::SEMANTIC`]）。
+    ///
+    /// 除内置清单外，还包括 **FKB 声明**的边种类（见 [`register_edge_kinds`]）——
+    /// 新增一种语义边不该以改内核为代价（与节点种类的
+    /// [`crate::model::kinds::EXTRA_SEMANTIC`] 同构）。
     pub fn is_semantic(&self) -> bool {
-        Self::SEMANTIC.iter().any(|k| self.0 == *k)
+        if Self::SEMANTIC.iter().any(|k| self.0 == *k) {
+            return true;
+        }
+        EXTRA_SEMANTIC_EDGE
+            .get_or_init(Default::default)
+            .read()
+            .map(|set| set.contains(&self.0))
+            .unwrap_or(false)
     }
 
     /// 是否为"桥边"（语义 ↔ 语法之间的发现连接器，见 [`Self::BRIDGE`]）。
+    ///
+    /// 除内置清单外，还包括 **FKB 声明**的桥边种类（见 [`register_edge_kinds`]）。
     pub fn is_bridge(&self) -> bool {
-        Self::BRIDGE.iter().any(|k| self.0 == *k)
+        if Self::BRIDGE.iter().any(|k| self.0 == *k) {
+            return true;
+        }
+        EXTRA_BRIDGE_EDGE
+            .get_or_init(Default::default)
+            .read()
+            .map(|set| set.contains(&self.0))
+            .unwrap_or(false)
     }
 }
 
@@ -245,29 +265,64 @@ pub fn is_bridge_edge(kind: &str) -> bool {
     EdgeKind(kind.to_string()).is_bridge()
 }
 
+/// FKB 追加登记的语义 / 桥边种类（进程内单例，随 FKB 装载填充）。
+///
+/// 与节点的 [`EXTRA_SEMANTIC`] 同构：让"新增一种边种类"也只需写 FKB、不改内核——
+/// 这是「只写 FKB、零代码」承诺在**边**这一维的落地（节点的同款机制早已就位）。
+static EXTRA_SEMANTIC_EDGE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+static EXTRA_BRIDGE_EDGE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// 登记 FKB 声明的语义 / 桥边种类（可重复调用，幂等合并）。
+///
+/// 调用方：`gt_adapter_fkb::loader` 在装载 FKB 时，把 `semantic_edge_kinds` /
+/// `bridge_edge_kinds` 喂进来。之后 `is_semantic` / `is_bridge` / `is_chain_edge`
+/// 会自动把它们当一等公民，无需再碰 `kinds.rs` 的 `SEMANTIC` / `BRIDGE` 清单。
+pub fn register_edge_kinds(
+    semantic: impl IntoIterator<Item = String>,
+    bridge: impl IntoIterator<Item = String>,
+) {
+    {
+        let mut set = EXTRA_SEMANTIC_EDGE
+            .get_or_init(Default::default)
+            .write()
+            .expect("语义边注册表未被破坏");
+        set.extend(semantic);
+    }
+    {
+        let mut set = EXTRA_BRIDGE_EDGE
+            .get_or_init(Default::default)
+            .write()
+            .expect("桥边注册表未被破坏");
+        set.extend(bridge);
+    }
+}
+
+/// 当前已登记的 FKB 边种类（供诊断 / 测试 / `validate` 观察）。
+pub fn extra_edge_kinds() -> (Vec<String>, Vec<String>) {
+    let sem: Vec<String> = EXTRA_SEMANTIC_EDGE
+        .get_or_init(Default::default)
+        .read()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default();
+    let bri: Vec<String> = EXTRA_BRIDGE_EDGE
+        .get_or_init(Default::default)
+        .read()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default();
+    (sem, bri)
+}
+
 /// 调用链边：折叠视图沿这些边做"正向发现"，把语法节点当透传。
-/// 与 `gt_application::view_service::is_chain_edge` 同义，集中在此作为唯一权威来源。
+///
+/// 权威来源是 [`EdgeKind::is_semantic`] + [`EdgeKind::is_bridge`]（含 FKB 声明的种类）
+/// 加上少量纯语法链边（`Calls` / `HasCallSite`）。集中在此作为唯一权威来源——
+/// 新增边种类只要登记进 `SEMANTIC` / `BRIDGE` 即自动可遍历，无需在此再列举。
 pub fn is_chain_edge(kind: &str) -> bool {
-    matches!(
-        kind,
-        "HandledBy"
-            | "Calls"
-            | "HasCallSite"
-            | "ReadsConfig"
-            | "ReadsCache"
-            | "WritesCache"
-            | "Mutates"
-            | "NavigatesTo"
-            | "Emits"
-            | "ListensTo"
-            | "ReadsDb"
-            | "WritesDb"
-            | "MapsTo"
-            | "Triggers"
-            | "PublishesTo"
-            | "CallsHttp"
-            | "ResolvesTo"
-    )
+    matches!(kind, "Calls" | "HasCallSite")
+        || EdgeKind(kind.to_string()).is_semantic()
+        || EdgeKind(kind.to_string()).is_bridge()
 }
 
 declare_open_kind! { Phase => "流水线阶段";
@@ -328,5 +383,37 @@ impl From<&str> for Language {
 impl std::fmt::Display for Language {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_kind_registry_extends_classification() {
+        // 内置语义边：注册前即识别。
+        assert!(EdgeKind("ReadsDb".to_string()).is_semantic());
+        assert!(is_chain_edge("ReadsDb"));
+
+        // 全新语义边：注册前不识别，注册后识别（且自动可沿调用链遍历）。
+        assert!(!EdgeKind("SendsWebhook".to_string()).is_semantic());
+        assert!(!is_chain_edge("SendsWebhook"));
+        register_edge_kinds(vec!["SendsWebhook".to_string()], vec![]);
+        assert!(EdgeKind("SendsWebhook".to_string()).is_semantic());
+        assert!(is_chain_edge("SendsWebhook"));
+
+        // 全新桥边：注册前不识别，注册后识别为桥边且可遍历。
+        assert!(!EdgeKind("MyBridge".to_string()).is_bridge());
+        register_edge_kinds(vec![], vec!["MyBridge".to_string()]);
+        assert!(EdgeKind("MyBridge".to_string()).is_bridge());
+        assert!(is_chain_edge("MyBridge"));
+
+        // 旧硬编码路径不受影响：内置桥边仍识别。
+        assert!(EdgeKind("HandledBy".to_string()).is_bridge());
+        assert!(is_chain_edge("HandledBy"));
+        // 纯语法链边仍走内置分支。
+        assert!(is_chain_edge("Calls"));
+        assert!(is_chain_edge("HasCallSite"));
     }
 }

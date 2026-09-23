@@ -195,6 +195,7 @@ pub fn run(ctx: &mut PipelineContext) {
                         db_table: None,
                         // MyBatis 的伪调用点来自 XML，没有"循环体内"这个概念。
                         in_loop: false,
+                        entity: None,
                         span,
                         file: rel.clone(),
                         sub: Some(SubProjectId(sub.id.get())),

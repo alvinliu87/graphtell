@@ -34,6 +34,10 @@ pub struct CallRecord {
     /// 该调用点是否位于循环体内（parser 事实，与 CallSite 节点的 `in_loop` 属性同源）。
     /// 供 P12/P13 这类"循环 / 批量"判定使用 —— 规则侧读节点属性，阶段侧读这里。
     pub in_loop: bool,
+    /// 该调用点关切的「主领域类型」（`CallSiteFact.entity` 透传），如事件类型
+    /// `OrderPlacedEvent`。供 `value: { entity: true }` 把同类发布 / 订阅归并到
+    /// 同一语义节点。
+    pub entity: Option<String>,
     pub span: Span,
     pub file: String,
     pub sub: Option<SubProjectId>,

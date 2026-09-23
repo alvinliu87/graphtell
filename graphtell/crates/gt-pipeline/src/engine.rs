@@ -1296,6 +1296,7 @@ mod tests {
             args: vec![],
             db_table: None,
             in_loop: false,
+            entity: None,
             span: Span::default(),
             file: String::new(),
             sub: None,

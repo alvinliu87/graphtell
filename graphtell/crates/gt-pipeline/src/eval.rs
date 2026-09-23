@@ -275,6 +275,15 @@ impl<'a> Evaluator<'a> {
                         .unwrap_or_else(|| recv.clone());
                     return Some(EvalValue::Str(fqn));
                 }
+                if src.entity == Some(true) {
+                    // 事件 / 领域主类型（如 `OrderPlacedEvent`）：发布方与订阅方据此
+                    // 归并到同一语义节点。取不到时返回 None，触发 `value_fallback`。
+                    let e = c.entity.as_ref()?;
+                    if e.is_empty() {
+                        return None;
+                    }
+                    return Some(EvalValue::Str(e.clone()));
+                }
                 None
             }
             MatchCtx::Config(c) => {
