@@ -13,6 +13,7 @@ use crate::java::JavaParser;
 use crate::js::JsFrontendParser;
 use crate::json::JsonParser;
 use crate::php::PhpParser;
+use crate::python::PythonParser;
 
 /// 默认注册中心。
 pub struct DefaultParserRegistry {
@@ -29,6 +30,11 @@ impl DefaultParserRegistry {
         }
         if let Ok(p) = JavaParser::new() {
             parsers.insert(Language::JAVA.to_string(), Box::new(p));
+        }
+        // Python（第三语言）：装饰器被建模为调用点，与 Java 注解同机制，
+        // 因此 FastAPI 这类框架的语义完全由 FKB 声明（见 fkb/python/fastapi.yaml）。
+        if let Ok(p) = PythonParser::new() {
+            parsers.insert(Language::PYTHON.to_string(), Box::new(p));
         }
         // 前端（JS/TS/Vue…）：轻量 HTTP 调用提取器，把「前端→后端」的调用翻成
         // CallSite，使 P5 能按 FKB 合成 HttpContract 并挂 CallsHttp（与后端 HandledBy

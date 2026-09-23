@@ -1,0 +1,144 @@
+# Celery 框架知识（Python）
+#
+# **纯 YAML 补齐，解析器零改动** —— `@celery_app.task` 是装饰器、`task.delay()`
+# 是普通调用，两者在解析器眼里都已经是 `CallSiteFact`（Python 侧沿用 Java 那套
+# 「注解 / 装饰器 = 调用点」的建模）。所以这里只需要声明选择器。
+#
+# 语义闭环的设计意图（与 Java 侧事件归并同理）：
+#   消费端 `@celery_app.task def send_email()` —— worker 从队列取该任务执行
+#   生产端 `send_email.delay(...)`              —— 把该任务投递进队列
+# 两端身份都取**任务名**，于是归并到**同一个 Queue 节点**，形成发布 / 订阅闭环，
+# 而不是「消费一个节点、生产另一个节点」的割裂视图。
+
+id: celery
+display_name: Celery
+language: python
+version_hint: "5.x"
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: requirements.txt
+    dependency: celery
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: pyproject.toml
+    dependency: celery
+    confidence: 0.9
+
+exclude_globs:
+  - "__pycache__/**"
+  - "*/__pycache__/**"
+  - "*/.venv/**"
+  - "*/venv/**"
+
+rules:
+  # ===== P5 Synthesize：任务的**消费端**（注册）=====
+  # `@celery_app.task` / `@shared_task` —— 该装饰器把一个函数注册成可被 worker
+  # 执行的任务，即「从队列消费」。
+  #
+  # 身份优先取显式任务名（`@celery.task(name="app.tasks.x")`）。
+  # 显式名写作**关键字实参**，解析器把它捕成 `[("name", 值)]`（见 positional_args），
+  # 于是可按名取值；关键字实参的位置不固定，故用 `path` 依次尝试前几个位置
+  # （取不到时结果为空串，整体兜底到 `value_fallback` 的函数名 —— Celery 的
+  # 默认任务名正是函数名）。这与 Java `@EventListener` 退回 `owner_member` 同理。
+  - id: celery-task-consumer
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "celery_app::task|celery::task|worker::task|shared_task"
+    binding:
+      - Synthesize:
+          node: Queue
+          identity:
+            kind: Named
+            value:
+              path:
+                - { arg: 0, field: "name" }
+                - { arg: 1, field: "name" }
+                - { arg: 0 }
+              join: ""
+              require_literal: true
+              normalize:
+                - short_name
+                - trim
+            value_fallback:
+              owner_member: true
+              normalize:
+                - short_name
+                - trim
+          link: { kind: ListensTo, direction: incoming }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：任务的**生产端**（投递）=====
+  # `send_email.delay(...)` / `.apply_async(...)` —— 接收者就是任务对象，
+  # 故身份取 `receiver_class`（= 任务名），与消费端的函数名归并到同一节点。
+  #
+  # `delay` / `apply_async` 是 Celery 专属方法名（不像 `get` / `send` 那样通用），
+  # 所以用 `*` 放行任意接收者 —— 同 Spring 侧 `*::sendDefault` 的取舍。
+  - id: celery-task-producer
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "*::delay|*::apply_async"
+    binding:
+      - Synthesize:
+          node: Queue
+          identity:
+            kind: Named
+            value:
+              # **显式队列名优先**：`task.apply_async(args=[x], queue="payments")`
+              # 明确指定投递到哪个队列，比「按任务名推断默认队列」更权威 ——
+              # 这正是本项目在别处也遵循的「显式声明优先于约定推断」
+              # （参见 `Predicate::NotClaimedBy` 的设计说明）。
+              # 关键字实参位置不固定，用 `path` 依次尝试前三个位置：
+              # 都取不到时结果为空 → 兜底到下面的任务名。
+              path:
+                - { arg: 0, field: "queue" }
+                - { arg: 1, field: "queue" }
+                - { arg: 2, field: "queue" }
+              join: ""
+              require_literal: true
+              normalize:
+                - short_name
+                - trim
+            value_fallback:
+              # 任务名（= 接收者）：保证普通 `.delay()` 与任务注册归并到同一节点。
+              # `short_name` 是关键 —— 接收者若由 `import` 还原成了完全限定名
+              # （`app.tasks.send_email`），不归一就会与消费端的短名拆成两个节点。
+              receiver_class: true
+              require_literal: true
+              normalize:
+                - short_name
+                - trim
+          link: { kind: PublishesTo, direction: incoming }
+          confidence: 0.8
+
+  # ===== P5 Synthesize：Beat 定时（周期性任务）=====
+  # `sender.add_periodic_task(30.0, task.s())` —— 第 1 个实参是执行间隔（秒）。
+  # 身份优先取该间隔字面量；取不到（写成变量 / 表达式）时退回注册函数名。
+  #
+  # 边的语义说明：`Triggers` 指向的是**注册点所在的函数**（与 Spring `@Scheduled`
+  # 指向"承担该注解的方法"同源）。真正被触发的任务在 `arg:1`（`task.s()` 调用），
+  # 其值不是字面量，当前无法作为链接目标 —— 如实标注，不编造边。
+  - id: celery-beat-periodic-task
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "add_periodic_task"
+    binding:
+      - Synthesize:
+          node: Schedule
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+            value_fallback:
+              owner_member: true
+              normalize:
+                - trim
+          link: { kind: Triggers, direction: outgoing }
+          confidence: 0.8

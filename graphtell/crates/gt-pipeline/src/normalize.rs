@@ -19,6 +19,7 @@ pub fn apply_normalize(input: &str, steps: &[NormalizeStep]) -> String {
             NormalizeStep::Singularize => singularize(&s),
             NormalizeStep::SnakePlural => snake_plural(&s),
             NormalizeStep::StripNamespace => strip_namespace(&s),
+            NormalizeStep::ShortName => short_name(&s),
             NormalizeStep::ParamWildcard => param_wildcard(&s),
             NormalizeStep::StripQuery => strip_query(&s),
             NormalizeStep::Trim => s.trim().to_string(),
@@ -114,6 +115,14 @@ pub fn strip_namespace(s: &str) -> String {
     s.rsplit(['\\', '/', ':']).next().unwrap_or(s).to_string()
 }
 
+/// 取点分路径的最后一段（比 [`strip_namespace`] 多认一个 `.`）。
+///
+/// `app.tasks.send_email` → `send_email`；短名本身不变（`send_email`）。
+/// 用于把「同一实体」的完全限定名与短名归并成同一个 identity。
+pub fn short_name(s: &str) -> String {
+    s.rsplit(['\\', '/', ':', '.']).next().unwrap_or(s).to_string()
+}
+
 /// `CamelCase` → `snake_case`。
 ///
 /// 按**字母数字段**处理：分隔符（`\` / `/` / `:`）之后的大写字母**不补下划线** ——
@@ -179,6 +188,15 @@ pub fn class_to_topic(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_name_takes_last_dotted_segment() {
+        // Python 的任务名：`import` 还原出的完全限定名要能与注册时的短名归并
+        assert_eq!(short_name("app.tasks.send_email"), "send_email");
+        assert_eq!(short_name("send_email"), "send_email");
+        // 已有的分隔符形态同样适用
+        assert_eq!(short_name("app\\service\\OrderService"), "OrderService");
+    }
 
     #[test]
     fn normalizes_table_identity() {

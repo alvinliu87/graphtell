@@ -360,6 +360,7 @@ impl Language {
     pub const JAVASCRIPT: &'static str = "javascript";
     pub const TYPESCRIPT: &'static str = "typescript";
     pub const JAVA: &'static str = "java";
+    pub const PYTHON: &'static str = "python";
     pub const RUST: &'static str = "rust";
     pub const UNKNOWN: &'static str = "unknown";
 

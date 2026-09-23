@@ -869,6 +869,14 @@ pub enum NormalizeStep {
     SnakePlural,
     /// 去掉命名空间，只留最后一段。
     StripNamespace,
+    /// 取**点分**路径的最后一段：`app.tasks.send_email` → `send_email`。
+    ///
+    /// 与 [`Self::StripNamespace`] 只差一个分隔符 `.`：Python / Java 的命名空间是
+    /// 点分的，而 `StripNamespace` 刻意**不拆** `.`（否则会把 Java 自动路由的包名
+    /// 一起拆掉，改变既有行为）。故另起一个**加性**的步骤，专供「同一语义实体的
+    /// 长短名要归并」这类场景 —— 例如 Celery 任务的注册方只有短名、投递方却因
+    /// `import` 还原成了完全限定名，不归一就会拆成两个节点。
+    ShortName,
     /// 路径参数段归一化：每个 `:` 开头的段都折成 `:*`。
     ///
     /// 契约桥的关键一步：后端路由写 `invoice/detail/:id`，前端拼接式 URL

@@ -7,6 +7,7 @@ pub mod java;
 pub mod js;
 pub mod json;
 pub mod php;
+pub mod python;
 pub mod registry;
 
 pub use registry::{require_parser, DefaultParserRegistry};

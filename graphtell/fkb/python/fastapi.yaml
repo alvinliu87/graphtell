@@ -1,0 +1,186 @@
+# FastAPI 框架知识（Python）
+#
+# **完全通过 YAML 声明补齐 Python 侧的框架语义 —— 未改动任何内核代码。**
+# 这是继 Java 之后**第三个语言**：只要实现 `LanguageParser` 并注册进来，
+# 上层流水线（P0~P8）无需任何改动即可处理 Python 工程。
+#
+# 同一个概念，三种表达：
+#   | 概念       | ThinkPHP          | Spring Boot         | FastAPI              |
+#   |------------|-------------------|---------------------|----------------------|
+#   | HTTP 契约  | `Route::get(...)` | `@GetMapping("/x")` | `@app.get("/x")`     |
+#   | 配置读取   | `sys_config()`    | `@Value("${x}")`    | `os.environ.get(x)`  |
+#   | 缓存       | `Cache::get()`    | `@Cacheable("x")`   | `redis.get("x")`     |
+#
+# 关键是**装饰器在解析器里被建模成调用点**（`CallSiteFact`），与 Java 注解同机制：
+# Python 装饰器 / Java 注解 / C# Attribute 本就是同一个概念 —— 声明式的框架调用。
+# 因此这里不需要任何新的 DSL 能力，`kind: call` 选择器即可匹配装饰器。
+
+id: fastapi
+display_name: FastAPI
+language: python
+version_hint: "0.100+"
+scope: framework
+
+detectors:
+  # requirements.txt / pyproject.toml 里出现 fastapi（`manifest_has` 对非 JSON
+  # 文件做文本包含匹配，纯文本清单同样适用）。
+  - kind: manifest_dependency
+    manifest: requirements.txt
+    dependency: fastapi
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: pyproject.toml
+    dependency: fastapi
+    confidence: 0.9
+
+exclude_globs:
+  - "__pycache__/**"
+  - "*/__pycache__/**"
+  - "*/.venv/**"
+  - "*/venv/**"
+
+root_rules:
+  - id: fastapi-app-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: app
+    confidence: 1.0
+    fallbacks:
+      - app
+      - src
+
+rules:
+  # ===== P5 Synthesize：HTTP 契约 =====
+  # `@router.get("/users")` —— 装饰器被建模为调用点：
+  #   callee = `router.get`（receiver=router / method=get），
+  #   owner  = 被装饰的**处理函数**（`app.api.users.list_users`）。
+  #
+  # 为什么不裸写 `callee: get|post|...`：Python 的方法名太通用，
+  # `requests.get("/api")` / `dict.get(...)` / `redis.get(...)` 都会误命中，
+  # 凭空造出数百条假的 HttpContract。故按「接收者变量名」收窄作用域 —— 与 Java
+  # 侧 `kafkaTemplate::send` 收窄 `send` 是同一套办法（见 spring-boot.yaml）。
+  # 项目若用了别的变量名（如 `v1_router`），把它加进下面的备选即可。
+  #
+  # 方法由装饰器名直接推导（`get` → `GET`），路径取自第 1 个实参（arg0）。
+  - id: fastapi-route-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "app::{get,post,put,delete,patch}|router::{get,post,put,delete,patch}|api_router::{get,post,put,delete,patch}"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            # Python 的处理函数常常直接写在模块里（不在类里）。解析器的
+            # `owner_class` 在模块级会回填为**模块点分名**，而模块已登记为
+            # Namespace 节点 —— 于是这里先定位模块、再按成员名落到函数本身。
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9
+
+  # ===== P5 Synthesize：ConfigKey =====
+  # `os.environ.get("SECRET_KEY")` / `os.getenv("SECRET_KEY")`。
+  # 解析器保留了完整的属性链（`os.environ.get` 的 receiver 是 `os.environ`），
+  # 因此可以用 `os.environ::get` 精确命中，不会误伤 `self.config.get(...)`。
+  - id: fastapi-env-config
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "os.environ::get|os::getenv"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.85
+
+  # ===== P6 AnnotatePost：Table（SQLAlchemy 声明式映射）=====
+  # `class UserModel(Base): __tablename__ = "users"` —— 表映射写在**类属性**里，
+  # 没有任何调用点可依，所以走 P6 的**图节点选择器**（而不是前面的 `kind: call`）：
+  #   1. 解析器把类体内的字面量赋值登记成 Property 声明（语言中性的建模，
+  #      与 PHP 的类属性同机制 —— 它并不知道 __tablename__ 是什么）；
+  #   2. P3 把属性值记录到**类节点**上（`property_of(类, "__tablename__")`）；
+  #   3. 这里用 `HasProperty` 命中、用 `property` 取值 —— SQLAlchemy 的知识
+  #      只存在于本 YAML，不在解析器和内核里。
+  - id: fastapi-sqlalchemy-table
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Class
+      where:
+        - has_property: "__tablename__"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              property: "__tablename__"
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          # 模型类 ——> 表（与 Spring 的 `@TableName` 同为 MapsTo）
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize：Cache（Redis）=====
+  # 同样按接收者变量名收窄：裸 `get` / `set` 会命中一切对象的同名方法。
+  - id: fastapi-cache-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "cache::get|redis_client::get|redis::get|cache_client::get"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.8
+
+  - id: fastapi-cache-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "cache::set|redis_client::set|redis::set|cache_client::set"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.8
