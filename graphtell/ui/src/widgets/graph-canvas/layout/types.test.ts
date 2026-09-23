@@ -500,3 +500,119 @@ describe('radialLayout：资源视角（星形）', () => {
     expect(r.guides).toBeDefined();
   });
 });
+
+/**
+ * 回归：中心辐射的**源端（hub 侧）锚点必须分散**。
+ *
+ * 旧实现把所有 hub 边的出发点都压在中心药丸竖边的 ±9px（共 18px）内 —— 30 条出边在
+ * 近中心处糊成一束，要等线散开才看得出"哪条通向谁"。现在沿中心药丸面向邻居那一侧的
+ * 「上边 → 侧边 → 下边」按目标次序铺开，一条边一个出入口。
+ *
+ * 铺开的红线：出发点仍必须落在这条边**看得见**的那段边界上 —— 线段只能"贴"住中心药丸，
+ * 不能钻进药丸底下再从另一侧穿出（药丸不透明时看不出来，悬浮聚焦压成半透明就露馅）。
+ */
+describe('中心辐射：源端锚点分散', () => {
+  const WIDTH = 1040;
+
+  /** 线段与矩形相交的参数区间 [t0, t1]（slab 法，测试侧独立实现）；不相交返回 null。 */
+  const range = (a: Pt, b: Pt, cx: number, cy: number, w: number, h: number) => {
+    let t0 = 0;
+    let t1 = 1;
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const slabs: Array<[number, number]> = [
+      [-dx, a[0] - (cx - w / 2)],
+      [dx, cx + w / 2 - a[0]],
+      [-dy, a[1] - (cy - h / 2)],
+      [dy, cy + h / 2 - a[1]],
+    ];
+    for (const [p, q] of slabs) {
+      if (p === 0) {
+        if (q < 0) return null;
+        continue;
+      }
+      const r = q / p;
+      if (p < 0) {
+        if (r > t1) return null;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return null;
+        if (r < t1) t1 = r;
+      }
+    }
+    return { t0, t1 };
+  };
+
+  /** 星形图里每条边的 hub 侧端点（边由中心出发则取首点，指向中心则取末点）。 */
+  const hubEnds = (edges: PlacedEdge[], centerId: number): Pt[] =>
+    edges.map((e) => (e.from === centerId ? e.points[0] : e.points[e.points.length - 1]));
+
+  /** 锚点的铺开幅度：最远两个锚点的距离。 */
+  const spread = (ends: Pt[]): number => {
+    let m = 0;
+    for (const p of ends) for (const q of ends) m = Math.max(m, Math.hypot(p[0] - q[0], p[1] - q[1]));
+    return m;
+  };
+
+  /** 每个锚点都必须落在中心药丸的**边界**上：贴着节点，不留缝也不悬空。 */
+  const expectOnHubBorder = (ends: Pt[], hub: PlacedNode) => {
+    const hw = (hub.w ?? 120) / 2;
+    const hh = (hub.h ?? 26) / 2;
+    ends.forEach((p) => {
+      const onSide =
+        Math.abs(Math.abs(p[0] - hub.x) - hw) < 0.51 && Math.abs(p[1] - hub.y) <= hh + 0.51;
+      const onCap =
+        Math.abs(Math.abs(p[1] - hub.y) - hh) < 0.51 && Math.abs(p[0] - hub.x) <= hw + 0.51;
+      expect(onSide || onCap).toBe(true);
+    });
+  };
+
+  it('等长扇形（30 条出边）：锚点贴在药丸边界上、一条边一个出入口、铺开远宽于旧的 18px', () => {
+    const center = node(1, 'GET /v2/order/invoice_detail', 0);
+    const fanout = Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+    const hub = r.nodes.find((n) => n.id === center.id)!;
+    const ends = hubEnds(r.edges, center.id);
+
+    expectOnHubBorder(ends, hub);
+    expect(new Set(ends.map((p) => `${Math.round(p[0])}:${Math.round(p[1])}`)).size).toBe(30);
+    expect(spread(ends)).toBeGreaterThan(80);
+  });
+
+  it('分散后线段仍只"贴"住中心药丸，不钻进去再从另一侧穿出', () => {
+    const center = node(1, 'GET /v2/order/invoice_detail', 0);
+    const fanout = Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
+    const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+    const hub = r.nodes.find((n) => n.id === center.id)!;
+
+    r.edges.forEach((e) => {
+      const hit = range(e.points[0], e.points[1], hub.x, hub.y, hub.w ?? 120, hub.h ?? 26);
+      // 与中心药丸若有交，只能是端点擦边（长度≈0），不能是"穿进去再从另一侧出来"
+      if (hit) expect(hit.t1 - hit.t0).toBeLessThan(0.02);
+    });
+
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+    expect(crossings(r.edges)).toBe(0);
+  });
+
+  it('单列形态（80 个使用者，边指向中心）同样分散，两条硬约束仍成立', () => {
+    const center = node(1, 'cache_order_summary', 0);
+    const users = Array.from({ length: 80 }, (_, i) => node(100 + i, `user_${i}`, 1));
+    const edges: LayoutEdge[] = users.map((n) => ({ id: n.id, from: n.id, to: center.id }));
+
+    const r = radialLayout({ center, rings: [users], edges, width: WIDTH, height: 720 });
+    const hub = r.nodes.find((n) => n.id === center.id)!;
+    const ends = hubEnds(r.edges, center.id);
+
+    expectOnHubBorder(ends, hub);
+    expect(new Set(ends.map((p) => `${Math.round(p[0])}:${Math.round(p[1])}`)).size).toBe(80);
+    expect(spread(ends)).toBeGreaterThan(80);
+
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+    expect(crossings(r.edges)).toBe(0);
+  });
+});

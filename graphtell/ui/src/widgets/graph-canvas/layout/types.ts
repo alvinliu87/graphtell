@@ -766,23 +766,39 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
 
   // 直线放射（单段直线，从中心药丸缘直接连到目标药丸缘）：用户要求"直接连直线"、不要
   // 90°/0° 的正交折线。关键纠正：单段直线**可以**零切节点——只要终点落在目标的*近侧边缘*
-  // 而非中心。左列（调用方）保持旧逻辑（终点取左列药丸右缘）；右列若走等长扇形，则用
-  // `shrinkToRects` 从中心药丸边界连到目标药丸近侧边界——任意角度都正确，且出射点沿中心
-  // 药丸右缘按目标角度单调铺开 ⇒ 边互不相交（结构保证，与是否弧形无关）。
+  // 而非中心。左列（调用方）终点取左列药丸右缘；右列若走等长扇形，则用 `shrinkToRects`
+  // 取目标药丸的近侧边界——任意角度都正确。
   // （注：终点若取药丸*中心*，远端浅线会在邻居行处扫入邻居药丸左半，故必须连到近侧边缘。）
   const ATTACH_MAX = PILL_H / 2 - 4;
-  const ATTACH_K = ATTACH_MAX / Math.max(colHalfSpan, 1);
-  const attachDy = (colPosY: number) => (colPosY - cy) * ATTACH_K;
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
-  const placed: PlacedEdge[] = edges.flatMap((e, ei) => {
+  /**
+   * **源端（hub 侧）锚点分散**。
+   *
+   * 旧实现把所有 hub 边的出发点都压在中心药丸竖边的 ±`ATTACH_MAX`（共 18px）内 ——
+   * 30 条出边挤在 18px 里，近中心处糊成一束，要等线散开才看得出"哪条通向谁"。
+   * 现在改为沿中心药丸**面向邻居那一侧的整条边界**（上边 → 侧边 → 下边）按目标次序
+   * 均匀铺开：每条边有各自的出入口，扇骨一出药丸就张开。
+   *
+   * 出发点不是想挪哪儿就挪哪儿 —— 必须落在这条边**看得见**的那段边界上，否则线段会先钻进
+   * 药丸底下再从另一侧穿出（药丸不透明时看不出来，悬浮聚焦压成半透明就露馅）。判据很直白：
+   * 目标在药丸上缘之上 ⇒ 取**上边**；在下缘之下 ⇒ 取**下边**；其余 ⇒ 取**侧边**。
+   * 三种情形下线段一离开锚点就出到药丸外；且锚点沿边界自上而下、目标也自上而下，
+   * 两个序列同序 ⇒ 扇骨互不相交（与旧实现同为结构保证，不是调参结果）。
+   *
+   * 目标端点不变 ⇒ 位移只发生在中心这一端、到目标处衰减为 0，
+   * 所以铺开不会把线推进邻居药丸（"边不穿过节点"这条硬约束不受影响）。
+   */
+  const FAN_SLOT = 28; // 同一段边界上相邻锚点的目标间距
+  const FAN_REACH = Math.min(centerW, 160); // 上 / 下边各最多用掉的长度（不越过药丸另一头）
+
+  /** 每条 hub 边的目标端点与平行边错开量（锚点分配按错开后的 y 排序）。 */
+  const hubSides = new Map<number, { tgt: Pt; off: number; onLeft: boolean; hubIsFrom: boolean }>();
+  edges.forEach((e, ei) => {
     const a = pos.get(e.from);
     const b = pos.get(e.to);
-    if (!a || !b) return [];
-    // 两端都不是中心：普通直连边。
-    if (e.from !== center.id && e.to !== center.id) {
-      return [{ ...e, points: [a, b], orthogonal: false }];
-    }
+    if (!a || !b) return;
+    if (e.from !== center.id && e.to !== center.id) return;
     const hubIsFrom = e.from === center.id;
     const otherId = hubIsFrom ? e.to : e.from;
     const other = hubIsFrom ? b : a;
@@ -794,28 +810,55 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     const p = parallel.get(ei);
     const off =
       p && p.count > 1 ? -ATTACH_MAX + (p.idx * (ATTACH_MAX * 2)) / (p.count - 1) : 0;
-    let hubPt: Pt;
-    let tgtPt: Pt;
+    const w = otherNode.w ?? 120;
+    let tgt: Pt;
     if (onLeft) {
-      // 左列（调用方）：终点取药丸右缘（旧逻辑）。
-      hubPt = [hubCx - centerW / 2, cy + Math.max(-ATTACH_MAX, Math.min(ATTACH_MAX, attachDy(other[1]) + off))];
-      tgtPt = [otherNode.x + otherNode.w! / 2, other[1] + off];
+      tgt = [otherNode.x + w / 2, other[1]]; // 左列（调用方）：取药丸右缘
     } else if (useArc) {
-      // 等长扇形：从中心药丸边界直接收缩到目标药丸近侧边界（任意角度正确）。
-      const shrink = shrinkToRects(hubCenter, centerW, PILL_H, other, otherNode.w ?? 120, PILL_H);
-      hubPt = shrink[0];
-      tgtPt = shrink[1];
+      tgt = shrinkToRects(hubCenter, centerW, PILL_H, other, w, PILL_H)[1];
     } else {
-      // 右列单列：终点取药丸左缘（旧逻辑）。
-      hubPt = [hubCx + centerW / 2, cy + Math.max(-ATTACH_MAX, Math.min(ATTACH_MAX, attachDy(other[1]) + off))];
-      tgtPt = [otherNode.x - otherNode.w! / 2, other[1] + off];
+      tgt = [otherNode.x - w / 2, other[1]]; // 右列单列：取药丸左缘
     }
-    const line: Pt[] = [
-      [hubPt[0], hubPt[1] + off],
-      [tgtPt[0], tgtPt[1] + off],
-    ];
+    hubSides.set(ei, { tgt, off, onLeft, hubIsFrom });
+  });
+
+  /** hub 侧锚点：边下标 → 出发点。 */
+  const hubAnchor = new Map<number, Pt>();
+  for (const side of [1, -1] as const) {
+    const items = [...hubSides.entries()]
+      .filter(([, s]) => (s.onLeft ? -1 : 1) === side)
+      .map(([ei, s]) => ({ ei, ty: s.tgt[1] + s.off }))
+      .sort((x, y) => x.ty - y.ty || x.ei - y.ei);
+    if (items.length === 0) continue;
+    const hh = PILL_H / 2;
+    const xSide = hubCx + (side * centerW) / 2; // 面向该侧的竖边
+    const above = items.filter((it) => it.ty < cy - hh);
+    const mid = items.filter((it) => it.ty >= cy - hh && it.ty <= cy + hh);
+    const below = items.filter((it) => it.ty > cy + hh);
+    /** 组内按 (i+0.5)/n 取点；跨度随条数增长、不超过 `FAN_REACH`（条数少时不无谓外扩）。 */
+    const place = (group: typeof items, at: (span: number, f: number) => Pt) => {
+      const span = Math.min(FAN_REACH, Math.max(0, group.length - 1) * FAN_SLOT);
+      group.forEach((it, i) => hubAnchor.set(it.ei, at(span, (i + 0.5) / group.length)));
+    };
+    // 上边：由远离拐角的一端走向拐角（最上面的目标取最外侧 —— 越陡 ⇒ 出射点越靠内，同序）
+    place(above, (span, f) => [xSide - side * span * (1 - f), cy - hh]);
+    // 侧边：自上而下均分
+    place(mid, (_span, f) => [xSide, cy - hh + 2 * hh * f]);
+    // 下边：由拐角走向远离拐角的一端（最下面的目标取最外侧）
+    place(below, (span, f) => [xSide - side * span * f, cy + hh]);
+  }
+
+  const placed: PlacedEdge[] = edges.flatMap((e, ei) => {
+    const a = pos.get(e.from);
+    const b = pos.get(e.to);
+    if (!a || !b) return [];
+    const spec = hubSides.get(ei);
+    // 两端都不是中心：普通直连边。
+    if (!spec) return [{ ...e, points: [a, b], orthogonal: false }];
+    const anchor = hubAnchor.get(ei)!;
+    const line: Pt[] = [anchor, [spec.tgt[0], spec.tgt[1] + spec.off]];
     // 方向：中心出发 → 目标；目标出发 → 中心（箭头由末端点方向决定）。
-    const pts = hubIsFrom ? line : line.slice().reverse();
+    const pts = spec.hubIsFrom ? line : line.slice().reverse();
     return [{ ...e, points: pts, orthogonal: false }];
   });
 
@@ -825,15 +868,18 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
   const arcNote = useArc
     ? `邻居排成**限角等长扇形**（以中心为圆心的圆弧，相邻弦距固定、每条边长度≈${Math.round(arcR)}px），消除了单列形态下顶部 / 底部节点拖出的超长边；`
     : '';
+  const fanNote =
+    '每条边的出发点沿中心药丸**面向邻居那一侧**的「上边 → 侧边 → 下边」按目标次序铺开（一条边一个出入口，近中心处不再糊成一束），';
   return {
     nodes,
     edges: placed,
     width: contentW,
     height: contentH,
     content: boundsOf(nodes),
+    // 出发点分散也要说给用户：这是「边看起来从哪出来」的直接解释，否则会被当成随机偏移。
     note: viaStar
-      ? `径向入口判定本图为**星形**（每条边都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`
-      : `中心辐射布局：${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`,
+      ? `径向入口判定本图为**星形**（每条边都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`
+      : `中心辐射布局：${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`,
   };
 }
 

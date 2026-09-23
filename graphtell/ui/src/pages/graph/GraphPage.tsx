@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useAsync } from '@/shared/lib/useAsync';
 import { useProject, projectApi, type SubProject } from '@/entities/project';
-import { graphApi } from '@/entities/graph';
+import { graphApi, type DiagnosticSummary } from '@/entities/graph';
 import {
   useAggregateView,
   useObjectView,
@@ -165,6 +165,16 @@ export function GraphPage() {
   /** 子工程列表（id / name / role），供过滤器与画布着色 / 图例使用。 */
   const { data: subProjectsData } = useAsync(() => projectApi.subProjects(id), [id]);
   const subProjects: SubProject[] = subProjectsData ?? [];
+  /**
+   * 暂无解析器的语言（P2 写入的 `unsupported_languages` 符号表，经诊断汇总结构化返回）。
+   * 图视图顶部要靠它出横幅：这些子工程只有文件结构、没有语义抽取，
+   * 不说清楚，用户面对近乎空的图会以为是"工程本身没东西"，而不是"工具不支持"。
+   */
+  const { data: diagSummary } = useAsync<DiagnosticSummary | null>(
+    () => (Number.isNaN(id) ? Promise.resolve(null) : graphApi.diagnosticsSummary(id)),
+    [id],
+  );
+  const unsupportedLangs = diagSummary?.unsupported_languages ?? [];
   const TIER_LABEL: Record<string, string> = {
     frontend: t('前端'),
     backend: t('后端'),
@@ -875,13 +885,16 @@ export function GraphPage() {
                       <Typography.Text
                         style={{ fontSize: 12, cursor: 'pointer' }}
                         onClick={() => {
-                          if (o.edge) {
+                          // 先取出局部变量：在 `setState` 的回调里访问 `o.edge`，
+                          // TS 的收窄不进闭包（属性收窄在回调内失效），会报可能为 null。
+                          const oe = o.edge;
+                          if (oe) {
                             // 这条直连访问本身是可点击展开的语义边（如事件触发点）：
                             // 打开边证据链抽屉，逐跳核对调用过程，而非只开节点详情。
                             setInspectNode(null);
-                            setInspectEdge(o.edge.id);
-                            setInspectEdgeView(o.edge);
-                            setState((s) => ({ ...s, i: null, e: o.edge.id }));
+                            setInspectEdge(oe.id);
+                            setInspectEdgeView(oe);
+                            setState((s) => ({ ...s, i: null, e: oe.id }));
                           } else {
                             setInspectNode(o.id);
                             setInspectEdge(null);
