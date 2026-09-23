@@ -163,6 +163,14 @@ export function RulesPage() {
   const configs = useAsync(() => checkApi.ruleConfigs(id), [id]);
   // 子工程的语言/框架 = 本工程的技术栈环境，用它判断规则适不适用。
   const subs = useAsync(() => projectApi.subProjects(id), [id]);
+  // 本工程当前落库违规：按 rule_id 计数，用于规则卡上显示「命中 N 条」。
+  // 与结果页同源（上限 5000，超限时此计数反映「已载入」而非全量）。
+  const violations = useAsync(() => checkApi.violations(id, 5000), [id]);
+  const ruleCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const v of violations.data ?? []) m[v.rule_id] = (m[v.rule_id] ?? 0) + 1;
+    return m;
+  }, [violations.data]);
 
   // 配置到达后播种一次；之后草稿由用户掌控（刷新不会悄悄覆盖手上的编辑）。
   useEffect(() => {
@@ -399,6 +407,7 @@ export function RulesPage() {
   const renderRule = (r: CheckRule): ReactNode => {
     const d = draftFor(r.id);
     const fits = applicable(r);
+    const hits = ruleCounts[r.id] ?? 0;
     const effective = d.enabled ?? r.enabled;
     const overridden = d.enabled !== null || Object.keys(d.options).length > 0;
     const hasParams = (r.params?.length ?? 0) > 0;
@@ -426,6 +435,9 @@ export function RulesPage() {
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {r.id}
             </Typography.Text>
+            <Tag color={hits > 0 ? 'volcano' : 'default'}>
+              {hits} {t('条违规')}
+            </Tag>
             {d.enabled === null ? (
               <Tag>
                 {t('继承默认')}：{r.enabled ? t('启用') : t('停用')}
@@ -585,6 +597,8 @@ export function RulesPage() {
                 const on = list.filter(
                   (r) => applicable(r) && (draftFor(r.id).enabled ?? r.enabled),
                 ).length;
+                // 本分类下各规则当前命中的违规总数。
+                const hits = list.reduce((s, r) => s + (ruleCounts[r.id] ?? 0), 0);
                 return {
                   key: cat,
                   label: (
@@ -594,6 +608,9 @@ export function RulesPage() {
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         {t('启用')} {on}
                       </Typography.Text>
+                      <Tag color={hits > 0 ? 'volcano' : 'default'}>
+                        {t('违规')} {hits}
+                      </Tag>
                     </Space>
                   ),
                   // 阻止冒泡：否则点"整组启用"会顺手把分组折叠掉。

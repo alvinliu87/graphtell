@@ -8,6 +8,7 @@ import {
   Row,
   Segmented,
   Select,
+  Switch,
   Space,
   Table,
   Tag,
@@ -28,6 +29,7 @@ import {
   SEVERITY_ORDER,
   SEVERITY_RANK,
   type CheckReport,
+  type CheckRule,
   type Severity,
   type Violation,
 } from '@/entities/check';
@@ -79,6 +81,12 @@ export function CheckPage() {
   const [ruleFilter, setRuleFilter] = useState<string | 'all'>('all');
   const [subFilter, setSubFilter] = useState<number[]>([]);
   const [limit] = useState(20);
+  /**
+   * 下拉里每条规则的命中数，是否计入当前严重度筛选。
+   * 默认 false：计数只看子工程范围、不受严重度影响（选「警告」时仍能看到每条规则的总命中）。
+   * 打开后：计数与列表一致，随严重度筛选收窄。
+   */
+  const [countBySeverity, setCountBySeverity] = useState(false);
 
   // 子工程列表（供子项目筛选器）。
   const { data: subsData } = useAsync(() => projectApi.subProjects(id), [id]);
@@ -177,6 +185,61 @@ export function CheckPage() {
    */
   const emptyButShouldHaveData =
     !stored.loading && !loadFailed && scoped.length === 0 && storedTotal != null && storedTotal > 0;
+
+  /**
+   * 「计数基准」列表：默认与 `scoped` 一致（只看子工程范围）；
+   * 打开「计数随严重度」开关后，先按当前严重度收窄，使下拉命中数与列表同步。
+   */
+  const countBase = useMemo(
+    () =>
+      countBySeverity
+        ? scoped.filter((v) => severity === 'all' || v.severity === severity)
+        : scoped,
+    [scoped, countBySeverity, severity],
+  );
+
+  /**
+   * 每条规则的命中数：基于 `countBase`（子工程范围，可选项随严重度收窄）；
+   * 默认不随严重度筛选变化，否则数字跳变、难以解读。
+   */
+  const ruleCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const v of countBase) m[v.rule_id] = (m[v.rule_id] ?? 0) + 1;
+    return m;
+  }, [countBase]);
+
+  /**
+   * 规则下拉选项：按 `category` 分组（一级，不做多级树），组内按
+   * 「严重度 → 命中数降序 → 标题」排序，高频问题浮到上面；每条附命中数。
+   */
+  const ruleOptions = useMemo(() => {
+    const byCat = new Map<string, CheckRule[]>();
+    for (const r of rules.data ?? []) {
+      const arr = byCat.get(r.category);
+      if (arr) arr.push(r);
+      else byCat.set(r.category, [r]);
+    }
+    const cats = [...byCat.keys()].sort((a, b) => a.localeCompare(b));
+    return [
+      { label: t('全部规则'), value: 'all' },
+      ...cats.map((cat) => ({
+        label: cat,
+        options: byCat
+          .get(cat)!
+          .slice()
+          .sort(
+            (a, b) =>
+              SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
+              (ruleCounts[b.id] ?? 0) - (ruleCounts[a.id] ?? 0) ||
+              a.title.localeCompare(b.title),
+          )
+          .map((r) => ({
+            label: `${r.title}（${ruleCounts[r.id] ?? 0}）`,
+            value: r.id,
+          })),
+      })),
+    ];
+  }, [rules.data, ruleCounts, t]);
 
   const filtered = useMemo(
     () =>
@@ -389,14 +452,27 @@ export function CheckPage() {
               />
               <Select
                 size="small"
-                style={{ minWidth: 220 }}
+                style={{ minWidth: 260 }}
                 value={ruleFilter}
                 onChange={setRuleFilter}
-                options={[
-                  { label: t('全部规则'), value: 'all' },
-                  ...(rules.data ?? []).map((r) => ({ label: r.title, value: r.id })),
-                ]}
+                showSearch
+                optionFilterProp="label"
+                filterOption={(input, option) => {
+                  const q = input.toLowerCase();
+                  const lbl = (option?.label ?? '').toString().toLowerCase();
+                  const val = ((option as { value?: unknown })?.value ?? '')
+                    .toString()
+                    .toLowerCase();
+                  return lbl.includes(q) || val.includes(q);
+                }}
+                options={ruleOptions}
               />
+              <Space size={6}>
+                <Switch size="small" checked={countBySeverity} onChange={setCountBySeverity} />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('计数随严重度')}
+                </Typography.Text>
+              </Space>
               <Select
                 size="small"
                 mode="multiple"

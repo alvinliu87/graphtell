@@ -515,6 +515,9 @@ const dict: Record<Lang, Record<string, string>> = {
     '只对当前筛选出的规则生效': 'Applies only to the currently filtered rules',
     '不适用': 'N/A here',
     '需要': 'requires',
+    '条违规': 'violations',
+    '违规': 'violations',
+    '计数随严重度': 'counts follow severity',
     '本工程不是该规则的适用环境，检查时会被自动跳过':
       'This project is not in the rule’s target environment; the check will skip it automatically',
     '工程级覆盖只记「与全局默认不同的那部分」：恢复默认 = 删除覆盖行，规则随 YAML 演进':
