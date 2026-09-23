@@ -126,6 +126,29 @@ export const SEVERITY_RANK: Record<Severity, number> = {
   info: 3,
 };
 
+/**
+ * 严重度展示名：列 Tag / 统计卡 / 筛选项共用**同一份**。
+ *
+ * 同一组档位曾经在 CheckPage 与 RulesPage 各写一遍，于是必然漂移：统计卡写了 4 档、
+ * 而列表的严重度筛选只写了后 3 档 —— 「严重」只能靠「全部」看到，筛不出来。
+ * 档位数量的真相只在 `Severity` 类型 + 这里，多余一份列表就是一个未来的不一致。
+ */
+export const SEVERITY_LABEL: Record<Severity, string> = {
+  critical: '严重',
+  error: '错误',
+  warning: '警告',
+  info: '提示',
+};
+
+/**
+ * 严重度展示顺序（由 `SEVERITY_RANK` 推导，不另写一份数组）。
+ *
+ * 与表格排序、统计卡、筛选项天然同序 —— 三处各写一遍顺序是同一类漂移的来源。
+ */
+export const SEVERITY_ORDER: Severity[] = (Object.keys(SEVERITY_RANK) as Severity[]).sort(
+  (a, b) => SEVERITY_RANK[a] - SEVERITY_RANK[b],
+);
+
 export const SEVERITY_COLOR: Record<Severity, string> = {
   critical: 'magenta',
   error: 'red',

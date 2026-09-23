@@ -32,6 +32,8 @@ import { checkApi } from '@/entities/check';
 import { projectApi } from '@/entities/project';
 import {
   SEVERITY_COLOR,
+  SEVERITY_LABEL,
+  SEVERITY_ORDER,
   SEVERITY_RANK,
   type CheckRule,
   type ProjectRuleConfig,
@@ -39,13 +41,6 @@ import {
   type Severity,
 } from '@/entities/check';
 import { useLocale } from '@/shared/lib/i18n';
-
-const SEVERITY_LABEL: Record<Severity, string> = {
-  critical: '严重',
-  error: '错误',
-  warning: '警告',
-  info: '提示',
-};
 
 /**
  * 规则筛选：按"与本工程的关系"筛。
@@ -426,7 +421,7 @@ export function RulesPage() {
                 onChange={(v) => setEnabled(r.id, v)}
               />
             </Tooltip>
-            <Tag color={SEVERITY_COLOR[r.severity]}>{SEVERITY_LABEL[r.severity]}</Tag>
+            <Tag color={SEVERITY_COLOR[r.severity]}>{t(SEVERITY_LABEL[r.severity])}</Tag>
             <span style={{ fontWeight: 600 }}>{r.title}</span>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {r.id}
@@ -558,10 +553,7 @@ export function RulesPage() {
               onChange={setSeverities}
               placeholder={t('严重度')}
               style={{ minWidth: 170 }}
-              options={(['critical', 'error', 'warning', 'info'] as Severity[]).map((s) => ({
-                value: s,
-                label: SEVERITY_LABEL[s],
-              }))}
+              options={SEVERITY_ORDER.map((s) => ({ value: s, label: t(SEVERITY_LABEL[s]) }))}
             />
             <Segmented<StateFilter>
               value={stateFilter}

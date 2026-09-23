@@ -24,6 +24,8 @@ import { checkApi } from '@/entities/check';
 import { projectApi, type SubProject } from '@/entities/project';
 import {
   SEVERITY_COLOR,
+  SEVERITY_LABEL,
+  SEVERITY_ORDER,
   SEVERITY_RANK,
   type CheckReport,
   type Severity,
@@ -31,11 +33,12 @@ import {
 } from '@/entities/check';
 import { useLocale } from '@/shared/lib/i18n';
 
-const SEVERITY_LABEL: Record<Severity, string> = {
-  critical: '严重',
-  error: '错误',
-  warning: '警告',
-  info: '提示',
+/** 统计卡强调色（`SEVERITY_COLOR` 是 antd 语义色名，给表格 Tag 用，两者用途不同）。 */
+const SEVERITY_ACCENT: Record<Severity, string> = {
+  critical: '#a8071a',
+  error: '#ff4d4f',
+  warning: '#fa8c16',
+  info: '#3d7eff',
 };
 
 const SUB_ROLE_LABEL: Record<string, string> = {
@@ -345,18 +348,17 @@ export function CheckPage() {
                 accent="#7c5cff"
               />
             </Col>
-            <Col xs={12} md={4}>
-              <StatCard title={SEVERITY_LABEL.critical} value={counts.critical} accent="#a8071a" />
-            </Col>
-            <Col xs={12} md={4}>
-              <StatCard title={t('错误')} value={counts.error} accent="#ff4d4f" />
-            </Col>
-            <Col xs={12} md={4}>
-              <StatCard title={t('警告')} value={counts.warning ?? 0} accent="#fa8c16" />
-            </Col>
-            <Col xs={12} md={4}>
-              <StatCard title={t('提示')} value={counts.info ?? 0} accent="#3d7eff" />
-            </Col>
+            {/* 四档由 `SEVERITY_ORDER` 生成，与下方严重度筛选**同源同序** ——
+                手写两份列表正是「统计卡有严重、筛选器没有」的成因。 */}
+            {SEVERITY_ORDER.map((s) => (
+              <Col key={s} xs={12} md={4}>
+                <StatCard
+                  title={t(SEVERITY_LABEL[s])}
+                  value={counts[s] ?? 0}
+                  accent={SEVERITY_ACCENT[s]}
+                />
+              </Col>
+            ))}
           </Row>
 
           <Card
@@ -382,9 +384,7 @@ export function CheckPage() {
                 onChange={(v) => setSeverity(v as Severity | 'all')}
                 options={[
                   { label: t('全部'), value: 'all' },
-                  { label: t('错误'), value: 'error' },
-                  { label: t('警告'), value: 'warning' },
-                  { label: t('提示'), value: 'info' },
+                  ...SEVERITY_ORDER.map((s) => ({ label: t(SEVERITY_LABEL[s]), value: s })),
                 ]}
               />
               <Select
@@ -423,7 +423,7 @@ export function CheckPage() {
                   dataIndex: 'severity',
                   width: 92,
                   render: (s: Severity) => (
-                    <Tag color={SEVERITY_COLOR[s]}>{SEVERITY_LABEL[s]}</Tag>
+                    <Tag color={SEVERITY_COLOR[s]}>{t(SEVERITY_LABEL[s])}</Tag>
                   ),
                 },
                 { title: t('规则'), dataIndex: 'rule_id', width: 190, ellipsis: true },
