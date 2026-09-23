@@ -106,24 +106,50 @@ pub struct IdentityKey {
     pub kind: SynthesizedKind,
     /// 归一化后的值，如 `store_order`、`order.pay_success`、`POST /apple_login`。
     pub value: String,
+    /// 可选的作用域前缀（如缓存的 `side`：`frontend` / `backend`）。
+    ///
+    /// 仅用于**幂等合并区分**与持久化索引（`key()`），**不影响展示名 `value`**。
+    /// 例如前端 `uni.setStorageSync('token')` 与后端 `Cache::get('token')` 同名，
+    /// 必须合成两个独立节点；把 `side` 收进 `scope` 即可，而节点的展示名仍干净为 `token`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl IdentityKey {
     pub fn fqn(value: impl Into<String>) -> Self {
-        Self { kind: SynthesizedKind(SynthesizedKind::FQN.to_string()), value: value.into() }
+        Self { kind: SynthesizedKind(SynthesizedKind::FQN.to_string()), value: value.into(), scope: None }
     }
     pub fn named(value: impl Into<String>) -> Self {
-        Self { kind: SynthesizedKind(SynthesizedKind::NAMED.to_string()), value: value.into() }
+        Self { kind: SynthesizedKind(SynthesizedKind::NAMED.to_string()), value: value.into(), scope: None }
+    }
+    /// 带作用域的身份（展示名不变，仅合并键区分）。
+    pub fn named_scoped(value: impl Into<String>, scope: impl Into<String>) -> Self {
+        Self {
+            kind: SynthesizedKind(SynthesizedKind::NAMED.to_string()),
+            value: value.into(),
+            scope: Some(scope.into()),
+        }
     }
     pub fn contract(method: &str, path: &str) -> Self {
         Self {
             kind: SynthesizedKind(SynthesizedKind::CONTRACT_ID.to_string()),
             value: format!("{} {}", method.to_uppercase(), path),
+            scope: None,
         }
     }
+    /// 给现有身份附加作用域（链式调用）。
+    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.scope = Some(scope.into());
+        self
+    }
     /// 用于数据库唯一索引与跨规则比对的字符串形式。
+    ///
+    /// `scope` 一旦存在即拼进键，确保同 `value` 不同端的节点不会合并。
     pub fn key(&self) -> String {
-        format!("{}:{}", self.kind, self.value)
+        match &self.scope {
+            Some(s) => format!("{}:{}:{}", self.kind, s, self.value),
+            None => format!("{}:{}", self.kind, self.value),
+        }
     }
 
     /// 仅对 `ContractId` 有效：拆出 `(METHOD, /path)`。

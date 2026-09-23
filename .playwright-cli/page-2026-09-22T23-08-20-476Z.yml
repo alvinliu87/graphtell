@@ -1,0 +1,62 @@
+- generic [ref=f2e4]:
+  - complementary [ref=f2e5]:
+    - menu [ref=f2e7]:
+      - text: 探索
+      - group [ref=f2e8]:
+        - menuitem "apartment 图视图" [ref=f2e9] [cursor=pointer]:
+          - img "apartment" [ref=f2e10]
+          - generic [ref=f2e13]: 图视图
+        - menuitem "database 节点浏览" [ref=f2e14] [cursor=pointer]:
+          - img "database" [ref=f2e15]
+          - generic [ref=f2e18]: 节点浏览
+        - menuitem "search 代码召回" [ref=f2e19] [cursor=pointer]:
+          - img "search" [ref=f2e20]
+          - generic [ref=f2e23]: 代码召回
+      - text: 质量门禁
+      - group [ref=f2e24]:
+        - menuitem "safety-certificate 合规检查" [ref=f2e25] [cursor=pointer]:
+          - img "safety-certificate" [ref=f2e26]
+          - generic [ref=f2e29]: 合规检查
+        - menuitem "profile 规则集" [ref=f2e32] [cursor=pointer]:
+          - img "profile" [ref=f2e33]
+          - generic [ref=f2e36]: 规则集
+        - menuitem "warning 诊断" [ref=f2e37] [cursor=pointer]:
+          - img "warning" [ref=f2e38]
+          - generic [ref=f2e41]: 诊断
+  - generic [ref=f2e44]:
+    - banner [ref=f2e45]:
+      - generic [ref=f2e46]:
+        - button "收起侧边栏" [ref=f2e48] [cursor=pointer]:
+          - img "menu-fold" [ref=f2e50]
+        - generic [ref=f2e54]:
+          - generic [ref=f2e55]: GT
+          - generic [ref=f2e56]:
+            - generic [ref=f2e57]: GraphTell
+            - generic [ref=f2e58]: 代码库图化分析
+        - button "选择工程 down" [ref=f2e60] [cursor=pointer]:
+          - generic [ref=f2e61]: 选择工程
+          - img "down" [ref=f2e62]
+      - radiogroup "segmented control" [ref=f2e67]:
+        - generic [ref=f2e68]:
+          - generic [ref=f2e69] [cursor=pointer]:
+            - radio "中文" [checked]
+            - generic "中文" [ref=f2e70]
+          - generic [ref=f2e71] [cursor=pointer]:
+            - radio "EN"
+            - generic "EN" [ref=f2e72]
+    - main [ref=f2e73]:
+      - generic [ref=f2e74]:
+        - generic [ref=f2e75]:
+          - heading "合规检查" [level=2] [ref=f2e76]
+          - generic [ref=f2e77]: 建图后自动跑出的规则结论（持久化），规则集见「规则集」页 —— 新增规则无需改前端
+        - button "reload 刷新" [ref=f2e81] [cursor=pointer]:
+          - img "reload" [ref=f2e83]
+          - generic [ref=f2e86]: 刷新
+      - alert [ref=f2e87]:
+        - img "close-circle" [ref=f2e88]
+        - generic [ref=f2e91]:
+          - generic [ref=f2e92]: 落库违规读取失败
+          - generic [ref=f2e94]:
+            - generic [ref=f2e95]: HTTP 500 Internal Server Error
+            - generic [ref=f2e96]: 侧栏角标来自汇总接口，它成功而本列表失败，就会看到「总数不为 0 但结果为空」。
+        - button "重 试" [ref=f2e98] [cursor=pointer]

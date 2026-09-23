@@ -86,12 +86,23 @@ impl ViewService {
         for spec in &self.views.registry().perspectives {
             let available = match (&spec.mode, &spec.node_kind) {
                 (gt_domain::model::ViewMode::Object, Some(kind)) => {
-                    // 先按 kind 数；为 0 时回退到 category（兼容以 category 分组的视角）。
-                    let n = stats.by_kind.get(kind).copied().unwrap_or(0);
-                    if n > 0 {
-                        n
+                    // 带 `side` 的视角：按「kind + side」精确计数（前后端缓存拆分）。
+                    if let Some(side) = &spec.side {
+                        self.store
+                            .count_nodes(
+                                project_id,
+                                Some(&gt_domain::model::NodeKind(kind.clone())),
+                                Some(side.as_str()),
+                            )
+                            .unwrap_or(0)
                     } else {
-                        stats.by_category.get(kind).copied().unwrap_or(0)
+                        // 先按 kind 数；为 0 时回退到 category（兼容以 category 分组的视角）。
+                        let n = stats.by_kind.get(kind).copied().unwrap_or(0);
+                        if n > 0 {
+                            n
+                        } else {
+                            stats.by_category.get(kind).copied().unwrap_or(0)
+                        }
                     }
                 }
                 _ => stats.nodes,
@@ -140,6 +151,18 @@ impl ViewService {
         // 让「子项目作为上层维度」切到该子项目后，默认对象也落在它内部。
         if let Some(sid) = sub_project_id {
             nodes.retain(|n| n.sub_project_id == Some(sid));
+        }
+
+        // 按「端」过滤：把种类相同但端不同的节点（如前后端缓存）拆到各自视角。
+        // 不满足 `side` 的节点（缺属性或与视角不符）直接剔除；`side` 为 `None` 的视角不过滤。
+        if let Some(side) = &spec.side {
+            nodes.retain(|n| {
+                n.properties
+                    .get("side")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == side.as_str())
+                    .unwrap_or(false)
+            });
         }
 
         // 有搜索词：直接按名称命中，不做全量打分（下拉按需搜索，求快）。
@@ -1853,7 +1876,7 @@ impl ViewService {
             .ok_or_else(|| DomainError::NotFound(format!("视角 {perspective}")))?;
 
         let target_kind = spec.node_kind.clone().unwrap_or_default();
-        let nodes = self.store.query_nodes(&NodeFilter {
+        let mut nodes = self.store.query_nodes(&NodeFilter {
             project_id,
             kind: if target_kind.is_empty() {
                 None
@@ -1864,6 +1887,16 @@ impl ViewService {
             limit: Some(2000),
             offset: Some(0),
         })?;
+        // 按「端」过滤（前后端缓存拆分）。
+        if let Some(side) = &spec.side {
+            nodes.retain(|n| {
+                n.properties
+                    .get("side")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == side.as_str())
+                    .unwrap_or(false)
+            });
+        }
 
         if spec.layout == gt_domain::model::LayoutMode::Matrix {
             return Ok(self.matrix_view(project_id, spec, nodes, sample_limit));
@@ -2636,9 +2669,16 @@ impl ViewService {
         let Some(n) = self.store.get_node(id)? else {
             return Ok(None);
         };
+        // 节点所属「端」：FKB 在语义节点上标注的 `side`（`frontend` / `backend`）。
+        // 透传给前端，并用于「点击即切」时按端选对视角（前后端缓存拆分）。
+        let side = n
+            .properties
+            .get("side")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let registry = self.views.registry();
         let own_view = registry
-            .view_for_kind(n.kind.as_str())
+            .view_for_kind_and_side(n.kind.as_str(), side.as_deref())
             .map(|s| s.id.clone());
         let has_own_view = own_view.is_some();
         let annotations: Vec<String> = self
@@ -2688,13 +2728,6 @@ impl ViewService {
                 }
             }
         }
-        // 节点所属「端」：FKB 在语义节点上标注的 `side`（`frontend` / `backend`）。
-        // 透传给前端，用于图上区分前后端子工程。
-        let side = n
-            .properties
-            .get("side")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
         Ok(Some(NodeView {
             id,
             kind: n.kind.to_string(),

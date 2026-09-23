@@ -41,6 +41,28 @@ pub struct SyntaxFacts {
     /// 且只有**至少一侧像签名值**时才收 —— 否则一个工程里几万条比较全进来，
     /// 事实集体积爆炸（CORS 那条只收 Allow-Origin 一个头，同理）。
     pub sign_compares: Vec<SignCompareFact>,
+    /// 方法体内的**局部变量赋值**（`$sql = ...;` / `$sql .= ...;`）。
+    ///
+    /// 供 P9 Taint 做**同函数内**的反向追踪：判断一个被拼进 SQL 的变量到底
+    /// 是不是来自请求。没有它，Taint 只能看调用点参数文本里"有没有 `$var`" ——
+    /// 于是 `Db::execute($execSql)` 这种整段变量传入的写法一律判高危，
+    /// 而该变量其实来自随版本包发布的本地文件（实测 CRMEB 40 条里有 34 条是这类）。
+    #[serde(default)]
+    pub variable_assignments: Vec<VariableAssignFact>,
+}
+
+/// 一次局部变量赋值。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariableAssignFact {
+    /// 变量名（不含 `$`），如 `execSql`。
+    pub var: String,
+    /// 赋值右侧的源码原文，如 `str_replace('@table', $table, $sql)`。
+    pub rhs: String,
+    /// 所在方法 / 函数的 FQN（反向追踪的作用域边界）。
+    pub owner_fqn: String,
+    /// 文件（在 `cf_ast` 阶段由 `file.path` 填充，与 `SignCompareFact` 同）。
+    pub file: String,
+    pub span: Span,
 }
 
 /// 声明。

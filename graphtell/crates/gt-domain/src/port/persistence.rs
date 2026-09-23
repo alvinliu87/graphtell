@@ -183,6 +183,16 @@ pub trait GraphQuery: Send + Sync {
     /// 违规与召回都要把节点还原成 `path:line`；同样是避免逐文件往返。
     fn file_paths(&self, project_id: ProjectId) -> Result<HashMap<i64, String>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
+    /// 按「种类 + 端（side）」统计节点数（比 `query_nodes` 轻量，只 `COUNT`）。
+    /// 视角层用它给带 `side` 过滤的视角（如前端本地存储 / 后端缓存拆分）算候选数量。
+    ///
+    /// `side` 为 `None` 时不限制端；`kind` 为 `None` 时不限制种类。
+    fn count_nodes(
+        &self,
+        project_id: ProjectId,
+        kind: Option<&NodeKind>,
+        side: Option<&str>,
+    ) -> Result<u64>;
     /// 按主键取边（供"边证据链"查询）。
     fn find_edge(&self, id: crate::model::EdgeId) -> Result<Option<Edge>>;
     /// 取文件路径（供跳转定位）。

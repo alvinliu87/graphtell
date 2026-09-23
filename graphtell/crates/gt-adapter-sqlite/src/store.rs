@@ -632,7 +632,11 @@ impl GraphSink for SqliteStore {
                     n.kind.as_str(),
                     n.name,
                     n.fqn,
-                    n.identity.as_ref().map(|i| i.key()),
+                    n.identity.as_ref().map(|i| {
+                        // 存完整 JSON（含 scope），保证前后端同名缓存 key 的 scope 不丢；
+                        // 序列化失败时退回扁平 key 字符串（旧数据兼容）。
+                        serde_json::to_string(i).unwrap_or_else(|_| i.key())
+                    }),
                     n.file_id.map(|f| f.get()),
                     n.span.start_line as i64,
                     n.span.end_line as i64,
@@ -858,6 +862,32 @@ impl GraphQuery for SqliteStore {
             .query_map(rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), row_to_node)
             .map_err(DomainError::infra)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
+
+    fn count_nodes(
+        &self,
+        project_id: ProjectId,
+        kind: Option<&NodeKind>,
+        side: Option<&str>,
+    ) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from("SELECT COUNT(*) FROM nodes WHERE project_id = ?1");
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_id.get())];
+        if let Some(kind) = kind {
+            let p = binds.len() + 1;
+            sql.push_str(&format!(
+                " AND (kind = ?{p} OR json_extract(properties, '$.category') = ?{p})"
+            ));
+            binds.push(Box::new(kind.to_string()));
+        }
+        if let Some(side) = side {
+            let p = binds.len() + 1;
+            sql.push_str(&format!(" AND json_extract(properties, '$.side') = ?{p}"));
+            binds.push(Box::new(side.to_string()));
+        }
+        conn.query_row(&sql, rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), |r| r.get(0))
+            .map(|c: i64| c as u64)
             .map_err(DomainError::infra)
     }
 
@@ -1542,7 +1572,7 @@ fn row_to_node(row: &rusqlite::Row) -> rusqlite::Result<Node> {
         fqn: row.get(5)?,
         identity: row
             .get::<_, Option<String>>(6)?
-            .map(|s| identity_from_key(&s)),
+            .and_then(|s| identity_from_key(&s)),
         file_id: row.get::<_, Option<i64>>(7)?.map(FileId),
         span: Span {
             start_line: row.get(8)?,
@@ -1560,13 +1590,19 @@ fn row_to_node(row: &rusqlite::Row) -> rusqlite::Result<Node> {
     })
 }
 
-fn identity_from_key(key: &str) -> gt_domain::model::IdentityKey {
-    match key.split_once(':') {
-        Some((kind, value)) => gt_domain::model::IdentityKey {
+fn identity_from_key(raw: &str) -> Option<gt_domain::model::IdentityKey> {
+    // 新格式：完整 JSON（含 `scope`）。
+    if let Ok(k) = serde_json::from_str::<gt_domain::model::IdentityKey>(raw) {
+        return Some(k);
+    }
+    // 旧格式兼容：扁平 `kind:value`（或 `kind:scope:value` 退化处理）。
+    match raw.split_once(':') {
+        Some((kind, value)) => Some(gt_domain::model::IdentityKey {
             kind: gt_domain::model::SynthesizedKind(kind.to_string()),
             value: value.to_string(),
-        },
-        None => gt_domain::model::IdentityKey::named(key),
+            scope: None,
+        }),
+        None => Some(gt_domain::model::IdentityKey::named(raw)),
     }
 }
 

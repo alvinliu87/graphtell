@@ -10,7 +10,7 @@ use gt_domain::model::{
     CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
     InheritanceFact, Language, NodeKind, SyntaxFacts,
 };
-use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact};
+use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
 use serde_json::json;
 use tree_sitter::{Language as TsLanguage, Node, Parser};
 use value::{eval_expr, span_of, text};
@@ -894,6 +894,19 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                             span: span_of(child),
                         });
                     }
+                    // 局部变量赋值（供 P9 Taint 反向追踪变量来源）。
+                    //
+                    // 只收**裸变量**左侧：`$this->x` / `$a['k']` 不是局部变量，
+                    // 追不到"是不是来自请求"，收进来只会让索引失真。
+                    if let Some(var) = plain_var_name(l, ctx.src) {
+                        ctx.facts.variable_assignments.push(VariableAssignFact {
+                            var,
+                            rhs: text(r, ctx.src).trim().to_string(),
+                            owner_fqn: owner_fqn.to_string(),
+                            file: String::new(),
+                            span: span_of(child),
+                        });
+                    }
                 }
                 recurse_calls(child, ctx, owner_fqn);
             }
@@ -910,6 +923,28 @@ fn recurse_calls(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
 /// 若赋值左侧是 `['Access-Control-Allow-Origin']` 这类下标访问，返回归一化头名；否则 `None`。
 ///
 /// 只关心会触发反射型 CORS 的 `Access-Control-Allow-Origin` 头（大小写不敏感、忽略引号）。
+/// 赋值左侧是**裸变量**时返回变量名（不含 `$`）；`$this->x` / `$a['k']` 返回 `None`。
+///
+/// 只认形如 `$sql` 的写法：`$this->` 是属性、`$a['k']` 是下标，两者都不是局部变量，
+/// 收进来会让 P9 Taint 的反向追踪把属性/数组读写误当成局部赋值链的一环。
+fn plain_var_name(node: Node, src: &str) -> Option<String> {
+    let raw = text(node, src).trim().to_string();
+    let body = raw.strip_prefix('$')?;
+    if body.is_empty() || !body.contains(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    // 只留标识符：`->`、`[`、空格等都说明不是裸变量。
+    if !body.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    // 首字符必须是字母或 `_`（`$1` 之类不是合法 PHP 变量）。
+    let first = body.chars().next()?;
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return None;
+    }
+    Some(body.to_string())
+}
+
 fn cors_header_key(node: Node, src: &str) -> Option<String> {
     if node.kind() != "subscript_expression" {
         return None;
@@ -957,6 +992,31 @@ Route::miss(function () {
                     .unwrap_or(false)
         });
         assert!(origin_call, "应捕获同行的 ->header('origin') 调用点");
+    }
+
+    #[test]
+    fn captures_local_variable_assignments() {
+        let src = "<?php
+class M {
+    public function run() {
+        $sql = 'select 1';
+        $exec = str_replace('@table', $t, $sql);
+        $this->conf = $sql;
+        $list['k'] = $sql;
+    }
+}";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("m.php", src).unwrap();
+        let vars: Vec<&str> = facts
+            .variable_assignments
+            .iter()
+            .map(|a| a.var.as_str())
+            .collect();
+        // 只收裸变量左侧：`$this->conf` / `$list['k']` 不是局部变量。
+        assert_eq!(vars, vec!["sql", "exec"]);
+        let exec = &facts.variable_assignments[1];
+        assert!(exec.rhs.contains("$sql"), "右侧原文应保留变量引用: {}", exec.rhs);
+        assert!(exec.owner_fqn.ends_with("run"), "owner_fqn={}", exec.owner_fqn);
     }
 
     /// 按调用点原文片段取它的 `in_loop` 标记（同一段源码里动词会重名，只能按行区分）。

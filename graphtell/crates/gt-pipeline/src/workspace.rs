@@ -10,7 +10,7 @@ use gt_domain::model::{
     Language, MergeStrategy, NewAnnotation, NewEdge, NewNode, Node, NodeId, NodeKind, Phase,
     ProjectId, Severity, Span, SubProjectId, SynthesizedKind,
 };
-use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact};
+use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
 use serde_json::Value;
 
 /// 一次调用点在工作区中的记录。
@@ -233,6 +233,9 @@ pub struct GraphWorkspace {
     /// 子工程事实（app_root 等），键为 sub_project_id。
     pub facts: BTreeMap<i64, BTreeMap<String, Value>>,
     pub diagnostics: Vec<Diagnostic>,
+    /// 局部变量赋值（`$sql = ...;`），按 (owner_fqn, var) → 右侧源码索引，
+    /// 供 `phase::taint` 在同函数内反向追踪变量来源。
+    pub variable_assignments: Vec<VariableAssignFact>,
     delta: GraphDelta,
 }
 
@@ -281,6 +284,7 @@ impl GraphWorkspace {
             table_prefixes: Vec::new(),
             facts: BTreeMap::new(),
             diagnostics: Vec::new(),
+            variable_assignments: Vec::new(),
             delta: GraphDelta::new(project_id),
         }
     }

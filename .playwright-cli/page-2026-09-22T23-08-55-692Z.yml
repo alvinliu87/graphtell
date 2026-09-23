@@ -1,0 +1,54 @@
+- generic [ref=f3e4]:
+  - complementary [ref=f3e5]:
+    - menu [ref=f3e7]:
+      - text: 探索
+      - group [ref=f3e8]:
+        - menuitem "apartment 图视图" [ref=f3e9] [cursor=pointer]:
+          - img "apartment" [ref=f3e10]
+          - generic [ref=f3e13]: 图视图
+        - menuitem "database 节点浏览" [ref=f3e14] [cursor=pointer]:
+          - img "database" [ref=f3e15]
+          - generic [ref=f3e18]: 节点浏览
+        - menuitem "search 代码召回" [ref=f3e19] [cursor=pointer]:
+          - img "search" [ref=f3e20]
+          - generic [ref=f3e23]: 代码召回
+      - text: 质量门禁
+      - group [ref=f3e24]:
+        - menuitem "safety-certificate 合规检查" [ref=f3e25] [cursor=pointer]:
+          - img "safety-certificate" [ref=f3e26]
+          - generic [ref=f3e29]: 合规检查
+        - menuitem "profile 规则集" [ref=f3e32] [cursor=pointer]:
+          - img "profile" [ref=f3e33]
+          - generic [ref=f3e36]: 规则集
+        - menuitem "warning 诊断" [ref=f3e37] [cursor=pointer]:
+          - img "warning" [ref=f3e38]
+          - generic [ref=f3e41]: 诊断
+  - generic [ref=f3e44]:
+    - banner [ref=f3e45]:
+      - generic [ref=f3e46]:
+        - button "收起侧边栏" [ref=f3e48] [cursor=pointer]:
+          - img "menu-fold" [ref=f3e50]
+        - generic [ref=f3e54]:
+          - generic [ref=f3e55]: GT
+          - generic [ref=f3e56]:
+            - generic [ref=f3e57]: GraphTell
+            - generic [ref=f3e58]: 代码库图化分析
+        - button "选择工程 down" [ref=f3e60] [cursor=pointer]:
+          - generic [ref=f3e61]: 选择工程
+          - img "down" [ref=f3e62]
+      - radiogroup "segmented control" [ref=f3e67]:
+        - generic [ref=f3e68]:
+          - generic [ref=f3e69] [cursor=pointer]:
+            - radio "中文" [checked]
+            - generic "中文" [ref=f3e70]
+          - generic [ref=f3e71] [cursor=pointer]:
+            - radio "EN"
+            - generic "EN" [ref=f3e72]
+    - main [ref=f3e73]:
+      - generic [ref=f3e74]:
+        - generic [ref=f3e75]:
+          - heading "合规检查" [level=2] [ref=f3e76]
+          - generic [ref=f3e77]: 建图后自动跑出的规则结论（持久化），规则集见「规则集」页 —— 新增规则无需改前端
+        - button "reload 刷新" [ref=f3e81] [cursor=pointer]:
+          - img "reload" [ref=f3e83]
+          - generic [ref=f3e86]: 刷新

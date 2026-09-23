@@ -36,6 +36,28 @@ impl ViewRegistry {
     pub fn view_for_kind(&self, kind: &str) -> Option<&PerspectiveSpec> {
         self.node_views.get(kind).and_then(|id| self.by_id(id))
     }
+
+    /// 带「端」的视角解析：优先匹配 `node_kind == kind` 且 `side` 命中的专用视角
+    /// （如后端 `Cache → cache`、前端 `Cache → local_storage`），否则退回 `view_for_kind`。
+    ///
+    /// 同一 `kind`（如 `Cache`）被拆成前后端两个视角时，点击节点应按其 `side`
+    /// 切到正确的那个，而不是被 `node_views` 的单一映射锁死。
+    pub fn view_for_kind_and_side(
+        &self,
+        kind: &str,
+        side: Option<&str>,
+    ) -> Option<&PerspectiveSpec> {
+        if let Some(side) = side {
+            if let Some(p) = self
+                .perspectives
+                .iter()
+                .find(|p| p.node_kind.as_deref() == Some(kind) && p.side.as_deref() == Some(side))
+            {
+                return Some(p);
+            }
+        }
+        self.view_for_kind(kind)
+    }
 }
 
 /// 视角声明。
@@ -48,6 +70,11 @@ pub struct PerspectiveSpec {
     pub mode: ViewMode,
     /// 对象类视角对应的节点种类。
     pub node_kind: Option<String>,
+    /// 仅纳入某「端」的节点：`frontend` / `backend`（按节点属性 `side` 过滤）。
+    /// 用于把"种类相同但端不同"的节点拆到不同视角，例如后端 `Cache` 与前端
+    /// `uni.setStorageSync` 都合成 `Cache` 节点，靠 `side` 拆成「缓存视角 / 本地存储视角」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
     /// 默认布局算法。
     pub layout: LayoutMode,
     /// 聚合视角的分组维度。
@@ -71,6 +98,7 @@ impl Default for PerspectiveSpec {
             label: String::new(),
             mode: ViewMode::Object,
             node_kind: None,
+            side: None,
             layout: LayoutMode::Radial,
             group_by: None,
             row_from: None,

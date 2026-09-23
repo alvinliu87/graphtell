@@ -764,7 +764,7 @@ fn exec_synthesize_one(
 ) -> NodeId {
     let ev = Evaluator::new(&ctx.ws, mctx).with_variant(variant.cloned());
     let identity = compute_identity(&ev, &s.identity, variant);
-    let Some(identity) = identity else {
+    let Some(mut identity) = identity else {
         ctx.ws.diagnose(
             phase,
             "IdentityUnresolved",
@@ -774,6 +774,28 @@ fn exec_synthesize_one(
         );
         return matched;
     };
+
+    // 把 `side`（frontend / backend）收进身份作用域，避免同名 key 前后端合并。
+    // 展示名 `value` 保持干净（仍是 key 原文，如 `token`），只在幂等合并键上区分。
+    // 适用：缓存 / 配置 / 事件 / 队列 / Topic 等「进程外中介」与资产类节点
+    // （ConfigKey / Event / Queue / Topic / Cache …），它们各自属于某一端，
+    // 前端 `uni.setStorageSync('token')` 与后端 `Cache::get('token')` 因此是
+    // 两个独立节点，而非共用一个。
+    //
+    // **唯一例外是 HttpContract（API 契约）**：前端调用与后端路由的同名契约本就该
+    // 合并（那是前后端链路打通的关键），绝不能按端拆分。契约身份用 `CONTRACT_ID`
+    // 标记，这里据此放行。
+    if identity.kind.as_str() != SynthesizedKind::CONTRACT_ID {
+        if let Some(side) = s
+            .fields
+            .iter()
+            .find(|f| f.name == "side")
+            .and_then(|f| f.value.as_ref())
+            .and_then(|vs| ev.string(vs))
+        {
+            identity = identity.with_scope(side);
+        }
+    }
 
     // 子类型提升为"种类"：`node: ExternalSystem, subtype: Cache` → kind = `Cache`。
     // 不再写 `ExternalSystem` 伞类别：每个语义节点都以其**具体种类**（Event / Queue /
@@ -1240,7 +1262,7 @@ fn compute_identity(
     if value.is_empty() {
         return None;
     }
-    Some(IdentityKey { kind, value })
+    Some(IdentityKey { kind, value, scope: None })
 }
 
 /// 供外部复用的解析层级判定（P7 用）。

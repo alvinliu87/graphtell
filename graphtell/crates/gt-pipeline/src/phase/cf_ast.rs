@@ -536,6 +536,19 @@ fn build_file(
             span: c.span,
         });
     }
+
+    // 局部变量赋值事实：补上文件路径，供 `phase::taint` 在同函数内反向追踪变量来源。
+    for a in &facts.variable_assignments {
+        ctx.ws
+            .variable_assignments
+            .push(gt_domain::model::syntax::VariableAssignFact {
+                var: a.var.clone(),
+                rhs: a.rhs.clone(),
+                owner_fqn: a.owner_fqn.clone(),
+                file: file.path.clone(),
+                span: a.span,
+            });
+    }
 }
 
 fn property_value(d: &Declaration) -> FactValue {

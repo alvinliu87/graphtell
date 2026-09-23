@@ -104,6 +104,7 @@ export function CheckPage() {
     [violations, subFilter],
   );
   const hasResults = scoped.length > 0 || report !== null;
+  const loadFailed = stored.error !== null;
 
   const refresh = async () => {
     setRunning(true);
@@ -162,6 +163,17 @@ export function CheckPage() {
     : null;
   const truncated =
     storedTotal != null && subFilter.length === 0 && scoped.length > 0 && scoped.length < storedTotal;
+
+  /**
+   * 「汇总有数、列表为空」必须单独说清楚。
+   *
+   * 曾经只要列表为空就显示「还没有检查结果」，而 `stored.error` 从没被渲染 ——
+   * 于是请求失败（工程 id 失效、后端 500、网络不通）与"确实 0 条违规"长得一模一样。
+   * 更糟的是此时侧栏角标（同源的 summary）仍显示历史总数，
+   * 于是出现"总数不为 0 但结果为空"却没有任何解释的界面。
+   */
+  const emptyButShouldHaveData =
+    !stored.loading && !loadFailed && scoped.length === 0 && storedTotal != null && storedTotal > 0;
 
   const filtered = useMemo(
     () =>
@@ -282,7 +294,41 @@ export function CheckPage() {
         />
       ) : null}
 
-      {!hasResults && !stored.loading ? (
+      {loadFailed ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('落库违规读取失败')}
+          description={
+            <div>
+              <div>{stored.error}</div>
+              <div style={{ marginTop: 8 }}>
+                {t('侧栏角标来自汇总接口，它成功而本列表失败，就会看到「总数不为 0 但结果为空」。')}
+              </div>
+            </div>
+          }
+          action={
+            <Button size="small" onClick={() => void stored.reload()}>
+              {t('重试')}
+            </Button>
+          }
+        />
+      ) : null}
+
+      {emptyButShouldHaveData && !loadFailed ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('汇总有数但列表为空')}
+          description={t(
+            `汇总显示本工程共 ${storedTotal} 条违规，但当前列表读到了 0 条 —— 常见原因是子工程筛选把结果过滤空了，或上一轮落库被重建清空而汇总仍是旧值。可点「刷新」重跑一次。`,
+          )}
+        />
+      ) : null}
+
+      {!hasResults && !stored.loading && !loadFailed && !emptyButShouldHaveData ? (
         <Empty
           description={t('还没有检查结果 —— 点右上角「刷新」运行一次（新工程建图会自动跑）')}
           style={{ marginBlock: 48 }}

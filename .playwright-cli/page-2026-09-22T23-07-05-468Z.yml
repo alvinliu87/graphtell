@@ -1,0 +1,54 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - menu [ref=e7]:
+      - text: 探索
+      - group [ref=e8]:
+        - menuitem "apartment 图视图" [ref=e9] [cursor=pointer]:
+          - img "apartment" [ref=e10]
+          - generic [ref=e13]: 图视图
+        - menuitem "database 节点浏览" [ref=e14] [cursor=pointer]:
+          - img "database" [ref=e15]
+          - generic [ref=e18]: 节点浏览
+        - menuitem "search 代码召回" [ref=e19] [cursor=pointer]:
+          - img "search" [ref=e20]
+          - generic [ref=e23]: 代码召回
+      - text: 质量门禁
+      - group [ref=e24]:
+        - menuitem "safety-certificate 合规检查" [ref=e25] [cursor=pointer]:
+          - img "safety-certificate" [ref=e26]
+          - generic [ref=e29]: 合规检查
+        - menuitem "profile 规则集" [ref=e32] [cursor=pointer]:
+          - img "profile" [ref=e33]
+          - generic [ref=e36]: 规则集
+        - menuitem "warning 诊断" [ref=e37] [cursor=pointer]:
+          - img "warning" [ref=e38]
+          - generic [ref=e41]: 诊断
+  - generic [ref=e44]:
+    - banner [ref=e45]:
+      - generic [ref=e46]:
+        - button "收起侧边栏" [ref=e48] [cursor=pointer]:
+          - img "menu-fold" [ref=e50]
+        - generic [ref=e54]:
+          - generic [ref=e55]: GT
+          - generic [ref=e56]:
+            - generic [ref=e57]: GraphTell
+            - generic [ref=e58]: 代码库图化分析
+        - button "选择工程 down" [ref=e60] [cursor=pointer]:
+          - generic [ref=e61]: 选择工程
+          - img "down" [ref=e62]
+      - radiogroup "segmented control" [ref=e67]:
+        - generic [ref=e68]:
+          - generic [ref=e69] [cursor=pointer]:
+            - radio "中文" [checked]
+            - generic "中文" [ref=e70]
+          - generic [ref=e71] [cursor=pointer]:
+            - radio "EN"
+            - generic "EN" [ref=e72]
+    - main [ref=e73]:
+      - generic [ref=e74]:
+        - generic [ref=e75]:
+          - heading "合规检查" [level=2] [ref=e76]
+          - generic [ref=e77]: 建图后自动跑出的规则结论（持久化），规则集见「规则集」页 —— 新增规则无需改前端
+        - button "reload 刷新" [ref=e81] [cursor=pointer]:
+          - img "reload" [ref=e83]
+          - generic [ref=e86]: 刷新

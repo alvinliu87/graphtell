@@ -49,9 +49,23 @@ perspectives:
     label: 事件视角
     mode: object
     node_kind: Event
+    # 只收后端领域事件（`side=backend`）：`Event::dispatch` / `Event::listen` 等。
+    # 前端组件间事件总线（uni-app `uni.$emit`）合成的是 `EventBus` 节点，被拆到
+    # 「前端事件」视角，不再混进这里（与缓存前后端拆分同构）。
+    side: backend
     layout: radial
     depth: 2
-    description: 事件总线：谁发布、谁监听（节点种类 Event）
+    description: 后端事件：谁发布、谁监听（Event::dispatch/listen，节点种类 Event，side=backend）
+
+  - id: event_bus
+    label: 前端事件
+    mode: object
+    node_kind: EventBus
+    # 只收前端组件间事件总线（`side=frontend`）：`uni.$emit` / `bus.$emit` / `$eventHub.$emit`。
+    side: frontend
+    layout: radial
+    depth: 2
+    description: 前端事件总线：谁发射、谁监听（uni.$emit/bus.$emit，节点种类 EventBus，side=frontend）
 
   - id: queue
     label: 队列视角
@@ -65,9 +79,22 @@ perspectives:
     label: 缓存视角
     mode: object
     node_kind: Cache
+    # 只收后端缓存（`side=backend`）：`Cache::*` / `Redis::*` / `*CacheService::*`。
+    # 前端本地存储被拆到「本地存储」视角，不再混进这里。
+    side: backend
     layout: radial
     depth: 2
-    description: 缓存：谁读、谁写（节点种类 Cache）
+    description: 后端缓存：谁读、谁写（Cache::/Redis::/*CacheService::，节点种类 Cache，side=backend）
+
+  - id: local_storage
+    label: 本地存储
+    mode: object
+    node_kind: Cache
+    # 只收前端本地存储（`side=frontend`）：`uni.getStorageSync` / `localStorage`。
+    side: frontend
+    layout: radial
+    depth: 2
+    description: 前端本地存储：谁读、谁写（uni.setStorageSync/localStorage，节点种类 Cache，side=frontend）
 
   - id: schedule
     label: 计划任务
@@ -134,6 +161,7 @@ node_views:
   # 进程外中介各自是独立种类，直接切到对应具体视角（不再有"外部系统"伞）。
   Cache: cache
   Event: event
+  EventBus: event_bus
   Queue: queue
   Schedule: schedule
   Topic: topic

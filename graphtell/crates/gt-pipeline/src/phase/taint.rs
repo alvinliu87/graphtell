@@ -20,8 +20,20 @@
 //! * where 条件插值：`->where("CONCAT(',',roles,',') LIKE '%,$roles,%'")` 这类把变量
 //!   直接塞进条件字符串的写法 —— 第 0 参是字符串且含插值即注入（裸变量留给 Tier-2）。
 //!
-//! 以上两类恰好覆盖 CRMEB 实测的全部 SQLi 形态（`SystemAdmin::searchRolesAttr`、
-//! `SystemDatabackup`、`SystemCrud::599`、`UpgradeController` 的 `$findSql`）。
+//! # P10 反向追踪：变量到底是不是来自请求
+//!
+//! 只看调用点参数文本（"里面有没有 `$var`"）会大量误报：`Db::execute($execSql)`
+//! 这种整段变量传入的写法一律命中，而 `$execSql` 其实来自随版本包发布的本地文件
+//! （实测 CRMEB 的 `sql-injection-raw` 40 条里 34 条是这类）。
+//!
+//! 因此这里在**同一函数内**沿赋值链反向追踪：变量 → 它的赋值右侧 → 右侧引用的
+//! 其它变量 → ……，只要链上任何一环出现请求源（`request()->param()` / `input()` /
+//! `$_GET` 等）才判定为污点。作用域限制在函数内，不做跨过程（Tier-2 的活）。
+//!
+//! 追不到来源（例如变量是函数参数）按"未见请求源"处理 —— 宁可漏报也不制造
+//! 无法解释的 critical；漏报会由 `rules_silent`（跑了但 0 命中）显式暴露出来。
+
+use std::collections::{HashMap, HashSet};
 
 use gt_domain::model::{
     AnnotationChannel, FactValue, Language, MergeStrategy, NewAnnotation, NodeId, Phase,
@@ -51,6 +63,19 @@ pub fn run(ctx: &mut PipelineContext) {
 
     let mut raw_count = 0usize;
     let mut where_count = 0usize;
+    /// 证实来自请求的（critical）之外的"来源不明"（warning）计数。
+    let mut raw_unknown_count = 0usize;
+    let mut where_unknown_count = 0usize;
+
+    // 赋值索引：(函数 FQN, 变量名) → 该变量在本函数内的所有赋值右侧源码。
+    // 与 `ctx.ws.calls` 一样先建好，避免循环里的借用冲突。
+    let mut index: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+    for a in &ctx.ws.variable_assignments {
+        index
+            .entry((a.owner_fqn.as_str(), a.var.as_str()))
+            .or_default()
+            .push(a.rhs.as_str());
+    }
 
     // 先收集待标注的调用点，避免 `ctx.ws.calls` 的不可变借用与 `annotate` 的可变借用冲突。
     let mut targets: Vec<(NodeId, String, String, String)> = Vec::new();
@@ -84,8 +109,29 @@ pub fn run(ctx: &mut PipelineContext) {
             continue;
         }
 
+        // 反向追踪：参数里的变量是否真的来自请求。
+        //
+        // * 证实来自请求 → `tainted_raw` / `tainted_where`（critical，可阻断）；
+        // * 追不到来源（变量是参数 / 跨函数）→ `*_unknown`（warning，需确认）。
+        //
+        // 第二类**不能静默丢弃**：实测 `SystemAdmin::searchRolesAttr($query, $roles)`
+        // 里 `$roles` 就是形参，与"来自本地升级文件"的误报同形，函数内视角分不开。
+        // 全部丢掉会静默漏报真实注入，而 `rules_silent` 兜不住（规则仍有命中）。
+        let vars = var_names_in(&arg_text(sql_arg));
+        let proven = vars
+            .iter()
+            .any(|v| reaches_request(&index, call.owner_fqn.as_str(), v));
+        // 参数里没有可解析的变量（例如 `$this->alias . '.uid'` 之外的形态）时维持原判据。
+        let unknown = !vars.is_empty() && !proven;
+
         let (kind, counter) = if is_raw {
-            ("tainted_raw", &mut raw_count)
+            if unknown {
+                ("tainted_raw_unknown", &mut raw_unknown_count)
+            } else {
+                ("tainted_raw", &mut raw_count)
+            }
+        } else if unknown {
+            ("tainted_where_unknown", &mut where_unknown_count)
         } else {
             ("tainted_where", &mut where_count)
         };
@@ -115,10 +161,99 @@ pub fn run(ctx: &mut PipelineContext) {
     }
 
     tracing::info!(
-        "P9 污点完成：原始SQL注入 {} 处，where 条件插值注入 {} 处",
+        "P9 污点完成：原始SQL注入 {} 处（来源不明 {} 处），where 条件插值注入 {} 处（来源不明 {} 处）",
         raw_count,
-        where_count
+        raw_unknown_count,
+        where_count,
+        where_unknown_count
     );
+}
+
+/// 反向追踪的最大深度（防止 `$a = $b; $b = $a;` 这类环与超长链）。
+const TRACE_DEPTH: u8 = 4;
+
+/// 请求源特征：出现任一即认为该表达式读到了用户输入。
+///
+/// 名单刻意保守（只认框架/超全局的取参写法），`$request` 也计入 —— 它被注入
+/// 进来时就是 Request 对象。宁可漏（由 `rules_silent` 兜住），也不要把配置
+/// 读取误判成用户输入。
+const REQUEST_SOURCES: &[&str] = &[
+    "$_get",
+    "$_post",
+    "$_request",
+    "$_cookie",
+    "$_files",
+    "request()",
+    "request::",
+    "$request",
+    "->param(",
+    "->input(",
+    "->get(",
+    "->post(",
+    "->all(",
+    "->only(",
+    "->except(",
+    "input(",
+];
+
+/// 变量（在**同一函数内**沿赋值链）是否最终来自请求输入。
+fn reaches_request(index: &HashMap<(&str, &str), Vec<&str>>, owner_fqn: &str, var: &str) -> bool {
+    let mut seen: HashSet<String> = HashSet::new();
+    trace_var(index, owner_fqn, var, TRACE_DEPTH, &mut seen)
+}
+
+fn trace_var(
+    index: &HashMap<(&str, &str), Vec<&str>>,
+    owner_fqn: &str,
+    var: &str,
+    depth: u8,
+    seen: &mut HashSet<String>,
+) -> bool {
+    if depth == 0 || !seen.insert(var.to_string()) {
+        return false;
+    }
+    let Some(rhss) = index.get(&(owner_fqn, var)) else {
+        // 没有赋值记录：参数 / 全局 / 追不到 —— 按"未见请求源"处理。
+        return false;
+    };
+    for rhs in rhss {
+        let lower = rhs.to_ascii_lowercase();
+        if REQUEST_SOURCES.iter().any(|s| lower.contains(s)) {
+            return true;
+        }
+        for next in var_names_in(rhs) {
+            if trace_var(index, owner_fqn, &next, depth - 1, seen) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 抽取文本里的变量名（`$sql` / `{$sql}`），不含 `$`，跳过 `$this`。
+fn var_names_in(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j > start {
+                let name = &text[start..j];
+                if name != "this" && !out.iter().any(|n| n == name) {
+                    out.push(name.to_string());
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// 参数文本里是否含有"用户变量引用"（`$var` / `{$var}`）。
@@ -143,20 +278,45 @@ fn arg_is_embedded(fv: &FactValue) -> bool {
     text_has_var(t) && (t.contains('\'') || t.contains('"') || contains_sql_keyword(t))
 }
 
+/// 文本里是否含有"变量引用"（`$var` / `{$var}`）；`$this` 不算。
+///
+/// `$this` 是对象自身，永远不是用户输入。把它算进来会让
+/// `->where($this->alias . '.uid', $uid)` 这种**参数化**写法被判成注入
+/// （条件字符串里确实"有变量"，但那个变量是属性，值是绑定参数）——
+/// 实测 CRMEB 上这正是 `sql-injection-where-interp` 残留 29 条的全部来源。
 fn text_has_var(t: &str) -> bool {
     let bytes = t.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'$' {
-            match bytes.get(i + 1) {
-                Some(b'{') => return true,
-                Some(c) if c.is_ascii_alphabetic() || *c == b'_' => return true,
-                _ => {}
+            if let Some(name) = var_name_at(t, i + 1) {
+                if name != "this" {
+                    return true;
+                }
+                i += 1 + name.len();
+                continue;
+            }
+            // `{$var}` 形态。
+            if bytes.get(i + 1) == Some(&b'{') {
+                return true;
             }
         }
         i += 1;
     }
     false
+}
+
+/// 从 `text[start..]` 起读取一个变量名（字母 / 数字 / 下划线）。
+fn var_name_at(text: &str, start: usize) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let mut j = start;
+    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    if j == start {
+        return None;
+    }
+    text.get(start..j)
 }
 
 fn contains_sql_keyword(t: &str) -> bool {
