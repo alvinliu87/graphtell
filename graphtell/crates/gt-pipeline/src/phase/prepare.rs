@@ -714,6 +714,9 @@ fn run_builtin(
         "php_config_keys" => load_config_keys(ctx, params, sub),
         // 通用别名装载器：文件 / 块标记 / 分隔符全由 FKB `params` 声明，不绑定任何语言。
         "middleware_aliases" => load_middleware_aliases(ctx, project_root, params),
+        // 通用声明式中间件装载器：文件名 / 键 / 作用域全由 FKB `params` 声明，
+        // 把声明类名单合并进 `route_list` 的 `guards`，由 P14 统一晋升节点 + 连边。
+        "declared_middleware" => load_declared_middleware(ctx, project_root, params),
         // 通用路由守卫装载器：识别逻辑完全来自 FKB 的 `route_guards` 声明，不再写死任何框架。
         "routes" => {
             if let Some(spec) = fk.route_guards.as_ref() {
@@ -2097,6 +2100,156 @@ fn load_nginx(
             }),
         );
     }
+}
+
+/// 声明式中间件列表：文件名 / 键 / 作用域**全由 FKB `params` 声明**——与 `middleware_aliases`、
+/// `nginx_config` 同款思路，内核只做"按声明扫固定写法"，不认任何框架 / 语言。
+///
+/// 中间件常在**文件**里登记，而非路由调用 `->middleware()`：
+/// * ThinkPHP 全局：`app/middleware.php` 返回裸类数组 `return [A::class, B::class];`；
+/// * ThinkPHP 多应用：`app/<app>/config/route.php` 的 `'middleware' => [A::class, ...]`。
+/// 这些写法不产生路由调用链，故 `guard_attach` 识别不到、`route_list` 的 `guards` 整段落空，
+/// 图里一个中间件都没有（likeadmin 就是典型）。
+///
+/// 本装载器把"声明类名单 + 作用域"存进工作区 `declared_middleware` 符号表；**不直接建节点**
+/// ——因为 prepare 阶段 HttpContract 节点尚未合成（likeadmin 这类自动路由项目，绝大多数路由
+/// 根本不进 `route_list`）。真正的节点 / `PassesThrough` 边由 P14（`phase/guard.rs`）在
+/// HttpContract 节点已存在的阶段按作用域挂出来，复用现有机理，内核零框架字符串。
+///
+/// # params
+/// * `paths`：要扫的文件（后缀匹配，支持 `**/X`）。
+/// * `key`：可选。声明数组所在键；省略时按整份文件取第一个 `[...]` 数组
+///   （即 `return [A::class, ...];` 形态）。
+/// * `scope`：`global`（挂到全部路由，默认）或 `per_app`（只挂到路径含 `/<app>` 的路由，
+///   应用名从文件路径相对 `project_root` 的第 `prefix_segment` 段取，默认 1；`prefix` 即 `/<app>`）。
+fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, params: &Value) {
+    let paths = params
+        .get("paths")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_default();
+    if paths.is_empty() {
+        return;
+    }
+    let key = params.get("key").and_then(Value::as_str).map(|s| s.to_string());
+    let scope = params
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("global");
+    let prefix_segment = params
+        .get("prefix_segment")
+        .and_then(Value::as_u64)
+        .unwrap_or(1) as usize;
+    let mut exts = params
+        .get("extensions")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_default();
+    if exts.is_empty() {
+        exts.push("php".into());
+    }
+    let exts: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
+
+    let mut idx: u32 = 0;
+    for (path, text) in scan_text_files(project_root, &exts) {
+        let hit = paths
+            .iter()
+            .any(|p| path.ends_with(p.trim_start_matches("**/")));
+        if !hit {
+            continue;
+        }
+        let classes = extract_middleware_classes(&text, key.as_deref());
+        if classes.is_empty() {
+            continue;
+        }
+        // `per_app` 时按文件路径（相对 project_root）取应用名作为路由前缀（如 `/adminapi`）。
+        let prefix: Option<String> = if scope == "per_app" {
+            let rel = path
+                .strip_prefix(project_root.to_string_lossy().as_ref())
+                .unwrap_or(&path);
+            let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+            parts.get(prefix_segment).map(|a| format!("/{}", a))
+        } else {
+            None
+        };
+        // 存进工作区，等 P14 在 HttpContract 节点存在后按作用域挂链（prepare 阶段节点未合成）。
+        ctx.ws.put_symbol(
+            ctx.project.id,
+            "declared_middleware",
+            &idx.to_string(),
+            json!({ "classes": classes, "scope": scope, "prefix": prefix }),
+        );
+        idx += 1;
+        info!(
+            "P3 声明式中间件：{} 个类（作用域 {:?}{}）",
+            classes.len(),
+            scope,
+            prefix.map(|p| format!(", 前缀 {}", p)).unwrap_or_default()
+        );
+    }
+}
+
+/// 从文件文本抽取中间件类名列表。
+///
+/// * `key` 给出时（如 `middleware`）：取 `'middleware' => [ ... ]` 数组块；
+/// * 否则：取整份文件的第一个 `[ ... ]` 数组（即 `return [A::class, ...];` 形态）。
+/// 每行取 `X::class`（剥 `//` 注释、尾逗号、前导 `\`），得到归一后的 FQN。
+fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
+    let block = match key {
+        Some(k) => match text.find(k) {
+            Some(idx) => {
+                let after = &text[idx + k.len()..];
+                let after = after.trim_start().strip_prefix("=>").unwrap_or(after);
+                match after.find('[') {
+                    Some(open) => {
+                        let rest = &after[open..];
+                        match rest.find(']') {
+                            Some(close) => rest[1..close].to_string(),
+                            None => return Vec::new(),
+                        }
+                    }
+                    None => return Vec::new(),
+                }
+            }
+            None => return Vec::new(),
+        },
+        None => match text.find('[') {
+            Some(open) => {
+                let bytes = text.as_bytes();
+                let mut depth = 0i32;
+                let mut close = None;
+                for i in open..text.len() {
+                    if bytes[i] == b'[' {
+                        depth += 1;
+                    } else if bytes[i] == b']' {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                }
+                match close {
+                    Some(c) => text[open + 1..c].to_string(),
+                    None => return Vec::new(),
+                }
+            }
+            None => return Vec::new(),
+        },
+    };
+    let mut out = Vec::new();
+    for line in block.lines() {
+        let line = line.split("//").next().unwrap_or(line).trim();
+        let line = line.trim_end_matches(',').trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(c) = line.strip_suffix("::class") {
+            let c = c.trim().trim_start_matches('\\').trim();
+            if !c.is_empty() {
+                out.push(c.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// 扫描指定扩展名的文本文件（跳过依赖目录）。

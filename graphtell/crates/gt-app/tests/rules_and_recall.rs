@@ -12,9 +12,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use gt_adapter_rules::YamlRuleSet;
 use gt_app::AppConfig;
 use gt_application::{RecallQuery, RecallService, RuleService};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
 use gt_domain::model::{
     AnnotationChannel, CheckPredicate, EdgeKind, Language, MergeStrategy, NewAnnotation, NewEdge,
     NewNode, NewProject, NewSourceFile, NodeId, NodeKind, Phase, ProjectId, Severity,
@@ -1780,4 +1784,72 @@ fn recall_with_snippets_is_safe_when_file_missing() {
         "文件不存在时片段应为 None，实际：{:?}",
         r.hits.iter().filter_map(|h| h.snippet.as_ref()).collect::<Vec<_>>()
     );
+}
+
+/// HTTP 层端到端：GET `/api/projects/{id}/recall` 必须能从图上召回相关代码。
+///
+/// 这是之前唯一没覆盖到的召回面——服务本身有集成用例，但 HTTP 入站适配器
+/// （`gt-adapter-http`）从不经过测试，路由拼错 / 参数解错都不会被发现。
+#[tokio::test]
+async fn recall_http_get_endpoint_returns_hits() {
+    let f = fixture();
+    seed_graph(&f);
+    let router = f.container.router();
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/projects/{}/recall?q=user&hops=2",
+                f.project.get()
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
+    assert!(json["ok"].as_bool() == Some(true), "应 success：{json:?}");
+    let hits = json["data"]["hits"].as_array().expect("data.hits 应为数组");
+    assert!(!hits.is_empty(), "GET /recall 应召回结果");
+    assert!(
+        hits.iter().any(|h| h["name"].as_str() == Some("user")),
+        "应含 user 种子：{hits:?}"
+    );
+}
+
+/// HTTP 层端到端：POST `/api/projects/{id}/recall` 走 `RecallQuery` 主体解析。
+#[tokio::test]
+async fn recall_http_post_endpoint_returns_hits() {
+    let f = fixture();
+    seed_graph(&f);
+    let router = f.container.router();
+
+    let payload = serde_json::json!({
+        "query": "user",
+        "limit": 20,
+        "hops": 2,
+        "kinds": [],
+        "with_snippets": false
+    });
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/projects/{}/recall", f.project.get()))
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
+    assert!(json["ok"].as_bool() == Some(true), "应 success：{json:?}");
+    let hits = json["data"]["hits"].as_array().expect("data.hits 应为数组");
+    assert!(!hits.is_empty(), "POST /recall 应召回结果");
 }

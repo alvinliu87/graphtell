@@ -31,3 +31,7 @@ path = "src/main.rs"
 [lib]
 name = "gt_app"
 path = "src/lib.rs"
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }

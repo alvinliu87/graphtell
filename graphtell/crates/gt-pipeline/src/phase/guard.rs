@@ -206,6 +206,44 @@ pub fn run(ctx: &mut PipelineContext) {
         plan.push((*contract_id, classes));
     }
 
+    // ②b 声明式中间件（文件登记，非路由调用链）：由 prepare 阶段的 `declared_middleware`
+    // 符号表给出。prepare 时 HttpContract 节点尚未合成（自动路由项目尤甚），故这里在节点
+    // 已存在后按作用域挂链——内核零框架字符串，作用域完全来自 FKB 声明。
+    // * `global`：挂到全部契约节点；
+    // * `per_app`：只挂到名字含 `prefix`（如 `/adminapi`）的契约节点。
+    if let Some(entries) = ctx.ws.symbols.get("declared_middleware") {
+        for entry in entries.values() {
+            let scope = entry.get("scope").and_then(Value::as_str).unwrap_or("global");
+            let prefix = entry.get("prefix").and_then(Value::as_str);
+            let classes: Vec<String> = entry
+                .get("classes")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|c| c.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if classes.is_empty() {
+                continue;
+            }
+            let targets: Vec<NodeId> = if scope == "per_app" {
+                contracts
+                    .iter()
+                    .filter(|(name, _)| prefix.map_or(true, |p| name.contains(p)))
+                    .map(|(_, id)| *id)
+                    .collect()
+            } else {
+                contracts.values().cloned().collect()
+            };
+            for tid in targets {
+                plan.push((tid, classes.clone()));
+            }
+        }
+    }
+
     // ③ 落边，并把被挂上的那个东西晋升 / 建成为 `Middleware` 语义节点
     let mut created = 0usize;
     let mut promoted = 0usize;

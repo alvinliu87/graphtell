@@ -672,3 +672,372 @@ fn render_markdown(
     }
     s
 }
+
+// ---------------------------------------------------------------- 单元测试
+//
+// 召回的"打分 / 查询解析 / 关系摘要"等纯逻辑此前没有任何针对性断言：
+// 集成测试只验证"名字是否出现"，从不断言 score / matched_terms 数值，
+// 因此一旦打分公式回归（如权重算错、跳数衰减失效）很难被发现。这里把
+// 这些纯函数直接单测锁住。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::error::DomainError;
+    use gt_domain::model::{
+        Edge, EdgeId, EdgeKind, IdentityKey, Language, Node, NodeId, NodeKind, Phase, ProjectId,
+        Span,
+    };
+    use gt_domain::port::FileSystem;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    // ---- 构造辅助 ----
+
+    fn tnode(id: i64, kind: &str, name: &str, fqn: Option<&str>, identity: Option<&str>) -> Node {
+        Node {
+            id: NodeId::new(id),
+            project_id: ProjectId::new(1),
+            sub_project_id: None,
+            kind: NodeKind::new(kind),
+            name: name.to_string(),
+            fqn: fqn.map(|s| s.to_string()),
+            identity: identity.map(IdentityKey::fqn),
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        }
+    }
+
+    fn edge(kind: &str, from: i64, to: i64) -> Edge {
+        Edge {
+            id: EdgeId::new(0),
+            project_id: ProjectId::new(1),
+            kind: EdgeKind::new(kind),
+            from_id: NodeId::new(from),
+            to_id: NodeId::new(to),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        }
+    }
+
+    /// 入边表：按 `to` 聚合（与 `score_node` / `relation_summary` 的取值方式一致）。
+    fn incoming(edges: &[(&str, i64, i64)]) -> HashMap<i64, Vec<Edge>> {
+        let mut m: HashMap<i64, Vec<Edge>> = HashMap::new();
+        for (k, from, to) in edges {
+            m.entry(*to).or_default().push(edge(k, *from, *to));
+        }
+        m
+    }
+
+    /// 出边表：按 `from` 聚合。
+    fn outgoing(edges: &[(&str, i64, i64)]) -> HashMap<i64, Vec<Edge>> {
+        let mut m: HashMap<i64, Vec<Edge>> = HashMap::new();
+        for (k, from, to) in edges {
+            m.entry(*from).or_default().push(edge(k, *from, *to));
+        }
+        m
+    }
+
+    // ---- parse_query ----
+
+    #[test]
+    fn parse_query_maps_all_chinese_kind_hints() {
+        let cases = [
+            ("数据库", "Table"),
+            ("接口", "HttpContract"),
+            ("路由", "HttpContract"),
+            ("端点", "HttpContract"),
+            ("事件", "Event"),
+            ("监听", "Event"),
+            ("配置", "ConfigKey"),
+            ("配置项", "ConfigKey"),
+            ("缓存", "Cache"),
+            ("队列", "Queue"),
+            ("消息", "Topic"),
+            ("定时", "Schedule"),
+            ("计划任务", "Schedule"),
+            ("页面", "Page"),
+            ("国际化", "I18nKey"),
+            ("多语言", "I18nKey"),
+        ];
+        for (word, kind) in cases {
+            let (_terms, hints) = parse_query(word);
+            assert!(
+                hints.iter().any(|h| h == kind),
+                "提示词 {word:?} 应映射到 {kind:?}，实际 {hints:?}"
+            );
+        }
+        // "表" 在其它集成用例覆盖过，这里再确认一次锚点
+        let (_t, hints) = parse_query("表");
+        assert!(hints.contains(&"Table".to_string()), "表 → Table");
+    }
+
+    #[test]
+    fn parse_query_splits_camel_case_and_keeps_whole() {
+        let (terms, _hints) = parse_query("createOrder");
+        assert!(terms.contains(&"create".to_string()));
+        assert!(terms.contains(&"Order".to_string()));
+        assert!(
+            terms.contains(&"createOrder".to_string()),
+            "整体标识符应保留（精确匹配得分最高）：{terms:?}"
+        );
+    }
+
+    #[test]
+    fn parse_query_keeps_snake_case_intact() {
+        let (terms, _hints) = parse_query("store_order");
+        assert!(
+            terms.contains(&"store_order".to_string()),
+            "snake_case 不能被拆成 store + order：{terms:?}"
+        );
+    }
+
+    #[test]
+    fn parse_query_filters_two_char_stop_words() {
+        let (terms, _hints) = parse_query("用户相关的代码");
+        assert!(
+            !terms.contains(&"相关".to_string()),
+            "2 字停用词应被过滤：{terms:?}"
+        );
+        assert!(
+            !terms.contains(&"代码".to_string()),
+            "2 字停用词应被过滤：{terms:?}"
+        );
+        assert!(
+            terms.iter().any(|t| t.contains("用户")),
+            "有意义的词应保留：{terms:?}"
+        );
+    }
+
+    #[test]
+    fn is_cjk_detects_chinese() {
+        assert!(is_cjk('中'));
+        assert!(!is_cjk('a'));
+        assert!(!is_cjk('1'));
+    }
+
+    // ---- score_node ----
+
+    #[test]
+    fn score_node_exact_name_match() {
+        // 100（精确）× 1.4（Table 权重）
+        let n = tnode(101, "Table", "user", None, None);
+        let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        assert!((score - 140.0).abs() < 1e-9, "精确匹配应得 100×1.4=140，实际 {score}");
+        assert_eq!(matched, vec!["user".to_string()]);
+    }
+
+    #[test]
+    fn score_node_starts_with_prefix() {
+        // 70（前缀）× 1.4
+        let n = tnode(102, "Table", "user_order", None, None);
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        assert!((score - 98.0).abs() < 1e-9, "前缀匹配应得 70×1.4=98，实际 {score}");
+    }
+
+    #[test]
+    fn score_node_contains() {
+        // 50（包含）× 1.0（Method）
+        let n = tnode(103, "Method", "my_user_x", None, None);
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        assert!((score - 50.0).abs() < 1e-9, "包含匹配应得 50×1.0=50，实际 {score}");
+    }
+
+    #[test]
+    fn score_node_identity_match() {
+        // 名字不匹配，identity 包含 → 45 × 1.0（Method）
+        let n = tnode(104, "Method", "zzz", None, Some("user_identity"));
+        let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        assert!((score - 45.0).abs() < 1e-9, "identity 命中应得 45×1.0=45，实际 {score}");
+        assert_eq!(matched, vec!["user".to_string()]);
+    }
+
+    #[test]
+    fn score_node_fqn_match() {
+        // fqn 包含 → 35 × 1.0
+        let n = tnode(105, "Method", "zzz", Some("app\\model\\user"), None);
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        assert!((score - 35.0).abs() < 1e-9, "fqn 命中应得 35×1.0=35，实际 {score}");
+    }
+
+    #[test]
+    fn score_node_multi_term_multiplier() {
+        // 命中两词：先累加各词得分，再整体 ×1.5。这里两个词各得 50（Method 权重 1.0），
+        // 所以 two == (one + order_only) × 1.5 == 150（大于简单相加的 100）。
+        let n = tnode(106, "Method", "xuserxorderx", None, None);
+        let (one, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (order_only, _) = score_node(&n, &["order".to_string()], &[], &HashMap::new());
+        let (two, matched) = score_node(
+            &n,
+            &["user".to_string(), "order".to_string()],
+            &[],
+            &HashMap::new(),
+        );
+        assert!(
+            (two - (one + order_only) * 1.5).abs() < 1e-9,
+            "双词应 = (单 + 单) × 1.5：one={one} order_only={order_only} two={two}"
+        );
+        assert!(two > one + order_only, "多词应严格高于简单相加");
+        assert_eq!(matched.len(), 2);
+    }
+
+    #[test]
+    fn score_node_kind_weight_prefers_semantic_nodes() {
+        let table = tnode(107, "Table", "user", None, None);
+        let method = tnode(108, "Method", "user", None, None);
+        let (s_t, _) = score_node(&table, &["user".to_string()], &[], &HashMap::new());
+        let (s_m, _) = score_node(&method, &["user".to_string()], &[], &HashMap::new());
+        assert!((s_t - 140.0).abs() < 1e-9, "Table 100×1.4=140");
+        assert!((s_m - 100.0).abs() < 1e-9, "Method 100×1.0=100");
+        assert!(s_t > s_m, "语义节点（表）应优先于方法");
+    }
+
+    #[test]
+    fn score_node_kind_hint_bonus() {
+        // 提示词说了"表" → 结构提示加成 +30
+        let n = tnode(109, "Table", "user", None, None);
+        let (no_hint, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (with_hint, _) =
+            score_node(&n, &["user".to_string()], &["Table".to_string()], &HashMap::new());
+        assert!(
+            (with_hint - (no_hint + 30.0)).abs() < 1e-9,
+            "结构提示应 +30：{with_hint} vs {no_hint}"
+        );
+    }
+
+    #[test]
+    fn score_node_fan_in_bonus() {
+        // 精确匹配 100 × 1.0（Method）+ 扇入 2 × 0.4
+        let n = tnode(110, "Method", "user", None, None);
+        let inc = incoming(&[("WritesDb", 200, 110), ("ReadsDb", 201, 110)]);
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &inc);
+        assert!(
+            (score - (100.0 + 2.0 * 0.4)).abs() < 1e-9,
+            "扇入 2 应 +0.8，实际 {score}"
+        );
+    }
+
+    // ---- relation_summary ----
+
+    #[test]
+    fn relation_summary_aggregates_and_formats_multiplicity() {
+        let inc = incoming(&[
+            ("WritesDb", 1, 300),
+            ("WritesDb", 2, 300),
+            ("WritesDb", 3, 300),
+            ("ReadsDb", 4, 300),
+        ]);
+        let rel = relation_summary(NodeId::new(300), &inc, &HashMap::new());
+        assert!(
+            rel.iter().any(|r| r == "← WritesDb ×3"),
+            "同种类多条入边应聚合为 ×3：{rel:?}"
+        );
+        assert!(
+            rel.iter().any(|r| r == "← ReadsDb"),
+            "单条不应带 ×N：{rel:?}"
+        );
+    }
+
+    #[test]
+    fn relation_summary_includes_outgoing() {
+        let out = outgoing(&[("Calls", 300, 9)]);
+        let rel = relation_summary(NodeId::new(300), &HashMap::new(), &out);
+        assert!(
+            rel.iter().any(|r| r == "→ Calls"),
+            "出边应带 → 前缀：{rel:?}"
+        );
+    }
+
+    // ---- neighbours ----
+
+    #[test]
+    fn neighbours_follows_chain_edges_both_directions() {
+        let inc = incoming(&[("HandledBy", 502, 500)]);
+        let out = outgoing(&[("Calls", 500, 501)]);
+        let ns = neighbours(NodeId::new(500), &inc, &out);
+        let ids: Vec<i64> = ns.iter().map(|n| n.get()).collect();
+        assert!(ids.contains(&501), "应沿出边走到 501：{ids:?}");
+        assert!(ids.contains(&502), "应沿入边走到 502：{ids:?}");
+    }
+
+    // ---- DEFAULT_EXCLUDED_KINDS ----
+
+    #[test]
+    fn excluded_kinds_covers_noise_node_types() {
+        let want = [
+            "CallSite",
+            "File",
+            "Directory",
+            "Namespace",
+            "Property",
+            "Const",
+        ];
+        for k in want {
+            assert!(
+                DEFAULT_EXCLUDED_KINDS.iter().any(|x| *x == k),
+                "{k} 应被排除出召回候选（否则召回会退化成逐行匹配）"
+            );
+        }
+    }
+
+    // ---- read_snippet ----
+
+    /// 内存文件系统：只实现召回片段读取所需的 4 个方法。
+    struct MemFs {
+        map: HashMap<PathBuf, String>,
+    }
+    impl MemFs {
+        fn new() -> Self {
+            Self { map: HashMap::new() }
+        }
+        fn insert(&mut self, p: &Path, s: impl Into<String>) {
+            self.map.insert(p.to_path_buf(), s.into());
+        }
+    }
+    impl FileSystem for MemFs {
+        fn exists(&self, p: &Path) -> bool {
+            self.map.contains_key(p)
+        }
+        fn is_dir(&self, _p: &Path) -> bool {
+            false
+        }
+        fn read_to_string(&self, p: &Path) -> Result<String> {
+            self.map
+                .get(p)
+                .cloned()
+                .ok_or_else(|| DomainError::NotFound(p.to_string_lossy().to_string()))
+        }
+        fn len(&self, p: &Path) -> Result<u64> {
+            Ok(self.map.get(p).map(|s| s.len() as u64).unwrap_or(0))
+        }
+    }
+
+    #[test]
+    fn read_snippet_reads_window_around_line() {
+        let mut fs = MemFs::new();
+        let p = PathBuf::from("/x/sample.php");
+        let content = (1..=10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs.insert(&p, content);
+        let snip = read_snippet(&fs, &p, 3).expect("应读出片段");
+        assert!(snip.contains("line1"), "应包含目标行之前 2 行：{snip}");
+        assert!(snip.contains("line3"), "应包含目标行：{snip}");
+        assert!(snip.contains("line6"), "应包含目标行之后 3 行：{snip}");
+    }
+
+    #[test]
+    fn read_snippet_skips_huge_files() {
+        let mut fs = MemFs::new();
+        let p = PathBuf::from("/x/huge.php");
+        fs.insert(&p, "x".repeat(3 * 1024 * 1024)); // 3MB > 2MB 上限
+        let snip = read_snippet(&fs, &p, 1);
+        assert!(snip.is_none(), "超大文件应跳过片段读取（防 OOM）");
+    }
+}

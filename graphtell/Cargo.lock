@@ -457,8 +457,10 @@ dependencies = [
  "gt-application",
  "gt-domain",
  "gt-pipeline",
+ "http-body-util",
  "serde_json",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

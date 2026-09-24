@@ -192,6 +192,29 @@ loaders:
       kind: builtin
       name: routes
       params: {}
+  # 声明式中间件（文件登记，非 `->middleware()` 调用链）：
+  # ThinkPHP 全局中间件 `app/middleware.php`（裸类数组）作用于全部路由；
+  # 多应用 `app/<app>/config/route.php` 的 `'middleware' => [...]` 只作用于该应用路由。
+  # 两者都挂到 `route_list`，由 P14 晋升为 Middleware 节点 + PassesThrough 边。
+  # 路径 / 键 / 作用域全在此声明，内核 `declared_middleware` 装载器不认任何框架。
+  - id: tp6-middleware-global
+    table: route_list
+    from:
+      kind: builtin
+      name: declared_middleware
+      params:
+        paths: ["app/middleware.php"]
+        scope: global
+  - id: tp6-middleware-per-app
+    table: route_list
+    from:
+      kind: builtin
+      name: declared_middleware
+      params:
+        paths: ["app/adminapi/config/route.php", "app/api/config/route.php"]
+        key: middleware
+        scope: per_app
+        prefix_segment: 1
   # Nginx 配置
   - id: nginx-config
     table: nginx
