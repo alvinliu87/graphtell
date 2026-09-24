@@ -1182,4 +1182,41 @@ mod tests {
         let snip = read_snippet(&fs, &p, 1);
         assert!(snip.is_none(), "超大文件应跳过片段读取（防 OOM）");
     }
+
+    // ---- 真实模型（bge-m3 ONNX）语义验证：仅 `model-ort` feature 下编译 ----
+    #[cfg(feature = "model-ort")]
+    #[test]
+    fn bge_semantic_recall_chinese_to_english() {
+        use crate::embed_ort::OrtBgeEmbedder;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models");
+        let onnx = std::env::var("GT_BGE_ONNX")
+            .unwrap_or_else(|_| root.join("bge-m3-onnx/model.onnx").to_string_lossy().into());
+        let tok = std::env::var("GT_BGE_TOKENIZER")
+            .unwrap_or_else(|_| root.join("bge-m3/tokenizer.json").to_string_lossy().into());
+        if !Path::new(&onnx).exists() {
+            eprintln!("skip bge_semantic_recall: 未找到 {onnx}（先跑 tools/export_bge_onnx.py）");
+            return;
+        }
+        let emb = OrtBgeEmbedder::load(&onnx, &tok).expect("加载 bge-m3 ONNX 失败");
+
+        let q = emb.embed("下单改优惠");
+        let order = emb.embed("placeOrder");
+        let discount = emb.embed("applyDiscount");
+        let noise = emb.embed("unused_log");
+
+        let co = crate::embedding::cosine(&q, &order);
+        let cd = crate::embedding::cosine(&q, &discount);
+        let cn = crate::embedding::cosine(&q, &noise);
+        println!("cos(下单改优惠, placeOrder)={co:.4}  (applyDiscount)={cd:.4}  (unused_log)={cn:.4}");
+
+        assert!(
+            co > 0.4 && cd > 0.4,
+            "中文意图应语义命中英文业务节点：co={co} cd={cd}"
+        );
+        assert!(
+            co > cn && cd > cn,
+            "噪声节点应明显低于目标节点：cn={cn} co={co} cd={cd}"
+        );
+    }
 }

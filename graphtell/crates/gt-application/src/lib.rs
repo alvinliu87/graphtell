@@ -11,9 +11,11 @@ pub mod project_service;
 pub mod rule_service;
 pub mod recall_service;
 pub mod embedding;
-// 真实神经网络嵌入适配器：仅在 `model` feature 开启时编译，离线构建不受影响。
-#[cfg(feature = "model")]
+// 真实神经网络嵌入适配器：仅在特定 `model-*` feature 开启时编译，离线构建不受影响。
+#[cfg(feature = "model-candle")]
 pub mod embed_model;
+#[cfg(feature = "model-ort")]
+pub mod embed_ort;
 
 pub use graph_query::{DiagnosticSummary, GraphQueryService};
 pub use view_service::ViewService;

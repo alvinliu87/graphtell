@@ -13,3 +13,17 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+
+# 真实模型嵌入（特征门控，默认不编译；离线构建不受影响）。
+# 启用 `model-ort` 后，把经 ModelScope 拉取并转出的 bge-m3 ONNX 权重指给
+# `OrtBgeEmbedder` 即可获得真正的跨语言语义向量（见 embed_ort.rs）。
+# 选用 tract（纯 Rust ONNX 推理引擎，零系统依赖；避开 onnxruntime 对 openssl 的要求）。
+tract-onnx = { version = "0.21", optional = true }
+tract-core = { version = "0.21", optional = true }
+tokenizers = { version = "0.20", optional = true }
+
+[features]
+# 真实 bge-m3（ONNX + tract）接入。
+model-ort = ["dep:tract-onnx", "dep:tract-core", "dep:tokenizers"]
+# 真实 bge-m3（candle 直接加载 safetensors）接入，参考实现。
+model-candle = []

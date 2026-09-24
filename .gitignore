@@ -35,6 +35,11 @@ CRMEB-master.zip
 .vite/
 .turbo/
 
+# ===== 下载的模型权重（非源码，构建/安装时拉取，切勿提交）=====
+# bge-m3 系列约 4.4GB（pytorch / onnx 权重 + tokenizer）来自 HuggingFace，
+# 见 crates/gt-application/src/embed_model.rs 的 model feature 说明。
+graphtell/models/
+
 # ===== 运行时数据 / 缓存 / 生成物 =====
 **/data/
 *.db
