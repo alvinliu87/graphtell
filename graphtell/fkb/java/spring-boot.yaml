@@ -47,6 +47,61 @@ root_rules:
       - src/main/java
       - src
 
+# ---------------------------------------------------------------- P3 装载
+loaders:
+  # 路由表 + 守卫：识别逻辑由下方 `route_guards` 声明（注解模型）。
+  - id: spring-route-list
+    table: route_list
+    from:
+      kind: builtin
+      name: routes
+      params: {}
+
+# ---------------------------------------------------------------- 路由守卫识别
+# Spring 的路由是**注解**（`@GetMapping("/page")`），与之同处一个方法的
+# `@PreAuthorize("@pms.hasPermission('sys:schedule:log')")` 就是守卫。
+# Java 解析器输出的注解 callee **不带 `@`**（与 TS 装饰器不同），故这里写裸名。
+#
+# `name_from_args: false` —— Spring 的实参是 SpEL 权限表达式，不是中间件类；
+# 真正的守卫是**注解本身**（`PreAuthorize` / `Secured` / `RolesAllowed`）。
+# `include_class_level: true` —— 打在控制器类上的 `@PreAuthorize` 作用于该类所有方法。
+route_guards:
+  route_calls:
+    - receiver: "GetMapping"
+      by: callee
+      verb_methods: { getmapping: GET }
+      path_arg: 0
+    - receiver: "PostMapping"
+      by: callee
+      verb_methods: { postmapping: POST }
+      path_arg: 0
+    - receiver: "PutMapping"
+      by: callee
+      verb_methods: { putmapping: PUT }
+      path_arg: 0
+    - receiver: "DeleteMapping"
+      by: callee
+      verb_methods: { deletemapping: DELETE }
+      path_arg: 0
+    - receiver: "PatchMapping"
+      by: callee
+      verb_methods: { patchmapping: PATCH }
+      path_arg: 0
+    - receiver: "RequestMapping"
+      by: callee
+      verb_methods: { requestmapping: ANY }
+      path_arg: 0
+  guard_attach:
+    kind: decorator
+    route_decorators: ["GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "RequestMapping"]
+    guard_decorators: ["PreAuthorize", "Secured", "RolesAllowed", "PreFilter", "PostAuthorize"]
+    name_from_args: false
+    include_class_level: true
+    # 注解是裸名（`@PreAuthorize`）；`this.checkAuth()` 这类成员调用不是注解
+    require_no_receiver: true
+  # 权限注解没有对应的类节点（真正的拦截器在框架里），故授权按注解名建成 Middleware 节点。
+  synthesize_unresolved: true
+
 rules:
   # ===== P5 Synthesize：HTTP 契约 =====
   # `@GetMapping("/list")` —— 方法从注解名推导（去 `Mapping` 后缀再大写）。

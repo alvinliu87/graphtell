@@ -230,6 +230,42 @@ describe('可读性硬约束', () => {
   });
 
   /**
+   * 回归：宽扇出 + **一条叶子间边**（路由视角里两张表之间的 ForeignKey）。
+   *
+   * 旧判定 `isStar` 要求每条边都碰中心 —— 一条 ForeignKey 就把判定判死，
+   * 19 片叶子落回每层一行的宽扇形（一行 6000px+、两端被裁的实测坏截图）。
+   * 现在近似星形（叶子间边 ≤ 3）仍走中心辐射；叶子间边自身若扫过同列邻居，
+   * 必须绕行（「边不穿过节点」不因放宽而破例）。
+   */
+  it('宽扇出 + 个别叶子间边（ForeignKey）→ 仍走中心辐射，叶子间边绕行不穿节点', () => {
+    const center = node(1, 'GET /admin/order/detail', 0);
+    const fanout = [
+      ...Array.from({ length: 4 }, (_, i) => node(10 + i, `middleware_${i}`, 1)),
+      ...Array.from({ length: 14 }, (_, i) => node(100 + i, `config_key_${i}`, 1)),
+      node(200, 'store_order_refund', 1),
+      node(201, 'user', 1),
+    ];
+    const edges: LayoutEdge[] = [
+      ...fanout.map((n) => ({ id: n.id, from: center.id, to: n.id })),
+      // 表间外键：两端都不是中心 —— 旧判定下这一条就把整张图推回宽扇形
+      { id: 900, from: 200, to: 201 },
+    ];
+
+    const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
+
+    // 走了中心辐射而非分层扇形：没有环引导线，中心在最左
+    expect(r.guides).toBeUndefined();
+    const centerX = r.nodes.find((n) => n.id === center.id)!.x;
+    fanout.forEach((n) => {
+      expect(r.nodes.find((x) => x.id === n.id)!.x).toBeGreaterThan(centerX);
+    });
+
+    // 两条硬约束仍成立（ForeignKey 边要么直连不撞、要么绕行）
+    expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
+    expect(crossings(r.edges)).toBe(0);
+  });
+
+  /**
    * 回归：路由视角的**左→右方向性**。
    *
    * 路由视角的图是「前端调用方 --CallsHttp--> 契约 --ReadsConfig/ReadsCache--> 依赖」，

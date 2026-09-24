@@ -18,6 +18,7 @@ import {
   NotificationOutlined,
   PropertySafetyOutlined,
   QuestionOutlined,
+  SafetyOutlined,
   SettingOutlined,
   TagOutlined,
   ThunderboltOutlined,
@@ -60,6 +61,11 @@ export const NODE_ICONS: Record<string, IconComp> = {
   Queue: CloudOutlined,
   Cache: ThunderboltOutlined,
   Topic: MessageOutlined,
+  // 中间件：挂在路由上的守门人 —— 盾牌图标，与"缓存 ⚡ / 配置 ⚙ / 契约 🔗"的语义区分开。
+  Middleware: SafetyOutlined,
+  // 事件 / 队列的消费者在画布上重标为这个角色（见 view_service 的视图层重标），
+  // 此前没有图标、一直回退成问号。
+  EventHandler: NotificationOutlined,
   Unknown: QuestionOutlined,
 };
 

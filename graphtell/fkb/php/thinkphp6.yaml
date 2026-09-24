@@ -177,12 +177,12 @@ loaders:
       pattern: "lang/*/*.php"
       locale_regex: "lang/([^/]+)/"
       format: php
-  # 路由表（Route:: 调用收集）
+  # 路由表（Route:: 调用收集）—— 识别逻辑由下方 `route_guards` 声明，内核不再写死。
   - id: tp6-route-list
     table: route_list
     from:
       kind: builtin
-      name: php_routes
+      name: routes
       params: {}
   # Nginx 配置
   - id: nginx-config
@@ -191,6 +191,29 @@ loaders:
       kind: builtin
       name: nginx_config
       params: {}
+
+# ---------------------------------------------------------------- 路由守卫识别
+# 完全声明式：中间件怎么挂、动词怎么映射、组前缀方法叫什么，都由这里给出，
+# 通用提取器（`routes` 装载器）据此从调用图收守卫，写入 `route_list`。
+route_guards:
+  route_calls:
+    - receiver: "Route"
+      verb_methods:
+        get: GET
+        post: POST
+        put: PUT
+        delete: DELETE
+        patch: PATCH
+        any: ANY
+        rule: ANY
+      path_arg: 0
+      handler_arg: 1
+      group_method: group
+  guard_attach:
+    kind: chain
+    method: middleware
+    arg_index: 0
+    arg2_index: 1
 
 # ---------------------------------------------------------------- P7 解析
 resolvers:

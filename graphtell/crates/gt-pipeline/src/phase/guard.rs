@@ -2,7 +2,7 @@
 //!
 //! # 为什么是**桥边**，而不是语义边
 //!
-//! `HttpContract --GuardedBy--> <中间件类>` 两端性质不同：起点是语义节点，终点是一个普通
+//! `HttpContract --PassesThrough--> <中间件>` 两端性质不同：起点是语义节点，终点是一个
 //! `Class`（语法节点），中间件自身并不需要"多处引用汇聚才存在"。与 `HandledBy`
 //! （契约 → handler）、`HasColumn`（表 → 列）同族：**可沿链遍历，但不计入「语义入边 /
 //! 出边 N」，也不当画布边画出来** —— 否则一条路由挂 3 个中间件，它的"出边 N"就凭空 +3，
@@ -21,14 +21,21 @@
 //! * 中间件类不在图里时（`vendor` 里的类、尚未还原的动态别名）**跳过，不建悬空边也不猜**。
 
 use gt_domain::model::{
-    AnnotationChannel, EdgeKind, MergeStrategy, NewAnnotation, NewEdge, NodeId, NodeKind, Phase,
+    AnnotationChannel, EdgeKind, MergeStrategy, NewAnnotation, NewEdge, NewNode, NodeId, NodeKind,
+    Phase, Span,
 };
 use serde_json::{json, Value};
 
 use crate::context::PipelineContext;
 
-/// 桥边种类：`HttpContract --GuardedBy--> 中间件类`。
-const GUARDED_BY: &str = "GuardedBy";
+/// 语义边种类：`HttpContract --PassesThrough--> 中间件`。
+///
+/// 名字取中性（"经过"而不是"守卫"）：中间件里既有会拒绝请求的守卫，也有只加响应头 /
+/// 记日志的旁路，统一叫"守卫"等于替后者过度声明。鉴不鉴权由 `Capability` 标注回答。
+const PASSES_THROUGH: &str = "PassesThrough";
+
+/// 「挂了鉴权中间件、但实参显式写着可选」的标注（未登录也能进，不等于没挂）。
+const OPTIONAL_AUTH: &str = "auth.optional";
 
 /// 契约名 → 节点（`HttpContract.name` 与 `route_list` 的键同源）。
 fn contract_index(ctx: &PipelineContext) -> std::collections::HashMap<String, NodeId> {
@@ -116,6 +123,24 @@ pub fn run_capabilities(ctx: &mut PipelineContext) {
                 .iter()
                 .any(|(_, arg)| arg.as_deref().map(|a| a != "false").unwrap_or(true));
             if !mandatory {
+                // 不打能力，但**记录这个确凿事实**：确实挂了鉴权中间件、且实参显式写着可选
+                // （`AuthTokenMiddleware::class, false` == 未登录也能进）。
+                // 这是"可选"而不是"没有"——把两者混为一谈就是编造，故另起一个标注，
+                // 供 `write-endpoint-with-optional-auth` 这类**正向**规则命中。
+                ctx.ws.annotate(NewAnnotation {
+                    node_id: *contract_id,
+                    channel: AnnotationChannel(AnnotationChannel::FKB_MARK.to_string()),
+                    kind: OPTIONAL_AUTH.to_string(),
+                    subkind: None,
+                    confidence: 0.9,
+                    evidence: json!({
+                        "source": "route_guard",
+                        "middleware": hits.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
+                        "arg": hits.iter().filter_map(|(_, a)| a.clone()).next(),
+                    }),
+                    phase: phase.clone(),
+                    merge: MergeStrategy::Coexist,
+                });
                 skipped_optional += 1;
                 continue;
             }
@@ -181,33 +206,141 @@ pub fn run(ctx: &mut PipelineContext) {
         plan.push((*contract_id, classes));
     }
 
-    // ③ 落边，并把被挂上的那个类晋升为 `Middleware` 语义节点
+    // ③ 落边，并把被挂上的那个东西晋升 / 建成为 `Middleware` 语义节点
     let mut created = 0usize;
     let mut promoted = 0usize;
+    let mut synthesized = 0usize;
     let mut unresolved = 0usize;
+    // FKB 授权「查不到也建节点」？见 `route_guards.synthesize_unresolved`。
+    // JS / Python 的中间件是**函数值**（`const loginLimiter = rateLimit({...})`），解析器
+    // 不会为它建语法节点，但"这条路由挂了一个叫 X 的中间件"是源码里的确凿事实 ——
+    // 授权后建一个同名 `Middleware` 语义节点，是如实记录而不是猜测。
+    let allow_synthesize = ctx.ws.synthesize_unresolved_guards;
+    // FKB 预声明的**已知中间件**（框架 / 库自带、源码不在图里）：`middleware_classes` 表，
+    // 由 FKB 的 `inline` 装载器写入（`{ class, capability }`），无需解析器改动。
+    // 按全名与短名两种键都可命中。
+    let mut known_middleware: std::collections::HashMap<String, Option<Value>> =
+        std::collections::HashMap::new();
+    for (key, val) in ctx
+        .ws
+        .symbols
+        .get("middleware_classes")
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+    {
+        let key = crate::phase::prepare::norm_class(key);
+        known_middleware.insert(key.clone(), Some(val.clone()));
+        let short = key.rsplit(['\\', '/']).next().unwrap_or(&key).to_string();
+        known_middleware.entry(short).or_insert_with(|| Some(val.clone()));
+    }
     for (contract_id, classes) in plan {
         for class in classes {
-            let Some(target) = ctx.ws.find_by_name(&class) else {
-                unresolved += 1;
+            // 精确 FQN 优先；落空时（Laravel 常写裸短名 `NoCacheMiddleware`、
+            // ThinkPHP 也可能被写成不带命名空间的短名）按**短名**兜底 ——
+            // `resolve_short_name` 对歧义短名一律拒绝，不会连错类。
+            let target = ctx
+                .ws
+                .find_by_name(&class)
+                .or_else(|| {
+                    ctx.ws
+                        .resolve_short_name(&class)
+                        .and_then(|fqn| ctx.ws.find_by_name(&fqn))
+                });
+            let Some(target) = target else {
+                // 图里没有这个类 —— 但**没节点不等于没语义**：
+                // 框架 / 库自带的中间件常住在 `vendor/` / `node_modules/`（不进图），
+                // FKB 若已声明过它（`middleware_classes` 表），就按声明落成节点 ——
+                // 这不是猜测，与"靠名字猜"是两回事，故不受 `synthesize_unresolved` 限制。
+                let norm = crate::phase::prepare::norm_class(&class);
+                let known = known_middleware.get(&norm).or_else(|| {
+                    let short = norm.rsplit(['\\', '/']).next().unwrap_or(&norm);
+                    known_middleware.get(short)
+                });
+                if known.is_none() && !allow_synthesize {
+                    unresolved += 1;
+                    continue;
+                }
+                let declared = known.cloned().unwrap_or(None);
+                let full = declared
+                    .as_ref()
+                    .and_then(|v| v.get("class").and_then(|c| c.as_str()))
+                    .unwrap_or(&class)
+                    .to_string();
+                // 显示用**短名**（与图里其它中间件节点一致），FQN 仍留在 `fqn` 字段备查。
+                let name = if known.is_some() {
+                    crate::phase::prepare::norm_class(&full)
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .unwrap_or(&full)
+                        .to_string()
+                } else {
+                    full.clone()
+                };
+                let mut props = json!({ "source": "route_guard" });
+                if let Some(cap) = declared.as_ref().and_then(|v| v.get("capability")) {
+                    props["capability"] = cap.clone();
+                }
+                if known.is_some() {
+                    props["declared_by"] = json!("fkb");
+                }
+                // 建一个 `Middleware` 语义节点（FKB 已声明 / 已授权）。
+                let id = ctx.ws.add_node(NewNode {
+                    id: None,
+                    project_id: ctx.project.id,
+                    sub_project_id: None,
+                    kind: NodeKind(NodeKind::MIDDLEWARE.to_string()),
+                    name: name.clone(),
+                    fqn: Some(name),
+                    identity: None,
+                    file_id: None,
+                    span: Span::default(),
+                    // 语言随所属契约（新建的中间件节点没有自己的文件位置）。
+                    language: ctx
+                        .ws
+                        .node(contract_id)
+                        .map(|n| n.language.clone())
+                        .unwrap_or_default(),
+                    phase: phase.clone(),
+                    confidence: if known.is_some() { 1.0 } else { 0.9 },
+                    properties: props,
+                });
+                synthesized += 1;
+                if ctx.ws.add_edge(NewEdge {
+                    project_id: ctx.project.id,
+                    kind: EdgeKind(PASSES_THROUGH.to_string()),
+                    from_id: contract_id,
+                    to_id: id,
+                    phase: phase.clone(),
+                    confidence: 0.9,
+                    properties: Value::Null,
+                }) {
+                    created += 1;
+                }
                 continue;
             };
             if target == contract_id {
                 continue;
             }
             // 晋升：改 kind 而**不新建节点**（`patch_kind` 的注释里写了为何必须如此）。
-            // 只对 `Class` 动手：万一将来某个 FKB 把别的东西当成中间件，不要连带改坏。
-            let is_class = ctx
+            // * `Class`：PHP 的中间件恒为类，无条件晋升；
+            // * `Function` / `Method`：JS / Python 的中间件是函数，仅当 FKB 授权
+            //   （`synthesize_unresolved`）时才晋升 —— 未授权时对别的东西一律不动，
+            //   万一某个 FKB 把不相干的东西当成中间件，也不会连带改坏。
+            let kind = ctx
                 .ws
                 .node(target)
-                .map(|n| n.kind.as_str() == NodeKind::CLASS)
-                .unwrap_or(false);
-            if is_class {
+                .map(|n| n.kind.as_str().to_string())
+                .unwrap_or_default();
+            let is_class = kind == NodeKind::CLASS;
+            let is_callable = kind == NodeKind::FUNCTION || kind == NodeKind::METHOD;
+            if is_class || (allow_synthesize && is_callable) {
                 ctx.ws.patch_kind(target, NodeKind::MIDDLEWARE);
                 promoted += 1;
             }
             if ctx.ws.add_edge(NewEdge {
                 project_id: ctx.project.id,
-                kind: EdgeKind(GUARDED_BY.to_string()),
+                kind: EdgeKind(PASSES_THROUGH.to_string()),
                 from_id: contract_id,
                 to_id: target,
                 phase: phase.clone(),
@@ -220,9 +353,10 @@ pub fn run(ctx: &mut PipelineContext) {
     }
 
     tracing::info!(
-        "P14 路由守卫完成：GuardedBy 边 {} 条 / {} 个类晋升为 Middleware（中间件类不在图里 {} 处，跳过不猜）",
+        "P14 路由守卫完成：PassesThrough 边 {} 条 / {} 个晋升为 Middleware / {} 个按名建成 Middleware（中间件不在图里且未授权 {} 处，跳过不猜）",
         created,
         promoted,
+        synthesized,
         unresolved
     );
 }
@@ -282,7 +416,7 @@ mod tests {
     fn guarded_by(ctx: &PipelineContext) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::new();
         for e in ctx.ws.edges() {
-            if e.kind.as_str() != GUARDED_BY {
+            if e.kind.as_str() != PASSES_THROUGH {
                 continue;
             }
             let f = ctx.ws.node(e.from_id).map(|n| n.name.clone()).unwrap_or_default();

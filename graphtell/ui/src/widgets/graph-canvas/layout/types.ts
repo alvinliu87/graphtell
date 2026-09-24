@@ -209,6 +209,28 @@ function isStar(centerId: number, edges: LayoutEdge[]): boolean {
 }
 
 /**
+ * 「近似星形」容忍的**叶子间边数上限**。
+ *
+ * 星形判定（[`isStar]`）要求每条边都碰中心，太脆：路由视角里两张表之间的
+ * `ForeignKey`、表视角里的一条外键 —— **一条**叶子间边就把判定判死，于是
+ * 几十片叶子的图落回每层一行的宽扇形（一行 6000px+、两端被裁，`LAYERED_FAN_MAX`
+ * 注释里记过的实测坏案例）。
+ *
+ * 阈值取 3 的理由：少量叶子间边是**装饰**（30 个邻居里的一两条外键），不改变
+ * "这是一颗星"的结构事实，hub-spoke 完全容纳得下（见 `hubSpokeLayout` 对叶子间边
+ * 的绕行）；而真正的多层链路图（环 1 → 环 2 的传递结构）叶子间边是**主体**
+ * （几十条），远超此阈值，仍走同心环 / 分层 —— 「把链路视角手动切成径向时不能
+ * 悄悄变样」的行为由测试钉住，不受本放宽影响。
+ */
+const NEAR_STAR_LEAF_EDGES = 3;
+
+/** 近似星形：绝大多数边都碰中心，仅 ≤ [`NEAR_STAR_LEAF_EDGES`] 条叶子间边。 */
+function isNearStar(centerId: number, edges: LayoutEdge[]): boolean {
+  const leafEdges = edges.filter((e) => e.from !== centerId && e.to !== centerId).length;
+  return leafEdges <= NEAR_STAR_LEAF_EDGES;
+}
+
+/**
  * 径向布局的统一入口：按**图形状**选布局族，而不是让用户自己去试。
  *
  * 星形（= 上述资源视角）一旦扇出上来，同心环是最差的选择：
@@ -225,7 +247,9 @@ function isStar(centerId: number, edges: LayoutEdge[]): boolean {
  */
 export function radialLayout(input: LayoutInput): LayoutResult {
   const leaves = input.rings.flat();
-  if (leaves.length >= HUB_MIN && isStar(input.center.id, input.edges)) {
+  // 用「近似星形」而不是严格星形：一条表间 ForeignKey 不该把几十片叶子的图
+  // 推回同心环（面积 ∝ n² 的坏案例）。少量叶子间边由 hub-spoke 绕行消化。
+  if (leaves.length >= HUB_MIN && isNearStar(input.center.id, input.edges)) {
     return hubSpokeLayout(input, leaves, true);
   }
   return concentricLayout(input);
@@ -853,13 +877,30 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     const b = pos.get(e.to);
     if (!a || !b) return [];
     const spec = hubSides.get(ei);
-    // 两端都不是中心：普通直连边。
-    if (!spec) return [{ ...e, points: [a, b], orthogonal: false }];
+    // 两端都不是中心（表间 ForeignKey 之类的叶子间边）：先试直连；同列两颗药丸
+    // 之间的直线会扫过中间的邻居药丸，撞上就沿侧通道绕行 —— 「边不穿过节点」
+    // 这条硬约束不因近似星形的放宽而破例。
+    if (!spec) {
+      const straight: Pt[] = [a, b];
+      const obstacles = obstaclesForPath(straight, nodes, new Set([e.from, e.to]), 100);
+      if (!pathHits(straight, obstacles)) {
+        return [{ ...e, points: straight, orthogonal: false }];
+      }
+      return [{ ...e, points: detourAroundNodes(a, b, obstacles), orthogonal: false }];
+    }
     const anchor = hubAnchor.get(ei)!;
-    const line: Pt[] = [anchor, [spec.tgt[0], spec.tgt[1] + spec.off]];
+    const end: Pt = [spec.tgt[0], spec.tgt[1] + spec.off];
+    // 辐射边的直连也做同一道探测。结构保证（左缘进入目标 x 区间时 y 已对准目标行）
+    // 只对**单列**形态成立；等长扇形里弧端节点的连线会扫过它内侧相邻的药丸
+    // （弧在 ±SPAN_MAX/2 处回卷，扇骨斜穿内侧邻居）—— 撞上就绕行，不假装没看见。
+    const line: Pt[] = [anchor, end];
+    const forward = spec.hubIsFrom;
+    const obstacles = obstaclesForPath(line, nodes, new Set([e.from, e.to]), 100);
+    const pts = pathHits(line, obstacles)
+      ? detourAroundNodes(line[0], line[1], obstacles)
+      : line;
     // 方向：中心出发 → 目标；目标出发 → 中心（箭头由末端点方向决定）。
-    const pts = spec.hubIsFrom ? line : line.slice().reverse();
-    return [{ ...e, points: pts, orthogonal: false }];
+    return [{ ...e, points: forward ? pts : pts.slice().reverse(), orthogonal: false }];
   });
 
   const flowNote = twoSided
@@ -870,6 +911,17 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     : '';
   const fanNote =
     '每条边的出发点沿中心药丸**面向邻居那一侧**的「上边 → 侧边 → 下边」按目标次序铺开（一条边一个出入口，近中心处不再糊成一束），';
+  // 交叉数如实报出（与 stackedLayout 同一口径）：单列形态有结构性的 0 交叉保证，
+  // 但等长扇形的弧端可能要靠绕行兜底，绕行失败时不谎报"0 处"。
+  const polys = placed.map((e) => ({ from: e.from, to: e.to, pts: e.points }));
+  const crossings = polys.length <= 600 ? countCrossings(polys) : null;
+  const hardNote =
+    crossings === 0
+      ? '边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**'
+      : crossings === null
+        ? '边较多，交叉数未逐一统计'
+        : `当前仍有 **${crossings} 处边交叉**（平面上无法完全消除），逐条确认时请配合悬浮高亮`;
+  const tail = '内容较高时纵向滚动查看。';
   return {
     nodes,
     edges: placed,
@@ -878,8 +930,8 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     content: boundsOf(nodes),
     // 出发点分散也要说给用户：这是「边看起来从哪出来」的直接解释，否则会被当成随机偏移。
     note: viaStar
-      ? `径向入口判定本图为**星形**（每条边都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`
-      : `中心辐射布局：${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**。内容较高时纵向滚动查看。`,
+      ? `径向入口判定本图为**星形**（边几乎都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态；至多 ${NEAR_STAR_LEAF_EDGES} 条叶子间边，如表间 ForeignKey，会绕行）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}${hardNote}。${tail}`
+      : `中心辐射布局：${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}${hardNote}。${tail}`,
   };
 }
 
@@ -1042,7 +1094,9 @@ const LAYERED_FAN_MAX = 10;
 
 export function layeredLayout(input: LayoutInput): LayoutResult {
   const leaves = input.rings.flat();
-  if (leaves.length > LAYERED_FAN_MAX && isStar(input.center.id, input.edges)) {
+  // 同 radialLayout：用「近似星形」——路由视角里一条表间 ForeignKey（叶子间边）
+  // 曾经把 19 片叶子的图判成"非星形"，落回单行 6000px+ 的宽扇形（实测截图坏案例）。
+  if (leaves.length > LAYERED_FAN_MAX && isNearStar(input.center.id, input.edges)) {
     return hubSpokeLayout(input, leaves, false);
   }
   return stackedLayout(input);

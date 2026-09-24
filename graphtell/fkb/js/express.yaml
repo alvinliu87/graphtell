@@ -30,6 +30,45 @@ exclude_globs:
   - "dist/**"
   - "build/**"
 
+# ---------------------------------------------------------------- P3 装载
+loaders:
+  # 路由表 + 守卫：识别逻辑由下方 `route_guards` 声明（位置参数写法
+  # `app.post('/login', loginLimiter, handler)`），内核不再写死。
+  - id: express-route-list
+    table: route_list
+    from:
+      kind: builtin
+      name: routes
+      params: {}
+
+# ---------------------------------------------------------------- 路由守卫识别
+# Express 是**位置参数**写法：第一个实参是路径，最后一个实参是 handler，
+# 中间的所有实参都是中间件（`app.post('/login', loginLimiter, handler)`）。
+route_guards:
+  route_calls:
+    # `accept_identifier: true` —— JS 的中间件是**函数引用**（`loginLimiter` /
+    # `isAuthenticated`），不是 `X::class` 字面量，必须显式声明才收。
+    - receiver: "app"
+      verb_methods: { get: GET, post: POST, put: PUT, delete: DELETE, patch: PATCH, head: HEAD, options: OPTIONS, all: ANY }
+      path_arg: 0
+      handler_arg: null
+      accept_identifier: true
+    - receiver: "router"
+      verb_methods: { get: GET, post: POST, put: PUT, delete: DELETE, patch: PATCH, head: HEAD, options: OPTIONS, all: ANY }
+      path_arg: 0
+      handler_arg: null
+      accept_identifier: true
+    - receiver: "api"
+      verb_methods: { get: GET, post: POST, put: PUT, delete: DELETE, patch: PATCH, head: HEAD, options: OPTIONS, all: ANY }
+      path_arg: 0
+      handler_arg: null
+      accept_identifier: true
+  guard_attach:
+    kind: positional
+  # JS 的中间件是函数值常量（`const loginLimiter = rateLimit({...})`），解析器不为它建
+  # 语法节点；但"这条路由挂了 loginLimiter"是源码事实，故授权按名建成 Middleware 节点。
+  synthesize_unresolved: true
+
 rules:
   # ===== P5 Synthesize：HTTP 契约（路由）=====
   # `app.get('/login', handler)` / `router.post('/x', ...)`。

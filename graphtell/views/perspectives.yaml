@@ -31,8 +31,12 @@ perspectives:
     label: 路由视角
     mode: object
     node_kind: HttpContract
-    # 路由是"一条 HTTP 入口的调用流"，自顶向下的层 = 跳数，比径向更能体现调用顺序与流向。
-    layout: layered
+    # 折叠掉语法层后，路由视图传到布局的图是**近似星形**（几乎所有边都碰中心，
+    # 仅个别表间 ForeignKey 是叶子间边）——对星形，自顶向下分层没有优势：
+    # 「契约 → 表/缓存」的边要从中间件行中间穿过去（实测截图）。
+    # radial 入口按图形状自适应：星形走中心辐射（0 交叉、0 穿节点），
+    # 真多层链路走同心环。计划任务视角保留 layered，因为那是真实执行链。
+    layout: radial
     # 为什么是 4 而不是 2：视图**只渲染语义节点**，中间的语法层（Controller / Services /
     # Dao / Model）全部折叠。四层架构（CRMEB：Controller → Services → Dao → Model → Table）
     # 里第一张表要第 4 跳才出现，depth=2 时路由视角几乎全空 —— 实测 CRMEB 抽样 60 个契约，
@@ -119,6 +123,22 @@ perspectives:
     depth: 2
     description: 消息 topic 的生产与消费（节点种类 Topic）
 
+  # 中间件：形状与「表视角」同构 —— 一个中心 + 一圈"谁经过了它"。
+  # 表视角看的是"谁在读写这张表"，中间件视角看的是"哪些端点过了这个守卫"。
+  #
+  # depth 刻意取 **1** 而不是 2：一个鉴权中间件常守几百个端点（CRMEB 的
+  # AllowOriginMiddleware 守 280 个），再往外扩一跳会把它守的端点接触到的
+  # 所有表 / 配置一起拉进来 —— 那不是"这个中间件守了谁"，而是一张全图。
+  # 要看某个端点后续动了什么资源，点那个端点切到路由视角即可。
+  - id: middleware
+    label: 中间件视角
+    mode: object
+    node_kind: Middleware
+    layout: radial
+    depth: 1
+    collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class]
+    description: 以中间件为中心，看它守了哪些端点（端点后续接触的资源请点端点切到路由视角）
+
   # ---------------- 以下视角 MVP 暂不实现，先注释 ----------------
   # - id: page
   #   label: 页面视角
@@ -169,4 +189,5 @@ node_views:
   Queue: queue
   Schedule: schedule
   Topic: topic
+  Middleware: middleware
   # MVP 暂不支持：Page / Domain / DeployUnit / Platform 不入映射。

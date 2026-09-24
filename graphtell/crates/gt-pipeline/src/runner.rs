@@ -244,7 +244,7 @@ pub fn run(
     // ---------------------------------------------------------- P14 Guard
     // 必须在 P5 之后：依赖 P3 写进 `route_list` 的 `guards` 字段与 P5 合成出的
     // `HttpContract` 节点、P2 建好的中间件 Class 节点。
-    // 产出 `HttpContract --GuardedBy--> 中间件类`（桥边：可遍历、不计入「语义入边 N」）。
+    // 产出 `HttpContract --PassesThrough--> 中间件`（语义边：两端都是语义节点，可画可计数）。
     let phase = Phase("Guard".to_string());
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);

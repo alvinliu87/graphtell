@@ -131,6 +131,100 @@ loaders:
   # 只是**声明**要在每个框架 FKB 里各写一份（装载器按框架装载，不共享声明）。
   # 没有它，Laravel 工程就没有权威列信息 —— `ColumnsMatch` 谓词与
   # P6 的「schema 列 → `Column` 图节点」沉淀都会落空。
+  # 中间件别名表（`app/Http/Kernel.php` 的 `$routeMiddleware`）。
+  # **必须声明在 `php_routes` 之前**：路由表里要按别名还原成类名，
+  # 装载顺序颠倒就会整条守卫丢掉（宁可缺不可猜）。
+  - id: laravel-middleware-aliases
+    table: middleware_aliases
+    from:
+      kind: builtin
+      name: middleware_aliases
+      # 全部由框架知识声明，内核不认识其中任何一个字符串：
+      # * `markers` 两个都列 —— Laravel ≤9 叫 `$routeMiddleware`，**10.x 改名
+      #   `$middlewareAliases`**（实测 10.x 骨架就是后者，只认前者会整表落空）；
+      # * 只取该块：同文件里 `$middlewareGroups` 的 `web` / `api` 是**组名**不是中间件名。
+      params:
+        paths: ["app/Http/Kernel.php", "Http/Kernel.php"]
+        markers: ["$middlewareAliases", "$routeMiddleware"]
+        end: "];"
+        separator: "=>"
+        extensions: ["php"]
+  # Laravel 11 的 `bootstrap/app.php`：`->withMiddleware(fn ($m) => $m->alias([...]))`
+  # 注册的**应用级自定义别名**（框架默认别名见下方 `laravel-default-aliases`）。
+  # 与上面 `laravel-middleware-aliases` 同写 `middleware_aliases` 表、装载顺序无关，
+  # 但都必须在 `laravel-routes` 之前（别名要先于路由装载，否则按别名还原类名时表还空）。
+  - id: laravel-bootstrap-aliases
+    table: middleware_aliases
+    from:
+      kind: builtin
+      name: middleware_aliases
+      params:
+        paths: ["bootstrap/app.php"]
+        markers: ["$middleware->alias"]
+        end: "];"
+        separator: "=>"
+        extensions: ["php"]
+  # 框架默认中间件别名（Laravel 11 由 `Illuminate\Foundation\Configuration\Middleware::defaultAliases()`
+  # 注册，源码在 `vendor/` 不进图）。这是**框架事实**（取自框架 11.x 源码，置信度 1.0），
+  # 让 `auth` / `throttle` / `guest` / `verified` / `can` / `signed` 等路由里常用的别名能静态
+  # 还原成类 —— Laravel 11 不再有 `app/Http/Kernel.php`，否则这些别名整表落空。
+  - id: laravel-default-aliases
+    table: middleware_aliases
+    from:
+      kind: inline
+      rows:
+        - { key: "auth", class: "Illuminate\\Auth\\Middleware\\Authenticate" }
+        - { key: "auth.basic", class: "Illuminate\\Auth\\Middleware\\AuthenticateWithBasicAuth" }
+        - { key: "auth.session", class: "Illuminate\\Session\\Middleware\\AuthenticateSession" }
+        - { key: "cache.headers", class: "Illuminate\\Http\\Middleware\\SetCacheHeaders" }
+        - { key: "can", class: "Illuminate\\Auth\\Middleware\\Authorize" }
+        - { key: "guest", class: "Illuminate\\Auth\\Middleware\\RedirectIfAuthenticated" }
+        - { key: "password.confirm", class: "Illuminate\\Auth\\Middleware\\RequirePassword" }
+        - { key: "precognitive", class: "Illuminate\\Foundation\\Http\\Middleware\\HandlePrecognitiveRequests" }
+        - { key: "signed", class: "Illuminate\\Routing\\Middleware\\ValidateSignature" }
+        - { key: "throttle", class: "Illuminate\\Routing\\Middleware\\ThrottleRequests" }
+        - { key: "verified", class: "Illuminate\\Auth\\Middleware\\EnsureEmailIsVerified" }
+  # ---------------------------------------------------------------------------
+  # **已知中间件**（框架 / 库自带，源码在 `vendor/` 不进图）
+  #
+  # FKB 的设计本意就是"预定义框架与库的语义知识"：一个类在图里**没有节点**
+  # （`vendor/` 被排除）不等于它**没有语义**。故这里把 Laravel 自带的中间件显式声明出来，
+  # P14 解析不到节点时会查这张表并按声明落成 `Middleware` 节点 ——
+  # 与"按名字猜"是两回事：这是 FKB 声明的事实，置信度 1.0。
+  #
+  # 声明方式复用已有的 `inline` 装载器（与 `facade_map` 同款），不需要改解析器。
+  - id: laravel-known-middleware
+    table: middleware_classes
+    from:
+      kind: inline
+      rows:
+        - { class: "Illuminate\\Auth\\Middleware\\Authenticate", capability: "Authentication" }
+        - { class: "Illuminate\\Auth\\Middleware\\AuthenticateWithBasicAuth", capability: "Authentication" }
+        - { class: "Illuminate\\Session\\Middleware\\AuthenticateSession", capability: "Authentication" }
+        - { class: "Illuminate\\Auth\\Middleware\\Authorize", capability: "Authorization" }
+        - { class: "Illuminate\\Routing\\Middleware\\ThrottleRequests", capability: "RateLimiting" }
+        - { class: "Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis", capability: "RateLimiting" }
+        - { class: "Illuminate\\Routing\\Middleware\\ValidateSignature", capability: "SignedRequest" }
+        - { class: "Illuminate\\Routing\\Middleware\\SubstituteBindings", capability: "Routing" }
+        - { class: "Illuminate\\Http\\Middleware\\SetCacheHeaders", capability: "Caching" }
+        - { class: "Illuminate\\Foundation\\Http\\Middleware\\ValidatePostSize", capability: "Validation" }
+        - { class: "Illuminate\\Foundation\\Http\\Middleware\\ConvertEmptyStringsToNull", capability: "Sanitization" }
+        - { class: "Illuminate\\Foundation\\Http\\Middleware\\TrimStrings", capability: "Sanitization" }
+        - { class: "Illuminate\\Http\\Middleware\\HandleCors", capability: "Cors" }
+        - { class: "Illuminate\\Cookie\\Middleware\\EncryptCookies", capability: "Encryption" }
+        - { class: "Illuminate\\Cookie\\Middleware\\AddQueuedCookiesToResponse", capability: "Session" }
+        - { class: "Illuminate\\Session\\Middleware\\StartSession", capability: "Session" }
+        - { class: "Illuminate\\View\\Middleware\\ShareErrorsFromSession", capability: "Session" }
+        - { class: "Illuminate\\Foundation\\Http\\Middleware\\PreventRequestsDuringMaintenance", capability: "Maintenance" }
+        - { class: "Illuminate\\Auth\\Middleware\\EnsureEmailIsVerified", capability: "Authentication" }
+        - { class: "Illuminate\\Auth\\Middleware\\RequirePassword", capability: "Authentication" }
+  # 路由表（`routes/*.php` 的 `Route::get/post/...`）—— 识别逻辑由下方 `route_guards` 声明。
+  - id: laravel-routes
+    table: route_list
+    from:
+      kind: builtin
+      name: routes
+      params: {}
   - id: laravel-db-schema
     table: schema
     from:
@@ -147,6 +241,43 @@ loaders:
       kind: builtin
       name: php_migration_schema
       params: {}
+
+# ---------------------------------------------------------------- 中间件能力
+# 「中间件类 → 能力」同样是框架知识：内核不认识任何一个中间件名字。
+# 命中后给契约打 `Capability` 标注（路由视角结论区的「标注」一行）。
+middleware_capabilities:
+  - { matches: "Authenticate", capability: "Authentication" }
+  - { matches: "Authorize", capability: "Authorization" }
+  - { matches: "ThrottleRequests", capability: "RateLimiting" }
+  - { matches: "EnsureEmailIsVerified", capability: "Authentication" }
+  - { matches: "ValidateSignature", capability: "SignedRequest" }
+  - { matches: "RequirePassword", capability: "Authentication" }
+
+# ---------------------------------------------------------------- 路由守卫识别
+# 与 ThinkPHP 同构：链式 `Route::get(path)->middleware(X)`。Laravel 的 `Route::middleware('auth')`
+# 写在前面（`->group` 在后）也认——通用提取器优先把 `group` 当根。别名（`auth` / `web`）
+# 经 `middleware_aliases` 表还原成真实类。
+route_guards:
+  route_calls:
+    - receiver: "Route"
+      verb_methods:
+        get: GET
+        post: POST
+        put: PUT
+        delete: DELETE
+        patch: PATCH
+        options: OPTIONS
+        any: ANY
+        match: ANY
+      path_arg: 0
+      handler_arg: 1
+      group_method: group
+  guard_attach:
+    kind: chain
+    method: middleware
+    arg_index: 0
+    arg2_index: 1
+  alias_table: middleware_aliases
 
 rules:
   # ===== P5 Synthesize：Table =====

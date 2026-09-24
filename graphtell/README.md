@@ -210,11 +210,15 @@ identity:
 
 | 节点 | 单击行为 |
 | --- | --- |
-| `HttpContract` / `Table` / `Schedule` / `Event` / `Queue` / `Cache` / `Topic` | 切到对应**对象视角**，二级同步为该节点 |
+| `HttpContract` / `Table` / `Schedule` / `Event` / `Queue` / `Cache` / `Topic` / `Middleware` | 切到对应**对象视角**，二级同步为该节点 |
 | `Domain` / `DeployUnit` / `Platform` | 切到**聚合视角**（框 + 计数 / 矩阵） |
 | `ConfigKey` / `KeyPattern` / `Component` / `SecretLocation` | **不切**顶部筛选器，只开右侧 Inspector |
 
 配套约束：悬停只高亮、单击才切、右键与详情图标不切、面包屑可回退、旧中心保留为邻居并标记 `from`、二级列表联动高亮。
+
+中间件视角刻意只用 `depth: 1`：一个鉴权中间件常守几百个端点（CRMEB 的 `AllowOriginMiddleware` 守 280 个），
+再往外扩一跳会把它守的端点所接触的所有表 / 配置一起拉进来 —— 那不是"这个中间件守了谁"，而是一张全图。
+要看某个端点后续动了什么资源，点那个端点切到路由视角。
 
 ### 4. URL 即现场
 

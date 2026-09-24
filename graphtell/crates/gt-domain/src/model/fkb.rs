@@ -10,6 +10,8 @@
 //! 全部数据驱动，内核不认识任何具体框架 —— 这是 **开闭原则** 与
 //! **依赖倒置** 的落点：新增框架只需加一份 YAML。
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -77,6 +79,18 @@ pub struct FrameworkKnowledge {
     /// **中间件自身的确凿身份**（类名），而不是"这个端点看起来要不要登录"。
     #[serde(default)]
     pub middleware_capabilities: Vec<MiddlewareCapability>,
+    /// **路由守卫识别规则**：怎么从调用图里认出「哪些中间件守着哪条路由」。
+    ///
+    /// 这是**框架知识而非内核知识**——`Route::get()->middleware(X)` 是 ThinkPHP/Laravel
+    /// 的链式写法，`app.get(path, mw, handler)` 是 Express 的位置参数写法，
+    /// `@UseGuards(X)` / `@login_required` / `@PreAuthorize` 是 NestJS/Python/Spring 的
+    /// 装饰器 / 注解写法。内核不认识任何一种，全部由 FKB 声明，通用提取器按声明去图上
+    /// 收，再写进 `route_list` 符号表（键与 P5 合成的 `HttpContract.name` 同形），
+    /// 供 P14 把守卫类晋升为 `Middleware` 并连 `PassesThrough` 边。
+    ///
+    /// 新增语言 / 框架支持中间件 = 加一段 `route_guards`，**不改 Rust**。
+    #[serde(default)]
+    pub route_guards: Option<RouteGuardSpec>,
     /// **事务边界标记**：`transaction` / `startTrans` / `beginTransaction` …
     /// 供「同一方法多次写库但未识别到事务」判定（部分成功会留下脏数据）。
     #[serde(default)]
@@ -176,6 +190,274 @@ pub struct MiddlewareCapability {
     pub matches: String,
     /// 产出的能力名（进 `Capability` 通道，如 `Authentication` / `RateLimiting`）。
     pub capability: String,
+}
+
+/// **路由守卫识别规则**（框架级声明，内核据此从调用图收守卫）。
+///
+/// 三种挂载模型覆盖主流写法：
+/// * `chain`：`Route::get(path)->middleware(X)`（ThinkPHP / Laravel 反向）；
+/// * `positional`：`app.get(path, mw1, mw2, handler)`（Express / Koa）；
+/// * `decorator`：`@UseGuards(X)` / `@login_required` / `@PreAuthorize` 落在与被修饰
+///   路由**同一方法**上，按 `owner_fqn` 关联（NestJS / Python / Spring）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RouteGuardSpec {
+    /// 路由定义调用模式（可多条：如 ThinkPHP 的 `Route::`、Express 的 `app`/`router`、
+    /// NestJS 的 `@Get` 装饰器）。
+    pub route_calls: Vec<RouteCallSpec>,
+    /// 守卫如何挂到路由上。**可以声明多个**：同一框架常有多种挂载写法
+    /// （NestJS 既有 `@UseGuards` 也有 `consumer.apply(...).forRoutes(...)`），
+    /// 内核会把各模型产出的守卫**并集**起来。
+    #[serde(default)]
+    pub guard_attach: GuardAttach,
+    /// 可选：中间件别名表符号名（Laravel 的 `Kernel::$routeMiddleware` → `middleware_aliases`）。
+    /// 守卫写的是别名（`auth` / `web`）时，按此表还原成真实类。
+    #[serde(default)]
+    pub alias_table: Option<String>,
+    /// 是否把**图里查不到节点的守卫**也当一个 `Middleware` 节点建出来。默认 **false**。
+    ///
+    /// 为什么是框架知识：
+    /// * PHP 的守卫恒为类，查不到 = 类在 `vendor` / 命名空间未还原 —— 建出来就是凭空造节点，
+    ///   故保持 false（「宁可缺不可猜」，该行为由测试钉住）。
+    /// * JS / Python 的守卫是**函数值**（`const loginLimiter = rateLimit({...})`），解析器
+    ///   不会为它建语法节点 —— 但"这条路由挂了一个叫 `loginLimiter` 的中间件"是源码里的
+    ///   确凿事实。此时建一个同名 `Middleware` 语义节点是**如实记录**，不是猜测。
+    #[serde(default)]
+    pub synthesize_unresolved: bool,
+}
+
+/// 一条「路由定义调用」识别模式。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RouteCallSpec {
+    /// 匹配目标：
+    /// * `by = receiver`（默认）：`call.receiver`（大小写不敏感）**含**此串即命中
+    ///   （ThinkPHP `Route`、Express `app`）；`receiver_ends_with = true` 时改为「以此串结尾」
+    ///   （Laravel 的 `\Route`）。
+    /// * `by = callee`：按 `call.callee`（大小写不敏感）匹配——装饰器 / 注解写法
+    ///   （NestJS `@Get` 的 callee 即 `Get`、Spring `@GetMapping` 的 callee 即 `GetMapping`、
+    ///   Python `@app.route` 的 callee 即 `app.route`）。此时 `receiver` 字段填装饰器名。
+    pub receiver: String,
+    /// 匹配维度：`receiver`（默认）或 `callee`。
+    #[serde(default)]
+    pub by: RouteMatchBy,
+    /// 方法名 → HTTP 动词（`GET`/`POST`/`PUT`/`DELETE`/`PATCH`/`ANY`）。键大小写不敏感；
+    /// 值取大写。ThinkPHP 的 `rule` → `ANY`、Laravel 的 `any` → `ANY` 都在此归一。
+    #[serde(default)]
+    pub verb_methods: HashMap<String, String>,
+    /// 路径实参下标（默认 0）。
+    #[serde(default = "default_zero")]
+    pub path_arg: usize,
+    /// handler 实参下标（默认 1）。`None` 表示路由定义不带 handler 实参。
+    #[serde(default)]
+    pub handler_arg: Option<usize>,
+    /// 组前缀方法名（如 ThinkPHP `group`）——用于把组前缀拼到组内每条路由路径前。
+    #[serde(default)]
+    pub group_method: Option<String>,
+    /// `by = receiver` 时是否「以 `receiver` 结尾」而非「含」。默认 false。
+    #[serde(default)]
+    pub receiver_ends_with: bool,
+    /// 是否把**标识符实参**（`app.post('/x', loginLimiter, handler)` 里的 `loginLimiter`）
+    /// 也当作中间件。默认 **false**。
+    ///
+    /// 为什么是框架知识：PHP 的中间件恒为 `X::class` 字面量，而 JS / Python 的中间件是
+    /// **函数引用**（`loginLimiter` / `isAuthenticated`），在调用图里落成变量名的
+    /// `Unknown`。PHP 侧必须保持 false —— `->middleware($v)` 这种动态实参若被收进来，
+    /// 会把一个变量名当成中间件挂上去，是编造（该行为由测试钉住）。
+    #[serde(default)]
+    pub accept_identifier: bool,
+}
+
+/// 路由匹配的维度。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteMatchBy {
+    /// 按 `call.receiver` 匹配（链式 / 位置参数写法）。
+    #[default]
+    Receiver,
+    /// 按 `call.callee` 匹配（装饰器 / 注解写法）。
+    Callee,
+}
+
+/// 守卫挂载模型。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GuardAttachSpec {
+    /// 链式：`Route::get(path)->middleware(X[, arg])`。
+    Chain(ChainGuardSpec),
+    /// 位置参数：`app.get(path, mw1, mw2, handler)`——`path_arg` 之后到 `handler_arg`
+    /// （不含）之间的实参都是中间件。
+    #[default]
+    Positional,
+    /// 装饰器 / 注解：守卫与被修饰路由**同 owner**（方法 / 函数），按 `owner_fqn` 关联。
+    Decorator(DecoratorGuardSpec),
+    /// 消费者式挂载：NestJS 的 `consumer.apply(X).forRoutes(...)`。
+    Consumer(ConsumerGuardSpec),
+}
+
+/// 一个 / 多个守卫挂载模型（`guard_attach` 的值）。
+///
+/// 允许单值或列表，是为了让同一框架声明**多种**挂载写法而不改内核、也不破坏既有 FKB。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GuardAttach {
+    One(GuardAttachSpec),
+    Many(Vec<GuardAttachSpec>),
+}
+
+impl GuardAttach {
+    /// 归一成模型列表。
+    pub fn specs(&self) -> Vec<&GuardAttachSpec> {
+        match self {
+            GuardAttach::One(s) => vec![s],
+            GuardAttach::Many(v) => v.iter().collect(),
+        }
+    }
+}
+
+impl Default for GuardAttach {
+    fn default() -> Self {
+        GuardAttach::One(GuardAttachSpec::Positional)
+    }
+}
+
+/// `consumer.apply(X).forRoutes(...)` 这类「模块里声明、作用于别处路由」的挂载。
+///
+/// NestJS 的中间件是在 `*.module.ts` 的 `configure()` 里挂的：
+/// ```ts
+/// consumer.apply(AuthMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
+/// ```
+/// 它对哪些路由生效由 `forRoutes` 的**实参**决定，而模块 → 控制器 → 路由的映射
+/// 内核无从得知，故"作用范围"必须由 FKB 声明（见 [`ConsumerScope`]）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConsumerGuardSpec {
+    /// 消费者变量名（默认 `consumer`）。
+    pub receiver: String,
+    /// 挂载中间件的方法名（默认 `apply`）。
+    pub apply_method: String,
+    /// 指定作用范围的方法名（默认 `forRoutes`）。
+    pub for_routes_method: String,
+    /// 视为"本模块全部路由"的通配实参（默认 `["*"]`）。
+    pub wildcards: Vec<String>,
+    /// 命中通配时按什么范围展开（默认 [`ConsumerScope::Directory`]）。
+    pub scope: ConsumerScope,
+}
+
+/// `forRoutes` 命中通配时，中间件作用于哪些路由。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsumerScope {
+    /// 只认**显式路径**（`forRoutes('users')`），通配一律不展开 —— 最保守。
+    ExplicitOnly,
+    /// 通配时作用于**与模块同目录**的控制器里的路由（NestJS 的惯例：
+    /// `user.module.ts` 与 `user.controller.ts` 同在 `src/user/`）。默认。
+    #[default]
+    Directory,
+    /// 通配时作用于**全部**路由（单模块工程的等价写法，多模块会过度声称）。
+    All,
+}
+
+impl Default for ConsumerGuardSpec {
+    fn default() -> Self {
+        Self {
+            receiver: "consumer".into(),
+            apply_method: "apply".into(),
+            for_routes_method: "forRoutes".into(),
+            wildcards: vec!["*".into()],
+            scope: ConsumerScope::Directory,
+        }
+    }
+}
+
+/// 链式守卫：`Route::get(path)->middleware(X)`。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChainGuardSpec {
+    /// 挂载守卫的成员方法名（如 `middleware`）。
+    pub method: String,
+    /// 守卫类实参下标（默认 0）。
+    #[serde(default = "default_zero")]
+    pub arg_index: usize,
+    /// 第二实参下标（区分强制 / 可选，如 `AuthTokenMiddleware::class, false`）。`None` 表示无。
+    #[serde(default)]
+    pub arg2_index: Option<usize>,
+}
+
+/// 装饰器 / 注解守卫：按 `owner_fqn` 关联。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DecoratorGuardSpec {
+    /// 路由装饰器 / 注解的 callee 名单（如 `app.route` / `@Get` / `@GetMapping`）。
+    /// 与解析器输出的 callee 逐字比对（TS 的装饰器带 `@` 前缀）；大小写不敏感。
+    pub route_decorators: Vec<String>,
+    /// 守卫装饰器 / 注解的 callee 名单（如 `login_required` / `@UseGuards` / `@PreAuthorize`）。
+    pub guard_decorators: Vec<String>,
+    /// 守卫名的**正则模式**（大小写不敏感）。命中其一即算守卫。
+    ///
+    /// 为什么必须有它：JS / Python 的守卫常常是**项目自己写的装饰器**
+    /// （`@requires_admin` / `@jwt_or_403` / `@staff_only`…），穷举名字是打地鼠。
+    /// 而"什么样的名字算守卫"是框架 / 项目约定，由 FKB 声明：
+    ///   `["(login|auth|jwt|token)", "(permission|role|admin|staff|owner)", "(guard|secure|required|only)"]`
+    /// Java / Spring 的注解是框架固定的（`@PreAuthorize` 等），用 `guard_decorators` 精确列举即可。
+    #[serde(default)]
+    pub guard_name_patterns: Vec<String>,
+    /// 守卫名的**排除正则**（大小写不敏感），**优先级高于** `guard_decorators` 与
+    /// `guard_name_patterns` —— 命中即"不是守卫"。
+    ///
+    /// 为什么必须有它：宽泛的包含模式会误伤——
+    /// * Swagger / OpenAPI 的**文档**装饰器 `@ApiBearerAuth()` 名字里带 `auth`，
+    ///   却完全不做鉴权（实测 NestJS realworld 有 17 条路由被它误标成"过了守卫"）；
+    /// * NestJS 的**参数**装饰器 `@User('email')` / `@Body()` / `@Param()` 只是取值，
+    ///   不是守卫；局部变量名（`_user`）也不该当中间件。
+    /// 「哪些名字不算守卫」同样是框架知识，由 FKB 声明。
+    #[serde(default)]
+    pub guard_exclude_patterns: Vec<String>,
+    /// 要求守卫 / 路由调用的 callee **以 `@` 开头**（即解析器标注的装饰器调用点）。
+    /// 默认 false。
+    ///
+    /// TS 解析器给装饰器 callee 加 `@` 前缀（`@Get` / `@UseGuards`），据此可把装饰器与
+    /// **普通方法调用**区分开 —— 否则 `this.userService.generateJWT(...)` 这种名字里带
+    /// `jwt` 的业务方法会被当成守卫（实测误报）。
+    #[serde(default)]
+    pub require_at_prefix: bool,
+    /// 按**路由调用的 handler 实参**去关联守卫（而不是按 owner）。默认 `None`。
+    ///
+    /// Django 这类框架把路由与视图**分开写**：
+    ///   urls.py     `path('profile', views.profile)`        ← 路由在这里
+    ///   views.py    `@login_required\ndef profile(request):` ← 守卫在这里
+    /// 两者 owner 不同（一个是 urls 模块、一个是视图函数），按 owner 关联必然落空。
+    /// 声明本字段（handler 所在实参下标）后，守卫按"owner_fqn **以 handler 名结尾**"匹配 ——
+    /// handler 写 `views.profile`，视图函数 owner 是 `myapp.views.profile`，后缀即命中。
+    #[serde(default)]
+    pub link_via_handler_arg: Option<usize>,
+    /// 要求守卫 / 路由调用**没有接收者**（裸名调用）。默认 false。
+    ///
+    /// Python 的 `@login_required`、Java 的 `@PreAuthorize` 都是裸名；而
+    /// `self.generate_jwt()` / `this.checkAuth()` 这类成员调用有接收者，不是装饰器。
+    #[serde(default)]
+    pub require_no_receiver: bool,
+    /// 守卫名取自**实参**还是**装饰器名本身**。默认 **true**（取自实参）。
+    ///
+    /// * `true`：NestJS 的 `@UseGuards(JwtAuthGuard)` —— 守卫是实参里的那个类；
+    ///           无参的 `@login_required` 仍退回装饰器名。
+    /// * `false`：Spring 的 `@PreAuthorize("hasRole('ADMIN')")` —— 实参是 SpEL 表达式，
+    ///           真正的"守卫"是注解本身（`PreAuthorize` / `Secured` / `RolesAllowed`）。
+    #[serde(default = "default_true")]
+    pub name_from_args: bool,
+    /// 是否也认**类级**守卫（守卫注解 / 装饰器打在类上，作用于该类的所有路由方法）。
+    /// 默认 **true**：NestJS 常在 `@Controller` 类上打 `@UseGuards`，
+    /// Spring 常在类上打 `@PreAuthorize`，Python 类视图也常用类级装饰器。
+    #[serde(default = "default_true")]
+    pub include_class_level: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_zero() -> usize {
+    0
 }
 
 /// 数据模型的读 / 写动词清单（方法名，大小写不敏感）。

@@ -136,6 +136,9 @@ export const EDGE_COLORS: Record<string, string> = {
   Declares: '#e5e7eb',
   Contains: '#e5e7eb',
   ResolvesTo: '#38bdf8',
+  // 中间件边：用中间件的天蓝；与 `HandledBy`（红 = 谁处理这个端点）区分开 ——
+  // 一个是"路过谁"，一个是"落到谁"。
+  PassesThrough: '#0ea5e9',
 };
 
 export function edgeColor(kind: string): string {

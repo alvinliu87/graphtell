@@ -386,6 +386,50 @@ fn nestjs_real_sample_produces_route_contracts() {
     );
 }
 
+/// 模块级 `MiddlewareConsumer`：`consumer.apply(AuthMiddleware).forRoutes({path, method})`
+/// 必须把 `AuthMiddleware` 落成 `Middleware` 语义节点，并让受它保护的路由经 `PassesThrough`
+/// 指向它（复现此前"对象字面量实参 0 命中"的回归）。
+#[test]
+fn nestjs_real_sample_consumer_middleware() {
+    let Some((nest_root, _)) = node_samples() else {
+        eprintln!("跳过：未找到 NestJS 真实样本（samples/nestjs-realworld-example-app）");
+        return;
+    };
+    let Some(b) = common::graph_with_root(&nest_root, ProjectConfig::default()) else {
+        panic!("真实样本建图应成功");
+    };
+    let mws: Vec<String> = nodes_of_kind(&b, "Middleware")
+        .iter()
+        .map(|n| n.name.clone())
+        .collect();
+    assert!(
+        mws.iter().any(|n| n == "AuthMiddleware"),
+        "应产出 Middleware 节点 AuthMiddleware，实际：{mws:?}"
+    );
+    // 至少一条契约经 `PassesThrough` 连到 AuthMiddleware（输入边）。
+    let linked = nodes_of_kind(&b, "Middleware")
+        .into_iter()
+        .filter(|m| m.name == "AuthMiddleware")
+        .any(|m| {
+            b.store
+                .edges_of(m.id, EdgeDirection::Incoming)
+                .expect("edges")
+                .iter()
+                .any(|e| e.kind.as_str() == "PassesThrough")
+        });
+    assert!(
+        linked,
+        "至少一条 HttpContract 应经 PassesThrough 连到 AuthMiddleware"
+    );
+    let count = nodes_of_kind(&b, "Middleware")
+        .into_iter()
+        .filter(|m| m.name == "AuthMiddleware")
+        .flat_map(|m| b.store.edges_of(m.id, EdgeDirection::Incoming).expect("edges"))
+        .filter(|e| e.kind.as_str() == "PassesThrough")
+        .count();
+    eprintln!("NestJS 真实样本 AuthMiddleware 守卫的契约数 = {count}");
+}
+
 #[test]
 fn express_real_sample_produces_route_contracts() {
     let Some((_, expr_root)) = node_samples() else {

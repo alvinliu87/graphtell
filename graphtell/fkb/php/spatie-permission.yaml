@@ -1,0 +1,34 @@
+# spatie/laravel-permission —— **库**级 FKB（不是框架）
+#
+# 为什么库也需要 FKB：FKB 的设计本意就是"预定义框架与常用库的语义知识"。
+# 这个包的中间件类住在 `vendor/`（不进图），但它们的语义是确凿的：
+# `PermissionMiddleware` 就是"按权限鉴权"。声明出来后，工程只要在
+# `Kernel.php` 里注册 `'permission' => PermissionMiddleware::class`，
+# 建图时就能把它落成 `Middleware` 节点并连到路由 —— 无需其源码进图。
+#
+# 本文件只声明"已知中间件"，不含任何规则：库的知识可以只贡献语义清单。
+# 新增同类库 = 再加一份这样的 YAML，不改内核。
+
+id: spatie-permission
+display_name: spatie/laravel-permission
+language: php
+version_hint: "5.x / 6.x"
+scope: framework
+# 库的知识同样**只在被识别到时才生效**（composer.json 里真装了这个包），
+# 不会串味到没用它的工程。
+detectors:
+  - kind: manifest_dependency
+    manifest: composer.json
+    dependency: spatie/laravel-permission
+    confidence: 0.95
+
+loaders:
+  # 写入 `middleware_classes` 表：P14 解析不到节点时按此表落成 Middleware 节点。
+  - id: spatie-permission-middleware
+    table: middleware_classes
+    from:
+      kind: inline
+      rows:
+        - { class: "Spatie\\Permission\\Middlewares\\PermissionMiddleware", capability: "Authorization" }
+        - { class: "Spatie\\Permission\\Middlewares\\RoleMiddleware", capability: "Authorization" }
+        - { class: "Spatie\\Permission\\Middlewares\\RoleOrPermissionMiddleware", capability: "Authorization" }

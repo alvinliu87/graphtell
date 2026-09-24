@@ -201,6 +201,11 @@ pub struct GraphWorkspace {
     pub route_groups: Vec<RouteGroup>,
     /// 路由守卫区间（`Route::xxx(...)->middleware(...)`），供查询"这条路由过了哪些中间件"。
     pub route_guard_scopes: Vec<RouteGuardScope>,
+    /// FKB 是否授权「图里查不到节点的守卫也建成 `Middleware` 节点」。
+    ///
+    /// 由 `route_guards.synthesize_unresolved` 声明（JS / Python 的函数值中间件为 true，
+    /// PHP 的类中间件为 false），P14 据此决定是建节点还是跳过。
+    pub synthesize_unresolved_guards: bool,
     pub symbols: BTreeMap<String, BTreeMap<String, Value>>,
     /// 类属性默认值：`(class_node_id, property_name) → value`。
     prop_values: HashMap<(i64, String), FactValue>,
@@ -297,6 +302,7 @@ impl GraphWorkspace {
             pending_links: Vec::new(),
             route_groups: Vec::new(),
             route_guard_scopes: Vec::new(),
+            synthesize_unresolved_guards: false,
             symbols: BTreeMap::new(),
             prop_values: HashMap::new(),
             file_nodes: HashMap::new(),

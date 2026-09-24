@@ -59,6 +59,63 @@ root_rules:
       - app
       - src
 
+# ---------------------------------------------------------------- P3 装载
+loaders:
+  # 路由表 + 守卫：识别逻辑由下方 `route_guards` 声明。
+  - id: fastapi-route-list
+    table: route_list
+    from:
+      kind: builtin
+      name: routes
+      params: {}
+
+# ---------------------------------------------------------------- 路由守卫识别
+# FastAPI：路由是 `@router.get("/x")`（动词即方法名），守卫形态有两种：
+#   * 装饰器（`@app.middleware` 之外自定义的 `@requires_auth` 等）—— 本声明覆盖；
+#   * **函数签名里的 `Depends(...)`**（`def read(x: User = Depends(get_current_user))`）——
+#     依赖不在装饰器里，**本声明不覆盖**（需在解析器侧收集形参依赖，属后续工作）。
+route_guards:
+  route_calls:
+    - receiver: "app"
+      verb_methods: { get: GET, post: POST, put: PUT, delete: DELETE, patch: PATCH, route: ANY, api_route: ANY }
+      path_arg: 0
+      accept_identifier: true
+    - receiver: "router"
+      verb_methods: { get: GET, post: POST, put: PUT, delete: DELETE, patch: PATCH, route: ANY, api_route: ANY }
+      path_arg: 0
+      accept_identifier: true
+    - receiver: "api_router"
+      verb_methods: { get: GET, post: POST, put: PUT, delete: DELETE, patch: PATCH, route: ANY, api_route: ANY }
+      path_arg: 0
+      accept_identifier: true
+  guard_attach:
+    kind: decorator
+    route_decorators: []
+    # `Depends(...)` —— FastAPI 的依赖写在**函数签名**里（`user=Depends(get_current_user)`），
+    # 解析器把它记成 owner 为该视图函数的调用点，故与装饰器同一套 owner 关联逻辑即可命中。
+    guard_decorators: ["login_required", "jwt_required", "auth_required", "requires_auth",
+                       "permission_required", "roles_required", "admin_required", "Depends"]
+    # JS / Python 的守卫常是项目自写的装饰器，穷举名字是打地鼠 ——
+    # 按"什么样的名字算守卫"声明（大小写不敏感正则）：
+    guard_name_patterns:
+      - "(login|logout|auth|jwt|token|session)"
+      - "(permission|role|admin|staff|owner|superuser)"
+      - "(guard|secure|required|only|protect|verify|check)"
+    # deny 优先：文档装饰器与参数装饰器**不是**守卫（实测误伤来源）
+    guard_exclude_patterns:
+      # Swagger / OpenAPI 文档装饰器：@ApiBearerAuth() / @ApiOperation() …
+      - "^@?api"
+      - "(swagger|openapi)"
+      # NestJS 参数装饰器（只取值不做鉴权）：@User() / @Body() / @Param() / @Req() …
+      - "^@?(req|request|res|response|next|session|param|params|body|query|headers|header|ip|uploadedfile|uploadedfiles|currentuser|user)$"
+      # 局部变量 / 内部名（`_user`）不是中间件
+      - "^_"
+    name_from_args: true
+    include_class_level: true
+    # 守卫装饰器是裸名（`@login_required`）；`self.check_x()` 这类成员调用不是装饰器
+    require_no_receiver: true
+  synthesize_unresolved: true
+
 rules:
   # ===== P5 Synthesize：HTTP 契约 =====
   # `@router.get("/users")` —— 装饰器被建模为调用点：

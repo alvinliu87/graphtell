@@ -41,6 +41,55 @@ exclude_globs:
 semantic_edge_kinds: [ForeignKey]
 bridge_edge_kinds: [References]
 
+# ---------------------------------------------------------------- P3 装载
+loaders:
+  # 路由表 + 守卫：识别逻辑由下方 `route_guards` 声明。
+  - id: django-route-list
+    table: route_list
+    from:
+      kind: builtin
+      name: routes
+      params: {}
+
+# ---------------------------------------------------------------- 路由守卫识别
+# Django 把**路由与视图分开写**：
+#   urls.py   `path('profile', views.profile)`        ← 路由（不编码 HTTP 方法，故 ANY）
+#   views.py  `@login_required\ndef profile(request)` ← 守卫
+# 两者 owner 不同，故用 `link_via_handler_arg: 1` 按**handler 实参**跨文件关联：
+# handler 写 `views.profile`，视图函数的 owner 是 `myapp.views.profile`，后缀即命中。
+route_guards:
+  route_calls:
+    - receiver: "path"
+      by: callee
+      verb_methods: { path: ANY }
+      path_arg: 0
+    - receiver: "re_path"
+      by: callee
+      verb_methods: { re_path: ANY }
+      path_arg: 0
+    - receiver: "url"
+      by: callee
+      verb_methods: { url: ANY }
+      path_arg: 0
+  guard_attach:
+    kind: decorator
+    route_decorators: []
+    guard_decorators: ["login_required", "staff_member_required", "permission_required",
+                       "user_passes_test", "csrf_protect", "require_http_methods"]
+    guard_name_patterns:
+      - "(login|logout|auth|jwt|token|session)"
+      - "(permission|role|admin|staff|owner|superuser)"
+      - "(guard|secure|required|only|protect|verify|check)"
+    guard_exclude_patterns:
+      # `path` / `include` / `re_path` 本身不是守卫；局部变量也不是
+      - "^(path|re_path|url|include|static)$"
+      - "^_"
+    name_from_args: true
+    include_class_level: true
+    require_no_receiver: true
+    link_via_handler_arg: 1
+  synthesize_unresolved: true
+
 rules:
   # ===== P5 Synthesize：模型 → 表 =====
   # `class Post(models.Model)` —— 表名取类短名（snake_plural，与 Laravel 的

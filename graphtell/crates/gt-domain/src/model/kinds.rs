@@ -206,12 +206,19 @@ declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
     // 与后端 `Event` 的 `Triggers` 同构——事件节点在折叠视图里充当「via」桥。
     EMITS       = "Emits"       => "前端发射事件总线事件（uni.$emit / bus.$emit）",
     LISTENS_TO  = "ListensTo"   => "前端监听事件总线事件（uni.$on / bus.$on）",
-    // 路由守卫：`HttpContract --GuardedBy--> Middleware`。
+    // 中间件：`HttpContract --PassesThrough--> Middleware`。
+    //
+    // 边名刻意取中性：**请求经过它**，而不是"被它守卫"。中间件里有的是守卫
+    // （`AuthToken` / `Blocker` / `throttle` —— 会拒绝请求），有的只是旁路
+    // （`AllowOrigin` 加响应头、`AdminLog` 记审计日志、`StationOpen` 是业务开关）。
+    // 统一叫 "GuardedBy" 会替后一类**过度声明** —— 与 `MapsTo` 不写成 `ReadsDb`
+    // 是同一条纪律：静态归属 ≠ 动作，路过 ≠ 守卫。
+    // "这个端点要不要鉴权"由 `Capability` 标注回答，不由边名承担。
+    //
     // 起初归 `BRIDGE`（当时终点还是语法节点 Class），中间件晋升为语义节点后
-    // **两端都是语义节点**，满足了语义边的不变式，故移入 `SEMANTIC`：
-    // 计入「语义出边 N」并画在画布上 —— 与"读写了几张表"同一口径，因为"过了哪几个
-    // 守卫"本身就是这个端点的一项业务事实。由 P14 `phase::guard` 产出。
-    GUARDED_BY   = "GuardedBy"    => "由…守卫（契约 → 中间件）",
+    // **两端都是语义节点**，满足了语义边的不变式，故移入 `SEMANTIC`（计入
+    // 「语义出边 N」并画在画布上）。由 P14 `phase::guard` 产出。
+    PASSES_THROUGH = "PassesThrough" => "经过（契约 → 中间件）",
     RESOLVES_TO   = "ResolvesTo"    => "动态解析结果",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新边种类",
 }
@@ -238,7 +245,7 @@ impl EdgeKind {
         Self::NAVIGATES_TO,
         Self::EMITS,
         Self::LISTENS_TO,
-        Self::GUARDED_BY,
+        Self::PASSES_THROUGH,
         "ReadsCache",
     ];
 

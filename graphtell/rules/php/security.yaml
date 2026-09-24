@@ -29,7 +29,8 @@ rules:
   # 要让它重新有意义，二选一（都需要动代码，勿擅自打开本条）：
   #   ① 收紧 `crmeb-public-endpoint`：只有彻底没挂鉴权类中间件的才判公开；
   #     需要一个能读 `route_list.guards` 的新谓词（引擎侧）。
-  #   ② 改成正向规则：只对「挂了鉴权中间件但实参显式为 false（可选）」的写端点报警。
+  #   ② 改成正向规则 —— **已落地为下面的 `write-endpoint-with-optional-auth`**：
+  #     只报「挂了鉴权中间件但实参显式为 false（可选）」的写端点，量小且每条可验证。
   - id: write-endpoint-without-auth
     title: 写端点未识别到鉴权能力
     description: >-
@@ -52,6 +53,36 @@ rules:
       - no_annotation: auth.public
     message: "写端点 {name} 未识别到鉴权能力（可能确实没做，也可能是图没解析出中间件）"
     remediation: "确认该端点是否应当鉴权；若中间件已在 FKB 支持范围内仍未被识别，补一条 capability 规则"
+
+  # ⚠️ 上面那条的正向替代品。二者的差别是**判据性质**：
+  #   `write-endpoint-without-auth` 用反向判据（"没有鉴权证据"）—— 证据不存在时恒真，
+  #   实测被 `crmeb-public-endpoint` 结构架空（互补且穷尽 → 永远 0 命中）；
+  #   这条用**正向判据**（"图上确实看到了：挂了鉴权中间件、且实参显式写着 false"），
+  #   只在有确凿事实时才成立，故不受"图没解析出来"的影响。
+  # 报的是"这个写端点未登录也能进"，而不是"它可能没鉴权" —— 措辞与证据强度对齐。
+  - id: write-endpoint-with-optional-auth
+    title: 写端点的鉴权是可选的（未登录也能进）
+    description: >-
+      端点挂了鉴权中间件，但挂载实参显式写着可选（CRMEB 的
+      `AuthTokenMiddleware::class, false`）：登录了就带上身份，没登录也照样放行。
+      「可选」不等于「没有」，所以本条只在图上真看到这个实参时才报 ——
+      没看到就不说话（那属于图没解析出来，不是代码没做）。
+    severity: warning
+    category: security
+    applies_to:
+      kinds: [HttpContract]
+      languages: [php]
+    when:
+      - any_of:
+          - identity_contains: "post "
+          - identity_contains: "put "
+          - identity_contains: "patch "
+          - identity_contains: "delete "
+      - has_annotation: auth.optional
+    message: "写端点 {name} 挂了鉴权中间件但实参为可选（未登录也能进）—— 请确认这是刻意设计"
+    remediation: >-
+      若该端点必须先登录才能操作（改状态却放行游客通常是漏洞），把挂载实参改成 true；
+      若确实是"登录了带身份、不登录也提供基础功能"的设计，保留即可。
 
   - id: raw-sql-sink
     title: 存在原始 SQL 执行点

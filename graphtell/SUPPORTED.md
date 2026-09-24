@@ -257,27 +257,51 @@ PHP ORM 的模型**通常不声明字段**（字段在 migration / 表结构里�
 
 端到端自检（合成工程，无需外部样本）：`crates/gt-pipeline/tests/php_orm_features.rs`。
 
-### 路由守卫（中间件）：只落地挂载，不收全局
+### 中间件：只落地挂载，不收全局
 
 | 语义 | 触发 | 节点 | 边 | 备注 |
 | --- | --- | --- | --- | --- |
-| **路由守卫** | `Route::group(fn){...}->middleware(X::class[, true])` / 单条路由自带 `->middleware(...)` | 不造节点 | 暂不建边 | P3 抽出后写进 `route_list`（`guards` 字段），路由视角的「结论」面板显示「经过中间件」一行 |
+| **中间件** | `Route::group(fn){...}->middleware(X::class[, true])` / 单条路由自带 `->middleware(...)` | `Middleware`（由 `Class` **晋升**，不新建） | `PassesThrough` | P3 抽挂载 → P5.5 能力标注 → P14 建边 + 晋升；路由视角「结论」面板另有「经过中间件」一行 |
 
-**刻意不为它造节点 / 语义边**：中间件的 identity 就是类的 FQN，而 P2 早已为该 Class 建了节点，
-再合成一个等于同一份代码两个实体。中间件的语义（角色 / 守卫关系 / 能力）应走**标注与桥边**，
-不走新种类 —— 详见 §5。
+**晋升而非合成**：中间件的 identity 就是类的 FQN，而 P2 早已为该 `Class` 建了节点，
+再合成一个等于同一份代码两个实体（扇入分裂、跳转给出两份位置）。故 P14 走
+`GraphDelta::kind_patches` **只改 kind，节点仍只有一个**。
+
+**为什么边名叫「经过」而不是「由…守卫」**：中间件里有会拒绝请求的守卫
+（`AuthToken` / `Blocker` / `throttle`），也有只加响应头 / 记日志的旁路
+（`AllowOrigin` / `AdminLog`）。统一叫"守卫"是替后者**过度声明** —— 与 `MapsTo`
+不写成 `ReadsDb` 同一条纪律（静态归属 ≠ 动作，路过 ≠ 守卫）。
+"这个端点要不要鉴权"由 `Capability: Authentication` 标注回答，不由边名承担。
 
 **为什么只收路由 / 路由组级挂载**：全局中间件（`app/middleware.php`、`Kernel::$middleware`）
 对每个端点都成立，是**环境常量而非信息** —— 画上去只会让每张图重复同一句废话
 （这正是 `write-endpoint-without-auth` 被停用的同型教训：把全局事实当端点级事实，
 1603 个契约里 1529 个被判成公开端点）。
 
-CRMEB 实测（流水线重跑）：28 段区间 / 43 处挂载 → **330 条契约**能显示中间件，共 **11 种组合**，
-最大一种仅占 33% —— 不是常量，所以这条事实配得上被展示（`AuthTokenMiddleware(true)` 与
-`(false)` 正好把「必须登录」与「可选登录」的接口分开）。
+CRMEB 实测（流水线重跑）：`route_list` 键与契约名**1265 / 1265** 对上 → **4436 条**
+`PassesThrough` 边、**10 个**类晋升为 `Middleware`、`auth.public` 从 1529 降到 894
+（被误判为"公开"的端点得到纠正）。
+组合分布：12 种，最大一种占 **63%** —— 准确的说法是区分度**不在单个端点之间，而在
+app 之间**（管理端 / 用户端 / 客服端 / 公开），同一个 app 内部确实是同一套中间件。
 
-已知边界：**Laravel 的修饰符前置写法** `Route::middleware('auth')->group(fn)` 暂不支持（链式方向
-与 ThinkPHP 相反）；字符串别名 → 类的还原需要 `Kernel::$routeMiddleware`，尚未装载。
+**Laravel 侧**（`fkb/php/laravel.yaml` 新增 `php_routes` / `php_middleware_aliases` 两个装载器）：
+
+| 项目 | 实测 |
+| --- | --- |
+| bagisto | `route_list` **0 → 207** 行（此前 Laravel 工程根本没有路由表，"路由表登记 handler"结论恒不显示）；24 条契约带守卫 |
+| aimeos | 16 条契约带守卫（`auth:sanctum` / `guest` …） |
+
+两点已解决：① 修饰符前置写法 `Route::middleware('auth')->group(fn)` —— 链根改取 `group`；
+② 数组形式 `->middleware(['auth','throttle:60'])` —— 每一项各算一次挂载。
+
+已知边界（诚实声明，不为这批写法硬撑）：
+- **别名 → 类**依赖 `app/Http/Kernel.php` 的 `$routeMiddleware`。3 个样本里只有 aimeos 有
+  `Http/Kernel.php` 且**没有**声明 `$routeMiddleware`（用的是 Laravel 内置别名），故别名
+  基本还原不出类名：守卫名字照常显示（`web` / `guest` / `throttle:5,1`），但**连不到类节点**。
+  裸短名（`NoCacheMiddleware`）走 `resolve_short_name` 兜底能连上（bagisto 实测 4 条边），
+  歧义短名一律拒绝。
+- Laravel 内置中间件（`auth` / `guest` / `throttle`）的类在 `vendor` 里，P0 已排除 ——
+  即使别名还原成功也未必有节点可连，这是**图的边界**，不是还原逻辑的缺陷。
 
 ### 3.3 Symfony（PHP）路由语义特征
 
