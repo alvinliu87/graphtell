@@ -2112,16 +2112,18 @@ fn load_nginx(
 /// 图里一个中间件都没有（likeadmin 就是典型）。
 ///
 /// 本装载器把"声明类名单 + 作用域"存进工作区 `declared_middleware` 符号表；**不直接建节点**
-/// ——因为 prepare 阶段 HttpContract 节点尚未合成（likeadmin 这类自动路由项目，绝大多数路由
-/// 根本不进 `route_list`）。真正的节点 / `PassesThrough` 边由 P14（`phase/guard.rs`）在
-/// HttpContract 节点已存在的阶段按作用域挂出来，复用现有机理，内核零框架字符串。
+/// ——因为 HttpContract 节点（尤其是 likeadmin 这类自动路由 / 由 `frontend-http-contract`
+/// 规则合成的契约）在 prepare 阶段还不存在。真正的节点 / `PassesThrough` 边由建图完成后的
+/// 后置步骤（见 `gt-application::PipelineService::attach_declared_middleware`）在 HttpContract
+/// 节点已齐全时按作用域挂出来，复用 P14 同款机理，内核零框架字符串。
 ///
 /// # params
-/// * `paths`：要扫的文件（后缀匹配，支持 `**/X`）。
+/// * `paths`：要扫的文件（后缀匹配，支持 `**/X`）。`per_app` 时支持单个 `*` 通配段
+///   （如 `app/*/config/route.php`），匹配到的 `*` 段即应用名。
 /// * `key`：可选。声明数组所在键；省略时按整份文件取第一个 `[...]` 数组
 ///   （即 `return [A::class, ...];` 形态）。
-/// * `scope`：`global`（挂到全部路由，默认）或 `per_app`（只挂到路径含 `/<app>` 的路由，
-///   应用名从文件路径相对 `project_root` 的第 `prefix_segment` 段取，默认 1；`prefix` 即 `/<app>`）。
+/// * `scope`：`global`（挂到全部路由，默认）或 `per_app`（只挂到名字含 `/<app>` 前缀的路由，
+///   `prefix` 即 `/<app>`，从 `paths` 的 `*` 通配段抽取）。
 fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, params: &Value) {
     let paths = params
         .get("paths")
@@ -2135,10 +2137,6 @@ fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, para
         .get("scope")
         .and_then(Value::as_str)
         .unwrap_or("global");
-    let prefix_segment = params
-        .get("prefix_segment")
-        .and_then(Value::as_u64)
-        .unwrap_or(1) as usize;
     let mut exts = params
         .get("extensions")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
@@ -2152,7 +2150,7 @@ fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, para
     for (path, text) in scan_text_files(project_root, &exts) {
         let hit = paths
             .iter()
-            .any(|p| path.ends_with(p.trim_start_matches("**/")));
+            .any(|p| declared_mw_path_matches(p, &path));
         if !hit {
             continue;
         }
@@ -2160,21 +2158,35 @@ fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, para
         if classes.is_empty() {
             continue;
         }
-        // `per_app` 时按文件路径（相对 project_root）取应用名作为路由前缀（如 `/adminapi`）。
+        // `per_app` 时从 `paths` 里形如 `app/*/config/route.php` 的 `*` 段抽应用名
+        // 作为路由前缀（如 `/adminapi`）—— 对齐结尾，不受 project_root 下多几层目录影响。
         let prefix: Option<String> = if scope == "per_app" {
-            let rel = path
-                .strip_prefix(project_root.to_string_lossy().as_ref())
-                .unwrap_or(&path);
-            let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-            parts.get(prefix_segment).map(|a| format!("/{}", a))
+            paths.iter().find_map(|p| {
+                let dseg: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+                let aseg: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+                if aseg.len() < dseg.len() {
+                    return None;
+                }
+                let suffix = &aseg[aseg.len() - dseg.len()..];
+                dseg.iter().zip(suffix).find_map(|(d, a)| {
+                    if *d == "*" {
+                        Some(format!("/{}", a))
+                    } else {
+                        None
+                    }
+                })
+            })
         } else {
             None
         };
-        // 存进工作区，等 P14 在 HttpContract 节点存在后按作用域挂链（prepare 阶段节点未合成）。
+        // 存进工作区，等建图完成后的后置步骤（见
+        // `gt-application::PipelineService::attach_declared_middleware`）按作用域挂链。
+        // key 加 `scope` 前缀 + 文件序号，保证同一工程内多个声明文件互不覆盖
+        // （`idx` 在每个 loader 调用内从 0 起算，不同 scope 必须靠前缀区分）。
         ctx.ws.put_symbol(
             ctx.project.id,
             "declared_middleware",
-            &idx.to_string(),
+            &format!("{}_{}", scope, idx),
             json!({ "classes": classes, "scope": scope, "prefix": prefix }),
         );
         idx += 1;
@@ -2189,28 +2201,46 @@ fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, para
 
 /// 从文件文本抽取中间件类名列表。
 ///
-/// * `key` 给出时（如 `middleware`）：取 `'middleware' => [ ... ]` 数组块；
+/// * `key` 给出时（如 `middleware`）：取 `key => [ ... ]` 数组块；
+///   注意 `key` 可能出现在命名空间里（如 `app\...\middleware\Foo`），故要求 key 后紧跟 `=>`
+///   （跳过引号 / 空白）才认作赋值键，避免命中命名空间。
 /// * 否则：取整份文件的第一个 `[ ... ]` 数组（即 `return [A::class, ...];` 形态）。
 /// 每行取 `X::class`（剥 `//` 注释、尾逗号、前导 `\`），得到归一后的 FQN。
 fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
     let block = match key {
-        Some(k) => match text.find(k) {
-            Some(idx) => {
-                let after = &text[idx + k.len()..];
-                let after = after.trim_start().strip_prefix("=>").unwrap_or(after);
-                match after.find('[') {
-                    Some(open) => {
-                        let rest = &after[open..];
-                        match rest.find(']') {
-                            Some(close) => rest[1..close].to_string(),
-                            None => return Vec::new(),
-                        }
-                    }
-                    None => return Vec::new(),
+        Some(k) => {
+            // 找「key => [」：遍历所有命中，取其后紧跟 `=>` 的那一处。
+            let mut from = 0;
+            let mut found: Option<usize> = None;
+            while let Some(rel) = text[from..].find(k) {
+                let abs = from + rel;
+                let rest = &text[abs + k.len()..];
+                let after = rest
+                    .trim_start_matches(|c: char| c == '\'' || c == '"' || c.is_whitespace());
+                if after.starts_with("=>") {
+                    found = Some(abs);
+                    break;
                 }
+                from = abs + k.len();
             }
-            None => return Vec::new(),
-        },
+            match found {
+                Some(idx) => {
+                    let after = &text[idx + k.len()..];
+                    let after = after.trim_start().strip_prefix("=>").unwrap_or(after);
+                    match after.find('[') {
+                        Some(open) => {
+                            let rest = &after[open..];
+                            match rest.find(']') {
+                                Some(close) => rest[1..close].to_string(),
+                                None => return Vec::new(),
+                            }
+                        }
+                        None => return Vec::new(),
+                    }
+                }
+                None => return Vec::new(),
+            }
+        }
         None => match text.find('[') {
             Some(open) => {
                 let bytes = text.as_bytes();
@@ -2250,6 +2280,24 @@ fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
         }
     }
     out
+}
+
+/// 路径后缀匹配（对齐结尾），支持 `*` 通配段（匹配恰好一个路径段）。
+///
+/// 用于 `declared_middleware` 的 `paths`：声明 `app/*/config/route.php` 能命中
+/// `server/app/adminapi/config/route.php`（无论 project_root 下多几层目录），而
+/// 不像 `engine::path_matches` 那样要求 pattern 从开头匹配 —— 自动路由项目的应用目录
+/// 常藏在 `server/app/<app>` 这类子目录里。无 `*` 时退化为普通后缀相等。
+fn declared_mw_path_matches(pattern: &str, path: &str) -> bool {
+    let pseg: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let aseg: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if aseg.len() < pseg.len() {
+        return false;
+    }
+    let suffix = &aseg[aseg.len() - pseg.len()..];
+    pseg.iter()
+        .zip(suffix)
+        .all(|(p, a)| *p == "*" || p == a)
 }
 
 /// 扫描指定扩展名的文本文件（跳过依赖目录）。

@@ -211,10 +211,9 @@ loaders:
       kind: builtin
       name: declared_middleware
       params:
-        paths: ["app/adminapi/config/route.php", "app/api/config/route.php"]
+        paths: ["app/*/config/route.php"]
         key: middleware
         scope: per_app
-        prefix_segment: 1
   # Nginx 配置
   - id: nginx-config
     table: nginx

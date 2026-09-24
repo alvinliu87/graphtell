@@ -20,8 +20,9 @@ use gt_application::{RecallQuery, RecallService, RuleService};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 use gt_domain::model::{
-    AnnotationChannel, CheckPredicate, EdgeKind, Language, MergeStrategy, NewAnnotation, NewEdge,
-    NewNode, NewProject, NewSourceFile, NodeId, NodeKind, Phase, ProjectId, Severity,
+    AnnotationChannel, CheckPredicate, EdgeKind, FileId, IdentityKey, Language, MergeStrategy,
+    NewAnnotation, NewEdge, NewNode, NewProject, NewSourceFile, NodeId, NodeKind, Phase, ProjectId,
+    Severity, Span,
 };
 use gt_domain::port::{
     DiagnosticSink, GraphDelta, GraphSink, Persistence, ProjectWriter, RuleProvider,
@@ -428,6 +429,129 @@ fn recall_expands_from_seed_along_graph() {
         .expect("createOrder 应在命中里");
     assert!(!expanded.direct, "扩展出来的是间接命中");
     assert!(expanded.hop >= 1);
+}
+
+/// 中文意图查询（"下单改优惠"）必须能越过词面，seed 到英文命名的业务节点。
+///
+/// 之前（纯词面子串）：只有名字恰好含「优惠」的 `优惠券` i18n 文案被命中，
+/// 真正的下单 / 改折扣代码（英文命名）全部漏掉。现在通过「中文意图词 → 英文
+/// 符号」的离线桥 + 向量软匹配，应能召回 `placeOrder` / `applyDiscount` /
+/// `OrderService`，并把图上的相关代码一并带出。
+#[test]
+fn recall_chinese_intent_bridges_to_english_nodes() {
+    let f = fixture();
+    let store = &f.container.store;
+    let pid = f.project;
+
+    let files = store
+        .replace_files(
+            pid,
+            vec![
+                NewSourceFile {
+                    project_id: pid,
+                    sub_project_id: None,
+                    path: "app/services/OrderService.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 512,
+                    content_hash: "h1".into(),
+                },
+                NewSourceFile {
+                    project_id: pid,
+                    sub_project_id: None,
+                    path: "app/i18n/zh.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 256,
+                    content_hash: "h2".into(),
+                },
+            ],
+        )
+        .expect("文件应可写入");
+    let svc_file = files[0].id;
+    let i18n_file = files[1].id;
+
+    let node = |kind: &str, name: &str, id: i64, file: Option<FileId>| NewNode {
+        id: Some(NodeId(id)),
+        project_id: pid,
+        sub_project_id: None,
+        kind: NodeKind::new(kind),
+        name: name.to_string(),
+        fqn: None,
+        identity: Some(IdentityKey::fqn(name)),
+        file_id: file,
+        span: Span {
+            start_line: 10,
+            end_line: 30,
+            start_byte: 0,
+            end_byte: 0,
+        },
+        language: Language::new("php"),
+        phase: Phase(Phase::SYNTHESIZE.to_string()),
+        confidence: 1.0,
+        properties: serde_json::Value::Null,
+    };
+
+    let order_svc = node("Class", "OrderService", 201, Some(svc_file));
+    let place_order = node("Method", "placeOrder", 202, Some(svc_file));
+    let apply_discount = node("Method", "applyDiscount", 203, Some(svc_file));
+    let coupon_i18n = node("I18nKey", "优惠券", 204, Some(i18n_file));
+
+    store
+        .apply(&GraphDelta {
+            project_id: Some(pid),
+            nodes: vec![
+                order_svc,
+                place_order.clone(),
+                apply_discount.clone(),
+                coupon_i18n.clone(),
+            ],
+            edges: vec![
+                // placeOrder 调用 applyDiscount，并写 OrderService
+                NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(202), NodeId(203)),
+                NewEdge::new(pid, EdgeKind::new(EdgeKind::WRITES_DB), NodeId(202), NodeId(201)),
+            ],
+            ..Default::default()
+        })
+        .expect("图应可写入");
+
+    let svc = RecallService::new(
+        f.container.store.clone() as Arc<dyn Persistence>,
+        f.container.filesystem(),
+        f.container.scanner(),
+    );
+    let result = svc
+        .recall(
+            f.project,
+            &RecallQuery {
+                query: "下单改优惠".into(),
+                limit: 20,
+                hops: 2,
+                kinds: Vec::new(),
+                with_snippets: false,
+            },
+        )
+        .expect("召回不应失败");
+
+    let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
+
+    // 1) 中文意图必须 seed 到英文业务节点（之前只会命中 i18n 文案）
+    assert!(
+        names.contains(&"placeOrder"),
+        "「下单」应 seed 到 placeOrder，实际命中：{names:?}"
+    );
+    assert!(
+        names.contains(&"applyDiscount"),
+        "「改优惠」应 seed 到 applyDiscount，实际命中：{names:?}"
+    );
+    // 2) 图扩展：placeOrder 写 OrderService，应被带出
+    assert!(
+        names.contains(&"OrderService"),
+        "OrderService 应被图扩展带出，实际命中：{names:?}"
+    );
+    // 3) i18n 文案仍在（词面子串），但不再是唯一结果
+    assert!(
+        names.contains(&"优惠券"),
+        "优惠券文案仍应命中，实际命中：{names:?}"
+    );
 }
 
 /// 中文结构提示（"表"）应把结果收敛到对应节点种类。

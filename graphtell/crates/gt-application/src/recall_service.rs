@@ -24,6 +24,8 @@ use gt_domain::model::kinds::is_chain_edge;
 use gt_domain::port::{FileScanner, FileSystem, NodeFilter, Persistence};
 use serde::{Deserialize, Serialize};
 
+use crate::embedding::{cosine, default_embedder, Embedder};
+
 /// 默认不参与召回的节点种类。
 ///
 /// `CallSite` 是方法体内的一次调用点（CRMEB 里占全部节点的 8 成），
@@ -36,6 +38,77 @@ pub const DEFAULT_EXCLUDED_KINDS: &[&str] = &[
     "Property",
     "Const",
 ];
+
+/// 向量路召回的权重与阈值（与词面分同量纲，便于合并排序）。
+const VECTOR_WEIGHT: f64 = 70.0;
+/// 余弦低于该值视为「不相关」，不进入候选。
+const VECTOR_THRESHOLD: f64 = 0.2;
+
+/// 中文意图词 → 英文符号候选词（离线语义桥，无需模型）。
+///
+/// 查询时把命中的意图词展开成英文 token，使词面 / 向量召回都能 seed 到
+/// 英文命名的业务节点（例：中文"下单" → `order` / `placeOrder`）。
+/// 这是「中文意图 → 英文符号」最廉价可靠的桥；真正的语义模型到位后可弱化。
+const INTENT_ALIASES: &[(&str, &[&str])] = &[
+    ("下单", &["order", "placeorder", "createorder", "submitorder"]),
+    ("订单", &["order", "orders"]),
+    ("改优惠", &["discount", "coupon", "promotion", "applydiscount"]),
+    ("优惠", &["discount", "coupon", "promotion", "vip"]),
+    ("折扣", &["discount"]),
+    ("优惠券", &["coupon", "voucher"]),
+    ("支付", &["pay", "payment", "checkout"]),
+    ("付款", &["pay", "payment"]),
+    ("用户", &["user", "member", "customer"]),
+    ("会员", &["member", "user", "vip"]),
+    ("商品", &["product", "goods", "sku"]),
+    ("购物车", &["cart", "basket"]),
+    ("库存", &["stock", "inventory"]),
+    ("登录", &["login", "auth", "signin"]),
+    ("注册", &["register", "signup"]),
+];
+
+/// 把查询里出现的中文意图词展开成英文候选 token。
+fn expand_intent_aliases(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (zh, en) in INTENT_ALIASES {
+        if query.contains(zh) {
+            for e in *en {
+                if !out.iter().any(|x: &String| x == e) {
+                    out.push((*e).to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 节点用于向量编码的文本（名字 + 种类 + fqn + identity）。
+fn node_embed_text(node: &Node) -> String {
+    let mut s = String::new();
+    s.push_str(node.kind.as_str());
+    s.push(' ');
+    s.push_str(&node.name);
+    if let Some(f) = &node.fqn {
+        s.push(' ');
+        s.push_str(f);
+    }
+    if let Some(i) = &node.identity {
+        s.push(' ');
+        s.push_str(&i.value);
+    }
+    s
+}
+
+/// 查询用于向量编码的文本（原查询 + 展开出的英文意图词）。
+fn query_embed_text(query: &str, alias_terms: &[String]) -> String {
+    let mut s = String::with_capacity(query.len() + alias_terms.join(" ").len() + 8);
+    s.push_str(query);
+    for t in alias_terms {
+        s.push(' ');
+        s.push_str(t);
+    }
+    s
+}
 
 /// 一次召回请求。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +199,8 @@ pub struct RecallService {
     store: Arc<dyn Persistence>,
     fs: Arc<dyn FileSystem>,
     _scanner: Arc<dyn FileScanner>,
+    /// 离线文本编码器（向量召回的「编码」一侧）。默认本地哈希编码器，可注入真模型。
+    embedder: Arc<dyn Embedder>,
 }
 
 impl RecallService {
@@ -134,12 +209,42 @@ impl RecallService {
         fs: Arc<dyn FileSystem>,
         scanner: Arc<dyn FileScanner>,
     ) -> Self {
-        Self { store, fs, _scanner: scanner }
+        Self {
+            store,
+            fs,
+            _scanner: scanner,
+            embedder: default_embedder(),
+        }
+    }
+
+    /// 注入自定义编码器（如测试假编码器，或未来的 `bge-m3` / `unixcoder`）。
+    pub fn with_embedder(
+        store: Arc<dyn Persistence>,
+        fs: Arc<dyn FileSystem>,
+        scanner: Arc<dyn FileScanner>,
+        embedder: Arc<dyn Embedder>,
+    ) -> Self {
+        Self {
+            store,
+            fs,
+            _scanner: scanner,
+            embedder,
+        }
     }
 
     /// 执行一次召回。
     pub fn recall(&self, project_id: ProjectId, q: &RecallQuery) -> Result<RecallResult> {
         let (terms, kind_hints) = parse_query(&q.query);
+
+        // 中文意图词展开：构造一份「用于匹配」的词表（不污染对外返回的 terms）。
+        // 这样中文意图（"下单"）才能 seed 到英文命名的业务节点（"order"）。
+        let alias_terms = expand_intent_aliases(&q.query);
+        let mut match_terms = terms.clone();
+        for t in &alias_terms {
+            if !match_terms.iter().any(|x| x == t) {
+                match_terms.push(t.clone());
+            }
+        }
 
         // ---- 1) 候选集：一次装载全部参与召回的节点
         let mut nodes: Vec<Node> = Vec::new();
@@ -180,13 +285,50 @@ impl RecallService {
             .get_project(project_id)?
             .map(|p| std::path::PathBuf::from(p.root_path));
 
-        // ---- 3) 打分：种子
+        // ---- 3) 打分：种子（词面路 + 向量路，合并）
+        // 3a) 词面路：标识符 / fqn / identity 的子串匹配（沿用既有 score_node）。
+        let mut lexical: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
+        for node in &nodes {
+            if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
+                continue;
+            }
+            let (score, matched) = score_node(node, &match_terms, &kind_hints, &incoming);
+            if score > 0.0 {
+                lexical.insert(node.id.get(), (score, matched));
+            }
+        }
+
+        // 3b) 向量路：离线编码器对节点文本做软匹配，补足词面漏掉的跨语言种子。
+        //     查询文本已带入展开出的英文意图词，使中文意图能靠近英文符号。
+        let mut vector: HashMap<i64, f64> = HashMap::new();
+        let qvec = self
+            .embedder
+            .embed(&query_embed_text(&q.query, &alias_terms));
+        for node in &nodes {
+            if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
+                continue;
+            }
+            let nvec = self.embedder.embed(&node_embed_text(node));
+            let c = cosine(&qvec, &nvec);
+            if c >= VECTOR_THRESHOLD {
+                let s = c * VECTOR_WEIGHT * kind_weight(node.kind.as_str());
+                let entry = vector.entry(node.id.get()).or_insert(0.0);
+                *entry = (*entry).max(s);
+            }
+        }
+
+        // 合并：词面优先，向量补足（取较大值）。
         let mut scored: Vec<(f64, Vec<String>, &Node)> = Vec::new();
         for node in &nodes {
-            let (score, matched) = score_node(node, &terms, &kind_hints, &incoming);
-            if score > 0.0 {
-                scored.push((score, matched, node));
-            }
+            let id = node.id.get();
+            let (score, matched) = match lexical.get(&id) {
+                Some((s, m)) => (*s, m.clone()),
+                None => match vector.get(&id) {
+                    Some(s) => (*s, vec!["<vector>".to_string()]),
+                    None => continue,
+                },
+            };
+            scored.push((score, matched, node));
         }
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 

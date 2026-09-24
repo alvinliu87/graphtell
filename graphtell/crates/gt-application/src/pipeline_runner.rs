@@ -1,12 +1,16 @@
 //! 建图用例：编排流水线并处理状态流转与后台执行。
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex};
 
 use gt_domain::error::{DomainError, Result};
-use gt_domain::model::{PhaseReport, Project, ProjectId, ProjectStatus};
+use gt_domain::model::{
+    EdgeKind, GraphDelta, NewEdge, NodeId, NodeKind, Phase, PhaseReport, Project, ProjectId,
+    ProjectStatus,
+};
 use gt_domain::port::{
-    FileScanner, FileSystem, GraphSink, KnowledgeProvider, ParserRegistry, Persistence,
-    PipelineObserver, ProjectWriter, RuleProvider,
+    EdgeDirection, FileScanner, FileSystem, GraphSink, KnowledgeProvider, NodeFilter, ParserRegistry,
+    Persistence, PipelineObserver, ProjectWriter, RuleProvider,
 };
 use gt_pipeline::runner::PipelineOutcome;
 use tracing::{error, info, warn};
@@ -151,6 +155,7 @@ impl PipelineService {
                     out.files.len()
                 );
                 self.run_check(project_id, &project.name);
+                self.attach_declared_middleware(project_id);
                 Ok(out)
             }
             Err(e) => {
@@ -201,6 +206,145 @@ impl PipelineService {
                 // 不向上传播：图已经建好了，不能因为"结论"算不出来就判定建图失败。
                 warn!("工程 {} 自动合规检查失败（图仍可用）：{}", project_name, e);
             }
+        }
+    }
+
+    /// 建图完成、规则合成完 HttpContract 节点后，把「声明式中间件」挂成 `PassesThrough` 边。
+    ///
+    /// # 为什么是建图之后、而不是 P14
+    ///
+    /// likeadmin 这类自动路由项目的绝大多数 HttpContract 由 `frontend-http-contract` 规则在
+    /// `run_check` 阶段才合成；P14 跑时它们还不存在，挂链会整段落空。这里读 prepare 阶段写入
+    /// `declared_middleware` 符号表的声明（文件名 / 键 / 作用域全在 FKB，内核零框架字符串），
+    /// 对**全量**契约节点按作用域挂边，并把对应的 `Class` 节点晋升为 `Middleware`。
+    ///
+    /// * `global`：挂到全部契约节点；
+    /// * `per_app`：只挂到名字含 `prefix`（如 `/adminapi`）的契约节点。
+    ///
+    /// 节点查找按类名（FQN / 短名）；图里没有该类（如 vendor 里的类）则跳过，不建悬空边。
+    fn attach_declared_middleware(&self, project_id: ProjectId) {
+        let Ok(declared) = self.store.list_symbols(project_id, "declared_middleware") else {
+            return;
+        };
+        if declared.is_empty() {
+            return;
+        }
+        let Ok(contracts) = self.store.query_nodes(&NodeFilter {
+            project_id,
+            kind: Some(NodeKind::from("HttpContract")),
+            limit: Some(1_000_000),
+            ..Default::default()
+        }) else {
+            return;
+        };
+        if contracts.is_empty() {
+            return;
+        }
+        let Ok(classes) = self.store.query_nodes(&NodeFilter {
+            project_id,
+            kind: Some(NodeKind::from("Class")),
+            limit: Some(1_000_000),
+            ..Default::default()
+        }) else {
+            return;
+        };
+        let Ok(mws) = self.store.query_nodes(&NodeFilter {
+            project_id,
+            kind: Some(NodeKind::from("Middleware")),
+            limit: Some(1_000_000),
+            ..Default::default()
+        }) else {
+            return;
+        };
+
+        // 类名（FQN / 短名）→ 节点 id，优先复用已有的 Middleware 节点。
+        let mut by_name: HashMap<String, NodeId> = HashMap::new();
+        for n in mws.iter().chain(classes.iter()) {
+            by_name.entry(n.name.clone()).or_insert(n.id);
+            if let Some(fqn) = &n.fqn {
+                by_name.entry(fqn.clone()).or_insert(n.id);
+            }
+            let short = n.name.rsplit(['\\', '/']).next().unwrap_or(&n.name).to_string();
+            by_name.entry(short).or_insert(n.id);
+        }
+
+        // 预读已有 PassesThrough 边去重。
+        let mut existing: HashSet<(NodeId, NodeId)> = HashSet::new();
+        for c in &contracts {
+            if let Ok(es) = self.store.edges_of(c.id, EdgeDirection::Outgoing) {
+                for e in es {
+                    if e.kind.as_str() == "PassesThrough" {
+                        existing.insert((e.from_id, e.to_id));
+                    }
+                }
+            }
+        }
+
+        let mut delta = GraphDelta::new(project_id);
+        for entry in declared.iter() {
+            let scope = entry
+                .value
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("global");
+            let prefix = entry.value.get("prefix").and_then(|v| v.as_str());
+            let classes_arr = entry
+                .value
+                .get("classes")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for cv in &classes_arr {
+                let Some(class) = cv.as_str().map(|s| s.to_string()) else {
+                    continue;
+                };
+                if class.is_empty() {
+                    continue;
+                }
+                let Some(&mw_id) = by_name.get(&class).or_else(|| {
+                    let short = class.rsplit(['\\', '/']).next().unwrap_or(&class);
+                    by_name.get(short)
+                }) else {
+                    continue;
+                };
+                let targets: Vec<NodeId> = if scope == "per_app" {
+                    contracts
+                        .iter()
+                        .filter(|c| prefix.map_or(true, |p| c.name.contains(p)))
+                        .map(|c| c.id)
+                        .collect()
+                } else {
+                    contracts.iter().map(|c| c.id).collect()
+                };
+                for tid in targets {
+                    if existing.contains(&(tid, mw_id)) {
+                        continue;
+                    }
+                    existing.insert((tid, mw_id));
+                    if !mws.iter().any(|m| m.id == mw_id) {
+                        delta.kind_patches.push((mw_id, NodeKind::from("Middleware")));
+                    }
+                    let mut e =
+                        NewEdge::new(project_id, EdgeKind::from("PassesThrough"), tid, mw_id);
+                    e.phase = Phase::from("P14");
+                    e.confidence = 1.0;
+                    delta.edges.push(e);
+                }
+            }
+        }
+
+        if delta.edges.is_empty() && delta.kind_patches.is_empty() {
+            return;
+        }
+        let edge_n = delta.edges.len();
+        let promoted_n = delta.kind_patches.len();
+        if let Err(e) = self.store.apply(&delta) {
+            warn!("工程 {project_id} 声明式中间件挂链失败：{e}");
+        } else {
+            info!(
+                "工程 {project_id} 声明式中间件挂链完成：{} 条边 / {} 个晋升为 Middleware",
+                edge_n, promoted_n
+            );
         }
     }
 
