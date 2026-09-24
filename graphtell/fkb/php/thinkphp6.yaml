@@ -162,6 +162,8 @@ loaders:
       kind: builtin
       name: php_db_schema
       # 表名识别：ThinkPHP 用 `Db::name` / `Model` / `Query`，与 Laravel 共用同一套形态。
+      # 匹配串由 FKB `params` 声明（不写死在内核）—— 注意 `apply_without_detection` 的
+      # `php/common.yaml` 只贡献规则、不跑装载器，故此处仍需本框架声明。
       params:
         table_receivers: ["Db", "\\Db", "Query", "Model"]
         table_methods: ["name", "table"]

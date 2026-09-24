@@ -8,6 +8,15 @@
 # 注意：本文件只放「各 PHP 框架写法相同」的规则；带强框架假设的规则
 # （表访问 `Db::name` vs `DB::table`、路由 handler 形态、事件注册方式…）仍留在各
 # 框架专属 FKB 里，避免用 A 框架知识解释 B 框架代码。
+#
+# 重要（装载器陷阱）：本文件**只贡献 `rules` 与 `external_calls` / `tx_calls`**，
+# 不跑 `loaders`。原因是 `apply_without_detection` 的 FKB 永不被「识别」，而管线
+# （`prepare.rs` 的装配阶段）只对「被识别到的框架 / 项目」调用 `run_loaders`。
+# 因此 `builtin` 装载器（如 `php_db_schema` / `php_config_keys` / `php_migration_schema`）
+# **必须写在各框架专属 YAML 里**，不能抽到本文件 —— 否则该装载器静默永不执行，
+# 其符号表（schema / config_keys / migration 列）整张落空，相关规则静默 0 命中。
+# 若要「去重」它们的 `params`，只能各框架 YAML 各声明一份（值相同但相互独立），
+# 不要试图挪到本文件。
 
 id: php-common
 display_name: PHP 通用
