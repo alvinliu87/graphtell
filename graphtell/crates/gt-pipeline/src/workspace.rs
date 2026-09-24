@@ -83,6 +83,31 @@ pub struct RouteGroup {
     pub prefix: String,
 }
 
+/// 挂在路由 / 路由组上的**一个**中间件（`->middleware(X::class, true)` 的一项）。
+#[derive(Debug, Clone)]
+pub struct RouteGuard {
+    /// 中间件类的完全限定名（`app\api\middleware\AuthTokenMiddleware`）。
+    pub class: String,
+    /// 挂载时的**第二个实参**：CRMEB 用它区分"必须登录 / 可选登录"
+    /// （`AuthTokenMiddleware::class, false` == 未授权也能进），是 `auth.public`
+    /// 判定最有信息量的一处信号。 Laravel 的 `->middleware('auth:api')` 这类
+    /// 别名也会先落在这里，别名 → 类的还原留到后续阶段。
+    pub arg: Option<String>,
+}
+
+/// 一段「带中间件的路由区间」：可能是 `Route::group(fn){...}->middleware(...)`，
+/// 也可能是单独注册、自带 `->middleware(...)` 的一条路由。
+///
+/// 与 [`RouteGroup`] **刻意分成两套结构**：后者只服务"组前缀补齐"、早已稳定；
+/// 这里收录的范围更宽（**含无前缀组**与单条路由），任何回归都不会动到前缀主干。
+#[derive(Debug, Clone)]
+pub struct RouteGuardScope {
+    pub file: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub guards: Vec<RouteGuard>,
+}
+
 /// 是否参与「短名 → FQN」索引的**类型节点**。
 ///
 /// 只有类 / 接口 / trait / 枚举参与：短名索引的语义本就是
@@ -174,6 +199,8 @@ pub struct GraphWorkspace {
     pub pending_links: Vec<PendingLink>,
     /// 路由组区间（`Route::group('v2', ...)`），供契约 ID 补齐组前缀。
     pub route_groups: Vec<RouteGroup>,
+    /// 路由守卫区间（`Route::xxx(...)->middleware(...)`），供查询"这条路由过了哪些中间件"。
+    pub route_guard_scopes: Vec<RouteGuardScope>,
     pub symbols: BTreeMap<String, BTreeMap<String, Value>>,
     /// 类属性默认值：`(class_node_id, property_name) → value`。
     prop_values: HashMap<(i64, String), FactValue>,
@@ -269,6 +296,7 @@ impl GraphWorkspace {
             inherits: Vec::new(),
             pending_links: Vec::new(),
             route_groups: Vec::new(),
+            route_guard_scopes: Vec::new(),
             symbols: BTreeMap::new(),
             prop_values: HashMap::new(),
             file_nodes: HashMap::new(),
@@ -949,6 +977,29 @@ impl GraphWorkspace {
         self.delta.location_patches.push((id, loc));
     }
 
+    /// 把一个已有节点**晋升**为另一种 kind（语法节点 → 语义节点）。
+    ///
+    /// 与 `Synthesize` 的差别是决定性的：**不新建节点**，只改这一个节点的种类。
+    /// 中间件就是这么来的 —— P2 已按 `Class` 建了它，P14 确认它挂在路由上之后改 kind，
+    /// 于是它在折叠视图里默认可见，而图里**始终只有一个** `AuthTokenMiddleware`
+    /// （若改成"再造一个合成节点"，同一份代码会变成两个节点：扇入分裂、
+    /// Inspector 出现重复条目、`Node → 定义位置` 给出两份互不完整的位置）。
+    ///
+    /// 只改 kind 不重建索引：`by_short` / `by_fqn` 在 `add_node` 时就登记好了，
+    /// 晋升发生在 P14，此后的解析都已结束，保留既有索引反而更安全（名字仍然可解析）。
+    pub fn patch_kind(&mut self, id: NodeId, kind: &str) {
+        let Some(node) = self.nodes.get_mut(&id.get()) else {
+            return;
+        };
+        if node.kind.as_str() == kind {
+            return;
+        }
+        node.kind = NodeKind(kind.to_string());
+        self.delta
+            .kind_patches
+            .push((id, NodeKind(kind.to_string())));
+    }
+
     // ------------------------------------------------------------ 配置
 
     pub fn set_table_prefixes(&mut self, prefixes: Vec<String>) {
@@ -990,6 +1041,51 @@ impl GraphWorkspace {
             .filter(|p| !p.is_empty())
             .collect::<Vec<_>>()
             .join("/")
+    }
+
+    /// 登记并查询路由守卫区间（P3 从 `Route::xxx(...)->middleware(...)` 收集）。
+    ///
+    /// 与 [`Self::add_route_groups`] 同理用**追加**：loaders 按子工程逐个调用，
+    /// 而收集时遍历的是全量调用点，覆盖会丢掉先处理子工程的数据。
+    pub fn add_route_guard_scopes(&mut self, scopes: Vec<RouteGuardScope>) {
+        self.route_guard_scopes.extend(scopes);
+    }
+
+    pub fn route_guard_scopes(&self) -> &[RouteGuardScope] {
+        &self.route_guard_scopes
+    }
+
+    /// 求某个调用点（文件 + 行号）被哪些中间件守着，**外层在前**。
+    ///
+    /// 用行号区间包含（而非 AST 遍历），与 [`Self::route_group_prefix`] 同一套打法：
+    /// 调用点的 `span` 天然覆盖整条 `Route::group(...)` 表达式（含闭包体）。
+    ///
+    /// 同名中间件按**内圈覆盖外圈**合并：组上挂 `AuthToken(true)`、组内某条路由
+    /// 挂 `AuthToken(false)` 时，生效的应当是后者。
+    pub fn route_guards(&self, file: &str, line: u32) -> Vec<RouteGuard> {
+        let mut matched: Vec<&RouteGuardScope> = self
+            .route_guard_scopes
+            .iter()
+            .filter(|g| g.file == file && g.start_line <= line && line <= g.end_line)
+            .collect();
+        if matched.is_empty() {
+            return Vec::new();
+        }
+        matched.sort_by_key(|g| (g.start_line, std::cmp::Reverse(g.end_line)));
+        let mut out: Vec<RouteGuard> = Vec::new();
+        for scope in matched {
+            for guard in &scope.guards {
+                match out.iter_mut().find(|g| g.class == guard.class) {
+                    Some(existing) => {
+                        if guard.arg.is_some() {
+                            existing.arg = guard.arg.clone();
+                        }
+                    }
+                    None => out.push(guard.clone()),
+                }
+            }
+        }
+        out
     }
 
     /// 去掉已知表前缀；同时尝试若干通用前缀。

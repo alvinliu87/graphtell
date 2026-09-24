@@ -70,6 +70,13 @@ pub struct FrameworkKnowledge {
     /// 查询贵得多，放进循环里比 N+1 更容易拖垮接口）。
     #[serde(default)]
     pub external_calls: Vec<String>,
+    /// **「中间件类 → 能力」映射**：某个中间件带什么能力（鉴权 / 限流 …）。
+    ///
+    /// 这份名单**属于框架知识**（什么叫鉴权中间件、项目自己给它起了什么名字），
+    /// 所以放在 FKB 而不是内核 —— 内核不认识任何一个中间件名字。判定锚点是
+    /// **中间件自身的确凿身份**（类名），而不是"这个端点看起来要不要登录"。
+    #[serde(default)]
+    pub middleware_capabilities: Vec<MiddlewareCapability>,
     /// **事务边界标记**：`transaction` / `startTrans` / `beginTransaction` …
     /// 供「同一方法多次写库但未识别到事务」判定（部分成功会留下脏数据）。
     #[serde(default)]
@@ -155,6 +162,20 @@ pub struct HandlerSpec {
     pub app_anchor_dir: Option<String>,
     /// 推断不出时 `{app}` 的兜底值。
     pub app_fallback: String,
+}
+
+/// 一条「中间件类 → 能力」声明：某个中间件确凿地提供了什么能力。
+///
+/// 例（CRMEB）：`AuthTokenMiddleware` 提供 `Authentication`。
+/// 匹配只对**短名**（去命名空间后的最后一段）做，且大小写不敏感 —— 同一类中间件
+/// 在不同 app 目录下会有不同命名空间（`app\api\middleware\AuthTokenMiddleware`
+/// 与 `app\kefuapi\middleware\KefuAuthTokenMiddleware`），但语义由名字表达。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiddlewareCapability {
+    /// 中间件类短名里需要**包含**的片段，如 `AuthToken` / `Throttle`。
+    pub matches: String,
+    /// 产出的能力名（进 `Capability` 通道，如 `Authentication` / `RateLimiting`）。
+    pub capability: String,
 }
 
 /// 数据模型的读 / 写动词清单（方法名，大小写不敏感）。

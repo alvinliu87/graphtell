@@ -17,6 +17,10 @@
 # 进程外中介（Event / Queue / Cache / Topic）各自是独立种类，视角**直接按种类**
 # 显示（事件 / 队列 / 缓存 / 消息 Topic），不再有笼统的"外部系统"伞。
 #
+# `Middleware` 是**唯一由语法节点晋升而来**的语义节点：P2 先按 `Class` 建出它，
+# P14 确认它挂在路由上之后把 kind 改成 `Middleware`（改身份、不新建节点 —— 否则
+# 同一份代码在图里出现两次）。因此路由视角里它会作为**第一环邻居**直接出现。
+#
 # node_views 里**没有**列出的节点种类不会切换顶部筛选器，
 # 只打开右侧 Inspector —— 例如 ConfigKey / KeyPattern / Component /
 # SecretLocation 这类资产/结构节点没有"单链路"语义。

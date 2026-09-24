@@ -34,6 +34,13 @@ pub struct GraphDelta {
     pub property_patches: Vec<(crate::model::NodeId, Value)>,
     /// 合成节点的"多处共现位置"追加（id → 位置）。
     pub location_patches: Vec<(crate::model::NodeId, crate::model::SourceLocation)>,
+    /// **节点种类的晋升**（id → 新种类）。
+    ///
+    /// 用于「语法节点被认出语义角色后升级为语义节点」——典型如中间件：它先是 P2 建出来的
+    /// 一个 `Class`，等 P14 确认它确实挂在路由上时，把它晋升成 `Middleware`
+    /// （**改的只是 kind，节点仍只有这一个**，绝不新造一个同身份节点 —— 否则同一份
+    /// 代码在图里出现两次，扇入分裂、跳转给出两份位置）。
+    pub kind_patches: Vec<(crate::model::NodeId, crate::model::NodeKind)>,
 }
 
 impl GraphDelta {
@@ -49,11 +56,13 @@ impl GraphDelta {
             && self.diagnostics.is_empty()
             && self.property_patches.is_empty()
             && self.location_patches.is_empty()
+            && self.kind_patches.is_empty()
             && !self.reset_project
     }
     pub fn merge(&mut self, mut other: GraphDelta) {
         self.property_patches.append(&mut other.property_patches);
         self.location_patches.append(&mut other.location_patches);
+        self.kind_patches.append(&mut other.kind_patches);
         self.nodes.extend(other.nodes);
         self.edges.extend(other.edges);
         self.annotations.extend(other.annotations);

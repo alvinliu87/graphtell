@@ -16,7 +16,7 @@ use tracing::{error, info};
 
 use crate::context::PipelineContext;
 use crate::phase::{
-    annotate, cf_ast, cors, external, ingest, prepare, propagate, resolve, sign, taint, tx,
+    annotate, cf_ast, cors, external, guard, ingest, prepare, propagate, resolve, sign, taint, tx,
 };
 
 /// 流水线所需的基础设施集合（依赖倒置：由组装根注入）。
@@ -160,6 +160,25 @@ pub fn run(
             observer,
             project.id,
         )?;
+        // P5 之后、P6 之前：能力必须**先于** P6 的公开端点判定写好。
+        // `crmeb-public-endpoint` 用 `none_of_capability` 反向判据，而反向判据只有在
+        // 正面证据确实存在过时才成立 —— 能力若等 P14 才补，P6 早已把每个契约都判成
+        // `auth.public`（实测 1603 个里 1529 个），标注落库后再也纠正不回来。
+        if phase.0 == Phase::SYNTHESIZE {
+            let cp = Phase("GuardCapability".to_string());
+            let started = Instant::now();
+            observer.on_phase_start(project.id, &cp);
+            guard::run_capabilities(&mut ctx);
+            flush(
+                infra.graph(),
+                &mut ctx,
+                &mut outcome,
+                &cp,
+                started,
+                observer,
+                project.id,
+            )?;
+        }
     }
 
     let phase = Phase(Phase::RESOLVE.to_string());
@@ -220,6 +239,16 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     tx::run(&mut ctx);
+    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
+
+    // ---------------------------------------------------------- P14 Guard
+    // 必须在 P5 之后：依赖 P3 写进 `route_list` 的 `guards` 字段与 P5 合成出的
+    // `HttpContract` 节点、P2 建好的中间件 Class 节点。
+    // 产出 `HttpContract --GuardedBy--> 中间件类`（桥边：可遍历、不计入「语义入边 N」）。
+    let phase = Phase("Guard".to_string());
+    let started = Instant::now();
+    observer.on_phase_start(project.id, &phase);
+    guard::run(&mut ctx);
     flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     Ok(outcome)

@@ -12,6 +12,17 @@ display_name: CRMEB
 language: php
 version_hint: "standard / multi-merchant"
 
+# 「哪个中间件提供哪种能力」—— 这是**本项目自己的命名约定**（`AuthTokenMiddleware`
+# 这种叫法内核不该认识），所以声明在 FKB 里，由 P5.5 落到契约的 `Capability` 通道上。
+#
+# 只列**看名字就能确凿认定的**：多个 app 目录下的同名语义（`AuthTokenMiddleware` /
+# `KefuAuthTokenMiddleware`）靠片段 `AuthToken` 一并匹配。
+# 挂载实参显式写着可选时（`AuthTokenMiddleware::class, false` == 未登录也能进）
+# 不产能力 —— 把"可选"说成"强制"是编造。
+middleware_capabilities:
+  - matches: AuthToken
+    capability: Authentication
+
 detectors:
   - kind: manifest_dependency
     manifest: composer.json

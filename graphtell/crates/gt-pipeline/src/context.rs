@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use gt_domain::model::{
-    DbVerbsSpec, HandlerSpec, Language, MagicDelegationSpec, NamespacePolicy, NodeId, Phase,
-    Project, ProjectConfig, Rule, SourceFile, SubProject, SubProjectId,
+    DbVerbsSpec, HandlerSpec, Language, MagicDelegationSpec, MiddlewareCapability,
+    NamespacePolicy, NodeId, Phase, Project, ProjectConfig, Rule, SourceFile, SubProject,
+    SubProjectId,
 };
 
 use crate::workspace::GraphWorkspace;
@@ -55,6 +56,8 @@ pub struct PipelineContext {
     pub lang_policy_default: NamespacePolicy,
     /// 外部系统调用名单（FKB `external_calls`）；跨框架差异小，只需一份全局合并结果。
     pub external_calls: Vec<String>,
+    /// 「中间件类 → 能力」映射（FKB `middleware_capabilities`）；同样全局合并即可。
+    pub middleware_capabilities: Vec<MiddlewareCapability>,
     /// 事务边界标记（FKB `tx_calls`）；同上，全局合并即可。
     pub tx_calls: Vec<String>,
     /// 子工程 → 消费入口方法名候选（FKB `entry_methods`）。
@@ -86,6 +89,7 @@ impl PipelineContext {
             db_verbs: HashMap::new(),
             db_verbs_default: None,
             external_calls: Vec::new(),
+            middleware_capabilities: Vec::new(),
             tx_calls: Vec::new(),
             lang_policies: HashMap::new(),
             lang_policy_default: NamespacePolicy::default(),

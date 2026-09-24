@@ -2839,6 +2839,27 @@ impl ViewService {
                 "路由表登记".into(),
                 entry.get("handler").cloned().unwrap_or(json!(null)),
             );
+            // 经过的中间件：这是看单个端点时最先想确认的事（要不要登录 / 限流）。
+            // 刻意只列**路由 / 路由组级**挂载 —— 全局中间件对每个端点都成立，
+            // 写在这里等于每份图都重复同一句废话（那改用「平台级前提」表达，不占结论区）。
+            if let Some(guards) = entry.get("guards").and_then(|g| g.as_array()) {
+                if !guards.is_empty() {
+                    let list: Vec<String> = guards
+                        .iter()
+                        .filter_map(|g| {
+                            let full = g.get("class").and_then(|c| c.as_str())?;
+                            let short = full.rsplit(['\\', '/']).next().unwrap_or(full);
+                            match g.get("arg").and_then(|a| a.as_str()) {
+                                Some(arg) => Some(format!("{}({})", short, arg)),
+                                None => Some(short.to_string()),
+                            }
+                        })
+                        .collect();
+                    if !list.is_empty() {
+                        out.insert("经过中间件".into(), json!(list.join(" · ")));
+                    }
+                }
+            }
         }
         // 入口类视角（路由 / 定时任务）若一条语义边都没画出来，画布会只剩孤零零一个中心节点，
         // 容易被误以为"视图坏了"。多半是真实情况（crontab 路由没解析到 handler，

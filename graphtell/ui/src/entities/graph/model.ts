@@ -106,6 +106,9 @@ export const NODE_COLORS: Record<string, string> = {
   Topic: '#f97316',
   // 事件 / 队列的消费者（监听器 / 消费者类）在画布上重标为此角色，与 Event / Queue 同族。
   EventHandler: '#fb923c',
+  // 中间件：挂在路由上的守门人，与契约（HttpContract）同冷色族，读图时"入口 → 守卫 → 资源"
+  // 的层次一眼可辨（守卫不属于业务资源，刻意不与 Table / Cache 的暖色混）。
+  Middleware: '#0ea5e9',
   Unknown: '#9ca3af',
 };
 

@@ -5,11 +5,12 @@
 //! * 用 `loaders` 装载权威源：`schema` / `config_keys` / `i18n` / `facade_map`
 //!   / `container_bindings` / `event_listeners` / `route_list` / `nginx`
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gt_domain::error::Result;
 use gt_domain::model::{
-    Detector, FrameworkKnowledge, KnowledgeScope, Language, Phase, PickStrategy, Rule,
+    Detector, FactValue, FrameworkKnowledge, KnowledgeScope, Language, Phase, PickStrategy, Rule,
     SubProjectId,
 };
 use gt_domain::port::{FileSystem, KnowledgeProvider, LanguageParser, ParserRegistry};
@@ -19,7 +20,7 @@ use tracing::{debug, info, warn};
 use crate::context::PipelineContext;
 use crate::engine::{capture_locale, path_matches};
 use crate::normalize::strip_prefixes;
-use crate::workspace::RouteGroup;
+use crate::workspace::{CallRecord, RouteGroup, RouteGuard, RouteGuardScope};
 
 /// 执行 Prepare。
 pub fn run(
@@ -101,6 +102,17 @@ pub fn run(
             for c in &fk.tx_calls {
                 if !ctx.tx_calls.iter().any(|x| x.eq_ignore_ascii_case(c)) {
                     ctx.tx_calls.push(c.clone());
+                }
+            }
+            // 「中间件类 → 能力」：名字是框架/项目约定（`AuthTokenMiddleware` 这种
+            // 叫法内核不该认识），故同样由 FKB 声明、这里只做去重合并。
+            for mc in &fk.middleware_capabilities {
+                if !ctx
+                    .middleware_capabilities
+                    .iter()
+                    .any(|x| x.capability == mc.capability && x.matches == mc.matches)
+                {
+                    ctx.middleware_capabilities.push(mc.clone());
                 }
             }
         }
@@ -1053,6 +1065,98 @@ fn load_config_keys(ctx: &mut PipelineContext, _sub: &gt_domain::model::SubProje
     }
 }
 
+/// 中间件挂载的方法名（`Route::group(...)->middleware(X::class)` 的链式末梢）。
+const GUARD_METHOD: &str = "middleware";
+
+/// 收集「哪些中间件守着哪一段路由」。
+///
+/// 难点在**链式调用**：`Route::group('pc', function () { ... })->middleware(A::class)`
+/// 在图上落成**一串**调用点，而根节点（`Route::group`）与每个 `->middleware()`
+/// **共享同一个 `start_byte`**（`member_call_expression` 从根那一段源码开始）。
+/// 于是按 `(file, start_byte)` 配对即可把中间件挂回它真正修饰的那段区间；
+/// 链上候选里取 `end_byte` **最小**的那个作为根 —— 其余都是它的超集。
+///
+/// # 已知边界（刻意不为这批写法硬撑）
+///
+/// * Laravel 把修饰符写在前面：`Route::middleware('auth')->group(fn)` / `Route::middleware('auth')->get(...)`。
+///   与 ThinkPHP 的 `Route::group(fn)->middleware(X)` 方向相反，按当前"共享 start_byte、
+///   取 span 最短者为根"的配对法会把 `middleware('auth')` 当成根，拿不到后面的闭包区间，
+///   故暂不产出；别名 → 类的还原还需要 `Kernel::$routeMiddleware`，属下一步。
+/// * 只收**路由 / 路由组**上的挂载。全局中间件（`app/middleware.php`、
+///   `Kernel::$middleware`）对每个端点都成立，是**环境常量而非信息**，刻意不收。
+fn collect_route_guards(calls: &[CallRecord]) -> Vec<RouteGuardScope> {
+    let is_route_call = |c: &CallRecord| -> bool {
+        c.receiver
+            .as_deref()
+            .map(|r| r.eq_ignore_ascii_case("Route") || r.ends_with("\\Route"))
+            .unwrap_or(false)
+    };
+
+    // ① 每个 (file, start_byte) 上 span 最短的 Route 调用 —— 即这条链的根。
+    let mut roots: HashMap<(String, u32), &CallRecord> = HashMap::new();
+    for call in calls {
+        if !is_route_call(call) || call.method.as_deref() == Some(GUARD_METHOD) {
+            continue;
+        }
+        let key = (call.file.clone(), call.span.start_byte);
+        match roots.get(&key) {
+            Some(prev) if prev.span.end_byte <= call.span.end_byte => {}
+            _ => {
+                roots.insert(key, call);
+            }
+        }
+    }
+
+    // ② 把每个 `->middleware(X::class[, arg])` 归并到它的根上。
+    let mut scopes: HashMap<(String, u32), RouteGuardScope> = HashMap::new();
+    for call in calls {
+        if !is_route_call(call) || call.method.as_deref() != Some(GUARD_METHOD) {
+            continue;
+        }
+        let Some(class) = call
+            .args
+            .first()
+            .and_then(|a| a.as_str())
+            .map(|s| s.trim().to_string())
+        else {
+            continue;
+        };
+        if class.is_empty() {
+            continue;
+        }
+        let Some(root) = roots.get(&(call.file.clone(), call.span.start_byte)) else {
+            continue;
+        };
+        let arg = call.args.get(1).and_then(guard_arg_text);
+        let scope = scopes
+            .entry((root.file.clone(), root.span.start_byte))
+            .or_insert_with(|| RouteGuardScope {
+                file: root.file.clone(),
+                start_line: root.span.start_line,
+                end_line: root.span.end_line,
+                guards: Vec::new(),
+            });
+        if !scope.guards.iter().any(|g| g.class == class) {
+            scope.guards.push(RouteGuard { class, arg });
+        }
+    }
+
+    let mut out: Vec<RouteGuardScope> = scopes.into_values().collect();
+    out.sort_by_key(|s| (s.file.clone(), s.start_line, s.end_line));
+    out
+}
+
+/// 取挂载实参的可读文本（`true` / `60` / `'auth:api'`…）；不可静态求值时返回 `None`。
+fn guard_arg_text(v: &FactValue) -> Option<String> {
+    match v {
+        FactValue::String(s) | FactValue::ClassConst(s) => Some(s.clone()),
+        FactValue::Bool(b) => Some(b.to_string()),
+        FactValue::Int(i) => Some(i.to_string()),
+        FactValue::Float(f) => Some(f.to_string()),
+        _ => None,
+    }
+}
+
 fn load_routes(ctx: &mut PipelineContext, _sub: &gt_domain::model::SubProject) {
     // 先收集路由组区间：`Route::group('v2', function(){...})` 的前缀要拼到组内每条
     // 路由的路径上，否则契约 ID 会丢掉 `v2`、与真实请求路径及前端调用对不上。
@@ -1097,7 +1201,17 @@ fn load_routes(ctx: &mut PipelineContext, _sub: &gt_domain::model::SubProject) {
         }
     }
 
-    let mut found: Vec<(String, String, String, u32)> = Vec::new();
+    // 中间件挂载：**必须在 prefixes 之后登记**（下面建 key 时要查），且同样只登记一次。
+    if ctx.ws.route_guard_scopes().is_empty() {
+        let scopes = collect_route_guards(&ctx.ws.calls);
+        if !scopes.is_empty() {
+            let total: usize = scopes.iter().map(|s| s.guards.len()).sum();
+            info!("P3 路由守卫：{} 段区间 / {} 处中间件挂载", scopes.len(), total);
+        }
+        ctx.ws.add_route_guard_scopes(scopes);
+    }
+
+    let mut found: Vec<(String, String, String, u32, Vec<RouteGuard>)> = Vec::new();
     for call in ctx.ws.calls.iter() {
         let is_route = call
             .receiver
@@ -1129,16 +1243,31 @@ fn load_routes(ctx: &mut PipelineContext, _sub: &gt_domain::model::SubProject) {
             .and_then(|a| a.as_str())
             .unwrap_or_default()
             .to_string();
-        let key = format!("{} {}", method.to_uppercase(), path);
-        found.push((key, handler, call.file.clone(), call.span.start_line));
+        // 补齐路由组前缀，让 `route_list` 的键与 P5 合成出来的契约 identity 对得上
+        // （同 `engine::compute_identity` 的 CONTRACT_ID 那一支：前缀插到前导斜杠之后）。
+        // 两个坑都必须避开，否则视图侧按契约名查符号表必然落空 —— 实测 CRMEB
+        // 改前 **0 条**能对上：
+        //   ① 组内路由丢了组前缀（`GET get_cart_list` ≠ `GET /pc/get_cart_list`）；
+        //   ② 组外路由丢了前导斜杠（`GET category/:id` ≠ `GET /category/:id`）。
+        let prefix = ctx.ws.route_group_prefix(&call.file, call.span.start_line);
+        let full_path = if prefix.is_empty() {
+            path.trim_start_matches('/').to_string()
+        } else {
+            format!("{}/{}", prefix, path.trim_start_matches('/'))
+        };
+        let key = format!("{} /{}", method.to_uppercase(), full_path);
+        let guards = ctx.ws.route_guards(&call.file, call.span.start_line);
+        found.push((key, handler, call.file.clone(), call.span.start_line, guards));
     }
-    for (key, handler, file, line) in found {
-        ctx.ws.put_symbol(
-            ctx.project.id,
-            "route_list",
-            &key,
-            json!({ "handler": handler, "file": file, "line": line }),
-        );
+    for (key, handler, file, line, guards) in found {
+        let mut value = json!({ "handler": handler, "file": file, "line": line });
+        if !guards.is_empty() {
+            value["guards"] = json!(guards
+                .iter()
+                .map(|g| json!({ "class": g.class, "arg": g.arg }))
+                .collect::<Vec<_>>());
+        }
+        ctx.ws.put_symbol(ctx.project.id, "route_list", &key, value);
     }
 }
 
@@ -1376,9 +1505,13 @@ fn dedup_rules(rules: Vec<Rule>) -> Vec<Rule> {
 mod tests {
     use std::path::PathBuf;
 
+    use super::{collect_route_guards, guard_arg_text};
+    use crate::workspace::{CallRecord, GraphWorkspace};
     use gt_adapter_fs::StdFileSystem;
     use gt_adapter_parser::DefaultParserRegistry;
-    use gt_domain::model::{Language, ProjectId, SubProject, SubProjectId};
+    use gt_domain::model::{
+        FactValue, Language, NodeId, ProjectId, Span, SubProject, SubProjectId,
+    };
 
     fn make_sub(root: PathBuf) -> SubProject {
         SubProject {
@@ -1392,6 +1525,193 @@ mod tests {
             frameworks: vec!["thinkphp6".into()],
             facts: serde_json::Value::Null,
         }
+    }
+
+    /// 造一个调用点：`Route::group('pc', fn)` / `Route::get('x','C@m')` / `->middleware(...)`。
+    ///
+    /// `byte` 是这条调用在源码里的**起始字节**：同一条链上的所有调用点共享它
+    /// （`member_call_expression` 从根那一段源码开始），这是配对唯一的依据。
+    fn call(
+        file: &str,
+        receiver: &str,
+        method: &str,
+        args: Vec<FactValue>,
+        start_line: u32,
+        end_line: u32,
+        byte: u32,
+        end_byte: u32,
+    ) -> CallRecord {
+        CallRecord {
+            node: NodeId::new(0),
+            owner: NodeId::new(0),
+            owner_fqn: "<file>".into(),
+            owner_class: None,
+            callee: format!("{}::{}", receiver, method),
+            receiver: Some(receiver.into()),
+            method: Some(method.into()),
+            args,
+            db_table: None,
+            in_loop: false,
+            entity: None,
+            span: Span {
+                start_line,
+                end_line,
+                start_byte: byte,
+                end_byte,
+            },
+            file: file.into(),
+            sub: None,
+            language: Language::new(Language::PHP),
+        }
+    }
+
+    fn class(name: &str) -> FactValue {
+        FactValue::ClassConst(name.into())
+    }
+
+    /// CRMEB 的真实写法：`Route::group('pc', fn){ ... })->middleware(A)->middleware(B, true)`，
+    /// 组内有多条路由。中间件必须落到**每条**路由上。
+    #[test]
+    fn group_level_guard_covers_inner_routes() {
+        let f = "app/api/route/pc.php";
+        let calls = vec![
+            // 根：`Route::group(function(){...})`（无前缀写法，跨 1..3 行），byte=10
+            call(f, "Route", "group", vec![], 1, 3, 10, 200),
+            call(f, "Route", "get", vec![FactValue::String("a".into())], 2, 2, 40, 90),
+            // 链上的两次 `->middleware`：与根共享 start_byte=10，span 更长
+            call(
+                f,
+                "Route",
+                "middleware",
+                vec![class(r"app\http\middleware\AllowOriginMiddleware")],
+                1,
+                4,
+                10,
+                230,
+            ),
+            call(
+                f,
+                "Route",
+                "middleware",
+                vec![
+                    class(r"app\api\middleware\AuthTokenMiddleware"),
+                    FactValue::Bool(true),
+                ],
+                1,
+                5,
+                10,
+                260,
+            ),
+        ];
+        let scopes = collect_route_guards(&calls);
+        assert_eq!(scopes.len(), 1, "一条链只应产出一段区间");
+        assert_eq!((scopes[0].start_line, scopes[0].end_line), (1, 3), "区间必须取根的 span");
+        assert_eq!(scopes[0].guards.len(), 2, "两个中间件都要收");
+
+        let mut ws = GraphWorkspace::new(ProjectId::new(1));
+        ws.add_route_guard_scopes(scopes);
+        let got = ws.route_guards(f, 2);
+        let names: Vec<&str> = got.iter().map(|g| g.class.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                r"app\http\middleware\AllowOriginMiddleware",
+                r"app\api\middleware\AuthTokenMiddleware",
+            ]
+        );
+        assert_eq!(got[1].arg.as_deref(), Some("true"), "`AuthToken::class, true` 的第二参数要留下");
+        // 区间外的路由不该被它守着（这正是"全局 vs 组级"的分界）
+        assert!(ws.route_guards(f, 40).is_empty());
+    }
+
+    /// 路由自带的 `->middleware(X::class, false)`：粒度细到单条路由，第二参数才会出现。
+    #[test]
+    fn route_level_guard_keeps_force_flag() {
+        let f = "app/api/route/user.php";
+        let calls = vec![
+            call(
+                f,
+                "Route",
+                "get",
+                vec![FactValue::String("info".into())],
+                7,
+                7,
+                10,
+                60,
+            ),
+            call(
+                f,
+                "Route",
+                "middleware",
+                vec![
+                    class(r"app\api\middleware\AuthTokenMiddleware"),
+                    FactValue::Bool(false),
+                ],
+                7,
+                8,
+                10,
+                90,
+            ),
+        ];
+        let scopes = collect_route_guards(&calls);
+        assert_eq!(scopes.len(), 1);
+        let mut ws = GraphWorkspace::new(ProjectId::new(1));
+        ws.add_route_guard_scopes(scopes);
+        let got = ws.route_guards(f, 7);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].arg.as_deref(), Some("false"));
+    }
+
+    /// 非 Route 接收者上的同名 `->middleware()` 不能误配；
+    /// 非标量实参（`->middleware($v)`）不该产出伪事实。
+    #[test]
+    fn ignores_foreign_and_dynamic_middleware() {
+        let f = "app/Service.php";
+        let calls = vec![
+            call(f, "$router", "middleware", vec![class("app\\A")], 1, 2, 10, 30),
+            call(f, "Route", "get", vec![FactValue::String("x".into())], 3, 3, 50, 80),
+            call(
+                f,
+                "Route",
+                "middleware",
+                vec![FactValue::Unknown(Some("$mw".into()))],
+                3,
+                4,
+                50,
+                100,
+            ),
+        ];
+        assert!(collect_route_guards(&calls).is_empty());
+        assert_eq!(guard_arg_text(&FactValue::Int(60)), Some("60".into()));
+        assert_eq!(guard_arg_text(&FactValue::Null), None);
+    }
+
+    /// 内圈覆盖外圈：组上 `AuthToken(true)`、路由上 `AuthToken(false)` 时生效的应是后者。
+    #[test]
+    fn inner_guard_overrides_outer() {
+        let f = "app/api/route/pc.php";
+        let mut ws = GraphWorkspace::new(ProjectId::new(1));
+        ws.add_route_guard_scopes(vec![crate::workspace::RouteGuardScope {
+            file: f.into(),
+            start_line: 1,
+            end_line: 30,
+            guards: vec![crate::workspace::RouteGuard {
+                class: r"app\Auth".into(),
+                arg: Some("true".into()),
+            }],
+        }]);
+        ws.add_route_guard_scopes(vec![crate::workspace::RouteGuardScope {
+            file: f.into(),
+            start_line: 5,
+            end_line: 6,
+            guards: vec![crate::workspace::RouteGuard {
+                class: r"app\Auth".into(),
+                arg: Some("false".into()),
+            }],
+        }]);
+        let got = ws.route_guards(f, 5);
+        assert_eq!(got.len(), 1, "同名中间件只算一个");
+        assert_eq!(got[0].arg.as_deref(), Some("false"), "内层实参覆盖外层");
     }
 
     #[test]

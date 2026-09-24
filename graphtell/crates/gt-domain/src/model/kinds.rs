@@ -92,6 +92,13 @@ declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点�
     // 前端事件总线节点：`uni.$emit('evt')` / `bus.$emit('evt')` 等组件解耦通信，
     // 与后端 `Event` 同构——同一事件名即同一节点，发射方与监听方都连到它。
     EVENT_BUS  = "EventBus"    => "事件总线节点（前端 uni.$emit / bus.$emit 组件通信）",
+    // 中间件：**唯一一种由语法节点晋升而来的语义节点**。
+    // 它不像 Table / Event / HttpContract 那样"靠多处引用汇聚才存在"，而是 P2 先建出一个
+    // `Class`、P14 确认它挂在路由上之后把 kind 改过来（见 `GraphDelta::kind_patches`：
+    // **改身份而不新增节点** —— 否则同一份代码在图里出现两次，扇入分裂、跳转给两份位置）。
+    // 列进 `SYNTHESIZED` 的唯一后果是它在折叠视图里**默认可见**，与 Table / HttpContract
+    // 同一待遇 —— 这也是用户看路由图时最先想确认的东西（这个接口过了哪些守卫）。
+    MIDDLEWARE   = "Middleware"   => "中间件（挂在路由上的守卫类，由 Class 晋升）",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新种类",
 }
 
@@ -124,6 +131,7 @@ impl NodeKind {
         Self::SCHEDULE,
         Self::PAGE,
         Self::EVENT_BUS,
+        Self::MIDDLEWARE,
     ];
 
     /// 是否为"第一类"语义节点（kind 自身即语义）。
@@ -198,6 +206,12 @@ declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
     // 与后端 `Event` 的 `Triggers` 同构——事件节点在折叠视图里充当「via」桥。
     EMITS       = "Emits"       => "前端发射事件总线事件（uni.$emit / bus.$emit）",
     LISTENS_TO  = "ListensTo"   => "前端监听事件总线事件（uni.$on / bus.$on）",
+    // 路由守卫：`HttpContract --GuardedBy--> Middleware`。
+    // 起初归 `BRIDGE`（当时终点还是语法节点 Class），中间件晋升为语义节点后
+    // **两端都是语义节点**，满足了语义边的不变式，故移入 `SEMANTIC`：
+    // 计入「语义出边 N」并画在画布上 —— 与"读写了几张表"同一口径，因为"过了哪几个
+    // 守卫"本身就是这个端点的一项业务事实。由 P14 `phase::guard` 产出。
+    GUARDED_BY   = "GuardedBy"    => "由…守卫（契约 → 中间件）",
     RESOLVES_TO   = "ResolvesTo"    => "动态解析结果",
     UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新边种类",
 }
@@ -224,6 +238,7 @@ impl EdgeKind {
         Self::NAVIGATES_TO,
         Self::EMITS,
         Self::LISTENS_TO,
+        Self::GUARDED_BY,
         "ReadsCache",
     ];
 

@@ -12,7 +12,7 @@ pub mod view;
 pub use fkb::{
     Action, AliasSpec, AnnotateAction, AnnotateTarget, AnnotationSpec, CallContext, Detector,
     Direction, ExpandSpec, ExpandVariant, FanInThresholds, FieldSpec, FileFormat,
-    FrameworkKnowledge, HandlerSpec, MagicDelegationSpec, DbVerbsSpec,
+    FrameworkKnowledge, HandlerSpec, MagicDelegationSpec, DbVerbsSpec, MiddlewareCapability,
     IdentitySpec, KnowledgeScope, LinkAction, LinkSpec, LoaderSource, LoaderSpec, NormalizeStep,
     PickStrategy, Predicate, ProjectAction,
     ResolveAs, ResolveStrategy, ResolveTier, Resolution, ResolverSpec, RootRule, RootSource, Rule,

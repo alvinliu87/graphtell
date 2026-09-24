@@ -1000,6 +1000,7 @@ export function GraphPage() {
               ))}
               {Array.from(new Set(asArray(view.conclusions['标注']))).length > 0 ||
               view.conclusions['schema 列数'] !== undefined ||
+              view.conclusions['经过中间件'] ||
               view.conclusions['路由表登记'] ? (
                 <Space size={6} wrap style={{ marginTop: 4 }}>
                   {Array.from(new Set(asArray(view.conclusions['标注']))).map((a) => (
@@ -1010,6 +1011,11 @@ export function GraphPage() {
                   {view.conclusions['schema 列数'] !== undefined ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       {t('schema 列数：') + String(view.conclusions['schema 列数'])}
+                    </Typography.Text>
+                  ) : null}
+                  {view.conclusions['经过中间件'] ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('经过中间件：') + String(view.conclusions['经过中间件'])}
                     </Typography.Text>
                   ) : null}
                   {view.conclusions['路由表登记'] ? (

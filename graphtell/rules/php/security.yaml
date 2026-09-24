@@ -18,6 +18,18 @@ rules:
   #
   # 注：现在即使打开也会被 `rules_unavailable` 自动拦下（Capability 通道为空），
   # 停用是双保险 —— 不为"能跑"留任何侥幸空间。
+  #
+  # ⚠️ 2026-09 状态更新（Capability 通道在 PHP 上已通之后重测）：
+  # 本条**不再**被 `rules_unavailable` 拦下（CRMEB 上已能跑），但 1603 个候选 **0 命中** ——
+  # 原因是它被 `fkb/php/crmeb.yaml` 的 `crmeb-public-endpoint` **结构架空**：后者用
+  # `none_of_capability` 判"公开端点"，恰好是本规则 `no_capability` 的补集，两者在
+  # **同一个证据源**上互斥且穷尽 —— 写端点要么有鉴权能力、要么已被判为公开，永不相交。
+  # 实测：585 个写端点里 80 个必需鉴权（有能力标注）、5 个可选鉴权、**500 个压根没挂
+  # 鉴权中间件** —— 本规则想报的正是第三类，而它们已被 `auth.public` 排除在外。
+  # 要让它重新有意义，二选一（都需要动代码，勿擅自打开本条）：
+  #   ① 收紧 `crmeb-public-endpoint`：只有彻底没挂鉴权类中间件的才判公开；
+  #     需要一个能读 `route_list.guards` 的新谓词（引擎侧）。
+  #   ② 改成正向规则：只对「挂了鉴权中间件但实参显式为 false（可选）」的写端点报警。
   - id: write-endpoint-without-auth
     title: 写端点未识别到鉴权能力
     description: >-

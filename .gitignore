@@ -17,6 +17,7 @@ CRMEB-master.zip
 *.local.sh
 .local/
 .codebuddy/
+.playwright-cli/
 
 # VSCode / CodeBuddy 本地配置（保留共享 settings.json）
 .vscode/*

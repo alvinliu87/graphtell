@@ -673,6 +673,15 @@ impl GraphSink for SqliteStore {
             .map_err(DomainError::infra)?;
         }
 
+        // 种类晋升（语法节点 → 语义节点，**不新增节点**）
+        for (id, kind) in &delta.kind_patches {
+            tx.execute(
+                "UPDATE nodes SET kind = ?1 WHERE id = ?2",
+                params![kind.as_str(), id.get()],
+            )
+            .map_err(DomainError::infra)?;
+        }
+
         // 共现位置追加（合成节点的多处定义）
         for (id, loc) in &delta.location_patches {
             let current: Option<String> = tx
