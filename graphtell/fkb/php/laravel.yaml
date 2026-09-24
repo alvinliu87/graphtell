@@ -230,7 +230,9 @@ loaders:
     from:
       kind: builtin
       name: php_db_schema
-      params: {}
+      params:
+        table_receivers: ["Db", "\\Db", "Query", "Model"]
+        table_methods: ["name", "table"]
   # 数据库 migration（`database/migrations/*.php`）—— **Laravel 的列主要来源**。
   # PHP ORM 的模型不声明字段，列只写在 migration 里；而 `$table->string('email')`
   # 在闭包内、owner 是闭包，FKB 拿不到它属于哪张表，故只能由装载器直接解析。
@@ -240,7 +242,9 @@ loaders:
     from:
       kind: builtin
       name: php_migration_schema
-      params: {}
+      params:
+        paths: ["database/migrations"]
+        extensions: ["php"]
 
 # ---------------------------------------------------------------- 中间件能力
 # 「中间件类 → 能力」同样是框架知识：内核不认识任何一个中间件名字。

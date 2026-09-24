@@ -161,14 +161,20 @@ loaders:
     from:
       kind: builtin
       name: php_db_schema
-      params: {}
+      # 表名识别：ThinkPHP 用 `Db::name` / `Model` / `Query`，与 Laravel 共用同一套形态。
+      params:
+        table_receivers: ["Db", "\\Db", "Query", "Model"]
+        table_methods: ["name", "table"]
   # 配置键权威源
   - id: tp6-config-keys
     table: config_keys
     from:
       kind: builtin
       name: php_config_keys
-      params: {}
+      # 配置访问器：ThinkPHP 用 `sys_config` / `config`，Laravel 用 `config` / `env`。
+      params:
+        accessors: ["sys_config", "sys_config_all", "config", "env", "Env::get"]
+        suffixes: ["::get"]
   # 多语言（lang/<locale>/*.php）
   - id: tp6-i18n
     table: i18n

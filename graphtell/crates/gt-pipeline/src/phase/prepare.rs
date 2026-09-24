@@ -711,7 +711,7 @@ fn run_builtin(
     match name {
         "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
         "php_migration_schema" => load_migration_schema(ctx, params, project_root),
-        "php_config_keys" => load_config_keys(ctx, sub),
+        "php_config_keys" => load_config_keys(ctx, params, sub),
         // 通用别名装载器：文件 / 块标记 / 分隔符全由 FKB `params` 声明，不绑定任何语言。
         "middleware_aliases" => load_middleware_aliases(ctx, project_root, params),
         // 通用路由守卫装载器：识别逻辑完全来自 FKB 的 `route_guards` 声明，不再写死任何框架。
@@ -755,6 +755,16 @@ fn load_schema(
     }
 
     // ② 从代码中的 Db::name('x') 收集表名（只收集最小的必要集合，避免整体克隆）
+    // 表名识别的 receiver / method 由 FKB `params` 声明（缺省覆盖 ThinkPHP 的
+    // `Db::name` / `Model` 与 Laravel 的 `DB::table` / `Query` / `Model`）。
+    let table_receivers: Vec<String> = params
+        .get("table_receivers")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| vec!["Db".into(), "\\Db".into(), "Query".into(), "Model".into()]);
+    let table_methods: Vec<String> = params
+        .get("table_methods")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| vec!["name".into(), "table".into()]);
     let mut found: Vec<(String, String)> = Vec::new();
     for call in ctx.ws.calls.iter() {
         // 只有 DB 语义的 name()/table() 才算表名：
@@ -762,18 +772,23 @@ fn load_schema(
         let is_db_receiver = call
             .receiver
             .as_deref()
-            .map(|r| {
-                let r = r.trim_start_matches('\\');
-                r.eq_ignore_ascii_case("Db")
-                    || r.ends_with("\\Db")
-                    || r.contains("Query")
-                    || r.contains("Model")
+            .map(|raw| {
+                let r = raw.trim_start_matches('\\');
+                table_receivers.iter().any(|p| {
+                    if p.starts_with('\\') {
+                        r.ends_with(p)
+                    } else if p.eq_ignore_ascii_case("Db") {
+                        r.eq_ignore_ascii_case(p)
+                    } else {
+                        r.contains(p)
+                    }
+                })
             })
             .unwrap_or(false);
         let is_table_call = call
             .method
             .as_deref()
-            .map(|m| m.eq_ignore_ascii_case("name") || m.eq_ignore_ascii_case("table"))
+            .map(|m| table_methods.iter().any(|t| m.eq_ignore_ascii_case(t)))
             .unwrap_or(false);
         if !is_table_call || !is_db_receiver {
             continue;
@@ -816,7 +831,16 @@ fn load_migration_schema(ctx: &mut PipelineContext, params: &Value, project_root
             }
         }
     }
-    for (path, text) in scan_migration_files(project_root) {
+    // migration 文件路径片段与扩展名由 FKB `params` 声明（缺省 Laravel/ThinkPHP 通用形态）。
+    let paths: Vec<String> = params
+        .get("paths")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| vec!["database/migrations".into()]);
+    let exts: Vec<String> = params
+        .get("extensions")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| vec!["php".into()]);
+    for (path, text) in scan_migration_files(project_root, &paths, &exts) {
         for (table, columns) in parse_migration_tables(&text) {
             let name = strip_prefixes(&table, &prefixes);
             merge_schema_columns(ctx, &name, columns, &path);
@@ -824,8 +848,9 @@ fn load_migration_schema(ctx: &mut PipelineContext, params: &Value, project_root
     }
 }
 
-/// 扫描 `database/migrations/*.php`（跳过依赖目录）。
-fn scan_migration_files(root: &Path) -> Vec<(String, String)> {
+/// 扫描 migration 文件（路径片段 + 扩展名由 FKB `params` 声明，缺省 `database/migrations` + `php`）。
+/// 跳过依赖目录（通用，不绑定框架）。
+fn scan_migration_files(root: &Path, paths: &[String], exts: &[String]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut walker = walkdir::WalkDir::new(root).follow_links(false).into_iter();
     while let Some(entry) = walker.next() {
@@ -844,9 +869,10 @@ fn scan_migration_files(root: &Path) -> Vec<(String, String)> {
         let is_php = p
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("php"))
+            .map(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
             .unwrap_or(false);
-        let is_migration = p.to_string_lossy().replace('\\', "/").contains("database/migrations/");
+        let norm = p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+        let is_migration = paths.iter().any(|pat| norm.contains(&pat.to_ascii_lowercase()));
         if !is_php || !is_migration {
             continue;
         }
@@ -1080,13 +1106,33 @@ fn merge_schema_columns(
     ctx.ws.put_symbol(ctx.project.id, "schema", table, value);
 }
 
-fn load_config_keys(ctx: &mut PipelineContext, _sub: &gt_domain::model::SubProject) {
+fn load_config_keys(ctx: &mut PipelineContext, params: &Value, _sub: &gt_domain::model::SubProject) {
+    // 配置访问器全部由 FKB `params` 声明（不同框架写法不同：
+    // ThinkPHP 用 `sys_config` / `config`，Laravel 用 `config` / `env`）。
+    // `accessors` 为精确 callee（大小写不敏感），`suffixes` 为后缀匹配
+    // （如 `::get` 覆盖任意 `Xxx::get`）。缺省沿用当前跨框架通用写法。
+    let accessors: Vec<String> = params
+        .get("accessors")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| {
+            vec![
+                "sys_config".into(),
+                "sys_config_all".into(),
+                "config".into(),
+                "env".into(),
+                "Env::get".into(),
+            ]
+        });
+    let suffixes: Vec<String> = params
+        .get("suffixes")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| vec!["::get".into()]);
     let mut found: Vec<(String, String, u32)> = Vec::new();
     for call in ctx.ws.calls.iter() {
-        let is_config = matches!(
-            call.callee.as_str(),
-            "sys_config" | "sys_config_all" | "config" | "env" | "Env::get"
-        ) || call.callee.ends_with("::get");
+        let is_config = accessors
+            .iter()
+            .any(|a| call.callee.eq_ignore_ascii_case(a))
+            || suffixes.iter().any(|s| call.callee.ends_with(s));
         if !is_config {
             continue;
         }
