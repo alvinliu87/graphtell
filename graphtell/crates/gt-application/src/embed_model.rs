@@ -1,45 +1,37 @@
 //! 真实神经网络嵌入适配器（**特性门控，默认不编译**）。
 //!
-//! 这是"强版"离线向量召回的落点：用本地 `candle` 跑 `bge-m3`，把中文意图与英文
-//! 代码符号映射到同一语义空间。**本文件只在 `model` feature 开启时参与编译**，
-//! 因此任何没有网络 / 没有模型权重的机器上，`cargo build` / `cargo test` 都照常 green。
+//! 用 `candle`（纯 Rust）直接加载本地 `bge-m3` 的 safetensors 权重，做真正的跨语言语义向量。
+//! 纯离线、CPU 可跑、零系统依赖（不需要 onnxruntime 的 openssl）。
+//! **本文件只在 `model-candle` feature 开启时参与编译**，因此任何没有模型权重的机器上，
+//! `cargo build` / `cargo test` 都照常 green。
 //!
 //! # 在能联网的机器上启用
 //!
-//! 1) 在 `crates/gt-application/Cargo.toml` 增加（candle 版本请对齐你拉取的权重）：
+//! 1)（一次性）拉权重并转 safetensors：
 //!
-//! ```toml
-//! [features]
-//! model = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:safetensors"]
-//!
-//! [dependencies]
-//! candle-core = { version = "0.6", optional = true }
-//! candle-nn  = { version = "0.6", optional = true }
-//! candle-transformers = { version = "0.6", optional = true }
-//! tokenizers = { version = "0.20", optional = true }
-//! safetensors = { version = "0.4", optional = true }
+//! ```bash
+//! python3 -m pip install torch sentence-transformers modelscope safetensors
+//! export HF_ENDPOINT=https://hf-mirror.com
+//! python3 tools/bge_demo.py                 # 经 modelscope 拉 bge-m3 到 models/bge-m3-ms/
+//! python3 tools/convert_bge_safetensors.py # 转出 models/bge-m3-safetensors/{model.safetensors,config.json,tokenizer.json}
 //! ```
 //!
-//! 2) 下载 `bge-m3` 权重到某个目录 `MODEL_DIR`，需含：
-//!    - `model.safetensors`（dense 权重）
-//!    - `config.json`
-//!    - `tokenizer.json`（bge-m3 自带，含检索指令模板）
+//! 2) 在 `gt-application/Cargo.toml` 启用 feature `model-candle`（已内置）。
 //!
-//! 3) 在组装根（container / router）里注入：
+//! 3) 组装根注入（召回流程零改动）：
 //!
 //! ```rust,ignore
-//! let embedder = Arc::new(CandleBgeEmbedder::load(MODEL_DIR)?);
+//! let embedder = Arc::new(CandleBgeEmbedder::load("models/bge-m3-safetensors")?);
 //! let svc = RecallService::with_embedder(store, fs, scanner, embedder);
 //! ```
 //!
-//! 召回流程（`recall`、`score_node`、图扩展、`Embedder` trait）**零改动**——
-//! 只是把 `default_embedder()` 换成了真模型。
+//! 已验证：同份权重在 onnxruntime 下与 sentence-transformers 输出 cosine==1.0；
+//! 对 `下单改优惠` 的语义召回命中 `applyDiscount / placeOrder` 等英文节点（见 tools/bge_demo.py）。
 
-#![cfg(feature = "model")]
+#![cfg(feature = "model-candle")]
 
-use std::sync::Arc;
-
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use tokenizers::Tokenizer;
 
@@ -61,15 +53,19 @@ impl CandleBgeEmbedder {
     pub fn load(model_dir: &str) -> candle_core::Result<Self> {
         let device = Device::Cpu;
 
-        let config: Config =
-            serde_json::from_str(&std::fs::read_to_string(format!("{model_dir}/config.json"))?)
-                .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
-        let weights = std::fs::read(format!("{model_dir}/model.safetensors"))
-            .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
-        let mmap = unsafe { candle_core::safetensors::MmapedSafetensors::new(weights)? };
-        let vb = candle_core::VarBuilder::from_safetensors(vec![mmap], DType::F32, &device)?;
-        // `with_pooling = false`：我们自己做 mean-pooling + L2 归一化。
-        let model = BertModel::load(vb, &config, false)?;
+        let config: Config = serde_json::from_str(
+            &std::fs::read_to_string(format!("{model_dir}/config.json"))
+                .map_err(|e| candle_core::Error::Msg(e.to_string()))?,
+        )
+        .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+
+        let safetensors_path = format!("{model_dir}/model.safetensors");
+        // mmap 读取权重文件：文件只读、加载期间不改动即安全。
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[safetensors_path], DType::F32, &device)?
+        };
+        // `with_pooling = false`：我们自己做 [CLS] 池化 + L2 归一化（bge 用 CLS）。
+        let model = BertModel::load(vb, &config)?;
         let tokenizer = Tokenizer::from_file(format!("{model_dir}/tokenizer.json"))
             .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
 
@@ -87,15 +83,27 @@ impl Embedder for CandleBgeEmbedder {
         self.dim
     }
 
-    /// 编码一段文本为 L2 归一化的语义向量。
-    ///
-    /// 失败会 panic（参考实现）；生产环境应改造成返回 `Result` 并在 `with_embedder`
-    /// 处传播。
+    /// 编码「文档」侧文本（节点名 / 代码片段）：**不加** bge 检索前缀，取 [CLS] + L2。
     fn embed(&self, text: &str) -> Vec<f32> {
-        let encoding = self
-            .tokenizer
-            .encode(format!("{RETRIEVE_PREFIX}{text}"), true)
-            .expect("tokenize 失败");
+        self.encode(text, false)
+    }
+
+    /// 编码「查询」侧文本（用户提问）：加 bge 检索前缀，使其与文档落入同一向量空间。
+    fn embed_query(&self, text: &str) -> Vec<f32> {
+        self.encode(text, true)
+    }
+}
+
+impl CandleBgeEmbedder {
+    /// 统一编码：查询侧 `is_query=true` 时拼上 bge 检索前缀，文档侧不加。
+    /// 取 [CLS] token 并 L2 归一化（bge 用 [CLS]，非 mean-pooling）。
+    fn encode(&self, text: &str, is_query: bool) -> Vec<f32> {
+        let t = if is_query {
+            format!("{RETRIEVE_PREFIX}{text}")
+        } else {
+            text.to_string()
+        };
+        let encoding = self.tokenizer.encode(t, true).expect("tokenize 失败");
         let ids: Vec<u32> = encoding.get_ids().to_vec();
         let seq_len = ids.len();
 
@@ -111,18 +119,19 @@ impl Embedder for CandleBgeEmbedder {
         // [1, seq, hidden]
         let hidden = self
             .model
-            .forward(&input_ids, &type_ids)
+            .forward(&input_ids, &type_ids, None)
             .expect("bert forward");
-        // 去掉 batch 维 → [seq, hidden]
-        let hidden = hidden.squeeze(0).expect("squeeze");
-        // mean-pooling（忽略 padding 由 seq_len 近似，bge 输入已无额外 pad）
-        let summed = hidden.sum(0).expect("sum");
-        let mean = summed
-            .broadcast_div(&Tensor::new(seq_len as f32, &self.device).expect("scalar"))
-            .expect("mean");
+        // 取 [CLS]（序列第 0 个 token）
+        let cls = hidden.i((0, 0)).expect("cls index");
         // L2 归一化
-        let norm = mean.sqr().expect("sqr").sum_all().expect("sum").sqrt().expect("norm");
-        let normalized = mean.broadcast_div(&norm).expect("normalize");
+        let norm = cls
+            .sqr()
+            .expect("sqr")
+            .sum_all()
+            .expect("sum")
+            .sqrt()
+            .expect("norm");
+        let normalized = cls.broadcast_div(&norm).expect("normalize");
 
         normalized.to_vec1::<f32>().expect("to_vec")
     }

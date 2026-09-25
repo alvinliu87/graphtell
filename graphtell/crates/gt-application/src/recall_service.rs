@@ -303,7 +303,7 @@ impl RecallService {
         let mut vector: HashMap<i64, f64> = HashMap::new();
         let qvec = self
             .embedder
-            .embed(&query_embed_text(&q.query, &alias_terms));
+            .embed_query(&query_embed_text(&q.query, &alias_terms));
         for node in &nodes {
             if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
                 continue;
@@ -1183,24 +1183,22 @@ mod tests {
         assert!(snip.is_none(), "超大文件应跳过片段读取（防 OOM）");
     }
 
-    // ---- 真实模型（bge-m3 ONNX）语义验证：仅 `model-ort` feature 下编译 ----
-    #[cfg(feature = "model-ort")]
+    // ---- 真实模型（bge-m3 / candle）语义验证：仅 `model-candle` feature 下编译 ----
+    #[cfg(feature = "model-candle")]
     #[test]
     fn bge_semantic_recall_chinese_to_english() {
-        use crate::embed_ort::OrtBgeEmbedder;
+        use crate::embed_model::CandleBgeEmbedder;
 
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models");
-        let onnx = std::env::var("GT_BGE_ONNX")
-            .unwrap_or_else(|_| root.join("bge-m3-onnx/model.onnx").to_string_lossy().into());
-        let tok = std::env::var("GT_BGE_TOKENIZER")
-            .unwrap_or_else(|_| root.join("bge-m3/tokenizer.json").to_string_lossy().into());
-        if !Path::new(&onnx).exists() {
-            eprintln!("skip bge_semantic_recall: 未找到 {onnx}（先跑 tools/export_bge_onnx.py）");
+        let model_dir = std::env::var("GT_BGE_MODEL")
+            .unwrap_or_else(|_| root.join("bge-m3-safetensors").to_string_lossy().into());
+        if !Path::new(&model_dir).join("model.safetensors").exists() {
+            eprintln!("skip bge_semantic_recall: 未找到 {model_dir}/model.safetensors（先跑 tools/convert_bge_safetensors.py）");
             return;
         }
-        let emb = OrtBgeEmbedder::load(&onnx, &tok).expect("加载 bge-m3 ONNX 失败");
+        let emb = CandleBgeEmbedder::load(&model_dir).expect("加载 bge-m3 safetensors 失败");
 
-        let q = emb.embed("下单改优惠");
+        let q = emb.embed_query("下单改优惠");
         let order = emb.embed("placeOrder");
         let discount = emb.embed("applyDiscount");
         let noise = emb.embed("unused_log");

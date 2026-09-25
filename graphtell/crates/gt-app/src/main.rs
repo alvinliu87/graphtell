@@ -82,6 +82,10 @@ enum Command {
         json: bool,
     },
     /// 按提示词在图上召回相关代码。
+    ///
+    /// 召回编码器：默认编译开启 `model-candle` 时走真实的 bge-m3 语义向量
+    /// （需本地权重，目录由环境变量 `GT_BGE_MODEL` 指定，默认 `models/bge-m3-safetensors`）；
+    /// 未配置权重或 `--no-default-features` 构建时自动退回本地哈希编码器（离线、零依赖）。
     Recall {
         #[arg(long)]
         project: i64,

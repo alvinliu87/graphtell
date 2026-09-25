@@ -35,3 +35,10 @@ path = "src/lib.rs"
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 http-body-util = { workspace = true }
+
+[features]
+default = ["model-candle"]
+# 端到端验证真实模型召回：转发到 gt-application 的 model-candle（纯 Rust bge-m3）。
+# 设为默认后，CLI 直接走真实 bge-m3 语义召回；若不想编译 candle，可用
+# `cargo build -p gt-app --no-default-features` 退回本地哈希编码器（零依赖）。
+model-candle = ["gt-application/model-candle"]

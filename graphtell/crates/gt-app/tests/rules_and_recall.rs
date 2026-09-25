@@ -554,6 +554,138 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
     );
 }
 
+/// 端到端：把真实 `bge-m3`（candle，纯 Rust）注入 `RecallService`，中文意图
+/// `下单改优惠` 经由「语义向量」直接 seed 到英文业务节点 `placeOrder` / `applyDiscount`，
+/// 且它们的得分明显高于无关噪声节点 `unused_log`。
+///
+/// 仅在 `--features model-candle` 下编译 / 运行；无模型权重时自动跳过。
+#[cfg(feature = "model-candle")]
+#[test]
+fn recall_real_bge_model_chinese_to_english() {
+    use gt_application::embed_model::CandleBgeEmbedder;
+    use std::sync::Arc;
+
+    let model_dir = std::env::var("GT_BGE_MODEL").unwrap_or_else(|_| {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../models/bge-m3-safetensors")
+            .to_string_lossy()
+            .into()
+    });
+    if !std::path::Path::new(&model_dir)
+        .join("model.safetensors")
+        .exists()
+    {
+        eprintln!(
+            "skip recall_real_bge_model: 未找到 {model_dir}/model.safetensors（先跑 tools/convert_bge_safetensors.py）"
+        );
+        return;
+    }
+
+    let f = fixture();
+    let store = &f.container.store;
+    let pid = f.project;
+
+    let files = store
+        .replace_files(
+            pid,
+            vec![
+                NewSourceFile {
+                    project_id: pid,
+                    sub_project_id: None,
+                    path: "app/services/OrderService.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 512,
+                    content_hash: "h1".into(),
+                },
+                NewSourceFile {
+                    project_id: pid,
+                    sub_project_id: None,
+                    path: "app/i18n/zh.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 256,
+                    content_hash: "h2".into(),
+                },
+            ],
+        )
+        .expect("文件应可写入");
+    let svc_file = files[0].id;
+    let i18n_file = files[1].id;
+
+    let node = |kind: &str, name: &str, id: i64, file: Option<FileId>| NewNode {
+        id: Some(NodeId(id)),
+        project_id: pid,
+        sub_project_id: None,
+        kind: NodeKind::new(kind),
+        name: name.to_string(),
+        fqn: None,
+        identity: Some(IdentityKey::fqn(name)),
+        file_id: file,
+        span: Span {
+            start_line: 10,
+            end_line: 30,
+            start_byte: 0,
+            end_byte: 0,
+        },
+        language: Language::new("php"),
+        phase: Phase(Phase::SYNTHESIZE.to_string()),
+        confidence: 1.0,
+        properties: serde_json::Value::Null,
+    };
+
+    let order_svc = node("Class", "OrderService", 201, Some(svc_file));
+    let place_order = node("Method", "placeOrder", 202, Some(svc_file));
+    let apply_discount = node("Method", "applyDiscount", 203, Some(svc_file));
+    // 无关噪声节点：与「下单改优惠」无任何语义关系
+    let noise = node("Method", "unused_log", 205, Some(svc_file));
+
+    store
+        .apply(&GraphDelta {
+            project_id: Some(pid),
+            nodes: vec![order_svc, place_order.clone(), apply_discount.clone(), noise.clone()],
+            edges: vec![
+                NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(202), NodeId(203)),
+                NewEdge::new(pid, EdgeKind::new(EdgeKind::WRITES_DB), NodeId(202), NodeId(201)),
+            ],
+            ..Default::default()
+        })
+        .expect("图应可写入");
+
+    let svc = RecallService::with_embedder(
+        f.container.store.clone() as Arc<dyn Persistence>,
+        f.container.filesystem(),
+        f.container.scanner(),
+        Arc::new(CandleBgeEmbedder::load(&model_dir).expect("加载 bge-m3 失败")),
+    );
+    let result = svc
+        .recall(
+            f.project,
+            &RecallQuery {
+                query: "下单改优惠".into(),
+                limit: 20,
+                hops: 2,
+                kinds: Vec::new(),
+                with_snippets: false,
+            },
+        )
+        .expect("召回不应失败");
+
+    let score_of = |name: &str| {
+        result
+            .seeds
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.score)
+            .expect("seed 应含该节点")
+    };
+    let p = score_of("placeOrder");
+    let a = score_of("applyDiscount");
+    let n = score_of("unused_log");
+    println!("bge 召回得分: placeOrder={p:.1} applyDiscount={a:.1} unused_log={n:.1}");
+
+    assert!(p > n, "placeOrder 得分应高于噪声 unused_log：{p} vs {n}");
+    assert!(a > n, "applyDiscount 得分应高于噪声 unused_log：{a} vs {n}");
+}
+
 /// 中文结构提示（"表"）应把结果收敛到对应节点种类。
 #[test]
 fn recall_understands_chinese_kind_hints() {

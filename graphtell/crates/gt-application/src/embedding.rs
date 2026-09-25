@@ -16,6 +16,13 @@ pub trait Embedder: Send + Sync {
     fn embed(&self, text: &str) -> Vec<f32>;
     /// 向量维度。
     fn dim(&self) -> usize;
+    /// 编码「查询」文本（召回时用户查询侧使用）。
+    ///
+    /// 默认与 [`Embedder::embed`] 相同；但部分模型（如 bge 系列）要求**查询侧**
+    /// 加检索前缀、文档侧不加，此时应覆写本方法，使查询与文档落入同一向量空间。
+    fn embed_query(&self, text: &str) -> Vec<f32> {
+        self.embed(text)
+    }
 }
 
 /// 两段向量的余弦相似度（重算各自 L2 范数，避免预归一化的浮点漂移）。

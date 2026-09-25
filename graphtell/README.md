@@ -427,7 +427,9 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 打分 = 关键词匹配（精确 > 前缀 > 子串）× 多词加成 × 种类权重（语义节点优先）+ 扇入加成，扩展按 `0.5^hop` 衰减。
 
-中文支持的方式是**结构提示词**："表"/"接口"/"事件"/"配置"/"队列"/"定时任务"会被识别成 `Table`/`HttpContract`/`Event`/… 的种类加成，并把这一结论显式回显给用户。**已知限制**：纯中文且不含标识符时无法召回（没有向量、不调 LLM）——这是刻意的取舍，先把"图能召回"这件事做可验证。
+中文支持的方式是**结构提示词**："表"/"接口"/"事件"/"配置"/"队列"/"定时任务"会被识别成 `Table`/`HttpContract`/`Event`/… 的种类加成，并把这一结论显式回显给用户。
+
+召回编码器分两档（由编译 feature 决定，运行时自动切换）：**默认**（`model-candle`，已设为默认 feature）会尝试加载本地 bge-m3 权重做跨语言语义向量，权重缺失时**自动退回**本地哈希编码器（离线、零依赖、不调 LLM）。因此"下单改优惠"这类纯中文提示词也能命中 `placeOrder` / `applyDiscount` 等英文节点；退回到哈希编码器时纯中文无标识符的召回会偏弱，但依旧不联网。权重目录由环境变量 `GT_BGE_MODEL` 指定（默认 `models/bge-m3-safetensors`），用 `tools/convert_bge_safetensors.py` 由 HuggingFace 的 `pytorch_model.bin` 转 safetensors 后即可启用。若不想编译 candle，可 `cargo build -p gt-app --no-default-features` 直接走哈希编码器。
 
 输出 `markdown` 字段是一份可直接粘给 LLM 的上下文包（种子 + 相关代码 + `path:line` + 源码片段 + 图上关系）。
 
