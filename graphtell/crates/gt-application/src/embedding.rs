@@ -23,6 +23,15 @@ pub trait Embedder: Send + Sync {
     fn embed_query(&self, text: &str) -> Vec<f32> {
         self.embed(text)
     }
+
+    /// 批量编码（文档侧，不加前缀）。
+    ///
+    /// 默认逐条调用 [`Embedder::embed`]；真实模型（bge-m3 / candle）应覆写为「单次前向」
+    /// 把冷启动从「逐节点 N 次前向」降为「少量大批次前向」——对大图召回是数量级提速
+    /// （bge-m3 在 CPU 上单条前向 ~百毫秒，批量前向可 amortize 到几毫秒 / 条）。
+    fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        texts.iter().map(|t| self.embed(t)).collect()
+    }
 }
 
 /// 两段向量的余弦相似度（重算各自 L2 范数，避免预归一化的浮点漂移）。
@@ -86,6 +95,57 @@ impl Embedder for LocalHashingEmbedder {
 /// 默认离线编码器（256 维，零外部依赖）。
 pub fn default_embedder() -> Arc<dyn Embedder> {
     Arc::new(LocalHashingEmbedder::new(256))
+}
+
+/// 解析召回用的编码器：编译了 `model-candle` 且 `GT_BGE_MODEL` 权重可用时优先 bge-m3，
+/// 否则（未编译 / 缺权重 / 加载失败）安全退回默认本地哈希编码器。
+///
+/// 返回值可直接注入 [`crate::RecallService`]。生产入口（CLI / HTTP router）都走它，
+/// 因此「有权重就走真实语义、没有就退回离线」是统一行为，无需调用方关心。
+pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
+    #[cfg(feature = "model-candle")]
+    {
+        let dir = std::env::var("GT_BGE_MODEL")
+            .unwrap_or_else(|_| "models/bge-m3-safetensors".to_string());
+        match crate::embed_model::CandleBgeEmbedder::load(&dir) {
+            Ok(embedder) => {
+                tracing::info!("已加载真实 bge-m3 语义编码器（{dir}）");
+                return Arc::new(embedder);
+            }
+            Err(err) => {
+                tracing::warn!("bge-m3 模型加载失败（{dir}），退回本地哈希编码器：{err}");
+            }
+        }
+    }
+    default_embedder()
+}
+
+/// 仅当编译了 `model-candle` 且 `GT_BGE_MODEL` 权重可用时返回真实 bge-m3 编码器，
+/// 否则返回 `None`（调用方应退回词面 / 快速向量路，且关闭后台预热）。
+///
+/// 与 [`resolve_recall_embedder`] 的区别：后者在无权重时**安全退回**默认哈希编码器；
+/// 本函数把「是否具备真实语义」这一事实显式交回调用方，便于决定是否触发后台预热。
+pub fn try_real_recall_embedder() -> Option<Arc<dyn Embedder>> {
+    #[cfg(feature = "model-candle")]
+    {
+        let dir = std::env::var("GT_BGE_MODEL")
+            .unwrap_or_else(|_| "models/bge-m3-safetensors".to_string());
+        match crate::embed_model::CandleBgeEmbedder::load(&dir) {
+            Ok(embedder) => {
+                tracing::info!("已加载真实 bge-m3 语义编码器（{dir}）");
+                Some(Arc::new(embedder))
+            }
+            Err(err) => {
+                tracing::warn!("bge-m3 模型加载失败（{dir}），无语义编码器：{err}");
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "model-candle"))]
+    {
+        tracing::info!("未编译 model-candle，无语义编码器（仅词面 / 快速向量路）");
+        None
+    }
 }
 
 /// 抽取用于编码的特征：ASCII token（保留大小写拆 camelCase/snake 后再转小写）

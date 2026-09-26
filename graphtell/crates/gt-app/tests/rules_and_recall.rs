@@ -494,6 +494,8 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
     let place_order = node("Method", "placeOrder", 202, Some(svc_file));
     let apply_discount = node("Method", "applyDiscount", 203, Some(svc_file));
     let coupon_i18n = node("I18nKey", "优惠券", 204, Some(i18n_file));
+    // 通用动词桥的落点：「查询/列表」→ list / find / all …
+    let list_orders = node("Method", "listOrders", 206, Some(svc_file));
 
     store
         .apply(&GraphDelta {
@@ -503,11 +505,14 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
                 place_order.clone(),
                 apply_discount.clone(),
                 coupon_i18n.clone(),
+                list_orders.clone(),
             ],
             edges: vec![
                 // placeOrder 调用 applyDiscount，并写 OrderService
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(202), NodeId(203)),
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::WRITES_DB), NodeId(202), NodeId(201)),
+                // listOrders 也写 OrderService，便于验证图扩展
+                NewEdge::new(pid, EdgeKind::new(EdgeKind::WRITES_DB), NodeId(206), NodeId(201)),
             ],
             ..Default::default()
         })
@@ -522,7 +527,9 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
         .recall(
             f.project,
             &RecallQuery {
-                query: "下单改优惠".into(),
+                // 用**跨领域通用动词**表达意图（查询 / 列表），不再依赖任何领域词表：
+                // 领域名词（下单 / 优惠）已统一交给工程自身的 i18n 桥。
+                query: "查询订单列表".into(),
                 limit: 20,
                 hops: 2,
                 kinds: Vec::new(),
@@ -533,24 +540,146 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
 
     let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
 
-    // 1) 中文意图必须 seed 到英文业务节点（之前只会命中 i18n 文案）
+    // 1) 中文通用动词必须 bridge 到英文方法（而不只是命中中文 i18n 文案）
     assert!(
-        names.contains(&"placeOrder"),
-        "「下单」应 seed 到 placeOrder，实际命中：{names:?}"
+        names.contains(&"listOrders"),
+        "「查询/列表」应 bridge 到 listOrders，实际命中：{names:?}"
     );
-    assert!(
-        names.contains(&"applyDiscount"),
-        "「改优惠」应 seed 到 applyDiscount，实际命中：{names:?}"
-    );
-    // 2) 图扩展：placeOrder 写 OrderService，应被带出
+    // 2) 图扩展：listOrders 写 OrderService，应被带出
     assert!(
         names.contains(&"OrderService"),
         "OrderService 应被图扩展带出，实际命中：{names:?}"
     );
-    // 3) i18n 文案仍在（词面子串），但不再是唯一结果
+    // 3) 命中里必须有「代码节点」，而不是只有文案类节点
     assert!(
-        names.contains(&"优惠券"),
-        "优惠券文案仍应命中，实际命中：{names:?}"
+        names.iter().any(|n| *n == "listOrders" || *n == "OrderService"),
+        "结果应包含代码节点，实际命中：{names:?}"
+    );
+}
+
+/// 端到端锁定「如何修改下单优惠」的排名成果（对应 eval 集同款查询 + grep 基线用例）。
+///
+/// 核心不变量：动作意图（修改）下，**只有命中内容词（coupon / order…）的纯动词 CRUD 方法**
+/// 才享受 1.5× 动作加权；无关域的发货 `DeliveryService.update` 即便名字命中 `update`，
+/// 也必须排在业务方法 `StoreCouponIssue.edit` 之后。回归前发货 CRUD 曾顶进 Top 5，
+/// 盖住了真正的优惠券服务节点。
+///
+/// 这条走的是完整词面召回链路（parse_query → action_intent → score_node → 排序），
+/// 单测 [`gt_application::recall_service`] 里那两条只钉住了 `score_node` 本身，
+/// 这条补上"整条管道串起来仍成立"的兜底。
+#[test]
+fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
+    let f = fixture();
+    let store = &f.container.store;
+    let pid = f.project;
+
+    let files = store
+        .replace_files(
+            pid,
+            vec![
+                NewSourceFile {
+                    project_id: pid,
+                    sub_project_id: None,
+                    path: "app/adminapi/controller/v1/marketing/StoreCouponIssue.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 512,
+                    content_hash: "hc1".into(),
+                },
+                NewSourceFile {
+                    project_id: pid,
+                    sub_project_id: None,
+                    path: "app/adminapi/controller/v1/order/DeliveryService.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 512,
+                    content_hash: "hc2".into(),
+                },
+            ],
+        )
+        .expect("文件应可写入");
+    let coupon_file = files[0].id;
+    let ship_file = files[1].id;
+
+    let node = |kind: &str, name: &str, id: i64, file: FileId, fqn: &str| NewNode {
+        id: Some(NodeId(id)),
+        project_id: pid,
+        sub_project_id: None,
+        kind: NodeKind::new(kind),
+        name: name.to_string(),
+        fqn: Some(fqn.to_string()),
+        identity: Some(IdentityKey::fqn(fqn)),
+        file_id: Some(file),
+        span: Span { start_line: 10, end_line: 30, start_byte: 0, end_byte: 0 },
+        language: Language::new("php"),
+        phase: Phase(Phase::SYNTHESIZE.to_string()),
+        confidence: 1.0,
+        properties: serde_json::Value::Null,
+    };
+
+    // 业务方法：类标识符含 coupon → 命中内容词 → 保留 1.5× 动作加权
+    let coupon_edit = node(
+        "Method",
+        "edit",
+        501,
+        coupon_file,
+        "app\\adminapi\\controller\\v1\\marketing\\StoreCouponIssue::edit",
+    );
+    // 无关域 CRUD：名字命中 update，但类标识符（DeliveryService）无内容词、
+    // 仅有路径里的 order → 必须被惩罚，不享受动作加权
+    let ship_update = node(
+        "Method",
+        "update",
+        502,
+        ship_file,
+        "app\\adminapi\\controller\\v1\\order\\DeliveryService::update",
+    );
+
+    store
+        .apply(&GraphDelta {
+            project_id: Some(pid),
+            nodes: vec![coupon_edit, ship_update],
+            ..Default::default()
+        })
+        .expect("图应可写入");
+
+    let svc = RecallService::new(
+        f.container.store.clone() as Arc<dyn Persistence>,
+        f.container.filesystem(),
+        f.container.scanner(),
+    );
+    let result = svc
+        .recall(
+            f.project,
+            &RecallQuery {
+                query: "如何修改下单优惠".into(),
+                limit: 20,
+                hops: 2,
+                kinds: Vec::new(),
+                with_snippets: false,
+            },
+        )
+        .expect("召回不应失败");
+
+    let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
+    let rank = |n: &str| names.iter().position(|x| *x == n);
+
+    let b = rank("edit").expect("业务方法 StoreCouponIssue::edit 应被召回");
+    let s = rank("update");
+    assert!(
+        s.map_or(true, |si| b < si),
+        "业务 edit 应排在发货 update 之前（修改意图下内容词才加权），实际：{names:?}"
+    );
+    // 关键词不该是字符级 bigram：证明中文已走词级切分
+    assert!(
+        !result.terms.iter().any(|t| t == "何修" || t == "改下" || t == "单优"),
+        "查询词不应含跨词边界噪音 bigram，实际：{:?}",
+        result.terms
+    );
+    assert!(
+        result.terms.iter().any(|t| t == "修改")
+            && result.terms.iter().any(|t| t == "下单")
+            && result.terms.iter().any(|t| t == "优惠"),
+        "查询词应保留 修改 / 下单 / 优惠，实际：{:?}",
+        result.terms
     );
 }
 
@@ -656,6 +785,12 @@ fn recall_real_bge_model_chinese_to_english() {
         f.container.scanner(),
         Arc::new(CandleBgeEmbedder::load(&model_dir).expect("加载 bge-m3 失败")),
     );
+    // 语义路要求工程已预热（生产入口由后台异步预热 / `graphtell embed` 完成）。
+    // 直接注入编码器时 `warmed_projects` 为空，召回会静默落到快速哈希路、bge 根本不参与，
+    // 本测试也就测不到它想测的「中文意图 → 英文符号」语义召回。
+    let warmed = svc.warm_up(f.project).expect("bge 预热应成功");
+    assert!(warmed > 0, "应至少编码一个主题级节点，实际 {warmed}");
+
     let result = svc
         .recall(
             f.project,
@@ -679,7 +814,15 @@ fn recall_real_bge_model_chinese_to_english() {
     };
     let p = score_of("placeOrder");
     let a = score_of("applyDiscount");
-    let n = score_of("unused_log");
+    // 噪声 `unused_log` 现在同样进入向量空间（Method/Function 已纳入语义编码），会被低分
+    // 召回 —— 这正是期望：噪声与业务节点可比，且得分应显著更低。未召回时按 0 分处理以
+    // 保持对模型权重变化的稳健性。
+    let n = result
+        .seeds
+        .iter()
+        .find(|s| s.name == "unused_log")
+        .map(|s| s.score)
+        .unwrap_or(0.0);
     println!("bge 召回得分: placeOrder={p:.1} applyDiscount={a:.1} unused_log={n:.1}");
 
     assert!(p > n, "placeOrder 得分应高于噪声 unused_log：{p} vs {n}");

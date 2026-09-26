@@ -31,7 +31,6 @@ use crate::context::PipelineContext;
 const CORS_REFLECT: &str = "cors_origin_reflect";
 
 pub fn run(ctx: &mut PipelineContext) {
-    let phase = Phase("Cors".to_string());
     let mut count = 0usize;
 
     // 先收集待标注的调用点，避免 `ctx.ws` 的不可变借用与 `annotate` 的可变借用冲突。

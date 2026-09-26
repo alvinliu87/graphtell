@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>提示词合成器 · graphtell</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:#f6f7fb;color:#1b1f2a;line-height:1.6}
+  header{background:linear-gradient(120deg,#4f46e5,#7c3aed);color:#fff;padding:20px 26px}
+  header h1{margin:0;font-size:19px;font-weight:650;letter-spacing:.3px}
+  header p{margin:6px 0 0;font-size:13px;opacity:.92;max-width:900px}
+  .wrap{max-width:1200px;margin:0 auto;padding:20px;display:grid;grid-template-columns:minmax(330px,400px) 1fr;gap:16px;align-items:start}
+  @media(max-width:920px){.wrap{grid-template-columns:1fr}}
+  .card{background:#fff;border:1px solid #e6e8ef;border-radius:12px;padding:18px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .card h2{margin:0 0 14px;font-size:14.5px;font-weight:650;color:#111827}
+  label{display:block;font-size:12.5px;font-weight:600;color:#374151;margin:0 0 6px}
+  .field{margin-bottom:13px}
+  input[type=text],input[type=number],select,textarea{width:100%;padding:9px 11px;border:1px solid #d7dae3;border-radius:8px;font-size:13.5px;font-family:inherit;background:#fff;color:#111827;outline:none;transition:border-color .15s,box-shadow .15s}
+  input:focus,select:focus,textarea:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+  textarea{min-height:92px;resize:vertical}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:#374151;font-weight:500}
+  .check input{width:auto}
+  .check label{margin:0;font-weight:500}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:13.5px;font-weight:600;cursor:pointer;font-family:inherit;transition:background .15s}
+  .btn:hover{background:#4338ca}
+  .btn:disabled{background:#a5b4fc;cursor:not-allowed}
+  .btn.ghost{background:#fff;color:#374151;border:1px solid #d7dae3}
+  .btn.ghost:hover{background:#f3f4f6}
+  .btn.block{width:100%}
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:12px}
+  .pill{background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;border-radius:999px;padding:3px 10px;font-weight:600}
+  #out{min-height:430px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:pre;overflow:auto;background:#fbfbfd}
+  .status{margin-top:10px;font-size:12.5px;color:#6b7280;min-height:18px}
+  .status.err{color:#b91c1c}
+  .actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+  .hint{font-size:11.5px;color:#6b7280;margin:4px 0 0}
+  footer{max-width:1200px;margin:0 auto;padding:0 20px 26px;font-size:12px;color:#6b7280}
+  code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:11.5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>提示词合成器</h1>
+  <p>把「用户意图」与「图谱召回的代码上下文」拼成可直接投喂 LLM 的提示词 —— 省掉 LLM 自己探索代码所耗费的 token，质量由实时代码图谱保证。</p>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>① 配置</h2>
+    <div class="field">
+      <label for="proj">工程</label>
+      <select id="proj"><option value="">加载中…</option></select>
+    </div>
+    <div class="field">
+      <label for="q">检索词（用于召回代码）</label>
+      <input type="text" id="q" placeholder="如：修改订单优惠 / 支付回调通知商户" />
+      <div class="hint">自然语言或标识符皆可，决定召回哪些代码。</div>
+    </div>
+    <div class="field">
+      <label for="intent">任务意图 / 补充说明</label>
+      <textarea id="intent" placeholder="如：在下单校验里增加余额不足的拦截，并返回明确错误码。"></textarea>
+      <div class="hint">写给 LLM 的任务描述；留空则让 LLM 依据上下文推断。</div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="limit">召回条数</label><input type="number" id="limit" value="20" min="1" max="100" /></div>
+      <div class="field"><label for="hops">扩展跳数</label><input type="number" id="hops" value="2" min="0" max="4" /></div>
+    </div>
+    <div class="field check"><input type="checkbox" id="snip" checked /><label for="snip">附带源码片段</label></div>
+    <button class="btn block" id="go">生成提示词</button>
+    <div class="status" id="st"></div>
+  </div>
+
+  <div class="card">
+    <h2>② 生成的提示词</h2>
+    <div class="meta" id="meta"></div>
+    <textarea id="out" readonly placeholder="点击左侧「生成提示词」后，这里会出现可直接复制的完整提示词…"></textarea>
+    <div class="actions">
+      <button class="btn ghost" id="copy">复制到剪贴板</button>
+      <button class="btn ghost" id="dl">下载 .md</button>
+    </div>
+    <div class="status" id="st2"></div>
+  </div>
+</div>
+
+<footer>
+  提示：IDE 侧想让 LLM 直接调用同一套能力，用 <code>graphtell mcp --project &lt;id&gt;</code> 以 MCP(stdio) 接入，
+  调用 <code>recall_code</code> 工具即可拿到同样的上下文。
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+const num = (v, d) => { const n = parseInt(v, 10); return Number.isNaN(n) ? d : n; };
+
+async function loadProjects() {
+  try {
+    const r = await fetch('/api/projects');
+    const j = await r.json();
+    const list = j.data || [];
+    const sel = $('#proj');
+    sel.innerHTML = '';
+    if (!list.length) {
+      sel.innerHTML = '<option value="">（暂无工程，请先在客户端建图）</option>';
+      return;
+    }
+    list.forEach(p => {
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = '#' + p.id + '  ' + p.name;
+      sel.appendChild(o);
+    });
+  } catch (e) {
+    $('#st').textContent = '工程列表加载失败：' + e;
+    $('#st').classList.add('err');
+  }
+}
+
+function fail(m) { $('#st').textContent = '失败：' + m; $('#st').classList.add('err'); }
+
+$('#go').addEventListener('click', async () => {
+  const id = $('#proj').value;
+  const q = $('#q').value.trim();
+  if (!id) return fail('请选择工程');
+  if (!q) return fail('请填写检索词');
+
+  $('#go').disabled = true;
+  $('#go').textContent = '生成中…';
+  $('#st').textContent = '';
+  $('#st').classList.remove('err');
+  $('#st2').textContent = '';
+
+  try {
+    const res = await fetch('/api/projects/' + id + '/prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: q,
+        intent: $('#intent').value,
+        limit: num($('#limit').value, 20),
+        hops: num($('#hops').value, 2),
+        with_snippets: $('#snip').checked
+      })
+    });
+    const j = await res.json();
+    if (j.ok === false || !j.data) throw new Error(j.error || '合成失败');
+    const d = j.data;
+    $('#out').value = d.prompt;
+    $('#meta').innerHTML =
+      '<span class="pill">种子 ' + d.seed_count + '</span>' +
+      '<span class="pill">命中 ' + d.hit_count + '</span>' +
+      '<span class="pill">≈ ' + d.approx_tokens + ' tokens</span>';
+    $('#st2').textContent = '已生成，可直接复制使用。';
+  } catch (e) {
+    fail(e.message || String(e));
+  } finally {
+    $('#go').disabled = false;
+    $('#go').textContent = '生成提示词';
+  }
+});
+
+$('#copy').addEventListener('click', async () => {
+  const t = $('#out').value;
+  if (!t) { $('#st2').textContent = '还没有内容可复制。'; return; }
+  try {
+    await navigator.clipboard.writeText(t);
+    $('#st2').textContent = '已复制到剪贴板。';
+  } catch (e) {
+    $('#out').select();
+    document.execCommand('copy');
+    $('#st2').textContent = '已复制（兼容模式）。';
+  }
+});
+
+$('#dl').addEventListener('click', () => {
+  const t = $('#out').value;
+  if (!t) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([t], { type: 'text/markdown' }));
+  a.download = 'prompt.md';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+loadProjects();
+</script>
+</body>
+</html>

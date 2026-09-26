@@ -1112,6 +1112,18 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)
     }
 
+    fn node_kinds(&self, project_id: ProjectId) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT kind FROM nodes WHERE project_id = ?1 ORDER BY kind")
+            .map_err(DomainError::infra)?;
+        let rows = stmt
+            .query_map(params![project_id.get()], |r| r.get::<_, String>(0))
+            .map_err(DomainError::infra)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)
+    }
+
     fn annotation_kinds(&self, project_id: ProjectId) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn

@@ -1,6 +1,8 @@
 //! 依赖装配容器。
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::sync::OnceLock;
 
 use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
@@ -26,6 +28,10 @@ pub struct Container {
     pub deps: Arc<PipelineDeps>,
     pub views: Arc<YamlViewRegistry>,
     pub rules: Arc<YamlRuleSet>,
+    /// 共享语义编码器（进程内懒加载一次：编译并配置了 bge-m3 时为 `Some`，否则 `None`）。
+    semantic_embedder: OnceLock<Option<Arc<dyn gt_application::Embedder>>>,
+    /// 共享节点向量缓存：首次召回预热后，后续召回只编码查询一次。
+    node_embed_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
 }
 
 impl Container {
@@ -50,7 +56,15 @@ impl Container {
             kb: Arc::new(kb),
         });
 
-        Ok(Self { config, store, deps, views, rules })
+        Ok(Self {
+            config,
+            store,
+            deps,
+            views,
+            rules,
+            semantic_embedder: OnceLock::new(),
+            node_embed_cache: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// 支持的编程语言。
@@ -95,44 +109,25 @@ impl Container {
 
     /// 代码召回服务（供 Tauri / CLI 直接使用）。
     ///
-    /// 若编译时启用 `model-candle` 且运行时在 `GT_BGE_MODEL` 指定的目录
-    /// （默认 `models/bge-m3-safetensors`）找到权重，则使用真实的 bge-m3 语义编码器；
-    /// 否则安全退回默认的本地哈希编码器（离线、零依赖）。
+    /// 编码器由 [`gt_application::resolve_recall_embedder`] 解析：编译了 `model-candle`
+    /// 且 `GT_BGE_MODEL`（默认 `models/bge-m3-safetensors`）权重可用时走真实 bge-m3，
+    /// 否则安全退回默认本地哈希编码器。节点向量缓存跨多次召回复用 —— 首次召回预热
+    /// （对全图编码一次），之后每次只对查询编码一次 + 全图点积，亚秒级返回。
     pub fn recall_service(&self) -> gt_application::RecallService {
-        #[cfg(feature = "model-candle")]
-        if let Some(embedder) = Self::load_candle_embedder() {
-            return gt_application::RecallService::with_embedder(
-                self.store.clone() as Arc<dyn Persistence>,
-                Arc::clone(&self.deps.fs),
-                Arc::clone(&self.deps.scanner),
-                embedder,
-            );
-        }
-        gt_application::RecallService::new(
+        // CLI 召回：优先真实 bge-m3（权重可用时），缺权重则无语义编码器（退回词面 / 快速路）。
+        // 这里**不**开启后台异步预热（避免 CLI 进程提前退出杀掉线程）；持久化走手动 `embed` 命令。
+        let semantic = self
+            .semantic_embedder
+            .get_or_init(gt_application::try_real_recall_embedder)
+            .clone();
+        gt_application::RecallService::with_embedder_and_cache(
             self.store.clone() as Arc<dyn Persistence>,
             Arc::clone(&self.deps.fs),
             Arc::clone(&self.deps.scanner),
+            semantic,
+            Arc::clone(&self.node_embed_cache),
+            Some(std::path::PathBuf::from("data/embeddings")),
         )
-    }
-
-    /// 尝试从 `GT_BGE_MODEL`（默认 `models/bge-m3-safetensors`）加载真实 bge-m3
-    /// 语义编码器；失败（缺权重 / 加载错误）返回 `None`，由调用方退回默认哈希编码器。
-    #[cfg(feature = "model-candle")]
-    fn load_candle_embedder() -> Option<Arc<dyn gt_application::Embedder>> {
-        use gt_application::embed_model::CandleBgeEmbedder;
-
-        let dir = std::env::var("GT_BGE_MODEL")
-            .unwrap_or_else(|_| "models/bge-m3-safetensors".to_string());
-        match CandleBgeEmbedder::load(&dir) {
-            Ok(embedder) => {
-                tracing::info!("已加载真实 bge-m3 语义编码器（{dir}）");
-                Some(Arc::new(embedder))
-            }
-            Err(err) => {
-                tracing::warn!("bge-m3 模型加载失败（{dir}），退回本地哈希编码器：{err}");
-                None
-            }
-        }
     }
 
     /// 各端口的只读引用（供 Tauri / CLI 直接使用）。

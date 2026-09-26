@@ -13,6 +13,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+# 文件变更监听（轮询遍历源码根，遵循 .gitignore、跳过隐藏）。
+ignore = { workspace = true }
 
 # 真实模型嵌入（特征门控，默认不编译；离线构建不受影响）。
 # 启用 `model-ort` 后，把经 ModelScope 拉取并转出的 bge-m3 ONNX 权重指给

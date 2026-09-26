@@ -15,8 +15,9 @@
 //! 这是刻意的取舍：先让"图能召回"这件事可验证，再谈语义层。
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use gt_domain::error::Result;
 use gt_domain::model::{Node, NodeId, ProjectId};
@@ -39,32 +40,225 @@ pub const DEFAULT_EXCLUDED_KINDS: &[&str] = &[
     "Const",
 ];
 
-/// 向量路召回的权重与阈值（与词面分同量纲，便于合并排序）。
-const VECTOR_WEIGHT: f64 = 70.0;
+/// 向量路召回的权重（与词面分同量纲，便于合并排序）。
+const VECTOR_WEIGHT: f64 = 200.0;
 /// 余弦低于该值视为「不相关」，不进入候选。
-const VECTOR_THRESHOLD: f64 = 0.2;
+pub const VECTOR_THRESHOLD: f64 = 0.3;
+/// 词面路取前 N 个作为种子。
+const SEED_COUNT: usize = 5;
+/// 向量路额外取前 N 个作为种子（与词面种子并集），补足跨语言召回。
+const VECTOR_SEED_COUNT: usize = 4;
+/// 仅在上下文包里给排名前 N 的命中附带源码片段；其余命中只列名字 + 位置。
+/// 片段是体积大头（每条约 7~15 行），全量附带会让默认输出膨胀到 ~800+ token，
+/// 而模型真正需要细看的往往是最靠前几条。列表仍保留全部命中的名字/位置，信息不丢。
+const SNIPPET_TOP: usize = 6;
+
+/// 通用 CRUD 动词方法名（仅含动作、不含业务语义）。
+///
+/// 动作意图下 [`rank_weight`] 会整体给 `Method` 加权（1.5×），目的是让"找实现代码"
+/// 时方法 / 类浮到路由与基础设施之上。但像 `edit` / `save` / `update` 这种**只叫动词**
+/// 的方法本身没有业务信息，仅靠「修改」这类查询词被加权后，会把发货、退款等
+/// **无关域的 CRUD** 顶到顶部（见 `如何修改下单优惠` 用例：DeliveryService.save/update
+/// 曾排在第 4~5，压过真正相关的优惠券服务）。
+/// 因此这类方法**只在"没命中任何内容词"时才取消动作加权**（退回默认 1.0）：
+/// 若它同时命中了内容词（如优惠券 / 订单的 `edit`，其 fqn 带 `Coupon`/`Order`），
+/// 说明它贴合查询主题，照常加权。复合业务名
+/// （`createForm` / `getWorkbench` / `beUsableCouponList`）因名字不是纯动词而不命中，
+/// 也照常加权 —— 精准只对"纯动词且无业务内容"的方法生效，零回归。
+const GENERIC_CRUD_METHODS: &[&str] = &[
+    "edit", "save", "update", "modify", "create", "add", "insert", "delete", "remove", "destroy",
+    "new", "set", "get", "list", "find", "query", "fetch", "search", "select", "load", "read",
+    "index",
+];
+
+/// 方法名是否只是通用 CRUD 动词（不含业务语义）。见 [`GENERIC_CRUD_METHODS`]。
+fn is_generic_crud_method(name: &str) -> bool {
+    GENERIC_CRUD_METHODS.contains(&name)
+}
+
+/// 过于通用的「架构名词」别名词（service / api / model / entity …）。
+///
+/// 这些词常作为类名后缀出现在 fqn 里（`DeliveryService`、`StoreCouponIssue`
+/// 都含 `service` / `api`）。若把它们当"内容词"，动作加权会误判：发货的
+/// `DeliveryService.save` 因 fqn 含 `service` 被当成"命中内容"而保留加权 —— 这正是
+/// 精确版修复一度回退的坑。只有**真正的领域词**（coupon / order / stock / pay …）
+/// 才算内容词（见 [`score_node`] 与向量路里的 `has_content` 判定）。
+const GENERIC_NOUNS: &[&str] = &[
+    "service", "api", "interface", "model", "entity", "config", "configuration", "data", "file",
+    "log", "cache", "task", "job", "message", "session", "property", "attribute", "field", "page",
+    "event", "queue", "topic", "schedule", "eventbus", "dict", "dictionary", "workbench",
+    "dashboard", "third", "party",
+];
+
+/// 该 token 是否为通用架构名词（见 [`GENERIC_NOUNS`]）。
+fn is_generic_noun(t: &str) -> bool {
+    GENERIC_NOUNS.contains(&t)
+}
+
+/// 从 fqn 抽出「类标识符」：去掉命名空间 / 目录路径，只留最后的类名 token。
+///
+/// fqn 形如 `app\adminapi\v1\order\DeliveryService::update` → `deliveryservice`；
+/// `app\services\activity\coupon\StoreCouponIssue` → `storecouponissue`。
+///
+/// 内容词判定只能针对「类标识符 + 方法名」，不能针对完整 fqn 路径 —— 否则目录名
+/// 会误判：`DeliveryService` 虽位于 `order/` 目录下，其 fqn 含 `order`，会被当成
+/// 「命中订单内容」而保住动作加权（这正是一度回退的坑）。类本身与订单无关。
+fn class_identifier(fqn: Option<&str>, name: &str) -> String {
+    let base = fqn.unwrap_or("");
+    let class_part = base.split("::").next().unwrap_or(base);
+    let ident = class_part.rsplit(['\\', '/']).next().unwrap_or(class_part);
+    if ident.is_empty() {
+        name.to_lowercase()
+    } else {
+        ident.to_lowercase()
+    }
+}
+
+/// 该节点是否「命中内容词」：方法名或类标识符包含某个**非通用** token
+/// （coupon / order / stock …），且不是通用 CRUD 动词、也不是架构名词（service/api…）。
+/// 仅当命中内容词时，纯 CRUD 动词方法才保留动作加权（见 [`GENERIC_CRUD_METHODS`]）。
+fn has_content_word(node: &Node, terms: &[String]) -> bool {
+    let name = node.name.to_lowercase();
+    let class_id = class_identifier(node.fqn.as_deref(), &name);
+    terms.iter().any(|raw| {
+        let t = raw.to_lowercase();
+        !GENERIC_CRUD_METHODS.contains(&t.as_str())
+            && !is_generic_noun(&t)
+            && (class_id.contains(&t) || name.contains(&t))
+    })
+}
 
 /// 中文意图词 → 英文符号候选词（离线语义桥，无需模型）。
 ///
-/// 查询时把命中的意图词展开成英文 token，使词面 / 向量召回都能 seed 到
-/// 英文命名的业务节点（例：中文"下单" → `order` / `placeOrder`）。
-/// 这是「中文意图 → 英文符号」最廉价可靠的桥；真正的语义模型到位后可弱化。
+/// ⚠️ 这里**只保留跨领域通用的词**。曾经放过一整张电商词表（下单 / 订单 / 优惠 /
+/// 折扣 / 优惠券 / 购物车 / 库存 / 商品 / 会员 …），后果是双向的：
+/// * 在非电商工程里这些词永远不命中，桥等于不存在；
+/// * `cohesion_multiplier` 的聚合加成又只对它们生效，排序行为随领域漂移。
+///
+/// 领域专属的「中文意图 → 本项目符号」一律走 [`RecallService::project_bridge`]：
+/// 中文「意图词 → 英文代码 token」桥（**通用层**，与具体业务无关，任意代码库都成立）。
+///
+/// 两类都被收录，因为二者对跨语言召回同样关键：
+/// * **操作动词**（查询 / 新增 / 删除 / 分页 / 撤销 / 回滚 …）→ 「自然语言 → 代码动作」的映射，
+///   任何系统都有增删改查、分页、上传下载，是通用层。实测「分页查询文章列表」出不来 `findAll`，
+///   正是缺了 `查询→find` / `列表→all` 这一层。
+/// * **通用技术名词**（库存→stock / 令牌→token / 授权→oauth / 订单→order / 用户→user …）→
+///   这些是**跨任意软件领域都成立**的基础词汇，不是某电商/金融工程的业务实体（具体商品类目、
+///   业务单据类型才属于领域名词，交给工程自身 i18n 桥推导）。把它们收录进来，中文「撤销令牌」
+///   才能展开出 `revoke token`、与 `revokeToken` 在向量空间里对齐——纯靠工程 i18n 桥覆盖不到。
+///
+/// 边界原则：只收「换个项目也大概率成立」的词；不收某个具体业务的专属实体/黑话。
 const INTENT_ALIASES: &[(&str, &[&str])] = &[
-    ("下单", &["order", "placeorder", "createorder", "submitorder"]),
-    ("订单", &["order", "orders"]),
-    ("改优惠", &["discount", "coupon", "promotion", "applydiscount"]),
-    ("优惠", &["discount", "coupon", "promotion", "vip"]),
-    ("折扣", &["discount"]),
-    ("优惠券", &["coupon", "voucher"]),
+    // ---- 通用操作动词（跨领域）----
+    ("分页查询", &["find", "list", "page", "all", "index"]),
+    ("查询", &["find", "get", "query", "fetch", "search", "select"]),
+    ("获取", &["get", "fetch", "find", "load"]),
+    ("读取", &["read"]),
+    ("拉取", &["pull", "fetch"]),
+    ("列表", &["list", "all", "index"]),
+    ("分页", &["page", "pagination", "limit", "offset"]),
+    ("新增", &["add", "create", "insert", "new"]),
+    ("添加", &["add", "create", "insert"]),
+    ("创建", &["create", "add", "insert"]),
+    ("删除", &["delete", "remove", "destroy"]),
+    ("移除", &["remove", "delete"]),
+    ("修改", &["update", "modify", "edit", "save"]),
+    ("更新", &["update", "modify", "save"]),
+    ("编辑", &["edit", "update"]),
+    ("详情", &["detail", "info", "get"]),
+    ("校验", &["validate", "check", "verify"]),
+    ("验证", &["validate", "verify", "check"]),
+    ("上传", &["upload"]),
+    ("下载", &["download"]),
+    ("导入", &["import"]),
+    ("导出", &["export"]),
+    ("统计", &["count", "stat", "summary", "total"]),
+    ("提交", &["submit", "commit"]),
+    ("撤销", &["revoke", "cancel"]),
+    ("回滚", &["rollback"]),
+    ("拦截", &["intercept", "block"]),
+    ("过滤", &["filter"]),
+    ("搜索", &["search"]),
+    ("发送", &["send"]),
+    ("接收", &["receive"]),
+    ("通知", &["notify"]),
+    ("回调", &["callback"]),
+    ("登录", &["login", "auth", "signin"]),
+    ("登出", &["logout"]),
+    ("注册", &["register", "signup"]),
+    ("认证", &["authenticate", "auth"]),
+    ("授权", &["authorize", "oauth"]),
+    ("计算", &["compute", "calculate"]),
+    ("生成", &["generate"]),
+    ("转换", &["convert", "transform"]),
+    ("解析", &["parse"]),
+    ("序列化", &["serialize"]),
+    ("加密", &["encrypt"]),
+    ("解密", &["decrypt"]),
+    ("排序", &["sort", "order"]),
+    ("汇总", &["aggregate"]),
+    ("重置", &["reset"]),
+    ("刷新", &["refresh"]),
+    // ---- 通用技术名词（跨领域；非具体业务实体）----
     ("支付", &["pay", "payment", "checkout"]),
     ("付款", &["pay", "payment"]),
     ("用户", &["user", "member", "customer"]),
-    ("会员", &["member", "user", "vip"]),
-    ("商品", &["product", "goods", "sku"]),
-    ("购物车", &["cart", "basket"]),
+    ("角色", &["role"]),
+    ("权限", &["permission", "authority"]),
+    ("管理员", &["admin"]),
+    ("订单", &["order"]),
+    ("商品", &["product", "goods", "item"]),
     ("库存", &["stock", "inventory"]),
-    ("登录", &["login", "auth", "signin"]),
-    ("注册", &["register", "signup"]),
+    ("余额", &["balance"]),
+    ("优惠", &["coupon", "discount"]),
+    ("折扣", &["discount"]),
+    ("金额", &["amount", "price"]),
+    ("价格", &["price"]),
+    ("账单", &["bill", "invoice"]),
+    ("评论", &["comment"]),
+    ("文章", &["article", "post"]),
+    ("博客", &["blog"]),
+    ("品牌", &["brand"]),
+    ("分类", &["category"]),
+    ("标签", &["tag"]),
+    ("令牌", &["token"]),
+    ("凭证", &["credential"]),
+    ("第三方", &["third", "party", "oauth"]),
+    ("访问", &["access"]),
+    ("字典", &["dict", "dictionary"]),
+    ("配置", &["config", "configuration"]),
+    ("工作台", &["workbench", "dashboard"]),
+    ("缓存", &["cache"]),
+    ("会话", &["session"]),
+    ("消息", &["message"]),
+    ("日志", &["log"]),
+    ("错误", &["error"]),
+    ("异常", &["exception"]),
+    ("任务", &["task", "job"]),
+    ("服务", &["service"]),
+    ("接口", &["api", "interface"]),
+    ("模型", &["model"]),
+    ("实体", &["entity"]),
+    ("字段", &["field"]),
+    ("属性", &["property", "attribute"]),
+    ("文件", &["file"]),
+    ("图片", &["image"]),
+    ("视频", &["video"]),
+    ("数据", &["data"]),
+    // ---- 组合意图补词（中文特有复合说法 → 英文 token）----
+    ("下单", &["order", "place", "create"]),
+    ("扣减", &["deduct", "reduce", "decrement", "dec"]),
+    ("失败", &["fail", "failure"]),
+    ("不足", &["insufficient", "lack"]),
+    // ---- 社交 / 信息流通用词（无 i18n 的工程也能靠这些命中 feed / follow）----
+    ("动态流", &["feed", "activity"]),
+    ("关注", &["follow"]),
+    ("收藏", &["favorite", "bookmark"]),
+    ("点赞", &["like"]),
+    // ---- 支付 / 交易（让充值配置、余额等命中具体方法而非泛化 config 节点）----
+    ("充值", &["recharge"]),
+    ("退款", &["refund"]),
+    ("支付", &["pay", "payment"]),
 ];
 
 /// 把查询里出现的中文意图词展开成英文候选 token。
@@ -82,19 +276,162 @@ fn expand_intent_aliases(query: &str) -> Vec<String> {
     out
 }
 
-/// 节点用于向量编码的文本（名字 + 种类 + fqn + identity）。
-fn node_embed_text(node: &Node) -> String {
+/// 意图词 → 类别标签（用于短语聚合加成）。
+///
+/// 中文意图词（"订单"）与它们展开出的英文 token（"order" / "orders"）归到同一类，
+/// 这样节点只要同时命中跨类别的 token（如 "order" + "coupon"），就说明它贴合了
+/// 「订单优惠」这种组合意图，而非孤立的「订单」。
+fn alias_group_map() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    for (zh, en) in INTENT_ALIASES {
+        m.insert((*zh).to_string(), (*zh).to_string());
+        for e in *en {
+            m.insert((*e).to_string(), (*zh).to_string());
+        }
+    }
+    m
+}
+
+/// 命中多个意图类别（如「订单」+「优惠」）给聚合加成，让组合意图优先于孤立词。
+///
+/// 每多命中一个类别 +30%，封顶 +90%（最多 ×1.9）。
+fn cohesion_multiplier(matched: &[String], group_map: &HashMap<String, String>) -> f64 {
+    let groups: std::collections::HashSet<&str> = matched
+        .iter()
+        .filter_map(|t| group_map.get(t))
+        .map(|s| s.as_str())
+        .collect();
+    if groups.len() <= 1 {
+        1.0
+    } else {
+        1.0 + 0.3 * ((groups.len() - 1) as f64).min(3.0)
+    }
+}
+
+/// 种子选择：词面 top-k 与向量 top-k 取并集（去重），合并分 = 词面分 + 向量分。
+///
+/// 关键：跨语言节点（优惠→Coupon）即便词面分低，也能作为「向量种子」被 BFS 扩到，
+/// 不再被 Order* 这类泛词面匹配淹没；且合并用相加而非取大，纯语义命中也能参与排序。
+fn select_seeds<'a>(
+    lexical: &HashMap<i64, (f64, Vec<String>)>,
+    vector: &HashMap<i64, f64>,
+    index: &'a HashMap<i64, &'a Node>,
+) -> Vec<(f64, Vec<String>, &'a Node)> {
+    let mut lex: Vec<(f64, i64)> = lexical.iter().map(|(id, (s, _))| (*s, *id)).collect();
+    // 同分按节点 id 兜底，保证种子选择可复现（同上：避免 HashMap 顺序引入随机）。
+    lex.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    let mut vec: Vec<(f64, i64)> = vector.iter().map(|(id, s)| (*s, *id)).collect();
+    vec.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
+    // 文案 / 页面类节点只做上下文，不当种子。
+    //
+    // 中文查询的词面命中大量落在这两类上（中文 i18n 文案、`/pages/...` 路径），
+    // 它们会把种子名额占满，而 BFS 从它们出发只通向前端文件 —— 实测中文查询的
+    // 向量信号（余弦 0.47~0.53，远超阈值）就是这样被挤掉的。
+    // i18n 桥的价值在于它提供的**英文 token**，不依赖这些节点本身当种子。
+    const SEED_SKIP_KINDS: &[&str] = &["I18nKey", "Page"];
+    let seedable = |id: &i64| {
+        index
+            .get(id)
+            .map(|n| !SEED_SKIP_KINDS.contains(&n.kind.as_str()))
+            .unwrap_or(false)
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<(f64, Vec<String>, &'a Node)> = Vec::new();
+    for (_, id) in lex
+        .iter()
+        .filter(|(_, id)| seedable(id))
+        .take(SEED_COUNT)
+        .chain(vec.iter().filter(|(_, id)| seedable(id)).take(VECTOR_SEED_COUNT))
+    {
+        if seen.insert(*id) {
+            let (ls, lm) = lexical.get(id).cloned().unwrap_or((0.0, Vec::new()));
+            let vs = vector.get(id).copied().unwrap_or(0.0);
+            let score = ls + vs;
+            let matched = if lm.is_empty() {
+                vec!["<vector>".to_string()]
+            } else {
+                lm
+            };
+            out.push((score, matched, index[id]));
+        }
+    }
+    out
+}
+
+/// 节点用于向量编码的文本（名字 + 种类 + fqn + identity + i18n 桥富化）。
+fn node_embed_text(node: &Node, enrich: &EnrichIndex) -> String {
     let mut s = String::new();
     s.push_str(node.kind.as_str());
     s.push(' ');
     s.push_str(&node.name);
+    // 再补一份「切分后」的写法：多语言语义模型很难把整串粘连标识符
+    // （`decProductAttrStock`）与中文查询（「库存扣减」）在同一空间里对齐，
+    // 切成 `dec product attr stock` 后才能被语义匹配到。
+    // 这是纯通用的处理 —— 不依赖任何领域词表，对任何语言/命名风格都成立。
+    let toks = key_tokens(&node.name);
+    if !toks.is_empty() {
+        s.push(' ');
+        s.push_str(&toks.join(" ").as_str());
+    }
     if let Some(f) = &node.fqn {
         s.push(' ');
         s.push_str(f);
+        let ft = key_tokens(f);
+        if !ft.is_empty() {
+            s.push(' ');
+            s.push_str(&ft.join(" ").as_str());
+        }
     }
     if let Some(i) = &node.identity {
         s.push(' ');
         s.push_str(&i.value);
+    }
+    // 节点文本富化：用工程自身 i18n 桥「反向」命中本节点的 token，把中文短语 + 同义词补进
+    // 嵌入文本。例：`storeCoupon` 的 token `coupon` 命中桥上「优惠券 → coupon…」，于是节点
+    // 文本带上「优惠券」，中文查询「优惠」就能在向量空间里直接对齐，而不必靠跨语言硬对齐。
+    // 纯数据驱动、零配置：工程自带 i18n / 源码中文片段即可，电商 / 金融 / 游戏一视同仁。
+    // 取名字与 fqn 的全部 token 去查桥；中文短语优先（直接对齐中文查询），其次英文同义词；
+    // 总量封顶，避免节点文本被无关短语撑爆。
+    let mut consider: Vec<String> = toks.clone();
+    if let Some(f) = &node.fqn {
+        consider.extend(key_tokens(f));
+    }
+    const MAX_ENRICH: usize = 10;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut added: usize = 0;
+    for t in &consider {
+        if let Some(hits) = enrich.get(t) {
+            for (zh, btoks) in hits {
+                if seen.insert(zh.clone()) && added < MAX_ENRICH {
+                    s.push(' ');
+                    s.push_str(zh);
+                    added += 1;
+                }
+                for bt in btoks {
+                    if bt != t && seen.insert(bt.clone()) && added < MAX_ENRICH {
+                        s.push(' ');
+                        s.push_str(bt);
+                        added += 1;
+                    }
+                }
+                if added >= MAX_ENRICH {
+                    break;
+                }
+            }
+        }
+        if added >= MAX_ENRICH {
+            break;
+        }
     }
     s
 }
@@ -108,6 +445,31 @@ fn query_embed_text(query: &str, alias_terms: &[String]) -> String {
         s.push_str(t);
     }
     s
+}
+
+/// 是否参与向量编码的节点。
+///
+/// `Method` / `Function` 曾因"占图大多数"被整体排除，副作用是中文语义查询无法直接命中
+/// 业务方法 —— 只能靠 `INTENT_ALIASES` 词面桥，或先命中类再经 BFS 带出，质量有天花板。
+/// 现把它们纳入向量空间以抬高召回质量上限，编码成本用 `ensure_cached_with` 的 `BATCH`
+/// 分批 + 跳过 [`DEFAULT_EXCLUDED_KINDS`] 来兜底。
+///
+/// 早期版本额外跳过了 `getXxx` / `setXxx` 访问器，理由是"数量大、语义由所属字段承载"。
+/// 但中文「获取 / 查询」意图的落点往往正是 `getXxx` 业务方法：`getWorkbench`、`getDictData`、
+/// `getAdminByUsername`、`setRechargeConfig` 全是业务方法而非纯字段访问器，被一刀切排除后
+/// 直接从向量空间消失，语义召回永远召不到它们。各种语言里 `getXxx` 都是中文召回的高频真答案，
+/// 因此这里**不再**按访问器过滤 —— 纳入所有带源位置的方法 / 函数。
+fn is_vector_kind(node: &Node) -> bool {
+    let k = node.kind.as_str();
+    if DEFAULT_EXCLUDED_KINDS.contains(&k) {
+        return false;
+    }
+    if k == "Method" || k == "Function" {
+        // 只要带源位置（有 `file_id`）就纳入：跳过无源位置的合成节点，但不按 get/set 过滤，
+        // 以免误杀中文「获取 / 查询」意图直接对应的业务方法。
+        return node.file_id.is_some();
+    }
+    true
 }
 
 /// 一次召回请求。
@@ -130,7 +492,7 @@ pub struct RecallQuery {
 }
 
 fn default_limit() -> usize {
-    20
+    10
 }
 fn default_hops() -> u32 {
     2
@@ -194,13 +556,47 @@ pub struct RecallResult {
     pub truncated: bool,
 }
 
+/// 节点嵌入文本（`node_embed_text`）的版本。
+///
+/// **改动 `node_embed_text` 的构造方式时必须递增此值**（例如加标识符切分）。
+/// 否则 `ensure_cached_with` 只补"缺失节点"、从不重算已缓存的向量，过时向量会被
+/// 一直静默复用 —— 曾因此把"向量过时"误判成"语义模型能力不足"。
+const EMBED_TEXT_VERSION: u32 = 1;
+
+/// 落盘的向量文件信封：带版本，版本不符即整份失效重算。
+#[derive(Serialize, Deserialize)]
+struct PersistedEmbeds {
+    version: u32,
+    vectors: HashMap<i64, Vec<f32>>,
+}
+
 /// 召回服务。
 pub struct RecallService {
     store: Arc<dyn Persistence>,
     fs: Arc<dyn FileSystem>,
     _scanner: Arc<dyn FileScanner>,
-    /// 离线文本编码器（向量召回的「编码」一侧）。默认本地哈希编码器，可注入真模型。
-    embedder: Arc<dyn Embedder>,
+    /// 快速编码器（始终可用，离线哈希）：语义向量未预热时，召回立刻用它对查询 + 节点编码，
+    /// 保证 UI 永不阻塞；语义质量在后台预热完成后自动接管。
+    fast_embedder: Arc<dyn Embedder>,
+    /// 语义编码器（真实 bge-m3，按需加载）。为 `None` 时只有词面 / 快速向量路，无后台预热。
+    semantic_embedder: Option<Arc<dyn Embedder>>,
+    /// 快速向量缓存（哈希，瞬时可重算，不落盘）。
+    fast_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+    /// 语义向量缓存（bge，落盘到 `embed_persist_dir`）。与快速缓存分开放，避免维度混用。
+    node_embed_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+    /// 已预热（bge 向量已算好并落盘）的工程集合；按工程粒度判定是否走语义路。
+    warmed_projects: Arc<Mutex<HashSet<i64>>>,
+    /// 正在后台预热中的工程集合（防重复 spawn）。
+    warming_projects: Arc<Mutex<HashSet<i64>>>,
+    /// 是否允许后台异步预热（仅 HTTP 生产入口开启；CLI / 测试关闭，避免 spawn 线程）。
+    enable_async_warmup: bool,
+    /// 语义向量持久化目录（`<dir>/<project_id>.json`）。建图时【不】写入；
+    /// 仅在召回后台预热 / 手动 `embed` 命令里计算并落盘，重启后直接加载。
+    /// 为 `None` 时不持久化（纯内存缓存）。
+    embed_persist_dir: Option<PathBuf>,
+    /// 工程 i18n 桥缓存：`工程 id -> [(中文文案, 该文案 key 切出的英文 token)]`。
+    /// 中文查询经由它映射到**本项目**的符号，不依赖任何领域专属词表。
+    bridge_cache: Arc<Mutex<HashMap<i64, Vec<(String, Vec<String>)>>>>,
 }
 
 impl RecallService {
@@ -209,35 +605,275 @@ impl RecallService {
         fs: Arc<dyn FileSystem>,
         scanner: Arc<dyn FileScanner>,
     ) -> Self {
-        Self {
+        Self::with_embedder_and_cache(
             store,
             fs,
-            _scanner: scanner,
-            embedder: default_embedder(),
-        }
+            scanner,
+            None,
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+        )
     }
 
-    /// 注入自定义编码器（如测试假编码器，或未来的 `bge-m3` / `unixcoder`）。
+    /// 注入自定义语义编码器（如测试假编码器）。默认关闭后台预热，避免 spawn 线程。
     pub fn with_embedder(
         store: Arc<dyn Persistence>,
         fs: Arc<dyn FileSystem>,
         scanner: Arc<dyn FileScanner>,
         embedder: Arc<dyn Embedder>,
     ) -> Self {
+        Self::with_embedder_and_cache(
+            store,
+            fs,
+            scanner,
+            Some(embedder),
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+        )
+    }
+
+    /// 注入语义编码器 + 共享语义向量缓存。
+    /// `semantic_embedder` 为 `None` 时仅词面 / 快速向量路，无后台预热。
+    pub fn with_embedder_and_cache(
+        store: Arc<dyn Persistence>,
+        fs: Arc<dyn FileSystem>,
+        scanner: Arc<dyn FileScanner>,
+        semantic_embedder: Option<Arc<dyn Embedder>>,
+        node_embed_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+        embed_persist_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
             store,
             fs,
             _scanner: scanner,
-            embedder,
+            fast_embedder: default_embedder(),
+            semantic_embedder,
+            fast_cache: Arc::new(Mutex::new(HashMap::new())),
+            node_embed_cache,
+            warmed_projects: Arc::new(Mutex::new(HashSet::new())),
+            warming_projects: Arc::new(Mutex::new(HashSet::new())),
+            enable_async_warmup: false,
+            embed_persist_dir,
+            bridge_cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// 开启后台异步预热（仅 HTTP 生产入口调用）：语义向量未就绪时召回立即用快速编码器返回，
+    /// 同时 spawn 线程把 bge 向量算好落盘；之后该工程自动切到语义路。
+    pub fn with_async_warmup(mut self) -> Self {
+        self.enable_async_warmup = true;
+        self
+    }
+
+    /// 清空节点向量缓存（图被重建 / 重新扫描后调用，避免命中过期向量）。
+    /// 同时复位预热状态，使下次召回重新走快速路并（生产入口）后台重新预热。
+    pub fn clear_node_cache(&self) {
+        self.fast_cache.lock().unwrap().clear();
+        self.node_embed_cache.lock().unwrap().clear();
+        self.warmed_projects.lock().unwrap().clear();
+        self.warming_projects.lock().unwrap().clear();
+        // 图重建后 i18n 文案可能变了，桥必须一起失效。
+        self.bridge_cache.lock().unwrap().clear();
+    }
+
+    /// 从持久化文件载入某工程的 bge 向量到语义缓存（文件不存在则跳过），并标记该工程已预热。
+    fn load_persisted(&self, path: &Path, project_id: ProjectId) {
+        load_persisted_into(
+            path,
+            &self.node_embed_cache,
+            project_id,
+            &self.warmed_projects,
+        );
+    }
+
+    /// 将本工程 bge 向量写入持久化文件（只写当前工程参与召回的节点，避免跨工程串味）。
+    fn persist(&self, path: &Path, nodes: &[Node]) {
+        let cache = self.node_embed_cache.lock().unwrap();
+        let vectors: HashMap<i64, Vec<f32>> = nodes
+            .iter()
+            .filter_map(|n| cache.get(&n.id.get()).cloned().map(|v| (n.id.get(), v)))
+            .collect();
+        drop(cache);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let env = PersistedEmbeds {
+            version: EMBED_TEXT_VERSION,
+            vectors,
+        };
+        if let Ok(data) = serde_json::to_vec(&env) {
+            let _ = std::fs::write(path, data);
+        }
+    }
+
+    /// 确保参与向量召回的主题级节点都已编码进给定缓存（未编码的批量编码并回填）。
+    /// 与具体查询无关，可被快速路 / 语义路 / 手动 `embed` 命令复用。
+    fn ensure_cached_with(
+        &self,
+        project_id: ProjectId,
+        nodes: &[Node],
+        embedder: &Arc<dyn Embedder>,
+        cache: &Mutex<HashMap<i64, Vec<f32>>>,
+    ) {
+        const BATCH: usize = 256;
+        // 节点文本富化：用本工程 i18n 桥反建索引，让中文查询能直接在向量空间对齐领域实体。
+        let enrich = build_enrich_index(&self.project_bridge(project_id, nodes));
+        let mut pending: Vec<(i64, String)> = Vec::new();
+        for node in nodes {
+            if !is_vector_kind(node) {
+                continue;
+            }
+            let id = node.id.get();
+            if cache.lock().unwrap().contains_key(&id) {
+                continue;
+            }
+            pending.push((id, node_embed_text(node, &enrich)));
+        }
+        for chunk in pending.chunks(BATCH) {
+            let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
+            let vecs = embedder.embed_batch(&texts);
+            let mut cache = cache.lock().unwrap();
+            for ((id, _), v) in chunk.iter().zip(vecs.into_iter()) {
+                cache.insert(*id, v);
+            }
+        }
+    }
+
+    /// 工程 i18n 桥：读该工程的 `I18nKey` 节点，产出「中文文案 → 该 key 的英文 token」。
+    ///
+    /// 这是**通用**的「中文意图 → 本项目符号」桥：不依赖任何领域词表，工程自带 i18n
+    /// 即可工作 —— 电商 / 金融 / 游戏 / 内部系统一视同仁。结果按工程缓存，
+    /// 图重建时随 [`Self::clear_node_cache`] 失效。
+    fn project_bridge(
+        &self,
+        project_id: ProjectId,
+        nodes: &[Node],
+    ) -> Vec<(String, Vec<String>)> {
+        if let Some(v) = self.bridge_cache.lock().unwrap().get(&project_id.get()) {
+            return v.clone();
+        }
+        let entries = compute_bridge(nodes);
+        self.bridge_cache
+            .lock()
+            .unwrap()
+            .insert(project_id.get(), entries.clone());
+        entries
+    }
+
+    /// 查询命中了哪些中文短语，返回「短语 → 本项目 token」。
+    ///
+    /// 命中多条时按短语长度降序取前 N 条：越长的短语越具体（"库存不足" 优于 "库存"）。
+    fn match_project_bridge(
+        &self,
+        project_id: ProjectId,
+        query: &str,
+        nodes: &[Node],
+    ) -> Vec<(String, Vec<String>)> {
+        const MAX_HITS: usize = 16;
+        let mut hits: Vec<(String, Vec<String>)> = self
+            .project_bridge(project_id, nodes)
+            .into_iter()
+            .filter(|(zh, _)| query.contains(zh.as_str()))
+            .collect();
+        // 越长的短语越具体（"库存不足" 优于 "库存"）。
+        hits.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()));
+        hits.truncate(MAX_HITS);
+        hits
+    }
+
+    /// 手动预热：把某工程全部主题级节点 bge 向量计算并持久化（建图不在此时发生）。
+    /// 用户可在后台跑 `graphtell embed --project N`，之后所有召回与重启都瞬时命中缓存。
+    pub fn warm_up(&self, project_id: ProjectId) -> Result<usize> {
+        let emb = match &self.semantic_embedder {
+            Some(e) => e,
+            None => {
+                tracing::warn!("未配置语义编码器（缺 bge 权重），embed 无操作");
+                return Ok(0);
+            }
+        };
+        let nodes = fetch_nodes(self.store.as_ref(), project_id)?;
+        if let Some(dir) = &self.embed_persist_dir {
+            let path = dir.join(format!("{}.json", project_id.get()));
+            self.load_persisted(&path, project_id);
+        }
+        self.ensure_cached_with(project_id, &nodes, emb, &self.node_embed_cache);
+        if let Some(dir) = &self.embed_persist_dir {
+            let path = dir.join(format!("{}.json", project_id.get()));
+            self.persist(&path, &nodes);
+        }
+        self.warmed_projects.lock().unwrap().insert(project_id.get());
+        Ok(nodes
+            .iter()
+            .filter(|n| is_vector_kind(n))
+            .count())
+    }
+
+    /// 诊断：给定查询，输出与各节点向量的余弦（降序）。
+    ///
+    /// 用来判定「中文查询召不到目标符号」到底属于哪一类问题：
+    /// * **模型 / 文本问题** —— 目标符号的余弦本来就低于 [`VECTOR_THRESHOLD`]，
+    ///   改进方向是节点嵌入文本或模型本身；
+    /// * **阈值 / 排序问题** —— 余弦其实够高，却被阈值、向量种子预算或排序挡掉，
+    ///   改进方向是调阈值 / 预算 / 排序。
+    ///
+    /// `name_filter` 非空时只看名字含这些子串的节点 —— 大工程全量编码要几十分钟，
+    /// 诊断通常只关心目标符号。
+    pub fn debug_cosine(
+        &self,
+        project_id: ProjectId,
+        query: &str,
+        name_filter: &[String],
+        top: usize,
+    ) -> Result<Vec<(String, String, f64)>> {
+        let Some(emb) = &self.semantic_embedder else {
+            return Err(gt_domain::error::DomainError::infra(
+                "未配置语义编码器（缺 bge 权重），无法做余弦诊断",
+            ));
+        };
+        let alias_terms = expand_intent_aliases(query);
+        let qvec = emb.embed_query(&query_embed_text(query, &alias_terms));
+
+        let nodes = fetch_nodes(self.store.as_ref(), project_id)?;
+        let enrich = build_enrich_index(&self.project_bridge(project_id, &nodes));
+        let picked: Vec<&Node> = nodes
+            .iter()
+            .filter(|n| is_vector_kind(n))
+            .filter(|n| {
+                name_filter.is_empty()
+                    || name_filter
+                        .iter()
+                        .any(|f| n.name.to_ascii_lowercase().contains(&f.to_ascii_lowercase()))
+            })
+            .collect();
+        let texts: Vec<String> = picked.iter().map(|n| node_embed_text(n, &enrich)).collect();
+        let vecs = emb.embed_batch(&texts);
+
+        let mut rows: Vec<(String, String, f64)> = picked
+            .iter()
+            .zip(vecs.into_iter())
+            .map(|(n, v)| (n.kind.to_string(), n.name.clone(), cosine(&qvec, &v)))
+            .collect();
+        rows.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+        });
+        rows.truncate(top);
+        Ok(rows)
     }
 
     /// 执行一次召回。
     pub fn recall(&self, project_id: ProjectId, q: &RecallQuery) -> Result<RecallResult> {
         let (terms, kind_hints) = parse_query(&q.query);
+        // 动作意图（找实现代码）会反转种类偏好：方法 / 类优先于 HTTP 路由与基础设施。
+        let action = action_intent(&q.query);
 
         // 中文意图词展开：构造一份「用于匹配」的词表（不污染对外返回的 terms）。
-        // 这样中文意图（"下单"）才能 seed 到英文命名的业务节点（"order"）。
+        // 两路来源：
+        //  1) 内置通用别名表（少量通用词）；
+        //  2) **工程自身**的 i18n 桥：i18n 中文文案 → 该文案 key 里的英文 token。
+        //     第 2 路是通用的 —— 只要工程带 i18n，中文查询就能落到本项目符号，
+        //     不需要为电商 / 金融 / 游戏各维护一张领域词表。
         let alias_terms = expand_intent_aliases(&q.query);
         let mut match_terms = terms.clone();
         for t in &alias_terms {
@@ -249,7 +885,7 @@ impl RecallService {
         // ---- 1) 候选集：一次装载全部参与召回的节点
         let mut nodes: Vec<Node> = Vec::new();
         if q.kinds.is_empty() {
-            for kind in scan_kinds() {
+            for kind in scan_kinds(self.store.as_ref(), project_id) {
                 let mut batch = self.store.query_nodes(&NodeFilter {
                     project_id,
                     kind: Some(gt_domain::model::NodeKind::new(kind)),
@@ -273,6 +909,17 @@ impl RecallService {
         }
         let truncated = nodes.len() >= SCAN_LIMIT as usize;
 
+        // 工程语义桥（依赖已装载的节点，故放在候选集之后）。
+        // 命中的中文短语按长度降序采用：越长的短语越具体（"库存不足" 优于 "库存"）。
+        let bridge_hits = self.match_project_bridge(project_id, &q.query, &nodes);
+        for (_zh, toks) in &bridge_hits {
+            for t in toks {
+                if !match_terms.iter().any(|x| x == t) {
+                    match_terms.push(t.clone());
+                }
+            }
+        }
+
         // ---- 2) 邻接（用于扩展与关系摘要）
         // id → 节点索引：BFS 里每跳都要回查节点概要，线性 find 会退化成 O(N²)。
         let index: HashMap<i64, &Node> = nodes.iter().map(|n| (n.id.get(), n)).collect();
@@ -287,55 +934,137 @@ impl RecallService {
 
         // ---- 3) 打分：种子（词面路 + 向量路，合并）
         // 3a) 词面路：标识符 / fqn / identity 的子串匹配（沿用既有 score_node）。
+        //     命中多个「意图类别」（如同时命中 订单 + 优惠）给予短语聚合加成，
+        //     使「订单优惠」这类组合意图优先于孤立的「订单」。
+        let mut group_map = alias_group_map();
+        // 命中的 i18n 文案各自成组，使「命中多个业务概念 → 聚合加成」在任意领域都成立，
+        // 而不只是对内置电商词表生效。
+        for (zh, toks) in &bridge_hits {
+            group_map.insert(zh.clone(), zh.clone());
+            for t in toks {
+                group_map.insert(t.clone(), zh.clone());
+            }
+        }
         let mut lexical: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
         for node in &nodes {
             if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
                 continue;
             }
-            let (score, matched) = score_node(node, &match_terms, &kind_hints, &incoming);
+            let (mut score, matched) = score_node(node, &match_terms, &kind_hints, &incoming, action);
             if score > 0.0 {
+                score *= cohesion_multiplier(&matched, &group_map);
                 lexical.insert(node.id.get(), (score, matched));
             }
         }
 
         // 3b) 向量路：离线编码器对节点文本做软匹配，补足词面漏掉的跨语言种子。
         //     查询文本已带入展开出的英文意图词，使中文意图能靠近英文符号。
+        // ---- 向量路（按工程选择生效空间，永不阻塞建图 / UI）----
+        // 语义空间 = 语义编码器可用 **且** 该工程向量已就绪（已预热 或 有落盘文件）。
+        //
+        // 必须先尝试载入落盘文件再做判定：原实现把载入写在 `if use_semantic` 内，
+        // 而 `use_semantic` 又要求 `warmed_projects` 已置位 —— 死锁：
+        // 重启后缓存为空 → 判为未预热 → 永不载入 → 每次重启都全量重算 bge
+        // （CRMEB 实测 56 分钟），落盘文件形同废纸。
+        let mut use_semantic = self.semantic_embedder.is_some()
+            && self.warmed_projects.lock().unwrap().contains(&project_id.get());
+        if !use_semantic && self.semantic_embedder.is_some() {
+            if let Some(dir) = &self.embed_persist_dir {
+                let path = dir.join(format!("{}.json", project_id.get()));
+                if path.exists() {
+                    // 内部会置 `warmed_projects`，之后该工程直接命中语义空间。
+                    self.load_persisted(&path, project_id);
+                    use_semantic = true;
+                }
+            }
+        }
+        let (chosen, cache): (&Arc<dyn Embedder>, &Mutex<HashMap<i64, Vec<f32>>>) = if use_semantic {
+            (self.semantic_embedder.as_ref().unwrap(), &self.node_embed_cache)
+        } else {
+            (&self.fast_embedder, &self.fast_cache)
+        };
+        let qvec = chosen.embed_query(&query_embed_text(&q.query, &alias_terms));
+
+        // 仅语义空间才落盘（快速哈希空间无需持久化，瞬时可重算）。
+        // 计算与落盘都【不在建图时发生】。
+        self.ensure_cached_with(project_id, &nodes, chosen, cache);
+        if use_semantic {
+            if let Some(dir) = &self.embed_persist_dir {
+                let path = dir.join(format!("{}.json", project_id.get()));
+                self.persist(&path, &nodes);
+            }
+        }
+
+        // 后台异步预热：语义编码器存在、本工程未预热、且入口开启了异步预热时，
+        // 上面已用快速空间立即返回，这里 spawn 线程把 bge 向量算好落盘；
+        // 完成后 `warmed_projects` 标记置位，之后该工程的召回自动切到语义空间。
+        if !use_semantic
+            && self.enable_async_warmup
+            && self.semantic_embedder.is_some()
+            && self.warming_projects.lock().unwrap().insert(project_id.get())
+        {
+            let (store, emb, sem_cache, dir, warmed, warming) = (
+                self.store.clone(),
+                self.semantic_embedder.clone().unwrap(),
+                self.node_embed_cache.clone(),
+                self.embed_persist_dir.clone(),
+                self.warmed_projects.clone(),
+                self.warming_projects.clone(),
+            );
+            thread::spawn(move || {
+                warm_up_worker(store, emb, sem_cache, dir, project_id, warmed, warming);
+            });
+        }
+
+        // 2) 逐节点取缓存向量打分。
+        //    必须读上面选定的 `cache`（= 当前生效的向量空间）：冷路径把向量编码进
+        //    `fast_cache`，若此处写死读 `node_embed_cache`（此时为空），向量分永远不贡献，
+        //    召回就退化成纯词面 + BFS，白算一遍编码。
         let mut vector: HashMap<i64, f64> = HashMap::new();
-        let qvec = self
-            .embedder
-            .embed_query(&query_embed_text(&q.query, &alias_terms));
         for node in &nodes {
-            if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
+            if !is_vector_kind(node) {
                 continue;
             }
-            let nvec = self.embedder.embed(&node_embed_text(node));
+            let nvec = match cache.lock().unwrap().get(&node.id.get()).cloned() {
+                Some(v) => v,
+                None => continue,
+            };
             let c = cosine(&qvec, &nvec);
             if c >= VECTOR_THRESHOLD {
-                let s = c * VECTOR_WEIGHT * kind_weight(node.kind.as_str());
+                // 语义分默认不乘种类权重（避免把 Method/Function 挤出向量种子）。
+                // 仅当查询是「找实现代码」的动作意图时，才按 [`rank_weight`] 给方法 / 类
+                // 加权、压低 HTTP 路由与基础设施 —— 否则这类查询会被字面同词的路由压过
+                // 真正的服务方法（storeCoupon / paymentOrder）。
+                let kw = if action {
+                    // 纯 CRUD 动词方法，仅当它**未命中内容词**（coupon/order…，来自 fqn）
+                    // 时才取消动作加权 —— 与词面路 [`score_node`] 保持一致：发货的 save/update
+                    // 沉底，而优惠券 / 订单的 edit 因 fqn 带 Coupon/Order 仍保住加权。
+                    let nlow = node.name.to_lowercase();
+                    if is_generic_crud_method(&nlow) {
+                        let has_content = has_content_word(node, &match_terms);
+                        if has_content {
+                            rank_weight(node.kind.as_str(), true)
+                        } else {
+                            kind_weight(node.kind.as_str())
+                        }
+                    } else {
+                        rank_weight(node.kind.as_str(), true)
+                    }
+                } else {
+                    1.0
+                };
+                let s = c * VECTOR_WEIGHT * kw;
                 let entry = vector.entry(node.id.get()).or_insert(0.0);
                 *entry = (*entry).max(s);
             }
         }
 
-        // 合并：词面优先，向量补足（取较大值）。
-        let mut scored: Vec<(f64, Vec<String>, &Node)> = Vec::new();
-        for node in &nodes {
-            let id = node.id.get();
-            let (score, matched) = match lexical.get(&id) {
-                Some((s, m)) => (*s, m.clone()),
-                None => match vector.get(&id) {
-                    Some(s) => (*s, vec!["<vector>".to_string()]),
-                    None => continue,
-                },
-            };
-            scored.push((score, matched, node));
-        }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        let seed_count = 5usize;
-        let seeds: Vec<SeedInfo> = scored
+        // 合并：词面分 + 向量分「相加」（不再是取大），让纯语义命中也能参与排序；
+        // 种子取「词面 top-k ∪ 向量 top-k」的并集 —— 否则跨语言节点（优惠→Coupon）
+        // 永远挤不进仅按总分排序的前 5，被 Order* 泛洪淹没。
+        let seed_tuples = select_seeds(&lexical, &vector, &index);
+        let seeds: Vec<SeedInfo> = seed_tuples
             .iter()
-            .take(seed_count)
             .map(|(s, _, n)| SeedInfo {
                 node_id: n.id,
                 kind: n.kind.to_string(),
@@ -346,7 +1075,7 @@ impl RecallService {
 
         // ---- 4) 扩展：沿链边 BFS，跳数衰减
         let mut best: HashMap<i64, RecallHit> = HashMap::new();
-        for (seed_score, matched, seed) in scored.iter().take(seed_count) {
+        for (seed_score, matched, seed) in &seed_tuples {
             let mut frontier = vec![(seed.id, 0u32)];
             let mut seen: HashSet<i64> = HashSet::new();
             seen.insert(seed.id.get());
@@ -389,7 +1118,29 @@ impl RecallService {
 
         // ---- 5) 排序 + 截断 + 补位置
         let mut hits: Vec<RecallHit> = best.into_values().collect();
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        // 同分时按节点 id 稳定排序：HashMap 迭代顺序会让同分命中的先后随机变化，
+        // 导致同一查询两次召回结果不同 —— 评测因此无法复现（实测同一构建两次跑
+        // hit@10 会差 1 条）。排序必须完全确定。
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.node_id.get().cmp(&b.node_id.get()))
+        });
+        // 同名上限：通用动词（find / update / create …）会把各处的同名方法一并拉进来，
+        // 挤满整个命中列表（实测出现过前 5 条全是 `findAll`）。同名最多保留 2 条，
+        // 保证结果的多样性。
+        const MAX_SAME_NAME: usize = 2;
+        let mut same: HashMap<String, usize> = HashMap::new();
+        let mut kept: Vec<RecallHit> = Vec::with_capacity(hits.len());
+        for h in hits {
+            let c = same.entry(h.name.clone()).or_insert(0);
+            if *c < MAX_SAME_NAME {
+                *c += 1;
+                kept.push(h);
+            }
+        }
+        hits = kept;
         hits.truncate(q.limit.max(1));
 
         for hit in hits.iter_mut() {
@@ -428,45 +1179,361 @@ impl RecallService {
     }
 }
 
+/// 装载某工程参与召回的全部节点（按 [`scan_kinds`]）。
+fn fetch_nodes(store: &dyn Persistence, project_id: ProjectId) -> Result<Vec<Node>> {
+    let mut nodes: Vec<Node> = Vec::new();
+    for kind in scan_kinds(store, project_id) {
+        let mut batch = store.query_nodes(&NodeFilter {
+            project_id,
+            kind: Some(gt_domain::model::NodeKind::new(kind)),
+            name_contains: None,
+            limit: Some(SCAN_LIMIT),
+            offset: None,
+        })?;
+        nodes.append(&mut batch);
+    }
+    Ok(nodes)
+}
+
+/// 从缓存抽取「本工程参与召回节点 → 向量」映射（用于落盘）。
+fn collect_cache(
+    cache: &Mutex<HashMap<i64, Vec<f32>>>,
+    nodes: &[Node],
+) -> HashMap<i64, Vec<f32>> {
+    let cache = cache.lock().unwrap();
+    nodes
+        .iter()
+        .filter_map(|n| cache.get(&n.id.get()).cloned().map(|v| (n.id.get(), v)))
+        .collect()
+}
+
+/// 后台预热 worker：用语义编码器算好某工程全部主题级节点 bge 向量、落盘、标记预热完成。
+/// 把落盘的工程向量载入给定缓存并标记该工程已预热（服务内与后台线程共用）。
+fn load_persisted_into(
+    path: &Path,
+    cache: &Mutex<HashMap<i64, Vec<f32>>>,
+    project_id: ProjectId,
+    warmed: &Mutex<HashSet<i64>>,
+) {
+    let Ok(data) = std::fs::read(path) else {
+        return;
+    };
+    // 旧格式（裸 map）与版本不符一律视为失效：宁可重算，
+    // 也不能让过时向量被静默复用。
+    let Ok(env) = serde_json::from_slice::<PersistedEmbeds>(&data) else {
+        return;
+    };
+    if env.version != EMBED_TEXT_VERSION {
+        return;
+    }
+    let mut cache = cache.lock().unwrap();
+    for (k, v) in env.vectors {
+        cache.entry(k).or_insert(v);
+    }
+    drop(cache);
+    warmed.lock().unwrap().insert(project_id.get());
+}
+
+fn warm_up_worker(
+    store: Arc<dyn Persistence>,
+    embedder: Arc<dyn Embedder>,
+    cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+    persist_dir: Option<PathBuf>,
+    project_id: ProjectId,
+    warmed: Arc<Mutex<HashSet<i64>>>,
+    warming: Arc<Mutex<HashSet<i64>>>,
+) {
+    let pid = project_id.get();
+    let res: Result<()> = (|| {
+        let nodes = fetch_nodes(store.as_ref(), project_id)?;
+        // 节点文本富化：用本工程 i18n 桥反建索引，与 `ensure_cached_with` 保持一致，
+        // 保证两条预热路径产出的节点向量完全相同。
+        let enrich = build_enrich_index(&compute_bridge(&nodes));
+        // 先载入落盘向量：否则重启后缓存为空，这里会把全量节点重算一遍
+        // （CRMEB 实测 56 分钟），落盘文件等于没用。
+        if let Some(dir) = &persist_dir {
+            let path = dir.join(format!("{pid}.json"));
+            if path.exists() {
+                load_persisted_into(&path, &cache, project_id, &warmed);
+            }
+        }
+        const BATCH: usize = 256;
+        let mut pending: Vec<(i64, String)> = Vec::new();
+        {
+            let cache = cache.lock().unwrap();
+            for node in &nodes {
+                if !is_vector_kind(node) {
+                    continue;
+                }
+                if cache.contains_key(&node.id.get()) {
+                    continue;
+                }
+                pending.push((node.id.get(), node_embed_text(node, &enrich)));
+            }
+        }
+        for chunk in pending.chunks(BATCH) {
+            let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
+            let vecs = embedder.embed_batch(&texts);
+            let mut cache = cache.lock().unwrap();
+            for ((id, _), v) in chunk.iter().zip(vecs.into_iter()) {
+                cache.insert(*id, v);
+            }
+        }
+        if let Some(dir) = &persist_dir {
+            if let Some(parent) = dir.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let path = dir.join(format!("{pid}.json"));
+            let env = PersistedEmbeds {
+                version: EMBED_TEXT_VERSION,
+                vectors: collect_cache(&cache, &nodes),
+            };
+            if let Ok(data) = serde_json::to_vec(&env) {
+                let _ = std::fs::write(path, data);
+            }
+        }
+        warmed.lock().unwrap().insert(pid);
+        Ok(())
+    })();
+    if let Err(e) = res {
+        tracing::error!("后台预热工程 #{pid} 失败：{e}");
+    }
+    warming.lock().unwrap().remove(&pid);
+}
+
 /// 单次扫描的节点上限（防止超大库把一次召回拖成全表扫描）。
 const SCAN_LIMIT: u32 = 200_000;
 
-/// 参与召回的节点种类 = 语义节点 + 主要语法节点，排除 [`DEFAULT_EXCLUDED_KINDS`]。
-fn scan_kinds() -> Vec<String> {
-    [
-        "Table",
-        "HttpContract",
-        "ConfigKey",
-        "I18nKey",
-        "Event",
-        "EventBus",
-        "Queue",
-        "Cache",
-        "Topic",
-        "Schedule",
-        "Page",
-        "Class",
-        "Interface",
-        "Trait",
-        "Enum",
-        "Method",
-        "Function",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+/// 兜底清单：库里读不到节点种类时才用它（保证降级可用）。
+const FALLBACK_SCAN_KINDS: &[&str] = &[
+    "Table",
+    "HttpContract",
+    "ConfigKey",
+    "I18nKey",
+    "Event",
+    "EventBus",
+    "Queue",
+    "Cache",
+    "Topic",
+    "Schedule",
+    "Page",
+    "Class",
+    "Interface",
+    "Trait",
+    "Enum",
+    "Method",
+    "Function",
+];
+
+/// 参与召回的节点种类 = 图上**真实存在**的种类 − [`DEFAULT_EXCLUDED_KINDS`]。
+///
+/// 这里早先硬编码了一份类型清单，后果是：新增语言适配器（Go / Rust / C# …）或流水线
+/// 新增 kind 时，这些节点会被**静默排除在召回之外** —— 不是分数低，而是压根不参与。
+/// 改为从库里取 `DISTINCT kind` 后，任意语言与未来新增类型都会自动纳入。
+fn scan_kinds(store: &dyn Persistence, project_id: ProjectId) -> Vec<String> {
+    match store.node_kinds(project_id) {
+        Ok(kinds) => {
+            let v: Vec<String> = kinds
+                .into_iter()
+                .filter(|k| !DEFAULT_EXCLUDED_KINDS.contains(&k.as_str()))
+                .collect();
+            if !v.is_empty() {
+                return v;
+            }
+        }
+        Err(e) => tracing::warn!("读取节点种类失败，回退内置清单: {e}"),
+    }
+    FALLBACK_SCAN_KINDS.iter().map(|s| s.to_string()).collect()
 }
 
-/// 链边邻居（双向）。
+// -------------------------------------------------- 工程 i18n 桥（数据驱动，零配置）
+
+/// 从 i18n key（如 `order.pay.insufficient_balance`）切出英文 token。
+///
+/// 只保留 ASCII token：这里建的是「中文 → 英文符号」的桥，中文 token 留在桥上没意义。
+fn key_tokens(key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for seg in key.split(|c: char| !c.is_alphanumeric()) {
+        for t in split_camel(seg) {
+            let t = t.to_ascii_lowercase();
+            if t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphanumeric()) && !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// 是否含中日韩汉字。
+fn contains_cjk(s: &str) -> bool {
+    s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+}
+
+/// 从源码片段里抽出中文串（复用查询侧的 `cjk_runs`，但去掉单字噪声并去重）。
+fn snippet_chinese(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in cjk_runs(s) {
+        if r.chars().count() >= 2 && !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// 从 `properties.locations[].file` 取「该文案所在模块」的 token：父目录名 + 文件名主干。
+///
+/// 例：`template/uni-app/components/payment/index.vue` → `payment`。
+/// 这把中文文案桥到它真实出现的业务模块 —— 纯数据驱动，与领域、语言、框架无关。
+/// 目录/文件名里大量通用词（`src` / `components` / `index` …）会被过滤，否则会把
+/// 无关节点一并拉进来。
+fn location_tokens(props: &serde_json::Value) -> Vec<String> {
+    const PATH_STOPWORDS: &[&str] = &[
+        "template", "templates", "src", "app", "apps", "pages", "page", "components",
+        "component", "views", "view", "index", "main", "static", "assets", "public",
+        "utils", "util", "common", "shared", "lib", "libs", "core", "vendor", "dist",
+        "build", "admin", "api", "js", "ts", "vue", "jsx", "tsx", "php", "java", "py",
+        "html", "css", "scss", "min", "module", "modules", "service", "services",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    let Some(locs) = props.get("locations").and_then(|l| l.as_array()) else {
+        return out;
+    };
+    for loc in locs.iter().take(8) {
+        let Some(file) = loc.get("file").and_then(|f| f.as_str()) else {
+            continue;
+        };
+        let path = std::path::Path::new(file);
+        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string());
+        let parent = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string());
+        for raw in [parent, stem].into_iter().flatten() {
+            for seg in raw.split(|c: char| !c.is_alphanumeric()) {
+                let t = seg.to_ascii_lowercase();
+                if t.len() >= 3
+                    && t.chars().all(|c| c.is_ascii_alphanumeric())
+                    && !PATH_STOPWORDS.contains(&t.as_str())
+                    && !out.contains(&t)
+                {
+                    out.push(t);
+                }
+            }
+        }
+        if out.len() >= 4 {
+            break;
+        }
+    }
+    out
+}
+
+/// 节点富化反向索引：节点名 / fqn 的某个 token → 命中到的「中文短语 + 该短语的英文 token」列表。
+///
+/// 由工程 i18n 桥反向得到：节点 `storeCoupon` 的 token `coupon` 命中桥上「优惠券 → coupon…」，
+/// 于是给该节点嵌入文本补上「优惠券」，让中文查询「优惠」能直接在向量空间对齐，而不必靠跨语言硬对齐。
+/// 纯数据驱动、零配置：工程自带 i18n / 源码中文片段即可，电商 / 金融 / 游戏一视同仁。
+type EnrichIndex = HashMap<String, Vec<(String, Vec<String>)>>;
+
+/// 由工程 i18n 桥（`Vec<(中文短语, 英文token)>`）反建节点富化索引。
+fn build_enrich_index(bridge: &[(String, Vec<String>)]) -> EnrichIndex {
+    let mut idx: EnrichIndex = HashMap::new();
+    for (zh, toks) in bridge {
+        for t in toks {
+            idx.entry(t.clone()).or_default().push((zh.clone(), toks.clone()));
+        }
+    }
+    idx
+}
+
+/// 工程 i18n 桥的数据计算（与缓存解耦）：遍历 i18n / 中文名 / 源码中文片段节点，
+/// 产出「中文文案 → 该 key 的英文 token」。被 [`RecallService::project_bridge`] 调用并缓存，
+/// 也被后台预热 worker 直接复用，确保两条预热路径产出的节点向量完全一致。
+fn compute_bridge(nodes: &[Node]) -> Vec<(String, Vec<String>)> {
+    const MAX_PER_NODE: usize = 4;
+    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+    for n in nodes {
+        let mut toks = key_tokens(&n.name);
+        for t in location_tokens(&n.properties) {
+            if !toks.contains(&t) {
+                toks.push(t);
+            }
+        }
+        if toks.is_empty() {
+            continue;
+        }
+        let mut texts: Vec<String> = Vec::new();
+        if let Some(t) = n.properties.get("texts").and_then(|t| t.as_object()) {
+            for (_locale, v) in t {
+                if let Some(s) = v.as_str() {
+                    texts.push(s.trim().to_string());
+                }
+            }
+        }
+        if texts.is_empty() && contains_cjk(&n.name) {
+            texts.push(n.name.trim().to_string());
+        }
+        if let Some(snip) = n.properties.get("snippet").and_then(|v| v.as_str()) {
+            for r in snippet_chinese(snip).into_iter().take(MAX_PER_NODE) {
+                texts.push(r);
+            }
+        }
+        let mut added = 0usize;
+        for s in texts {
+            let len = s.chars().count();
+            if (2..=30).contains(&len) && !s.trim().is_empty() {
+                entries.push((s, toks.clone()));
+                added += 1;
+                if added >= MAX_PER_NODE {
+                    break;
+                }
+            }
+        }
+    }
+    entries
+}
+
+/// 按大小写边界切驼峰串（`insufficientBalance` → `insufficient` / `Balance`）。
+fn split_camel(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for c in s.chars() {
+        if c.is_ascii_uppercase() && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push(c);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// 结构性「包含」边：命中容器（类 / 接口 / 表 / 契约）时，用来把它的成员带进召回。
+///
+/// 召回原先只沿调用链边扩展，后果是命中 `ArticleService` 却拿不到它的 `findAll`
+/// —— 这一点连英文查询都复现（`article list pagination` 只出类、不出方法）。
+/// 包含边是纯结构信息，与语言、领域、命名风格都无关。
+fn is_containment_edge(kind: &str) -> bool {
+    matches!(kind, "Declares" | "HasColumn" | "Extends" | "HandledBy")
+}
+
+/// 单个容器最多带出的成员数，避免一个大类的全部方法把命中列表挤满。
+const MAX_MEMBERS_PER_CONTAINER: usize = 6;
+
+/// 召回扩展用的邻居（双向）：调用链边 **+ 包含边**。
 fn neighbours(
     id: NodeId,
     incoming: &HashMap<i64, Vec<gt_domain::model::Edge>>,
     outgoing: &HashMap<i64, Vec<gt_domain::model::Edge>>,
 ) -> Vec<NodeId> {
     let mut out = Vec::new();
+    let mut members = 0usize;
     if let Some(es) = outgoing.get(&id.get()) {
         for e in es {
             if is_chain_edge(e.kind.as_str()) {
+                out.push(e.to_id);
+            } else if is_containment_edge(e.kind.as_str()) && members < MAX_MEMBERS_PER_CONTAINER {
+                members += 1;
                 out.push(e.to_id);
             }
         }
@@ -474,6 +1541,9 @@ fn neighbours(
     if let Some(es) = incoming.get(&id.get()) {
         for e in es {
             if is_chain_edge(e.kind.as_str()) {
+                out.push(e.from_id);
+            } else if is_containment_edge(e.kind.as_str()) && members < MAX_MEMBERS_PER_CONTAINER {
+                members += 1;
                 out.push(e.from_id);
             }
         }
@@ -516,6 +1586,7 @@ fn score_node(
     terms: &[String],
     kind_hints: &[String],
     incoming: &HashMap<i64, Vec<gt_domain::model::Edge>>,
+    action: bool,
 ) -> (f64, Vec<String>) {
     let name = node.name.to_lowercase();
     let fqn = node.fqn.as_deref().unwrap_or("").to_lowercase();
@@ -552,8 +1623,18 @@ fn score_node(
         return (0.0, matched);
     }
 
-    // 种类权重：语义节点（表 / 契约 / 事件…）是"主题级"答案，优先于方法
-    score *= kind_weight(node.kind.as_str());
+    // 种类权重：语义节点（表 / 契约 / 事件…）是"主题级"答案，优先于方法；
+    // 动作意图（找实现代码）时反转偏好（见 [`rank_weight`]）。
+    // 纯 CRUD 动词方法（edit/save/update…）**只有在同时命中内容词（coupon/order…）时**
+    // 才享受动作加权；否则（如发货的 save/update，只靠「修改」被加权）退回默认 1.0，
+    // 避免无关域 CRUD 顶到顶部（见 [`GENERIC_CRUD_METHODS`]）。
+    let has_content_term = has_content_word(node, terms);
+    let kw = if action && is_generic_crud_method(&name) && !has_content_term {
+        kind_weight(node.kind.as_str())
+    } else {
+        rank_weight(node.kind.as_str(), action)
+    };
+    score *= kw;
 
     // 结构提示加成：提示词里说了"表"，就优先给 Table
     for hint in kind_hints {
@@ -573,6 +1654,31 @@ fn score_node(
     (score, matched)
 }
 
+/// 词面 / 向量路共用的「种类权重」。
+///
+/// 默认（`action=false`）沿用原 [`kind_weight`]：结构 / 契约类（表、HTTP 接口、事件…）
+/// 是「主题级」答案，权重大于方法，使"订单相关的表"收敛到 `Table`。
+///
+/// 当查询意图是「找实现这段逻辑的代码」（`action=true`，含 修改 / 实现 / 计算 /
+/// 校验 / 扣减 / 支付 / 回调 … 等动作动词）时反转偏好：给方法 / 类加权、压低
+/// HTTP 路由与异步基础设施（事件 / 队列 / 缓存 / 定时 …）。否则这类查询会被字面同词的
+/// 路由（`GET /marketing/coupon/edit`、`ANY /pay/notify`）的词面高分压过真正的服务方法
+/// （storeCoupon / paymentOrder），而后者才是"代码在哪"的意图所指。
+fn rank_weight(kind: &str, action: bool) -> f64 {
+    if !action {
+        return kind_weight(kind);
+    }
+    match kind {
+        "Method" | "Function" => 1.5,
+        "Class" | "Interface" | "Trait" | "Enum" => 1.3,
+        "Table" => 1.4,
+        "ConfigKey" | "I18nKey" | "Page" | "EventBus" => 1.2,
+        "HttpContract" | "Event" | "Queue" | "Topic" | "Cache" | "Schedule" => 0.7,
+        _ => 0.9,
+    }
+}
+
+/// 默认种类权重（见 [`rank_weight`]）。
 fn kind_weight(kind: &str) -> f64 {
     match kind {
         "Table" | "HttpContract" | "Event" | "Queue" | "Cache" | "Topic" | "Schedule" => 1.4,
@@ -581,6 +1687,25 @@ fn kind_weight(kind: &str) -> f64 {
         "Method" | "Function" => 1.0,
         _ => 0.8,
     }
+}
+
+/// 查询是否意在「找实现逻辑的代码」而非「找主题 / 路由」。
+///
+/// 命中动作动词即为真：词面 / 向量路据此反转种类偏好（见 [`rank_weight`]）。
+/// 仅当为真时才改权重 —— 非动作查询完全沿用旧 [`kind_weight`]，零回归。
+fn action_intent(q: &str) -> bool {
+    const KW: &[&str] = &[
+        // 中文动作
+        "修改", "实现", "在哪", "代码", "方法", "函数", "逻辑", "计算", "处理", "校验", "拦截",
+        "回滚", "扣减", "设置", "保存", "更新", "新增", "删除", "查询", "获取", "读取", "加载",
+        "下单", "支付", "通知", "回调", "创建", "生成", "调用", "执行", "写入", "怎么", "如何",
+        // 英文动作
+        "modify", "implement", "code", "where", "compute", "handle", "validate", "intercept",
+        "rollback", "deduct", "save", "update", "create", "add", "delete", "query", "get",
+        "fetch", "load", "set", "pay", "notify", "callback", "invoke", "execute", "write", "how",
+    ];
+    let low = q.to_lowercase();
+    KW.iter().any(|k| low.contains(&k.to_lowercase()))
 }
 
 /// 解析提示词：拆出查询词与结构提示。
@@ -649,18 +1774,30 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
     // 词大多就是两个字（订单 / 创建 / 接口 / 缓存 …），bigram 能以近乎零的
     // 成本覆盖它们。噪音 bigram（单创 / 建涉）匹配不到任何节点，会被打分
     // 自然淘汰 —— 所以不需要词典、不需要分词库，也就没有新依赖。
+    // 已知中文词（内置别名表里的词条）：用于过滤 CJK bigram 里跨越词边界的
+    // 无意义组合（何修 / 改下 / 单优 …）。仅当整段命中了已知词时才启用过滤 ——
+    // 否则（OOV 中文）仍退化为全 bigram 兜底，保留对未知词的覆盖。
+    let known_alias_words: HashSet<&str> =
+        INTENT_ALIASES.iter().map(|(zh, _)| *zh).collect();
+
     for run in cjk_runs(query) {
         // 整段保留一份：精确长词命中时得分最高。
         let keep = strip_hint_chars(&run, hint_map);
         if keep.chars().count() >= 2 && !terms.iter().any(|t| t == &keep) {
             terms.push(keep);
         }
-        // 二字组
+        // 二字组。整段命中已知中文词时，仅保留「已知词」本身的 bigram，
+        // 丢掉跨越词边界的噪音组合（何修 / 改下 / 单优）；
+        // 整段无已知词时（OOV）保持原行为：全部 bigram 兜底。
+        let has_known = INTENT_ALIASES.iter().any(|(zh, _)| run.contains(*zh));
         let chars: Vec<char> = run.chars().collect();
         for w in chars.windows(2) {
             let gram: String = w.iter().collect();
             let gk = strip_hint_chars(&gram, hint_map);
-            if gk.chars().count() >= 2 && !terms.iter().any(|t| t == &gk) {
+            if gk.chars().count() >= 2
+                && (!has_known || known_alias_words.contains(gk.as_str()))
+                && !terms.iter().any(|t| t == &gk)
+            {
                 terms.push(gk);
             }
         }
@@ -807,8 +1944,11 @@ fn render_markdown(
         if !h.relations.is_empty() {
             s.push_str(&format!("- 图上关系：{}\n", h.relations.join("，")));
         }
-        if let Some(sn) = &h.snippet {
-            s.push_str(&format!("\n```\n{sn}\n```\n"));
+        // 仅排名前 SNIPPET_TOP 的命中附带源码片段，控制默认输出体积（见 [`SNIPPET_TOP`]）。
+        if i < SNIPPET_TOP {
+            if let Some(sn) = &h.snippet {
+                s.push_str(&format!("\n```\n{sn}\n```\n"));
+            }
         }
         s.push('\n');
     }
@@ -963,13 +2103,60 @@ mod tests {
         assert!(!is_cjk('1'));
     }
 
+    // ---- 短语聚合加成（修复 3：组合意图优先于孤立词）----
+
+    #[test]
+    fn cohesion_boosts_multi_intent() {
+        let g = alias_group_map();
+        // 只命中一个操作类别（"查询" 的英文 find）：无加成
+        let one = cohesion_multiplier(&["find".to_string()], &g);
+        assert!((one - 1.0).abs() < 1e-9, "单类别不应加成：{one}");
+        // 命中两个操作类别（查询 + 删除）：×1.3
+        let two = cohesion_multiplier(&["find".to_string(), "delete".to_string()], &g);
+        assert!((two - 1.3).abs() < 1e-9, "双类别应 ×1.3：{two}");
+        // 中文意图词同样归类（用跨领域的通用动词，不依赖任何领域词表）
+        let zh = cohesion_multiplier(&["查询".to_string(), "删除".to_string()], &g);
+        assert!((zh - 1.3).abs() < 1e-9, "中文双类别也应 ×1.3：{zh}");
+    }
+
+    // ---- 种子并集（修复 1+2：跨语言节点必须进种子，且合并分为相加）----
+
+    #[test]
+    fn select_seeds_unions_vector_seeds() {
+        // 模拟"修改订单优惠"查询：词面分 Order 类碾压 Coupon 类，
+        // 但向量分（bge 余弦）Coupon 远高 —— 旧逻辑只按总分取前 5，Coupon 永远落选。
+        let mut lexical = HashMap::new();
+        lexical.insert(1, (260.0, vec!["order".to_string()])); // OrderServices
+        lexical.insert(2, (55.0, vec!["coupon".to_string()])); // StoreCouponServices
+        let mut vector = HashMap::new();
+        vector.insert(1, 30.0);
+        vector.insert(2, 110.0);
+
+        let n1 = tnode(1, "Class", "OrderServices", None, None);
+        let n2 = tnode(2, "Class", "StoreCouponServices", None, None);
+        let mut index = HashMap::new();
+        index.insert(1, &n1);
+        index.insert(2, &n2);
+
+        let seeds = select_seeds(&lexical, &vector, &index);
+        let ids: Vec<i64> = seeds.iter().map(|(_, _, n)| n.id.get()).collect();
+        assert!(ids.contains(&2), "Coupon 节点必须作为向量种子入选：{ids:?}");
+        // 合并分 = 词面 + 向量（相加而非取大）
+        let coupon = seeds.iter().find(|(_, _, n)| n.id.get() == 2).unwrap();
+        assert!(
+            (coupon.0 - 165.0).abs() < 1e-9,
+            "合并分应为 55+110=165，实际 {}",
+            coupon.0
+        );
+    }
+
     // ---- score_node ----
 
     #[test]
     fn score_node_exact_name_match() {
         // 100（精确）× 1.4（Table 权重）
         let n = tnode(101, "Table", "user", None, None);
-        let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((score - 140.0).abs() < 1e-9, "精确匹配应得 100×1.4=140，实际 {score}");
         assert_eq!(matched, vec!["user".to_string()]);
     }
@@ -978,7 +2165,7 @@ mod tests {
     fn score_node_starts_with_prefix() {
         // 70（前缀）× 1.4
         let n = tnode(102, "Table", "user_order", None, None);
-        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((score - 98.0).abs() < 1e-9, "前缀匹配应得 70×1.4=98，实际 {score}");
     }
 
@@ -986,7 +2173,7 @@ mod tests {
     fn score_node_contains() {
         // 50（包含）× 1.0（Method）
         let n = tnode(103, "Method", "my_user_x", None, None);
-        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((score - 50.0).abs() < 1e-9, "包含匹配应得 50×1.0=50，实际 {score}");
     }
 
@@ -994,7 +2181,7 @@ mod tests {
     fn score_node_identity_match() {
         // 名字不匹配，identity 包含 → 45 × 1.0（Method）
         let n = tnode(104, "Method", "zzz", None, Some("user_identity"));
-        let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((score - 45.0).abs() < 1e-9, "identity 命中应得 45×1.0=45，实际 {score}");
         assert_eq!(matched, vec!["user".to_string()]);
     }
@@ -1003,7 +2190,7 @@ mod tests {
     fn score_node_fqn_match() {
         // fqn 包含 → 35 × 1.0
         let n = tnode(105, "Method", "zzz", Some("app\\model\\user"), None);
-        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((score - 35.0).abs() < 1e-9, "fqn 命中应得 35×1.0=35，实际 {score}");
     }
 
@@ -1012,13 +2199,14 @@ mod tests {
         // 命中两词：先累加各词得分，再整体 ×1.5。这里两个词各得 50（Method 权重 1.0），
         // 所以 two == (one + order_only) × 1.5 == 150（大于简单相加的 100）。
         let n = tnode(106, "Method", "xuserxorderx", None, None);
-        let (one, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
-        let (order_only, _) = score_node(&n, &["order".to_string()], &[], &HashMap::new());
+        let (one, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
+        let (order_only, _) = score_node(&n, &["order".to_string()], &[], &HashMap::new(), false);
         let (two, matched) = score_node(
             &n,
             &["user".to_string(), "order".to_string()],
             &[],
             &HashMap::new(),
+            false,
         );
         assert!(
             (two - (one + order_only) * 1.5).abs() < 1e-9,
@@ -1032,8 +2220,8 @@ mod tests {
     fn score_node_kind_weight_prefers_semantic_nodes() {
         let table = tnode(107, "Table", "user", None, None);
         let method = tnode(108, "Method", "user", None, None);
-        let (s_t, _) = score_node(&table, &["user".to_string()], &[], &HashMap::new());
-        let (s_m, _) = score_node(&method, &["user".to_string()], &[], &HashMap::new());
+        let (s_t, _) = score_node(&table, &["user".to_string()], &[], &HashMap::new(), false);
+        let (s_m, _) = score_node(&method, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((s_t - 140.0).abs() < 1e-9, "Table 100×1.4=140");
         assert!((s_m - 100.0).abs() < 1e-9, "Method 100×1.0=100");
         assert!(s_t > s_m, "语义节点（表）应优先于方法");
@@ -1043,9 +2231,9 @@ mod tests {
     fn score_node_kind_hint_bonus() {
         // 提示词说了"表" → 结构提示加成 +30
         let n = tnode(109, "Table", "user", None, None);
-        let (no_hint, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new());
+        let (no_hint, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
         let (with_hint, _) =
-            score_node(&n, &["user".to_string()], &["Table".to_string()], &HashMap::new());
+            score_node(&n, &["user".to_string()], &["Table".to_string()], &HashMap::new(), false);
         assert!(
             (with_hint - (no_hint + 30.0)).abs() < 1e-9,
             "结构提示应 +30：{with_hint} vs {no_hint}"
@@ -1057,11 +2245,115 @@ mod tests {
         // 精确匹配 100 × 1.0（Method）+ 扇入 2 × 0.4
         let n = tnode(110, "Method", "user", None, None);
         let inc = incoming(&[("WritesDb", 200, 110), ("ReadsDb", 201, 110)]);
-        let (score, _) = score_node(&n, &["user".to_string()], &[], &inc);
+        let (score, _) = score_node(&n, &["user".to_string()], &[], &inc, false);
         assert!(
             (score - (100.0 + 2.0 * 0.4)).abs() < 1e-9,
             "扇入 2 应 +0.8，实际 {score}"
         );
+    }
+
+    #[test]
+    fn rank_weight_reverses_preference_under_action_intent() {
+        // 非动作意图：HTTP 路由（1.4）优先于方法（1.0）。
+        assert!(rank_weight("HttpContract", false) > rank_weight("Method", false));
+        // 动作意图（找实现代码）：方法（1.5）反超路由（0.7）。
+        assert!(rank_weight("Method", true) > rank_weight("HttpContract", true));
+        // 非动作时与默认种类权重一致（零回归）。
+        assert!((rank_weight("Table", false) - 1.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn action_intent_detects_code_seeking_verbs() {
+        assert!(action_intent("修改订单优惠")); // 修改
+        assert!(action_intent("支付回调通知商户")); // 回调 / 支付 / 通知
+        assert!(action_intent("用户余额不足时拦截下单")); // 拦截
+        assert!(action_intent("商品库存扣减失败回滚")); // 扣减 / 回滚
+        // 纯主题查询不应触发动作意图。
+        assert!(!action_intent("优惠券列表页面"));
+    }
+
+    #[test]
+    fn method_beats_route_under_action_intent() {
+        // 同一词面命中下，动作意图让服务方法压过字面同词的 HTTP 路由。
+        let route = tnode(201, "HttpContract", "coupon_edit", None, None);
+        let method = tnode(202, "Method", "storeCoupon", None, None);
+        let (s_route, _) = score_node(&route, &["coupon".to_string()], &[], &HashMap::new(), true);
+        let (s_method, _) = score_node(&method, &["coupon".to_string()], &[], &HashMap::new(), true);
+        assert!(s_method > s_route, "动作意图下方法应压过路由：{s_method} vs {s_route}");
+    }
+
+    #[test]
+    fn score_node_generic_crud_method_skips_action_boost() {
+        // 纯动词方法（edit/save/update…）在动作意图下、且没命中内容词时，不享受 1.5× 加权，
+        // 退回默认 1.0，否则「修改」类查询会把无关域 CRUD（发货 save / 退款 update）顶到顶部。
+        let generic = tnode(301, "Method", "save", None, None);
+        let (s_gen, _) = score_node(&generic, &["save".to_string()], &[], &HashMap::new(), true);
+        assert!((s_gen - 100.0).abs() < 1e-9, "纯 CRUD 方法无内容词应退回 1.0 权重，实际 {s_gen}");
+
+        // 同一纯动词方法若类标识符命中内容词（如优惠券的 edit，类 StoreCouponIssue 含 Coupon），
+        // 应保留 1.5× 加权。注意：目录路径里的 order 不应算内容词 —— 即便 fqn 路径含 order
+        // （如 v1/order/DeliveryService），只要类标识符不含内容词仍应被惩罚。
+        let coupon_edit = tnode(
+            302,
+            "Method",
+            "edit",
+            Some("app\\adminapi\\controller\\v1\\marketing\\StoreCouponIssue::edit"),
+            None,
+        );
+        // 名字 edit（100）+ 类标识符含 coupon（35）→ 135；两词 ×1.5 聚合；内容词 → 1.5× 加权生效：
+        // 135 × 1.5 × 1.5 = 303.75。
+        let (s_ce, _) = score_node(
+            &coupon_edit,
+            &["edit".to_string(), "coupon".to_string()],
+            &[],
+            &HashMap::new(),
+            true,
+        );
+        assert!(
+            (s_ce - 303.75).abs() < 1e-9,
+            "命中内容词的 CRUD 方法应保留 1.5 加权，实际 {s_ce}"
+        );
+
+        // 反例：DeliveryService 虽在 order/ 目录下（fqn 路径含 order），但类标识符不含任何内容词，
+        // 应被惩罚（退回 1.0）。
+        let delivery_save = tnode(
+            303,
+            "Method",
+            "save",
+            Some("app\\adminapi\\controller\\v1\\order\\DeliveryService::save"),
+            None,
+        );
+        let (s_ds, _) = score_node(
+            &delivery_save,
+            &["save".to_string(), "order".to_string()],
+            &[],
+            &HashMap::new(),
+            true,
+        );
+        // 名字 save（100）+ 路径 order 仅作计分（+35）→ 135；×1.5 聚合；但无内容词 → 不加权 1.0：
+        // 135 × 1.5 = 202.5。
+        assert!(
+            (s_ds - 202.5).abs() < 1e-9,
+            "类标识符无内容词的 CRUD 方法应退回 1.0 权重，实际 {s_ds}"
+        );
+
+        // 复合业务名（createForm）仍享受动作加权 1.5×，不受波及。
+        let biz = tnode(304, "Method", "createForm", None, None);
+        let (s_biz, _) = score_node(&biz, &["form".to_string()], &[], &HashMap::new(), true);
+        assert!((s_biz - 75.0).abs() < 1e-9, "复合业务方法应保留 1.5 加权，实际 {s_biz}");
+    }
+
+    #[test]
+    fn parse_query_drops_boundary_bigrams() {
+        // 「如何修改下单优惠」含已知中文词（修改 / 下单 / 优惠），应保留这些词，
+        // 但过滤掉跨越词边界的噪音 bigram（何修 / 改下 / 单优）。
+        let (terms, _hints) = parse_query("如何修改下单优惠");
+        assert!(terms.iter().any(|t| t == "修改"), "修改 应保留：{terms:?}");
+        assert!(terms.iter().any(|t| t == "下单"), "下单 应保留：{terms:?}");
+        assert!(terms.iter().any(|t| t == "优惠"), "优惠 应保留：{terms:?}");
+        assert!(!terms.iter().any(|t| t == "何修"), "何修 应为噪音被过滤：{terms:?}");
+        assert!(!terms.iter().any(|t| t == "改下"), "改下 应为噪音被过滤：{terms:?}");
+        assert!(!terms.iter().any(|t| t == "单优"), "单优 应为噪音被过滤：{terms:?}");
     }
 
     // ---- relation_summary ----

@@ -172,6 +172,12 @@ pub trait GraphQuery: Send + Sync {
     /// 图上从来没有 `Triggers` 边时，`no_incoming: Triggers` 对每个节点都成立，
     /// 会把全部事件节点报成"没人触发"。跑之前先确认这个边种类真的存在过。
     fn edge_kinds(&self, project_id: ProjectId) -> Result<Vec<String>>;
+    /// 工程内出现过的全部**节点种类**。
+    ///
+    /// 与 [`Self::edge_kinds`] 同理：召回要按「图上真实存在的类型」取候选，而不是
+    /// 硬编码一份类型清单 —— 否则新语言适配器 / 流水线新增的类型会被静默漏掉
+    /// （不是分数低，而是压根不参与召回）。
+    fn node_kinds(&self, project_id: ProjectId) -> Result<Vec<String>>;
     /// 工程内出现过的全部标注 `(channel, kind)`。
     ///
     /// 与 [`Self::edge_kinds`] 同理，用于挡住"标注压根没产出"导致的恒真误报；

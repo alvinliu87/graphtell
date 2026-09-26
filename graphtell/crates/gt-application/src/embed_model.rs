@@ -78,6 +78,13 @@ impl CandleBgeEmbedder {
     }
 }
 
+/// 单条文本参与编码的最大 token 数。
+///
+/// 节点侧文本（名 / fqn / 关系摘要）与查询都很短，几百 token 足够表达语义。
+/// 不加这个上限时，batch 会按「本批最长那条」补齐，一条超长文本就能把整批注意力成本
+/// 抬到 O(batch × seq²) —— 预热因此慢到不可用（实测 144 个节点 4 分钟跑不完）。
+const MAX_TOKENS: usize = 256;
+
 impl Embedder for CandleBgeEmbedder {
     fn dim(&self) -> usize {
         self.dim
@@ -92,6 +99,75 @@ impl Embedder for CandleBgeEmbedder {
     fn embed_query(&self, text: &str) -> Vec<f32> {
         self.encode(text, true)
     }
+
+    /// 批量编码（文档侧，不加前缀）：把一批文本拼成一个大批次做一次前向，
+    /// 取各自 [CLS] 并 L2 归一化。比逐条 `embed` 快一个数量级，是大图召回冷启动的关键优化。
+    fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        if texts.is_empty() {
+            return Vec::new();
+        }
+        // 逐条 tokenize，取最大长度用于右补齐（pad 置于序列尾部，[CLS] 始终在首位不受影响）。
+        let mut all_ids: Vec<Vec<u32>> = Vec::with_capacity(texts.len());
+        let mut max_len = 1usize;
+        for t in texts {
+            let enc = self
+                .tokenizer
+                .encode(t.as_str(), true)
+                .expect("tokenize 失败");
+            let mut ids = enc.get_ids().to_vec();
+            // 必须截断：补齐长度取本批最大值，一条超长文本会拖垮整批。
+            ids.truncate(MAX_TOKENS);
+            if !ids.is_empty() {
+                max_len = max_len.max(ids.len());
+            }
+            all_ids.push(ids);
+        }
+        let batch = all_ids.len();
+        let mut flat = vec![0u32; batch * max_len];
+        let mut mask = vec![0u32; batch * max_len];
+        for (i, ids) in all_ids.iter().enumerate() {
+            for (j, &id) in ids.iter().enumerate() {
+                flat[i * max_len + j] = id;
+                mask[i * max_len + j] = 1;
+            }
+        }
+        let input_ids = Tensor::new(flat, &self.device)
+            .expect("input_ids")
+            .reshape((batch, max_len))
+            .expect("reshape");
+        let type_ids = Tensor::new(vec![0u32; batch * max_len], &self.device)
+            .expect("type_ids")
+            .reshape((batch, max_len))
+            .expect("reshape");
+        let attn = Tensor::new(mask, &self.device)
+            .expect("attn")
+            .reshape((batch, max_len))
+            .expect("reshape");
+
+        // [batch, seq, hidden] → 取 [CLS]（序列第 0 位）→ [batch, hidden]
+        let hidden = self
+            .model
+            .forward(&input_ids, &type_ids, Some(&attn))
+            .expect("bert forward");
+        let cls = hidden
+            .narrow(1, 0, 1)
+            .expect("narrow")
+            .squeeze(1)
+            .expect("squeeze");
+        // L2 归一化（按行）
+        let norm = cls
+            .sqr()
+            .expect("sqr")
+            .sum(1)
+            .expect("sum")
+            .unsqueeze(1)
+            .expect("unsqueeze")
+            .sqrt()
+            .expect("norm");
+        let normalized = cls.broadcast_div(&norm).expect("normalize");
+
+        normalized.to_vec2::<f32>().expect("to_vec")
+    }
 }
 
 impl CandleBgeEmbedder {
@@ -104,7 +180,9 @@ impl CandleBgeEmbedder {
             text.to_string()
         };
         let encoding = self.tokenizer.encode(t, true).expect("tokenize 失败");
-        let ids: Vec<u32> = encoding.get_ids().to_vec();
+        let mut ids: Vec<u32> = encoding.get_ids().to_vec();
+        // 同 [`Self::embed_batch`]：限制序列长度，避免超长文本拖垮单次前向。
+        ids.truncate(MAX_TOKENS);
         let seq_len = ids.len();
 
         let input_ids = Tensor::new(ids, &self.device)

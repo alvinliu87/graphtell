@@ -63,7 +63,7 @@ pub fn run(ctx: &mut PipelineContext) {
 
     let mut raw_count = 0usize;
     let mut where_count = 0usize;
-    /// 证实来自请求的（critical）之外的"来源不明"（warning）计数。
+    // 证实来自请求的（critical）之外的"来源不明"（warning）计数。
     let mut raw_unknown_count = 0usize;
     let mut where_unknown_count = 0usize;
 

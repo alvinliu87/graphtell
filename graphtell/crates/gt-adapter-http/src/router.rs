@@ -1,14 +1,16 @@
 //! 路由与处理器。
 
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
 use axum::{
     extract::{Path, Query, State},
+    response::Html,
     routing::{delete, get, post, put},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use gt_application::{
     pipeline_runner::{PipelineDeps, PipelineService},
@@ -39,7 +41,9 @@ pub struct AppState {
     pub parsers: Arc<dyn ParserRegistry>,
     pub frameworks: usize,
     /// 最近一次建图进度（工程 id → 观察者）。
-    pub progress: Mutex<std::collections::HashMap<i64, Arc<ProgressObserver>>>,
+    pub progress: Mutex<HashMap<i64, Arc<ProgressObserver>>>,
+    /// 共享节点向量缓存（与 `recall` 内的编码器共用）；建图重建时清空。
+    pub node_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -65,12 +69,22 @@ pub fn state(
     let graphs = Arc::new(GraphQueryService::new(Arc::clone(&store)));
     let views = Arc::new(ViewService::new(Arc::clone(&store), view_registry));
     let checks = Arc::new(RuleService::new(Arc::clone(&store), rules));
-    let recall = Arc::new(RecallService::new(
-        Arc::clone(&store),
-        Arc::clone(&deps.fs),
-        Arc::clone(&deps.scanner),
-    ));
-    Arc::new(AppState {
+    // 召回：优先真实 bge-m3（权重可用时），否则退回默认哈希编码器；节点向量缓存跨召回复用。
+    let node_cache = Arc::new(Mutex::new(HashMap::<i64, Vec<f32>>::new()));
+    let recall = Arc::new(
+        RecallService::with_embedder_and_cache(
+            Arc::clone(&store),
+            Arc::clone(&deps.fs),
+            Arc::clone(&deps.scanner),
+            gt_application::try_real_recall_embedder(),
+            Arc::clone(&node_cache),
+            Some(std::path::PathBuf::from("data/embeddings")),
+        )
+        // 生产 HTTP 入口开启后台异步预热：首个召回立即用快速编码器返回（不阻塞 UI），
+        // 同时 spawn 线程把 bge 向量算好落盘；完成后该工程自动切到语义路。
+        .with_async_warmup(),
+    );
+    let state = Arc::new(AppState {
         projects,
         pipeline,
         graphs,
@@ -79,8 +93,25 @@ pub fn state(
         recall,
         parsers: Arc::clone(&deps.parsers),
         frameworks,
-        progress: Mutex::new(std::collections::HashMap::new()),
-    })
+        progress: Mutex::new(HashMap::new()),
+        node_cache,
+    });
+    // 启动源码变更监听（P2 v1）：轮询+防抖 → 整库安全重建 + 自动合规 + 清空召回缓存。
+    // 仅对已有工程启动；新建工程在 create_project 处理器里单独启动。
+    if let Ok(list) = state.projects.list() {
+        for p in list {
+            let root = std::path::PathBuf::from(&p.root_path);
+            if root.is_dir() {
+                gt_application::watch::watch_project(
+                    p.id,
+                    root,
+                    Arc::clone(&state.pipeline),
+                    Arc::clone(&state.recall),
+                );
+            }
+        }
+    }
+    state
 }
 
 pub fn build_router(state: Shared) -> Router {
@@ -129,6 +160,11 @@ pub fn build_router(state: Shared) -> Router {
         )
         // 代码召回（提示词 → 相关代码）
         .route("/api/projects/{id}/recall", get(recall_get).post(recall_post))
+        // 提示词合成：召回上下文 + 用户意图 → 可直接粘给 LLM 的完整提示词
+        .route("/api/projects/{id}/prompt", post(compose_prompt))
+        // 提示词合成器页面（自包含静态页，内嵌进二进制，无需额外静态托管）
+        .route("/compose", get(compose_page))
+        .route("/", get(compose_page))
         .with_state(state)
 }
 
@@ -190,6 +226,16 @@ async fn create_project(
         Ok(p) => {
             // 创建后自动开始建图
             let _ = trigger_run(&state, p.id);
+            // 新工程也启动变更监听
+            let root = std::path::PathBuf::from(&p.root_path);
+            if root.is_dir() {
+                gt_application::watch::watch_project(
+                    p.id,
+                    root,
+                    Arc::clone(&state.pipeline),
+                    Arc::clone(&state.recall),
+                );
+            }
             Json(ApiResponse::success(p.into()))
         }
         Err(e) => Json(ApiResponse::failure(e.to_string())),
@@ -245,6 +291,8 @@ fn trigger_run(state: &Shared, id: ProjectId) -> Result<(), DomainError> {
         .lock()
         .unwrap()
         .insert(id.get(), Arc::clone(&observer));
+    // 图将被重建，旧节点向量可能失效，先清空召回缓存（下次召回重新预热）。
+    state.node_cache.lock().unwrap().clear();
     state.pipeline.spawn(id, observer)
 }
 
@@ -700,6 +748,116 @@ async fn recall_post(
         Ok(r) => Json(ApiResponse::success(r)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }
+}
+
+// ---------------------------------------------------------- 提示词合成器
+
+/// 提示词合成请求：召回参数 + 用户任务意图。
+#[derive(Debug, Deserialize)]
+pub struct ComposePromptRequest {
+    /// 用于召回代码的检索词（自然语言 + 标识符混写皆可）。
+    pub query: String,
+    /// 用户的任务意图 / 补充说明；缺省时提示词会要求 LLM 依据上下文推断。
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub hops: Option<u32>,
+    #[serde(default)]
+    pub with_snippets: Option<bool>,
+}
+
+/// 提示词合成结果。
+#[derive(Debug, Serialize)]
+pub struct ComposePromptResult {
+    /// 可直接粘给 LLM 的完整提示词。
+    pub prompt: String,
+    /// 原始召回上下文（markdown），便于用户自行裁剪。
+    pub markdown: String,
+    pub seed_count: usize,
+    pub hit_count: usize,
+    /// 提示词 token 粗估（中英文按不同系数）。
+    pub approx_tokens: usize,
+}
+
+/// 合成提示词：图谱召回上下文 + 用户意图 → 一段可直接投喂 LLM 的提示词。
+///
+/// 设计要点：召回只提供"地图"（路径/行号/片段），提示词明确要求 LLM 按需按路径精准
+/// 读取文件全文 —— 既省掉 discovery 的 token，又不丢实现完整性。
+async fn compose_prompt(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+    Json(req): Json<ComposePromptRequest>,
+) -> Json<ApiResponse<ComposePromptResult>> {
+    let rq = RecallQuery {
+        query: req.query.clone(),
+        limit: req.limit.unwrap_or(20),
+        hops: req.hops.unwrap_or(2),
+        kinds: Vec::new(),
+        with_snippets: req.with_snippets.unwrap_or(true),
+    };
+    match state.recall.recall(ProjectId(id), &rq) {
+        Ok(r) => {
+            let prompt = compose_prompt_text(&req.query, req.intent.as_deref(), &r.markdown);
+            let approx_tokens = estimate_tokens(&prompt);
+            Json(ApiResponse::success(ComposePromptResult {
+                prompt,
+                markdown: r.markdown,
+                seed_count: r.seeds.len(),
+                hit_count: r.hits.len(),
+                approx_tokens,
+            }))
+        }
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+/// 提示词模板：先给证据（召回上下文），再给任务，末尾约束质量。
+fn compose_prompt_text(query: &str, intent: Option<&str>, markdown: &str) -> String {
+    let intent_text = intent
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "（未填写，请依据下方代码上下文推断本次任务目标）".to_string());
+
+    format!(
+        "你是一名资深软件工程师。下面是为本次任务从代码知识图谱中检索出的【相关代码上下文】，\
+已按相关度精选出最相关的文件、符号与调用/数据关系，并给出文件路径、行号与关键片段。\n\n\
+========== 相关代码上下文（图谱召回） ==========\n\
+{markdown}\n\
+==============================================\n\n\
+【本次任务】\n\
+{intent}\n\n\
+（召回该上下文所用的检索词：{query}）\n\n\
+【要求】\n\
+1. 优先复用上下文中的文件、类、函数与字段命名；不要臆造上下文中不存在的接口或字段。\n\
+2. 上面只是“地图”：片段用于定位，如需完整实现细节，请按给出的文件路径与行号精准读取对应文件。\n\
+3. 改动范围收敛到与任务相关的文件，给出最小且可评审的改动。\n\
+4. 若上下文不足以支撑改动，请明确说明还缺什么，而不是凭空补全。\n",
+        markdown = markdown,
+        intent = intent_text,
+        query = query
+    )
+}
+
+/// 粗估 token 数：ASCII（代码/英文）约 4 字符 1 token，中文约 1.5 字符 1 token。
+fn estimate_tokens(s: &str) -> usize {
+    let mut ascii = 0usize;
+    let mut cjk = 0usize;
+    for c in s.chars() {
+        if c.is_ascii() {
+            ascii += 1;
+        } else {
+            cjk += 1;
+        }
+    }
+    (ascii as f64 / 4.0 + cjk as f64 / 1.5).ceil() as usize
+}
+
+/// 提示词合成器页面：内嵌静态页，避免额外静态资源托管与前端构建。
+async fn compose_page() -> Html<&'static str> {
+    Html(include_str!("compose.html"))
 }
 
 #[derive(Debug, Deserialize)]

@@ -10,6 +10,9 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
+
+/// MCP(stdio) 桥：IDE 经由它连接常驻服务。
+mod mcp;
 use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_app::{AppConfig, Container};
 use gt_domain::model::fkb::Action;
@@ -92,7 +95,7 @@ enum Command {
         /// 提示词（自然语言 + 标识符混写）。
         #[arg(long)]
         query: String,
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 10)]
         limit: usize,
         #[arg(long, default_value_t = 2)]
         hops: u32,
@@ -102,6 +105,40 @@ enum Command {
     },
     /// 校验 FKB 目录（语法 + 约定），不连库、不建图。
     Validate,
+    /// 预计算并持久化某工程的节点向量（不影响建图；可后台运行，如 `graphtell embed --project 1 &`）。
+    ///
+    /// 之后所有召回与重启都瞬时命中缓存，无需再对全图重算 bge 向量。权重目录同召回：
+    /// 默认 `models/bge-m3-safetensors`，可用 `GT_BGE_MODEL` 覆盖。
+    Embed {
+        #[arg(long)]
+        project: i64,
+    },
+    /// 诊断：输出查询与节点向量的余弦，用于判定"中文查不到目标"是模型能力问题
+    /// 还是阈值 / 排序问题。
+    ///
+    /// 例：`graphtell cosine --project 1 --query "商品库存扣减失败回滚" --names stock`
+    /// 若目标符号余弦本就低于阈值 → 模型 / 节点文本问题；若余弦够高却没召回 → 阈值 / 排序问题。
+    Cosine {
+        #[arg(long)]
+        project: i64,
+        #[arg(long)]
+        query: String,
+        /// 只看名字含这些子串的节点（逗号分隔）；不给则全量编码（大工程会很慢）
+        #[arg(long)]
+        names: Option<String>,
+        #[arg(long, default_value = "20")]
+        top: usize,
+    },
+    /// 以 MCP(stdio) 方式暴露给 IDE：经 HTTP 连接常驻服务，提供 `recall_code` /
+    /// `check_compliance` / `list_violations` 工具。stdout 是 JSON-RPC 通道，日志走 stderr。
+    Mcp {
+        /// 常驻服务地址，默认 http://127.0.0.1:5177
+        #[arg(long, default_value = "http://127.0.0.1:5177")]
+        base_url: String,
+        /// 目标工程 id（缺省时回退到环境变量 GRAPHTELL_PROJECT_ID）
+        #[arg(long)]
+        project: Option<i64>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -110,6 +147,9 @@ fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        // MCP 模式把 stdout 当作 JSON-RPC 通道，任何 stdout 日志都会破坏协议；
+        // 统一写 stderr，对 serve 也无害。
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -258,6 +298,42 @@ fn main() -> anyhow::Result<()> {
                         println!("  … 另有 {} 条未显示（用 --json 查看全部）", report.violations.len() - 50);
                     }
                 }
+                Command::Embed { project } => {
+                    let n = container
+                        .recall_service()
+                        .warm_up(gt_domain::model::ProjectId(project))?;
+                    println!(
+                        "已为工程 #{project} 计算并持久化 {n} 个节点向量（data/embeddings/{project}.json）"
+                    );
+                }
+                Command::Cosine {
+                    project,
+                    query,
+                    names,
+                    top,
+                } => {
+                    let filter: Vec<String> = names
+                        .unwrap_or_default()
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let rows = container.recall_service().debug_cosine(
+                        gt_domain::model::ProjectId(project),
+                        &query,
+                        &filter,
+                        top,
+                    )?;
+                    let th = gt_application::recall_service::VECTOR_THRESHOLD;
+                    println!("查询「{query}」与节点向量的余弦（阈值 {th}）：");
+                    if rows.is_empty() {
+                        println!("  （无匹配节点：放宽 --names 或去掉该参数）");
+                    }
+                    for (kind, name, c) in rows {
+                        let flag = if c >= th { "过阈值" } else { "低于阈值" };
+                        println!("  {c:.4}  [{flag}]  {kind}  {name}");
+                    }
+                }
                 Command::Recall { project, query, limit, hops, markdown } => {
                     let result = container.recall_service().recall(
                         gt_domain::model::ProjectId(project),
@@ -304,6 +380,19 @@ fn main() -> anyhow::Result<()> {
                             loc
                         );
                     }
+                }
+                Command::Mcp { base_url, project } => {
+                    let project = project
+                        .or_else(|| {
+                            std::env::var("GRAPHTELL_PROJECT_ID")
+                                .ok()
+                                .and_then(|s| s.parse::<i64>().ok())
+                        })
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("缺少 --project 或环境变量 GRAPHTELL_PROJECT_ID")
+                        })?;
+                    let bridge = mcp::McpBridge::new(base_url, project);
+                    return bridge.run();
                 }
                 _ => unreachable!(),
             }
