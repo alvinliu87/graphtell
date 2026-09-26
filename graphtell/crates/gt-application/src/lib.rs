@@ -24,7 +24,7 @@ pub use view_service::ViewService;
 pub use pipeline_runner::PipelineService;
 pub use project_service::ProjectService;
 pub use rule_service::{CheckSummary, RuleService};
-pub use recall_service::{RecallHit, RecallQuery, RecallResult, RecallService, SeedInfo};
+pub use recall_service::{RecallHit, RecallQuality, RecallQuery, RecallResult, RecallService, SeedInfo};
 pub use embedding::{
     default_embedder, Embedder, LocalHashingEmbedder, resolve_recall_embedder,
     try_real_recall_embedder,

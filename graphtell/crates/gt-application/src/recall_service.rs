@@ -123,6 +123,173 @@ fn is_generic_noun(t: &str) -> bool {
     GENERIC_NOUNS.contains(&t)
 }
 
+/// 事件驱动查询里，事件处理器（监听器 / 订阅者）作为种子的引导分下限。
+///
+/// 详见 [`collect_event_seeds`]：处理器方法名往往极泛（统一叫 `handle`），纯词面分≈0，
+/// 必须靠引导分进入种子集合、参与 BFS，否则「下单后怎么发通知」「退款成功后怎么回退」
+/// 这类问题只召回一堆泛词。实际分值取「最强词面种子 × 0.85」并夹在 [下限, 700]，
+/// 让监听器与它的直接被调者都能浮到前排，又不至于压过真正按名字命中的强种子。
+const EVENT_SEED_MIN: f64 = 400.0;
+/// 事件处理器的「直接被调者」加分：把「监听器 → 业务处理器」链路相对普通的
+/// 「种子 → 一跳邻居」上浮，缓解事件处理器被通用 CRUD 淹没。
+const EVENT_CALLEE_BOOST: f64 = 1.6;
+/// 事件种子上限：命中的监听器可能很多（全工程的 `*Listener` 都含 `order`/`user` 等泛词），
+/// 只保留按相关度（命中查询词数）排序后的前 N 个，避免把 BFS 与种子清单刷屏。
+const EVENT_SEED_CAP: usize = 10;
+
+/// 事件驱动查询识别：用户问的是「X 之后怎么 Y」「成功后…」「事件 / 监听 / 回调…」这类
+/// 还原「触发 → 监听器 → 处理器」链路的问题。正解往往是事件处理器（命名极泛的
+/// `*Listener` / `*Subscriber` 类或 `handle` / `onX` 方法），而非按名字直接命中的普通方法。
+///
+/// 只认「时序 / 显式事件」信号，不认「通知 / 下单」这类动作词 —— 否则普通动作查询会被
+/// 误判为事件查询而混入监听器种子（动作意图由 [`action_intent`] 单独处理）。
+fn event_intent(q: &str) -> bool {
+    const KW: &[&str] = &[
+        // 中文：时序 / 后置动作
+        "之后", "之后怎么", "后怎么", "成功后", "完成后", "到账后", "支付后", "下单后", "退款后",
+        "发货后", "创建后", "登录后", "注册后", "支付成功", "下单成功",
+        // 中文：显式事件语义
+        "事件", "监听", "触发器", "回调", "订阅",
+        // 英文
+        "after", "on success", "once", "on complete",
+        "event", "listener", "subscribe", "observer", "trigger", "callback",
+    ];
+    let low = q.to_lowercase();
+    KW.iter().any(|k| low.contains(&k.to_lowercase()))
+}
+
+/// 该节点是否为事件处理器（监听者 / 订阅者 / 观察者）。纯按命名约定 + 命名空间判断，
+/// 与具体框架无关（ThinkPHP 的 `*Listener`、Laravel 的 `EventListener`、Spring 的
+/// `@EventListener`、NestJS 的 `@OnEvent` 都覆盖得到）。
+fn is_event_handler(node: &Node) -> bool {
+    let name = node.name.to_lowercase();
+    let class_part = node
+        .fqn
+        .as_deref()
+        .map(|f| f.split("::").next().unwrap_or(f).to_lowercase())
+        .unwrap_or_default();
+    const SUFFIXES: &[&str] = &[
+        "listener", "subscriber", "observer", "eventhandler", "eventsubscriber",
+        "eventlistener", "eventconsumer", "consumer",
+    ];
+    if SUFFIXES.iter().any(|s| class_part.ends_with(s) || name.ends_with(s)) {
+        return true;
+    }
+    // 位于 event / listener / observer / subscriber / handler 命名空间或路径下的
+    // `handle` / `listen` / `dispatch` / `__invoke` / `onX` 方法，视为事件处理方法。
+    let in_event_ns = node.fqn.as_deref().map(|f| {
+        let fl = f.to_lowercase();
+        ["listener", "event", "observer", "subscriber", "handler", "eventbus", "events"]
+            .iter()
+            .any(|t| fl.contains(t))
+    }).unwrap_or(false);
+    if in_event_ns {
+        const HANDLER_METHODS: &[&str] = &["handle", "listen", "dispatch", "__invoke", "onevent"];
+        if HANDLER_METHODS.iter().any(|m| name == *m) {
+            return true;
+        }
+        if name.starts_with("on")
+            && name.chars().nth(2).map(|c| c.is_uppercase()).unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// 收集事件处理器种子（见 [`is_event_handler`]，及 `Event` 节点）。
+///
+/// 仅返回「尚未进入已有种子」且「可作为种子」的节点；事件处理器（监听器 / 订阅者 /
+/// Event 节点）数量可能很多，必须要求它的**名字或 fqn 命中任一查询词**才作种子，
+/// 否则会把全工程的监听器都灌进 BFS，退化成"监听器汤"，反而淹没真正相关的那一个。
+///
+/// 命中的查询词越多（横跨越多概念）越相关，按匹配词数降序只保留前 [`EVENT_SEED_CAP`]
+/// 个 —— 例如「下单后发通知」下 `OrderCreateAfterListener`（含 order）理应压过无关的
+/// `OrderDeliveryListener`，但二者都只命中 `order` 时由上限兜底，避免刷屏。
+///
+/// 种子分值按**命中词的稀有度（idf）**加权：一个监听器若只命中 `order` 这类泛词，
+/// 它和同概念的所有兄弟监听器（`OrderCreate`/`OrderRefund`/`OrderPaySuccess`…）一样被
+/// 拉到平手；但若它命中 `notify` / `coupon` / `refund` 这类稀有概念，就应压过只命中泛词的
+/// 兄弟 —— 这正是「下单后**发通知**」要让 `NotifyListener` 压过 `OrderRefund*Listener`、
+/// 「退款成功**回退优惠券**」要让 `OrderRefund*Listener` 压过 `OrderCreate*Listener` 的通用依据。
+fn collect_event_seeds<'a>(
+    nodes: &[Node],
+    index: &'a HashMap<i64, &'a Node>,
+    existing: &HashSet<i64>,
+    match_terms: &[String],
+    base_score: f64,
+) -> Vec<(f64, Vec<String>, &'a Node)> {
+    const SKIP_KINDS: &[&str] = &["I18nKey", "Page", "EventBus"];
+    // 文档频率 df：含该词（名字或 fqn）的节点数。df 越小越稀有，idf = ln(N/df) 越大。
+    let total = nodes.len().max(1);
+    let df: HashMap<String, usize> = match_terms
+        .iter()
+        .map(|t| {
+            let tl = t.to_lowercase();
+            let c = nodes
+                .iter()
+                .filter(|n| {
+                    n.name.to_lowercase().contains(&tl)
+                        || n.fqn
+                            .as_deref()
+                            .map(|f| f.to_lowercase().contains(&tl))
+                            .unwrap_or(false)
+                })
+                .count();
+            (t.clone(), c)
+        })
+        .collect();
+    // (分值, 节点) 收集后按分值降序再截断，保证最相关的监听器进 BFS。
+    let mut candidates: Vec<(f64, i64)> = Vec::new();
+    for node in nodes {
+        let id = node.id.get();
+        if existing.contains(&id)
+            || DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str())
+            || SKIP_KINDS.contains(&node.kind.as_str())
+        {
+            continue;
+        }
+        if !(is_event_handler(node) || node.kind.as_str() == "Event") {
+            continue;
+        }
+        // 事件处理器名字往往很泛（统一叫 `handle`），靠名字命中不了查询词；但**类名 /
+        // fqn 通常带业务概念**（`OrderCreateAfterListener` 含 `order`、`NotifyListener`
+        // 含 `notify`），统计它命中了哪些查询词。
+        let low = node.name.to_lowercase();
+        let fqn_low = node.fqn.as_deref().map(|f| f.to_lowercase()).unwrap_or_default();
+        let matched: Vec<&String> = match_terms
+            .iter()
+            .filter(|t| {
+                let t = t.to_lowercase();
+                low.contains(&t) || fqn_low.contains(&t)
+            })
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        // 稀有度加权：命中词越稀有（idf 越大），该监听器越可能是「真正被触发的那条」。
+        // 分值 = 词面相对基线 + idf 微调度，且整体夹在 [基线, 基线+200] 内 —— 这样事件种子
+        // 只用于在「词面强种子之下」做**兄弟监听器间的排序微调**（notify 压过 order、refund
+        // 压过 order），而不会整体压过 `create` / `notifyConfirm` 等强词面命中。
+        let rarity: f64 = matched
+            .iter()
+            .map(|t| {
+                let c = (*df.get(*t).unwrap_or(&0)).max(1);
+                ((total as f64) / (c as f64)).ln().max(0.0)
+            })
+            .sum();
+        let score = (base_score + rarity * 20.0).min(base_score + 200.0).max(EVENT_SEED_MIN);
+        candidates.push((score, id));
+    }
+    // 分值高的优先；同分时用小 id 兜底，保证可复现。
+    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+    candidates
+        .into_iter()
+        .take(EVENT_SEED_CAP)
+        .map(|(s, id)| (s, vec!["<event>".to_string()], index[&id]))
+        .collect()
+}
+
 /// 把标识符按「驼峰边界 + 非字母数字边界」切成小写 token 序列。
 ///
 /// 例：`StoreCouponIssue` → `["store","coupon","issue"]`；
@@ -1212,6 +1379,7 @@ impl RecallService {
         confidence: f32,
         reason: &str,
         missing: &[String],
+        event: bool,
     ) -> String {
         if quality == RecallQuality::High {
             return String::new();
@@ -1227,6 +1395,18 @@ impl RecallService {
                 ">\n> 建议改用以下特征词自行检索：{}\n",
                 missing.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join("、")
             ));
+        }
+        // 事件驱动查询的额外退路：正解多为命名极泛的事件监听器（`*Listener` /
+        // `*Subscriber`，方法统一叫 `handle`），词面召回几乎命中不了。直接点明该去
+        // 读哪类文件，比笼统的"头部区分度不足"更有操作性。
+        if event {
+            s.push_str(
+                ">\n> 该查询疑似事件 / 流程驱动（X 之后怎么 Y）。图上正解多为事件监听器 \
+                 （`*Listener` / `*Subscriber` / `@EventListener` / `@OnEvent`）或订阅者，\
+                 方法名通常很泛（统一叫 `handle`），词面召回难以命中。建议直接阅读工程里 \
+                 `listener` / `event` / `observer` / `subscriber` 目录下的对应监听器，以及相关的 \
+                 `*Services` 实现，确认「触发 → 监听器 → 处理器」链路。\n",
+            );
         }
         s.push('\n');
         s
@@ -1278,7 +1458,13 @@ impl RecallService {
         }
         let hits = Self::merge_intent_hits(groups, limit);
         let quality_reason = reasons.join("；");
-        let advisory = Self::quality_advisory(quality, confidence, &quality_reason, &missing_terms);
+        let advisory = Self::quality_advisory(
+            quality,
+            confidence,
+            &quality_reason,
+            &missing_terms,
+            event_intent(&q.query),
+        );
         let markdown =
             render_markdown(project_id, q, &terms, &hints, &seeds, &hits, &advisory);
         Ok(RecallResult {
@@ -1310,6 +1496,9 @@ impl RecallService {
         let action = action_intent(&q.query) && !wants_config;
         // 流程意图（还原调用链）：结果改按图拓扑排序（见 [`reorder_for_flow`]）。
         let flow = flow_intent(&q.query);
+        // 事件驱动意图（X 之后怎么 Y / 成功后 …）：把被命名约定淹没的事件处理器
+        // （监听器 / 订阅者）补成种子并上浮，见 [`collect_event_seeds`] / [`is_event_handler`]。
+        let event = event_intent(&q.query);
 
         // 中文意图词展开：构造一份「用于匹配」的词表（不污染对外返回的 terms）。
         // 两路来源：
@@ -1526,7 +1715,25 @@ impl RecallService {
         // 合并：词面分 + 向量分「相加」（不再是取大），让纯语义命中也能参与排序；
         // 种子取「词面 top-k ∪ 向量 top-k」的并集 —— 否则跨语言节点（优惠→Coupon）
         // 永远挤不进仅按总分排序的前 5，被 Order* 泛洪淹没。
-        let seed_tuples = select_seeds(&lexical, &vector, &index);
+        let mut seed_tuples = select_seeds(&lexical, &vector, &index);
+        // 事件驱动查询：把被命名约定淹没的事件处理器（监听器 / 订阅者 / Event 节点）
+        // 补成种子，否则「下单后怎么发通知」「退款成功后怎么回退」这类问题只能召回泛词。
+        // 种子分值由命中词的稀有度（idf）决定，让命中 notify/coupon/refund 这类稀有概念的
+        // 监听器压过只命中 order/user 等泛词的兄弟监听器（见 [`collect_event_seeds`]）。
+        if event {
+            // 事件种子基线取「最强词面种子 × 0.55」：低于词面强命中，保证 `create` /
+            // `notifyConfirm` 等仍排在前排、且质量评估不会因特征词被淹没而掉到「低」；
+            // idf 微调只在该基线之上区分兄弟监听器（见 [`collect_event_seeds`]）。
+            let top_lex = lexical.values().map(|(s, _)| *s).fold(0.0_f64, f64::max);
+            let event_base = (top_lex * 0.55).max(EVENT_SEED_MIN);
+            let existing: HashSet<i64> =
+                seed_tuples.iter().map(|(_, _, n)| n.id.get()).collect();
+            for (s, m, n) in
+                collect_event_seeds(&nodes, &index, &existing, &match_terms, event_base)
+            {
+                seed_tuples.push((s, m, n));
+            }
+        }
         let seeds: Vec<SeedInfo> = seed_tuples
             .iter()
             .map(|(s, _, n)| SeedInfo {
@@ -1591,6 +1798,32 @@ impl RecallService {
             let fan_in = incoming.get(&h.node_id.get()).map(|es| es.len()).unwrap_or(0);
             h.score *= hub_penalty(fan_in);
         }
+        // 事件驱动查询：把「事件处理器 → 直接被调者」与「沿事件语义边相连的节点」上浮，
+        // 让「监听器 → 业务处理器」链路相对普通的「种子 → 一跳邻居」更靠前。
+        // 否则监听器虽被补成种子，它调用的正解仍会被通用 CRUD 淹没。
+        if event {
+            let event_seed_ids: HashSet<i64> = seed_tuples
+                .iter()
+                .filter(|(_, m, _)| m.iter().any(|x| x == "<event>"))
+                .map(|(_, _, n)| n.id.get())
+                .collect();
+            if !event_seed_ids.is_empty() {
+                let mut callees: HashSet<i64> = HashSet::new();
+                for sid in &event_seed_ids {
+                    if let Some(node) = index.get(sid) {
+                        for nb in neighbours(node.id, &incoming, &outgoing) {
+                            callees.insert(nb.get());
+                        }
+                    }
+                }
+                for h in hits.iter_mut() {
+                    let id = h.node_id.get();
+                    if callees.contains(&id) && !event_seed_ids.contains(&id) {
+                        h.score *= EVENT_CALLEE_BOOST;
+                    }
+                }
+            }
+        }
         // 同分时按节点 id 稳定排序：HashMap 迭代顺序会让同分命中的先后随机变化，
         // 导致同一查询两次召回结果不同 —— 评测因此无法复现（实测同一构建两次跑
         // hit@10 会差 1 条）。排序必须完全确定。
@@ -1648,7 +1881,8 @@ impl RecallService {
 
         let (quality, confidence, quality_reason, missing_terms) =
             Self::assess_quality(&q.query, &hits, &boilerplate);
-        let advisory = Self::quality_advisory(quality, confidence, &quality_reason, &missing_terms);
+        let advisory =
+            Self::quality_advisory(quality, confidence, &quality_reason, &missing_terms, event);
         let markdown =
             render_markdown(project_id, q, &terms, &kind_hints, &seeds, &hits, &advisory);
         Ok(RecallResult {
@@ -3268,6 +3502,92 @@ mod tests {
         assert!(mid < 1.0 && mid > 0.4, "中等枢纽应被部分压低，实际 {mid}");
         assert!(hub < mid, "扇入越大衰减越多：{hub} vs {mid}");
         assert!(hub >= 0.4, "衰减应有下限，实际 {hub}");
+    }
+
+    // ---- 事件驱动召回 ----
+
+    #[test]
+    fn event_intent_fires_only_on_sequence_or_explicit_event() {
+        // 时序 / 显式事件信号才触发，普通动作查询不触发（避免误混入监听器种子）。
+        assert!(event_intent("下单后怎么发通知给用户"), "应包含时序词『后怎么』");
+        assert!(event_intent("退款成功后怎么回退优惠券"), "应包含『成功后』");
+        assert!(event_intent("订单创建之后做哪些事"), "应包含『之后』");
+        assert!(event_intent("支付回调通知商户"), "『回调』是事件语义");
+        assert!(event_intent("用户注册事件如何处理"), "『事件』是显式事件信号");
+        assert!(event_intent("order paid after event listener"), "英文 after / listener");
+
+        // 普通动作查询不应被误判。
+        assert!(!event_intent("如何修改下单优惠"), "纯动作查询不应触发");
+        assert!(!event_intent("商品库存预警阈值是多少"), "配置查询不应触发");
+        assert!(!event_intent("注册流程是怎样的"), "流程意图与事件意图独立（flow 另判）");
+        assert!(!event_intent("怎么发送通知"), "仅有『通知』无时序/事件信号不应触发");
+    }
+
+    #[test]
+    fn is_event_handler_detects_listener_by_convention() {
+        // 类名以 Listener / Subscriber / Observer 结尾。
+        assert!(is_event_handler(&tnode(
+            1, "Class", "OrderCreateAfterListener",
+            Some("app\\listener\\order\\OrderCreateAfterListener"), None
+        )));
+        assert!(is_event_handler(&tnode(
+            2, "Class", "UserRegisteredSubscriber",
+            Some("app\\subscriber\\UserRegisteredSubscriber"), None
+        )));
+
+        // 方法名 handle / onX 且位于 listener / event 命名空间。
+        assert!(is_event_handler(&tnode(
+            3, "Method", "handle",
+            Some("app\\listener\\order\\OrderCreateAfterListener::handle"), None
+        )));
+        assert!(is_event_handler(&tnode(
+            4, "Method", "onOrderPaid",
+            Some("app\\events\\OrderPaidListener::onOrderPaid"), None
+        )));
+
+        // 普通业务方法 / 服务类不应被误判。
+        assert!(!is_event_handler(&tnode(
+            5, "Method", "create", Some("app\\services\\UserServices::create"), None
+        )));
+        assert!(!is_event_handler(&tnode(
+            6, "Class", "StoreOrderRefundServices",
+            Some("app\\services\\order\\StoreOrderRefundServices"), None
+        )));
+        // `on` + 小写（如 online）不是事件处理方法。
+        assert!(!is_event_handler(&tnode(
+            7, "Method", "online", Some("app\\services\\UserServices::online"), None
+        )));
+    }
+
+    #[test]
+    fn collect_event_seeds_returns_only_handlers_and_event_nodes() {
+        let nodes = vec![
+            tnode(1, "Class", "OrderCreateAfterListener",
+                Some("app\\listener\\order\\OrderCreateAfterListener"), None),
+            tnode(2, "Method", "handle",
+                Some("app\\listener\\order\\OrderCreateAfterListener::handle"), None),
+            tnode(3, "Class", "StoreOrderRefundServices",
+                Some("app\\services\\order\\StoreOrderRefundServices"), None),
+            // Event 节点：名字命中查询词才作种子
+            tnode(4, "Event", "OrderPaidEvent", Some("OrderPaidEvent"), None),
+            // Event 节点：名字未命中查询词 → 排除
+            tnode(5, "Event", "UserLoggedInEvent", Some("UserLoggedInEvent"), None),
+            // 已存在的种子 → 排除
+            tnode(9, "Method", "refund", Some("app\\services\\order\\refund"), None),
+        ];
+        let index: HashMap<i64, &Node> =
+            nodes.iter().map(|n| (n.id.get(), n)).collect();
+        let existing: HashSet<i64> = HashSet::from([9i64]);
+        let seeds = collect_event_seeds(
+            &nodes, &index, &existing, &["refund".to_string(), "paid".to_string(), "order".to_string()], 400.0,
+        );
+        let ids: Vec<i64> = seeds.iter().map(|(_, _, n)| n.id.get()).collect();
+        assert!(ids.contains(&1), "监听器类应作种子：{ids:?}");
+        assert!(ids.contains(&2), "监听器 handle 方法应作种子：{ids:?}");
+        assert!(ids.contains(&4), "名字命中查询词的 Event 节点应作种子：{ids:?}");
+        assert!(!ids.contains(&3), "普通 Services 类不应作种子：{ids:?}");
+        assert!(!ids.contains(&5), "名字未命中查询词的 Event 节点应排除：{ids:?}");
+        assert!(!ids.contains(&9), "已存在的种子不应重复：{ids:?}");
     }
 
     // ---- 多意图拆分 / 合并 ----

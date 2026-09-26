@@ -1,0 +1,6 @@
+{"id":"order_create_notify","query":"下单后怎么发通知给用户","intent":"event","expect_contains":["OrderCreateAfterListener"],"expect_quality_at_least":"medium","note":"下单后给用户的通知入口：OrderCreateAfterListener 必须浮出，质量不得 Low"}
+{"id":"refund_coupon_back","query":"退款成功后怎么回退优惠券","intent":"event","expect_contains":["OrderRefundCreateAfterListener"],"expect_quality_at_least":"medium","note":"退款回退优惠券的正解入口监听器，必须浮出"}
+{"id":"modify_order_discount","query":"怎么修改下单优惠","intent":"business","expect_contains":["StoreCouponIssue"],"expect_quality_at_least":"medium","note":"修改下单优惠应落到优惠券服务 StoreCouponIssue"}
+{"id":"stock_warn_threshold","query":"商品库存预警阈值是多少","intent":"config","expect_contains":["ProductStockJob","product_stock_job"],"expect_quality_at_least":"medium","note":"库存预警应召回 ProductStockJob / product_stock_job"}
+{"id":"login_log","query":"用户登录后怎么记录登录日志","intent":"event","expect_contains":["loginSaveVisit","AdminLoginListener"],"expect_quality_at_least":"medium","note":"登录后记录日志应命中 loginSaveVisit / AdminLoginListener"}
+{"id":"payment_callback","query":"支付回调怎么处理","intent":"event","expect_contains":["paymentService","handleOrderPaySuccess"],"expect_quality_at_least":"medium","note":"支付回调应召回 paymentService / handleOrderPaySuccess"}

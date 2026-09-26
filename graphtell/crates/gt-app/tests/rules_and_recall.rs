@@ -16,7 +16,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use gt_adapter_rules::YamlRuleSet;
 use gt_app::AppConfig;
-use gt_application::{RecallQuery, RecallService, RuleService};
+use gt_application::{RecallQuality, RecallQuery, RecallService, RuleService};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 use gt_domain::model::{
@@ -681,6 +681,207 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
         "查询词应保留 修改 / 下单 / 优惠，实际：{:?}",
         result.terms
     );
+}
+
+/// 端到端锁定「事件驱动查询」的两个核心不变量（对应 eval 集同款查询 + 6 场景复盘）：
+///
+/// 1. **监听器浮出**：查询「X 之后怎么 Y」时，被命名约定淹没的事件监听器
+///    （`*Listener`，方法名统一叫 `handle`、词面分≈0）必须被补成种子并进前排 ——
+///    具体地，「下单后怎么发通知」要能召回 `OrderCreateAfterListener`、「退款成功后怎么回退优惠券」
+///    要能召回 `OrderRefundCreateAfterListener`。
+/// 2. **质量不崩**：事件种子只做「兄弟监听器间的 idf 微调」，不整体压过词面强命中，
+///    因此质量档不得掉到 `Low`（否则整段上下文作废、等于没召回）。
+///
+/// 这条不走样本（CRMEB），直接手造一组「订单/退款/通知 监听器 + 业务 Service」的小图，
+/// 任何机器上必跑，守住上面两条回归。
+#[test]
+fn recall_event_driven_listener_surfaces_without_quality_collapse() {
+    let f = fixture();
+    let store = &f.container.store;
+    let pid = f.project;
+
+    let files = store
+        .replace_files(
+            pid,
+            vec![NewSourceFile {
+                project_id: pid,
+                sub_project_id: None,
+                path: "app/listener/order/OrderCreateAfterListener.php".into(),
+                language: Language::new("php"),
+                size_bytes: 512,
+                content_hash: "hl1".into(),
+            }],
+        )
+        .expect("文件应可写入");
+    let listener_file = files[0].id;
+
+    let node = |kind: &str, name: &str, id: i64, file: FileId, fqn: &str| NewNode {
+        id: Some(NodeId(id)),
+        project_id: pid,
+        sub_project_id: None,
+        kind: NodeKind::new(kind),
+        name: name.to_string(),
+        fqn: Some(fqn.to_string()),
+        identity: Some(IdentityKey::fqn(fqn)),
+        file_id: Some(file),
+        span: Span { start_line: 10, end_line: 30, start_byte: 0, end_byte: 0 },
+        language: Language::new("php"),
+        phase: Phase(Phase::SYNTHESIZE.to_string()),
+        confidence: 1.0,
+        properties: serde_json::Value::Null,
+    };
+
+    // 业务 Service（含 order / user / coupon 内容词 → 词面强命中）
+    let order_svc = node("Class", "OrderService", 801, listener_file, "app\\services\\OrderService");
+    let user_svc = node("Class", "UserService", 802, listener_file, "app\\services\\UserService");
+    let coupon_svc = node("Class", "CouponService", 803, listener_file, "app\\services\\CouponService");
+    let recover_coupon = node(
+        "Method",
+        "recoverCoupon",
+        804,
+        listener_file,
+        "app\\services\\CouponService::recoverCoupon",
+    );
+    // 内聚业务方法：同一方法同时覆盖两个概念，给质量评估器提供「概念内聚」信号，
+    // 否则「下单 + 通知 + 用户」三类概念各撞一个无关节点会被判 Low（假信心护栏）。
+    // 这也正是真实代码库里存在的入口（下单后发通知 / 退款回退优惠卷）。
+    let send_notify = node(
+        "Method",
+        "sendOrderCreateNotify",
+        805,
+        listener_file,
+        "app\\services\\NotifyService::sendOrderCreateNotify",
+    );
+    let refund_coupon_back = node(
+        "Method",
+        "refundCouponBack",
+        806,
+        listener_file,
+        "app\\services\\CouponService::refundCouponBack",
+    );
+    // 事件监听器（名字带 Listener → 被 `is_event_handler` 识别；方法名 `handle` 词面分≈0）
+    let order_create_listener = node(
+        "Class",
+        "OrderCreateAfterListener",
+        811,
+        listener_file,
+        "app\\listener\\order\\OrderCreateAfterListener",
+    );
+    let order_refund_listener = node(
+        "Class",
+        "OrderRefundCreateAfterListener",
+        812,
+        listener_file,
+        "app\\listener\\order\\OrderRefundCreateAfterListener",
+    );
+    let notify_listener = node(
+        "Class",
+        "NotifyListener",
+        813,
+        listener_file,
+        "app\\listener\\notify\\NotifyListener",
+    );
+    let order_create_event = node(
+        "Event",
+        "OrderCreateAfterEvent",
+        821,
+        listener_file,
+        "app\\event\\OrderCreateAfterEvent",
+    );
+
+    store
+        .apply(&GraphDelta {
+            project_id: Some(pid),
+            nodes: vec![
+                order_svc,
+                user_svc,
+                coupon_svc,
+                recover_coupon,
+                send_notify,
+                refund_coupon_back,
+                order_create_listener.clone(),
+                order_refund_listener.clone(),
+                notify_listener.clone(),
+                order_create_event.clone(),
+            ],
+            edges: vec![
+                // 事件 → 监听器（语义边，未来若接"事件边连通性"加权也能用到）
+                NewEdge::new(
+                    pid,
+                    EdgeKind::new(EdgeKind::HANDLED_BY),
+                    NodeId(821),
+                    NodeId(811),
+                ),
+            ],
+            ..Default::default()
+        })
+        .expect("图应可写入");
+
+    let svc = RecallService::new(
+        f.container.store.clone() as Arc<dyn Persistence>,
+        f.container.filesystem(),
+        f.container.scanner(),
+    );
+
+    // ---- 场景 1：下单后怎么发通知给用户 → OrderCreateAfterListener 必须浮出，质量不崩 ----
+    let r1 = svc
+        .recall(
+            f.project,
+            &RecallQuery {
+                query: "下单后怎么发通知给用户".into(),
+                limit: 20,
+                hops: 2,
+                kinds: Vec::new(),
+                with_snippets: false,
+            },
+        )
+        .expect("召回不应失败");
+    let names1: Vec<&str> = r1.hits.iter().map(|h| h.name.as_str()).collect();
+    assert!(
+        names1.iter().any(|n| *n == "OrderCreateAfterListener"),
+        "「下单后发通知」必须召回 OrderCreateAfterListener，实际：{names1:?}"
+    );
+    assert_ne!(
+        r1.quality,
+        RecallQuality::Low,
+        "事件种子不得整体压过词面命中导致质量崩到 Low，实际：{:?}（{names1:?}）",
+        r1.quality_reason
+    );
+
+    // ---- 场景 2：退款成功后怎么回退优惠券 → OrderRefundCreateAfterListener + 回退券逻辑浮出 ----
+    let r2 = svc
+        .recall(
+            f.project,
+            &RecallQuery {
+                query: "退款成功后怎么回退优惠券".into(),
+                limit: 20,
+                hops: 2,
+                kinds: Vec::new(),
+                with_snippets: false,
+            },
+        )
+        .expect("召回不应失败");
+    let names2: Vec<&str> = r2.hits.iter().map(|h| h.name.as_str()).collect();
+    assert!(
+        names2.iter().any(|n| *n == "OrderRefundCreateAfterListener"),
+        "「退款回退优惠券」必须召回 OrderRefundCreateAfterListener，实际：{names2:?}"
+    );
+    assert_ne!(
+        r2.quality,
+        RecallQuality::Low,
+        "退款场景质量不得崩到 Low，实际：{:?}（{names2:?}）",
+        r2.quality_reason
+    );
+
+    // ---- idf 微调不变量：命中稀有概念（notify）的监听器应压过只命中泛词（order）的兄弟 ----
+    let rank = |n: &str| names1.iter().position(|x| *x == n);
+    match (rank("NotifyListener"), rank("OrderRefundCreateAfterListener")) {
+        (Some(a), Some(b)) => assert!(
+            a < b,
+            "NotifyListener（notify，稀有）应排在 OrderRefundCreateAfterListener（仅 order）之前，实际：{names1:?}"
+        ),
+        _ => {} // 任一未进前排则不强制（主要取决于词面种子竞争），核心不变量已由上面两条守住
+    }
 }
 
 /// 端到端：把真实 `bge-m3`（candle，纯 Rust）注入 `RecallService`，中文意图
