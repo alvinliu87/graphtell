@@ -1307,6 +1307,15 @@ impl RecallService {
 
         // ---- 5) 排序 + 截断 + 补位置
         let mut hits: Vec<RecallHit> = best.into_values().collect();
+        // 枢纽抑制（**所有查询**生效，不只流程查询）：被全工程到处引用的通用底座
+        // （中间件被 800~1200 条路由穿过、Request / Cache 之类）对任何查询都不是答案，
+        // 但它们常作为种子的**一跳邻居**被带进来（此时分数 = 父种子 × 衰减，
+        // 在 score_node 里抑制没用，必须作用在最终得分上）。按总入度平滑衰减，
+        // 下限 0.4 —— 永不为 0，仍可被召到，只是不再占位。
+        for h in hits.iter_mut() {
+            let fan_in = incoming.get(&h.node_id.get()).map(|es| es.len()).unwrap_or(0);
+            h.score *= hub_penalty(fan_in);
+        }
         // 同分时按节点 id 稳定排序：HashMap 迭代顺序会让同分命中的先后随机变化，
         // 导致同一查询两次召回结果不同 —— 评测因此无法复现（实测同一构建两次跑
         // hit@10 会差 1 条）。排序必须完全确定。
@@ -1789,10 +1798,21 @@ fn score_node(
     let fqn = node.fqn.as_deref().unwrap_or("").to_lowercase();
     let identity = node.identity.as_ref().map(|i| i.value.to_lowercase()).unwrap_or_default();
 
+    // HTTP 路由的路径里 `save` / `update` / `edit` / `create` 是**写接口的命名约定** ——
+    // 几乎每个写接口都带，对主题毫无区分度。实测「怎么修改商品库存预警阈值」被
+    // `POST /product/crawl/save`、`PUT /user/save_give_level_time` 这类路由灌满前排，
+    // 它们只靠「修改→save」+ 宽泛的「商品/订单」凑数，与该意图的特征词毫无关系。
+    // 因此路由节点的路径里，通用 CRUD 动词**不计入命中**（与方法侧的
+    // "纯动词无内容词打折"是同一条原则）。路由仍可靠路径里的业务词命中。
+    let is_contract = node.kind.as_str().eq_ignore_ascii_case("HttpContract");
+
     let mut score = 0.0f64;
     let mut matched: Vec<String> = Vec::new();
     for t in terms {
         let t = t.to_lowercase();
+        if is_contract && GENERIC_CRUD_METHODS.contains(&t.as_str()) {
+            continue;
+        }
         let mut best = 0.0f64;
         if name == t {
             best = 100.0;
