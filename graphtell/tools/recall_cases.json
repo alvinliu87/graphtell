@@ -4,7 +4,9 @@
     "targets 必须来自图里**真实存在**的符号，不允许凭印象填写 —— 新增 case 前请先在库里核实。",
     "lang=zh 为中文查询，lang=en 为同一意图的英文对照：",
     "  若 zh 不中而 en 中 → 跨语言桥的问题；若两者都不中 → 检索/排序本身的问题。",
-    "覆盖：PHP(电商/后台) / TypeScript(Node,非电商) / Java(SpringBoot,电商) / Python(FastAPI)。"
+    "覆盖：PHP(电商/后台) / TypeScript(Node,非电商) / Java(SpringBoot,电商) / Python(FastAPI)。",
+    "用「、」连接两个独立问题的 case 用于验证**多意图拆分**：判据是 hit 用「任一 target」语义，",
+    "  因此它只能保证至少一个意图被召回；要断言两个意图各自命中，请像下面那样为每个意图单独建 case。"
   ],
   "projects": {
     "1": "CRMEB（PHP 电商，含 i18n）",
@@ -68,6 +70,18 @@
       "project": 1,
       "query": "如何修改下单优惠",
       "targets": ["storecoupon", "order"],
+      "lang": "zh"
+    },
+    {
+      "project": 1,
+      "query": "订单总价里优惠是怎么算进去的",
+      "targets": ["getcouponsorderprice", "getorderproductcoupon", "ordercoupon"],
+      "lang": "zh"
+    },
+    {
+      "project": 1,
+      "query": "如何修改下单优惠、订单总价里优惠是怎么算进去的",
+      "targets": ["getcouponsorderprice", "getorderproductcoupon", "ordercoupon", "storecoupon"],
       "lang": "zh"
     },
     {

@@ -628,6 +628,7 @@ pub struct SeedInfo {
 /// **静默失败**成了最坏的失败模式。这里把质量显式报出去，让调用方能降级到
 /// grep / 自行阅读。判定只用与项目无关的信号（特征词覆盖率 + 头部分差）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
 pub enum RecallQuality {
     /// 特征词基本命中、头部分差健康 —— 可直接采信。
     High,
@@ -1095,17 +1096,35 @@ impl RecallService {
             .filter(|(zh, _)| query.contains(*zh))
             .map(|(zh, ens)| (*zh, *ens))
             .collect();
-        let missing: Vec<String> = concepts
+        // 覆盖率按**概念数**算（不是关键词条数），所以未命中集合先只留概念。
+        let missing_concepts: Vec<(&str, &[&str])> = concepts
             .iter()
             .filter(|(_, ens)| !ens.iter().any(|e| matched.contains(&e.to_lowercase())))
-            .map(|(zh, _)| (*zh).to_string())
+            .map(|(zh, ens)| (*zh, *ens))
             .collect();
 
         let coverage = if concepts.is_empty() {
             1.0
         } else {
-            1.0 - (missing.len() as f32 / concepts.len() as f32)
+            1.0 - (missing_concepts.len() as f32 / concepts.len() as f32)
         };
+
+        // 对外输出的**可检索关键词**：中文概念 + 它的英文展开。
+        //
+        // 只给中文字面是不够的：代码库里的标识符是英文，让 AI IDE 拿「回调」去 grep
+        // 一个 PHP 工程什么都搜不到 —— 实测这条退路建议形同虚设。两者都给才真能搜到。
+        let mut missing: Vec<String> = Vec::new();
+        for (zh, ens) in &missing_concepts {
+            missing.push((*zh).to_string());
+            for e in *ens {
+                if !missing.iter().any(|m| m == e) {
+                    missing.push((*e).to_string());
+                }
+            }
+        }
+        // 说明文案仍只用中文概念，避免过长。
+        let missing_zh: Vec<String> =
+            missing_concepts.iter().map(|(zh, _)| (*zh).to_string()).collect();
 
         // 3) 头部分差。
         let top = hits.first().map(|h| h.score).unwrap_or(0.0);
@@ -1142,31 +1161,39 @@ impl RecallService {
         }
         let fragmented = concepts.len() >= 2 && best_cohesion < 2;
 
+        // **没有任何可评估概念时绝不允许判 High**。
+        // 查询越生僻、越超出词表，可算的概念越少 —— 极端情况下 concepts 为空，
+        // coverage 取默认值 1.0，于是"越生僻越说没问题"，恰好在最需要提醒时失灵。
+        // 这违背"宁可报低"原则：没有概念 = 无法确认质量，至少报 Medium 并说明。
+        let unevaluable = concepts.is_empty();
+
         let quality = if coverage < 0.5 || (concepts.len() >= 3 && best_cohesion < 2) {
             RecallQuality::Low
-        } else if coverage >= 0.9 && confidence >= 0.55 && !fragmented {
+        } else if coverage >= 0.9 && confidence >= 0.55 && !fragmented && !unevaluable {
             RecallQuality::High
         } else {
             RecallQuality::Medium
         };
 
-        let reason = if quality == RecallQuality::Low && coverage >= 0.5 {
+        let reason = if unevaluable {
+            "查询未包含可评估的意图概念（多为领域专有词 / 生僻说法），无法确认召回质量，结果需自行判断".to_string()
+        } else if quality == RecallQuality::Low && coverage >= 0.5 {
             "各概念分别被互不相关的节点命中（无任何命中同时覆盖两个概念），多为泛词各自撞名".to_string()
         } else {
             match quality {
             RecallQuality::Low => format!(
                 "多数特征词未命中（{}），前排为泛词匹配 —— 建议改用 grep 或自行阅读确认",
-                if missing.is_empty() {
+                if missing_zh.is_empty() {
                     "命中过少".to_string()
                 } else {
-                    missing.join("、")
+                    missing_zh.join("、")
                 }
             ),
             RecallQuality::Medium => {
-                if missing.is_empty() {
+                if missing_zh.is_empty() {
                     "特征词已命中但头部区分度不足，结果可能分散".to_string()
                 } else {
-                    format!("部分特征词未命中（{}），结果可能不完整", missing.join("、"))
+                    format!("部分特征词未命中（{}），结果可能不完整", missing_zh.join("、"))
                 }
             }
             RecallQuality::High => "特征词基本命中、头部区分度健康".to_string(),
@@ -3393,6 +3420,45 @@ mod tests {
             "样板命中不应算覆盖「优惠」：{missing:?}"
         );
         assert_eq!(q, RecallQuality::Low, "排除样板后覆盖率过低应为 Low");
+    }
+
+    #[test]
+    fn assess_quality_missing_terms_include_english_expansions() {
+        // 只给中文字面是不够的：代码里的标识符是英文，AI IDE 拿「回调」grep 不到任何东西。
+        // 因此未命中概念必须同时输出它的英文展开，才算真正可用的退路。
+        let hits = vec![qhit(1, 500.0, &["pay"])];
+        let (_q, _conf, reason, missing) =
+            RecallService::assess_quality("支付回调失败怎么排查", &hits, &HashSet::new());
+        assert!(missing.iter().any(|m| m == "回调"), "应含中文概念：{missing:?}");
+        assert!(
+            missing.iter().any(|m| m == "callback"),
+            "应含英文展开 callback，否则 grep 不到代码：{missing:?}"
+        );
+        assert!(missing.iter().any(|m| m == "fail"), "应含英文展开 fail：{missing:?}");
+        // 说明文案只用中文概念，避免过长。
+        assert!(!reason.contains("callback"), "说明文案不应塞英文展开：{reason}");
+    }
+
+    #[test]
+    fn assess_quality_without_concepts_cannot_be_high() {
+        // 查询不含任何已知意图概念（领域专有词 / 生僻说法）时，可算概念为空、
+        // 覆盖率取默认 1.0 —— 若不拦住就会出现"越生僻越说没问题"。
+        // 这里用纯 ASCII 无意义串保证必然 OOV（等价于任何生僻领域查询）。
+        let hits = vec![qhit(1, 500.0, &["express"]), qhit(2, 100.0, &["delivery"])];
+        let (q, _conf, reason, _missing) =
+            RecallService::assess_quality("zzzqqx", &hits, &HashSet::new());
+        assert_ne!(q, RecallQuality::High, "无可评估概念时不得判 High");
+        assert!(reason.contains("无法确认"), "应说明无法确认质量：{reason}");
+    }
+
+    #[test]
+    fn recall_quality_serializes_lowercase() {
+        // 必须序列化成小写：UI 按 'high'/'medium'/'low' 判断档位配色，
+        // MCP 的 with_quality_guidance 也按小写匹配后追加"下一步该做什么"。
+        // 默认 derive 会输出 "Medium"（大写）→ 两处同时失灵，且 UI 会**静默显示"高"**。
+        assert_eq!(serde_json::to_string(&RecallQuality::High).unwrap(), "\"high\"");
+        assert_eq!(serde_json::to_string(&RecallQuality::Medium).unwrap(), "\"medium\"");
+        assert_eq!(serde_json::to_string(&RecallQuality::Low).unwrap(), "\"low\"");
     }
 
     #[test]

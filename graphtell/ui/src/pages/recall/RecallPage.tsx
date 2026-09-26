@@ -190,7 +190,9 @@ export function RecallPage() {
           ) : null}
         </Space>
 
-        {result ? (
+        {/* loading 时隐藏上一次的结果摘要与质量条：否则会残留旧内容，
+            与下方转圈的 loading 区同时出现，看起来像"新结果已经出来了"。 */}
+        {result && !loading ? (
           <div style={{ marginTop: 12 }}>
             <RecallQualityBanner
               result={result}
