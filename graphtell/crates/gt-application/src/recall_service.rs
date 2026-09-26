@@ -45,6 +45,11 @@ const VECTOR_WEIGHT: f64 = 200.0;
 /// 余弦低于该值视为「不相关」，不进入候选。
 pub const VECTOR_THRESHOLD: f64 = 0.3;
 /// 词面路取前 N 个作为种子。
+///
+/// 试过放宽到 10 / 12：确实能把 `order_cancel_time` 捞回来，但会让无关方法
+/// （`save`）进入「如何修改下单优惠」的前排，属于净损失，**已放弃**。
+/// 真正解法是 [`wants_config_value`]：配置类查询不反转种类偏好后，
+/// 该配置键自己就排到第 2，无需动名额。这里保持原值。
 const SEED_COUNT: usize = 5;
 /// 向量路额外取前 N 个作为种子（与词面种子并集），补足跨语言召回。
 const VECTOR_SEED_COUNT: usize = 4;
@@ -76,6 +81,13 @@ fn is_generic_crud_method(name: &str) -> bool {
     GENERIC_CRUD_METHODS.contains(&name)
 }
 
+/// 纯 CRUD 动词方法**只靠动词命中**（无任何内容词）时，基础匹配分的折扣系数。
+///
+/// 只取消动作加权（见 [`GENERIC_CRUD_METHODS`]）还不够：这类方法靠同名就能拿到
+/// 100 分的精确匹配，仍会霸榜。打折后它们让位于真正的领域答案。
+/// 命中内容词的（优惠券的 edit / 订单的 update）完全不受影响。
+const GENERIC_CRUD_VERB_ONLY_DISCOUNT: f64 = 0.5;
+
 /// 过于通用的「架构名词」别名词（service / api / model / entity …）。
 ///
 /// 这些词常作为类名后缀出现在 fqn 里（`DeliveryService`、`StoreCouponIssue`
@@ -95,36 +107,82 @@ fn is_generic_noun(t: &str) -> bool {
     GENERIC_NOUNS.contains(&t)
 }
 
-/// 从 fqn 抽出「类标识符」：去掉命名空间 / 目录路径，只留最后的类名 token。
+/// 把标识符按「驼峰边界 + 非字母数字边界」切成小写 token 序列。
 ///
-/// fqn 形如 `app\adminapi\v1\order\DeliveryService::update` → `deliveryservice`；
-/// `app\services\activity\coupon\StoreCouponIssue` → `storecouponissue`。
+/// 例：`StoreCouponIssue` → `["store","coupon","issue"]`；
+/// `userAddressServices` → `["user","address","services"]`；
+/// `HTTPResponse` → `["http","response"]`。
 ///
-/// 内容词判定只能针对「类标识符 + 方法名」，不能针对完整 fqn 路径 —— 否则目录名
-/// 会误判：`DeliveryService` 虽位于 `order/` 目录下，其 fqn 含 `order`，会被当成
-/// 「命中订单内容」而保住动作加权（这正是一度回退的坑）。类本身与订单无关。
-fn class_identifier(fqn: Option<&str>, name: &str) -> String {
-    let base = fqn.unwrap_or("");
-    let class_part = base.split("::").next().unwrap_or(base);
-    let ident = class_part.rsplit(['\\', '/']).next().unwrap_or(class_part);
-    if ident.is_empty() {
-        name.to_lowercase()
-    } else {
-        ident.to_lowercase()
+/// 旧实现把类标识符拼成无分隔串后做整串 `contains` 子串匹配，会把**词中间**的
+/// 巧合片段当成命中：`Recorder` 含 `order`、`Reorder` 含 `order` 都会被误判成
+/// 「命中订单内容」而保住动作加权。改成先切 token、再按 **token 前缀**匹配后，
+/// `order` 只能命中 `order` / `orders`（复数）/ `orderItem`（驼峰首 token），
+/// 不再误命中 `recorder`。规则纯依赖标识符形态，与具体工程无关。
+///
+/// 用前缀而非严格相等，是为了保住「复合 / 屈折」这类**合理**匹配：
+/// `pay`→`payment`、`order`→`orders` 仍算命中，否则会把真正相关的领域类误降级。
+fn split_ident_tokens(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for i in 0..n {
+        let c = chars[i];
+        if !c.is_alphanumeric() {
+            if !cur.is_empty() {
+                tokens.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        let is_upper = c.is_uppercase();
+        if is_upper && !cur.is_empty() {
+            let prev = chars[i - 1];
+            let prev_is_lower = prev.is_lowercase();
+            let prev_is_upper = prev.is_uppercase();
+            let next_is_lower = i + 1 < n && chars[i + 1].is_lowercase();
+            // 驼峰词首（foo|Bar）或缩写词尾（HTTP|Server）处切分。
+            if prev_is_lower || (prev_is_upper && next_is_lower) {
+                tokens.push(std::mem::take(&mut cur));
+            }
+        }
+        cur.push(c.to_ascii_lowercase());
     }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    tokens
 }
 
-/// 该节点是否「命中内容词」：方法名或类标识符包含某个**非通用** token
-/// （coupon / order / stock …），且不是通用 CRUD 动词、也不是架构名词（service/api…）。
-/// 仅当命中内容词时，纯 CRUD 动词方法才保留动作加权（见 [`GENERIC_CRUD_METHODS`]）。
+/// 该节点是否「命中内容词」：方法名或类标识符拆出的 token 里，存在某个**非通用**
+/// token（coupon / order / stock …），且它不是通用 CRUD 动词、也不是架构名词
+/// （service/api…）。仅当命中内容词时，纯 CRUD 动词方法才保留动作加权
+/// （见 [`GENERIC_CRUD_METHODS`]）。
+///
+/// 注意：内容词来自「本次查询的 terms」，匹配用 **token 前缀**（而非整串子串），
+/// 因此与具体工程无关 —— 问库存就认 `stock`、问支付就认 `pay`（含 `payment`），
+/// 但不会因 `recorder` 里含 `order` 这种词中片段而误判。
 fn has_content_word(node: &Node, terms: &[String]) -> bool {
-    let name = node.name.to_lowercase();
-    let class_id = class_identifier(node.fqn.as_deref(), &name);
+    let name_tokens = split_ident_tokens(&node.name);
+    let class_tokens = match node.fqn.as_deref() {
+        Some(f) => {
+            let class_part = f.split("::").next().unwrap_or(f);
+            // 只取末段类名，剥离命名空间 / 目录路径 —— 否则 `order/DeliveryService`
+            // 的目录 `order` 会被当成命中订单内容（一度回退的坑）。类本身与订单无关。
+            let ident = class_part.rsplit(['\\', '/']).next().unwrap_or(class_part);
+            if ident.is_empty() {
+                name_tokens.clone()
+            } else {
+                split_ident_tokens(ident)
+            }
+        }
+        None => name_tokens.clone(),
+    };
+    let all: Vec<&String> = name_tokens.iter().chain(class_tokens.iter()).collect();
     terms.iter().any(|raw| {
         let t = raw.to_lowercase();
         !GENERIC_CRUD_METHODS.contains(&t.as_str())
             && !is_generic_noun(&t)
-            && (class_id.contains(&t) || name.contains(&t))
+            && all.iter().any(|tok| tok.starts_with(&t))
     })
 }
 
@@ -209,6 +267,14 @@ const INTENT_ALIASES: &[(&str, &[&str])] = &[
     ("订单", &["order"]),
     ("商品", &["product", "goods", "item"]),
     ("库存", &["stock", "inventory"]),
+    // ---- 通用「可配置值」语汇：任意系统都有取消 / 时限 / 阈值 / 预警 ----
+    // 缺了它们，「订单自动取消时间」这类提问只能命中宽泛的 order，
+    // 而真正的配置键 `order_cancel_time` 因匹配不到 cancel / time 而落榜。
+    ("取消", &["cancel"]),
+    ("时间", &["time"]),
+    ("时限", &["time", "timeout", "expire"]),
+    ("阈值", &["threshold", "limit", "warn"]),
+    ("预警", &["warn", "warning", "alert"]),
     ("余额", &["balance"]),
     ("优惠", &["coupon", "discount"]),
     ("折扣", &["discount"]),
@@ -862,11 +928,125 @@ impl RecallService {
         Ok(rows)
     }
 
-    /// 执行一次召回。
+    /// 把一句话拆成多个**独立意图**。
+    ///
+    /// 「怎么修改商品库存预警阈值、修改订单自动取消时间」这类提问把两个独立问题
+    /// 塞进一句话。若当成一个词袋召回，两个意图的词互相干扰，且 `limit` 会被
+    /// 单一意图的高分噪声占满 —— 实测这两条子问题**单独查都能找到答案**
+    /// （`product_stock_job` / `ConfigKey order_cancel_time`），合起来却双双跌出前 20。
+    /// 因此拆开分别召回、再按意图合并（见 [`RecallService::recall`]）。
+    ///
+    /// 只有拆出 ≥2 段且都够长时才算多意图，否则退回单意图，零回归。
+    fn split_intents(q: &str) -> Vec<String> {
+        // 先按连接词切，再按标点切。
+        let mut parts: Vec<String> = vec![q.to_string()];
+        for sep in ["以及", "并且", "还有", "另外"] {
+            let mut next = Vec::new();
+            for p in parts {
+                next.extend(p.split(sep).map(|s| s.to_string()));
+            }
+            parts = next;
+        }
+        let mut next = Vec::new();
+        for p in parts {
+            next.extend(p.split(|c| "、，,；;。".contains(c)).map(|s| s.to_string()));
+        }
+        let out: Vec<String> = next
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            // 过短片段（语气词 / 残留标点旁支）不单独成意图。
+            .filter(|s| s.chars().count() >= 4)
+            .collect();
+        if out.len() >= 2 { out } else { Vec::new() }
+    }
+
+    /// 多意图结果合并：按意图**轮询**取一条，保证每个意图都有代表进入最终列表
+    /// （否则高分意图会再次把其它意图挤空），全程按 node_id 去重。
+    fn merge_intent_hits(groups: Vec<Vec<RecallHit>>, limit: usize) -> Vec<RecallHit> {
+        let mut out: Vec<RecallHit> = Vec::new();
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut idx = vec![0usize; groups.len()];
+        while out.len() < limit {
+            let mut progressed = false;
+            for gi in 0..groups.len() {
+                while idx[gi] < groups[gi].len() {
+                    let h = groups[gi][idx[gi]].clone();
+                    idx[gi] += 1;
+                    if seen.insert(h.node_id.get()) {
+                        out.push(h);
+                        progressed = true;
+                        break;
+                    }
+                }
+                if out.len() >= limit {
+                    break;
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+        out
+    }
+
+    /// 执行一次召回：单意图直接走 [`Self::recall_single`]；
+    /// 多意图（顿号 / 逗号连接的多个独立问题）拆开分别召回再合并
+    /// （见 [`split_intents`] / [`merge_intent_hits`]）。
     pub fn recall(&self, project_id: ProjectId, q: &RecallQuery) -> Result<RecallResult> {
+        let parts = Self::split_intents(&q.query);
+        if parts.is_empty() {
+            return self.recall_single(project_id, q);
+        }
+        let limit = q.limit.max(1);
+        let mut groups: Vec<Vec<RecallHit>> = Vec::new();
+        let mut terms: Vec<String> = Vec::new();
+        let mut hints: Vec<String> = Vec::new();
+        let mut seeds: Vec<SeedInfo> = Vec::new();
+        let mut truncated = false;
+        for part in &parts {
+            let sub = RecallQuery { query: part.clone(), limit, ..q.clone() };
+            let r = self.recall_single(project_id, &sub)?;
+            for t in &r.terms {
+                if !terms.iter().any(|x| x == t) {
+                    terms.push(t.clone());
+                }
+            }
+            for h in &r.kind_hints {
+                if !hints.iter().any(|x| x == h) {
+                    hints.push(h.clone());
+                }
+            }
+            seeds.extend(r.seeds);
+            truncated |= r.truncated;
+            groups.push(r.hits);
+        }
+        let hits = Self::merge_intent_hits(groups, limit);
+        let markdown = render_markdown(project_id, q, &terms, &hints, &seeds, &hits);
+        Ok(RecallResult {
+            project_id,
+            query: q.query.clone(),
+            terms,
+            kind_hints: hints,
+            seeds,
+            hits,
+            markdown,
+            truncated,
+        })
+    }
+
+    /// 单意图召回的完整流程（多意图时由 [`RecallService::recall`] 分派多次）。
+    fn recall_single(&self, project_id: ProjectId, q: &RecallQuery) -> Result<RecallResult> {
         let (terms, kind_hints) = parse_query(&q.query);
         // 动作意图（找实现代码）会反转种类偏好：方法 / 类优先于 HTTP 路由与基础设施。
-        let action = action_intent(&q.query);
+        //
+        // 但查询若已**点名配置项**（阈值 / 参数 / 开关 / 配置 …），用户要找的是
+        // **那个配置值**而不是实现代码，此时绝不能再反转偏好 —— 否则 Method 被抬到
+        // 1.5×，而 ConfigKey(1.2×) / Queue(0.7×) 被压低，实测正好把 `order_cancel_time`
+        // 与 `product_stock_job` 挤出结果。点名了语义节点就以该节点为准。
+        let wants_config = wants_config_value(&q.query);
+        let action = action_intent(&q.query) && !wants_config;
+        // 流程意图（还原调用链）：结果改按图拓扑排序（见 [`reorder_for_flow`]）。
+        let flow = flow_intent(&q.query);
 
         // 中文意图词展开：构造一份「用于匹配」的词表（不污染对外返回的 terms）。
         // 两路来源：
@@ -948,6 +1128,15 @@ impl RecallService {
         let mut lexical: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
         for node in &nodes {
             if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
+                continue;
+            }
+            // 纯动词且无内容词的方法**不当种子**：它只是动作词的同名词（「修改」→
+            // save/update/edit 会命中全工程同名方法），不含任何主题信息，让它当种子
+            // 只会把 BFS 引向无关的通用 CRUD。与 score_node 里的折扣是同一条原则。
+            let verb_only = action
+                && is_generic_crud_method(&node.name.to_lowercase())
+                && !has_content_word(node, &match_terms);
+            if verb_only {
                 continue;
             }
             let (mut score, matched) = score_node(node, &match_terms, &kind_hints, &incoming, action);
@@ -1142,6 +1331,14 @@ impl RecallService {
         }
         hits = kept;
         hits.truncate(q.limit.max(1));
+        // 流程查询：把**已按相关性选出的**结果改排成链路顺序（入口 → … → 落库）。
+        // 必须放在截断**之后**：否则无关的浅层兄弟节点（每个路由 / 控制器方法都是
+        // 深度 0）会被提前、挤掉真正相关的深层节点（实测 `del_level` / `appleLogin`
+        // 挤走了 `LoginServices::register`）。这里只改顺序、不改入选集合。
+        // 非流程查询不进入此分支，排序与改动前完全一致。
+        if flow {
+            reorder_for_flow(&mut hits, &incoming);
+        }
 
         for hit in hits.iter_mut() {
             let node = index.get(&hit.node_id.get()).copied();
@@ -1629,7 +1826,16 @@ fn score_node(
     // 才享受动作加权；否则（如发货的 save/update，只靠「修改」被加权）退回默认 1.0，
     // 避免无关域 CRUD 顶到顶部（见 [`GENERIC_CRUD_METHODS`]）。
     let has_content_term = has_content_word(node, terms);
-    let kw = if action && is_generic_crud_method(&name) && !has_content_term {
+    let verb_only = action && is_generic_crud_method(&name) && !has_content_term;
+    if verb_only {
+        // 只靠动词命中、无任何内容词时，**连基础匹配分也打折**：
+        // 「修改」会展开成 save/update/edit/modify，而全工程到处都有叫 save / update
+        // 的方法，它们仅凭同名就拿到 100 分精确匹配 —— 实测「怎么修改订单自动取消时间」
+        // 被这批同名方法霸榜，真正的答案（ConfigKey order_cancel_time）反而进不了前 12。
+        // 这与上面取消动作加权是同一条原则：纯动词且无内容词，不该占高位。
+        score *= GENERIC_CRUD_VERB_ONLY_DISCOUNT;
+    }
+    let kw = if verb_only {
         kind_weight(node.kind.as_str())
     } else {
         rank_weight(node.kind.as_str(), action)
@@ -1708,6 +1914,199 @@ fn action_intent(q: &str) -> bool {
     KW.iter().any(|k| low.contains(&k.to_lowercase()))
 }
 
+/// 查询是否意在「还原一条流程 / 调用链」，而不是找单个实现点。
+///
+/// 这类查询的正确答案本质上**有序**：页面 / 路由 → 控制器 → 服务 → 落库。
+/// 单纯按相关分平铺会把链路打乱（页面排在入口函数之后），且让谁都连的基础设施
+/// 枢纽（`Request` 被调 300+ 次、`Cache` 400+ 次）霸占前排。命中流程词时才启用
+/// 拓扑重排（见 [`reorder_for_flow`]）—— 与 [`action_intent`] 同样的守门方式：
+/// **非流程查询完全沿用旧排序，零回归**。
+/// 「可配置值」语汇：命中即说明用户要找的是**一个配置项**（阈值 / 参数 / 开关 …），
+/// 而不是实现代码 —— 此时不应按动作意图反转种类偏好，否则 Method 被抬到 1.5×、
+/// 而 ConfigKey(1.2×) / Queue(0.7×) 被压低，正好把真正的配置挤出结果。
+///
+/// **故意不走 `hint_map`**：提示词会被 [`strip_hint_chars`] 逐字从查询词里剔除，
+/// 加"下限"会让 `下单` 变成 `单`。这里只在原始 query 上做包含判断，零副作用。
+const CONFIG_WORDS: &[&str] = &[
+    "阈值", "参数", "开关", "上限", "下限", "时长", "间隔", "配置", "配置项", "预警",
+    // 「自动取消**时间**」这类时限本身就是个配置值；漏了它，该查询会走动作意图
+    // （Method 1.5×）而把 ConfigKey 压下去，正解 `order_cancel_time` 直接落榜。
+    "时间",
+];
+
+fn wants_config_value(q: &str) -> bool {
+    CONFIG_WORDS.iter().any(|w| q.contains(w))
+}
+
+fn flow_intent(q: &str) -> bool {
+    const KW: &[&str] = &[
+        // 中文
+        "流程", "链路", "调用链", "调用关系", "调用顺序", "调用过程", "步骤", "顺序", "生命周期",
+        "流转", "怎么走", "走一遍", "经过",
+        // 英文
+        "flow", "call chain", "trace", "pipeline", "lifecycle", "walkthrough", "sequence",
+    ];
+    let low = q.to_lowercase();
+    KW.iter().any(|k| low.contains(&k.to_lowercase()))
+}
+
+/// 流程方向边：调用 / 承接 / 落库方向，即「谁被谁调下去」。
+/// 用于把命中排成「入口 → … → 落库」的链路（见 [`reorder_for_flow`]）。
+fn is_flow_edge(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Calls" | "CallsHttp" | "HandledBy" | "PassesThrough" | "WritesDb" | "ReadsDb"
+    )
+}
+
+/// 流程的**入口层**种类：HTTP 契约 / 页面。它们天然是链路起点 ——
+/// 即便前端函数用 `CallsHttp` 指向某个路由，该路由仍是后端的**入口**而非中间节点，
+/// 不该被算成"被前端调下来的下一层"（否则路由会排到服务方法之后）。
+fn is_entry_kind(kind: &str) -> bool {
+    matches!(kind, "HttpContract" | "Page")
+}
+
+/// 扇入超过该值的节点视为「枢纽」：全工程到处都在调用的通用底座
+/// （`Request` 被调 300+ 次、`Cache` 400+ 次），不是任一流程的特有环节。
+const HUB_FANIN: usize = 60;
+
+/// 枢纽衰减系数：随扇入平滑压低，最低 0.4，永不为 0 —— 底座仍可被召到，
+/// 只是不再霸占链路的前排（见 [`reorder_for_flow`]）。
+fn hub_penalty(fan_in: usize) -> f64 {
+    if fan_in <= HUB_FANIN {
+        return 1.0;
+    }
+    let excess = (fan_in - HUB_FANIN) as f64;
+    0.4 + 0.6 * (-excess / 200.0).exp()
+}
+
+/// 命中集合内沿流程方向的最长路径深度（入口 = 0）。回边按 0 处理以容忍环。
+fn flow_depth(
+    id: i64,
+    callers: &HashMap<i64, Vec<i64>>,
+    memo: &mut HashMap<i64, i64>,
+    visiting: &mut HashSet<i64>,
+) -> i64 {
+    if let Some(d) = memo.get(&id) {
+        return *d;
+    }
+    if !visiting.insert(id) {
+        return 0; // 环：本次不再深入
+    }
+    let mut best = 0i64;
+    if let Some(cs) = callers.get(&id) {
+        for c in cs {
+            best = best.max(flow_depth(*c, callers, memo, visiting) + 1);
+        }
+    }
+    visiting.remove(&id);
+    memo.insert(id, best);
+    best
+}
+
+/// 命中集合里，沿流程边与**种子**连通的那些节点。
+///
+/// 判据：在流程边构成的无向图上求连通分量，只保留含至少一个直接命中
+/// （`direct`，即种子本身）的分量。这样才叫「这次查询的链路」——
+/// 否则每个恰好没有上游的兄弟节点都会自成深度 0 而挤到前面。
+fn anchored_components(hits: &[RecallHit], adj: &HashMap<i64, Vec<i64>>) -> HashSet<i64> {
+    let mut out: HashSet<i64> = HashSet::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    for h in hits.iter().filter(|h| h.direct) {
+        let start = h.node_id.get();
+        if !seen.insert(start) {
+            continue;
+        }
+        let mut stack = vec![start];
+        while let Some(n) = stack.pop() {
+            out.insert(n);
+            if let Some(ns) = adj.get(&n) {
+                for m in ns {
+                    if seen.insert(*m) {
+                        stack.push(*m);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 流程查询的拓扑重排：命中集合内沿 [`is_flow_edge`] 求深度，按「入口 → … → 落库」
+/// 排序；与链路无关的邻居（只经包含 / 配置等非流程边连着）沉到最后；枢纽按扇入衰减。
+///
+/// 仅在 [`flow_intent`] 为真时调用，其余查询的排序完全不受影响。
+fn reorder_for_flow(
+    hits: &mut Vec<RecallHit>,
+    incoming: &HashMap<i64, Vec<gt_domain::model::Edge>>,
+) {
+    let on: HashSet<i64> = hits.iter().map(|h| h.node_id.get()).collect();
+
+    // node → 同在命中集合里的「上游调用者」；同时建无向邻接用于求连通分量。
+    let mut callers: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+    for h in hits.iter() {
+        let id = h.node_id.get();
+        if let Some(es) = incoming.get(&id) {
+            for e in es {
+                let f = e.from_id.get();
+                if is_flow_edge(e.kind.as_str()) && on.contains(&f) {
+                    // 邻接用于连通性判定：入口也要连上，否则会被判成孤立分量而沉底。
+                    adj.entry(id).or_default().push(f);
+                    adj.entry(f).or_default().push(id);
+                    // 深度只按「被谁调下来」累加；入口层恒为起点。
+                    if !is_entry_kind(h.kind.as_str()) {
+                        callers.entry(id).or_default().push(f);
+                    }
+                }
+            }
+        }
+    }
+    // 只有「含至少一个直接命中（种子）」的连通分量才算链路。
+    // 否则彼此无关、只是恰好没有上游的兄弟节点（mobile / postMore / 各控制器方法）
+    // 全都拿到深度 0，反而浮到真正链路的前面。
+    //
+    // 注：试过更细的「主链路 = 入口 ∪ 种子祖先 ∪ 种子后代」三档方案，实测
+    // **无法**把同类兄弟方法（mobile）降下去（它在图里确实与种子有可达关系），
+    // 却会把页面挤到链路之后，属于净损失，故不采用。
+    let on_chain = anchored_components(hits, &adj);
+
+    let mut memo: HashMap<i64, i64> = HashMap::new();
+    let mut visiting: HashSet<i64> = HashSet::new();
+    let mut depths: HashMap<i64, i64> = HashMap::new();
+    let mut fan_in: HashMap<i64, usize> = HashMap::new();
+    for h in hits.iter() {
+        let id = h.node_id.get();
+        depths.insert(id, flow_depth(id, &callers, &mut memo, &mut visiting));
+        fan_in.insert(
+            id,
+            incoming
+                .get(&id)
+                .map(|es| es.iter().filter(|e| is_flow_edge(e.kind.as_str())).count())
+                .unwrap_or(0),
+        );
+    }
+
+    hits.sort_by(|a, b| {
+        let ia = a.node_id.get();
+        let ib = b.node_id.get();
+        // 1) 在链路上的排前面
+        let ca = on_chain.contains(&ia);
+        let cb = on_chain.contains(&ib);
+        cb.cmp(&ca)
+            // 2) 链路内按拓扑深度（入口 → 落库）
+            .then_with(|| depths[&ia].cmp(&depths[&ib]))
+            // 3) 同档按「枢纽衰减后的得分」
+            .then_with(|| {
+                let sa = a.score * hub_penalty(fan_in[&ia]);
+                let sb = b.score * hub_penalty(fan_in[&ib]);
+                sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            // 4) 稳定兜底（同分时按 id，保证可复现）
+            .then_with(|| ia.cmp(&ib))
+    });
+}
+
 /// 解析提示词：拆出查询词与结构提示。
 ///
 /// 结构提示（"表" / "接口" / "事件" …）不参与文本匹配，而是转成节点种类加成 ——
@@ -1735,7 +2134,15 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         ("页面", "Page"),
         ("国际化", "I18nKey"),
         ("多语言", "I18nKey"),
+        // 「阈值 / 参数 / 开关 / 上限 …」在任意系统里都是**一个可配置的值**，
+        // 其落点是配置项（ConfigKey）而非某段代码 —— 复用上面同一套提示机制，
+        // 让「怎么修改订单自动取消时间」收敛到 `order_cancel_time` 这类配置键，
+        // 而不是被 1.5× 加权的方法（save / update …）淹没。
     ];
+    // 注意：**不要**往 hint_map 里加「阈值 / 下限 / 时长 …」这类词。
+    // `strip_hint_chars` 会把提示词里的**每个字**从所有查询词里剔除 ——
+    // 加入"下限"会让 `下单` 被削成 `单`（"如何修改下单优惠" → "如何修改单优惠"）。
+    // 「要找配置项」的判定改由 [`wants_config_value`] 独立承担，不碰 hint_map。
 
     for (word, kind) in hint_map {
         if query.contains(word) && !hints.iter().any(|h| h == kind) {
@@ -1782,7 +2189,7 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
 
     for run in cjk_runs(query) {
         // 整段保留一份：精确长词命中时得分最高。
-        let keep = strip_hint_chars(&run, hint_map);
+        let keep = strip_hint_words(&run, hint_map);
         if keep.chars().count() >= 2 && !terms.iter().any(|t| t == &keep) {
             terms.push(keep);
         }
@@ -1793,7 +2200,7 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         let chars: Vec<char> = run.chars().collect();
         for w in chars.windows(2) {
             let gram: String = w.iter().collect();
-            let gk = strip_hint_chars(&gram, hint_map);
+            let gk = strip_hint_words(&gram, hint_map);
             if gk.chars().count() >= 2
                 && (!has_known || known_alias_words.contains(gk.as_str()))
                 && !terms.iter().any(|t| t == &gk)
@@ -1838,14 +2245,25 @@ fn cjk_runs(query: &str) -> Vec<String> {
     runs
 }
 
-/// 去掉出现在结构提示词里的字符。
+/// 去掉查询里出现的**完整结构提示词**（"表" / "接口" / "缓存" …）。
 ///
 /// "表" / "接口" / "缓存" 这类词已经转成节点种类加成，再拿去当文本匹配词
 /// 只会把召回结果带偏（"表" 会命中所有名字含"表"的节点）。
-fn strip_hint_chars(s: &str, hint_map: &[(&str, &str)]) -> String {
-    s.chars()
-        .filter(|c| !hint_map.iter().any(|(w, _)| w.contains(*c)))
-        .collect()
+///
+/// **必须整词删除，绝不能逐字删除**：旧实现把提示词拆成单字后，从整段里过滤掉
+/// 所有"出现过这些字"的字符 —— 副作用极大：
+/// * 「缓存」的 `存` + 「数据库」的 `库` → `库存` 被削成空；
+/// * 「消息」的 `消` + 「定时」的 `时` → `取消时间` 被削成 `取`。
+/// 实测「商品库存预警阈值」因此丢掉"库存"、「修改订单自动取消时间」丢掉"取消时间"，
+/// 直接导致这两个意图各自的正解（`product_stock_job` / `order_cancel_time`）召不回来。
+fn strip_hint_words(s: &str, hint_map: &[(&str, &str)]) -> String {
+    let mut out = s.to_string();
+    for (word, _) in hint_map {
+        if out.contains(word) {
+            out = out.replace(word, "");
+        }
+    }
+    out
 }
 
 /// 拆分 camelCase / snake_case 后入列。
@@ -2288,7 +2706,8 @@ mod tests {
         // 退回默认 1.0，否则「修改」类查询会把无关域 CRUD（发货 save / 退款 update）顶到顶部。
         let generic = tnode(301, "Method", "save", None, None);
         let (s_gen, _) = score_node(&generic, &["save".to_string()], &[], &HashMap::new(), true);
-        assert!((s_gen - 100.0).abs() < 1e-9, "纯 CRUD 方法无内容词应退回 1.0 权重，实际 {s_gen}");
+        // 100（精确匹配）× 0.5（纯动词无内容词折扣）× 1.0（退回默认权重）= 50
+        assert!((s_gen - 50.0).abs() < 1e-9, "纯 CRUD 方法无内容词应打折并退回 1.0 权重，实际 {s_gen}");
 
         // 同一纯动词方法若类标识符命中内容词（如优惠券的 edit，类 StoreCouponIssue 含 Coupon），
         // 应保留 1.5× 加权。注意：目录路径里的 order 不应算内容词 —— 即便 fqn 路径含 order
@@ -2333,7 +2752,7 @@ mod tests {
         // 名字 save（100）+ 路径 order 仅作计分（+35）→ 135；×1.5 聚合；但无内容词 → 不加权 1.0：
         // 135 × 1.5 = 202.5。
         assert!(
-            (s_ds - 202.5).abs() < 1e-9,
+            (s_ds - 101.25).abs() < 1e-9,
             "类标识符无内容词的 CRUD 方法应退回 1.0 权重，实际 {s_ds}"
         );
 
@@ -2341,6 +2760,286 @@ mod tests {
         let biz = tnode(304, "Method", "createForm", None, None);
         let (s_biz, _) = score_node(&biz, &["form".to_string()], &[], &HashMap::new(), true);
         assert!((s_biz - 75.0).abs() < 1e-9, "复合业务方法应保留 1.5 加权，实际 {s_biz}");
+    }
+
+    #[test]
+    fn has_content_word_matches_tokens_not_substrings() {
+        // 查询「怎么新增一种优惠券类型」展开出的词（新增 → add/create/insert/new，优惠 → coupon/discount）。
+        let terms: Vec<String> = ["新增", "优惠", "add", "create", "insert", "new", "coupon", "discount"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // 纯动词方法 `create`，类标识符 token 为 [user, address, services]：
+        // add / create / insert / new 全是通用 CRUD 动词，本来就不具备「内容词」资格；
+        // 其余词（新增 / 优惠 / coupon / discount）都不匹配任何 token → 无内容词。
+        let address_create = tnode(
+            305,
+            "Method",
+            "create",
+            Some("app\\services\\user\\UserAddressServices::create"),
+            None,
+        );
+        assert!(
+            !has_content_word(&address_create, &terms),
+            "通用动词不算内容词，且类 token 不含查询主题"
+        );
+        // 名字 create（100）+ fqn 含 add（35）→ 135；两词 ×1.5 聚合；无内容词 → 加权退回 1.0：
+        // 135 × 1.5 = 202.5（而非 303.75）。
+        let (s_addr, _) = score_node(&address_create, &terms, &[], &HashMap::new(), true);
+        assert!(
+            (s_addr - 101.25).abs() < 1e-9,
+            "无关域 CRUD 不应保留 1.5 加权，实际 {s_addr}"
+        );
+
+        // 对照组：同类纯动词 `create`，但类标识符的 token 里真的有 coupon
+        // （token 前缀命中，不是词中子串），应命中内容词、保留 1.5× 加权。
+        let coupon_create = tnode(
+            306,
+            "Method",
+            "create",
+            Some("app\\services\\coupon\\CouponServices::create"),
+            None,
+        );
+        assert!(
+            has_content_word(&coupon_create, &terms),
+            "类标识符 token 含 coupon 应算命中内容词"
+        );
+        let (s_coupon, _) = score_node(&coupon_create, &terms, &[], &HashMap::new(), true);
+        assert!(
+            (s_coupon - 303.75).abs() < 1e-9,
+            "命中内容词的 CRUD 方法应保留 1.5 加权，实际 {s_coupon}"
+        );
+        assert!(s_coupon > s_addr, "优惠券的 create 应高于无关域的 create");
+
+        // 直接验证标识符切分。
+        assert_eq!(
+            split_ident_tokens("UserAddressServices"),
+            vec!["user", "address", "services"]
+        );
+        assert_eq!(split_ident_tokens("HTTPResponse"), vec!["http", "response"]);
+        assert_eq!(split_ident_tokens("store_order"), vec!["store", "order"]);
+    }
+
+    #[test]
+    fn has_content_word_rejects_midword_but_keeps_compound() {
+        // 词中片段不应算命中：`RecorderService` 的 token 是 [recorder, service]，
+        // `order` 只是 `recorder` 的**词中子串**（旧实现拼成 recorderservice 后
+        // contains("order") 会误判），按 token 前缀匹配后不再命中。
+        let recorder_save = tnode(
+            307,
+            "Method",
+            "save",
+            Some("app\\services\\RecorderService::save"),
+            None,
+        );
+        assert!(
+            !has_content_word(&recorder_save, &["save".to_string(), "order".to_string()]),
+            "`order` 嵌在 `recorder` 词中，不应算命中内容词"
+        );
+        // save（100）+ fqn 含 order（35）→ 135；两词 ×1.5；无内容词 → 1.0：135 × 1.5 = 202.5。
+        let (s_rec, _) = score_node(
+            &recorder_save,
+            &["save".to_string(), "order".to_string()],
+            &[],
+            &HashMap::new(),
+            true,
+        );
+        assert!(
+            (s_rec - 101.25).abs() < 1e-9,
+            "词中子串不应保住 1.5 加权，实际 {s_rec}"
+        );
+
+        // 反向保护：合理的「复合 / 屈折」匹配必须保留 —— `pay` → `payment` 属前缀命中，
+        // 若退化为严格相等，支付域的 save 会被误降级（这是本次改动的主要回归风险）。
+        let payment_save = tnode(
+            308,
+            "Method",
+            "save",
+            Some("app\\services\\PaymentService::save"),
+            None,
+        );
+        assert!(
+            has_content_word(&payment_save, &["save".to_string(), "pay".to_string()]),
+            "`pay` 应前缀命中 `payment`，否则会误伤支付域"
+        );
+        let (s_pay, _) = score_node(
+            &payment_save,
+            &["save".to_string(), "pay".to_string()],
+            &[],
+            &HashMap::new(),
+            true,
+        );
+        assert!(
+            (s_pay - 303.75).abs() < 1e-9,
+            "复合匹配应保留 1.5 加权，实际 {s_pay}"
+        );
+    }
+
+    // ---- 流程拓扑重排 ----
+
+    /// `direct` = 是否为种子本身（hop 0）；false 表示 BFS 带出的邻居。
+    /// 只有含种子的连通分量才算链路（见 [`anchored_components`]）。
+    fn fhit(id: i64, name: &str, kind: &str, score: f64, direct: bool) -> RecallHit {
+        RecallHit {
+            node_id: NodeId::new(id),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            fqn: None,
+            score,
+            hop: if direct { 0 } else { 1 },
+            seed: "seed".to_string(),
+            matched_terms: Vec::new(),
+            direct,
+            file: None,
+            line: None,
+            snippet: None,
+            relations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn flow_intent_only_fires_on_flow_queries() {
+        assert!(flow_intent("注册流程"), "「注册流程」应识别为流程查询");
+        assert!(flow_intent("支付的调用链"));
+        assert!(flow_intent("how does the payment flow work"));
+        // 非流程查询必须为 false —— 这是「其余查询排序零回归」的前提。
+        assert!(!flow_intent("如何修改下单优惠"));
+        assert!(!flow_intent("怎么新增一种优惠券类型"));
+    }
+
+    #[test]
+    fn reorder_for_flow_orders_entry_to_sink_and_sinks_unrelated() {
+        // 一条完整链路：页面(1) → 路由(2) → 控制器(3) → 服务(4) → Dao(5) → 表(6)
+        let inc = incoming(&[
+            ("CallsHttp", 1, 2),
+            ("HandledBy", 2, 3),
+            ("Calls", 3, 4),
+            ("Calls", 4, 5),
+            ("WritesDb", 5, 6),
+        ]);
+        // 故意打乱顺序、且分数与链路顺序无关。
+        let mut hits = vec![
+            fhit(6, "user_table", "Table", 100.0, false),
+            fhit(3, "register", "Method", 300.0, false),
+            fhit(1, "login_page", "File", 50.0, false),
+            fhit(5, "save", "Method", 120.0, false),
+            // 只有服务层是种子：整条链路因它而被判定为「本次查询的链路」。
+            fhit(4, "LoginServices.register", "Method", 250.0, true),
+            // 路由是**入口层**：即便被前端 CallsHttp 指着，也应排在服务方法之前。
+            fhit(2, "POST /register", "HttpContract", 80.0, false),
+            // BFS 带出的无关邻居：不在含种子的连通分量里，应沉底。
+            fhit(7, "unrelated_validate", "Method", 200.0, false),
+        ];
+        reorder_for_flow(&mut hits, &inc);
+        let order: Vec<i64> = hits.iter().map(|h| h.node_id.get()).collect();
+        // 入口（路由 / 页面）→ 控制器 → 服务 → Dao → 表，与分数无关。
+        assert_eq!(
+            order[..6],
+            [2, 1, 3, 4, 5, 6],
+            "流程查询应沿「入口 → 落库」排序，实际 {order:?}"
+        );
+        assert_eq!(order[6], 7, "与链路无关的邻居应沉底，实际 {order:?}");
+        // 关键回归点：路由必须早于服务方法。
+        let pos = |id: i64| order.iter().position(|x| *x == id).unwrap();
+        assert!(
+            pos(2) < pos(4),
+            "路由（入口）应排在服务方法之前：路由 {:?} vs 服务 {:?}",
+            pos(2),
+            pos(4)
+        );
+    }
+
+    #[test]
+    fn hub_penalty_suppresses_high_fan_in_only() {
+        assert_eq!(hub_penalty(10), 1.0, "低扇入不应被惩罚");
+        assert_eq!(hub_penalty(60), 1.0, "阈值内不应被惩罚");
+        let mid = hub_penalty(123); // 如 BaseDao::save
+        let hub = hub_penalty(452); // 如 Cache
+        assert!(mid < 1.0 && mid > 0.4, "中等枢纽应被部分压低，实际 {mid}");
+        assert!(hub < mid, "扇入越大衰减越多：{hub} vs {mid}");
+        assert!(hub >= 0.4, "衰减应有下限，实际 {hub}");
+    }
+
+    // ---- 多意图拆分 / 合并 ----
+
+    #[test]
+    fn split_intents_splits_compound_questions_only() {
+        // 顿号连接的两个独立问题 → 拆成两段（合起来会互相干扰，实测双双丢答案）。
+        let parts = RecallService::split_intents("怎么修改商品库存预警阈值、修改订单自动取消时间");
+        assert_eq!(parts.len(), 2, "应拆成 2 个意图：{parts:?}");
+        assert!(parts[0].contains("库存预警阈值"), "{parts:?}");
+        assert!(parts[1].contains("自动取消时间"), "{parts:?}");
+
+        // 逗号 / 分号 / 连接词同样生效。
+        assert_eq!(RecallService::split_intents("查询订单相关的表，查询商品相关的表").len(), 2);
+        assert_eq!(RecallService::split_intents("查询订单相关的表；查询商品相关的表").len(), 2);
+        assert_eq!(RecallService::split_intents("查询订单相关的表以及查询商品相关的表").len(), 2);
+
+        // 单意图必须返回空 → 走原路径，零回归。
+        assert!(RecallService::split_intents("如何修改下单优惠").is_empty());
+        assert!(RecallService::split_intents("注册流程").is_empty());
+        // 过短片段不单独成意图（避免语气词 / 标点旁支被当成独立问题）。
+        assert!(RecallService::split_intents("订单、商品").is_empty());
+    }
+
+    #[test]
+    fn merge_intent_hits_round_robins_and_dedups() {
+        // 意图 A 分数全面高于 B：若按分数合并，B 会被挤空；轮询保证每个意图都有代表。
+        let a = vec![
+            fhit(1, "a1", "Method", 900.0, true),
+            fhit(2, "a2", "Method", 800.0, false),
+            fhit(3, "a3", "Method", 700.0, false),
+        ];
+        let b = vec![
+            fhit(4, "b1", "ConfigKey", 600.0, true),
+            fhit(5, "b2", "ConfigKey", 500.0, false),
+        ];
+        let merged = RecallService::merge_intent_hits(vec![a, b], 4);
+        let ids: Vec<i64> = merged.iter().map(|h| h.node_id.get()).collect();
+        assert_eq!(ids, vec![1, 4, 2, 5], "应按意图轮询而非按分数，实际 {ids:?}");
+
+        // 跨意图重复节点只保留一次。
+        let dup = RecallService::merge_intent_hits(
+            vec![
+                vec![fhit(1, "x", "Method", 900.0, true)],
+                vec![fhit(1, "x", "Method", 900.0, true)],
+            ],
+            4,
+        );
+        assert_eq!(dup.len(), 1, "跨意图重复节点应去重，实际 {}", dup.len());
+    }
+
+    // ---- 配置项意图 / 提示词整词删除 ----
+
+    #[test]
+    fn wants_config_value_fires_only_on_config_seeking_queries() {
+        assert!(wants_config_value("怎么修改订单自动取消时间"));
+        assert!(wants_config_value("商品库存预警阈值"));
+        assert!(wants_config_value("修改缓存配置"));
+        // 找实现代码的查询绝不能误判 —— 否则会关掉动作意图的方法加权。
+        assert!(!wants_config_value("如何修改下单优惠"));
+        assert!(!wants_config_value("注册流程"));
+        assert!(!wants_config_value("怎么新增一种优惠券类型"));
+    }
+
+    #[test]
+    fn strip_hint_words_removes_whole_words_not_chars() {
+        let hints = &[
+            ("表", "Table"),
+            ("数据库", "Table"),
+            ("缓存", "Cache"),
+            ("定时", "Schedule"),
+            ("消息", "Topic"),
+        ];
+        // 出现的提示词整词移除。
+        assert_eq!(strip_hint_words("订单表", hints), "订单");
+        assert_eq!(strip_hint_words("查询缓存", hints), "查询");
+
+        // 关键回归点：旧实现逐字删除，「缓存」的 存 + 「数据库」的 库 会把 `库存` 削空，
+        // 「消息」的 消 + 「定时」的 时 会把 `取消时间` 削成 `取`。
+        assert_eq!(strip_hint_words("商品库存预警阈值", hints), "商品库存预警阈值");
+        assert_eq!(strip_hint_words("修改订单自动取消时间", hints), "修改订单自动取消时间");
     }
 
     #[test]
