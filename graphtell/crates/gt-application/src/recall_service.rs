@@ -88,6 +88,22 @@ fn is_generic_crud_method(name: &str) -> bool {
 /// 命中内容词的（优惠券的 edit / 订单的 update）完全不受影响。
 const GENERIC_CRUD_VERB_ONLY_DISCOUNT: f64 = 0.5;
 
+/// ORM **关联访问器**（样板）的折扣系数。
+///
+/// `user()` / `refund()` / `productInfo()` 这类方法体只有 `hasOne / hasMany / belongsTo`，
+/// 不含任何业务逻辑，图上特征是带 `MapsTo` 出边（语义"模型映射到表/实体"）。
+/// 它们靠与泛词**精确同名**拿到 100 分（"用户→user"），实测「下单后怎么发通知给用户」
+/// 前四全是这种样板。降到 0.3 后不再霸占种子名额，但仍可被召到。
+const RELATION_ACCESSOR_DISCOUNT: f64 = 0.3;
+
+/// 是否为 ORM 关联访问器：带 `MapsTo` 出边（映射到另一个实体）。
+fn has_maps_to(id: i64, outgoing: &HashMap<i64, Vec<gt_domain::model::Edge>>) -> bool {
+    outgoing
+        .get(&id)
+        .map(|es| es.iter().any(|e| e.kind.as_str() == "MapsTo"))
+        .unwrap_or(false)
+}
+
 /// 过于通用的「架构名词」别名词（service / api / model / entity …）。
 ///
 /// 这些词常作为类名后缀出现在 fqn 里（`DeliveryService`、`StoreCouponIssue`
@@ -605,6 +621,32 @@ pub struct SeedInfo {
     pub score: f64,
 }
 
+/// 召回质量档位。
+///
+/// 召回质量**方差极大**：有的查询正解在前二，有的**两个意图都落空**、前排全是
+/// 泛词噪声。但两者返回的东西长得一样 —— 下游（AI IDE）会同等信任，于是
+/// **静默失败**成了最坏的失败模式。这里把质量显式报出去，让调用方能降级到
+/// grep / 自行阅读。判定只用与项目无关的信号（特征词覆盖率 + 头部分差）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecallQuality {
+    /// 特征词基本命中、头部分差健康 —— 可直接采信。
+    High,
+    /// 部分特征词未命中，或命中分散 —— 建议结合列表自行判断。
+    Medium,
+    /// 多数特征词未命中，前排为泛词匹配 —— 建议改走 grep / 自行阅读。
+    Low,
+}
+
+impl RecallQuality {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RecallQuality::High => "high",
+            RecallQuality::Medium => "medium",
+            RecallQuality::Low => "low",
+        }
+    }
+}
+
 /// 召回结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecallResult {
@@ -620,6 +662,15 @@ pub struct RecallResult {
     pub markdown: String,
     /// 是否因扫描上限而被截断。
     pub truncated: bool,
+    /// 召回置信度（0~1）：特征词覆盖率与头部分差的加权。
+    pub confidence: f32,
+    /// 质量档位（见 [`RecallQuality`]）。
+    pub quality: RecallQuality,
+    /// 档位判定依据（人话）。
+    pub quality_reason: String,
+    /// 未命中的**特征词**（去掉通用 CRUD 动词 / 架构名词后仍有区分度的查询词）。
+    /// 质量偏低时可直接拿这些词去 grep。
+    pub missing_terms: Vec<String>,
 }
 
 /// 节点嵌入文本（`node_embed_text`）的版本。
@@ -989,6 +1040,171 @@ impl RecallService {
         out
     }
 
+    /// 评估召回质量（见 [`RecallQuality`]）。
+    ///
+    /// 用三条**与项目无关**的信号，因此换任何工程都成立：
+    /// 1. **概念覆盖率** —— 查询里的中文意图概念（下单 / 优惠 / 通知 …）有多少被
+    ///    **有信息量的命中**（排除 ORM 关联样板）命中；按概念而非按词统计，
+    ///    命中任一英文展开即算覆盖（优惠 → coupon 或 discount 都行）；
+    /// 2. **头部分差** —— top1 相对第 2~5 名均值的领先幅度，一堆同质噪声时该值极小；
+    /// 3. **概念内聚度** —— 是否有同一条命中同时覆盖 ≥2 个概念。缺了这条，
+    ///    "下单后怎么发通知"这类查询会因每个概念分别被不同噪声节点撞上而**误判 High**。
+    ///
+    /// 阈值**保守**：宁可报低，也不给假信心（误判比不判更糟）。
+    ///
+    /// # 已知局限（不要重复踩）
+    ///
+    /// 本函数**无法区分"命中了"和"命中对了"**：
+    /// 噪声节点往往也**真实**命中了查询词 —— `UserAddressServices::create` 确实同时
+    /// 覆盖"下单 + 用户"，正如正解 `StoreCouponIssue::edit` 覆盖"修改 + 优惠"。
+    /// 区别不在结构而在语义（本查询要的是"下单 + **通知**"这一对），词面 + 图结构判断不了。
+    /// 因此**结构型信号到此为止**，再往下需要语义理解。
+    ///
+    /// 试过并**放弃**的两条收紧方案（都会误伤好查询，勿重试）：
+    /// * 只认名字命中（不认 fqn）—— 会把「如何修改下单优惠」误判：其"优惠"只存在于
+    ///   类名 `StoreCouponIssue`，名字里没有；
+    /// * 认名字 + 类标识符 —— 挡不住 `UserAddressServices`（user 就在类名里），仍报健康。
+    ///
+    /// # TODO（能力缺口，非本函数可解）
+    ///
+    /// **事件驱动链路召回**：像"下单后怎么发通知给用户""退款成功后怎么回退优惠券"
+    /// 这类查询，正解是「下单事件 → 监听器 → 消息服务」这条链，需要沿
+    /// `Triggers` / `PublishesTo` / `ListensTo` 做**定向链路展开**，而不是按名字匹配。
+    /// 在这之前，这类查询只能靠 [`RecallQuality`] 提示调用方降级（grep / 自行阅读）。
+    fn assess_quality(
+        query: &str,
+        hits: &[RecallHit],
+        boilerplate: &HashSet<i64>,
+    ) -> (RecallQuality, f32, String, Vec<String>) {
+        // 2) 只认"有信息量"的命中：ORM 关联样板（hasOne 之类）不算数。
+        let mut matched: HashSet<String> = HashSet::new();
+        for h in hits.iter().filter(|h| !boilerplate.contains(&h.node_id.get())) {
+            for t in &h.matched_terms {
+                matched.insert(t.to_lowercase());
+            }
+        }
+
+        // 1) 特征**概念**（而非词）：查询里出现的中文意图词（下单 / 优惠 / 通知 …）。
+        //
+        // 按"概念"而不是"词"算覆盖率是必须的：
+        // * 中文词本身匹配不到英文标识符，若逐词统计会把覆盖率无谓拉低（实测四条查询全被判 Low）；
+        // * 一个概念只要命中它的**任一**英文展开即算覆盖（优惠 → coupon 或 discount 都行），
+        //   否则同义展开会再次拉低。
+        let concepts: Vec<(&str, &[&str])> = INTENT_ALIASES
+            .iter()
+            .filter(|(zh, _)| query.contains(*zh))
+            .map(|(zh, ens)| (*zh, *ens))
+            .collect();
+        let missing: Vec<String> = concepts
+            .iter()
+            .filter(|(_, ens)| !ens.iter().any(|e| matched.contains(&e.to_lowercase())))
+            .map(|(zh, _)| (*zh).to_string())
+            .collect();
+
+        let coverage = if concepts.is_empty() {
+            1.0
+        } else {
+            1.0 - (missing.len() as f32 / concepts.len() as f32)
+        };
+
+        // 3) 头部分差。
+        let top = hits.first().map(|h| h.score).unwrap_or(0.0);
+        let rest: Vec<f64> = hits.iter().skip(1).take(4).map(|h| h.score).collect();
+        let rest_mean = if rest.is_empty() {
+            0.0
+        } else {
+            rest.iter().sum::<f64>() / rest.len() as f64
+        };
+        let gap: f32 = if rest_mean > 0.0 {
+            (((top / rest_mean - 1.0) / 1.5).clamp(0.0, 1.0)) as f32
+        } else {
+            1.0
+        };
+
+        let confidence = (0.65 * coverage + 0.35 * gap).clamp(0.0, 1.0);
+
+        // 4) **概念内聚度**：有没有同一条命中同时覆盖 ≥2 个概念。
+        //
+        // 这是覆盖率看不出来的失败模式：复合查询（"下单后发通知"）的每个概念
+        // 可能**分别**被互不相关的节点命中（下单→某个 create、通知→某个 notify），
+        // 于是覆盖率 = 1.0 被判 High —— 但它说明的恰恰是"泛词各自撞名字"，
+        // 召回根本没落到真正的业务代码上。实测该查询就栽在这里（假信心）。
+        // 正解必然同时关联多个概念，因此内聚度 < 2 就是强烈的噪声信号。
+        let mut best_cohesion = 0usize;
+        for h in hits.iter().filter(|h| !boilerplate.contains(&h.node_id.get())) {
+            let tl: HashSet<String> =
+                h.matched_terms.iter().map(|t| t.to_lowercase()).collect();
+            let n = concepts
+                .iter()
+                .filter(|(_, ens)| ens.iter().any(|e| tl.contains(&e.to_lowercase())))
+                .count();
+            best_cohesion = best_cohesion.max(n);
+        }
+        let fragmented = concepts.len() >= 2 && best_cohesion < 2;
+
+        let quality = if coverage < 0.5 || (concepts.len() >= 3 && best_cohesion < 2) {
+            RecallQuality::Low
+        } else if coverage >= 0.9 && confidence >= 0.55 && !fragmented {
+            RecallQuality::High
+        } else {
+            RecallQuality::Medium
+        };
+
+        let reason = if quality == RecallQuality::Low && coverage >= 0.5 {
+            "各概念分别被互不相关的节点命中（无任何命中同时覆盖两个概念），多为泛词各自撞名".to_string()
+        } else {
+            match quality {
+            RecallQuality::Low => format!(
+                "多数特征词未命中（{}），前排为泛词匹配 —— 建议改用 grep 或自行阅读确认",
+                if missing.is_empty() {
+                    "命中过少".to_string()
+                } else {
+                    missing.join("、")
+                }
+            ),
+            RecallQuality::Medium => {
+                if missing.is_empty() {
+                    "特征词已命中但头部区分度不足，结果可能分散".to_string()
+                } else {
+                    format!("部分特征词未命中（{}），结果可能不完整", missing.join("、"))
+                }
+            }
+            RecallQuality::High => "特征词基本命中、头部区分度健康".to_string(),
+            }
+        };
+
+        (quality, confidence, reason, missing)
+    }
+
+    /// 质量告警块（Markdown）。质量 High 时返回空串 —— 不打扰正常结果。
+    ///
+    /// 关键是**给出可操作的退路**：不只说"我不行"，而是把未命中的特征词列出来，
+    /// 让调用方（AI IDE）知道该去 grep 什么。
+    fn quality_advisory(
+        quality: RecallQuality,
+        confidence: f32,
+        reason: &str,
+        missing: &[String],
+    ) -> String {
+        if quality == RecallQuality::High {
+            return String::new();
+        }
+        let label = match quality {
+            RecallQuality::Low => "低",
+            RecallQuality::Medium => "中",
+            RecallQuality::High => "高",
+        };
+        let mut s = format!("> ⚠️ **召回质量：{}（置信度 {:.2}）** — {}\n", label, confidence, reason);
+        if !missing.is_empty() {
+            s.push_str(&format!(
+                ">\n> 建议改用以下特征词自行检索：{}\n",
+                missing.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join("、")
+            ));
+        }
+        s.push('\n');
+        s
+    }
+
     /// 执行一次召回：单意图直接走 [`Self::recall_single`]；
     /// 多意图（顿号 / 逗号连接的多个独立问题）拆开分别召回再合并
     /// （见 [`split_intents`] / [`merge_intent_hits`]）。
@@ -1003,6 +1219,10 @@ impl RecallService {
         let mut hints: Vec<String> = Vec::new();
         let mut seeds: Vec<SeedInfo> = Vec::new();
         let mut truncated = false;
+        let mut missing_terms: Vec<String> = Vec::new();
+        let mut quality = RecallQuality::High;
+        let mut confidence = 1.0f32;
+        let mut reasons: Vec<String> = Vec::new();
         for part in &parts {
             let sub = RecallQuery { query: part.clone(), limit, ..q.clone() };
             let r = self.recall_single(project_id, &sub)?;
@@ -1018,10 +1238,22 @@ impl RecallService {
             }
             seeds.extend(r.seeds);
             truncated |= r.truncated;
+            // 多意图取**最差**档位与最低置信度：宁可报低，不给假信心。
+            quality = quality.max(r.quality);
+            confidence = confidence.min(r.confidence);
+            reasons.push(format!("「{}」：{}", part, r.quality_reason));
+            for m in &r.missing_terms {
+                if !missing_terms.iter().any(|x| x == m) {
+                    missing_terms.push(m.clone());
+                }
+            }
             groups.push(r.hits);
         }
         let hits = Self::merge_intent_hits(groups, limit);
-        let markdown = render_markdown(project_id, q, &terms, &hints, &seeds, &hits);
+        let quality_reason = reasons.join("；");
+        let advisory = Self::quality_advisory(quality, confidence, &quality_reason, &missing_terms);
+        let markdown =
+            render_markdown(project_id, q, &terms, &hints, &seeds, &hits, &advisory);
         Ok(RecallResult {
             project_id,
             query: q.query.clone(),
@@ -1031,6 +1263,10 @@ impl RecallService {
             hits,
             markdown,
             truncated,
+            confidence,
+            quality,
+            quality_reason,
+            missing_terms,
         })
     }
 
@@ -1125,6 +1361,14 @@ impl RecallService {
                 group_map.insert(t.clone(), zh.clone());
             }
         }
+        // ORM 关联访问器（`hasOne / hasMany` 样板）全集：既用于打分降权，
+        // 也用于质量评估（这类命中不算"有信息量的命中"）。
+        let boilerplate: HashSet<i64> = nodes
+            .iter()
+            .filter(|n| has_maps_to(n.id.get(), &outgoing))
+            .map(|n| n.id.get())
+            .collect();
+
         let mut lexical: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
         for node in &nodes {
             if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
@@ -1142,6 +1386,10 @@ impl RecallService {
             let (mut score, matched) = score_node(node, &match_terms, &kind_hints, &incoming, action);
             if score > 0.0 {
                 score *= cohesion_multiplier(&matched, &group_map);
+                // ORM 关联访问器（hasOne/hasMany 样板）不含业务逻辑，压低到不再占种子名额。
+                if boilerplate.contains(&node.id.get()) {
+                    score *= RELATION_ACCESSOR_DISCOUNT;
+                }
                 lexical.insert(node.id.get(), (score, matched));
             }
         }
@@ -1371,7 +1619,11 @@ impl RecallService {
             }
         }
 
-        let markdown = render_markdown(project_id, q, &terms, &kind_hints, &seeds, &hits);
+        let (quality, confidence, quality_reason, missing_terms) =
+            Self::assess_quality(&q.query, &hits, &boilerplate);
+        let advisory = Self::quality_advisory(quality, confidence, &quality_reason, &missing_terms);
+        let markdown =
+            render_markdown(project_id, q, &terms, &kind_hints, &seeds, &hits, &advisory);
         Ok(RecallResult {
             project_id,
             query: q.query.clone(),
@@ -1381,6 +1633,10 @@ impl RecallService {
             hits,
             markdown,
             truncated,
+            confidence,
+            quality,
+            quality_reason,
+            missing_terms,
         })
     }
 }
@@ -2340,9 +2596,15 @@ fn render_markdown(
     hints: &[String],
     seeds: &[SeedInfo],
     hits: &[RecallHit],
+    // 质量告警块（质量 High 时为空串）。放在**最前面**：调用方必须先看到它，
+    // 否则会照常信任后面的列表 —— 那正是"静默失败"。
+    advisory: &str,
 ) -> String {
     let mut s = String::new();
     s.push_str(&format!("# 召回上下文：{}\n\n", q.query));
+    if !advisory.is_empty() {
+        s.push_str(advisory);
+    }
     s.push_str(&format!(
         "- 工程：#{}\n- 查询词：{}\n",
         project_id,
@@ -3033,6 +3295,16 @@ mod tests {
     // ---- 配置项意图 / 提示词整词删除 ----
 
     #[test]
+    fn has_maps_to_flags_orm_relation_accessors_only() {
+        // 关联访问器：带 MapsTo 出边（映射到另一个实体）。
+        assert!(has_maps_to(1, &outgoing(&[("MapsTo", 1, 2)])));
+        // 业务方法不带：实测 saveInvoiceInfo / updateCartInfo / notifyConfirm 均无 MapsTo。
+        assert!(!has_maps_to(1, &outgoing(&[("Calls", 1, 2)])));
+        assert!(!has_maps_to(1, &outgoing(&[("WritesDb", 1, 2)])));
+        assert!(!has_maps_to(1, &HashMap::new()));
+    }
+
+    #[test]
     fn wants_config_value_fires_only_on_config_seeking_queries() {
         assert!(wants_config_value("怎么修改订单自动取消时间"));
         assert!(wants_config_value("商品库存预警阈值"));
@@ -3060,6 +3332,67 @@ mod tests {
         // 「消息」的 消 + 「定时」的 时 会把 `取消时间` 削成 `取`。
         assert_eq!(strip_hint_words("商品库存预警阈值", hints), "商品库存预警阈值");
         assert_eq!(strip_hint_words("修改订单自动取消时间", hints), "修改订单自动取消时间");
+    }
+
+    // ---- 召回质量评估 ----
+
+    /// 构造带"命中词"的合成命中，用于质量评估断言（不依赖任何真实工程数据）。
+    fn qhit(id: i64, score: f64, matched: &[&str]) -> RecallHit {
+        let mut h = fhit(id, "node", "Method", score, true);
+        h.matched_terms = matched.iter().map(|s| s.to_string()).collect();
+        h
+    }
+
+    #[test]
+    fn assess_quality_high_when_all_concepts_covered() {
+        // 「如何修改下单优惠」三个概念（修改 / 下单 / 优惠）都命中，且头部区分度健康。
+        let hits = vec![
+            qhit(1, 500.0, &["order", "edit", "coupon"]),
+            qhit(2, 100.0, &["order"]),
+            qhit(3, 90.0, &["order"]),
+        ];
+        let (q, conf, _reason, missing) =
+            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new());
+        assert_eq!(q, RecallQuality::High, "概念全覆盖应为 High，conf={conf}");
+        assert!(missing.is_empty(), "不应有未命中概念：{missing:?}");
+    }
+
+    #[test]
+    fn assess_quality_medium_when_partially_covered() {
+        // 只覆盖「下单 / 优惠」，缺「修改」。
+        let hits = vec![qhit(1, 500.0, &["order", "coupon"]), qhit(2, 100.0, &["order"])];
+        let (q, _conf, _reason, missing) =
+            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new());
+        assert_eq!(q, RecallQuality::Medium, "部分覆盖应为 Medium");
+        assert!(missing.iter().any(|m| m == "修改"), "应报告缺失概念「修改」：{missing:?}");
+    }
+
+    #[test]
+    fn assess_quality_low_when_most_concepts_missing() {
+        // 只覆盖「下单」→ 覆盖率 1/3 < 0.5。
+        let hits = vec![qhit(1, 500.0, &["order"]), qhit(2, 100.0, &["order"])];
+        let (q, _conf, _reason, missing) =
+            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new());
+        assert_eq!(q, RecallQuality::Low, "多数概念未命中应为 Low");
+        assert!(
+            missing.iter().any(|m| m == "修改") && missing.iter().any(|m| m == "优惠"),
+            "缺失概念应含「修改」「优惠」：{missing:?}"
+        );
+    }
+
+    #[test]
+    fn assess_quality_ignores_boilerplate_hits() {
+        // 「优惠」只被 ORM 关联样板命中 → 不算覆盖（样板不含业务信息）。
+        let mut boilerplate = HashSet::new();
+        boilerplate.insert(9);
+        let hits = vec![qhit(1, 500.0, &["order"]), qhit(9, 480.0, &["coupon"])];
+        let (q, _conf, _reason, missing) =
+            RecallService::assess_quality("如何修改下单优惠", &hits, &boilerplate);
+        assert!(
+            missing.iter().any(|m| m == "优惠"),
+            "样板命中不应算覆盖「优惠」：{missing:?}"
+        );
+        assert_eq!(q, RecallQuality::Low, "排除样板后覆盖率过低应为 Low");
     }
 
     #[test]

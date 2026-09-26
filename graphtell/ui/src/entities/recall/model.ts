@@ -55,4 +55,19 @@ export interface RecallResult {
   /** 可直接粘给 LLM 的上下文包。 */
   markdown: string;
   truncated: boolean;
+
+  /**
+   * 召回置信度（0~1）。
+   * 以及下面三个质量字段：召回质量方差极大（有的查询正解在前二，有的两个意图
+   * 都落空、前排全是泛词噪声），但结果长得一模一样 —— 不把质量显式报出来，
+   * 用户会同等信任，于是「静默失败」成了最坏的失败模式。
+   * 只做提示，不过滤结果：命中照常返回。
+   */
+  confidence: number;
+  /** 质量档位（见后端 `RecallQuality`）。 */
+  quality: 'high' | 'medium' | 'low';
+  /** 档位判定依据（人话，可直接展示）。 */
+  quality_reason: string;
+  /** 未命中的特征概念 —— UI 上渲染成可点击 chip，点一下即用该词重新召回。 */
+  missing_terms: string[];
 }

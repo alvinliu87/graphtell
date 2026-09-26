@@ -23,6 +23,71 @@ import type { RecallResult } from '@/entities/recall';
 import { useLocale } from '@/shared/lib/i18n';
 
 /**
+ * 召回质量条：把服务端判定的质量档位显式呈现出来。
+ *
+ * 为什么必须有：召回质量**方差极大** —— 有的查询正解在前二，有的两个意图都落空、
+ * 前排全是泛词噪声，但两者返回的列表长得一模一样。不标出来的话用户会同等信任，
+ * 于是「静默失败」成了最坏的失败模式。
+ *
+ * 非「高」时把未命中的特征词渲染成可点击 chip：点一下即用该词重新召回，
+ * 给用户一条明确的退路，而不是只告诉他"这次不准"。
+ */
+function RecallQualityBanner({
+  result,
+  onPickTerm,
+}: {
+  result: RecallResult;
+  onPickTerm: (kw: string) => void;
+}) {
+  const { t } = useLocale();
+  const meta =
+    result.quality === 'low'
+      ? { color: 'red', label: t('低'), type: 'error' as const }
+      : result.quality === 'medium'
+        ? { color: 'orange', label: t('中'), type: 'warning' as const }
+        : { color: 'green', label: t('高'), type: 'success' as const };
+
+  return (
+    <Alert
+      type={meta.type}
+      showIcon
+      style={{ marginBottom: 10 }}
+      message={
+        <Space size={6} wrap>
+          <Typography.Text strong>{t('召回质量')}</Typography.Text>
+          <Tag color={meta.color}>{meta.label}</Tag>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {t('置信度')} {(result.confidence ?? 1).toFixed(2)}
+          </Typography.Text>
+        </Space>
+      }
+      description={
+        <>
+          <div style={{ fontSize: 12 }}>{result.quality_reason}</div>
+          {result.missing_terms?.length ? (
+            <div style={{ marginTop: 6 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('建议改用这些特征词检索')}：
+              </Typography.Text>
+              {result.missing_terms.map((m) => (
+                <Tag
+                  key={m}
+                  color={meta.color}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onPickTerm(m)}
+                >
+                  {m}
+                </Tag>
+              ))}
+            </div>
+          ) : null}
+        </>
+      }
+    />
+  );
+}
+
+/**
  * 代码召回页：给一段提示词，返回"该看哪些代码"。
  *
  * 设计要点（与后端 `RecallHit.direct` / `hop` 对应）：
@@ -45,8 +110,10 @@ export function RecallPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async () => {
-    const q = query.trim();
+  // `override`：供质量条上的特征词 chip 直接以该词重新召回 ——
+  // 不能只 setQuery 再 run()，因为 setState 是异步的，run 会读到旧值。
+  const run = async (override?: string) => {
+    const q = (override ?? query).trim();
     if (!q) {
       message.warning(t('请输入提示词'));
       return;
@@ -125,6 +192,13 @@ export function RecallPage() {
 
         {result ? (
           <div style={{ marginTop: 12 }}>
+            <RecallQualityBanner
+              result={result}
+              onPickTerm={(kw) => {
+                setQuery(kw);
+                void run(kw);
+              }}
+            />
             <Space size={6} wrap>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('解析出的查询词')}：

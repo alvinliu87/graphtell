@@ -102,7 +102,7 @@ impl McpBridge {
             "tools": [
                 {
                     "name": "recall_code",
-                    "description": "按自然语言/标识符提示词在代码图上召回相关代码，返回紧凑的 Markdown 上下文（文件路径、行号、片段、调用关系）。把这段上下文注入给生成代码的 LLM，可替代它自行读取全仓或多次 grep，显著节省 token。",
+                    "description": "按自然语言/标识符提示词在代码图上召回相关代码，返回紧凑的 Markdown 上下文（文件路径、行号、片段、调用关系）。把这段上下文注入给生成代码的 LLM，可替代它自行读取全仓或多次 grep，显著节省 token。返回的上下文顶部带**质量档位**（高/中/低 + 置信度）：当质量为「低」时说明多数特征词未命中、前排可能是泛词噪声，**不要直接采信**，应按文末给出的特征词自行检索或直接阅读相关文件；质量为「中」时结果可能不完整，建议补充检索。",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -190,7 +190,10 @@ impl McpBridge {
         let path = format!("/api/projects/{}/recall", self.project);
         match http_call(&self.base, &path, "POST", Some(&body)) {
             Ok(resp) => match extract_markdown(&resp) {
-                Ok(md) => (md, false),
+                Ok(md) => {
+                    let (quality, confidence, missing) = extract_quality(&resp);
+                    (with_quality_guidance(md, &quality, confidence, &missing), false)
+                }
                 Err(e) => (format!("解析召回响应失败: {e}"), true),
             },
             Err(e) => (
@@ -272,6 +275,68 @@ impl McpBridge {
 }
 
 // ---------------------------------------------------------------- 响应格式化
+
+/// 抽取召回的**质量元数据**（quality / confidence / missing_terms）。
+///
+/// 单独一个函数而非塞进 [`extract_markdown`]：markdown 解析失败时仍能独立诊断，
+/// 也让 MCP 侧可以按档位追加"下一步该做什么"。缺省按 high 处理（不打扰正常结果）。
+fn extract_quality(resp: &str) -> (String, f64, Vec<String>) {
+    let Ok(v) = serde_json::from_str::<Value>(resp) else {
+        return ("high".to_string(), 1.0, Vec::new());
+    };
+    let Some(data) = v.get("data") else {
+        return ("high".to_string(), 1.0, Vec::new());
+    };
+    let quality = data
+        .get("quality")
+        .and_then(|q| q.as_str())
+        .unwrap_or("high")
+        .to_string();
+    let confidence = data.get("confidence").and_then(|c| c.as_f64()).unwrap_or(1.0);
+    let missing = data
+        .get("missing_terms")
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    (quality, confidence, missing)
+}
+
+/// 按质量档位追加"下一步该做什么"。
+///
+/// **只提示，绝不丢弃已召回的片段** —— 片段仍有参考价值，扔掉已付出的检索成本
+/// 并不划算。目的是避免"拿着噪声当证据"的静默失败：低质量时明确要求调用方
+/// 改用给出的特征词自行检索 / 直接阅读文件。
+fn with_quality_guidance(
+    md: String,
+    quality: &str,
+    confidence: f64,
+    missing: &[String],
+) -> String {
+    let kw = if missing.is_empty() {
+        "（无可用特征词，建议换更具体的说法重试）".to_string()
+    } else {
+        missing
+            .iter()
+            .map(|m| format!("`{m}`"))
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    match quality {
+        "low" => format!(
+            "{md}\n\n---\n⚠️ **召回质量低（置信度 {confidence:.2}）—— 不要只依赖以上上下文。**\n\
+             请改用这些特征词自行检索：{kw}。仍无法确定时，直接打开相关文件阅读。"
+        ),
+        "medium" => format!(
+            "{md}\n\n---\nℹ️ **召回质量中等（置信度 {confidence:.2}）**：结果可能不完整。\n\
+             未命中的特征词：{kw}。建议补充检索后再下结论。"
+        ),
+        _ => md,
+    }
+}
 
 fn extract_markdown(resp: &str) -> anyhow::Result<String> {
     let v: Value = serde_json::from_str(resp)?;
