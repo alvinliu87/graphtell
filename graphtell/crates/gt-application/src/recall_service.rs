@@ -104,6 +104,212 @@ fn has_maps_to(id: i64, outgoing: &HashMap<i64, Vec<gt_domain::model::Edge>>) ->
         .unwrap_or(false)
 }
 
+// ---------------------------------------------------------------------------
+// 开发者的三类「噪声 / 锚点」信号
+// ---------------------------------------------------------------------------
+// 这三条都来自同一类真实踩坑（见各自注释里的场景），共同点：**单靠词面 / 向量相似度
+// 会把样板代码和用户点名的符号混在一起**，必须用「路径 / 形态」这类廉价且可靠的信号
+// 在打分阶段就区分开，而不是等排序之后再补救。
+
+/// **点名符号**（`(For Test::Result`) 的加权：提示词里写了完整标识符
+/// （`StoreOrderCreateServices` / `createOrder` / `store_order`）时，用户已经明确
+/// 知道自己要看哪个类 / 方法 —— 这不是"语义相似"问题，是"精确指向"问题。
+///
+/// 实测「StoreOrderCreateServices 里 createOrder 之后都调了哪些下游方法」被一批
+/// `*Listener` 灌满前排、`createOrder` 一个都不出现：查询含「之后」触发事件意图，
+/// 事件种子有 `EVENT_SEED_MIN` 兜底（400 分），压过了 `createOrder` 的精确匹配分。
+/// 给这类精确指向加权后，点名的符号稳定回到种子首位。
+const ANCHOR_EXACT_BOOST: f64 = 3.0;
+/// 标识符前缀 / 后缀命中（`createOrders` ↔ 锚点 `createOrder`）。
+const ANCHOR_NAME_BOOST: f64 = 2.2;
+/// 落在 fqn 里（父 / 子命名空间或目录），比名字弱。
+const ANCHOR_FQN_BOOST: f64 = 1.6;
+
+/// **测试文件**的折扣系数。
+///
+/// 开发者不会在单测里找业务实现，但 `test/user.test.js`、`test/tools/nock-server-fixtures.js`
+/// 这类文件里满是 `makeFakeUser` / `fixtureFilename` 等"看起来很像答案"的符号：
+/// 实测「上传头像后生成缩略图」的前 five 条里有四条来自 `test/**`。降权后它们仍可被召到，
+/// 只是不再占位。
+const TEST_FILE_DISCOUNT: f64 = 0.55;
+
+/// **生成器样板文件**的折扣系数（MyBatis Generator 的 `mall-mbg` / `generated-sources` …）。
+///
+/// 这类文件里全是 `andPaymentTimeIsNull` / `createCriteria` / `addCriterion` 之类的查询构造器，
+/// 中文查询（"订单超过 30 分钟未支付自动取消"）靠词面就能拿满分，却毫无业务语义 ——
+/// 实测 mall 工程 top8 里七条来自这里。
+const GENERATED_FILE_DISCOUNT: f64 = 0.5;
+
+/// 查询构造器（Criteria / Example DSL）链式方法名的折扣。
+///
+/// 与路径互补：即使不在 `mbg` 目录下（`*Example` 类被手工拷进业务包也会污染），
+/// `andXxxEqualTo` / `createCriteria` 这种形态本身就是 MyBatis Generator 的指纹。
+const CRITERIA_BUILDER_DISCOUNT: f64 = 0.45;
+
+/// 路径是否属于**测试代码**：按路径分段 / 文件名口径判定，避免把 `Contest/`、
+/// `latest/` 这类恰好含 "test" 子串的业务目录误伤。
+fn is_test_path(path: &str) -> bool {
+    let norm = path.replace('\\', "/").to_lowercase();
+    let (_, file) = match norm.rsplit_once('/') {
+        Some((dir, f)) => (dir, f),
+        None => ("", norm.as_str()),
+    };
+    // 文件名口径：`*.test.js` / `*.spec.ts` / `*_test.go` / `test_*.py`
+    if file.starts_with("test_")
+        || file.contains(".test.")
+        || file.contains(".spec.")
+        || file.ends_with("_test.go")
+        || file.ends_with("_test.php")
+        || file.ends_with("_test.py")
+    {
+        return true;
+    }
+    // 目录口径：`test/`、`tests/`、`__tests__/`、`spec/`、`specs/`
+    norm.split('/').any(|seg| {
+        matches!(seg, "test" | "tests" | "__tests__" | "spec" | "specs")
+    })
+}
+
+/// 路径是否属于**框架 / 生成器输出的样板代码**。
+fn is_generated_path(path: &str) -> bool {
+    let norm = path.replace('\\', "/").to_lowercase();
+    norm.split('/').any(|seg| {
+        // MyBatis Generator 的产物模块（mall-mbg / xxx-mbg）、Maven / Gradle / Protobuf 的
+        // generated-sources、以及 protoc 生成的 `*_pb2` 模块。
+        // 注意别用 `starts_with("gen")` 之类的宽松前缀 —— 业务代码里的 invoice generator /
+        // genesis 目录会被误伤。
+        seg.contains("mbg") || seg.contains("generated") || seg.contains("_pb2")
+    })
+}
+
+/// 是否为 MyBatis Generator 的查询构造器方法：`example.createCriteria()`、
+/// `addCriterion(...)`、`andPaymentTimeIsNull()` / `orStatusEqualTo()` …
+///
+/// 判定只看**形态**（驼峰 + `and`/`or` 前缀 + 第三个字母大写），与工程无关。
+fn is_criteria_builder_method(name: &str) -> bool {
+    if matches!(
+        name,
+        "createCriteria" | "createCriteriaInternal" | "addCriterion" | "addCriterionWithNoValue"
+    ) {
+        return true;
+    }
+    // `andPaymentTimeIsNull` / `orIdIn`：and|or 前缀 + 大写词首 + 足够长（排除 and/or 本身
+    // 与 `android` 这类以 and 开头的正常词 —— 它们第三个字符是小写）。
+    for prefix in ["and", "or"] {
+        let rest = match name.strip_prefix(prefix) {
+            Some(r) if r.chars().count() >= 2 => r,
+            _ => continue,
+        };
+        if rest.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 路径维度的降权系数（测试 / 生成代码）。
+fn file_noise_discount(path: &str) -> f64 {
+    if is_test_path(path) {
+        TEST_FILE_DISCOUNT
+    } else if is_generated_path(path) {
+        GENERATED_FILE_DISCOUNT
+    } else {
+        1.0
+    }
+}
+
+/// 节点所在的**文件路径**指针（供 [`node_noise_discount`] 查表）。
+fn node_file_path<'a>(node: &Node, files: &'a HashMap<i64, String>) -> Option<&'a str> {
+    let fid = node.file_id.as_ref()?;
+    files.get(&fid.get()).map(|s| s.as_str())
+}
+
+/// 节点的综合降权：ORM 关联访问器 × 文件（测试 / 生成）× 查询构造器方法。
+fn node_noise_discount(
+    node: &Node,
+    files: &HashMap<i64, String>,
+    boilerplate: &HashSet<i64>,
+) -> f64 {
+    let mut d = 1.0;
+    if boilerplate.contains(&node.id.get()) {
+        d *= RELATION_ACCESSOR_DISCOUNT;
+    }
+    if let Some(p) = node_file_path(node, files) {
+        d *= file_noise_discount(p);
+    }
+    if is_criteria_builder_method(&node.name) {
+        d *= CRITERIA_BUILDER_DISCOUNT;
+    }
+    d
+}
+
+/// 提示词里**点名的完整标识符**（锚点）。
+///
+/// 口径要保守：只有「形如标识符（驼峰 / 下划线，≥2 个 token，长度 ≥6）」**且**
+/// 「在图里真的存在（某个节点的 name / fqn 含它）」才算锚点。
+/// 「真的存在」这一条是必须的 —— 否则把随手写的一个英文单词当锚点加权，会反向
+/// 把排序带偏；而对 PascalCase 类名这种形态，同名的概率本来就很低。
+fn extract_anchors(query: &str, nodes: &[Node]) -> Vec<String> {
+    let mut cands: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    for ch in query.chars() {
+        if (ch.is_alphanumeric() && !is_cjk(ch)) || ch == '_' {
+            buf.push(ch);
+        } else if !buf.is_empty() {
+            cands.push(std::mem::take(&mut buf));
+        }
+    }
+    if !buf.is_empty() {
+        cands.push(buf);
+    }
+
+    cands
+        .into_iter()
+        .filter(|c| is_identifier_shaped(c))
+        .map(|c| c.to_lowercase())
+        .filter(|low| {
+            nodes.iter().any(|n| {
+                n.name.to_lowercase().contains(low.as_str())
+                    || n.fqn
+                        .as_deref()
+                        .is_some_and(|f| f.to_lowercase().contains(low.as_str()))
+            })
+        })
+        .collect()
+}
+
+/// 是否形如「多词标识符」：`StoreOrderCreateServices` / `createOrder` / `store_order`。
+/// 单个英文单词（`shipping`、`platform`）不算 —— 它是普通查询词，不该拿锚点加权。
+fn is_identifier_shaped(s: &str) -> bool {
+    if s.chars().count() < 6 {
+        return false;
+    }
+    if !s.chars().any(|c| c == '_' || c.is_uppercase()) {
+        return false;
+    }
+    split_ident_tokens(s).len() >= 2
+}
+
+/// 节点是否命中某个锚点，以及对应的加权档（见 [`ANCHOR_EXACT_BOOST`]）。
+fn anchor_multiplier(node: &Node, anchors: &[String]) -> f64 {
+    if anchors.is_empty() {
+        return 1.0;
+    }
+    let name = node.name.to_lowercase();
+    let fqn = node.fqn.as_deref().unwrap_or("").to_lowercase();
+    let mut best = 1.0f64;
+    for a in anchors {
+        if name == *a {
+            best = best.max(ANCHOR_EXACT_BOOST);
+        } else if name.starts_with(a.as_str()) || name.ends_with(a.as_str()) {
+            best = best.max(ANCHOR_NAME_BOOST);
+        } else if !fqn.is_empty() && fqn.contains(a.as_str()) {
+            best = best.max(ANCHOR_FQN_BOOST);
+        }
+    }
+    best
+}
+
 /// 过于通用的「架构名词」别名词（service / api / model / entity …）。
 ///
 /// 这些词常作为类名后缀出现在 fqn 里（`DeliveryService`、`StoreCouponIssue`
@@ -116,6 +322,13 @@ const GENERIC_NOUNS: &[&str] = &[
     "log", "cache", "task", "job", "message", "session", "property", "attribute", "field", "page",
     "event", "queue", "topic", "schedule", "eventbus", "dict", "dictionary", "workbench",
     "dashboard", "third", "party",
+    // 实体"容器"名词：user / member / admin 等几乎每个系统都有，且常作为类名前缀
+    // （UserAddressServices / MemberServices / AdminController）。i18n 桥会把「user coupon」
+    // 这类文案的英文 key 拆出 `user` 灌进 match_terms，若不把它们当通用名词，任何 `User*`
+    // 类里的 `create`/`update` 都会因 fqn 含 `user` 被判「命中内容词」，从而绕过泛 CRUD
+    // 抑制、霸占无关查询的顶部（实测「怎么创建优惠券」被 UserAddressServices::create 夺冠）。
+    // 排除它们不影响真正的领域词（coupon/order/point/level…）作为内容判定。
+    "user", "member", "admin", "agent", "common", "base",
 ];
 
 /// 该 token 是否为通用架构名词（见 [`GENERIC_NOUNS`]）。
@@ -389,7 +602,22 @@ fn has_content_word(node: &Node, terms: &[String]) -> bool {
 ///   才能展开出 `revoke token`、与 `revokeToken` 在向量空间里对齐——纯靠工程 i18n 桥覆盖不到。
 ///
 /// 边界原则：只收「换个项目也大概率成立」的词；不收某个具体业务的专属实体/黑话。
-const INTENT_ALIASES: &[(&str, &[&str])] = &[
+// ============================================================================
+// 内置别名表（按「领域包 / domain pack」组织）
+// ----------------------------------------------------------------------------
+// 设计动机：之前整张表是一张「电商 / CMS 形状」的大表，非电商工程（金融 / 游戏 /
+// 权限中台 / 内核 …）开箱即用质量很差。现拆成多个领域包：
+//   - `PACK_GENERIC`   跨领域通用（操作动词 + 通用技术名词 + 可配置值语汇），任何系统都有；
+//   - `PACK_ECOMMERCE` 电商 / CMS 专属（退款 / 团购 / 收货地址 / 头像 …）；
+//   - `PACK_FINANCE`   金融专属（转账 / 对账 / 风控 …），**演示「domain pack」可按域无限扩展**。
+// 默认 [`BUILTIN_PACKS`] 全部加载，使任意工程开箱即有覆盖；项目级
+// `.graphtell/aliases.json` 仍可在其上追加本工程黑话（见 [`merged_aliases`]）。
+// 如需按域收窄，裁剪 `BUILTIN_PACKS` 即可（或未来接入「项目级按需选择」配置）。
+// ============================================================================
+
+/// 跨领域通用别名包：操作动词 + 通用技术名词 + 可配置值语汇。
+/// 这些词几乎出现在所有软件系统里，不绑定具体业务域。
+const PACK_GENERIC: &[(&str, &[&str])] = &[
     // ---- 通用操作动词（跨领域）----
     ("分页查询", &["find", "list", "page", "all", "index"]),
     ("查询", &["find", "get", "query", "fetch", "search", "select"]),
@@ -495,29 +723,143 @@ const INTENT_ALIASES: &[(&str, &[&str])] = &[
     ("视频", &["video"]),
     ("数据", &["data"]),
     // ---- 组合意图补词（中文特有复合说法 → 英文 token）----
-    ("下单", &["order", "place", "create"]),
-    ("扣减", &["deduct", "reduce", "decrement", "dec"]),
     ("失败", &["fail", "failure"]),
     ("不足", &["insufficient", "lack"]),
+];
+
+/// 电商 / CMS 领域别名包：仅在本域系统里以固定英文出现（退款=refund、团购=groupon、
+/// 收货地址=address、头像=avatar …）。`秒杀=seckill` / `分润=brokerage` 这类仅某大促 /
+/// 某平台专属的黑话仍由项目级 `.graphtell/aliases.json` 注入，不入内置表。
+const PACK_ECOMMERCE: &[(&str, &[&str])] = &[
+    ("短信", &["sms", "message"]),
+    ("合并", &["merge", "combine"]),
+    ("积分", &["point", "score", "integral"]),
+    ("规格", &["spec", "specification", "attr", "attribute"]),
+    ("验证码", &["captcha", "code", "verify"]),
+    // ---- 补齐此前退化的领域词（之前不在表里，查询只能命中泛化 add / save）----
+    ("二维码", &["qrcode", "qr", "code"]),
+    ("头像", &["avatar", "profile"]),
+    ("地址", &["address"]),
+    ("收货地址", &["address", "shipping"]),
+    ("会员", &["member", "vip"]),
+    ("等级", &["level", "grade"]),
+    ("优惠券", &["coupon"]),
+    ("购物车", &["cart"]),
+    ("店铺", &["shop", "store"]),
+    ("物流", &["logistics", "shipping"]),
+    ("发票", &["invoice"]),
+    // ---- 同义词补全：让不同说法都桥到同一英文 token ----
+    ("退款", &["refund"]),
+    ("退货", &["refund", "return"]),
+    ("售后", &["aftersale", "refund", "service"]),
+    ("团购", &["groupon", "group"]),
+    ("拼团", &["groupon", "group"]),
     // ---- 社交 / 信息流通用词（无 i18n 的工程也能靠这些命中 feed / follow）----
     ("动态流", &["feed", "activity"]),
     ("关注", &["follow"]),
     ("收藏", &["favorite", "bookmark"]),
     ("点赞", &["like"]),
-    // ---- 支付 / 交易（让充值配置、余额等命中具体方法而非泛化 config 节点）----
+    // ---- 交易 / 履约（让充值、扣减、下单命中具体方法而非泛化 config 节点）----
     ("充值", &["recharge"]),
-    ("退款", &["refund"]),
-    ("支付", &["pay", "payment"]),
+    ("下单", &["order", "place", "create"]),
+    ("扣减", &["deduct", "reduce", "decrement", "dec"]),
 ];
 
+/// 金融领域别名包：**演示「domain pack」机制可按业务域无限扩展**。
+/// 非电商工程（如清算 / 对账系统）开箱即可获得本域词汇桥，无需从零手写别名。
+/// 该包为「方向性示例」，可随真实金融工程落地继续扩充。
+const PACK_FINANCE: &[(&str, &[&str])] = &[
+    ("转账", &["transfer"]),
+    ("清算", &["clearing", "settle"]),
+    ("对账", &["reconcile", "reconciliation"]),
+    ("风控", &["risk", "control"]),
+    ("结算", &["settle", "settlement"]),
+    ("流水", &["statement", "ledger", "flow"]),
+    ("交易", &["trade", "transaction"]),
+    ("账户", &["account"]),
+    ("授信", &["credit", "limit"]),
+    ("还款", &["repay"]),
+    ("利率", &["interest", "rate"]),
+];
+
+/// 全部内置领域包。默认全部加载，使任意工程开箱即有覆盖；
+/// 如需按域收窄，裁剪此数组即可（或未来接入「项目级按需选择」配置）。
+const BUILTIN_PACKS: &[&[(&str, &[&str])]] = &[PACK_GENERIC, PACK_ECOMMERCE, PACK_FINANCE];
+
+/// 把全部内置领域包合并成一个可合并的 owned 别名表。
+///
+/// 跨包同键（同一中文词出现在多个包里）会**合并英文展开**、去重，不覆盖。
+fn builtin_aliases() -> Vec<(String, Vec<String>)> {
+    let mut list: Vec<(String, Vec<String>)> = Vec::new();
+    for pack in BUILTIN_PACKS {
+        for (zh, ens) in *pack {
+            if let Some(slot) = list.iter_mut().find(|(z, _)| z == zh) {
+                for e in ens.iter() {
+                    let owned = (*e).to_string();
+                    if !slot.1.contains(&owned) {
+                        slot.1.push(owned);
+                    }
+                }
+            } else {
+                list.push(((*zh).to_string(), ens.iter().map(|e| (*e).to_string()).collect()));
+            }
+        }
+    }
+    list
+}
+
+/// 所有内置别名包里的「中文键」集合，供 CJK 切词的已知词过滤使用
+/// （见 [`parse_query`]：命中已知词时才过滤跨越词边界的噪音 bigram）。
+fn builtin_alias_keys() -> std::collections::HashSet<String> {
+    let mut s = std::collections::HashSet::new();
+    for pack in BUILTIN_PACKS {
+        for (zh, _) in *pack {
+            s.insert((*zh).to_string());
+        }
+    }
+    s
+}
+
+/// 内置通用别名表 + 项目级 `.graphtell/aliases.json` 合并后的完整别名表。
+///
+/// 项目级文件是「领域黑话」的正确归处：它随代码库走（放在工程根），不污染
+/// 通用工具源码。格式为 `{ 中文词: [英文token, ...], ... }` 的 JSON 对象，
+/// 例如 `{ "秒杀": ["seckill"] }`。与内置表同名的键会**追加**英文展开，不覆盖。
+/// 文件不存在 / 解析失败时静默回退到内置表（仅打 warning），保证不阻断召回。
+fn merged_aliases(project_root: Option<&std::path::Path>) -> Vec<(String, Vec<String>)> {
+    let mut list = builtin_aliases();
+    if let Some(root) = project_root {
+        let cfg = root.join(".graphtell").join("aliases.json");
+        if let Ok(text) = std::fs::read_to_string(&cfg) {
+            match serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&text) {
+                Ok(extra) => {
+                    for (zh, ens) in extra {
+                        if let Some(slot) = list.iter_mut().find(|(z, _)| z == &zh) {
+                            for e in ens {
+                                if !slot.1.contains(&e) {
+                                    slot.1.push(e);
+                                }
+                            }
+                        } else {
+                            list.push((zh, ens));
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("项目别名配置解析失败 {cfg:?}：{e}（已忽略，仅用内置表）"),
+            }
+        }
+    }
+    list
+}
+
 /// 把查询里出现的中文意图词展开成英文候选 token。
-fn expand_intent_aliases(query: &str) -> Vec<String> {
+fn expand_intent_aliases(query: &str, aliases: &[(String, Vec<String>)]) -> Vec<String> {
     let mut out = Vec::new();
-    for (zh, en) in INTENT_ALIASES {
-        if query.contains(zh) {
-            for e in *en {
+    for (zh, en) in aliases {
+        if query.contains(zh.as_str()) {
+            for e in en {
                 if !out.iter().any(|x: &String| x == e) {
-                    out.push((*e).to_string());
+                    out.push(e.clone());
                 }
             }
         }
@@ -530,12 +872,12 @@ fn expand_intent_aliases(query: &str) -> Vec<String> {
 /// 中文意图词（"订单"）与它们展开出的英文 token（"order" / "orders"）归到同一类，
 /// 这样节点只要同时命中跨类别的 token（如 "order" + "coupon"），就说明它贴合了
 /// 「订单优惠」这种组合意图，而非孤立的「订单」。
-fn alias_group_map() -> HashMap<String, String> {
+fn alias_group_map(aliases: &[(String, Vec<String>)]) -> HashMap<String, String> {
     let mut m = HashMap::new();
-    for (zh, en) in INTENT_ALIASES {
-        m.insert((*zh).to_string(), (*zh).to_string());
-        for e in *en {
-            m.insert((*e).to_string(), (*zh).to_string());
+    for (zh, en) in aliases {
+        m.insert(zh.clone(), zh.clone());
+        for e in en {
+            m.insert(e.clone(), zh.clone());
         }
     }
     m
@@ -1115,7 +1457,7 @@ impl RecallService {
                 "未配置语义编码器（缺 bge 权重），无法做余弦诊断",
             ));
         };
-        let alias_terms = expand_intent_aliases(query);
+        let alias_terms = expand_intent_aliases(query, &builtin_aliases());
         let qvec = emb.embed_query(&query_embed_text(query, &alias_terms));
 
         let nodes = fetch_nodes(self.store.as_ref(), project_id)?;
@@ -1239,10 +1581,24 @@ impl RecallService {
     /// 这类查询，正解是「下单事件 → 监听器 → 消息服务」这条链，需要沿
     /// `Triggers` / `PublishesTo` / `ListensTo` 做**定向链路展开**，而不是按名字匹配。
     /// 在这之前，这类查询只能靠 [`RecallQuality`] 提示调用方降级（grep / 自行阅读）。
+    /// 质量评估里**不计入领域概念**的纯动作动词。
+    ///
+    /// 它们只表达"要找实现代码"的意图（见 [`action_intent`]），本身不含业务语义；
+    /// 若当作覆盖率概念会误伤召回质量：例如「怎么生成商品二维码」的 `生成` 展开成
+    /// `generate`，几乎没有任何标识符叫 generate，于是被判 Medium「部分特征词未命中（生成）」，
+    /// 而真正决定召回好坏的是「二维码」这个领域概念。把这些纯动词排除后，覆盖率只由
+    /// 领域概念（订单 / 优惠 / 退款 / 二维码 …）驱动，告警才真实可信。
+    /// 注意：保留「下单 / 支付 / 通知 / 回调 / 回滚 / 扣减」等**承载业务事件**的词作为概念。
+    const QUALITY_ACTION_VERBS: &[&str] = &[
+        "生成", "上传", "修改", "新增", "创建", "删除", "查询", "读取", "加载", "获取",
+        "设置", "保存", "更新", "处理", "计算", "校验", "拦截", "执行", "调用", "写入",
+    ];
+
     fn assess_quality(
         query: &str,
         hits: &[RecallHit],
         boilerplate: &HashSet<i64>,
+        aliases: &[(String, Vec<String>)],
     ) -> (RecallQuality, f32, String, Vec<String>) {
         // 2) 只认"有信息量"的命中：ORM 关联样板（hasOne 之类）不算数。
         let mut matched: HashSet<String> = HashSet::new();
@@ -1258,13 +1614,15 @@ impl RecallService {
         // * 中文词本身匹配不到英文标识符，若逐词统计会把覆盖率无谓拉低（实测四条查询全被判 Low）；
         // * 一个概念只要命中它的**任一**英文展开即算覆盖（优惠 → coupon 或 discount 都行），
         //   否则同义展开会再次拉低。
-        let concepts: Vec<(&str, &[&str])> = INTENT_ALIASES
+        let concepts: Vec<(&str, &[String])> = aliases
             .iter()
-            .filter(|(zh, _)| query.contains(*zh))
-            .map(|(zh, ens)| (*zh, *ens))
+            .filter(|(zh, _)| {
+                query.contains(zh.as_str()) && !Self::QUALITY_ACTION_VERBS.contains(&zh.as_str())
+            })
+            .map(|(zh, ens)| (zh.as_str(), ens.as_slice()))
             .collect();
         // 覆盖率按**概念数**算（不是关键词条数），所以未命中集合先只留概念。
-        let missing_concepts: Vec<(&str, &[&str])> = concepts
+        let missing_concepts: Vec<(&str, &[String])> = concepts
             .iter()
             .filter(|(_, ens)| !ens.iter().any(|e| matched.contains(&e.to_lowercase())))
             .map(|(zh, ens)| (*zh, *ens))
@@ -1502,11 +1860,18 @@ impl RecallService {
 
         // 中文意图词展开：构造一份「用于匹配」的词表（不污染对外返回的 terms）。
         // 两路来源：
-        //  1) 内置通用别名表（少量通用词）；
+        //  1) 内置通用别名表（少量通用词，**叠加**项目级 `.graphtell/aliases.json`
+        //     里各自的领域黑话，见 [`merged_aliases`]）；
         //  2) **工程自身**的 i18n 桥：i18n 中文文案 → 该文案 key 里的英文 token。
         //     第 2 路是通用的 —— 只要工程带 i18n，中文查询就能落到本项目符号，
         //     不需要为电商 / 金融 / 游戏各维护一张领域词表。
-        let alias_terms = expand_intent_aliases(&q.query);
+        let aliases = merged_aliases(
+            self.store
+                .get_project(project_id)?
+                .map(|p| std::path::PathBuf::from(p.root_path))
+                .as_deref(),
+        );
+        let alias_terms = expand_intent_aliases(&q.query, &aliases);
         let mut match_terms = terms.clone();
         for t in &alias_terms {
             if !match_terms.iter().any(|x| x == t) {
@@ -1568,7 +1933,7 @@ impl RecallService {
         // 3a) 词面路：标识符 / fqn / identity 的子串匹配（沿用既有 score_node）。
         //     命中多个「意图类别」（如同时命中 订单 + 优惠）给予短语聚合加成，
         //     使「订单优惠」这类组合意图优先于孤立的「订单」。
-        let mut group_map = alias_group_map();
+        let mut group_map = alias_group_map(&aliases);
         // 命中的 i18n 文案各自成组，使「命中多个业务概念 → 聚合加成」在任意领域都成立，
         // 而不只是对内置电商词表生效。
         for (zh, toks) in &bridge_hits {
@@ -1585,6 +1950,10 @@ impl RecallService {
             .map(|n| n.id.get())
             .collect();
 
+        // 提示词**点名的标识符**（`StoreOrderCreateServices` / `createOrder`）：精确指向，
+        // 给它们加权并抬高相对噪声的地位（见 [`anchor_multiplier`]）。
+        let anchors = extract_anchors(&q.query, &nodes);
+
         let mut lexical: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
         for node in &nodes {
             if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
@@ -1593,19 +1962,22 @@ impl RecallService {
             // 纯动词且无内容词的方法**不当种子**：它只是动作词的同名词（「修改」→
             // save/update/edit 会命中全工程同名方法），不含任何主题信息，让它当种子
             // 只会把 BFS 引向无关的通用 CRUD。与 score_node 里的折扣是同一条原则。
+            // 例外：它是提示词**点名的符号** —— 用户问 `createOrder` 就别再把它当噪音筛掉。
+            let anchored = anchor_multiplier(node, &anchors) > 1.0;
             let verb_only = action
                 && is_generic_crud_method(&node.name.to_lowercase())
-                && !has_content_word(node, &match_terms);
+                && !has_content_word(node, &match_terms)
+                && !anchored;
             if verb_only {
                 continue;
             }
             let (mut score, matched) = score_node(node, &match_terms, &kind_hints, &incoming, action);
             if score > 0.0 {
                 score *= cohesion_multiplier(&matched, &group_map);
-                // ORM 关联访问器（hasOne/hasMany 样板）不含业务逻辑，压低到不再占种子名额。
-                if boilerplate.contains(&node.id.get()) {
-                    score *= RELATION_ACCESSOR_DISCOUNT;
-                }
+                score *= anchor_multiplier(node, &anchors);
+                // 测试文件 / 生成器样板 / ORM 关联访问器：不含业务逻辑，
+                // 压低到不再占种子名额（见 [`node_noise_discount`]）。
+                score *= node_noise_discount(node, &files, &boilerplate);
                 lexical.insert(node.id.get(), (score, matched));
             }
         }
@@ -1694,11 +2066,15 @@ impl RecallService {
                     // 沉底，而优惠券 / 订单的 edit 因 fqn 带 Coupon/Order 仍保住加权。
                     let nlow = node.name.to_lowercase();
                     if is_generic_crud_method(&nlow) {
-                        let has_content = has_content_word(node, &match_terms);
+                        let has_content =
+                            has_content_word(node, &match_terms) || anchor_multiplier(node, &anchors) > 1.0;
                         if has_content {
                             rank_weight(node.kind.as_str(), true)
                         } else {
-                            kind_weight(node.kind.as_str())
+                            // 与词面路 `score_node` 保持一致：纯动词且无内容词的方法，不仅在
+                            // 动作意图下取消加权（退回 `kind_weight`），基础分也乘 0.5 折扣，
+                            // 否则它会靠向量同名匹配霸榜（见 [`GENERIC_CRUD_VERB_ONLY_DISCOUNT`]）。
+                            kind_weight(node.kind.as_str()) * GENERIC_CRUD_VERB_ONLY_DISCOUNT
                         }
                     } else {
                         rank_weight(node.kind.as_str(), true)
@@ -1706,7 +2082,13 @@ impl RecallService {
                 } else {
                     1.0
                 };
-                let s = c * VECTOR_WEIGHT * kw;
+                // 与词面路同口径：点名符号加权 + 测试 / 生成代码降权，保证两路种子
+                // 不会因为走了向量就拿回本该被压下去的样板节点。
+                let s = c
+                    * VECTOR_WEIGHT
+                    * kw
+                    * anchor_multiplier(node, &anchors)
+                    * node_noise_discount(node, &files, &boilerplate);
                 let entry = vector.entry(node.id.get()).or_insert(0.0);
                 *entry = (*entry).max(s);
             }
@@ -1725,7 +2107,14 @@ impl RecallService {
             // `notifyConfirm` 等仍排在前排、且质量评估不会因特征词被淹没而掉到「低」；
             // idf 微调只在该基线之上区分兄弟监听器（见 [`collect_event_seeds`]）。
             let top_lex = lexical.values().map(|(s, _)| *s).fold(0.0_f64, f64::max);
-            let event_base = (top_lex * 0.55).max(EVENT_SEED_MIN);
+            // 提示词**点名了标识符**时（`StoreOrderCreateServices 里 createOrder …`），
+            // 用户已经知道该看哪个符号，此时事件种子不再享受 `EVENT_SEED_MIN` 兜底 ——
+            // 否则成批的 `*Listener`（各命中一个泛词）会被抬到用户点名的符号之上。
+            let event_base = if anchors.is_empty() {
+                (top_lex * 0.55).max(EVENT_SEED_MIN)
+            } else {
+                top_lex * 0.55
+            };
             let existing: HashSet<i64> =
                 seed_tuples.iter().map(|(_, _, n)| n.id.get()).collect();
             for (s, m, n) in
@@ -1797,6 +2186,12 @@ impl RecallService {
         for h in hits.iter_mut() {
             let fan_in = incoming.get(&h.node_id.get()).map(|es| es.len()).unwrap_or(0);
             h.score *= hub_penalty(fan_in);
+            // 测试文件 / 生成器样板：也要在**最终得分**上生效。
+            // 它们常常不是种子本身，而是种子的邻居（被 BFS 带进来的 test helper），
+            // 命中分继承自种子 —— 只在种子打分阶段压不住它们，必须在最终得分上再打一次折。
+            if let Some(n) = index.get(&h.node_id.get()) {
+                h.score *= node_noise_discount(n, &files, &boilerplate);
+            }
         }
         // 事件驱动查询：把「事件处理器 → 直接被调者」与「沿事件语义边相连的节点」上浮，
         // 让「监听器 → 业务处理器」链路相对普通的「种子 → 一跳邻居」更靠前。
@@ -1880,7 +2275,7 @@ impl RecallService {
         }
 
         let (quality, confidence, quality_reason, missing_terms) =
-            Self::assess_quality(&q.query, &hits, &boilerplate);
+            Self::assess_quality(&q.query, &hits, &boilerplate, &aliases);
         let advisory =
             Self::quality_advisory(quality, confidence, &quality_reason, &missing_terms, event);
         let markdown =
@@ -2721,8 +3116,7 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
     // 已知中文词（内置别名表里的词条）：用于过滤 CJK bigram 里跨越词边界的
     // 无意义组合（何修 / 改下 / 单优 …）。仅当整段命中了已知词时才启用过滤 ——
     // 否则（OOV 中文）仍退化为全 bigram 兜底，保留对未知词的覆盖。
-    let known_alias_words: HashSet<&str> =
-        INTENT_ALIASES.iter().map(|(zh, _)| *zh).collect();
+    let known_alias_words: HashSet<String> = builtin_alias_keys();
 
     for run in cjk_runs(query) {
         // 整段保留一份：精确长词命中时得分最高。
@@ -2733,7 +3127,7 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         // 二字组。整段命中已知中文词时，仅保留「已知词」本身的 bigram，
         // 丢掉跨越词边界的噪音组合（何修 / 改下 / 单优）；
         // 整段无已知词时（OOV）保持原行为：全部 bigram 兜底。
-        let has_known = INTENT_ALIASES.iter().any(|(zh, _)| run.contains(*zh));
+        let has_known = known_alias_words.iter().any(|zh| run.contains(zh.as_str()));
         let chars: Vec<char> = run.chars().collect();
         for w in chars.windows(2) {
             let gram: String = w.iter().collect();
@@ -3068,7 +3462,7 @@ mod tests {
 
     #[test]
     fn cohesion_boosts_multi_intent() {
-        let g = alias_group_map();
+        let g = alias_group_map(&builtin_aliases());
         // 只命中一个操作类别（"查询" 的英文 find）：无加成
         let one = cohesion_multiplier(&["find".to_string()], &g);
         assert!((one - 1.0).abs() < 1e-9, "单类别不应加成：{one}");
@@ -3306,6 +3700,42 @@ mod tests {
     }
 
     #[test]
+    fn entity_container_nouns_do_not_count_as_content() {
+        // i18n 桥会把「user coupon」这类文案的英文 key 拆出 `user` 灌进 match_terms。
+        // 若实体容器名词（user / member / admin …）被当成内容词，任何 `User*` 类里的
+        // `create` 都会因 fqn 含 `user` 被判「命中内容词」，从而绕过泛 CRUD 抑制、霸占
+        // 无关查询顶部（实测「怎么创建优惠券」被 UserAddressServices::create 夺冠）。
+        // 修复：这类词进 [`GENERIC_NOUNS`]，不得作为内容词豁免折扣 / 动作加权。
+        let user_create = tnode(
+            401,
+            "Method",
+            "create",
+            Some("app\\adminapi\\controller\\v1\\user\\UserAddressServices::create"),
+            None,
+        );
+        // 仅带 `user`（实体容器名词，类标识符与路径都含它）：不应作为内容词 → 仍走折扣 + 无动作加权。
+        let (s_user, _) = score_node(
+            &user_create,
+            &["create".to_string(), "user".to_string()],
+            &[],
+            &HashMap::new(),
+            true,
+        );
+        // 换成真正出现在类标识符里的领域词 `address`：命中内容词 → 保留 1.5× 动作加权。
+        let (s_addr, _) = score_node(
+            &user_create,
+            &["create".to_string(), "address".to_string()],
+            &[],
+            &HashMap::new(),
+            true,
+        );
+        assert!(
+            s_addr > s_user,
+            "实体容器名词 user 不应作为内容词豁免泛 CRUD 折扣：address 命中 {s_addr} 应 > user 命中 {s_user}"
+        );
+    }
+
+    #[test]
     fn has_content_word_matches_tokens_not_substrings() {
         // 查询「怎么新增一种优惠券类型」展开出的词（新增 → add/create/insert/new，优惠 → coupon/discount）。
         let terms: Vec<String> = ["新增", "优惠", "add", "create", "insert", "new", "coupon", "discount"]
@@ -3362,6 +3792,195 @@ mod tests {
         );
         assert_eq!(split_ident_tokens("HTTPResponse"), vec!["http", "response"]);
         assert_eq!(split_ident_tokens("store_order"), vec!["store", "order"]);
+    }
+
+    // ---- 路径 / 形态噪声与锚点（开发者信号）----
+
+    #[test]
+    fn test_paths_are_detected_by_segment_not_substring() {
+        // 命中：真实的测试路径形态。
+        assert!(is_test_path("test/user.test.js"));
+        assert!(is_test_path("test/tools/nock-server-fixtures.js"));
+        assert!(is_test_path("__tests__/article.spec.ts"));
+        assert!(is_test_path("app/tests/UserTest.php"));
+        assert!(is_test_path("internal/user/user_test.go"));
+        assert!(is_test_path("tests/test_helper.py"));
+
+        // 不误伤：恰好含 "test" 子串的业务路径。
+        // （早期版本按子串判定，会把 Contest/ / latest/ 这类目录全部降级。）
+        assert!(!is_test_path("src/contest/ContestService.php"));
+        assert!(!is_test_path("app/controller/latest/LatestController.php"));
+        assert!(!is_test_path("app/services/order/StoreOrderCreateServices.php"));
+    }
+
+    #[test]
+    fn generated_paths_are_detected_by_module_segment() {
+        // MyBatis Generator 产物：整模块都是 `OmsOrderItemExample` 这类查询构造器。
+        assert!(is_generated_path("mall-mbg/src/main/java/com/macro/mall/model/OmsOrderItemExample.java"));
+        assert!(is_generated_path("target/generated-sources/foo/Bar.java"));
+        assert!(is_generated_path("app/build/generated/model/pb_model.dart"));
+        // 业务代码不受影响。
+        assert!(!is_generated_path("mall-admin/src/main/java/com/macro/mall/controller/OmsOrderController.java"));
+        assert!(!is_generated_path("app/services/order/StoreOrderCreateServices.php"));
+    }
+
+    #[test]
+    fn criteria_builder_methods_are_detected_by_shape() {
+        // MyBatis Generator 的查询构造器指纹。
+        assert!(is_criteria_builder_method("addCriterion"));
+        assert!(is_criteria_builder_method("createCriteria"));
+        assert!(is_criteria_builder_method("createCriteriaInternal"));
+        assert!(is_criteria_builder_method("andPaymentTimeIsNull"));
+        assert!(is_criteria_builder_method("andRecommendStatusGreaterThanOrEqualTo"));
+        assert!(is_criteria_builder_method("orIdIn"));
+
+        // 不误伤：正常业务方法（第三个字符是小写，不构成 and|or + 驼峰词首）。
+        assert!(!is_criteria_builder_method("orderAfter"));
+        assert!(!is_criteria_builder_method("androidHelper"));
+        assert!(!is_criteria_builder_method("order"));
+        assert!(!is_criteria_builder_method("getOrderList"));
+    }
+
+    #[test]
+    fn node_noise_discount_combines_accessor_file_and_shape() {
+        let files: HashMap<i64, String> = [(7i64, "test/user.test.js".to_string())]
+            .into_iter()
+            .collect();
+        let boilerplate: HashSet<i64> = HashSet::new();
+
+        let mut clean = tnode(401, "Method", "createOrder", None, None);
+        clean.file_id = Some(gt_domain::model::FileId::new(7));
+        assert!(
+            (node_noise_discount(&clean, &files, &boilerplate) - TEST_FILE_DISCOUNT).abs() < 1e-9,
+            "测试文件内的普通方法打折"
+        );
+
+        // 叠加：生成器目录里的 Criteria 样板方法。
+        let mut builder = tnode(402, "Method", "andPaymentTimeIsNull", None, None);
+        builder.file_id = Some(gt_domain::model::FileId::new(7));
+        let expected = TEST_FILE_DISCOUNT * CRITERIA_BUILDER_DISCOUNT;
+        assert!(
+            (node_noise_discount(&builder, &files, &boilerplate) - expected).abs() < 1e-9,
+            "样板形态 + 测试路径应叠加打折"
+        );
+    }
+
+    #[test]
+    fn anchors_are_extracted_only_for_real_identifiers_in_graph() {
+        let nodes = vec![
+            tnode(
+                410,
+                "Class",
+                "StoreOrderCreateServices",
+                Some("app\\services\\order\\StoreOrderCreateServices"),
+                None,
+            ),
+            tnode(
+                411,
+                "Method",
+                "createOrder",
+                Some("app\\services\\order\\StoreOrderCreateServices::createOrder"),
+                None,
+            ),
+            tnode(412, "Method", "save", None, None),
+        ];
+
+        // 开发者点名了类 + 方法。
+        let anchors = extract_anchors(
+            "StoreOrderCreateServices 里 createOrder 之后调了哪些下游方法",
+            &nodes,
+        );
+        assert!(anchors.contains(&"storeordercreateservices".to_string()));
+        assert!(anchors.contains(&"createorder".to_string()));
+
+        // snake_case 同样算锚点。
+        let snake = vec![tnode(413, "Function", "list_users", None, None)];
+        let anchors = extract_anchors("list_users 这个函数在哪", &snake);
+        assert!(anchors.contains(&"list_users".to_string()));
+
+        // 纯中文 / 纯英文小写单词查询**不产生锚点**：那是普通查询词，
+        // 加权会把排序带偏（不能因为写了 rollback 就把所有含 rollback 的符号抬起来）。
+        assert!(extract_anchors("reduce product stock and rollback on failure", &nodes).is_empty());
+        assert!(extract_anchors("订单总价里优惠是怎么算进去的", &nodes).is_empty());
+
+        // 图里不存在的标识符也不算锚点（避免对臆想的符号加权）。
+        assert!(extract_anchors("NonExistentService 在哪", &nodes).is_empty());
+    }
+
+    #[test]
+    fn anchor_multiplier_tiers_by_match_strength() {
+        let cls = tnode(
+            420,
+            "Class",
+            "StoreOrderCreateServices",
+            Some("app\\services\\order\\StoreOrderCreateServices"),
+            None,
+        );
+        let method = tnode(
+            421,
+            "Method",
+            "createOrder",
+            Some("app\\services\\order\\StoreOrderCreateServices::createOrder"),
+            None,
+        );
+        let other = tnode(422, "Method", "save", Some("app\\services\\DeliveryService::save"), None);
+        let anchors = vec!["createorder".to_string(), "storeordercreateservices".to_string()];
+
+        assert!((anchor_multiplier(&method, &anchors) - ANCHOR_EXACT_BOOST).abs() < 1e-9);
+        assert!((anchor_multiplier(&cls, &anchors) - ANCHOR_EXACT_BOOST).abs() < 1e-9);
+        assert!(
+            (anchor_multiplier(&other, &anchors) - 1.0).abs() < 1e-9,
+            "未被点名的符号不加权"
+        );
+        assert!(anchor_multiplier(&method, &[]) == 1.0, "无锚点时保持中性");
+
+        // 前缀 / 后缀命中（`createOrders`）→ 次一档；仅 fqn 命中 → 再降一档。
+        let plural = tnode(423, "Method", "createOrders", None, None);
+        assert!((anchor_multiplier(&plural, &anchors) - ANCHOR_NAME_BOOST).abs() < 1e-9);
+        let in_ns = tnode(
+            424,
+            "Method",
+            "zzz",
+            Some("app\\services\\order\\StoreOrderCreateServicesWrap::zzz"),
+            None,
+        );
+        assert!((anchor_multiplier(&in_ns, &anchors) - ANCHOR_FQN_BOOST).abs() < 1e-9);
+    }
+
+    #[test]
+    fn builtin_aliases_merge_domain_packs_and_synonyms() {
+        // 验证：内置别名表已从「单一张电商表」重构为「多领域包」，
+        // 默认全部合并加载，且同义词 / 补齐词均已生效。
+        let all = builtin_aliases();
+        let en_of = |zh: &str| -> Vec<String> {
+            all.iter()
+                .find(|(z, _)| z == zh)
+                .map(|(_, e)| e.clone())
+                .unwrap_or_default()
+        };
+
+        // 1) 跨域通用包（PACK_GENERIC）仍在：操作动词 + 通用技术名词。
+        assert!(!en_of("查询").is_empty(), "通用动词 查询 应在内置表");
+        assert!(!en_of("配置").is_empty(), "通用名词 配置 应在内置表");
+
+        // 2) 电商包（PACK_ECOMMERCE）补齐的领域词已生效。
+        assert!(en_of("二维码").iter().any(|e| e == "qrcode"), "二维码→qrcode 补齐");
+        assert!(en_of("头像").iter().any(|e| e == "avatar"), "头像→avatar 补齐");
+        assert!(en_of("地址").iter().any(|e| e == "address"), "地址→address 补齐");
+        assert!(en_of("购物车").iter().any(|e| e == "cart"), "购物车→cart 补齐");
+
+        // 3) 同义词：退货 / 售后 都应桥到 refund（与 退款 同义）。
+        let refund_terms = expand_intent_aliases("怎么办理退货", &all);
+        assert!(refund_terms.iter().any(|t| t == "refund"), "退货 应展开 refund：{refund_terms:?}");
+        let aftersale_terms = expand_intent_aliases("售后问题怎么处理", &all);
+        assert!(aftersale_terms.iter().any(|t| t == "refund"), "售后 应展开 refund：{aftersale_terms:?}");
+
+        // 4) 金融包（PACK_FINANCE）已合并：非电商工程也能桥到本域 token。
+        //    这里仅验证「包已加载、展开正确」，端到端命中取决于工程是否真有对应代码。
+        assert!(en_of("对账").iter().any(|e| e == "reconcile"), "金融包 对账→reconcile 应存在");
+        assert!(en_of("转账").iter().any(|e| e == "transfer"), "金融包 转账→transfer 应存在");
+        let reconcile_terms = expand_intent_aliases("订单怎么对账", &all);
+        assert!(reconcile_terms.iter().any(|t| t == "reconcile"), "对账 应展开 reconcile：{reconcile_terms:?}");
     }
 
     #[test]
@@ -3699,42 +4318,53 @@ mod tests {
             qhit(3, 90.0, &["order"]),
         ];
         let (q, conf, _reason, missing) =
-            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new());
+            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new(), &builtin_aliases());
         assert_eq!(q, RecallQuality::High, "概念全覆盖应为 High，conf={conf}");
         assert!(missing.is_empty(), "不应有未命中概念：{missing:?}");
     }
 
     #[test]
     fn assess_quality_medium_when_partially_covered() {
-        // 只覆盖「下单 / 优惠」，缺「修改」。
-        let hits = vec![qhit(1, 500.0, &["order", "coupon"]), qhit(2, 100.0, &["order"])];
+        // 「下单 / 优惠」两个领域概念只覆盖「下单」，缺「优惠」→ 部分覆盖应为 Medium。
+        // 「修改」是纯动作动词，不计入质量概念（见 [`QUALITY_ACTION_VERBS`]）。
+        let hits = vec![qhit(1, 500.0, &["order"]), qhit(2, 100.0, &["order"])];
         let (q, _conf, _reason, missing) =
-            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new());
+            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new(), &builtin_aliases());
         assert_eq!(q, RecallQuality::Medium, "部分覆盖应为 Medium");
-        assert!(missing.iter().any(|m| m == "修改"), "应报告缺失概念「修改」：{missing:?}");
+        assert!(missing.iter().any(|m| m == "优惠"), "应报告缺失概念「优惠」：{missing:?}");
+        assert!(
+            !missing.iter().any(|m| m == "修改"),
+            "动作动词修改不应作为未命中概念：{missing:?}"
+        );
     }
 
     #[test]
     fn assess_quality_low_when_most_concepts_missing() {
-        // 只覆盖「下单」→ 覆盖率 1/3 < 0.5。
+        // 「下单 / 优惠 / 支付」三个领域概念只覆盖「下单」→ 覆盖率 1/3 < 0.5 → Low。
         let hits = vec![qhit(1, 500.0, &["order"]), qhit(2, 100.0, &["order"])];
         let (q, _conf, _reason, missing) =
-            RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new());
+            RecallService::assess_quality("如何修改下单优惠支付", &hits, &HashSet::new(), &builtin_aliases());
         assert_eq!(q, RecallQuality::Low, "多数概念未命中应为 Low");
         assert!(
-            missing.iter().any(|m| m == "修改") && missing.iter().any(|m| m == "优惠"),
-            "缺失概念应含「修改」「优惠」：{missing:?}"
+            missing.iter().any(|m| m == "优惠") && missing.iter().any(|m| m == "支付"),
+            "缺失概念应含「优惠」「支付」：{missing:?}"
+        );
+        assert!(
+            !missing.iter().any(|m| m == "修改"),
+            "动作动词修改不应作为未命中概念：{missing:?}"
         );
     }
 
     #[test]
     fn assess_quality_ignores_boilerplate_hits() {
         // 「优惠」只被 ORM 关联样板命中 → 不算覆盖（样板不含业务信息）。
+        // 三个领域概念（下单 / 优惠 / 支付）中，样板只覆盖「优惠」、真实命中只覆盖「下单」，
+        // 于是「优惠」不算数、覆盖率 1/3 → Low。
         let mut boilerplate = HashSet::new();
         boilerplate.insert(9);
         let hits = vec![qhit(1, 500.0, &["order"]), qhit(9, 480.0, &["coupon"])];
         let (q, _conf, _reason, missing) =
-            RecallService::assess_quality("如何修改下单优惠", &hits, &boilerplate);
+            RecallService::assess_quality("如何修改下单优惠支付", &hits, &boilerplate, &builtin_aliases());
         assert!(
             missing.iter().any(|m| m == "优惠"),
             "样板命中不应算覆盖「优惠」：{missing:?}"
@@ -3748,7 +4378,7 @@ mod tests {
         // 因此未命中概念必须同时输出它的英文展开，才算真正可用的退路。
         let hits = vec![qhit(1, 500.0, &["pay"])];
         let (_q, _conf, reason, missing) =
-            RecallService::assess_quality("支付回调失败怎么排查", &hits, &HashSet::new());
+            RecallService::assess_quality("支付回调失败怎么排查", &hits, &HashSet::new(), &builtin_aliases());
         assert!(missing.iter().any(|m| m == "回调"), "应含中文概念：{missing:?}");
         assert!(
             missing.iter().any(|m| m == "callback"),
@@ -3766,9 +4396,30 @@ mod tests {
         // 这里用纯 ASCII 无意义串保证必然 OOV（等价于任何生僻领域查询）。
         let hits = vec![qhit(1, 500.0, &["express"]), qhit(2, 100.0, &["delivery"])];
         let (q, _conf, reason, _missing) =
-            RecallService::assess_quality("zzzqqx", &hits, &HashSet::new());
+            RecallService::assess_quality("zzzqqx", &hits, &HashSet::new(), &builtin_aliases());
         assert_ne!(q, RecallQuality::High, "无可评估概念时不得判 High");
         assert!(reason.contains("无法确认"), "应说明无法确认质量：{reason}");
+    }
+
+    #[test]
+    fn action_verbs_excluded_from_quality_concepts() {
+        // 「生成 / 上传 / 修改」是纯动作动词，只表达意图、不含业务语义，不应作为
+        // 质量覆盖率的领域概念。即便其英文展开（generate）没被任何命中覆盖，也不应
+        // 触发「特征词未命中（生成）」的告警，否则「怎么生成商品二维码」会被误判。
+        // 真正决定召回好坏的是「二维码」这类领域概念。
+        let aliases = vec![
+            ("生成".to_string(), vec!["generate".to_string()]),
+            ("二维码".to_string(), vec!["qrcode".to_string()]),
+        ];
+        let hits = vec![qhit(1, 500.0, &["qrcode"])]; // 只覆盖「二维码」
+        let (q, _c, _r, missing) =
+            RecallService::assess_quality("怎么生成商品二维码", &hits, &HashSet::new(), &aliases);
+        assert!(
+            !missing.iter().any(|m| m == "生成"),
+            "动作动词生成不应作为未命中概念：{missing:?}"
+        );
+        // 二维码已覆盖、生成不计入 → 覆盖率由领域概念决定，不应因生成未命中掉到 Low。
+        assert_ne!(q, RecallQuality::Low, "生成不应拉低质量档：{missing:?}");
     }
 
     #[test]
