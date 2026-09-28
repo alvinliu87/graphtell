@@ -8,7 +8,7 @@
 //! 真正的语义模型（`bge-m3` / `unixcoder`，本地 `candle` / `ort` 推理）只要实现
 //! [`Embedder`] trait 即可无缝替换，召回流程无需改动。
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// 文本 → 稠密向量的编码器。可替换、可离线。
 pub trait Embedder: Send + Sync {
@@ -97,16 +97,78 @@ pub fn default_embedder() -> Arc<dyn Embedder> {
     Arc::new(LocalHashingEmbedder::new(256))
 }
 
-/// 解析召回用的编码器：编译了 `model-candle` 且 `GT_BGE_MODEL` 权重可用时优先 bge-m3，
-/// 否则（未编译 / 缺权重 / 加载失败）安全退回默认本地哈希编码器。
+/// 当前生效的 embedding 后端描述（供 status 端点 / UI 展示）。
+static BACKEND_INFO: OnceLock<String> = OnceLock::new();
+/// 当前生效的 embedding 向量维度。
+static BACKEND_DIM: OnceLock<usize> = OnceLock::new();
+
+fn set_backend_info(name: &str, dim: usize) {
+    let _ = BACKEND_INFO.set(name.to_string());
+    let _ = BACKEND_DIM.set(dim);
+}
+
+/// 当前 embedding 后端的人类可读描述（如 `bge-m3-local`、`remote-openai (http://...)`）。
+pub fn embedding_backend_info() -> String {
+    BACKEND_INFO.get().cloned().unwrap_or_else(|| "unknown".to_string())
+}
+
+/// 当前 embedding 向量维度；未知时为 0。
+pub fn embedding_dim() -> usize {
+    BACKEND_DIM.get().copied().unwrap_or(0)
+}
+
+/// 解析召回用的编码器：依据 `GT_EMBEDDING_BACKEND` 选择后端。
+///
+/// - `auto`（默认）：本地 bge-m3 优先，缺权重则安全退回离线词面哈希；
+/// - `local`：强制本地 bge-m3，缺失也不退回（明确报错，提示先 `graphtell model fetch`）；
+/// - `url` / `remote`：指向用户自带的 embedding 服务（OpenAI 兼容 / TEI 原生）；
+/// - `hash` / `off` / `none`：纯离线词面哈希（零依赖，质量弱但保底可用）。
 ///
 /// 返回值可直接注入 [`crate::RecallService`]。生产入口（CLI / HTTP router）都走它，
 /// 因此「有权重就走真实语义、没有就退回离线」是统一行为，无需调用方关心。
 pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
-    // 混合编码器优先：查询走 tract（~140ms，比 candle ~810ms 快约 5.8 倍），
-    // 节点批量编码走 candle（~35ms/条，比 tract 批量 307ms/条 快约 9 倍）。
-    // 两侧同为 0-based position_ids，实测 cos(candle, tract) == 1.000000，
-    // 故切换无需重编码、向量空间不变。
+    let backend = std::env::var("GT_EMBEDDING_BACKEND").unwrap_or_else(|_| "auto".to_string());
+    match backend.as_str() {
+        "hash" | "off" | "none" => {
+            set_backend_info("hash (离线词面, 256d)", 256);
+            return Arc::new(LocalHashingEmbedder::new(256));
+        }
+        "url" | "remote" => {
+            return match crate::embed_remote::RemoteHttpEmbedder::load() {
+                Ok(e) => {
+                    let dim = e.dim();
+                    let fmt = match std::env::var("GT_EMBEDDING_FORMAT").as_deref() {
+                        Ok("tei") => "tei",
+                        _ => "openai",
+                    };
+                    let url = std::env::var("GT_EMBEDDING_URL").unwrap_or_default();
+                    set_backend_info(&format!("remote-{fmt} ({url})"), dim);
+                    Arc::new(e)
+                }
+                Err(err) => {
+                    tracing::warn!("远程 embedding 加载失败（{err}），退回离线词面编码器");
+                    set_backend_info("hash (remote failed)", 256);
+                    Arc::new(LocalHashingEmbedder::new(256))
+                }
+            };
+        }
+        "local" => {
+            // 强制本地 bge-m3：缺失也不退回词面，让用户明确感知权重缺失。
+            if let Some(e) = try_real_recall_embedder() {
+                let dim = e.dim();
+                set_backend_info("bge-m3-local", dim);
+                return e;
+            }
+            tracing::error!(
+                "GT_EMBEDDING_BACKEND=local 但本地 bge-m3 权重缺失，请先 `graphtell model fetch`"
+            );
+            set_backend_info("hash (local missing)", 256);
+            return Arc::new(LocalHashingEmbedder::new(256));
+        }
+        "auto" | _ => {}
+    }
+
+    // ---- auto：本地 bge-m3 优先，否则退回离线词面（默认行为） ----
     #[cfg(all(feature = "model-candle", feature = "model-ort"))]
     {
         let dir = std::env::var("GT_BGE_MODEL")
@@ -118,6 +180,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
             match crate::embed_ort::HybridBgeEmbedder::load(&dir, &onnx, &tok) {
                 Ok(embedder) => {
                     tracing::info!("已加载混合 bge-m3 编码器（查询 tract / 批量 candle，{onnx}）");
+                    set_backend_info("bge-m3-local (hybrid tract+candle)", embedder.dim());
                     return Arc::new(embedder);
                 }
                 Err(err) => tracing::warn!("混合编码器加载失败（{onnx}），回退 candle：{err}"),
@@ -131,6 +194,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
         match crate::embed_model::CandleBgeEmbedder::load(&dir) {
             Ok(embedder) => {
                 tracing::info!("已加载真实 bge-m3 语义编码器（{dir}）");
+                set_backend_info("bge-m3-local (candle)", embedder.dim());
                 return Arc::new(embedder);
             }
             Err(err) => {
@@ -138,6 +202,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
             }
         }
     }
+    set_backend_info("hash (offline fallback, 256d)", 256);
     default_embedder()
 }
 

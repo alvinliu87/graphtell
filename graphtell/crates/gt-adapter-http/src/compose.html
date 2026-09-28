@@ -82,6 +82,7 @@
     </div>
     <div class="status" id="st2"></div>
   </div>
+  <div class="status" id="be" style="margin-top:12px"></div>
 </div>
 
 <footer>
@@ -92,6 +93,17 @@
 <script>
 const $ = s => document.querySelector(s);
 const num = (v, d) => { const n = parseInt(v, 10); return Number.isNaN(n) ? d : n; };
+
+async function loadBackend() {
+  try {
+    const r = await fetch('/api/server/status');
+    const j = await r.json();
+    if (j && j.data) {
+      $('#be').textContent = '检索后端：' + j.data.embedding_backend + '  ·  ' + j.data.embedding_dim + ' 维';
+    }
+  } catch (e) { /* 状态不可用时静默 */ }
+}
+loadBackend();
 
 async function loadProjects() {
   try {

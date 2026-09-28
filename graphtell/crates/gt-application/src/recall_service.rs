@@ -686,7 +686,7 @@ const PACK_GENERIC: &[(&str, &[&str])] = &[
     ("时限", &["time", "timeout", "expire"]),
     ("阈值", &["threshold", "limit", "warn"]),
     ("预警", &["warn", "warning", "alert"]),
-    ("余额", &["balance"]),
+    ("余额", &["balance", "yue", "now_money"]),
     ("优惠", &["coupon", "discount"]),
     ("折扣", &["discount"]),
     ("金额", &["amount", "price"]),
@@ -717,6 +717,9 @@ const PACK_GENERIC: &[(&str, &[&str])] = &[
     ("缓存", &["cache"]),
     ("会话", &["session"]),
     ("消息", &["message"]),
+    ("推送", &["push", "notify"]),
+    ("表", &["table", "schema"]),
+    ("数据表", &["table", "schema"]),
     ("日志", &["log"]),
     ("错误", &["error"]),
     ("异常", &["exception"]),
@@ -734,6 +737,11 @@ const PACK_GENERIC: &[(&str, &[&str])] = &[
     // ---- 组合意图补词（中文特有复合说法 → 英文 token）----
     ("失败", &["fail", "failure"]),
     ("不足", &["insufficient", "lack"]),
+    // ---- 稳定性 / 并发控制（高并发系统常见提问）----
+    ("限流", &["rate", "limit", "throttle"]),
+    ("熔断", &["circuit", "breaker", "fallback"]),
+    ("幂等", &["idempotent", "idempotency"]),
+    ("队列", &["queue", "mq"]),
 ];
 
 /// 电商 / CMS 领域别名包：仅在本域系统里以固定英文出现（退款=refund、团购=groupon、
@@ -777,6 +785,14 @@ const PACK_ECOMMERCE: &[(&str, &[&str])] = &[
     ("充值", &["recharge"]),
     ("下单", &["order", "place", "create"]),
     ("扣减", &["deduct", "reduce", "decrement", "dec"]),
+    // ---- 零售 / 分销 / 履约扩展（让门店、分销、佣金、提现、核销命中具体实现）----
+    ("门店", &["store", "shop", "retail"]),
+    ("分销", &["distribution", "resale", "brokerage"]),
+    ("佣金", &["commission", "brokerage"]),
+    ("提现", &["withdraw", "cashout"]),
+    ("核销", &["writeoff", "verify", "consume"]),
+    ("营销", &["promotion", "marketing"]),
+    ("活动", &["activity", "campaign", "promotion"]),
 ];
 
 /// 金融领域别名包：**演示「domain pack」机制可按业务域无限扩展**。
@@ -786,6 +802,10 @@ const PACK_FINANCE: &[(&str, &[&str])] = &[
     ("转账", &["transfer"]),
     ("清算", &["clearing", "settle"]),
     ("对账", &["reconcile", "reconciliation"]),
+    // 回退 / 回滚：优惠券回退（recoverCoupon）、积分回退（integralAndCouponBack 的 Back）、
+    // 库存回滚（regressionStock）。代码里常用 recover / rollback / *Back 后缀表达「回退」。
+    ("回退", &["rollback", "recover", "restore"]),
+    ("回滚", &["rollback", "recover"]),
     ("风控", &["risk", "control"]),
     ("结算", &["settle", "settlement"]),
     ("流水", &["statement", "ledger", "flow"]),

@@ -10,6 +10,7 @@ gt-domain = { workspace = true }
 gt-pipeline = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ureq = { version = "2", features = ["json", "tls"] }
 rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -11,6 +11,7 @@ pub mod project_service;
 pub mod rule_service;
 pub mod recall_service;
 pub mod embedding;
+pub mod embed_remote;
 /// 源码变更监听（轮询 + 防抖 → 整库安全重建 + 自动合规）。
 pub mod watch;
 // 真实神经网络嵌入适配器：仅在特定 `model-*` feature 开启时编译，离线构建不受影响。
@@ -27,6 +28,6 @@ pub use rule_service::{CheckSummary, RuleService};
 pub use recall_service::{RecallHit, RecallQuality, RecallQuery, RecallResult, RecallService, SeedInfo};
 pub use embedding::{
     default_embedder, Embedder, LocalHashingEmbedder, resolve_recall_embedder,
-    try_real_recall_embedder,
+    try_real_recall_embedder, embedding_backend_info, embedding_dim,
 };
 pub use gt_domain::model::{CheckReport, CheckRule, Violation};

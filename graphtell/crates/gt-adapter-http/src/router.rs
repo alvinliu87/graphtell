@@ -76,7 +76,7 @@ pub fn state(
             Arc::clone(&store),
             Arc::clone(&deps.fs),
             Arc::clone(&deps.scanner),
-            gt_application::try_real_recall_embedder(),
+            Some(gt_application::resolve_recall_embedder()),
             Arc::clone(&node_cache),
             Some(std::path::PathBuf::from("data/embeddings")),
             Some(std::path::PathBuf::from("data/snapshots")),
@@ -118,6 +118,8 @@ pub fn state(
 pub fn build_router(state: Shared) -> Router {
     Router::new()
         .route("/api/health", get(health))
+        // 服务器状态（含当前 embedding 后端，供 UI 只读展示）
+        .route("/api/server/status", get(server_status))
         // Project CRUD
         .route("/api/projects", get(list_projects).post(create_project))
         .route(
@@ -859,6 +861,22 @@ fn estimate_tokens(s: &str) -> usize {
 /// 提示词合成器页面：内嵌静态页，避免额外静态资源托管与前端构建。
 async fn compose_page() -> Html<&'static str> {
     Html(include_str!("compose.html"))
+}
+
+/// 服务器状态：暴露当前生效的 embedding 后端与维度，供 UI 只读展示。
+#[derive(Serialize)]
+pub struct ServerStatusDto {
+    pub version: String,
+    pub embedding_backend: String,
+    pub embedding_dim: usize,
+}
+
+async fn server_status() -> Json<ApiResponse<ServerStatusDto>> {
+    Json(ApiResponse::success(ServerStatusDto {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        embedding_backend: gt_application::embedding::embedding_backend_info(),
+        embedding_dim: gt_application::embedding::embedding_dim(),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
