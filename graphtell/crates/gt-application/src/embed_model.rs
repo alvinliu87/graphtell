@@ -30,9 +30,10 @@
 
 #![cfg(feature = "model-candle")]
 
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
+use serde::Deserialize;
 use tokenizers::Tokenizer;
 
 use crate::embedding::Embedder;
@@ -40,16 +41,42 @@ use crate::embedding::Embedder;
 /// 检索指令前缀：bge 系列要求对「待检索文本」加这个前缀以激活 retrieval 表征。
 const RETRIEVE_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
 
-/// 基于 `candle` + `bge-m3` 的本地语义编码器（CPU 可跑，纯离线）。
+/// 池化方式：bge 用 [CLS]，e5 用「去 Padding 均值」。
+#[derive(Clone, Copy)]
+enum Pooling {
+    Cls,
+    Mean,
+}
+
+/// 模型目录可选的元数据（`embed_meta.json`），覆盖默认（bge 风格）的池化与前缀。
+/// 缺省即保持 bge-m3 行为，向后兼容。
+#[derive(Deserialize)]
+struct EmbedMeta {
+    #[serde(default)]
+    pooling: String,
+    #[serde(default)]
+    query_prefix: String,
+    #[serde(default)]
+    doc_prefix: String,
+}
+
+/// 基于 `candle` 的本地语义编码器（CPU 可跑，纯离线）。bge / e5 共用同一套 BERT 主干
+/// （xlm-roberta 与 bert 权重命名一致，`BertModel` 均可加载），仅池化与前缀不同，
+/// 由 `embed_meta.json` 区分。
 pub struct CandleBgeEmbedder {
     model: BertModel,
     tokenizer: Tokenizer,
     dim: usize,
     device: Device,
+    pooling: Pooling,
+    query_prefix: String,
+    doc_prefix: String,
 }
 
 impl CandleBgeEmbedder {
     /// 从本地目录加载权重（`model.safetensors` + `config.json` + `tokenizer.json`）。
+    /// 可选的 `embed_meta.json` 覆盖池化与前缀：`pooling: "mean"` + `query_prefix`/`doc_prefix`
+    /// 用于 e5 系列；缺省保持 bge 风格（[CLS] + `RETRIEVE_PREFIX`）。
     pub fn load(model_dir: &str) -> candle_core::Result<Self> {
         let device = Device::Cpu;
 
@@ -64,16 +91,36 @@ impl CandleBgeEmbedder {
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[safetensors_path], DType::F32, &device)?
         };
-        // `with_pooling = false`：我们自己做 [CLS] 池化 + L2 归一化（bge 用 CLS）。
         let model = BertModel::load(vb, &config)?;
         let tokenizer = Tokenizer::from_file(format!("{model_dir}/tokenizer.json"))
             .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+
+        // 默认 bge 行为；有 `embed_meta.json` 则按模型类型覆盖（e5 用 mean + query:/passage:）。
+        let mut pooling = Pooling::Cls;
+        let mut query_prefix = RETRIEVE_PREFIX.to_string();
+        let mut doc_prefix = String::new();
+        if let Ok(s) = std::fs::read_to_string(format!("{model_dir}/embed_meta.json")) {
+            if let Ok(m) = serde_json::from_str::<EmbedMeta>(&s) {
+                pooling = if m.pooling.trim() == "mean" {
+                    Pooling::Mean
+                } else {
+                    Pooling::Cls
+                };
+                if !m.query_prefix.is_empty() {
+                    query_prefix = m.query_prefix;
+                }
+                doc_prefix = m.doc_prefix;
+            }
+        }
 
         Ok(Self {
             model,
             tokenizer,
             dim: config.hidden_size,
             device,
+            pooling,
+            query_prefix,
+            doc_prefix,
         })
     }
 }
@@ -100,8 +147,9 @@ impl Embedder for CandleBgeEmbedder {
         self.encode(text, true)
     }
 
-    /// 批量编码（文档侧，不加前缀）：把一批文本拼成一个大批次做一次前向，
-    /// 取各自 [CLS] 并 L2 归一化。比逐条 `embed` 快一个数量级，是大图召回冷启动的关键优化。
+    /// 批量编码（文档侧）：把一批文本拼成一个大批次做一次前向，按 `pooling` 取向量并 L2
+    /// 归一化。比逐条 `embed` 快一个数量级，是大图召回冷启动的关键优化。文档侧统一加
+    /// `doc_prefix`（e5 需要；bge 文档侧无前缀）。
     fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
         if texts.is_empty() {
             return Vec::new();
@@ -112,7 +160,7 @@ impl Embedder for CandleBgeEmbedder {
         for t in texts {
             let enc = self
                 .tokenizer
-                .encode(t.as_str(), true)
+                .encode(format!("{}{}", self.doc_prefix, t), true)
                 .expect("tokenize 失败");
             let mut ids = enc.get_ids().to_vec();
             // 必须截断：补齐长度取本批最大值，一条超长文本会拖垮整批。
@@ -144,18 +192,14 @@ impl Embedder for CandleBgeEmbedder {
             .reshape((batch, max_len))
             .expect("reshape");
 
-        // [batch, seq, hidden] → 取 [CLS]（序列第 0 位）→ [batch, hidden]
         let hidden = self
             .model
             .forward(&input_ids, &type_ids, Some(&attn))
             .expect("bert forward");
-        let cls = hidden
-            .narrow(1, 0, 1)
-            .expect("narrow")
-            .squeeze(1)
-            .expect("squeeze");
+        // 按 `pooling` 取 [batch, hidden]
+        let pooled = self.pool(&hidden, &attn, max_len, batch).expect("pool");
         // L2 归一化（按行）
-        let norm = cls
+        let norm = pooled
             .sqr()
             .expect("sqr")
             .sum(1)
@@ -164,26 +208,30 @@ impl Embedder for CandleBgeEmbedder {
             .expect("unsqueeze")
             .sqrt()
             .expect("norm");
-        let normalized = cls.broadcast_div(&norm).expect("normalize");
+        let normalized = pooled.broadcast_div(&norm).expect("normalize");
 
         normalized.to_vec2::<f32>().expect("to_vec")
     }
 }
 
 impl CandleBgeEmbedder {
-    /// 统一编码：查询侧 `is_query=true` 时拼上 bge 检索前缀，文档侧不加。
-    /// 取 [CLS] token 并 L2 归一化（bge 用 [CLS]，非 mean-pooling）。
+    /// 统一编码：查询侧 `is_query=true` 时拼 `query_prefix`，文档侧拼 `doc_prefix`
+    /// （e5 需要；bge 文档侧无前缀）。按 `pooling` 取向量并 L2 归一化。
     fn encode(&self, text: &str, is_query: bool) -> Vec<f32> {
-        let t = if is_query {
-            format!("{RETRIEVE_PREFIX}{text}")
+        let prefix = if is_query {
+            &self.query_prefix
         } else {
-            text.to_string()
+            &self.doc_prefix
         };
+        let t = format!("{prefix}{text}");
         let encoding = self.tokenizer.encode(t, true).expect("tokenize 失败");
         let mut ids: Vec<u32> = encoding.get_ids().to_vec();
         // 同 [`Self::embed_batch`]：限制序列长度，避免超长文本拖垮单次前向。
         ids.truncate(MAX_TOKENS);
         let seq_len = ids.len();
+        if seq_len == 0 {
+            return vec![0.0; self.dim];
+        }
 
         let input_ids = Tensor::new(ids, &self.device)
             .expect("input_ids")
@@ -193,24 +241,48 @@ impl CandleBgeEmbedder {
             .expect("type_ids")
             .unsqueeze(0)
             .expect("unsqueeze");
+        let attn = Tensor::new(vec![1u32; seq_len], &self.device)
+            .expect("attn")
+            .unsqueeze(0)
+            .expect("unsqueeze");
 
-        // [1, seq, hidden]
         let hidden = self
             .model
-            .forward(&input_ids, &type_ids, None)
+            .forward(&input_ids, &type_ids, Some(&attn))
             .expect("bert forward");
-        // 取 [CLS]（序列第 0 个 token）
-        let cls = hidden.i((0, 0)).expect("cls index");
-        // L2 归一化
-        let norm = cls
+        let pooled = self.pool(&hidden, &attn, seq_len, 1).expect("pool");
+        let norm = pooled
             .sqr()
             .expect("sqr")
             .sum_all()
             .expect("sum")
             .sqrt()
             .expect("norm");
-        let normalized = cls.broadcast_div(&norm).expect("normalize");
+        let normalized = pooled.broadcast_div(&norm).expect("normalize");
 
-        normalized.to_vec1::<f32>().expect("to_vec")
+        let mut v = normalized.to_vec2::<f32>().expect("to_vec");
+        v.pop().unwrap()
+    }
+
+    /// 池化：`Cls` 取序列第 0 位；`Mean` 对真实 token（attn=1）做掩码均值。
+    fn pool(
+        &self,
+        hidden: &Tensor,
+        attn: &Tensor,
+        seq_len: usize,
+        batch: usize,
+    ) -> candle_core::Result<Tensor> {
+        match self.pooling {
+            Pooling::Cls => hidden.narrow(1, 0, 1)?.squeeze(1),
+            Pooling::Mean => {
+                // hidden[b,s,h] * attn[b,s,1] → 对 s 求和 → / 求和(attn)[b,1]
+                // attn 是 U32 的 mask，需转 F32 才能与 hidden 做乘法。
+                let a = attn.to_dtype(DType::F32)?.reshape((batch, seq_len, 1))?;
+                let weighted = hidden.broadcast_mul(&a)?;
+                let sum = weighted.sum(1)?; // [b, h]
+                let denom = a.sum(1)?.clamp(1.0, f64::MAX)?; // [b, 1] 防除零
+                sum.broadcast_div(&denom)
+            }
+        }
     }
 }

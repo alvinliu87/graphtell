@@ -127,6 +127,7 @@ impl Container {
             semantic,
             Arc::clone(&self.node_embed_cache),
             Some(std::path::PathBuf::from("data/embeddings")),
+            None,
         )
     }
 

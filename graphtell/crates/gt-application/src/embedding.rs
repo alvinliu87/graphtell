@@ -103,6 +103,27 @@ pub fn default_embedder() -> Arc<dyn Embedder> {
 /// 返回值可直接注入 [`crate::RecallService`]。生产入口（CLI / HTTP router）都走它，
 /// 因此「有权重就走真实语义、没有就退回离线」是统一行为，无需调用方关心。
 pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
+    // 混合编码器优先：查询走 tract（~140ms，比 candle ~810ms 快约 5.8 倍），
+    // 节点批量编码走 candle（~35ms/条，比 tract 批量 307ms/条 快约 9 倍）。
+    // 两侧同为 0-based position_ids，实测 cos(candle, tract) == 1.000000，
+    // 故切换无需重编码、向量空间不变。
+    #[cfg(all(feature = "model-candle", feature = "model-ort"))]
+    {
+        let dir = std::env::var("GT_BGE_MODEL")
+            .unwrap_or_else(|_| "models/bge-m3-safetensors".to_string());
+        let onnx = std::env::var("GT_BGE_ONNX")
+            .unwrap_or_else(|_| "models/bge-m3-onnx/model.onnx".to_string());
+        if std::path::Path::new(&onnx).exists() {
+            let tok = format!("{dir}/tokenizer.json");
+            match crate::embed_ort::HybridBgeEmbedder::load(&dir, &onnx, &tok) {
+                Ok(embedder) => {
+                    tracing::info!("已加载混合 bge-m3 编码器（查询 tract / 批量 candle，{onnx}）");
+                    return Arc::new(embedder);
+                }
+                Err(err) => tracing::warn!("混合编码器加载失败（{onnx}），回退 candle：{err}"),
+            }
+        }
+    }
     #[cfg(feature = "model-candle")]
     {
         let dir = std::env::var("GT_BGE_MODEL")
@@ -126,6 +147,24 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
 /// 与 [`resolve_recall_embedder`] 的区别：后者在无权重时**安全退回**默认哈希编码器；
 /// 本函数把「是否具备真实语义」这一事实显式交回调用方，便于决定是否触发后台预热。
 pub fn try_real_recall_embedder() -> Option<Arc<dyn Embedder>> {
+    // 同 [`resolve_recall_embedder`]：优先混合编码器（查询 tract / 批量 candle）。
+    #[cfg(all(feature = "model-candle", feature = "model-ort"))]
+    {
+        let dir = std::env::var("GT_BGE_MODEL")
+            .unwrap_or_else(|_| "models/bge-m3-safetensors".to_string());
+        let onnx = std::env::var("GT_BGE_ONNX")
+            .unwrap_or_else(|_| "models/bge-m3-onnx/model.onnx".to_string());
+        if std::path::Path::new(&onnx).exists() {
+            let tok = format!("{dir}/tokenizer.json");
+            match crate::embed_ort::HybridBgeEmbedder::load(&dir, &onnx, &tok) {
+                Ok(embedder) => {
+                    tracing::info!("已加载混合 bge-m3 编码器（查询 tract / 批量 candle，{onnx}）");
+                    return Some(Arc::new(embedder));
+                }
+                Err(err) => tracing::warn!("混合编码器加载失败（{onnx}），回退 candle：{err}"),
+            }
+        }
+    }
     #[cfg(feature = "model-candle")]
     {
         let dir = std::env::var("GT_BGE_MODEL")

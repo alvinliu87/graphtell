@@ -37,8 +37,12 @@ tower = { workspace = true, features = ["util"] }
 http-body-util = { workspace = true }
 
 [features]
-default = ["model-candle"]
+default = ["model-candle", "model-ort"]
 # 端到端验证真实模型召回：转发到 gt-application 的 model-candle（纯 Rust bge-m3）。
 # 设为默认后，CLI 直接走真实 bge-m3 语义召回；若不想编译 candle，可用
 # `cargo build -p gt-app --no-default-features` 退回本地哈希编码器（零依赖）。
 model-candle = ["gt-application/model-candle"]
+# ONNX + tract（纯 Rust 推理，零系统依赖）。与 candle 组合成**混合编码器**：
+# 查询侧走 tract（~140ms，candle ~810ms，快约 5.8 倍），节点批量编码仍走 candle
+# （~35ms/条，tract 批量 307ms/条）。缺 ONNX 权重时自动回退纯 candle，行为不变。
+model-ort = ["gt-application/model-ort"]

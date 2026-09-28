@@ -7,7 +7,10 @@
     "覆盖：PHP(电商/后台) / TypeScript(Node,非电商) / Java(SpringBoot,电商) / Python(FastAPI)。",
     "用「、」连接两个独立问题的 case 用于验证**多意图拆分**：判据是 hit 用「任一 target」语义，",
     "  因此它只能保证至少一个意图被召回；要断言两个意图各自命中，请像下面那样为每个意图单独建 case。",
-    "batch=1 是第一批（动作意图 / 跨语言）；batch=2 是第二批「真实开发场景」",
+    "batch=1 第一批（动作意图 / 跨语言）；batch=2 第二批「真实开发场景」（2026-09-26）；",
+    "batch=3 第三批「故障现象描述」（2026-09-27）：开发者按症状提问题（超卖 / 密码错了 / 超时没取消 / JWT 校验），",
+    "  靠 PACK_SYMPTOM（现象→实现面）架桥。跨项目交叉验证：同一个「密码」桥既要在 mall 找到",
+    "  passwordEncoder，也要在 likeadmin 找到 PasswordValidate —— 若只在出问题的工程上通过，说明是硬编码而非泛化。",
     "  （2026-09-26 增补，全部 targets 已在源码里核实存在）。它们的文案照搬开发者在 IDE 里的原话：",
     "  点名标识符（StoreOrderCreateServices / decGoodsStock）、用故障现象描述问题（超卖 / 邮件发不出去）、",
     "  以及「改需求」型提问。用于守住三件事：",
@@ -267,7 +270,8 @@
       "project": 24,
       "batch": 2,
       "query": "后台管理员登录报密码错误，密码加密比对在哪做的",
-      "targets": ["umsadminserviceimpl"],
+      "note": "targets 修正于 2026-09-27：原本只写 UmsAdminServiceImpl，但该类自身不含 password 词素，真正负责比对的是 CommonSecurityConfig::passwordEncoder（改密码走的 updatePassword）。两个都算正解，故并列。",
+      "targets": ["passwordencoder", "updatepassword", "umsadminserviceimpl"],
       "lang": "zh"
     },
     {
@@ -297,6 +301,42 @@
       "query": "上传文件要限制大小和后缀类型，现在在哪校验的",
       "targets": ["setuploadfile"],
       "lang": "zh"
+    },
+
+    {
+      "project": 1,
+      "batch": 3,
+      "query": "商品超卖了，扣库存的地方到底有没有加锁",
+      "targets": ["decgoodsstock", "decproductstock", "lockservice"],
+      "lang": "zh"
+    },
+    {
+      "project": 11,
+      "batch": 3,
+      "query": "改密码的时候，密码规则是在哪里校验的",
+      "targets": ["passwordvalidate"],
+      "lang": "zh"
+    },
+    {
+      "project": 13,
+      "batch": 3,
+      "query": "JWT 令牌是在哪里签发的",
+      "targets": ["generatejwt"],
+      "lang": "zh"
+    },
+    {
+      "project": 24,
+      "batch": 3,
+      "query": "订单超时了却没自动取消，我该从哪个定时任务开始排查",
+      "targets": ["canceltimeoutorder", "ordertimeoutcanceltask"],
+      "lang": "zh"
+    },
+    {
+      "project": 24,
+      "batch": 3,
+      "query": "orders are not cancelled after payment timeout, find the scheduled task",
+      "targets": ["canceltimeoutorder", "ordertimeoutcanceltask"],
+      "lang": "en"
     }
   ]
 }

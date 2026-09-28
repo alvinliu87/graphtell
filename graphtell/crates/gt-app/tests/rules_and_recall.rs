@@ -431,6 +431,85 @@ fn recall_expands_from_seed_along_graph() {
     assert!(expanded.hop >= 1);
 }
 
+/// 候选集快照跨请求复用（延迟优化）**不能**以"答旧图"为代价。
+///
+/// 常驻服务只在 watch 触发重建时收到 `clear_node_cache`；图若在**另一个进程**
+/// （如手工 `graphtell run`）被改写，服务不会收到通知。因此每次复用快照前都要用
+/// 一次轻量的 `stats` 校验规模，规模对不上就重建 —— 本用例锁住这条不变量：
+/// 同一个 `RecallService`、中途改图、**不调用** `clear_node_cache`，
+/// 第二次召回必须看得到新写入的节点。
+#[test]
+fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
+    let f = fixture();
+    seed_graph(&f);
+    let store = &f.container.store;
+    let pid = f.project;
+
+    let svc = RecallService::new(
+        f.container.store.clone() as Arc<dyn Persistence>,
+        f.container.filesystem(),
+        f.container.scanner(),
+    );
+    let query = |q: &str| {
+        svc.recall(
+            pid,
+            &RecallQuery {
+                query: q.into(),
+                limit: 20,
+                hops: 2,
+                kinds: Vec::new(),
+                with_snippets: false,
+            },
+        )
+        .expect("召回不应失败")
+    };
+
+    // 第一次召回：图上还没有这个节点（顺便把该工程的快照装进缓存）。
+    let before = query("zzqLateAddedWidget");
+    assert!(
+        !before.hits.iter().any(|h| h.name == "zzqLateAddedWidget"),
+        "写入前不应存在该节点，实际：{:?}",
+        before.hits.iter().map(|h| &h.name).collect::<Vec<_>>()
+    );
+
+    // 另一个进程改图：新增一个节点，且不通知 RecallService。
+    store
+        .apply(&GraphDelta {
+            project_id: Some(pid),
+            nodes: vec![NewNode {
+                id: Some(NodeId(999)),
+                project_id: pid,
+                sub_project_id: None,
+                kind: NodeKind::new("Method"),
+                name: "zzqLateAddedWidget".to_string(),
+                fqn: None,
+                identity: Some(IdentityKey::fqn("zzqLateAddedWidget")),
+                file_id: None,
+                span: Span {
+                    start_line: 10,
+                    end_line: 30,
+                    start_byte: 0,
+                    end_byte: 0,
+                },
+                language: Language::new("php"),
+                phase: Phase(Phase::SYNTHESIZE.to_string()),
+                confidence: 1.0,
+                properties: serde_json::Value::Null,
+            }],
+            edges: Vec::new(),
+            ..Default::default()
+        })
+        .expect("改图应成功");
+
+    // 第二次召回：必须看到新节点 —— 否则说明快照被永久复用，答的一直是旧图。
+    let after = query("zzqLateAddedWidget");
+    assert!(
+        after.hits.iter().any(|h| h.name == "zzqLateAddedWidget"),
+        "图已改写但快照未失效（会一直答旧图），实际命中：{:?}",
+        after.hits.iter().map(|h| &h.name).collect::<Vec<_>>()
+    );
+}
+
 /// 中文意图查询（"下单改优惠"）必须能越过词面，seed 到英文命名的业务节点。
 ///
 /// 之前（纯词面子串）：只有名字恰好含「优惠」的 `优惠券` i18n 文案被命中，

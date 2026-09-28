@@ -79,6 +79,7 @@ pub fn state(
             gt_application::try_real_recall_embedder(),
             Arc::clone(&node_cache),
             Some(std::path::PathBuf::from("data/embeddings")),
+            Some(std::path::PathBuf::from("data/snapshots")),
         )
         // 生产 HTTP 入口开启后台异步预热：首个召回立即用快速编码器返回（不阻塞 UI），
         // 同时 spawn 线程把 bge 向量算好落盘；完成后该工程自动切到语义路。

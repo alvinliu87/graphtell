@@ -698,6 +698,15 @@ const PACK_GENERIC: &[(&str, &[&str])] = &[
     ("品牌", &["brand"]),
     ("分类", &["category"]),
     ("标签", &["tag"]),
+    // 「类型 / 方式」是跨领域通用名词，且常直接对应代码里的 `*_type` / `*Method`：
+    // 缺了它们，「新增一种优惠券类型」「加一个新的配送方式」这类提问只剩泛化 add/coupon，
+    // 接不上真正的券种配置 / 配送方式实现面。
+    //
+    // 刻意**不收 category**：那是 `分类` 的地盘，挂到 `类型` 上会把 `*Category`
+    // （ArticleCategory / WechatNewsCategory …）当噪音带进「优惠券类型」这类查询，
+    // 实测挤掉了真正相关的 coupon 节点。
+    ("类型", &["type", "kind"]),
+    ("方式", &["method", "way", "mode"]),
     ("令牌", &["token"]),
     ("凭证", &["credential"]),
     ("第三方", &["third", "party", "oauth"]),
@@ -747,6 +756,11 @@ const PACK_ECOMMERCE: &[(&str, &[&str])] = &[
     ("购物车", &["cart"]),
     ("店铺", &["shop", "store"]),
     ("物流", &["logistics", "shipping"]),
+    // 配送 / 快递 / 发货：物流的三种常见中文说法，实现面分别是 delivery / express / ship。
+    // 只收跨领域通用的说法，「同城配送」这类平台黑话仍留给项目级 `.graphtell/aliases.json`。
+    ("配送", &["delivery", "express", "shipping", "dispatch"]),
+    ("快递", &["express", "courier", "delivery"]),
+    ("发货", &["delivery", "ship", "send", "express"]),
     ("发票", &["invoice"]),
     // ---- 同义词补全：让不同说法都桥到同一英文 token ----
     ("退款", &["refund"]),
@@ -782,9 +796,55 @@ const PACK_FINANCE: &[(&str, &[&str])] = &[
     ("利率", &["interest", "rate"]),
 ];
 
+/// **故障现象 / 运维语汇**别名包。
+///
+/// 开发者提问题的方式和代码里命名的方式天然错位：人是**按现象**描述目标的
+/// （"邮件发不出去"、"密码串了"、"超卖了"、"超时没取消"），而真正负责的代码叫
+/// `sendMail` / `passwordEncoder` / `decGoodsStock` / `cancelTimeOutOrder`。
+/// 这两者之间的相似度极低 —— 靠向量也拉不到一起，必须显式架桥。
+///
+/// 与 [`PACK_GENERIC`] 的区别：那里是**直译**（删除→delete、库存→stock）；
+/// 这里是**多落点推断**：一个现象在不同系统里的实现面不同（"加锁"可能是
+/// lock / mutex / atomic / optimistic / transaction），所以要给一组候选面，
+/// 由本工程的符号决定谁真的命中。因此这里的英文词比其它包宽，收词更谨慎。
+///
+/// 边界原则与其它包一致：**只收跨领域通用的现象**（邮件、密码、令牌、登录、
+/// 定时、并发、重复提交 …）。业务专属的现象（"券核销失败"）归入项目级
+/// `.graphtell/aliases.json`。
+const PACK_SYMPTOM: &[(&str, &[&str])] = &[
+    // ---- 邮件 / 消息通道 ----
+    ("邮件", &["mail", "email", "smtp", "mailer"]),
+    ("邮箱", &["mail", "email"]),
+    // ---- 身份 / 凭据（"密码错误""改密码"落的都是这一组）----
+    ("密码", &["password", "passwd", "pwd"]),
+    ("口令", &["password", "passwd"]),
+    // `passwordEncoder` / BCrypt 这类 Bean 只含 password + encoder，
+    // 单靠「加密→encrypt」匹配不到 encoder 这个后缀形态。
+    ("密文", &["encrypt", "cipher", "hash", "bcrypt", "encoder"]),
+    ("签名", &["sign", "signature"]),
+    // JWT 侧：查询写的是缩写 `JWT`（大写），键用小写 + ASCII 大小写不敏感匹配处理。
+    ("jwt", &["jwt", "jsonwebtoken", "token", "bearer", "auth", "guard", "strategy"]),
+    ("鉴权", &["auth", "authenticate", "authorize", "guard", "middleware"]),
+    ("白名单", &["whitelist", "exclude", "anonymous"]),
+    ("黑名单", &["blacklist", "deny"]),
+    // ---- 并发 / 一致性（"超卖""重复下单""并发扣成负数"）----
+    ("超卖", &["stock", "oversell", "deduct", "decrement", "dec"]),
+    ("加锁", &["lock", "mutex", "atomic", "pessimistic", "optimistic"]),
+    ("并发", &["concurrent", "lock", "atomic", "mutex"]),
+    ("事务", &["transaction", "atomic", "commit"]),
+    // ---- 定时 / 延迟执行 ----
+    ("超时", &["timeout", "expire", "overtime", "delay"]),
+    ("定时", &["schedule", "cron", "timer"]),
+];
+
 /// 全部内置领域包。默认全部加载，使任意工程开箱即有覆盖；
 /// 如需按域收窄，裁剪此数组即可（或未来接入「项目级按需选择」配置）。
-const BUILTIN_PACKS: &[&[(&str, &[&str])]] = &[PACK_GENERIC, PACK_ECOMMERCE, PACK_FINANCE];
+const BUILTIN_PACKS: &[&[(&str, &[&str])]] = &[
+    PACK_GENERIC,
+    PACK_ECOMMERCE,
+    PACK_FINANCE,
+    PACK_SYMPTOM,
+];
 
 /// 把全部内置领域包合并成一个可合并的 owned 别名表。
 ///
@@ -853,10 +913,20 @@ fn merged_aliases(project_root: Option<&std::path::Path>) -> Vec<(String, Vec<St
 }
 
 /// 把查询里出现的中文意图词展开成英文候选 token。
+///
+/// **ASCII 键**（`jwt` 这类缩写）按大小写不敏感匹配：开发者写的是 `JWT`，
+/// 键只能存一个小写形式，严格 `contains` 会让这条桥永不生效。
+/// 中文键不受影响（大小写无意义）。
 fn expand_intent_aliases(query: &str, aliases: &[(String, Vec<String>)]) -> Vec<String> {
+    let low = query.to_lowercase();
     let mut out = Vec::new();
     for (zh, en) in aliases {
-        if query.contains(zh.as_str()) {
+        let hit = if zh.is_ascii() {
+            low.contains(&zh.to_lowercase())
+        } else {
+            query.contains(zh.as_str())
+        };
+        if hit {
             for e in en {
                 if !out.iter().any(|x: &String| x == e) {
                     out.push(e.clone());
@@ -1063,6 +1133,32 @@ fn is_vector_kind(node: &Node) -> bool {
     true
 }
 
+/// 预热编码的**优先级**（越小越先编）。
+///
+/// 大工程全量编码在本机 CPU 上要 45 分钟以上，这段时间召回只能走快速哈希（质量降级）。
+/// 让**真正常被召回的种类**先编码，可以让语义质量在预热早期就基本可用，而不是
+/// 等全部编完才变好 —— 这是「降级期体验」的主要改善点，不改变任何向量结果。
+///
+/// 顺序依据 [`rank_weight`] 的动作意图加权：Method / Function 是最主要的实现落点，
+/// 其次是承载业务概念的类，其余（Table / HttpContract / EventBus …）多靠 BFS 带出。
+fn warm_priority(kind: &str) -> u8 {
+    match kind {
+        "Method" | "Function" => 0,
+        "Class" | "Interface" | "Trait" | "Enum" => 1,
+        _ => 2,
+    }
+}
+
+/// 待编码列表排序：① 高价值种类优先；② 同优先级内**按文本长度相邻**。
+///
+/// 第 ② 点是纯性能优化：批内要补齐到该批最长序列，若一批里混进 1 条 256-token 的长文本，
+/// 其余几十 token 的短文本全被补齐到 256，算力浪费可达数倍。按长度排序分桶后
+/// 每批长度接近，padding 浪费最小。各序列在 BERT 里独立计算，**分批方式不改变向量**，
+/// 因此该排序零质量风险。
+fn sort_pending_for_warmup(pending: &mut Vec<(i64, String, u8)>) {
+    pending.sort_by(|a, b| a.2.cmp(&b.2).then(a.1.len().cmp(&b.1.len())));
+}
+
 /// 一次召回请求。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecallQuery {
@@ -1188,12 +1284,24 @@ pub struct RecallResult {
 /// **改动 `node_embed_text` 的构造方式时必须递增此值**（例如加标识符切分）。
 /// 否则 `ensure_cached_with` 只补"缺失节点"、从不重算已缓存的向量，过时向量会被
 /// 一直静默复用 —— 曾因此把"向量过时"误判成"语义模型能力不足"。
-const EMBED_TEXT_VERSION: u32 = 1;
+/// 落盘向量的「空间版本」。**向量空间变了就必须 +1**，否则旧文件会被静默复用
+/// （维度相同、版本相同，守卫查不出来），查询与节点落在不同空间，余弦整体失真。
+///
+/// v2：修正 position_ids 偏移 —— bge-m3 主干是 XLM-RoBERTa（`padding_idx=1`），
+/// HF 参考用 2-based（`arange(2, seq+2)`），而此前 candle 用的是 0-based，
+/// 实测 `cos(0-based, HF) ≈ 0.96`。v2 起两侧均对齐参考实现，**全部存量向量失效需重编码**。
+const EMBED_TEXT_VERSION: u32 = 2;
 
 /// 落盘的向量文件信封：带版本，版本不符即整份失效重算。
 #[derive(Serialize, Deserialize)]
 struct PersistedEmbeds {
     version: u32,
+    /// 向量维度：必须与当前语义编码器一致才能复用。换更小模型（维度变化，如 bge-m3 1024 →
+    /// e5 768）后旧文件维度不符，整份失效重编码；否则 `cosine` 按 `min(len)` 计算会
+    /// 静默用错维度失真。`#[serde(default)]` 让旧格式（无 dim 字段）落到 0——此时仅当
+    /// 当前编码器维度与向量实际维度一致（同维度模型，如 bge-m3）才复用，不强制重编码。
+    #[serde(default)]
+    dim: usize,
     vectors: HashMap<i64, Vec<f32>>,
 }
 
@@ -1221,9 +1329,88 @@ pub struct RecallService {
     /// 仅在召回后台预热 / 手动 `embed` 命令里计算并落盘，重启后直接加载。
     /// 为 `None` 时不持久化（纯内存缓存）。
     embed_persist_dir: Option<PathBuf>,
+    /// 候选快照持久化目录（`<dir>/<project_id>.json`）。冷启动从这里秒级加载，
+    /// 不再现场从 SQLite 重建全部节点 + 边（CRMEB 实测 ~10s -> <1s）。`None` 时不持久化。
+    /// 图重建时由 [`Self::clear_node_cache`] 删除整目录强制失效。
+    snapshot_persist_dir: Option<PathBuf>,
     /// 工程 i18n 桥缓存：`工程 id -> [(中文文案, 该文案 key 切出的英文 token)]`。
     /// 中文查询经由它映射到**本项目**的符号，不依赖任何领域专属词表。
     bridge_cache: Arc<Mutex<HashMap<i64, Vec<(String, Vec<String>)>>>>,
+    /// **候选集快照**缓存：`工程 id -> 参与召回的节点 + 邻接 + 文件路径`。
+    ///
+    /// 一次召回里最大的固定开销不是打分，而是把候选集从 SQLite 拉出来
+    /// （CRMEB 12k 节点实测 856ms + 邻接 110ms），而且多意图查询还会按子意图
+    /// **重复拉一遍**。图只会在重建时变化：重建完成会调 [`Self::clear_node_cache`]，
+    /// 另外每次复用前用一次 `stats` 做廉价校验（见 [`Self::snapshot_stale`]）。
+    /// 用 `Arc` 是让调用方在整个召回期间借用快照，期间不持有写锁。
+    candidate_cache: Arc<Mutex<HashMap<i64, Arc<CandidateSet>>>>,
+    /// 查询向量缓存（`查询文本 -> 向量`）：同一句提示词重复问（IDE 里很常见）时
+    /// 不需要再跑一次 bge 前向（~750ms）。容量很小，纯 LRU 语义即可。
+    query_vec_cache: Arc<Mutex<Vec<(String, Vec<f32>)>>>,
+}
+
+/// 一次召回所需的「图快照」：候选节点 + 邻接 + 文件路径。见 [`RecallService::candidate_cache`]。
+///
+/// 派生 `Clone` / `Serialize` / `Deserialize` 以便**落盘复用**：冷启动不再现场从 SQLite 重建
+/// （CRMEB 实测 ~10s），改为直接读落盘快照（<1s）。见 [`RecallService::candidate_set`]。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CandidateSet {
+    nodes: Vec<Node>,
+    incoming: HashMap<i64, Vec<gt_domain::model::Edge>>,
+    outgoing: HashMap<i64, Vec<gt_domain::model::Edge>>,
+    files: HashMap<i64, String>,
+    /// 建快照时的**全图**节点 / 边总数（来自 `stats`），用于 [`RecallService::snapshot_stale`]
+    /// 的廉价校验。必须是全图口径：`nodes` 只含参与召回的种类，规模天然小于 `stats.nodes`，
+    /// 拿它和 `stats.nodes` 比会永远判定"已过期"，快照复用就形同废弃。
+    node_count: u64,
+    edge_count: u64,
+    /// 建快照时使用的 `kinds` 过滤条件（空 = 全种类）。带过滤的请求不与全量快照共用。
+    kinds: Vec<String>,
+}
+
+/// 落盘候选快照信封：带版本，版本不符即整份失效重建（与 [`PersistedEmbeds`] 同理）。
+const SNAPSHOT_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct PersistedSnapshot {
+    version: u32,
+    set: CandidateSet,
+}
+
+/// 查询向量缓存容量（见 [`RecallService::query_vec_cache`]）。
+const QUERY_VEC_CACHE_CAP: usize = 64;
+
+/// 查询文本 → 向量，带一个小 LRU 缓存（见 [`RecallService::query_vec_cache`]）。
+///
+/// 抽成自由函数，使查询编码可以在**独立线程**里与候选装载 / 落盘载入并行执行
+/// （三者互不依赖，而查询编码是单次 bge 前向，CPU 上 ~800ms，是冷启动最大的串行项）。
+/// 把这段逻辑从这里挪到线程里，就把"重启后首问"的冷启动延迟砍掉约 1s。
+///
+/// `semantic` 参与构成 key：两个编码器空间不同，不能互相复用。
+fn encode_query_cached(
+    cache: &Arc<Mutex<Vec<(String, Vec<f32>)>>>,
+    embedder: &Arc<dyn Embedder>,
+    text: &str,
+    semantic: bool,
+) -> Vec<f32> {
+    let key = format!("{}{}", if semantic { "sem|" } else { "fast|" }, text);
+    if let Some(v) = cache
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| k == &key)
+        .map(|(_, v)| v.clone())
+    {
+        return v;
+    }
+    let v = embedder.embed_query(text);
+    let mut c = cache.lock().unwrap();
+    c.retain(|(k, _)| k != &key);
+    c.push((key, v.clone()));
+    if c.len() > QUERY_VEC_CACHE_CAP {
+        c.remove(0);
+    }
+    v
 }
 
 impl RecallService {
@@ -1238,6 +1425,7 @@ impl RecallService {
             scanner,
             None,
             Arc::new(Mutex::new(HashMap::new())),
+            None,
             None,
         )
     }
@@ -1256,6 +1444,7 @@ impl RecallService {
             Some(embedder),
             Arc::new(Mutex::new(HashMap::new())),
             None,
+            None,
         )
     }
 
@@ -1268,6 +1457,7 @@ impl RecallService {
         semantic_embedder: Option<Arc<dyn Embedder>>,
         node_embed_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
         embed_persist_dir: Option<PathBuf>,
+        snapshot_persist_dir: Option<PathBuf>,
     ) -> Self {
         Self {
             store,
@@ -1281,7 +1471,10 @@ impl RecallService {
             warming_projects: Arc::new(Mutex::new(HashSet::new())),
             enable_async_warmup: false,
             embed_persist_dir,
+            snapshot_persist_dir,
             bridge_cache: Arc::new(Mutex::new(HashMap::new())),
+            candidate_cache: Arc::new(Mutex::new(HashMap::new())),
+            query_vec_cache: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1301,15 +1494,178 @@ impl RecallService {
         self.warming_projects.lock().unwrap().clear();
         // 图重建后 i18n 文案可能变了，桥必须一起失效。
         self.bridge_cache.lock().unwrap().clear();
+        // 节点 / 邻接都换了，候选集快照与查询向量缓存必须失效（否则一直答旧图）。
+        self.candidate_cache.lock().unwrap().clear();
+        self.query_vec_cache.lock().unwrap().clear();
+        // 落盘候选快照一并删除：图变了，规模计数若恰好相同不会被判过期，必须靠删文件强制重建。
+        if let Some(dir) = &self.snapshot_persist_dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
-    /// 从持久化文件载入某工程的 bge 向量到语义缓存（文件不存在则跳过），并标记该工程已预热。
+    /// 取该工程参与召回的候选集快照（跨请求复用，见 [`Self::candidate_cache`]）。
+    ///
+    /// 带了 `kinds` 过滤的请求不进缓存（它是少数路径，缓存命中反而要按 "工程+过滤" 建 key）。
+    ///
+    /// 冷启动优化：内存缓存未命中时，先尝试从落盘快照秒级恢复（[`Self::load_persisted_snapshot`]），
+    /// 规模校验通过即直接复用，免去现场从 SQLite 重建全部节点 + 边（CRMEB 实测 ~10s -> <1s）；
+    /// 否则现场重建并把结果落盘，供后续重启复用。
+    fn candidate_set(&self, project_id: ProjectId, kinds: &[String]) -> Result<Arc<CandidateSet>> {
+        let cacheable = kinds.is_empty();
+        if cacheable {
+            if let Some(snap) = self.candidate_cache.lock().unwrap().get(&project_id.get()) {
+                if snap.kinds.is_empty() && !self.snapshot_stale(project_id, snap) {
+                    return Ok(Arc::clone(snap));
+                }
+            }
+            // 内存未命中：尝试落盘快照秒级恢复（免现场重建）。
+            if let Some(set) = self.load_persisted_snapshot(project_id) {
+                if !self.snapshot_stale(project_id, &set) {
+                    let arc = Arc::new(set);
+                    self.candidate_cache
+                        .lock()
+                        .unwrap()
+                        .insert(project_id.get(), Arc::clone(&arc));
+                    return Ok(arc);
+                }
+            }
+        }
+        let built = Self::build_candidate_set(self.store.as_ref(), project_id, kinds)?;
+        let snap = Arc::new(built);
+        if cacheable {
+            self.candidate_cache
+                .lock()
+                .unwrap()
+                .insert(project_id.get(), Arc::clone(&snap));
+            // 后台落盘，供重启秒级加载（不阻塞本次请求）。
+            self.persist_snapshot(project_id, &snap);
+        }
+        Ok(snap)
+    }
+
+    /// 从落盘快照恢复候选集（见 [`Self::snapshot_persist_dir`]）。文件缺失 / 损坏 / 版本不符返回 `None`，
+    /// 调用方退回到现场重建。
+    fn load_persisted_snapshot(&self, project_id: ProjectId) -> Option<CandidateSet> {
+        let dir = self.snapshot_persist_dir.as_ref()?;
+        let path = dir.join(format!("{}.bin", project_id.get()));
+        let t = std::time::Instant::now();
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!("snapshot load {path:?} 读取失败: {e}");
+                return None;
+            }
+        };
+        match rmp_serde::from_slice::<PersistedSnapshot>(&bytes) {
+            Ok(p) if p.version == SNAPSHOT_VERSION => {
+                tracing::debug!(
+                    "snapshot load {path:?} 成功 {} ms, 节点 {}",
+                    t.elapsed().as_millis(),
+                    p.set.nodes.len()
+                );
+                Some(p.set)
+            }
+            Ok(p) => {
+                tracing::debug!("snapshot load 版本不符: 文件{} 当前{}", p.version, SNAPSHOT_VERSION);
+                None
+            }
+            Err(e) => {
+                tracing::debug!("snapshot load {path:?} 解析失败: {e}");
+                None
+            }
+        }
+    }
+
+    /// 把候选集落盘（后台线程，原子写临时文件后 rename）。图重建时由
+    /// [`Self::clear_node_cache`] 删除整目录强制失效。
+    fn persist_snapshot(&self, project_id: ProjectId, snap: &CandidateSet) {
+        let dir = match &self.snapshot_persist_dir {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let pid = project_id.get();
+        let set = snap.clone();
+        thread::spawn(move || {
+            if let Err(e) = (|| -> std::io::Result<()> {
+                std::fs::create_dir_all(&dir)?;
+                let path = dir.join(format!("{pid}.bin"));
+                let tmp = dir.join(format!("{pid}.bin.tmp"));
+                let bytes = rmp_serde::to_vec(&PersistedSnapshot {
+                    version: SNAPSHOT_VERSION,
+                    set,
+                })
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                std::fs::write(&tmp, &bytes)?;
+                std::fs::rename(&tmp, &path)?;
+                Ok(())
+            })() {
+                tracing::warn!("候选快照落盘失败(工程 {pid}): {e}");
+            }
+        });
+    }
+
+    /// 快照是否已过期：只读一次 `stats`（几条 `COUNT`，毫秒级）与快照规模比对。
+    ///
+    /// 没有这层校验就会引入真实回退：图在**另一个进程**里被 `graphtell run` 重建过、
+    /// 或工程被删改时，常驻服务收不到通知（只有 watch 才调 `clear_node_cache`），
+    /// 于是召回会一直用旧图回答 —— 而改动前每次查询都重新读库，不会有这个问题。
+    /// 规模对不上就重建快照；规模恰好相同的重建由 `clear_node_cache` 兜底。
+    fn snapshot_stale(&self, project_id: ProjectId, snap: &CandidateSet) -> bool {
+        match self.store.stats(project_id) {
+            Ok(s) => s.nodes != snap.node_count || s.edges != snap.edge_count,
+            Err(_) => false,
+        }
+    }
+
+
+    fn build_candidate_set(
+        store: &dyn Persistence,
+        project_id: ProjectId,
+        kinds: &[String],
+    ) -> Result<CandidateSet> {
+        let wanted: Vec<String> = if kinds.is_empty() {
+            scan_kinds(store, project_id)
+        } else {
+            kinds.to_vec()
+        };
+        let mut nodes: Vec<Node> = Vec::new();
+        for kind in wanted {
+            let mut batch = store.query_nodes(&NodeFilter {
+                project_id,
+                kind: Some(gt_domain::model::NodeKind::new(kind)),
+                name_contains: None,
+                limit: Some(SCAN_LIMIT),
+                offset: None,
+            })?;
+            nodes.append(&mut batch);
+        }
+        let ids: Vec<NodeId> = nodes.iter().map(|n| n.id).collect();
+        let incoming = store.edges_incoming(&ids)?;
+        let outgoing = store.edges_outgoing(&ids)?;
+        let stats = store.stats(project_id).ok();
+        let node_count = stats.as_ref().map(|s| s.nodes).unwrap_or(0);
+        let edge_count = stats.as_ref().map(|s| s.edges).unwrap_or(0);
+        let files = store.file_paths(project_id)?;
+        Ok(CandidateSet {
+            nodes,
+            incoming,
+            outgoing,
+            files,
+            node_count,
+            edge_count,
+            kinds: kinds.to_vec(),
+        })
+    }
+
+    /// 从持久化文件载入某工程的 bge 向量到语义缓存（文件不存在 / 维度不符则跳过），并标记已预热。
     fn load_persisted(&self, path: &Path, project_id: ProjectId) {
+        let expected_dim = self.semantic_embedder.as_ref().map_or(0, |e| e.dim());
         load_persisted_into(
             path,
             &self.node_embed_cache,
             project_id,
             &self.warmed_projects,
+            expected_dim,
         );
     }
 
@@ -1326,6 +1682,7 @@ impl RecallService {
         }
         let env = PersistedEmbeds {
             version: EMBED_TEXT_VERSION,
+            dim: self.semantic_embedder.as_ref().map_or(0, |e| e.dim()),
             vectors,
         };
         if let Ok(data) = serde_json::to_vec(&env) {
@@ -1335,17 +1692,21 @@ impl RecallService {
 
     /// 确保参与向量召回的主题级节点都已编码进给定缓存（未编码的批量编码并回填）。
     /// 与具体查询无关，可被快速路 / 语义路 / 手动 `embed` 命令复用。
+    ///
+    /// 返回**本次新编码**的节点数 —— 调用方据此判断要不要落盘：
+    /// 落盘会把全工程向量重新序列化写一次（CRMEB 157MB / 约 0.5s），
+    /// 而绝大多数召回一个节点都不缺，每次都写是纯粹的写放大。
     fn ensure_cached_with(
         &self,
         project_id: ProjectId,
         nodes: &[Node],
         embedder: &Arc<dyn Embedder>,
         cache: &Mutex<HashMap<i64, Vec<f32>>>,
-    ) {
+    ) -> usize {
         const BATCH: usize = 256;
         // 节点文本富化：用本工程 i18n 桥反建索引，让中文查询能直接在向量空间对齐领域实体。
         let enrich = build_enrich_index(&self.project_bridge(project_id, nodes));
-        let mut pending: Vec<(i64, String)> = Vec::new();
+        let mut pending: Vec<(i64, String, u8)> = Vec::new();
         for node in nodes {
             if !is_vector_kind(node) {
                 continue;
@@ -1354,16 +1715,22 @@ impl RecallService {
             if cache.lock().unwrap().contains_key(&id) {
                 continue;
             }
-            pending.push((id, node_embed_text(node, &enrich)));
+            pending.push((
+                id,
+                node_embed_text(node, &enrich),
+                warm_priority(node.kind.as_str()),
+            ));
         }
+        sort_pending_for_warmup(&mut pending);
         for chunk in pending.chunks(BATCH) {
-            let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
+            let texts: Vec<String> = chunk.iter().map(|(_, t, _)| t.clone()).collect();
             let vecs = embedder.embed_batch(&texts);
             let mut cache = cache.lock().unwrap();
-            for ((id, _), v) in chunk.iter().zip(vecs.into_iter()) {
+            for ((id, _, _), v) in chunk.iter().zip(vecs.into_iter()) {
                 cache.insert(*id, v);
             }
         }
+        pending.len()
     }
 
     /// 工程 i18n 桥：读该工程的 `I18nKey` 节点，产出「中文文案 → 该 key 的英文 token」。
@@ -1788,9 +2155,35 @@ impl RecallService {
         let mut quality = RecallQuality::High;
         let mut confidence = 1.0f32;
         let mut reasons: Vec<String> = Vec::new();
-        for part in &parts {
-            let sub = RecallQuery { query: part.clone(), limit, ..q.clone() };
-            let r = self.recall_single(project_id, &sub)?;
+        // 多意图**并行**跑：每个子意图都要跑一次 bge 前向（~0.8s），串行时总时延随
+        // 子意图数线性增长（实测 2 段 5.3s → 优化后 1.79s，其中大头就是两次前向）。
+        // 子意图之间只读共享状态（快照 / 向量缓存各自带锁），因此可以安全并发。
+        // 单意图不走线程，避免无谓的调度开销。
+        let sub_results: Vec<Result<RecallResult>> = if parts.len() > 1 {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = parts
+                    .iter()
+                    .map(|part| {
+                        let sub = RecallQuery { query: part.clone(), limit, ..q.clone() };
+                        s.spawn(move || self.recall_single(project_id, &sub))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_else(|_| Err(gt_domain::error::DomainError::infra("子意图召回线程 panic"))))
+                    .collect()
+            })
+        } else {
+            parts
+                .iter()
+                .map(|part| {
+                    let sub = RecallQuery { query: part.clone(), limit, ..q.clone() };
+                    self.recall_single(project_id, &sub)
+                })
+                .collect()
+        };
+        for (part, r) in parts.iter().zip(sub_results) {
+            let r = r?;
             for t in &r.terms {
                 if !terms.iter().any(|x| x == t) {
                     terms.push(t.clone());
@@ -1879,32 +2272,43 @@ impl RecallService {
             }
         }
 
-        // ---- 1) 候选集：一次装载全部参与召回的节点
-        let mut nodes: Vec<Node> = Vec::new();
-        if q.kinds.is_empty() {
-            for kind in scan_kinds(self.store.as_ref(), project_id) {
-                let mut batch = self.store.query_nodes(&NodeFilter {
-                    project_id,
-                    kind: Some(gt_domain::model::NodeKind::new(kind)),
-                    name_contains: None,
-                    limit: Some(SCAN_LIMIT),
-                    offset: None,
-                })?;
-                nodes.append(&mut batch);
-            }
+        // 查询编码与候选装载 / 落盘载入相互独立：查询编码是单次 bge 前向（CPU ~800ms），
+        // 是冷启动最大的串行项。这里提前算好查询文本与"语义空间"判定，把编码丢进独立线程，
+        // 与下方的候选装载 / 落盘载入并行 —— 重启后首问从 ~2.5s 降到 ~1.5s。
+        // 热路径不受影响：同句重复走查询向量缓存（编码 ~0ms）；新查询本就被 bge 单句前向主导。
+        // `early_semantic` 必须与下方 `use_semantic` 最终判定一致（语义空间必须匹配），
+        // 这里用同样的"已预热 或 落盘文件存在"条件提前决定，二者等价。
+        let qtext = query_embed_text(&q.query, &alias_terms);
+        let early_semantic = self.semantic_embedder.is_some()
+            && (self
+                .warmed_projects
+                .lock()
+                .unwrap()
+                .contains(&project_id.get())
+                || self.embed_persist_dir.as_ref().map_or(false, |d| {
+                    d.join(format!("{}.json", project_id.get())).exists()
+                }));
+        let qvec_cache = self.query_vec_cache.clone();
+        let qvec_embedder = if early_semantic {
+            self.semantic_embedder.clone().unwrap()
         } else {
-            for kind in &q.kinds {
-                let mut batch = self.store.query_nodes(&NodeFilter {
-                    project_id,
-                    kind: Some(gt_domain::model::NodeKind::new(kind.clone())),
-                    name_contains: None,
-                    limit: Some(SCAN_LIMIT),
-                    offset: None,
-                })?;
-                nodes.append(&mut batch);
-            }
-        }
+            self.fast_embedder.clone()
+        };
+        let qtext_for_thread = qtext.clone();
+        let qvec_handle = thread::spawn(move || {
+            encode_query_cached(&qvec_cache, &qvec_embedder, &qtext_for_thread, early_semantic)
+        });
+
+        // ---- 1) 候选集：参与召回的节点（快照跨请求复用，见 [`Self::candidate_set`]）。
+        let t_nodes = std::time::Instant::now();
+        let snap = self.candidate_set(project_id, &q.kinds)?;
+        let nodes: &[Node] = &snap.nodes;
         let truncated = nodes.len() >= SCAN_LIMIT as usize;
+        tracing::debug!(
+            "latency: 候选装载 {} 个节点 {} ms",
+            nodes.len(),
+            t_nodes.elapsed().as_millis()
+        );
 
         // 工程语义桥（依赖已装载的节点，故放在候选集之后）。
         // 命中的中文短语按长度降序采用：越长的短语越具体（"库存不足" 优于 "库存"）。
@@ -1917,13 +2321,12 @@ impl RecallService {
             }
         }
 
-        // ---- 2) 邻接（用于扩展与关系摘要）
+        // ---- 2) 邻接（用于扩展与关系摘要）：与候选节点同属一份快照。
         // id → 节点索引：BFS 里每跳都要回查节点概要，线性 find 会退化成 O(N²)。
         let index: HashMap<i64, &Node> = nodes.iter().map(|n| (n.id.get(), n)).collect();
-        let ids: Vec<NodeId> = nodes.iter().map(|n| n.id).collect();
-        let incoming = self.store.edges_incoming(&ids)?;
-        let outgoing = self.store.edges_outgoing(&ids)?;
-        let files = self.store.file_paths(project_id)?;
+        let incoming = &snap.incoming;
+        let outgoing = &snap.outgoing;
+        let files = &snap.files;
         let root = self
             .store
             .get_project(project_id)?
@@ -1955,7 +2358,7 @@ impl RecallService {
         let anchors = extract_anchors(&q.query, &nodes);
 
         let mut lexical: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
-        for node in &nodes {
+        for node in nodes {
             if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
                 continue;
             }
@@ -1991,6 +2394,7 @@ impl RecallService {
         // 而 `use_semantic` 又要求 `warmed_projects` 已置位 —— 死锁：
         // 重启后缓存为空 → 判为未预热 → 永不载入 → 每次重启都全量重算 bge
         // （CRMEB 实测 56 分钟），落盘文件形同废纸。
+        let t_load = std::time::Instant::now();
         let mut use_semantic = self.semantic_embedder.is_some()
             && self.warmed_projects.lock().unwrap().contains(&project_id.get());
         if !use_semantic && self.semantic_embedder.is_some() {
@@ -2003,20 +2407,46 @@ impl RecallService {
                 }
             }
         }
+        tracing::debug!(
+            "latency: 载入落盘向量 {} ms（节点 {}）",
+            t_load.elapsed().as_millis(),
+            nodes.len()
+        );
         let (chosen, cache): (&Arc<dyn Embedder>, &Mutex<HashMap<i64, Vec<f32>>>) = if use_semantic {
             (self.semantic_embedder.as_ref().unwrap(), &self.node_embed_cache)
         } else {
             (&self.fast_embedder, &self.fast_cache)
         };
-        let qvec = chosen.embed_query(&query_embed_text(&q.query, &alias_terms));
+        // 查询编码已提前丢进独立线程与候选装载 / 落盘载入并行；此处等它结束。
+        // 冷启动下线程早算完（被候选装载的 ~1s 完全盖住）；热路径同句重复则缓存命中、瞬间返回。
+        let t_q = std::time::Instant::now();
+        let qvec = qvec_handle
+            .join()
+            .expect("查询编码线程 panic");
+        tracing::debug!(
+            "latency: 查询编码 {} ms（查询侧文本 {} 字符，别名词 {} 个，线程并行）",
+            t_q.elapsed().as_millis(),
+            qtext.chars().count(),
+            alias_terms.len()
+        );
 
         // 仅语义空间才落盘（快速哈希空间无需持久化，瞬时可重算）。
         // 计算与落盘都【不在建图时发生】。
-        self.ensure_cached_with(project_id, &nodes, chosen, cache);
-        if use_semantic {
+        let t_enc = std::time::Instant::now();
+        let newly_encoded = self.ensure_cached_with(project_id, nodes, chosen, cache);
+        tracing::debug!(
+            "latency: 节点编码补齐 {} ms（新增 {} 个）",
+            t_enc.elapsed().as_millis(),
+            newly_encoded
+        );
+        // 只有**真的算出了新向量**才写盘。此前无条件写回，于是每次召回都要把全工程
+        // 向量重新序列化一遍（CRMEB 157MB / 约 0.5s）—— 而这些内容一次都没变过。
+        if use_semantic && newly_encoded > 0 {
             if let Some(dir) = &self.embed_persist_dir {
                 let path = dir.join(format!("{}.json", project_id.get()));
-                self.persist(&path, &nodes);
+                let t_p = std::time::Instant::now();
+                self.persist(&path, nodes);
+                tracing::debug!("latency: 落盘写回 {} ms", t_p.elapsed().as_millis());
             }
         }
 
@@ -2046,7 +2476,7 @@ impl RecallService {
         //    `fast_cache`，若此处写死读 `node_embed_cache`（此时为空），向量分永远不贡献，
         //    召回就退化成纯词面 + BFS，白算一遍编码。
         let mut vector: HashMap<i64, f64> = HashMap::new();
-        for node in &nodes {
+        for node in nodes {
             if !is_vector_kind(node) {
                 continue;
             }
@@ -2327,11 +2757,15 @@ fn collect_cache(
 
 /// 后台预热 worker：用语义编码器算好某工程全部主题级节点 bge 向量、落盘、标记预热完成。
 /// 把落盘的工程向量载入给定缓存并标记该工程已预热（服务内与后台线程共用）。
+///
+/// `expected_dim` 为当前语义编码器维度；落盘文件维度不符（换模型 / 旧格式无 dim 字段）即整份
+/// 失效重编码，避免用错维度的向量做余弦（[`crate::embedding::cosine`] 按 `min(len)` 计算会失真）。
 fn load_persisted_into(
     path: &Path,
     cache: &Mutex<HashMap<i64, Vec<f32>>>,
     project_id: ProjectId,
     warmed: &Mutex<HashSet<i64>>,
+    expected_dim: usize,
 ) {
     let Ok(data) = std::fs::read(path) else {
         return;
@@ -2342,6 +2776,12 @@ fn load_persisted_into(
         return;
     };
     if env.version != EMBED_TEXT_VERSION {
+        return;
+    }
+    // 仅当落盘维度明确写出且与当前编码器不符时才失效（换更小模型如 bge-m3→e5 时 1024≠768）。
+    // 旧的「无 dim 字段」文件（dim=0）视为合法：其向量维度本就与同维度编码器（如 bge-m3）一致，
+    // 不强制重编码，避免无谓的全量大工程重算。
+    if env.dim != 0 && env.dim != expected_dim {
         return;
     }
     let mut cache = cache.lock().unwrap();
@@ -2372,11 +2812,11 @@ fn warm_up_worker(
         if let Some(dir) = &persist_dir {
             let path = dir.join(format!("{pid}.json"));
             if path.exists() {
-                load_persisted_into(&path, &cache, project_id, &warmed);
+                load_persisted_into(&path, &cache, project_id, &warmed, embedder.dim());
             }
         }
         const BATCH: usize = 256;
-        let mut pending: Vec<(i64, String)> = Vec::new();
+        let mut pending: Vec<(i64, String, u8)> = Vec::new();
         {
             let cache = cache.lock().unwrap();
             for node in &nodes {
@@ -2386,14 +2826,19 @@ fn warm_up_worker(
                 if cache.contains_key(&node.id.get()) {
                     continue;
                 }
-                pending.push((node.id.get(), node_embed_text(node, &enrich)));
+                pending.push((
+                    node.id.get(),
+                    node_embed_text(node, &enrich),
+                    warm_priority(node.kind.as_str()),
+                ));
             }
         }
+        sort_pending_for_warmup(&mut pending);
         for chunk in pending.chunks(BATCH) {
-            let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
+            let texts: Vec<String> = chunk.iter().map(|(_, t, _)| t.clone()).collect();
             let vecs = embedder.embed_batch(&texts);
             let mut cache = cache.lock().unwrap();
-            for ((id, _), v) in chunk.iter().zip(vecs.into_iter()) {
+            for ((id, _, _), v) in chunk.iter().zip(vecs.into_iter()) {
                 cache.insert(*id, v);
             }
         }
@@ -2404,6 +2849,7 @@ fn warm_up_worker(
             let path = dir.join(format!("{pid}.json"));
             let env = PersistedEmbeds {
                 version: EMBED_TEXT_VERSION,
+                dim: embedder.dim(),
                 vectors: collect_cache(&cache, &nodes),
             };
             if let Ok(data) = serde_json::to_vec(&env) {
@@ -3122,20 +3568,33 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         // 整段保留一份：精确长词命中时得分最高。
         let keep = strip_hint_words(&run, hint_map);
         if keep.chars().count() >= 2 && !terms.iter().any(|t| t == &keep) {
-            terms.push(keep);
+            terms.push(keep.clone());
         }
-        // 二字组。整段命中已知中文词时，仅保留「已知词」本身的 bigram，
-        // 丢掉跨越词边界的噪音组合（何修 / 改下 / 单优）；
-        // 整段无已知词时（OOV）保持原行为：全部 bigram 兜底。
-        let has_known = known_alias_words.iter().any(|zh| run.contains(zh.as_str()));
-        let chars: Vec<char> = run.chars().collect();
-        for w in chars.windows(2) {
-            let gram: String = w.iter().collect();
+        // 二字组：只保留**同一词内部**的组合。
+        //
+        // 旧实现是「全有或全无」：整段只要命中过任一已知词，就只保留已知词本身的 bigram，
+        // 其余全部丢弃。代价是像「退款审核通过后钱怎么退回」这种「已知词 + 未知业务词」
+        // 混排的正常句子里，`审核` / `退回` 这类**关键业务词**会被连带丢掉，
+        // 于是只能召回宽泛的 `refund`、够不到真正负责的 `agreeRefund`。
+        //
+        // 改成「已知词优先的最大匹配切段」（[`segment_cjk`]）：已知词整段保留；
+        // 落在已知词之外的**连续未知字**仍按 bigram 兜底；跨越已知词边界的组合
+        // （何修 / 改下 / 单优）不再产生。它丢的正是当初想丢的那一类，
+        // 不再牵连同句里没收录的业务词。
+        let segs = segment_cjk(&keep, &known_alias_words);
+        for (seg, known) in &segs {
+            if *known && seg.chars().count() >= 2 && !terms.iter().any(|t| t == seg) {
+                terms.push(seg.clone());
+            }
+        }
+        for w in segs.windows(2) {
+            // 两侧都必须是「未收录的单字」，才组一个 bigram —— 已知词不参与跨边界组字。
+            if w[0].1 || w[1].1 {
+                continue;
+            }
+            let gram: String = format!("{}{}", w[0].0, w[1].0);
             let gk = strip_hint_words(&gram, hint_map);
-            if gk.chars().count() >= 2
-                && (!has_known || known_alias_words.contains(gk.as_str()))
-                && !terms.iter().any(|t| t == &gk)
-            {
+            if gk.chars().count() >= 2 && !terms.iter().any(|t| t == &gk) {
                 terms.push(gk);
             }
         }
@@ -3153,6 +3612,42 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         .collect();
 
     (terms, hints)
+}
+
+/// 把一段 CJK 串按「已知词最大匹配」切成若干段；`(文本, 是否为已知词)`。
+///
+/// 未收录的字**逐字成段**交给调用方做 bigram 兜底，这样可以保留 审核 / 退回 这类
+/// 没进别名表但在具体工程里真实存在的业务词；而已收录的词整体成段，天然避免与相邻
+/// 字组出跨越词边界的噪音组合（见 [`parse_query`]）。
+fn segment_cjk(run: &str, known: &HashSet<String>) -> Vec<(String, bool)> {
+    let chars: Vec<char> = run.chars().collect();
+    let max_len = known
+        .iter()
+        .map(|k| k.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(2);
+    let mut out: Vec<(String, bool)> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let room = (chars.len() - i).min(max_len);
+        let mut matched: Option<(String, usize)> = None;
+        for l in (2..=room).rev() {
+            let cand: String = chars[i..i + l].iter().collect();
+            if known.contains(&cand) {
+                matched = Some((cand, l));
+                break;
+            }
+        }
+        if let Some((word, len)) = matched {
+            out.push((word, true));
+            i += len;
+        } else {
+            out.push((chars[i].to_string(), false));
+            i += 1;
+        }
+    }
+    out
 }
 
 fn is_cjk(ch: char) -> bool {
@@ -3449,6 +3944,67 @@ mod tests {
             terms.iter().any(|t| t.contains("用户")),
             "有意义的词应保留：{terms:?}"
         );
+    }
+
+    #[test]
+    fn symptom_pack_bridges_phenomena_to_implementation_tokens() {
+        let all = builtin_aliases();
+        let en_of = |zh: &str| -> Vec<String> {
+            all.iter()
+                .find(|(z, _)| z == zh)
+                .map(|(_, e)| e.clone())
+                .unwrap_or_default()
+        };
+
+        // 现象词 → 实现面：邮件桥到 mail/email/smtp，密码到 password/passwd/pwd，
+        // 超卖同时给到库存面（stock）与并发面（lock/atomic），因为不同系统落点不同。
+        assert!(en_of("邮件").iter().any(|e| e == "mail"), "邮件→mail");
+        assert!(en_of("密码").iter().any(|e| e == "password"), "密码→password");
+        assert!(en_of("超卖").iter().any(|e| e == "stock"), "超卖→stock");
+        assert!(en_of("加锁").iter().any(|e| e == "lock"), "加锁→lock");
+        assert!(en_of("jwt").iter().any(|e| e == "token"), "jwt→token");
+
+        // 直译层的旧词条没有被现象包污染（删除 仍只有 delete/remove/destroy）。
+        assert!(en_of("删除").iter().any(|e| e == "delete"));
+        assert!(!en_of("删除").iter().any(|e| e == "mail"));
+    }
+
+    #[test]
+    fn expand_intent_aliases_matches_ascii_keys_case_insensitively() {
+        // ASCII 键大小写不敏感：开发者写 `JWT`，键是 `jwt`。
+        let low = vec![(
+            "jwt".to_string(),
+            vec!["token".to_string(), "auth".to_string()],
+        )];
+        let out = expand_intent_aliases("JWT 是在哪里统一校验的", &low);
+        assert!(out.contains(&"token".to_string()), "大写 JWT 也应命中jwt桥");
+        let out = expand_intent_aliases("jwt middleware", &low);
+        assert!(out.contains(&"auth".to_string()));
+
+        // 中文键仍然是精确包含匹配。
+        let zh = vec![("邮件".to_string(), vec!["mail".to_string()])];
+        assert!(expand_intent_aliases("邮件发不出去，负责发邮件的代码在哪", &zh)
+            .contains(&"mail".to_string()));
+        assert!(expand_intent_aliases("订单退款", &zh).is_empty());
+    }
+
+    #[test]
+    fn cjk_segmentation_keeps_unknown_words_beside_known_ones() {
+        // 旧规则是「全有或全无」：整段只要命中过任一已知词，就只保留已知词本身的 bigram。
+        // 「退款审核通过后钱怎么退回」里 `退款` 已知 → `审核` / `退回` 这两个**真正的
+        // 业务词**被一起丢掉，于是只能召回宽泛的 refund、够不到负责退款的 agreeRefund。
+        let (terms, _) = parse_query("退款审核通过后钱怎么退回");
+        assert!(terms.iter().any(|t| t == "退款"), "已知词保留：{terms:?}");
+        assert!(terms.iter().any(|t| t == "审核"), "未收录业务词应保留：{terms:?}");
+        assert!(terms.iter().any(|t| t == "退回"), "未收录业务词应保留：{terms:?}");
+
+        // 跨边界噪音仍像以前一样被丢掉（见 parse_query_drops_boundary_bigrams）。
+        let segs = segment_cjk("如何修改下单优惠", &builtin_alias_keys());
+        assert!(segs.iter().any(|(s, k)| *k && s == "修改"));
+        assert!(segs.iter().any(|(s, k)| *k && s == "下单"));
+        assert!(segs.iter().any(|(s, k)| *k && s == "优惠"));
+        // 如 / 何 是未收录单字 → 各自成段，"何修" 不会作为一个整体出现。
+        assert!(!segs.iter().any(|(s, _)| s == "何修"));
     }
 
     #[test]
@@ -3981,6 +4537,63 @@ mod tests {
         assert!(en_of("转账").iter().any(|e| e == "transfer"), "金融包 转账→transfer 应存在");
         let reconcile_terms = expand_intent_aliases("订单怎么对账", &all);
         assert!(reconcile_terms.iter().any(|t| t == "reconcile"), "对账 应展开 reconcile：{reconcile_terms:?}");
+
+        // 5) 履约 / 类型补词：此前「怎么加一个新的配送方式」整条查询零落点（只剩 bigram），
+        //    召回漂到 environment / issue_log 这类无关节点。
+        assert!(en_of("配送").iter().any(|e| e == "delivery"), "配送→delivery 补齐");
+        assert!(en_of("快递").iter().any(|e| e == "express"), "快递→express 补齐");
+        assert!(en_of("发货").iter().any(|e| e == "delivery"), "发货→delivery 补齐");
+        assert!(en_of("类型").iter().any(|e| e == "type"), "类型→type 补齐");
+        assert!(en_of("方式").iter().any(|e| e == "method"), "方式→method 补齐");
+
+        // 整句端到端：必须真的展开出 delivery / express（此前这两个词一个都没有）。
+        let ship_terms = expand_intent_aliases("怎么加一个新的配送方式", &all);
+        assert!(
+            ship_terms.iter().any(|t| t == "delivery"),
+            "配送方式 应展开 delivery：{ship_terms:?}"
+        );
+        assert!(
+            ship_terms.iter().any(|t| t == "express"),
+            "配送方式 应展开 express：{ship_terms:?}"
+        );
+        // 券种：类型 要接上 type，否则「新增一种优惠券类型」只剩泛化 add/coupon。
+        let coupon_type_terms = expand_intent_aliases("怎么新增一种优惠券类型", &all);
+        assert!(
+            coupon_type_terms.iter().any(|t| t == "type"),
+            "优惠券类型 应展开 type：{coupon_type_terms:?}"
+        );
+        assert!(
+            coupon_type_terms.iter().any(|t| t == "coupon"),
+            "优惠券类型 仍应展开 coupon：{coupon_type_terms:?}"
+        );
+    }
+
+    #[test]
+    fn warm_priority_ranks_methods_above_classes_above_rest() {
+        assert_eq!(warm_priority("Method"), 0, "Method 是最主要的实现落点");
+        assert_eq!(warm_priority("Function"), 0);
+        assert_eq!(warm_priority("Class"), 1);
+        assert_eq!(warm_priority("Interface"), 1);
+        assert_eq!(warm_priority("Table"), 2, "Table 等多靠 BFS 带出，排在最后");
+    }
+
+    #[test]
+    fn sort_pending_for_warmup_groups_by_priority_then_length() {
+        // 打乱顺序：长文本、低优先级混在一起（真实 pending 就是按节点 id 顺序）。
+        let mut p = vec![
+            (3, "x".repeat(300), 2),
+            (1, "a".repeat(10), 0),
+            (2, "b".repeat(50), 0),
+            (4, "y".repeat(20), 2),
+        ];
+        sort_pending_for_warmup(&mut p);
+        let ids: Vec<i64> = p.iter().map(|x| x.0).collect();
+        // ① 高价值种类（优先级 0）整体在前
+        assert_eq!(&ids[..2], &[1, 2], "Method/Function 应先编码：{ids:?}");
+        // ② 同优先级内按长度升序 → 批内 padding 最小
+        assert!(p[0].1.len() <= p[1].1.len(), "同优先级内应按长度相邻：{ids:?}");
+        // ③ 低优先级在后，同样按长度相邻
+        assert_eq!(&ids[2..], &[4, 3], "低优先级在后且按长度相邻：{ids:?}");
     }
 
     #[test]

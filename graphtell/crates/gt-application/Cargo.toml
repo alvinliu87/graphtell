@@ -10,6 +10,7 @@ gt-domain = { workspace = true }
 gt-pipeline = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
@@ -20,8 +21,8 @@ ignore = { workspace = true }
 # 启用 `model-ort` 后，把经 ModelScope 拉取并转出的 bge-m3 ONNX 权重指给
 # `OrtBgeEmbedder` 即可获得真正的跨语言语义向量（见 embed_ort.rs）。
 # 选用 tract（纯 Rust ONNX 推理引擎，零系统依赖；避开 onnxruntime 对 openssl 的要求）。
-tract-onnx = { version = "0.21", optional = true }
-tract-core = { version = "0.21", optional = true }
+tract-onnx = { version = "0.23", optional = true }
+tract-core = { version = "0.23", optional = true }
 tokenizers = { version = "0.20", optional = true }
 candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }
