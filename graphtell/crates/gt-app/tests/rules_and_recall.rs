@@ -389,6 +389,7 @@ fn recall_expands_from_seed_along_graph() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -459,6 +460,7 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败")
@@ -613,6 +615,7 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -734,6 +737,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -912,6 +916,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -937,6 +942,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -1080,6 +1086,7 @@ fn recall_real_bge_model_chinese_to_english() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -1129,6 +1136,7 @@ fn recall_understands_chinese_kind_hints() {
                 hops: 1,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -1386,6 +1394,7 @@ fn recall_splits_chinese_sentence_into_bigrams() {
                 hops: 1,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -1431,6 +1440,7 @@ fn recall_keeps_snake_case_identifiers_intact() {
                 hops: 0,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -1464,6 +1474,7 @@ fn recall_produces_markdown_context_pack() {
                 hops: 1,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -1831,6 +1842,7 @@ fn recall_kinds_filters_seeds_not_results() {
                 hops: 1,
                 kinds,
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败")
@@ -1879,6 +1891,7 @@ fn recall_limit_truncates_results() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         )
         .expect("召回不应失败")
@@ -1909,6 +1922,7 @@ fn recall_handles_empty_query() {
                     hops: 1,
                     kinds: Vec::new(),
                     with_snippets: false,
+                include_body: false,
                 },
             )
             .unwrap_or_else(|e| panic!("查询 {q:?} 不应失败：{e}"));
@@ -2238,6 +2252,7 @@ fn recall_reads_snippet_from_real_file() {
                 hops: 0,
                 kinds: Vec::new(),
                 with_snippets: true,
+                include_body: false,
             },
         )
         .expect("召回不应失败");
@@ -2453,6 +2468,7 @@ fn recall_with_snippets_is_safe_when_file_missing() {
                 hops: 1,
                 kinds: Vec::new(),
                 with_snippets: true,
+                include_body: false,
             },
         )
         .expect("开启片段不应导致失败");
@@ -2531,4 +2547,96 @@ async fn recall_http_post_endpoint_returns_hits() {
     assert!(json["ok"].as_bool() == Some(true), "应 success：{json:?}");
     let hits = json["data"]["hits"].as_array().expect("data.hits 应为数组");
     assert!(!hits.is_empty(), "POST /recall 应召回结果");
+}
+
+/// HTTP 层：`include_body` 必须透传到召回，并在上下文包末尾附上命中文件的完整源码。
+///
+/// 这是 MCP / IDE 省去二次 `read` 的关键路径。夹具源文件不在磁盘上，因此这里断言的是
+/// "段落被拼进去"（读取失败也必须给出提示，而不是静默丢掉整段）。
+#[tokio::test]
+async fn recall_http_include_body_appends_full_file_section() {
+    let f = fixture();
+    seed_graph(&f);
+    let router = f.container.router();
+
+    let payload = serde_json::json!({
+        "query": "user",
+        "limit": 20,
+        "hops": 2,
+        "with_snippets": false,
+        "include_body": true
+    });
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/projects/{}/recall", f.project.get()))
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
+    let md = json["data"]["markdown"].as_str().expect("应有 markdown");
+    assert!(
+        md.contains("## 完整文件（include_body）"),
+        "include_body=true 时应附上完整文件段：{md}"
+    );
+}
+
+/// 对照：不传 `include_body` 时不应出现该段落（默认 false，避免默认输出体积膨胀）。
+#[tokio::test]
+async fn recall_http_without_include_body_has_no_full_file_section() {
+    let f = fixture();
+    seed_graph(&f);
+    let router = f.container.router();
+
+    let payload = serde_json::json!({ "query": "user", "with_snippets": false });
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/projects/{}/recall", f.project.get()))
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
+    let md = json["data"]["markdown"].as_str().expect("应有 markdown");
+    assert!(
+        !md.contains("## 完整文件（include_body）"),
+        "默认不应附完整文件段：{md}"
+    );
+}
+
+/// HTTP 层：预热进度端点应返回 warmed / warming 等字段（供 MCP 判断召回是否走冷路径）。
+#[tokio::test]
+async fn warmup_http_endpoint_returns_status_fields() {
+    let f = fixture();
+    seed_graph(&f);
+    let router = f.container.router();
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/projects/{}/warmup", f.project.get()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
+    assert!(json["ok"].as_bool() == Some(true), "应 success：{json:?}");
+    let d = &json["data"];
+    assert!(d["warmed"].is_boolean(), "应有 warmed 字段：{d:?}");
+    assert!(d["warming"].is_boolean(), "应有 warming 字段：{d:?}");
 }

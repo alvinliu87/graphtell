@@ -43,7 +43,7 @@ pub struct AppState {
     /// 最近一次建图进度（工程 id → 观察者）。
     pub progress: Mutex<HashMap<i64, Arc<ProgressObserver>>>,
     /// 共享节点向量缓存（与 `recall` 内的编码器共用）；建图重建时清空。
-    pub node_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+    pub node_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -70,7 +70,7 @@ pub fn state(
     let views = Arc::new(ViewService::new(Arc::clone(&store), view_registry));
     let checks = Arc::new(RuleService::new(Arc::clone(&store), rules));
     // 召回：优先真实 bge-m3（权重可用时），否则退回默认哈希编码器；节点向量缓存跨召回复用。
-    let node_cache = Arc::new(Mutex::new(HashMap::<i64, Vec<f32>>::new()));
+    let node_cache = Arc::new(Mutex::new(HashMap::<u64, Vec<f32>>::new()));
     let recall = Arc::new(
         RecallService::with_embedder_and_cache(
             Arc::clone(&store),
@@ -163,6 +163,8 @@ pub fn build_router(state: Shared) -> Router {
         )
         // 代码召回（提示词 → 相关代码）
         .route("/api/projects/{id}/recall", get(recall_get).post(recall_post))
+        // 后台预热进度（语义向量 bge 计算）：让 IDE / MCP 知道召回是否还在走冷路径。
+        .route("/api/projects/{id}/warmup", get(project_warmup))
         // 提示词合成：召回上下文 + 用户意图 → 可直接粘给 LLM 的完整提示词
         .route("/api/projects/{id}/prompt", post(compose_prompt))
         // 提示词合成器页面（自包含静态页，内嵌进二进制，无需额外静态托管）
@@ -714,6 +716,8 @@ pub struct RecallGetQuery {
     /// 逗号分隔的节点种类，如 `Table,HttpContract`。
     pub kinds: Option<String>,
     pub snippets: Option<bool>,
+    /// 是否把命中文件的完整源码一并附上（见 `RecallQuery::include_body`）。
+    pub include_body: Option<bool>,
 }
 
 impl RecallGetQuery {
@@ -727,6 +731,7 @@ impl RecallGetQuery {
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
                 .unwrap_or_default(),
             with_snippets: self.snippets.unwrap_or(true),
+            include_body: self.include_body.unwrap_or(false),
         }
     }
 }
@@ -799,6 +804,7 @@ async fn compose_prompt(
         hops: req.hops.unwrap_or(2),
         kinds: Vec::new(),
         with_snippets: req.with_snippets.unwrap_or(true),
+        include_body: false,
     };
     match state.recall.recall(ProjectId(id), &rq) {
         Ok(r) => {
@@ -876,6 +882,33 @@ async fn server_status() -> Json<ApiResponse<ServerStatusDto>> {
         version: env!("CARGO_PKG_VERSION").to_string(),
         embedding_backend: gt_application::embedding::embedding_backend_info(),
         embedding_dim: gt_application::embedding::embedding_dim(),
+    }))
+}
+
+/// 后台预热进度：语义向量 bge 是否就绪 / 预热中进度。
+#[derive(Debug, Clone, Serialize)]
+pub struct WarmupStatusDto {
+    /// 该工程语义向量是否已全部就绪（召回走完整语义路）。
+    pub warmed: bool,
+    /// 是否正在后台预热中（召回暂走冷路径）。
+    pub warming: bool,
+    /// 已编码节点数（仅 `warming` 时有意义）。
+    pub done: usize,
+    /// 待编码节点总数（仅 `warming` 时有意义）。
+    pub total: usize,
+}
+
+/// 查询某工程的后台预热进度。
+async fn project_warmup(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+) -> Json<ApiResponse<WarmupStatusDto>> {
+    let st = state.recall.warmup_progress(id);
+    Json(ApiResponse::success(WarmupStatusDto {
+        warmed: st.map(|s| s.warmed).unwrap_or(false),
+        warming: st.map(|s| s.warming).unwrap_or(false),
+        done: st.map(|s| s.done).unwrap_or(0),
+        total: st.map(|s| s.total).unwrap_or(0),
     }))
 }
 

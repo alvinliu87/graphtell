@@ -31,7 +31,7 @@ pub struct Container {
     /// 共享语义编码器（进程内懒加载一次：编译并配置了 bge-m3 时为 `Some`，否则 `None`）。
     semantic_embedder: OnceLock<Option<Arc<dyn gt_application::Embedder>>>,
     /// 共享节点向量缓存：首次召回预热后，后续召回只编码查询一次。
-    node_embed_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+    node_embed_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
 }
 
 impl Container {

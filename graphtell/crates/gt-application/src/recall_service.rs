@@ -57,6 +57,10 @@ const VECTOR_SEED_COUNT: usize = 4;
 /// 片段是体积大头（每条约 7~15 行），全量附带会让默认输出膨胀到 ~800+ token，
 /// 而模型真正需要细看的往往是最靠前几条。列表仍保留全部命中的名字/位置，信息不丢。
 const SNIPPET_TOP: usize = 6;
+/// 命中文件完整源码返回的数量上限（避免一次性塞入过多文件撑爆上下文）。
+const INCLUDE_BODY_MAX_FILES: usize = 8;
+/// 单个命中文件完整源码的字节上限，超出截断（避免超大文件撑爆上下文）。
+const INCLUDE_BODY_MAX_BYTES: usize = 128 * 1024;
 
 /// 通用 CRUD 动词方法名（仅含动作、不含业务语义）。
 ///
@@ -308,6 +312,221 @@ fn anchor_multiplier(node: &Node, anchors: &[String]) -> f64 {
         }
     }
     best
+}
+
+/// 概念簇（中文概念 → 英文同义词簇）：用于「排序侧概念加权」。
+///
+/// 与 [`expand_intent_aliases`]（查询侧，决定**是否匹配**）互补：后者把中文概念展开成
+/// 英文 token 用于词面匹配；本机制在**排序阶段**对「命中该概念多个表达」的节点额外加权，
+/// 让真正属于该领域的节点（如 `resendVerificationEmail` 同时含 mail+email）相对
+/// 「只命中泛词 notify/send 的无关节点」和「测试文件」上浮 —— 这正是「发邮件」在
+/// likeadmin / mall 之类命名分散的工程里召回偏弱的根因（不是没匹配，而是被泛词与测试挤下去）。
+///
+/// **通用性**：不依赖任何具体工程的节点文本，换个工程自动生效。已覆盖「通知 / 支付 /
+/// 库存 / 密码 / 鉴权 / 退款」等高频概念，且可按相同模式继续扩（改本数组一处即可，
+/// 零成本、零重编码）。与节点富化（逐工程改节点、需重编码）相反，这是排序层通用改进。
+///
+/// `core` = 较特异的 token（命中即认为是该概念，单 token 也给温和加权）；
+/// `all`  = 全部 token（含较泛的 notify / message，仅当与 core 同现时给聚合加成，
+///          避免单泛词 notify 滥加权）。
+/// 概念簇覆盖「领域别名包」(PACK_ECOMMERCE / FINANCE / SYMPTOM 以及 GENERIC 里的业务名词)
+/// 同款中文概念 → 英文实现面。这是**根治级通用**排序层：换任何工程自动生效，零节点改动、
+/// 零重编码；某个概念不被 query 触发时对排序零影响（故新增未覆盖的概念对评测零风险）。
+///
+/// 规则同前：core 用特异 token（单命中即 ×1.2），all 含较泛 token（仅同现才 ×1.5）。
+/// 已知会误抬无关节点的泛词（pay / password / pwd / message / code / send / limit / control …
+/// ）保持降级到 all，不单独加权。
+const CONCEPT_CLUSTERS: &[(&[&str], &[&str])] = &[
+    // 通知 / 通信概念
+    (
+        &["mail", "email", "sms"],
+        &["mail", "email", "sms", "notify", "message", "push"],
+    ),
+    // 支付 / 交易概念（pay 移入 all：避免「未支付」等否定式把 pay* 节点过度抬高挤掉订单取消类 target）
+    (
+        &["payment", "checkout"],
+        &["pay", "payment", "checkout", "transaction", "wallet"],
+    ),
+    // 库存 / 仓储概念
+    (
+        &["stock", "inventory", "warehouse"],
+        &["stock", "inventory", "warehouse", "goods", "deduct", "decrement", "oversell"],
+    ),
+    // 密码 / 密文概念（password/pwd 字面太泛，如 passwordless 也含 password；
+    // 故仅「加密实现」bcrypt/encoder/encrypt/cipher 作核心加权，password 字面留 all，
+    // 仅当与加密实现同现时才聚合加成，避免单 password 节点误抬）
+    (
+        &["encrypt", "cipher", "bcrypt", "encoder"],
+        &[
+            "password", "passwd", "pwd", "encrypt", "cipher", "bcrypt", "encoder", "hash",
+            "decrypt",
+        ],
+    ),
+    // 鉴权 / JWT 概念
+    (
+        &["auth", "permission", "rbac", "jwt", "oauth", "guard", "login"],
+        &[
+            "auth", "permission", "rbac", "jwt", "oauth", "guard", "login", "token", "bearer",
+            "strategy", "middleware", "authorize", "authenticate",
+        ],
+    ),
+    // 退款 / 售后概念
+    (&["refund", "reback"], &["refund", "reback", "return"]),
+    // ===== 以下由领域别名概念对齐而来（通用、零节点改动）=====
+    // 余额 / 资产
+    (&["balance", "yue", "now_money"], &["balance", "yue", "now_money"]),
+    // 优惠 / 折扣
+    (&["coupon", "discount"], &["coupon", "discount"]),
+    // 内容实体（文章 / 评论 / 品牌 / 分类 / 标签）
+    (
+        &["article", "post", "blog", "comment", "brand", "category", "tag"],
+        &["article", "post", "blog", "comment", "brand", "category", "tag"],
+    ),
+    // 并发 / 一致性（加锁 / 并发 / 事务）
+    (
+        &["lock", "mutex", "atomic", "concurrent", "transaction", "commit"],
+        &[
+            "lock", "mutex", "atomic", "concurrent", "transaction", "commit", "pessimistic",
+            "optimistic",
+        ],
+    ),
+    // 定时 / 延迟（超时 / 定时任务 / 过期）
+    (
+        &["schedule", "cron", "timer", "timeout", "expire", "overtime", "delay"],
+        &["schedule", "cron", "timer", "timeout", "expire", "overtime", "delay"],
+    ),
+    // 预警 / 阈值 / 时限（limit 泛，留 all）
+    (&["warn", "alert", "threshold"], &["warn", "alert", "threshold", "limit"]),
+    // 充值
+    (&["recharge"], &["recharge"]),
+    // 履约 / 物流（配送 / 发货 / 快递）
+    (
+        &["logistics", "delivery", "express", "ship", "dispatch"],
+        &["logistics", "delivery", "express", "ship", "send", "dispatch", "shipping"],
+    ),
+    // 分销 / 佣金
+    (
+        &["distribution", "brokerage", "commission"],
+        &["distribution", "resale", "brokerage", "commission"],
+    ),
+    // 提现
+    (&["withdraw", "cashout"], &["withdraw", "cashout"]),
+    // 核销（verify / consume 泛，留 all）
+    (&["writeoff"], &["writeoff", "verify", "consume"]),
+    // 营销 / 活动
+    (
+        &["promotion", "marketing", "campaign"],
+        &["promotion", "marketing", "activity", "campaign"],
+    ),
+    // 会员 / 等级
+    (&["member", "vip", "level", "grade"], &["member", "vip", "level", "grade"]),
+    // 地址
+    (&["address"], &["address", "shipping"]),
+    // 头像
+    (&["avatar", "profile"], &["avatar", "profile"]),
+    // 验证码（code / verify 泛，留 all）
+    (&["captcha"], &["captcha", "code", "verify"]),
+    // 二维码
+    (&["qrcode", "qr"], &["qrcode", "qr", "code"]),
+    // 关注 / 动态流
+    (&["follow", "feed"], &["follow", "feed", "activity"]),
+    // 收藏 / 点赞
+    (&["favorite", "bookmark", "like"], &["favorite", "bookmark", "like"]),
+    // 发票 / 账单
+    (&["invoice", "bill"], &["invoice", "bill"]),
+    // 签名
+    (&["sign", "signature"], &["sign", "signature"]),
+    // 白名单 / 黑名单
+    (
+        &["whitelist", "blacklist", "exclude", "anonymous", "deny"],
+        &["whitelist", "blacklist", "exclude", "anonymous", "deny"],
+    ),
+    // 金融：转账
+    (&["transfer"], &["transfer"]),
+    // 金融：清算 / 结算
+    (
+        &["clearing", "settle", "settlement"],
+        &["clearing", "settle", "settlement"],
+    ),
+    // 金融：对账
+    (
+        &["reconcile", "reconciliation"],
+        &["reconcile", "reconciliation"],
+    ),
+    // 金融：流水
+    (&["statement", "ledger", "flow"], &["statement", "ledger", "flow"]),
+    // 金融：账户
+    (&["account"], &["account"]),
+    // 金融：授信（limit 泛，留 all）
+    (&["credit"], &["credit", "limit"]),
+    // 金融：还款
+    (&["repay"], &["repay"]),
+    // 金融：利率
+    (&["interest", "rate"], &["interest", "rate"]),
+    // 金融：风控（control 泛，留 all）
+    (&["risk"], &["risk", "control"]),
+    // 金融：回退 / 回滚
+    (
+        &["rollback", "recover", "restore"],
+        &["rollback", "recover", "restore"],
+    ),
+];
+
+/// 节点命中某概念簇的加权系数（温和，避免引入噪音）：
+/// - 命中 `all` 中 ≥2 个不同 token（同概念多表达，如 mail+email）→ ×1.5；
+/// - 否则命中 `core` 中 ≥1 个 token（如 email / sms）→ ×1.2；
+/// - 否则 ×1.0（单泛词 notify / message 不单独加权）。
+fn concept_multiplier(node: &Node, clusters: &[(&[&str], &[&str])]) -> f64 {
+    if clusters.is_empty() {
+        return 1.0;
+    }
+    let name = node.name.to_lowercase();
+    let fqn = node.fqn.as_deref().unwrap_or("").to_lowercase();
+    let identity = node
+        .identity
+        .as_ref()
+        .map(|i| i.value.to_lowercase())
+        .unwrap_or_default();
+    let mut boost = 1.0;
+    for (core, all) in clusters {
+        let mut n_all = 0usize;
+        let mut n_core = 0usize;
+        for t in *all {
+            let tok = *t; // &str
+            let hit = name.contains(tok) || fqn.contains(tok) || identity.contains(tok);
+            if hit {
+                n_all += 1;
+                if core.contains(&tok) {
+                    n_core += 1;
+                }
+            }
+        }
+        if n_all >= 2 {
+            boost *= 1.5;
+        } else if n_core >= 1 {
+            boost *= 1.2;
+        }
+    }
+    boost
+}
+
+/// 根据已展开的别名词判断触发了哪些概念簇。
+///
+/// 复用 [`expand_intent_aliases`] 的输出：中文概念词（邮件 / 通知 …）已被桥展开成这些
+/// 英文 token，故 `alias_terms` 含某簇 `all` 中任一 token 即触发该簇。
+fn triggered_concepts(
+    alias_terms: &[String],
+) -> Vec<(&'static [&'static str], &'static [&'static str])> {
+    let mut out = Vec::new();
+    for (core, all) in CONCEPT_CLUSTERS {
+        let fired = all
+            .iter()
+            .any(|t| alias_terms.iter().any(|a| a.as_str() == *t));
+        if fired {
+            out.push((*core, *all));
+        }
+    }
+    out
 }
 
 /// 过于通用的「架构名词」别名词（service / api / model / entity …）。
@@ -776,6 +995,17 @@ const PACK_ECOMMERCE: &[(&str, &[&str])] = &[
     ("售后", &["aftersale", "refund", "service"]),
     ("团购", &["groupon", "group"]),
     ("拼团", &["groupon", "group"]),
+    // ---- 审批流（`审核` / `通过` / `同意`）刻意**不收**，原因记录在 `docs` 之外，留此备查 ----
+    //
+    // 曾为 CRMEB「退款审核通过后钱怎么退回」补过 `通过 → agree`，实测结论是**净负、已撤销**：
+    //  * 语义路救不了：全部 refund* 节点余弦挤在 0.64~0.67（agreeRefund 0.6493，与头名
+    //    仅差 0.018），区分度太低；
+    //  * 词面桥会误伤：词面匹配是**子串**匹配，`agree` 会命中 `agreement`（用户协议）。
+    //    评测集那条含"用户"→`user`，于是 `GET /user/member/agreement` 双重命中霸占前排，
+    //    top5 从 refund 相关被整体换成协议相关；
+    //  * 48 条同口径对照：逐条 hit 差异 0（提升 0、回退 0），但退款那条结果质量明显变差。
+    // 结论：要修这条得先解决"子串误伤"（让 `agree` 走 token 精确匹配，使
+    // `agreement ≠ agree`），在那之前别再给审批语义加 `agree` 落点。
     // ---- 社交 / 信息流通用词（无 i18n 的工程也能靠这些命中 feed / follow）----
     ("动态流", &["feed", "activity"]),
     ("关注", &["follow"]),
@@ -1175,7 +1405,7 @@ fn warm_priority(kind: &str) -> u8 {
 /// 其余几十 token 的短文本全被补齐到 256，算力浪费可达数倍。按长度排序分桶后
 /// 每批长度接近，padding 浪费最小。各序列在 BERT 里独立计算，**分批方式不改变向量**，
 /// 因此该排序零质量风险。
-fn sort_pending_for_warmup(pending: &mut Vec<(i64, String, u8)>) {
+fn sort_pending_for_warmup(pending: &mut Vec<(u64, String, u8)>) {
     pending.sort_by(|a, b| a.2.cmp(&b.2).then(a.1.len().cmp(&b.1.len())));
 }
 
@@ -1196,6 +1426,13 @@ pub struct RecallQuery {
     /// 是否带源码片段（需要读文件，成本略高）。
     #[serde(default = "default_true")]
     pub with_snippets: bool,
+    /// 是否把命中涉及的完整文件源码也一并附上（默认 false）。
+    ///
+    /// MCP / IDE 场景下 LLM 拿到的上下文可直接阅读实现，省去再发 `read` 去拉全文的一轮往返。
+    /// 仅取排名最前的少数命中文件（见 [`INCLUDE_BODY_MAX_FILES`]），且单文件超过
+    /// [`INCLUDE_BODY_MAX_BYTES`] 会被截断并标注，避免超大文件撑爆上下文。
+    #[serde(default)]
+    pub include_body: bool,
 }
 
 fn default_limit() -> usize {
@@ -1273,6 +1510,21 @@ impl RecallQuality {
     }
 }
 
+/// 后台预热进度（语义向量 bge 计算）。
+///
+/// 让 IDE / MCP 知道当前召回是否还在走冷路径（快速向量 / 词面），以便提示"稍后重试质量更佳"。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct WarmupStatus {
+    /// 该工程语义向量是否已全部就绪（召回走完整语义路）。
+    pub warmed: bool,
+    /// 是否正在后台预热中。
+    pub warming: bool,
+    /// 已编码节点数（仅 `warming` 时有意义）。
+    pub done: usize,
+    /// 待编码节点总数（仅 `warming` 时有意义）。
+    pub total: usize,
+}
+
 /// 召回结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecallResult {
@@ -1297,6 +1549,9 @@ pub struct RecallResult {
     /// 未命中的**特征词**（去掉通用 CRUD 动词 / 架构名词后仍有区分度的查询词）。
     /// 质量偏低时可直接拿这些词去 grep。
     pub missing_terms: Vec<String>,
+    /// 后台预热进度（仅 `warming` 时填，用于 IDE / MCP 提示召回质量是否受冷路径影响）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warmup: Option<WarmupStatus>,
 }
 
 /// 节点嵌入文本（`node_embed_text`）的版本。
@@ -1307,10 +1562,12 @@ pub struct RecallResult {
 /// 落盘向量的「空间版本」。**向量空间变了就必须 +1**，否则旧文件会被静默复用
 /// （维度相同、版本相同，守卫查不出来），查询与节点落在不同空间，余弦整体失真。
 ///
-/// v2：修正 position_ids 偏移 —— bge-m3 主干是 XLM-RoBERTa（`padding_idx=1`），
-/// HF 参考用 2-based（`arange(2, seq+2)`），而此前 candle 用的是 0-based，
-/// 实测 `cos(0-based, HF) ≈ 0.96`。v2 起两侧均对齐参考实现，**全部存量向量失效需重编码**。
-const EMBED_TEXT_VERSION: u32 = 2;
+/// v3：向量缓存键由「节点 id」改为「节点 embed 文本的内容哈希」。
+/// 旧 v2 文件以节点 id 为键；图重建（`reset_project` 重分配 id）后旧键全部失配，
+/// 导致每次重建都全量重 embed（CPU 上数十分钟）。v3 起用内容指纹作键，
+/// 未变更节点的向量可跨重建 / 重启直接命中落盘，**全量重算降为仅算变更节点**。
+/// v3→v4：持久化格式由 JSON 改为 rmp（解析快一个数量级）；旧 JSON 文件版本不符，一次性失效重编码。
+const EMBED_TEXT_VERSION: u32 = 4;
 
 /// 落盘的向量文件信封：带版本，版本不符即整份失效重算。
 #[derive(Serialize, Deserialize)]
@@ -1322,7 +1579,23 @@ struct PersistedEmbeds {
     /// 当前编码器维度与向量实际维度一致（同维度模型，如 bge-m3）才复用，不强制重编码。
     #[serde(default)]
     dim: usize,
-    vectors: HashMap<i64, Vec<f32>>,
+    vectors: HashMap<u64, Vec<f32>>,
+}
+
+/// 语义向量缓存键：节点 embed 文本的确定性内容指纹（FNV-1a 64）。
+///
+/// 用内容而非 `node.id` 作键：图重建（`reset_project` 重分配节点 id）后，
+/// 未变更节点的 embed 文本不变 → 指纹不变 → 落盘向量跨重建 / 重启直接复用，
+/// 把"全量重 embed（CPU 上数十分钟）"降为"仅 embed 文本变化的少数节点"。
+///
+/// 快速向量缓存键直接用 `node.id as u64`（瞬时可重算，无需内容指纹）。
+fn embed_text_key(text: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 /// 召回服务。
@@ -1335,17 +1608,21 @@ pub struct RecallService {
     fast_embedder: Arc<dyn Embedder>,
     /// 语义编码器（真实 bge-m3，按需加载）。为 `None` 时只有词面 / 快速向量路，无后台预热。
     semantic_embedder: Option<Arc<dyn Embedder>>,
-    /// 快速向量缓存（哈希，瞬时可重算，不落盘）。
-    fast_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
-    /// 语义向量缓存（bge，落盘到 `embed_persist_dir`）。与快速缓存分开放，避免维度混用。
-    node_embed_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+    /// 快速向量缓存（哈希，瞬时可重算，不落盘）。键为 `node.id as u64`。
+    fast_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
+    /// 语义向量缓存（bge，落盘到 `embed_persist_dir`）。键为节点 embed 文本的内容哈希
+    /// （见 [`embed_text_key`]），使图重建后未变更节点的向量可跨重建复用。
+    node_embed_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
     /// 已预热（bge 向量已算好并落盘）的工程集合；按工程粒度判定是否走语义路。
     warmed_projects: Arc<Mutex<HashSet<i64>>>,
     /// 正在后台预热中的工程集合（防重复 spawn）。
     warming_projects: Arc<Mutex<HashSet<i64>>>,
+    /// 后台预热的进度计数：工程 id → (已编码节点数, 待编码总数)。仅预热进行中保留，
+    /// 完成 / 失败后清除，供 `/api/.../warmup` 与 MCP 暴露"预热进度"。
+    warm_progress: Arc<Mutex<HashMap<i64, (usize, usize)>>>,
     /// 是否允许后台异步预热（仅 HTTP 生产入口开启；CLI / 测试关闭，避免 spawn 线程）。
     enable_async_warmup: bool,
-    /// 语义向量持久化目录（`<dir>/<project_id>.json`）。建图时【不】写入；
+    /// 语义向量持久化目录（`<dir>/<project_id>.rmp`）。建图时【不】写入；
     /// 仅在召回后台预热 / 手动 `embed` 命令里计算并落盘，重启后直接加载。
     /// 为 `None` 时不持久化（纯内存缓存）。
     embed_persist_dir: Option<PathBuf>,
@@ -1475,7 +1752,7 @@ impl RecallService {
         fs: Arc<dyn FileSystem>,
         scanner: Arc<dyn FileScanner>,
         semantic_embedder: Option<Arc<dyn Embedder>>,
-        node_embed_cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+        node_embed_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
         embed_persist_dir: Option<PathBuf>,
         snapshot_persist_dir: Option<PathBuf>,
     ) -> Self {
@@ -1489,6 +1766,7 @@ impl RecallService {
             node_embed_cache,
             warmed_projects: Arc::new(Mutex::new(HashSet::new())),
             warming_projects: Arc::new(Mutex::new(HashSet::new())),
+            warm_progress: Arc::new(Mutex::new(HashMap::new())),
             enable_async_warmup: false,
             embed_persist_dir,
             snapshot_persist_dir,
@@ -1512,6 +1790,7 @@ impl RecallService {
         self.node_embed_cache.lock().unwrap().clear();
         self.warmed_projects.lock().unwrap().clear();
         self.warming_projects.lock().unwrap().clear();
+        self.warm_progress.lock().unwrap().clear();
         // 图重建后 i18n 文案可能变了，桥必须一起失效。
         self.bridge_cache.lock().unwrap().clear();
         // 节点 / 邻接都换了，候选集快照与查询向量缓存必须失效（否则一直答旧图）。
@@ -1677,38 +1956,105 @@ impl RecallService {
         })
     }
 
-    /// 从持久化文件载入某工程的 bge 向量到语义缓存（文件不存在 / 维度不符则跳过），并标记已预热。
-    fn load_persisted(&self, path: &Path, project_id: ProjectId) {
+    /// 从持久化文件载入某工程的 bge 向量到语义缓存，并标记已预热。
+    ///
+    /// 优先 rmp（v4+，解析快一个数量级）；过渡期旧文件是 v3 JSON，回退读一次并顺手把
+    /// rmp 重写落盘，之后直接走 rmp。返回是否真的载入成功（文件存在且版本 / 维度匹配）；
+    /// `false` 表示落盘文件已失效，调用方必须按"未预热"处理（见 [`load_persisted_into`]）。
+    fn load_persisted(&self, rmp_path: &Path, project_id: ProjectId) -> bool {
         let expected_dim = self.semantic_embedder.as_ref().map_or(0, |e| e.dim());
-        load_persisted_into(
-            path,
+        // 决定实际读取哪个文件：rmp 优先，缺失则旧 json（过渡）。
+        let (path, need_rmp) = if rmp_path.exists() {
+            (rmp_path.to_path_buf(), false)
+        } else {
+            let json_path = rmp_path.with_extension("json");
+            if json_path.exists() {
+                (json_path, true)
+            } else {
+                return false;
+            }
+        };
+        let ok = load_persisted_into(
+            &path,
             &self.node_embed_cache,
             project_id,
             &self.warmed_projects,
             expected_dim,
         );
+        // 过渡：从旧 JSON 载入成功后，后台把向量以 rmp 重写落盘，后续重启直接走 rmp（亚秒级），
+        // 不阻塞本次召回请求。
+        if ok && need_rmp {
+            let store = self.store.clone();
+            let cache = self.node_embed_cache.clone();
+            let dir = self.embed_persist_dir.clone();
+            let dim = expected_dim;
+            let pid = project_id.get();
+            thread::spawn(move || {
+                if let Ok(nodes) = fetch_nodes(store.as_ref(), ProjectId(pid)) {
+                    let enrich = build_enrich_index(&compute_bridge(&nodes));
+                    if let Some(d) = dir {
+                        Self::persist_vectors(
+                            &cache,
+                            dim,
+                            &d.join(format!("{pid}.rmp")),
+                            &nodes,
+                            &enrich,
+                        );
+                    }
+                }
+            });
+        }
+        ok
     }
 
     /// 将本工程 bge 向量写入持久化文件（只写当前工程参与召回的节点，避免跨工程串味）。
-    fn persist(&self, path: &Path, nodes: &[Node]) {
-        let cache = self.node_embed_cache.lock().unwrap();
-        let vectors: HashMap<i64, Vec<f32>> = nodes
-            .iter()
-            .filter_map(|n| cache.get(&n.id.get()).cloned().map(|v| (n.id.get(), v)))
-            .collect();
-        drop(cache);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let env = PersistedEmbeds {
-            version: EMBED_TEXT_VERSION,
-            dim: self.semantic_embedder.as_ref().map_or(0, |e| e.dim()),
-            vectors,
-        };
-        if let Ok(data) = serde_json::to_vec(&env) {
-            let _ = std::fs::write(path, data);
-        }
+    ///
+    /// 用 rmp（msgpack）二进制而非 JSON：CRMEB 全量向量 JSON 约 153MB、serde_json 解析
+    /// ~5s，是「首查慢」的根因；rmp 同体量仅约 1/2 体积、解析快一个数量级（亚秒级），
+    /// 配合异步预热首查几乎无感。
+    fn persist(&self, path: &Path, nodes: &[Node], enrich: &EnrichIndex) {
+        Self::persist_vectors(
+            &self.node_embed_cache,
+            self.semantic_embedder.as_ref().map_or(0, |e| e.dim()),
+            path,
+            nodes,
+            enrich,
+        );
     }
+
+/// 把本工程 bge 向量写入 rmp 落盘文件（见 [`PersistedEmbeds`]）。
+///
+/// 抽成自由函数以便后台线程在「旧 JSON → rmp 过渡」时离线重写，不阻塞召回请求。
+/// 用 rmp（msgpack）而非 JSON：CRMEB 全量向量 JSON 约 153MB、serde_json 解析 ~5s，
+/// 是「首查慢」的根因；rmp 同体量仅约 1/2 体积、解析快一个数量级（亚秒级）。
+fn persist_vectors(
+    cache: &Mutex<HashMap<u64, Vec<f32>>>,
+    dim: usize,
+    path: &Path,
+    nodes: &[Node],
+    enrich: &EnrichIndex,
+) {
+    let cache = cache.lock().unwrap();
+    let vectors: HashMap<u64, Vec<f32>> = nodes
+        .iter()
+        .filter_map(|n| {
+            let key = embed_text_key(&node_embed_text(n, enrich));
+            cache.get(&key).cloned().map(|v| (key, v))
+        })
+        .collect();
+    drop(cache);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let env = PersistedEmbeds {
+        version: EMBED_TEXT_VERSION,
+        dim,
+        vectors,
+    };
+    if let Ok(data) = rmp_serde::to_vec(&env) {
+        let _ = std::fs::write(path, data);
+    }
+}
 
     /// 确保参与向量召回的主题级节点都已编码进给定缓存（未编码的批量编码并回填）。
     /// 与具体查询无关，可被快速路 / 语义路 / 手动 `embed` 命令复用。
@@ -1716,38 +2062,41 @@ impl RecallService {
     /// 返回**本次新编码**的节点数 —— 调用方据此判断要不要落盘：
     /// 落盘会把全工程向量重新序列化写一次（CRMEB 157MB / 约 0.5s），
     /// 而绝大多数召回一个节点都不缺，每次都写是纯粹的写放大。
+    /// `semantic` 为真时以「节点 embed 文本的内容哈希」作缓存键（跨重建复用落盘向量）；
+    /// 为假时以 `node.id as u64` 作键（快速哈希空间，瞬时可重算）。
+    /// `enrich` 由调用方构建后传入，避免每条路径各自重建富化索引。
     fn ensure_cached_with(
         &self,
-        project_id: ProjectId,
         nodes: &[Node],
         embedder: &Arc<dyn Embedder>,
-        cache: &Mutex<HashMap<i64, Vec<f32>>>,
+        cache: &Mutex<HashMap<u64, Vec<f32>>>,
+        enrich: &EnrichIndex,
+        semantic: bool,
     ) -> usize {
         const BATCH: usize = 256;
-        // 节点文本富化：用本工程 i18n 桥反建索引，让中文查询能直接在向量空间对齐领域实体。
-        let enrich = build_enrich_index(&self.project_bridge(project_id, nodes));
-        let mut pending: Vec<(i64, String, u8)> = Vec::new();
+        let mut pending: Vec<(u64, String, u8)> = Vec::new();
         for node in nodes {
             if !is_vector_kind(node) {
                 continue;
             }
-            let id = node.id.get();
-            if cache.lock().unwrap().contains_key(&id) {
+            let text = node_embed_text(node, enrich);
+            let key: u64 = if semantic {
+                embed_text_key(&text)
+            } else {
+                node.id.get() as u64
+            };
+            if cache.lock().unwrap().contains_key(&key) {
                 continue;
             }
-            pending.push((
-                id,
-                node_embed_text(node, &enrich),
-                warm_priority(node.kind.as_str()),
-            ));
+            pending.push((key, text, warm_priority(node.kind.as_str())));
         }
         sort_pending_for_warmup(&mut pending);
         for chunk in pending.chunks(BATCH) {
             let texts: Vec<String> = chunk.iter().map(|(_, t, _)| t.clone()).collect();
             let vecs = embedder.embed_batch(&texts);
             let mut cache = cache.lock().unwrap();
-            for ((id, _, _), v) in chunk.iter().zip(vecs.into_iter()) {
-                cache.insert(*id, v);
+            for ((key, _, _), v) in chunk.iter().zip(vecs.into_iter()) {
+                cache.insert(*key, v);
             }
         }
         pending.len()
@@ -1806,20 +2155,46 @@ impl RecallService {
             }
         };
         let nodes = fetch_nodes(self.store.as_ref(), project_id)?;
+        let enrich = build_enrich_index(&self.project_bridge(project_id, &nodes));
         if let Some(dir) = &self.embed_persist_dir {
-            let path = dir.join(format!("{}.json", project_id.get()));
+            let path = dir.join(format!("{}.rmp", project_id.get()));
             self.load_persisted(&path, project_id);
         }
-        self.ensure_cached_with(project_id, &nodes, emb, &self.node_embed_cache);
+        self.ensure_cached_with(&nodes, emb, &self.node_embed_cache, &enrich, true);
         if let Some(dir) = &self.embed_persist_dir {
-            let path = dir.join(format!("{}.json", project_id.get()));
-            self.persist(&path, &nodes);
+            let path = dir.join(format!("{}.rmp", project_id.get()));
+            self.persist(&path, &nodes, &enrich);
         }
         self.warmed_projects.lock().unwrap().insert(project_id.get());
         Ok(nodes
             .iter()
             .filter(|n| is_vector_kind(n))
             .count())
+    }
+
+    /// 查询某工程的后台预热进度。
+    ///
+    /// 返回 `Some` 表示处于"预热中"或"已预热完成"；返回 `None` 表示既未在预热也未预热过
+    /// （即该工程当前走冷路径）。供 `/api/.../warmup` 与 [`RecallResult::warmup`] 复用。
+    pub fn warmup_progress(&self, project_id: i64) -> Option<WarmupStatus> {
+        let warmed = self.warmed_projects.lock().unwrap().contains(&project_id);
+        let warming = self.warming_projects.lock().unwrap().contains(&project_id);
+        if !warming && !warmed {
+            return None;
+        }
+        let (done, total) = self
+            .warm_progress
+            .lock()
+            .unwrap()
+            .get(&project_id)
+            .copied()
+            .unwrap_or((0, 0));
+        Some(WarmupStatus {
+            warmed,
+            warming,
+            done,
+            total,
+        })
     }
 
     /// 诊断：给定查询，输出与各节点向量的余弦（降序）。
@@ -2236,8 +2611,11 @@ impl RecallService {
             &missing_terms,
             event_intent(&q.query),
         );
-        let markdown =
+        let mut markdown =
             render_markdown(project_id, q, &terms, &hints, &seeds, &hits, &advisory);
+        if q.include_body {
+            markdown = append_file_bodies(self.fs.as_ref(), &hits, markdown);
+        }
         Ok(RecallResult {
             project_id,
             query: q.query.clone(),
@@ -2251,6 +2629,7 @@ impl RecallService {
             quality,
             quality_reason,
             missing_terms,
+            warmup: self.warmup_progress(project_id.get()),
         })
     }
 
@@ -2292,6 +2671,9 @@ impl RecallService {
             }
         }
 
+        // 触发的概念簇（如「邮件」→ 通知簇）：用于排序侧概念加权，见 [`concept_multiplier`]。
+        let triggered = triggered_concepts(&alias_terms);
+
         // 查询编码与候选装载 / 落盘载入相互独立：查询编码是单次 bge 前向（CPU ~800ms），
         // 是冷启动最大的串行项。这里提前算好查询文本与"语义空间"判定，把编码丢进独立线程，
         // 与下方的候选装载 / 落盘载入并行 —— 重启后首问从 ~2.5s 降到 ~1.5s。
@@ -2306,7 +2688,7 @@ impl RecallService {
                 .unwrap()
                 .contains(&project_id.get())
                 || self.embed_persist_dir.as_ref().map_or(false, |d| {
-                    d.join(format!("{}.json", project_id.get())).exists()
+                    d.join(format!("{}.rmp", project_id.get())).exists()
                 }));
         let qvec_cache = self.query_vec_cache.clone();
         let qvec_embedder = if early_semantic {
@@ -2323,6 +2705,9 @@ impl RecallService {
         let t_nodes = std::time::Instant::now();
         let snap = self.candidate_set(project_id, &q.kinds)?;
         let nodes: &[Node] = &snap.nodes;
+        // 节点富化索引（内容哈希键所需）：与 `ensure_cached_with` / `persist` 共用同一份，
+        // 避免每次召回重复构建。
+        let enrich = build_enrich_index(&self.project_bridge(project_id, nodes));
         let truncated = nodes.len() >= SCAN_LIMIT as usize;
         tracing::debug!(
             "latency: 候选装载 {} 个节点 {} ms",
@@ -2398,6 +2783,8 @@ impl RecallService {
             if score > 0.0 {
                 score *= cohesion_multiplier(&matched, &group_map);
                 score *= anchor_multiplier(node, &anchors);
+                // 排序侧概念加权：命中「通知」等概念簇的节点上浮（见 [`concept_multiplier`]）。
+                score *= concept_multiplier(node, &triggered);
                 // 测试文件 / 生成器样板 / ORM 关联访问器：不含业务逻辑，
                 // 压低到不再占种子名额（见 [`node_noise_discount`]）。
                 score *= node_noise_discount(node, &files, &boilerplate);
@@ -2419,12 +2806,18 @@ impl RecallService {
             && self.warmed_projects.lock().unwrap().contains(&project_id.get());
         if !use_semantic && self.semantic_embedder.is_some() {
             if let Some(dir) = &self.embed_persist_dir {
-                let path = dir.join(format!("{}.json", project_id.get()));
-                if path.exists() {
-                    // 内部会置 `warmed_projects`，之后该工程直接命中语义空间。
-                    self.load_persisted(&path, project_id);
-                    use_semantic = true;
-                }
+                // **只有真的载入成功才切语义空间**（版本 / 维度必须匹配）。
+                //
+                // 曾无条件置 `use_semantic = true`：版本升级后落盘文件被判失效、
+                // 一个向量都没载入，却仍走语义路 → 请求线程里同步对全库做 bge 编码
+                // （CRMEB 十几分钟不返回），且因"已判为语义路"永不启动后台预热，
+                // 预热进度永远显示未开始。改为按实际结果判定：载入失败就走快速路
+                // 立即返回，让后台预热接管重算。
+                //
+                // 落盘如今优先 rmp（v4 起，解析比旧 JSON 153MB / ~5s 快一个数量级），
+                // 首查同步载入也仅亚秒级；旧 v3 JSON 仍被兼容（内部回退且自动重写 rmp）。
+                let path = dir.join(format!("{}.rmp", project_id.get()));
+                use_semantic = self.load_persisted(&path, project_id);
             }
         }
         tracing::debug!(
@@ -2432,7 +2825,7 @@ impl RecallService {
             t_load.elapsed().as_millis(),
             nodes.len()
         );
-        let (chosen, cache): (&Arc<dyn Embedder>, &Mutex<HashMap<i64, Vec<f32>>>) = if use_semantic {
+        let (chosen, cache): (&Arc<dyn Embedder>, &Mutex<HashMap<u64, Vec<f32>>>) = if use_semantic {
             (self.semantic_embedder.as_ref().unwrap(), &self.node_embed_cache)
         } else {
             (&self.fast_embedder, &self.fast_cache)
@@ -2453,7 +2846,8 @@ impl RecallService {
         // 仅语义空间才落盘（快速哈希空间无需持久化，瞬时可重算）。
         // 计算与落盘都【不在建图时发生】。
         let t_enc = std::time::Instant::now();
-        let newly_encoded = self.ensure_cached_with(project_id, nodes, chosen, cache);
+        let newly_encoded =
+            self.ensure_cached_with(nodes, chosen, cache, &enrich, use_semantic);
         tracing::debug!(
             "latency: 节点编码补齐 {} ms（新增 {} 个）",
             t_enc.elapsed().as_millis(),
@@ -2463,9 +2857,9 @@ impl RecallService {
         // 向量重新序列化一遍（CRMEB 157MB / 约 0.5s）—— 而这些内容一次都没变过。
         if use_semantic && newly_encoded > 0 {
             if let Some(dir) = &self.embed_persist_dir {
-                let path = dir.join(format!("{}.json", project_id.get()));
+                let path = dir.join(format!("{}.rmp", project_id.get()));
                 let t_p = std::time::Instant::now();
-                self.persist(&path, nodes);
+                self.persist(&path, nodes, &enrich);
                 tracing::debug!("latency: 落盘写回 {} ms", t_p.elapsed().as_millis());
             }
         }
@@ -2478,16 +2872,17 @@ impl RecallService {
             && self.semantic_embedder.is_some()
             && self.warming_projects.lock().unwrap().insert(project_id.get())
         {
-            let (store, emb, sem_cache, dir, warmed, warming) = (
+            let (store, emb, sem_cache, dir, warmed, warming, progress) = (
                 self.store.clone(),
                 self.semantic_embedder.clone().unwrap(),
                 self.node_embed_cache.clone(),
                 self.embed_persist_dir.clone(),
                 self.warmed_projects.clone(),
                 self.warming_projects.clone(),
+                self.warm_progress.clone(),
             );
             thread::spawn(move || {
-                warm_up_worker(store, emb, sem_cache, dir, project_id, warmed, warming);
+                warm_up_worker(store, emb, sem_cache, dir, project_id, warmed, warming, progress);
             });
         }
 
@@ -2500,7 +2895,14 @@ impl RecallService {
             if !is_vector_kind(node) {
                 continue;
             }
-            let nvec = match cache.lock().unwrap().get(&node.id.get()).cloned() {
+            // 语义空间按「节点 embed 文本的内容哈希」取向量（跨重建复用落盘向量），
+            // 快速空间按节点 id 取（瞬时可重算）。
+            let key: u64 = if use_semantic {
+                embed_text_key(&node_embed_text(node, &enrich))
+            } else {
+                node.id.get() as u64
+            };
+            let nvec = match cache.lock().unwrap().get(&key).cloned() {
                 Some(v) => v,
                 None => continue,
             };
@@ -2538,6 +2940,7 @@ impl RecallService {
                     * VECTOR_WEIGHT
                     * kw
                     * anchor_multiplier(node, &anchors)
+                    * concept_multiplier(node, &triggered)
                     * node_noise_discount(node, &files, &boilerplate);
                 let entry = vector.entry(node.id.get()).or_insert(0.0);
                 *entry = (*entry).max(s);
@@ -2728,8 +3131,11 @@ impl RecallService {
             Self::assess_quality(&q.query, &hits, &boilerplate, &aliases);
         let advisory =
             Self::quality_advisory(quality, confidence, &quality_reason, &missing_terms, event);
-        let markdown =
+        let mut markdown =
             render_markdown(project_id, q, &terms, &kind_hints, &seeds, &hits, &advisory);
+        if q.include_body {
+            markdown = append_file_bodies(self.fs.as_ref(), &hits, markdown);
+        }
         Ok(RecallResult {
             project_id,
             query: q.query.clone(),
@@ -2743,6 +3149,7 @@ impl RecallService {
             quality,
             quality_reason,
             missing_terms,
+            warmup: self.warmup_progress(project_id.get()),
         })
     }
 }
@@ -2765,13 +3172,17 @@ fn fetch_nodes(store: &dyn Persistence, project_id: ProjectId) -> Result<Vec<Nod
 
 /// 从缓存抽取「本工程参与召回节点 → 向量」映射（用于落盘）。
 fn collect_cache(
-    cache: &Mutex<HashMap<i64, Vec<f32>>>,
+    cache: &Mutex<HashMap<u64, Vec<f32>>>,
     nodes: &[Node],
-) -> HashMap<i64, Vec<f32>> {
+    enrich: &EnrichIndex,
+) -> HashMap<u64, Vec<f32>> {
     let cache = cache.lock().unwrap();
     nodes
         .iter()
-        .filter_map(|n| cache.get(&n.id.get()).cloned().map(|v| (n.id.get(), v)))
+        .filter_map(|n| {
+            let key = embed_text_key(&node_embed_text(n, enrich));
+            cache.get(&key).cloned().map(|v| (key, v))
+        })
         .collect()
 }
 
@@ -2780,29 +3191,45 @@ fn collect_cache(
 ///
 /// `expected_dim` 为当前语义编码器维度；落盘文件维度不符（换模型 / 旧格式无 dim 字段）即整份
 /// 失效重编码，避免用错维度的向量做余弦（[`crate::embedding::cosine`] 按 `min(len)` 计算会失真）。
+/// 返回是否**真的**载入了（文件存在且版本 / 维度匹配）。
+///
+/// `false` 表示落盘文件已失效（版本升级 / 换模型），调用方必须按"未预热"处理：
+/// 否则会在请求线程里同步对全库做 bge 编码（CRMEB 实测十几分钟不返回），
+/// 且因"已判定为语义路"而永不启动后台预热 —— 预热进度也永远显示未开始。
 fn load_persisted_into(
     path: &Path,
-    cache: &Mutex<HashMap<i64, Vec<f32>>>,
+    cache: &Mutex<HashMap<u64, Vec<f32>>>,
     project_id: ProjectId,
     warmed: &Mutex<HashSet<i64>>,
     expected_dim: usize,
-) {
-    let Ok(data) = std::fs::read(path) else {
-        return;
+) -> bool {
+    // 优先读 rmp（v4 起的新格式，解析快一个数量级）；若缺失 / 解析失败，
+    // 回退读同名 `.json`（v3 旧格式）一次，过渡期不浪费 16 分钟全量重编码。
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => {
+            let json_path = path.with_extension("json");
+            match std::fs::read(&json_path) {
+                Ok(d) => d,
+                Err(_) => return false,
+            }
+        }
     };
-    // 旧格式（裸 map）与版本不符一律视为失效：宁可重算，
-    // 也不能让过时向量被静默复用。
-    let Ok(env) = serde_json::from_slice::<PersistedEmbeds>(&data) else {
-        return;
+    // rmp 优先；失败（如旧 JSON 文件）再试 JSON。二者都失败即失效重编码。
+    let Ok(env) = rmp_serde::from_slice::<PersistedEmbeds>(&data)
+        .or_else(|_| serde_json::from_slice::<PersistedEmbeds>(&data))
+    else {
+        return false;
     };
-    if env.version != EMBED_TEXT_VERSION {
-        return;
+    // v2 及更早（无内容指纹）一律失效；v3（旧 JSON）/ v4（rmp）均可复用。
+    if env.version < 3 || env.version > EMBED_TEXT_VERSION {
+        return false;
     }
     // 仅当落盘维度明确写出且与当前编码器不符时才失效（换更小模型如 bge-m3→e5 时 1024≠768）。
     // 旧的「无 dim 字段」文件（dim=0）视为合法：其向量维度本就与同维度编码器（如 bge-m3）一致，
     // 不强制重编码，避免无谓的全量大工程重算。
     if env.dim != 0 && env.dim != expected_dim {
-        return;
+        return false;
     }
     let mut cache = cache.lock().unwrap();
     for (k, v) in env.vectors {
@@ -2810,16 +3237,18 @@ fn load_persisted_into(
     }
     drop(cache);
     warmed.lock().unwrap().insert(project_id.get());
+    true
 }
 
 fn warm_up_worker(
     store: Arc<dyn Persistence>,
     embedder: Arc<dyn Embedder>,
-    cache: Arc<Mutex<HashMap<i64, Vec<f32>>>>,
+    cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
     persist_dir: Option<PathBuf>,
     project_id: ProjectId,
     warmed: Arc<Mutex<HashSet<i64>>>,
     warming: Arc<Mutex<HashSet<i64>>>,
+    progress: Arc<Mutex<HashMap<i64, (usize, usize)>>>,
 ) {
     let pid = project_id.get();
     let res: Result<()> = (|| {
@@ -2830,47 +3259,49 @@ fn warm_up_worker(
         // 先载入落盘向量：否则重启后缓存为空，这里会把全量节点重算一遍
         // （CRMEB 实测 56 分钟），落盘文件等于没用。
         if let Some(dir) = &persist_dir {
-            let path = dir.join(format!("{pid}.json"));
+            let path = dir.join(format!("{pid}.rmp"));
             if path.exists() {
                 load_persisted_into(&path, &cache, project_id, &warmed, embedder.dim());
             }
         }
         const BATCH: usize = 256;
-        let mut pending: Vec<(i64, String, u8)> = Vec::new();
+        let mut pending: Vec<(u64, String, u8)> = Vec::new();
         {
             let cache = cache.lock().unwrap();
             for node in &nodes {
                 if !is_vector_kind(node) {
                     continue;
                 }
-                if cache.contains_key(&node.id.get()) {
+                let text = node_embed_text(node, &enrich);
+                let key = embed_text_key(&text);
+                if cache.contains_key(&key) {
                     continue;
                 }
-                pending.push((
-                    node.id.get(),
-                    node_embed_text(node, &enrich),
-                    warm_priority(node.kind.as_str()),
-                ));
+                pending.push((key, text, warm_priority(node.kind.as_str())));
             }
         }
         sort_pending_for_warmup(&mut pending);
+        let total = pending.len();
+        let mut done = 0usize;
         for chunk in pending.chunks(BATCH) {
             let texts: Vec<String> = chunk.iter().map(|(_, t, _)| t.clone()).collect();
             let vecs = embedder.embed_batch(&texts);
             let mut cache = cache.lock().unwrap();
-            for ((id, _, _), v) in chunk.iter().zip(vecs.into_iter()) {
-                cache.insert(*id, v);
+            for ((key, _, _), v) in chunk.iter().zip(vecs.into_iter()) {
+                cache.insert(*key, v);
             }
+            done += chunk.len();
+            progress.lock().unwrap().insert(pid, (done, total));
         }
         if let Some(dir) = &persist_dir {
             if let Some(parent) = dir.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let path = dir.join(format!("{pid}.json"));
+            let path = dir.join(format!("{pid}.rmp"));
             let env = PersistedEmbeds {
                 version: EMBED_TEXT_VERSION,
                 dim: embedder.dim(),
-                vectors: collect_cache(&cache, &nodes),
+                vectors: collect_cache(&cache, &nodes, &enrich),
             };
             if let Ok(data) = serde_json::to_vec(&env) {
                 let _ = std::fs::write(path, data);
@@ -2883,6 +3314,7 @@ fn warm_up_worker(
         tracing::error!("后台预热工程 #{pid} 失败：{e}");
     }
     warming.lock().unwrap().remove(&pid);
+    progress.lock().unwrap().remove(&pid);
 }
 
 /// 单次扫描的节点上限（防止超大库把一次召回拖成全表扫描）。
@@ -3194,6 +3626,11 @@ fn score_node(
         let mut best = 0.0f64;
         if name == t {
             best = 100.0;
+        // 曾尝试把「完整 token 命中」（`agreeRefund` 的 `agree`）与「单词内前缀」
+        // （`agreement` 的 `agree`）分开计分，以修 #1 退款案例 —— 48 条 A/B 实测
+        // **回退**（@5 39→38、@10 43→41、@20 45→43），已撤销：给首 token 提分会
+        // 连带改变大量既有排序，收益不足以抵。若日后要再试，必须先解决
+        // "整体排序对分值过于敏感"这一点，而不是单点加分。
         } else if name.starts_with(&t) {
             best = 70.0;
         } else if name.contains(&t) {
@@ -3758,6 +4195,52 @@ fn read_snippet(fs: &dyn FileSystem, path: &Path, line: u32) -> Option<String> {
     Some(lines[start - 1..end].join("\n"))
 }
 
+/// 把命中涉及的少数文件完整源码追加到上下文包末尾。
+///
+/// 用于 `include_body`：IDE / MCP 场景下 LLM 拿到这段即可直接阅读实现，省去再发 `read`
+/// 拉全文的一轮往返。仅取排名最前且去重的若干文件（[`INCLUDE_BODY_MAX_FILES`]），
+/// 单文件超过 [`INCLUDE_BODY_MAX_BYTES`] 截断，避免超大文件撑爆上下文。
+fn append_file_bodies(fs: &dyn FileSystem, hits: &[RecallHit], mut md: String) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut files: Vec<String> = Vec::new();
+    for h in hits {
+        if let Some(f) = &h.file {
+            if seen.insert(f.clone()) {
+                files.push(f.clone());
+            }
+        }
+        if files.len() >= INCLUDE_BODY_MAX_FILES {
+            break;
+        }
+    }
+    if files.is_empty() {
+        return md;
+    }
+    md.push_str("\n\n## 完整文件（include_body）\n\n");
+    for f in &files {
+        md.push_str(&format!("### {f}\n\n"));
+        match fs.read_to_string(Path::new(f)) {
+            Ok(text) => {
+                let content = if text.len() > INCLUDE_BODY_MAX_BYTES {
+                    let mut s = text;
+                    s.truncate(INCLUDE_BODY_MAX_BYTES);
+                    format!(
+                        "{s}\n\n…（内容超过 {}KB，已截断）",
+                        INCLUDE_BODY_MAX_BYTES / 1024
+                    )
+                } else {
+                    text
+                };
+                md.push_str(&format!("```\n{content}\n```\n\n"));
+            }
+            Err(_) => {
+                md.push_str("_（文件读取失败，可能已被移动或删除）_\n\n");
+            }
+        }
+    }
+    md
+}
+
 /// 渲染可直接粘给 LLM 的上下文包。
 fn render_markdown(
     project_id: ProjectId,
@@ -4123,6 +4606,23 @@ mod tests {
         let n = tnode(105, "Method", "zzz", Some("app\\model\\user"), None);
         let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((score - 35.0).abs() < 1e-9, "fqn 命中应得 35×1.0=35，实际 {score}");
+    }
+
+    #[test]
+    fn score_node_agreement_prefix_is_weaker_than_full_token_semantically() {
+        // 现状记录（**不是**理想行为，改这里前先看 `score_node` 里的撤销说明）：
+        // `agree` 在 `agreeRefund` 里是完整 token，在 `agreement` 里只是单词内前缀，
+        // 但两者目前**同分**（都走整串 starts_with = 70）。曾尝试分开计分，
+        // 48 条 A/B 实测回退，故保持现状 —— 此断言用于锁住"两者同分"这一事实，
+        // 将来若有人改了分值，这里会失败从而提醒他去跑 A/B。
+        let a = tnode(106, "Method", "agreeRefund", None, None);
+        let b = tnode(107, "Method", "agreement", None, None);
+        let (sa, _) = score_node(&a, &["agree".to_string()], &[], &HashMap::new(), false);
+        let (sb, _) = score_node(&b, &["agree".to_string()], &[], &HashMap::new(), false);
+        assert!(
+            (sa - sb).abs() < 1e-9,
+            "当前实现下两者同分（均为整串前缀 70）；若不等说明已改动，必须重跑 48 条 A/B：{sa} vs {sb}"
+        );
     }
 
     #[test]
@@ -4524,6 +5024,69 @@ mod tests {
     }
 
     #[test]
+    fn concept_multiplier_boosts_notification_cluster() {
+        // 触发「通知」概念簇（邮件 → mail/email/sms/notify）。
+        let triggered = triggered_concepts(&[
+            "mail".to_string(),
+            "email".to_string(),
+            "sms".to_string(),
+            "notify".to_string(),
+        ]);
+        assert!(!triggered.is_empty(), "邮件应触发通知簇");
+
+        // 单核心 token（sms，不含其它概念 token）→ 温和加权 1.2。
+        let single = tnode(430, "Method", "sendSms", None, None);
+        assert!(
+            (concept_multiplier(&single, &triggered) - 1.2).abs() < 1e-9,
+            "单核心应 1.2"
+        );
+
+        // 双表达（mail+email，email 内含 mail）→ 聚合加成 1.5。
+        let dual = tnode(431, "Method", "resendVerificationEmail", None, None);
+        assert!(
+            (concept_multiplier(&dual, &triggered) - 1.5).abs() < 1e-9,
+            "双表达应 1.5"
+        );
+
+        // 单泛词 notify（不在 core）→ 不加权 1.0。
+        let vague = tnode(432, "Method", "someNotify", None, None);
+        assert!(
+            (concept_multiplier(&vague, &triggered) - 1.0).abs() < 1e-9,
+            "单泛词应 1.0"
+        );
+
+        // 未触发概念时不加权。
+        assert_eq!(concept_multiplier(&single, &[]), 1.0);
+    }
+
+    #[test]
+    fn concept_multiplier_covers_payment_and_auth_clusters() {
+        // 「支付」触发支付簇、「鉴权」触发鉴权簇。
+        let triggered = triggered_concepts(&[
+            "pay".to_string(),
+            "payment".to_string(),
+            "auth".to_string(),
+            "guard".to_string(),
+        ]);
+        assert!(!triggered.is_empty());
+        // 支付专用：payment+checkout（payment 内含 pay）→ 聚合加成 1.5。
+        let pay = tnode(440, "Method", "createCheckoutPayment", None, None);
+        assert!(
+            (concept_multiplier(&pay, &triggered) - 1.5).abs() < 1e-9,
+            "支付双表达应 1.5"
+        );
+        // 鉴权：JwtTokenUtil 含 jwt(core)+token(all) → 1.5。
+        let jwt = tnode(441, "Class", "JwtTokenUtil", None, None);
+        assert!(
+            (concept_multiplier(&jwt, &triggered) - 1.5).abs() < 1e-9,
+            "鉴权双表达应 1.5"
+        );
+        // 完全无关的节点不应被加权。
+        let other = tnode(442, "Method", "findProfile", None, None);
+        assert_eq!(concept_multiplier(&other, &triggered), 1.0);
+    }
+
+    #[test]
     fn builtin_aliases_merge_domain_packs_and_synonyms() {
         // 验证：内置别名表已从「单一张电商表」重构为「多领域包」，
         // 默认全部合并加载，且同义词 / 补齐词均已生效。
@@ -4607,13 +5170,13 @@ mod tests {
             (4, "y".repeat(20), 2),
         ];
         sort_pending_for_warmup(&mut p);
-        let ids: Vec<i64> = p.iter().map(|x| x.0).collect();
+        let ids: Vec<u64> = p.iter().map(|x| x.0).collect();
         // ① 高价值种类（优先级 0）整体在前
-        assert_eq!(&ids[..2], &[1, 2], "Method/Function 应先编码：{ids:?}");
+        assert_eq!(&ids[..2], &[1u64, 2], "Method/Function 应先编码：{ids:?}");
         // ② 同优先级内按长度升序 → 批内 padding 最小
         assert!(p[0].1.len() <= p[1].1.len(), "同优先级内应按长度相邻：{ids:?}");
         // ③ 低优先级在后，同样按长度相邻
-        assert_eq!(&ids[2..], &[4, 3], "低优先级在后且按长度相邻：{ids:?}");
+        assert_eq!(&ids[2..], &[4u64, 3], "低优先级在后且按长度相邻：{ids:?}");
     }
 
     #[test]
@@ -5171,6 +5734,47 @@ mod tests {
         fn len(&self, p: &Path) -> Result<u64> {
             Ok(self.map.get(p).map(|s| s.len() as u64).unwrap_or(0))
         }
+    }
+
+    // ---- append_file_bodies ----
+
+    fn hit_with_file(file: &str) -> RecallHit {
+        RecallHit {
+            node_id: NodeId::new(1),
+            kind: "Method".to_string(),
+            name: "foo".to_string(),
+            fqn: None,
+            score: 100.0,
+            hop: 0,
+            seed: "foo".to_string(),
+            matched_terms: Vec::new(),
+            direct: true,
+            file: Some(file.to_string()),
+            line: Some(3),
+            snippet: None,
+            relations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn append_file_bodies_appends_full_source_once_per_file() {
+        let mut fs = MemFs::new();
+        fs.insert(Path::new("/src/A.php"), "<?php\nclass A {}\n?>\n");
+        // 同一文件被两条命中引用：正文只应出现一次，否则重复正文会白白撑爆上下文。
+        let hits = vec![hit_with_file("/src/A.php"), hit_with_file("/src/A.php")];
+        let out = append_file_bodies(&fs, &hits, "# 上下文\n".to_string());
+        assert!(out.starts_with("# 上下文\n"), "应在原上下文之后追加：{out}");
+        assert!(out.contains("## 完整文件（include_body）"), "应带小节标题：{out}");
+        assert_eq!(out.matches("class A {}").count(), 1, "同一文件正文只应出现一次：{out}");
+    }
+
+    #[test]
+    fn append_file_bodies_missing_file_is_explained() {
+        let fs = MemFs::new();
+        let hits = vec![hit_with_file("/src/missing.php")];
+        // 文件读不到时要说明原因，而不是静默丢掉整段（否则调用方以为是"没有命中文件"）。
+        let out = append_file_bodies(&fs, &hits, "ctx".to_string());
+        assert!(out.contains("文件读取失败"), "读不到文件应给出提示：{out}");
     }
 
     #[test]

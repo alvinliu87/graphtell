@@ -102,6 +102,9 @@ enum Command {
         /// 只输出可直接粘给 LLM 的 Markdown 上下文包。
         #[arg(long)]
         markdown: bool,
+        /// 把命中涉及的完整文件源码也附上（配合 `--markdown` 使用，省去自行读取全文）。
+        #[arg(long)]
+        include_body: bool,
     },
     /// 校验 FKB 目录（语法 + 约定），不连库、不建图。
     Validate,
@@ -129,8 +132,10 @@ enum Command {
         #[arg(long, default_value = "20")]
         top: usize,
     },
-    /// 以 MCP(stdio) 方式暴露给 IDE：经 HTTP 连接常驻服务，提供 `recall_code` /
-    /// `check_compliance` / `list_violations` 工具。stdout 是 JSON-RPC 通道，日志走 stderr。
+    /// 以 MCP(stdio) 方式暴露给 IDE：经 HTTP 连接常驻服务，提供 `recall_code`（可带
+    /// `include_body` 直接返回命中文件全文）/ `compose_prompt` / `check_compliance` /
+    /// `list_violations` / `warmup_status`（查后台预热进度）工具。
+    /// stdout 是 JSON-RPC 通道，日志走 stderr。
     Mcp {
         /// 常驻服务地址，默认 http://127.0.0.1:5177
         #[arg(long, default_value = "http://127.0.0.1:5177")]
@@ -303,7 +308,7 @@ fn main() -> anyhow::Result<()> {
                         .recall_service()
                         .warm_up(gt_domain::model::ProjectId(project))?;
                     println!(
-                        "已为工程 #{project} 计算并持久化 {n} 个节点向量（data/embeddings/{project}.json）"
+                        "已为工程 #{project} 计算并持久化 {n} 个节点向量（data/embeddings/{project}.rmp）"
                     );
                 }
                 Command::Cosine {
@@ -334,7 +339,7 @@ fn main() -> anyhow::Result<()> {
                         println!("  {c:.4}  [{flag}]  {kind}  {name}");
                     }
                 }
-                Command::Recall { project, query, limit, hops, markdown } => {
+                Command::Recall { project, query, limit, hops, markdown, include_body } => {
                     let result = container.recall_service().recall(
                         gt_domain::model::ProjectId(project),
                         &gt_application::RecallQuery {
@@ -343,6 +348,7 @@ fn main() -> anyhow::Result<()> {
                             hops,
                             kinds: Vec::new(),
                             with_snippets: true,
+                            include_body,
                         },
                     )?;
                     if markdown {

@@ -108,7 +108,8 @@ impl McpBridge {
                         "properties": {
                             "query": {"type":"string","description":"提示词，可中英文混写，如「修改订单优惠」「payment callback」"},
                             "limit": {"type":"integer","description":"返回命中上限，默认 20"},
-                            "hops": {"type":"integer","description":"沿调用边扩展跳数，默认 2"}
+                            "hops": {"type":"integer","description":"沿调用边扩展跳数，默认 2"},
+                            "include_body": {"type":"boolean","description":"是否把命中涉及的完整文件源码也一并附上（默认 false）。开启后 LLM 可直接阅读实现，省去再发 read 拉全文的一轮往返；仅返回排名最前的少数文件，超大文件会被截断"}
                         },
                         "required": ["query"]
                     }
@@ -149,6 +150,15 @@ impl McpBridge {
                         },
                         "required": []
                     }
+                },
+                {
+                    "name": "warmup_status",
+                    "description": "查询当前工程的后台语义向量预热进度。返回是否已预热完成（warmed）、是否正在预热（warming）以及已完成/总节点数。IDE 可据此判断召回是否还在走冷路径（质量偏弱），决定是否稍后重试。",
+                    "inputSchema": {
+                        "type":"object",
+                        "properties": {},
+                        "required": []
+                    }
                 }
             ]
         })
@@ -162,6 +172,7 @@ impl McpBridge {
             "compose_prompt" => self.compose(&args),
             "check_compliance" => self.check(&args),
             "list_violations" => self.violations(&args),
+            "warmup_status" => self.warmup_status(),
             other => (format!("未知工具: {other}"), true),
         };
         Some(json!({
@@ -179,12 +190,17 @@ impl McpBridge {
         };
         let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
         let hops = args.get("hops").and_then(|h| h.as_u64()).unwrap_or(2) as u32;
+        let include_body = args
+            .get("include_body")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
         let body = json!({
             "query": query,
             "limit": limit,
             "hops": hops,
             "kinds": [],
-            "with_snippets": true
+            "with_snippets": true,
+            "include_body": include_body
         })
         .to_string();
         let path = format!("/api/projects/{}/recall", self.project);
@@ -192,7 +208,11 @@ impl McpBridge {
             Ok(resp) => match extract_markdown(&resp) {
                 Ok(md) => {
                     let (quality, confidence, missing) = extract_quality(&resp);
-                    (with_quality_guidance(md, &quality, confidence, &missing), false)
+                    let warm_note = extract_warmup_note(&resp);
+                    (
+                        with_quality_guidance(md, &quality, confidence, &missing) + &warm_note,
+                        false,
+                    )
                 }
                 Err(e) => (format!("解析召回响应失败: {e}"), true),
             },
@@ -272,6 +292,15 @@ impl McpBridge {
             Err(e) => (format!("连接常驻服务失败: {e}"), true),
         }
     }
+
+    /// 查询当前工程的后台预热进度（语义向量 bge 计算）。
+    fn warmup_status(&self) -> (String, bool) {
+        let path = format!("/api/projects/{}/warmup", self.project);
+        match http_call(&self.base, &path, "GET", None) {
+            Ok(resp) => format_warmup(&resp),
+            Err(e) => (format!("连接常驻服务失败: {e}"), true),
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 响应格式化
@@ -303,6 +332,29 @@ fn extract_quality(resp: &str) -> (String, f64, Vec<String>) {
         })
         .unwrap_or_default();
     (quality, confidence, missing)
+}
+
+/// 从召回响应抽取后台预热状态，并在「预热中」时给出提示，让 IDE 知道召回质量可能偏弱。
+fn extract_warmup_note(resp: &str) -> String {
+    let Ok(v) = serde_json::from_str::<Value>(resp) else {
+        return String::new();
+    };
+    let Some(data) = v.get("data") else {
+        return String::new();
+    };
+    let Some(w) = data.get("warmup") else {
+        return String::new();
+    };
+    let warmed = w.get("warmed").and_then(|x| x.as_bool()).unwrap_or(false);
+    let warming = w.get("warming").and_then(|x| x.as_bool()).unwrap_or(false);
+    if warming && !warmed {
+        let done = w.get("done").and_then(|x| x.as_u64()).unwrap_or(0);
+        let total = w.get("total").and_then(|x| x.as_u64()).unwrap_or(0);
+        return format!(
+            "\n\n---\n⏳ **语义向量预热中（已完成 {done}/{total}）**：当前召回暂走冷路径（快速向量/词面），质量偏弱。稍后重试可获得完整语义召回。"
+        );
+    }
+    String::new()
 }
 
 /// 按质量档位追加"下一步该做什么"。
@@ -426,6 +478,34 @@ fn format_violation(v: &Value) -> String {
     let line = v.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
     let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
     format!("[{sev}] {rid} {file}:{line} — {msg}\n")
+}
+
+/// 把 `/warmup` 响应格式化为人话状态。
+fn format_warmup(resp: &str) -> (String, bool) {
+    let v: Value = match serde_json::from_str(resp) {
+        Ok(v) => v,
+        Err(e) => return (format!("解析预热响应失败: {e}"), true),
+    };
+    if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
+        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
+        return (format!("服务返回失败: {err}"), true);
+    }
+    let d = match v.get("data") {
+        Some(d) => d,
+        None => return ("无预热状态".into(), false),
+    };
+    let warmed = d.get("warmed").and_then(|x| x.as_bool()).unwrap_or(false);
+    let warming = d.get("warming").and_then(|x| x.as_bool()).unwrap_or(false);
+    let done = d.get("done").and_then(|x| x.as_u64()).unwrap_or(0);
+    let total = d.get("total").and_then(|x| x.as_u64()).unwrap_or(0);
+    let status = if warmed {
+        "✅ 已预热完成（召回走完整语义路）".to_string()
+    } else if warming {
+        format!("⏳ 预热中（已完成 {done}/{total}），召回暂走冷路径质量偏弱")
+    } else {
+        "❄️ 未预热（召回走冷路径；首次查询会触发后台预热）".to_string()
+    };
+    (format!("预热状态：{status}"), false)
 }
 
 // ---------------------------------------------------------------- 极简本地 HTTP 客户端

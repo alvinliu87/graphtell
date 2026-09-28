@@ -179,6 +179,7 @@ fn eval_recall_scenarios() {
                 hops: 2,
                 kinds: Vec::new(),
                 with_snippets: false,
+                include_body: false,
             },
         ) {
             Ok(r) => r,
