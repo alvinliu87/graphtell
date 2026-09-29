@@ -901,12 +901,15 @@ fn invoice_detail_route_first_hop_has_call_site() {
 /// 间接边与证据覆盖率、可见环分布，任一项变了都说明行为变了。
 ///
 /// 它不是"正确性"断言（正确性是下面两个用例的事），而是**行为不变**的护栏。
-// 特征化（characterization）护栏：断言 invoice_detail 对象视图的**边种类分布快照**。
-// 该快照是按旧版 CRMEB 校准的（期望 31 条边），而当前样本是 v6.0.0，实测 35 条
-// （ReadsConfig 等分布已变）。它不是"正确性"断言，而是"行为不变"护栏，因此
-// 换参考样本时必须**先重新校准快照**再启用，不能因为跑不过就直接改数字。
+// 特征化（characterization）护栏：断言 invoice_detail 对象视图的**边分布快照**。
+// 它守的不是"正确性"，而是"行为不变" —— 数字一旦变化必须**显式**接受并写明原因，
+// 绝不能悄悄放过。
+//
+// 本快照已按当前参考样本（CRMEB v6.0.0）重新校准：边总数 31 → 35，多出 4 条为
+// `{ForeignKey: 1, PassesThrough: 3}` —— 分别来自后加的 P6 表外键与 P14 中间件晋升，
+// 二者属**直连结构边**，因此 `indirect`（31）不再等于边总数（35）。
+// 核心指标未变：ReadsCache 2、ReadsConfig 28、最长 via 链 5 跳。
 #[test]
-#[ignore = "特征化快照按旧版 CRMEB 校准（期望 31 条边），当前样本 v6.0.0 实测 35 条，需重新校准后启用"]
 fn object_view_characterization_invoice_detail() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -946,11 +949,23 @@ fn object_view_characterization_invoice_detail() {
         }
     }
     via_len.sort_unstable();
+    // 校准用诊断：快照漂移时直接照这里打印的实际值更新下方断言，不必再猜。
+    eprintln!(
+        "[characterize] total={} by_kind={:?} indirect={} with_loc={} max_via={} via1={} orphans_calls_http={}",
+        ov.edges.len(),
+        by_kind,
+        indirect,
+        with_loc,
+        via_len.last().copied().unwrap_or(0),
+        via_len.iter().filter(|&&l| l == 1).count(),
+        ov.orphans.iter().filter(|o| o.edge_kind == "CallsHttp").count(),
+    );
 
-    // 32 → 31：前端 `Function --CallsHttp--> 契约` 这条**直连**边从画布撤下、降级进
-    // `orphans` 记账（画布严格只留语义节点）。特征测试的意义正在于**显式**接受这类
-    // 行为变更，而不是让它悄悄溜过去 —— 事实没丢，换了呈现位置（见下方 orphans 断言）。
-    assert_eq!(ov.edges.len(), 31, "边总数变了：{:?}", by_kind);
+    // 31 → 35：多出的 4 条是 `{ForeignKey: 1, PassesThrough: 3}`（P6 表外键 + P14
+    // 中间件晋升，均为后加能力）。前端 `Function --CallsHttp--> 契约` 这条直连边仍
+    // 撤在画布外、降级进 `orphans` 记账（画布严格只留语义节点）—— 事实没丢，
+    // 换了呈现位置（见下方 orphans 断言）。
+    assert_eq!(ov.edges.len(), 35, "边总数变了：{:?}", by_kind);
     // 前端契约桥：uni-app 的 `` request.get(`v2/order/invoice_detail/${id}`) ``
     // （模板串 URL）已能与该后端路由按**参数形状**汇聚，这条 `CallsHttp` 改记在
     // `orphans` 里（画布不再出现前端函数这个语法节点）。
@@ -972,17 +987,18 @@ fn object_view_characterization_invoice_detail() {
         28,
         "ReadsConfig 边数变了"
     );
-    // `CallsHttp` 已从画布撤下，现在画布上的每一条边都是沿后端调用链**间接**得来的
-    // 资源读写（提拉 / 传播），不再有直连边混入。
+    // 画布 35 条边里**31 条**是沿后端调用链提拉/传播得来的间接资源读写；
+    // 另 4 条（ForeignKey 1 + PassesThrough 3）是 P6 / P14 落下的**直连结构边**，
+    // 它们本来就不是"沿链推导"出来的，故 indirect 不再等于边总数 —— 这是新增能力
+    // 带来的预期差异，不是 indirect 判定被改坏。
     assert_eq!(
-        indirect,
-        ov.edges.len(),
-        "画布上的边都应是提拉/传播得来的间接边，变了说明 indirect 判定被改坏"
+        indirect, 31,
+        "间接（提拉/传播）边数变了，说明 indirect 判定被改坏"
     );
+    // 34 条能给出资源访问位置；缺的那 1 条是结构边（无调用点可引），属预期。
     assert_eq!(
-        with_loc,
-        ov.edges.len(),
-        "每条边都应能给出资源访问位置，变了说明证据选取被改坏"
+        with_loc, 34,
+        "能给出访问位置的边数变了，说明证据选取被改坏"
     );
     // 关键：**最长链必须到 5 跳**（detail → getQRCodePath → init → more → remember），
     // 若折叠/回溯被改坏，最长链会退回 2~3 跳。
