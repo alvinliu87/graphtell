@@ -24,7 +24,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # 不用 ubuntu-latest：它会随 GitHub 升级（当前 24.04，glibc 2.39），
+          # 编出的二进制要求 GLIBC_2.39，在 Ubuntu 22.04 / Debian 12 等老系统上
+          # 直接报 "GLIBC_2.39 not found" 跑不起来。锁定 22.04（glibc 2.35）
+          # 可覆盖 22.04 及以上的常见发行版。
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             asset: linux-x86_64
           - os: macos-latest
@@ -86,6 +90,10 @@ jobs:
     name: 推送 Docker 镜像到 GHCR
     runs-on: ubuntu-latest
     needs: build
+    # Docker 镜像是**附加项**：镜像内要再编一遍含 candle 的完整后端，耗时长且
+    # 易受 Runner 内存 / 构建环境影响。它失败不应让整个 Release 失败 ——
+    # 各平台二进制包才是主交付物（用户也可用仓库里的 Dockerfile 本地构建）。
+    continue-on-error: true
     permissions:
       contents: read
       packages: write
