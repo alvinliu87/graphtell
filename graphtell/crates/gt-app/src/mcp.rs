@@ -116,7 +116,7 @@ impl McpBridge {
                 },
                 {
                     "name": "compose_prompt",
-                    "description": "在召回到的相关代码上下文之上再拼上「用户任务意图 + 质量约束」，产出一段可直接投喂代码生成 LLM 的完整提示词。与 Web UI 的提示词合成器（/compose）共用服务端同一套模板，结果完全一致；LLM 拿着它可直接开工，不必自行拼装上下文与约束。",
+                    "description": "在召回到的相关代码上下文之上再拼上「用户任务意图 + 质量约束」，产出一段可直接投喂代码生成 LLM 的完整提示词。与 Web UI 的「提示词增强」页（/compose）共用服务端同一套模板，结果完全一致；LLM 拿着它可直接开工，不必自行拼装上下文与约束。",
                     "inputSchema": {
                         "type": "object",
                         "properties": {

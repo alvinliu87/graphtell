@@ -12,7 +12,7 @@
 | 能力 | 输入 | 输出 |
 | --- | --- | --- |
 | **合规检查**（[见下](#合规检查在图上跑规则)） | `rules/*.yaml` 里声明的规则 | 违规清单（`path:line` 可跳转） |
-| **代码召回**（[见下](#代码召回按提示词查图)） | 一段提示词 | 该看哪些代码 + 可直接粘给 LLM 的上下文包 |
+| **提示词增强**（[见下](#提示词增强按提示词查图)） | 一段提示词 | 该看哪些代码 + 可直接粘给 LLM 的上下文包 |
 
 ---
 
@@ -49,7 +49,7 @@ cd ui && npm run tauri dev
 ./target/debug/graphtell check  --project 1 --rule hot-table  # 只跑一条规则
 ./target/debug/graphtell check  --project 1 --dry-run --json  # 预览，输出完整报告
 
-# 代码召回
+# 提示词增强
 ./target/debug/graphtell recall --project 1 --query "store_order 订单表"
 ./target/debug/graphtell recall --project 1 --query "优惠券相关代码" --markdown  # 输出 LLM 上下文包
 ```
@@ -409,7 +409,7 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 改了口径就必须重跑 —— 库里的违规是"上次口径"的结论。UI 把"保存"和"重跑"合成一个动作，避免用户改完发现结果没变。
 
-## 代码召回：按提示词查图
+## 提示词增强：按提示词查图
 
 全文检索回答"哪个文件出现了这个字符串"；召回回答"这个主题涉及哪些代码"。后者必须靠图。
 
@@ -429,7 +429,9 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 中文支持的方式是**结构提示词**："表"/"接口"/"事件"/"配置"/"队列"/"定时任务"会被识别成 `Table`/`HttpContract`/`Event`/… 的种类加成，并把这一结论显式回显给用户。
 
-召回编码器分两档（由编译 feature 决定，运行时自动切换）：**默认**（`model-candle`，已设为默认 feature）会尝试加载本地 bge-m3 权重做跨语言语义向量，权重缺失时**自动退回**本地哈希编码器（离线、零依赖、不调 LLM）。因此"下单改优惠"这类纯中文提示词也能命中 `placeOrder` / `applyDiscount` 等英文节点；退回到哈希编码器时纯中文无标识符的召回会偏弱，但依旧不联网。权重目录由环境变量 `GT_BGE_MODEL` 指定（默认 `models/bge-m3-safetensors`），用 `tools/convert_bge_safetensors.py` 由 HuggingFace 的 `pytorch_model.bin` 转 safetensors 后即可启用。若不想编译 candle，可 `cargo build -p gt-app --no-default-features` 直接走哈希编码器。
+召回编码器分两档（由编译 feature 决定，运行时自动切换）：**默认**（`model-candle` 与 `model-ort` 均已设为默认 feature）会尝试加载本地 bge-m3 权重做跨语言语义向量，权重缺失时**自动退回**本地哈希编码器（离线、零依赖、不调 LLM）。因此"下单改优惠"这类纯中文提示词也能命中 `placeOrder` / `applyDiscount` 等英文节点；退回到哈希编码器时纯中文无标识符的召回会偏弱，但依旧不联网。权重目录由环境变量 `GT_BGE_MODEL` 指定（默认 `models/bge-m3-safetensors`），用 `tools/convert_bge_safetensors.py` 由 HuggingFace 的 `pytorch_model.bin` 转 safetensors 后即可启用。若不想编译 candle / ort，可 `cargo build -p gt-app --no-default-features` 直接走哈希编码器。
+
+> 命令行用 `recall` 子命令触发本能力（`graphtell recall --project 1 --query "…"`），它是「提示词增强」在 CLI 侧的入口；Web / 桌面端的同名能力在「提示词增强」页。
 
 输出 `markdown` 字段是一份可直接粘给 LLM 的上下文包（种子 + 相关代码 + `path:line` + 源码片段 + 图上关系）。
 
@@ -449,6 +451,27 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 产出：`Class` 1011、`Method` 6620、`CallSite` 47354、**`HttpContract` 1227**、**`Table` 156`、`Event` 45、`ConfigKey` 227；
 标注含 `pii.phone`（19 张表，含通过 `user_phone` 变体列名识别出的 `store_order`）、`data.criticality`、`config.storage:Database`、`entrypoint.login`（10 个端点，含 `POST /apple_login`）。
+
+> **关于样本与发布包**：CRMEB / Bagisto 这类大型第三方工程**不随仓库分发**（授权 + 体积），请设 `GRAPHTELL_SAMPLE_DIR` 自行提供后再复现上述数字。仓库内随附的轻量样本（见 `samples/`）则始终可用，并已被自动生成成**可直接在 GitHub 渲染的展示页**——见下。
+
+## 示例 Demo（GitHub 展示）
+
+`tools/gen_demo.sh` 对每个样本跑「建图 → 规则检测 → 召回示例」，把结果落盘为 GitHub 原生可渲染的 Markdown（图规模表格、规则违规表、中文召回上下文包），放在 **[`docs/demo/`](docs/demo/README.md)**。无需模型权重（召回走哈希兜底），推到默认分支即可查看，也可本地 `./tools/gen_demo.sh --build` 重新生成。
+
+> 集成测试依赖的样本同样是「软依赖」：仓库内 `samples/` 缺席时（如发布包 / 部分检出），相关测试自动跳过而非失败——与 demo 脚本跳过缺失样本的行为一致。
+
+---
+
+## MVP 状态与已知限制
+
+本仓库当前以 **MVP** 形态发布，以下功能与完整设想的差异请知悉：
+
+- **命名统一为「提示词增强」**：Web / 桌面端菜单、本 README、MCP 工具描述、自包含合成页都叫「提示词增强」；它内部由「代码召回（检索）」与「提示词合成」两步组成，CLI 子命令仍叫 `recall`（`graphtell recall --project 1 --query "…"`）。
+- **部分入口在 MVP 中隐去，但功能仍在**：
+  - **节点浏览（Explorer）**：与「提示词增强」（语义检索）高度重叠，且列表有 `limit: 200` 硬顶、无排序，MVP 未放进侧栏菜单；直接访问 `/projects/:id/explorer` 仍可用。
+  - **设置页**：原本只服务于「跳转 IDE」（本地根模板 / WSL / 默认 IDE），而「跳转 IDE」入口已停用，故设置页一并移除。
+- **编码器的默认编译 feature**：`model-candle` 与 `model-ort` **均已设为默认 feature**。权重（`GT_BGE_MODEL`，默认 `models/bge-m3-safetensors`）缺失时自动退回本地哈希编码器（离线、零依赖、不调 LLM）。若不想编译 candle / ort，可 `cargo build -p gt-app --no-default-features`。
+- **视角（两级筛选器的一级选项）MVP 暂不实现**：`views/perspectives.yaml` 中的 `page` / `domain` / `deploy_unit` / `platform` 视角已在 YAML 中注释、不会生效；当前筛选器只按节点种类与名称工作。
 
 ---
 
@@ -472,6 +495,33 @@ fkb/                     预置框架知识
 rules/                   检查规则（合规检查）
 views/                   视角声明（两级筛选器的一级选项）
 ```
+
+## 部署（Docker / 发布包）
+
+后端 `graphtell serve` 在单一端口（默认 5177）上**同时托管 REST API 与构建好的 React SPA**（`--ui-dir` 指向 `ui/dist`，同源、免 CORS、无需反向代理）。
+
+### Docker（推荐）
+
+```bash
+# 默认开启 model-candle / model-ort：召回走真实 bge-m3 语义向量（权重缺失自动退回词面）
+docker build -t graphtell:latest .
+docker run -d -p 5177:5177 -v $(pwd)/data:/data graphtell:latest
+# 或一键：docker compose up -d --build
+```
+
+浏览器打开 `http://localhost:5177/`。想构建更小的「仅词面」镜像：`docker build --build-arg GT_FEATURES="--no-default-features" -t graphtell:hash .`。
+
+### 发布包（不含 Docker）
+
+`scripts/package-release.sh` 会构建前端 + 后端 release 二进制，并打包成 `release/graphtell-<version>.tar.gz`（含 `graphtell` 二进制、`ui/`、`fkb/`、`rules/`、`views/` 与启动说明）：
+
+```bash
+./scripts/package-release.sh
+# 解压后：
+./graphtell --data-dir ./data serve --bind 0.0.0.0 --port 5177 --ui-dir ./ui
+```
+
+> 前端在构建期用 `VITE_API_BASE=same-origin` 编译，因此 SPA 走相对路径、可部署到任意主机名而不必重写镜像。
 
 ## 扩展新语言 / 新框架
 
