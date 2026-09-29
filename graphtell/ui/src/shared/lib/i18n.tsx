@@ -533,7 +533,6 @@ const dict: Record<Lang, Record<string, string>> = {
     '已就绪': 'Ready',
     '建图中': 'Indexing',
     '全部工程': 'All projects',
-    'SQLite 持久化': 'SQLite persisted',
     '添加一个工程后会自动开始建图：识别子工程 → 语法建图 → 装载框架知识 → 语义合成 → 动态解析':
       'Adding a project auto-starts graphing: detect sub-projects → syntax graph → load framework knowledge → semantic synthesis → dynamic resolution',
     '检索图上的任意节点，并查看它的标注与相邻边': 'Search any node on the graph and view its annotations and adjacent edges',

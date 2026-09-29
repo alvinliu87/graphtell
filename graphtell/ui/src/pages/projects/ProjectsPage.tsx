@@ -1,4 +1,4 @@
-import { Button, Card, Col, Empty, Row, Space, Tag } from 'antd';
+import { Button, Card, Col, Empty, Row, Space } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useProjects } from '@/entities/project';
@@ -68,7 +68,6 @@ export function ProjectsPage() {
             variant="borderless"
             style={{ borderRadius: 14 }}
             title={t('全部工程')}
-            extra={<Tag color="blue">{t('SQLite 持久化')}</Tag>}
           >
             <ProjectTable projects={projects} loading={loading} onDeleted={() => void reload()} />
           </Card>

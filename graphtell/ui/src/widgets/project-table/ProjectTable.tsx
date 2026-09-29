@@ -32,6 +32,8 @@ export function ProjectTable({
         {
           title: t('名称'),
           dataIndex: 'name',
+          width: 200,
+          ellipsis: true,
           render: (_, p) => (
             <a
               onClick={() => {
@@ -44,7 +46,10 @@ export function ProjectTable({
             </a>
           ),
         },
-        { title: t('根目录'), dataIndex: 'root_path', ellipsis: true, width: 340 },
+        // 根目录是**不定长**内容，让它吃掉剩余宽度（不设 width）；若把不设宽度的位置留给
+        // 「名称」，固定表格布局下它会独占所有剩余空间，把路径挤成一小截 —— 正是「名字很宽、
+        // 路径被截断」的成因。名称反而是短枚举，固定宽度 + ellipsis 更稳。
+        { title: t('根目录'), dataIndex: 'root_path', ellipsis: true },
         {
           title: t('状态'),
           dataIndex: 'status',
