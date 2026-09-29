@@ -1,0 +1,22 @@
+# 一键起 GraphTell（后端 + 前端同源托管，单端口 5177）。
+#
+#   docker compose up -d --build
+#   浏览器打开 http://localhost:5177/
+#
+# 想用「仅词面」镜像（更小、不编译 candle/ort），把 build.args 的 GT_FEATURES 改成 "--no-default-features"。
+services:
+  graphtell:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GT_FEATURES: ""
+    image: graphtell:latest
+    ports:
+      - "5177:5177"
+    volumes:
+      - graphtell-data:/data
+    restart: unless-stopped
+
+volumes:
+  graphtell-data:

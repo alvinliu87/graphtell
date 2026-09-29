@@ -57,7 +57,8 @@ fn built() -> Option<Arc<Built>> {
                 rules_dir: Some(workspace_root().join("rules")),
                 bind: "127.0.0.1".into(),
                 port: 0,
-            };
+                ui_dir: None,
+                };
             let container = Container::new(config).expect("容器装配不应失败");
 
             let projects = ProjectService::new(

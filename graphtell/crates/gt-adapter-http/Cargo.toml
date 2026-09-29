@@ -11,8 +11,17 @@ anyhow = { workspace = true }
 gt-application = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
-tower-http = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "util", "cors", "trace"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+gt-adapter-sqlite = { workspace = true }
+gt-adapter-fs = { workspace = true }
+gt-adapter-parser = { workspace = true }
+gt-adapter-fkb = { workspace = true }
+gt-adapter-rules = { workspace = true }
+gt-adapter-views = { workspace = true }
+tower = { workspace = true }

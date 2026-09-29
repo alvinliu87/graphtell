@@ -10,6 +10,7 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
+use tower_http::services::{ServeDir, ServeFile};
 use serde::{Deserialize, Serialize};
 
 use gt_application::{
@@ -115,8 +116,15 @@ pub fn state(
     state
 }
 
-pub fn build_router(state: Shared) -> Router {
-    Router::new()
+/// 组装所有路由。
+///
+/// `ui_dir` 为 `Some` 且指向含 `index.html` 的目录时，后端会**顺带托管构建好的 React SPA**：
+/// 用 `tower_http::ServeDir` 做兜底（命中静态文件直接返回，如 `/assets/*`；未命中回退到
+/// `index.html` 以支持前端路由），并把根路径 `/` 让给 SPA。此时 `/compose` 仍是内嵌的独立
+/// 「提示词增强」页。`ui_dir` 为 `None`（开发态默认）时不托管前端，根路径回退到 `/compose`，
+/// 与历史行为一致。
+pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router {
+    let router = Router::new()
         .route("/api/health", get(health))
         // 服务器状态（含当前 embedding 后端，供 UI 只读展示）
         .route("/api/server/status", get(server_status))
@@ -161,16 +169,32 @@ pub fn build_router(state: Shared) -> Router {
             "/api/projects/{id}/rules/config/{rule_id}",
             delete(reset_rule_config),
         )
-        // 代码召回（提示词 → 相关代码）
+        // 提示词增强 · 召回（提示词 → 相关代码）
         .route("/api/projects/{id}/recall", get(recall_get).post(recall_post))
         // 后台预热进度（语义向量 bge 计算）：让 IDE / MCP 知道召回是否还在走冷路径。
         .route("/api/projects/{id}/warmup", get(project_warmup))
-        // 提示词合成：召回上下文 + 用户意图 → 可直接粘给 LLM 的完整提示词
+        // 提示词增强 · 合成：召回上下文 + 用户意图 → 可直接粘给 LLM 的完整提示词
         .route("/api/projects/{id}/prompt", post(compose_prompt))
-        // 提示词合成器页面（自包含静态页，内嵌进二进制，无需额外静态托管）
-        .route("/compose", get(compose_page))
-        .route("/", get(compose_page))
-        .with_state(state)
+        // 提示词增强页（自包含静态页，内嵌进二进制，无需额外静态托管）
+        .route("/compose", get(compose_page));
+
+    // 生产部署可让后端顺带托管构建好的 React SPA：当 `ui_dir` 指向含 index.html 的目录时，
+    // 用 ServeDir 兜底（命中文件直接返回、未命中回退 index.html 做前端路由），并把根 `/`
+    // 让给 SPA；否则根仍回退到内嵌 compose 页。开发态不传 ui_dir，行为不变。
+    let router = if let Some(ui_dir) = ui_dir {
+        if ui_dir.join("index.html").is_file() {
+            router.fallback_service(
+                ServeDir::new(ui_dir.clone()).fallback(ServeFile::new(ui_dir.join("index.html"))),
+            )
+        } else {
+            // 目录存在但没有构建产物：根仍回退到内嵌 compose 页，不崩。
+            router.route("/", get(compose_page))
+        }
+    } else {
+        router.route("/", get(compose_page))
+    };
+
+    router.with_state(state)
 }
 
 // ---------------------------------------------------------------- 处理器
@@ -715,7 +739,7 @@ async fn batch_rule_config(
     }
 }
 
-// ---------------------------------------------------------------- 代码召回
+// ---------------------------------------------------------- 提示词增强 · 召回
 
 /// GET 形式的召回参数（供 UI 简单调用）。
 #[derive(Debug, Deserialize)]
@@ -768,9 +792,9 @@ async fn recall_post(
     }
 }
 
-// ---------------------------------------------------------- 提示词合成器
+// ---------------------------------------------------------- 提示词增强 · 合成
 
-/// 提示词合成请求：召回参数 + 用户任务意图。
+/// 提示词增强请求：召回参数 + 用户任务意图。
 #[derive(Debug, Deserialize)]
 pub struct ComposePromptRequest {
     /// 用于召回代码的检索词（自然语言 + 标识符混写皆可）。
@@ -786,7 +810,7 @@ pub struct ComposePromptRequest {
     pub with_snippets: Option<bool>,
 }
 
-/// 提示词合成结果。
+/// 提示词增强结果。
 #[derive(Debug, Serialize)]
 pub struct ComposePromptResult {
     /// 可直接粘给 LLM 的完整提示词。
@@ -884,7 +908,7 @@ fn estimate_tokens(s: &str) -> usize {
     (ascii as f64 / 4.0 + cjk as f64 / 1.5).ceil() as usize
 }
 
-/// 提示词合成器页面：内嵌静态页，避免额外静态资源托管与前端构建。
+/// 提示词增强页：内嵌静态页，避免额外静态资源托管与前端构建。
 async fn compose_page() -> Html<&'static str> {
     Html(include_str!("compose.html"))
 }

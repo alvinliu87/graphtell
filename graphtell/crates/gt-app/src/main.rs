@@ -41,6 +41,10 @@ enum Command {
         bind: String,
         #[arg(long, default_value_t = 5177)]
         port: u16,
+        /// 构建好的 Web UI（React SPA）目录；指定后后端会顺带托管前端，
+        /// 根路径 `/` 即 SPA 入口（未指定则 `/` 回退到内嵌独立页 `/compose`）。
+        #[arg(long)]
+        ui_dir: Option<PathBuf>,
     },
     /// 创建工程（创建后自动开始建图）。
     Create {
@@ -165,9 +169,10 @@ fn main() -> anyhow::Result<()> {
     };
 
     match cli.command {
-        Command::Serve { bind, port } => {
+        Command::Serve { bind, port, ui_dir } => {
             config.bind = bind;
             config.port = port;
+            config.ui_dir = ui_dir;
             let container = Container::new(config)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

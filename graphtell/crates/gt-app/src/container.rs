@@ -96,7 +96,7 @@ impl Container {
             Arc::clone(&self.views) as Arc<dyn ViewRegistryProvider>,
             Arc::clone(&self.rules) as Arc<dyn RuleProvider>,
         );
-        build_router(state)
+        build_router(state, self.config.resolve_ui_dir())
     }
 
     /// 合规检查服务（供 Tauri / CLI 直接使用）。
@@ -107,7 +107,7 @@ impl Container {
         )
     }
 
-    /// 代码召回服务（供 Tauri / CLI 直接使用）。
+    /// 提示词增强服务（代码召回 + 提示词合成；供 Tauri / CLI 直接使用）。
     ///
     /// 编码器由 [`gt_application::resolve_recall_embedder`] 解析：编译了 `model-candle`
     /// 且 `GT_BGE_MODEL`（默认 `models/bge-m3-safetensors`）权重可用时走真实 bge-m3，

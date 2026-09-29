@@ -58,6 +58,7 @@ fn fixture() -> Fixture {
         rules_dir: Some(root.join("rules")),
         bind: "127.0.0.1".into(),
         port: 0,
+        ui_dir: None,
     };
     let container = gt_app::Container::new(config).expect("容器装配不应失败");
     let project_service = gt_application::ProjectService::new(

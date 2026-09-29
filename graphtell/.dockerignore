@@ -1,0 +1,18 @@
+# 构建上下文清理：避免把大目录 / 敏感文件塞进 docker build context
+target/
+**/target/
+ui/node_modules/
+ui/dist/
+node_modules/
+data/
+**/data/
+.git/
+**/.git/
+*.sqlite
+*.rmp
+*.log
+src-tauri/
+.idea/
+.vscode/
+.github/
+**/*.tsbuildinfo
