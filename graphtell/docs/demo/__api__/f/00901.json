@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 2747, "node_id": 1000094747, "channel": "Capability", "kind": "Authentication", "subkind": null, "confidence": 0.9, "evidence": {"middleware": ["AuthTokenMiddleware"], "source": "route_guard"}, "phase": "GuardCapability"}], "error": null}

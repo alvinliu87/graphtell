@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 112846, "project_id": 1, "kind": "Triggers", "from_id": 1000037552, "to_id": 1000093616, "phase": "Resolve", "confidence": 0.85, "properties": {"evidence": {"evidence": "事件别名 OrderPaySuccessListener", "location": "crmeb/app/services/order/StoreOrderSuccessServices.php:96", "rule": "Event"}, "tier": "Alias"}}], "error": null}

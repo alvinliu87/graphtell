@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 93383, "project_id": 1, "kind": "CallsHttp", "from_id": 1000075069, "to_id": 1000094783, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"location": "template/uni-app/api/admin.js:124", "rule": "frontend-http-contract", "snippet": "return request.post(\"admin/order/refund\", data, {"}}}], "error": null}

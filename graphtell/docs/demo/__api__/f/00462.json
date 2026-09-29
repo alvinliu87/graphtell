@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 112862, "project_id": 1, "kind": "Triggers", "from_id": 1000037590, "to_id": 1000093622, "phase": "Resolve", "confidence": 0.85, "properties": {"evidence": {"evidence": "事件别名 UserLevelListener", "location": "crmeb/app/services/order/StoreOrderTakeServices.php:623", "rule": "Event"}, "tier": "Alias"}}], "error": null}

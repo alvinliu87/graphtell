@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 1000093609, "kind": "Event", "name": "HttpEnd", "synthetic": true, "locations": [{"file": "crmeb/app/event.php", "line": 20, "symbol": "HttpEnd", "note": "规则 tp6-event-registry"}, {"file": "crmeb/app/event.php", "line": 20, "symbol": "HttpEnd", "note": "权威源 event_listeners"}], "reference_count": 0}, "error": null}

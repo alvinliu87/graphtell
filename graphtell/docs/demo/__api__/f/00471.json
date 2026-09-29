@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 111750, "project_id": 1, "kind": "Triggers", "from_id": 1000028543, "to_id": 1000093623, "phase": "Resolve", "confidence": 0.85, "properties": {"evidence": {"evidence": "事件别名 UserVisitListener", "location": "crmeb/app/services/activity/advance/StoreAdvanceServices.php:317", "rule": "Event"}, "tier": "Alias"}}], "error": null}

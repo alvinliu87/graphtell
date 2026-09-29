@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 7841, "node_id": 2000089095, "channel": "Capability", "kind": "RateLimiting", "subkind": null, "confidence": 0.9, "evidence": {"middleware": ["ThrottleRequests"], "source": "route_guard"}, "phase": "GuardCapability"}], "error": null}

@@ -1,13 +1,19 @@
-# GraphTell 示例画廊
+# GraphTell 静态 Demo
 
-> 自动生成（`tools/gen_demo.sh`）。交互式版本见 [index.html](index.html)（GitHub Pages）。
-> 每个样本在本地跑建图 + 规则检测 + 召回示例，无需模型权重（召回走哈希兜底）。
-> 第三方样本按各自许可证授权，来源见 [samples-licenses.md](../samples-licenses.md)；其源码不随本仓库分发。
+真实产品前端 + 录制 API 回放的纯静态站点（无后端依赖），可托管在 GitHub Pages。
 
-| 样本 | 简介 | 许可证 | 图规模 | 规则违规 | 详情 |
-| --- | --- | --- | --- | --- | --- |
-| frontend-backend-link | 自造合成夹具：前端 ↔ 后端跨端链路 | 本项目自有 | 83 节点 | 25 条 | [详情](frontend-backend-link/README.md) |
-| express | Express 起步项目（Node） | MIT | 7089 节点 | 1 条 | [详情](express/README.md) |
-| litemall | litemall 电商系统（Java/SpringBoot） | MIT | 48140 节点 | 274 条 | [详情](litemall/README.md) |
-| bagisto | Bagisto 电商系统（PHP/Laravel） | MIT | 90602 节点 | 304 条 | [详情](bagisto/README.md) |
-| CRMEB | CRMEB 商城（PHP/ThinkPHP） | Apache-2.0 | 96241 节点 | 1036 条 | [详情](CRMEB/README.md) |
+## 能做什么
+- 浏览工程（CRMEB / Bagisto / 自造夹具）
+- 语义图：进入工程「图」页签，看路由/表/事件等视角的语义依赖图，点节点展开链路
+- 规则检验：合规页签看规则命中与诊断
+- 提示词增强：召回/提示词页签，对预置中文问句做代码召回并合成提示词
+
+## 局限（设计如此）
+- 写操作（新建/删除工程、跑建图、文件浏览）需真后端，静态站不可用
+- 召回/提示词只能选预置问句命中录制；任意新输入会回落到某条预置结果
+- 未录制的深度请求会拿到空或「全局视角」兜底，页面降级而非崩溃
+
+## 重新生成
+    python3 tools/gen_ui_demo.py                 # 默认样本（先 cargo build -p gt-app）
+    python3 tools/gen_ui_demo.py --sample 我的项目=/abs/path
+    python3 tools/gen_ui_demo.py --no-build

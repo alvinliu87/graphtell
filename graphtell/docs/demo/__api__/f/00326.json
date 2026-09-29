@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 1000022676, "kind": "Middleware", "name": "AllowOriginMiddleware", "synthetic": false, "locations": [{"file": "crmeb/app/http/middleware/AllowOriginMiddleware.php", "line": 25, "symbol": "app\\http\\middleware\\AllowOriginMiddleware", "note": "Middleware 定义"}], "reference_count": 1266}, "error": null}

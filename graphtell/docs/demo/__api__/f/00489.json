@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 109728, "project_id": 1, "kind": "Triggers", "from_id": 1000004532, "to_id": 1000093625, "phase": "Resolve", "confidence": 0.85, "properties": {"evidence": {"evidence": "事件别名 CustomNoticeListener", "location": "crmeb/app/adminapi/controller/v1/order/StoreOrder.php:700", "rule": "Event"}, "tier": "Alias"}}], "error": null}

@@ -1,0 +1,1 @@
+{"ok": true, "data": {"version": "0.1.0", "embedding_backend": "hash (offline fallback, 256d)", "embedding_dim": 256}, "error": null}

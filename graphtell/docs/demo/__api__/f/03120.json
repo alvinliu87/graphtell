@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 222446, "project_id": 3, "kind": "HandledBy", "from_id": 3000000083, "to_id": 3000000008, "phase": "AnnotatePost", "confidence": 0.45, "properties": {"evidence": {"rule": "tp6-auto-route-contract", "target": "app\\controller\\Ping::ping"}}}], "error": null}

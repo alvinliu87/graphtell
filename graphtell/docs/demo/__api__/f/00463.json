@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 91364, "project_id": 1, "kind": "HandledBy", "from_id": 1000093622, "to_id": 1000024683, "phase": "AnnotatePre", "confidence": 0.85499996, "properties": {"evidence": {"rule": "tp6-event-registry", "target": "app\\listener\\user\\UserLevelListener"}}}], "error": null}

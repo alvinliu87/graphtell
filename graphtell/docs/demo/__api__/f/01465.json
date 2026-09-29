@@ -1,0 +1,1 @@
+{"ok": true, "data": {"project_id": 2, "rules_total": 35, "rules_run": 0, "violations": [], "by_severity": {}, "by_rule": {}, "rules_silent": [], "rules_not_applicable": [], "rules_unavailable": [], "duration_ms": 9}, "error": null}

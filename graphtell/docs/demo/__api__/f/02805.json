@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 3, "name": "frontend-backend-link", "root_path": "/samples/frontend-backend-link", "description": null, "status": "ready", "config": {"exclude_globs": [], "required_locales": ["zh-cn", "en-us"], "table_prefixes": [], "full_pipeline": true}, "created_at": 1790690387407, "updated_at": 1790690387432}, "error": null}

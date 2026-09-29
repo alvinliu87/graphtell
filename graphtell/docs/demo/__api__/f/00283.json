@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 8786, "project_id": 1, "kind": "Declares", "from_id": 1000008697, "to_id": 1000008698, "phase": "CfAst", "confidence": 1.0, "properties": null}, {"id": 8787, "project_id": 1, "kind": "Implements", "from_id": 1000008697, "to_id": 1000008659, "phase": "CfAst", "confidence": 1.0, "properties": null}], "error": null}

@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 1000014977, "kind": "Middleware", "name": "StationOpenMiddleware", "synthetic": false, "locations": [{"file": "crmeb/app/api/middleware/StationOpenMiddleware.php", "line": 23, "symbol": "app\\api\\middleware\\StationOpenMiddleware", "note": "Middleware 定义"}], "reference_count": 351}, "error": null}

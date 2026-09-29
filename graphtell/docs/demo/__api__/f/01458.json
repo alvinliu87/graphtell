@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 2, "name": "bagisto", "root_path": "/samples/php-projects/laravel/bagisto", "description": null, "status": "ready", "config": {"exclude_globs": [], "required_locales": ["zh-cn", "en-us"], "table_prefixes": [], "full_pipeline": true}, "created_at": 1790690307986, "updated_at": 1790690385953}, "error": null}

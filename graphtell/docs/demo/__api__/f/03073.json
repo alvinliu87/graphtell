@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 3000000071, "kind": "HttpContract", "name": "PUT /api/tags/:id", "synthetic": true, "locations": [{"file": "backend/route/api.php", "line": 19, "symbol": "PUT /api/tags/:id", "note": "规则 tp6-route-resource", "snippet": "Route::resource('/api/tags', 'app\\controller\\Tag')->except(['read']);"}], "reference_count": 0}, "error": null}

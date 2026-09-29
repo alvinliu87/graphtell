@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 222440, "project_id": 3, "kind": "CallsHttp", "from_id": 3000000036, "to_id": 3000000058, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"location": "frontend/src/api.js:22", "rule": "frontend-http-contract", "snippet": "request.get('/api/invoice/detail/' + id);"}}}], "error": null}

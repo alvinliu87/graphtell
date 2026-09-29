@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 92705, "project_id": 1, "kind": "CallsHttp", "from_id": 1000058154, "to_id": 1000094138, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"location": "template/admin/src/api/order.js:66", "rule": "frontend-http-contract", "snippet": "return request({"}}}], "error": null}

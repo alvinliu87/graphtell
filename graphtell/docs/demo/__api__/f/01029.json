@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 93607, "project_id": 1, "kind": "CallsHttp", "from_id": 1000075524, "to_id": 1000094899, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"location": "template/uni-app/api/user.js:166", "rule": "frontend-http-contract", "snippet": "return request.get('spread/banner', {"}}}], "error": null}

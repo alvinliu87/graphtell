@@ -1,0 +1,1 @@
+{"ok": true, "data": {"edge": {"id": 222396, "kind": "PassesThrough", "from": 2000089379, "to": 2000090597, "resolved": false, "confidence": 0.9, "hops": null, "via": [], "to_call_site": null, "indirect": false, "also_kinds": [], "node_locations": []}, "reason": "该边（PassesThrough）没有可定位的证据位置，可能来自规则补全，请谨慎采信。", "locations": [], "via": []}, "error": null}

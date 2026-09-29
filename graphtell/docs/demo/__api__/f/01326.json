@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 91722, "project_id": 1, "kind": "PublishesTo", "from_id": 1000024558, "to_id": 1000095159, "phase": "Synthesize", "confidence": 0.765, "properties": {"evidence": {"location": "crmeb/app/listener/order/OrderPaySuccessListener.php:96", "rule": "tp6-queue-topic", "snippet": "PrintJob::dispatch([$orderInfo['id'], 1]);"}}}], "error": null}

@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 2000089251, "kind": "Queue", "name": "data_grid", "synthetic": true, "locations": [{"file": "packages/Webkul/DataGrid/src/DataGrid.php", "line": 719, "symbol": "data_grid", "note": "规则 laravel-queue-dispatch", "snippet": "Event::dispatch(\"datagrid.{$datagridName}.{$eventName}\", $payload);"}], "reference_count": 211}, "error": null}

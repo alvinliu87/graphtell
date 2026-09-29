@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 93103, "project_id": 1, "kind": "CallsHttp", "from_id": 1000058982, "to_id": 1000093909, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"location": "template/admin/src/api/uploadPictures.js:99", "rule": "frontend-http-contract", "snippet": "return request({"}}}], "error": null}

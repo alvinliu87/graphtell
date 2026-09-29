@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 2000089257, "kind": "Table", "name": "product_category", "synthetic": true, "locations": [{"file": "packages/Webkul/DataTransfer/src/Helpers/Importers/Product/Importer.php", "line": 1355, "symbol": "product_category", "note": "规则 laravel-db-table", "snippet": "DB::table('product_categories')->upsert("}], "reference_count": 6}, "error": null}

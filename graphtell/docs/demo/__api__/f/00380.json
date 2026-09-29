@@ -1,0 +1,1 @@
+{"ok": true, "data": {"id": 1000093613, "kind": "Event", "name": "UserRegisterListener", "synthetic": true, "locations": [{"file": "crmeb/app/event.php", "line": 20, "symbol": "UserRegisterListener", "note": "规则 tp6-event-registry"}, {"file": "crmeb/app/event.php", "line": 20, "symbol": "UserRegisterListener", "note": "权威源 event_listeners"}], "reference_count": 1}, "error": null}

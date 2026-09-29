@@ -1,0 +1,1 @@
+{"ok": true, "data": [{"id": 213514, "project_id": 2, "kind": "HandledBy", "from_id": 2000089118, "to_id": 2000004948, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"rule": "laravel-route-http-contract", "target": "Webkul\\Admin\\Http\\Controllers\\ConfigurationController"}}}], "error": null}
