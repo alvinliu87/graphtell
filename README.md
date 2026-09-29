@@ -107,7 +107,18 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 
 ## 快速开始
 
-**方式 A：预编译包**（推荐试用） —— 到 [Releases](https://github.com/alvinliu87/graphtell/releases) 下载对应平台的包（含二进制与 `fkb/` `rules/` `views/` 运行时资产）；`v0.1.0-beta.1` 起提供。
+**方式 A：预编译包**（推荐试用） —— 到 [Releases](https://github.com/alvinliu87/graphtell/releases) 下载对应平台的包（含二进制与 `fkb/` `rules/` `views/` 运行时资产），解压即用：
+
+```bash
+tar -xzf graphtell-linux-x86_64.tar.gz && cd graphtell
+./graphtell rules                                    # 随包 35 条规则
+./graphtell create --name demo --path /path/to/repo  # 建图
+./graphtell check --project 1                        # 规则校验
+./graphtell recall --project 1 --query "优惠券相关代码" --markdown
+```
+
+> 提供 linux-x86_64 / macos-x86_64 / macos-aarch64 / windows-x86_64 四平台；`v0.1.0-beta.2` 起可用。
+> Linux 包要求 **glibc ≥ 2.35**（Ubuntu 22.04 / Debian 12 及以上）；更老的系统请用 Docker 或源码构建。
 
 **方式 B：Docker**
 
