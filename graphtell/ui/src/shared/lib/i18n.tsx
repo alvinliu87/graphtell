@@ -222,10 +222,35 @@ const dict: Record<Lang, Record<string, string>> = {
 
     // ---- 界面文案（中文即键；zh-CN 回退为原串，en-US 提供英译）----
     '工程总览': 'Projects',
-    '质量门禁': 'Quality Gate',
-    '合规检查': 'Compliance',
+    '规则检验': 'Rule inspection',
+    '提示词增强': 'Prompt augmentation',
+    '把你本来要发给 IDE 的那段话写在这里，系统按图召回相关代码并合成进去 —— 这一页不调用大模型，只做检索与拼装':
+      'Paste the message you would send to your IDE; the system recalls related code from the graph and composes it in — this page calls no LLM, it only retrieves and assembles.',
+    '你要找什么 / 想让 IDE 帮你做什么 —— 这段会原样写进提示词的【本次任务】':
+      'What are you looking for / what should the IDE do — this is copied verbatim into the prompt’s TASK section',
+    '⌘/Ctrl + Enter 直接生成': '⌘/Ctrl + Enter to generate',
+    '生成提示词': 'Compose prompt',
+    '参数': 'Options',
+    '用一句话描述你要找的代码': 'Describe the code you are looking for in one sentence',
+    '试试这几个例子（点一下即生成）': 'Try one of these (click to generate)',
+    '系统会按图召回相关代码，并合成成一段可直接粘给 IDE 的提示词':
+      'The system recalls related code from the graph and composes a prompt you can paste into your IDE.',
+    '增强后的提示词': 'Augmented prompt',
+    '复制提示词': 'Copy prompt',
+    '提示词已复制，可直接粘贴给 IDE': 'Prompt copied — paste it into your IDE',
+    '展开全文': 'Show full text',
+    '收起': 'Collapse',
+    '先描述你要找什么': 'Describe what you are looking for first',
+    '提示词 = 你的任务 + 按图召回的代码上下文 + 质量约束；上下文包只有中间那段，可自行裁剪':
+      'Prompt = your task + graph-recalled code context + quality constraints; the context pack is only the middle part, trim it as you like.',
+    '命中': 'Hits',
+    '种子': 'seeds',
+    'store_order 订单表': 'store_order order table',
+    '用户登录的接口': 'login endpoint',
+    '优惠券相关代码': 'coupon-related code',
     '规则集': 'Rule Set',
     '代码图': 'Code Graph',
+    '界面语言': 'UI language',
     '节点浏览': 'Explorer',
     '诊断': 'Diagnostics',
     '建图报告': 'Build Report',
@@ -236,7 +261,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '读法：先看「问题类型」有几类、哪类要管；同一类在几百个文件上重复触发时，条数不代表问题数。':
       'How to read it: start from the problem types — how many there are and which one matters. When one type fires in hundreds of files, the entry count is not the problem count.',
     '代码是否违反规则见': 'For rule violations of the code itself, see ',
-    '去质量门禁查看': 'Open Quality Gate',
+    '查看规则检验': 'View rule inspection',
     '问题类型': 'Problem types',
     '这一页是「建图报告」：记录图没建全的地方，不是你的代码违反了规则':
       'This page is the "Build Report": where the graph is incomplete — not a verdict on your code.',
@@ -253,6 +278,18 @@ const dict: Record<Lang, Record<string, string>> = {
     '警告': 'Warnings',
     '提示': 'Hints',
     '严重': 'Critical',
+    // 规则分类（slug → 中文键见 entities/check 的 RULE_CATEGORY_LABEL）
+    '架构': 'Architecture',
+    '安全': 'Security',
+    '契约': 'Contract',
+    '死代码': 'Dead Code',
+    '性能': 'Performance',
+    '接口卫生': 'API hygiene',
+    // 筛选器 chrome（规则检验 / 代码图 共用）
+    '全部规则': 'All rules',
+    '全部子工程': 'All sub-projects',
+    '前端': 'Frontend',
+    '后端': 'Backend',
     '类型': 'Type',
     '已复制定位': 'Location copied',
     // 诊断页的分组视图
@@ -295,7 +332,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '（多为引擎局限与预期内，不改变召回结论）':
       '— mostly engine limits and expected cases; recall conclusions are unaffected.',
     '回到代码图': 'Back to code graph',
-    '返回合规检查': 'Back to compliance',
+    '返回规则检验': 'Back to rule inspection',
     '建图后自动跑出的规则结论（持久化）；哪些规则启用、阈值多少在「规则集」里调':
       'Rule conclusions produced automatically after the build (persisted); which rules are enabled and their thresholds are tuned in "Rule Set".',
     '只画当前这一条链路；其余以计数与未解析记账呈现。':

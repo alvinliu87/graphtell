@@ -156,6 +156,30 @@ export const SEVERITY_COLOR: Record<Severity, string> = {
   info: 'blue',
 };
 
+/**
+ * 规则分类 (slug) → 展示名（中文键，再经 `t()` 翻成当前语言）。
+ *
+ * 分类 slug 来自规则集 YAML（`rules/**\/*.yaml` 的 `category`），是**稳定且有限**的枚举，
+ * 但直接显示 `api-hygiene` / `architecture` 这种 slug 对用户是黑话 —— 所以在这里落一份
+ * 「slug → 人话」的真相，由 i18n 负责中英切换。
+ *
+ * 为什么集中在这一处：规则检验页（筛选器分组标题）与规则集页（分组标题 / 整组开关）
+ * 都要用；两处各写一份正是「同一分类在两页显示不同名」的漂移来源。
+ */
+export const RULE_CATEGORY_LABEL: Record<string, string> = {
+  architecture: '架构',
+  security: '安全',
+  contract: '契约',
+  deadcode: '死代码',
+  performance: '性能',
+  'api-hygiene': '接口卫生',
+};
+
+/** 分类 slug 的展示名：未知分类原样回退 slug（FKB 动态引入也不白屏）。 */
+export function ruleCategoryLabel(cat: string): string {
+  return RULE_CATEGORY_LABEL[cat] ?? cat;
+}
+
 /** 合规检查的严重度汇总（菜单角标用，来自后端按 code 前缀的聚合计数）。 */
 export interface CheckSummary {
   critical: number;

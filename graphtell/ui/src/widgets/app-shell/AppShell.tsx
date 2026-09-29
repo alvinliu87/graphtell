@@ -8,6 +8,7 @@ import {
   Menu,
   Segmented,
   Space,
+  Tooltip,
   Typography,
 } from 'antd';
 import {
@@ -18,7 +19,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   SafetyCertificateOutlined,
-  // 暂时注释：规则集入口移到合规检查页
+  // 暂时注释：规则集入口移到规则检验页
   // ProfileOutlined,
   SearchOutlined,
   UnorderedListOutlined,
@@ -79,13 +80,13 @@ export function AppShell() {
     );
   };
 
-  // 合规检查的菜单标签：带严重度角标，让菜单本身成为质量仪表盘。
+  // 规则检验的菜单标签：带严重度角标，让菜单本身成为质量仪表盘。
   //
-  // 只有合规检查带角标：它统计的是"代码违反了哪条规则"，条数就是待办数；
+  // 只有规则检验带角标：它统计的是"代码违反了哪条规则"，条数就是待办数；
   // 诊断不是（见上方注释），所以不进侧栏。
   const checkLabel = (
     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-      <span>{t('合规检查')}</span>
+      <span>{t('规则检验')}</span>
       {severityBadge(summary)}
     </span>
   );
@@ -113,9 +114,9 @@ export function AppShell() {
    * 现在总共就三项、且各自是不同动作（看图 / 搜代码 / 看结论），
    * 分组只会让"两个组各一两项"看起来像在凑数 —— 平铺反而一眼看完。
    *
-   * 规则集**不进菜单**：它调的是"哪些规则启用、阈值多少"，是合规检查的**配置项**，
+   * 规则集**不进菜单**：它调的是"哪些规则启用、阈值多少"，是规则检验的**配置项**，
    * 不是并列的目的地 —— 用户是在看了结论之后才想去调规则，所以入口放在
-   * 合规检查页页头（见 CheckPage 的「规则集」按钮）。
+   * 规则检验页页头（见 CheckPage 的「规则集」按钮）。
    */
   const items = [
     ...(projectId
@@ -124,16 +125,16 @@ export function AppShell() {
           // 暂时注释：节点浏览入口已停用（工程表格里那个按钮也一并注释了）。
           // 它真正不可替代的是「按名精确查 / 按类盘点」，但当前形态没兑现：
           // `limit: 200` 硬顶且无排序（盘点会漏）、列是造图内部字段（fqn / 语言 / 阶段 / 置信度）、
-          // 与代码召回（语义检索）大量重叠。
+          // 与提示词增强（语义检索）大量重叠。
           // 路由 `/explorer` 与页面都保留着 —— 恢复只需解开这一行与 ProjectTable 里那一段。
           // { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
-          { key: withProject('/recall'), icon: <SearchOutlined />, label: t('代码召回') },
+          { key: withProject('/recall'), icon: <SearchOutlined />, label: t('提示词增强') },
           {
             key: withProject('/check'),
             icon: <SafetyCertificateOutlined />,
             label: checkLabel,
           },
-          // 暂时注释：规则集改为从合规检查页进入（见上方注释）。
+          // 暂时注释：规则集改为从规则检验页进入（见上方注释）。
           // { key: withProject('/rules'), icon: <ProfileOutlined />, label: t('规则集') },
         ]
       : []),
@@ -240,15 +241,17 @@ export function AppShell() {
           {/* 右侧：仅语言切换 + 离线告警。框架知识 / 语言等静态信息已从顶栏移除（可在工程详情查看），
               后端在线时无提示（应用能跑即代表在线），仅在异常时冒出红点告警，避免日常噪音。 */}
           <Space size={10} align="center">
-            <Segmented
-              size="small"
-              value={lang}
-              onChange={(v) => setLang(v as Lang)}
-              options={[
-                { label: '中文', value: 'zh-CN' },
-                { label: 'EN', value: 'en-US' },
-              ]}
-            />
+            <Tooltip title={t('界面语言')}>
+              <Segmented
+                size="small"
+                value={lang}
+                onChange={(v) => setLang(v as Lang)}
+                options={[
+                  { label: '中', value: 'zh-CN' },
+                  { label: 'EN', value: 'en-US' },
+                ]}
+              />
+            </Tooltip>
             {/* 暂时注释：设置入口已隐藏
             <Button
               type="text"

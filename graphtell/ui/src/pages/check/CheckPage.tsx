@@ -33,6 +33,7 @@ import {
   SEVERITY_LABEL,
   SEVERITY_ORDER,
   SEVERITY_RANK,
+  ruleCategoryLabel,
   type CheckReport,
   type CheckRule,
   type Severity,
@@ -64,7 +65,7 @@ const SUB_ROLE_LABEL: Record<string, string> = {
 const STORED_LIMIT = 5000;
 
 /**
- * 合规检查结果页：建图后自动跑出的结论（来自持久化诊断表）。
+ * 规则检验结果页：建图后自动跑出的结论（来自持久化诊断表）。
  *
  * 设计要点：
  * * 进入页面即直接显示**上一次自动检查**的落库结果，无需手动触发；
@@ -77,7 +78,7 @@ export function CheckPage() {
   const id = Number(projectId);
   const navigate = useNavigate();
   const { t } = useLocale();
-  // 手动重跑/刷新后刷新侧边栏「合规检查」角标。
+  // 手动重跑/刷新后刷新侧边栏「规则检验」角标。
   const { refreshCheckSummary } = useOutletContext<{ refreshCheckSummary: () => void }>();
 
   const [report, setReport] = useState<CheckReport | null>(null);
@@ -229,7 +230,7 @@ export function CheckPage() {
     return [
       { label: t('全部规则'), value: 'all' },
       ...cats.map((cat) => ({
-        label: cat,
+        label: t(ruleCategoryLabel(cat)),
         options: byCat
           .get(cat)!
           .slice()
@@ -271,7 +272,7 @@ export function CheckPage() {
   return (
     <>
       <PageHeader
-        title={t('合规检查')}
+        title={t('规则检验')}
         subtitle={t('建图后自动跑出的规则结论（持久化）；哪些规则启用、阈值多少在「规则集」里调')}
         extra={
           <Space>
@@ -491,7 +492,7 @@ export function CheckPage() {
                 value={subFilter}
                 onChange={(v) => setSubFilter(v ?? [])}
                 options={subs.map((s) => ({
-                  label: `${s.name}（${SUB_ROLE_LABEL[s.role] ?? s.role}）`,
+                  label: `${s.name}（${t(SUB_ROLE_LABEL[s.role] ?? s.role)}）`,
                   value: s.id,
                 }))}
               />

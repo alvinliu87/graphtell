@@ -797,6 +797,13 @@ pub struct ComposePromptResult {
     pub hit_count: usize,
     /// 提示词 token 粗估（中英文按不同系数）。
     pub approx_tokens: usize,
+    /// **完整召回结果**（种子 / 命中 / 解析出的查询词 / 质量档位）。
+    ///
+    /// 为什么要把整份召回结果带上：Web 端"提示词增强"页要同时展示
+    /// 「合成的提示词」和「命中列表（可核对召回质量、点特征词重跑）」。
+    /// 不带的话前端只能再调一次 `/recall` —— 而召回正是这里最贵的一步，
+    /// 一次生成跑两遍纯属浪费，且两次结果可能不一致（图在两次之间被重建）。
+    pub recall: gt_application::RecallResult,
 }
 
 /// 合成提示词：图谱召回上下文 + 用户意图 → 一段可直接投喂 LLM 的提示词。
@@ -820,12 +827,15 @@ async fn compose_prompt(
         Ok(r) => {
             let prompt = compose_prompt_text(&req.query, req.intent.as_deref(), &r.markdown);
             let approx_tokens = estimate_tokens(&prompt);
+            let seed_count = r.seeds.len();
+            let hit_count = r.hits.len();
             Json(ApiResponse::success(ComposePromptResult {
                 prompt,
-                markdown: r.markdown,
-                seed_count: r.seeds.len(),
-                hit_count: r.hits.len(),
+                markdown: r.markdown.clone(),
+                seed_count,
+                hit_count,
                 approx_tokens,
+                recall: r,
             }))
         }
         Err(e) => Json(ApiResponse::failure(e.to_string())),

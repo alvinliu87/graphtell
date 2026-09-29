@@ -44,6 +44,42 @@ export interface RecallHit {
   relations: string[];
 }
 
+/**
+ * 合成提示词的请求。
+ *
+ * `query` 与 `intent` 是两件事：`query` 是**用来召回代码的检索词**，
+ * `intent` 是**本次任务 / 提示词**（告诉 LLM 要做什么）。分开是因为它们用途不同 ——
+ * 同一个任务可能要换几种说法才能召回对；反过来同一批代码也能支撑不同任务。
+ */
+export interface ComposePromptRequest {
+  /** 用于召回代码的检索词（自然语言 + 标识符混写皆可）。 */
+  query: string;
+  /** 本次任务 / 提示词；缺省时合成结果会要求 LLM 依据上下文推断。 */
+  intent?: string;
+  limit?: number;
+  hops?: number;
+  with_snippets?: boolean;
+}
+
+/** 合成提示词的结果。 */
+export interface ComposePromptResult {
+  /** 可直接粘给 LLM 的完整提示词（任务 + 代码上下文 + 质量约束）。 */
+  prompt: string;
+  /** 原始召回上下文（markdown），便于自行裁剪。 */
+  markdown: string;
+  seed_count: number;
+  hit_count: number;
+  /** 提示词 token 粗估。 */
+  approx_tokens: number;
+  /**
+   * 完整召回结果（种子 / 命中 / 查询词 / 质量档位）。
+   *
+   * 后端一次返回而不是前端再调一次 `/recall`：召回是最贵的一步，
+   * 跑两遍既浪费又可能不一致（两次之间图被重建）。
+   */
+  recall: RecallResult;
+}
+
 /** 召回结果。 */
 export interface RecallResult {
   project_id: number;

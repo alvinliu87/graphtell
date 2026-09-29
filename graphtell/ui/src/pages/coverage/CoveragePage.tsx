@@ -75,7 +75,7 @@ const SAMPLE_LIMIT = 3;
  *
  * 两条设计主线（都是踩过坑才有的）：
  *
- * 1. **合规检查的结论刻意不在这里**：两者虽然都存在诊断表里，但性质不同
+ * 1. **规则检验的结论刻意不在这里**：两者虽然都存在诊断表里，但性质不同
  *    （"图没建全" vs "代码违反了规则"），混在一张表里只会让两类结论都读不懂。
  *    这里给一个显式入口指过去，避免用户以为"一条错误都没有"。
  * 2. **按问题类型分组，而不是平铺条目**：诊断天生长尾重复（同一条引擎诊断在几百个文件上
@@ -189,7 +189,7 @@ export function CoveragePage() {
                 <Space size={8} wrap>
                   <span>
                     {t('代码是否违反规则见')}
-                    {t('合规检查')}：{t('共 ')}
+                    {t('规则检验')}：{t('共 ')}
                     {checkTotal}
                     {t(' 条')}（
                     {SEVERITY_ORDER.map((sev, i) => (
@@ -201,7 +201,7 @@ export function CoveragePage() {
                     ）
                   </span>
                   <Button size="small" onClick={() => navigate(`/projects/${id}/check`)}>
-                    {t('去质量门禁查看')}
+                    {t('查看规则检验')}
                   </Button>
                 </Space>
               </div>

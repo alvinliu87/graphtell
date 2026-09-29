@@ -35,6 +35,7 @@ import {
   SEVERITY_LABEL,
   SEVERITY_ORDER,
   SEVERITY_RANK,
+  ruleCategoryLabel,
   type CheckRule,
   type ProjectRuleConfig,
   type RuleParam,
@@ -82,19 +83,14 @@ function appliesToEnv(
 }
 
 /** 分类展示顺序（其余未知分类追加在末尾）。 */
-const CATEGORY_ORDER = ['architecture', 'security', 'contract', 'deadcode'];
-
-/** 分类标题（中英双语，fallback 到原始 slug）。 */
-const CATEGORY_LABEL: Record<string, { 'zh-CN': string; 'en-US': string }> = {
-  architecture: { 'zh-CN': '架构', 'en-US': 'Architecture' },
-  security: { 'zh-CN': '安全', 'en-US': 'Security' },
-  contract: { 'zh-CN': '契约', 'en-US': 'Contract' },
-  deadcode: { 'zh-CN': '死代码', 'en-US': 'Dead Code' },
-};
-
-function catLabel(cat: string, lang: 'zh-CN' | 'en-US'): string {
-  return CATEGORY_LABEL[cat]?.[lang] ?? CATEGORY_LABEL[cat]?.['en-US'] ?? cat;
-}
+const CATEGORY_ORDER = [
+  'architecture',
+  'security',
+  'contract',
+  'deadcode',
+  'performance',
+  'api-hygiene',
+];
 
 /**
  * 本工程对一条规则的**草稿**：启用态覆盖 + 参数覆盖。
@@ -143,7 +139,7 @@ function sameOptions(a: Record<string, unknown>, b: Record<string, unknown>): bo
 export function RulesPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
-  const { t, lang } = useLocale();
+  const { t } = useLocale();
   const navigate = useNavigate();
   const { refreshCheckSummary } = useOutletContext<{ refreshCheckSummary: () => void }>();
 
@@ -522,8 +518,8 @@ export function RulesPage() {
         subtitle={t('规则由后端 YAML 声明，前端只渲染；可在本工程内覆盖启用态与阈值，保存后自动重跑')}
         extra={
           <Space>
-            {/* 侧栏不再有「规则集」项：这一页的唯一入口是合规检查页页头，所以这里给回路 */}
-            <Button onClick={() => navigate(`/projects/${id}/check`)}>{t('返回合规检查')}</Button>
+            {/* 侧栏不再有「规则集」项：这一页的唯一入口是规则检验页页头，所以这里给回路 */}
+            <Button onClick={() => navigate(`/projects/${id}/check`)}>{t('返回规则检验')}</Button>
             <Button onClick={discard} disabled={!dirty || saving}>
               {t('放弃修改')}
             </Button>
@@ -605,7 +601,7 @@ export function RulesPage() {
                   key: cat,
                   label: (
                     <Space size={8}>
-                      <span style={{ fontWeight: 600 }}>{catLabel(cat, lang)}</span>
+                      <span style={{ fontWeight: 600 }}>{t(ruleCategoryLabel(cat))}</span>
                       <Tag>{list.length}</Tag>
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         {t('启用')} {on}
