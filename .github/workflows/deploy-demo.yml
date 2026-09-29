@@ -9,8 +9,10 @@ name: Deploy demo (GitHub Pages)
 # 因此 CI 不需要样本代码库（它们不随仓库分发），发布的是**已生成的静态产物**。
 
 on:
+  # 本仓库主分支名是 master（Gitee 侧），同时兼容 main —— 只写 main 会导致
+  # 推 master 时工作流**根本不触发**，demo 永远不发布。
   push:
-    branches: [main]
+    branches: [master, main]
     paths:
       - 'graphtell/docs/demo/**'
       - 'graphtell/tools/gen_demo.sh'
