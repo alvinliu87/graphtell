@@ -303,8 +303,11 @@ export function CheckPage() {
           style={{ marginBottom: 16 }}
           message={t('列表已被读取上限截断')}
           description={t(
-            `本工程共 ${storedTotal} 条违规，当前只列出 ${scoped.length} 条（读取上限 ${STORED_LIMIT}）。排序已按严重度优先，被截掉的是最不严重的提示级。`,
-          )}
+            '本工程共 {n} 条违规，当前只列出 {m} 条（读取上限 {limit}）。排序已按严重度优先，被截掉的是最不严重的提示级。',
+          )
+            .replace('{n}', String(storedTotal))
+            .replace('{m}', String(scoped.length))
+            .replace('{limit}', String(STORED_LIMIT))}
         />
       ) : null}
 
@@ -399,8 +402,8 @@ export function CheckPage() {
           style={{ marginBottom: 16 }}
           message={t('汇总有数但列表为空')}
           description={t(
-            `汇总显示本工程共 ${storedTotal} 条违规，但当前列表读到了 0 条 —— 常见原因是子工程筛选把结果过滤空了，或上一轮落库被重建清空而汇总仍是旧值。可点「刷新」重跑一次。`,
-          )}
+            '汇总显示本工程共 {n} 条违规，但当前列表读到了 0 条 —— 常见原因是子工程筛选把结果过滤空了，或上一轮落库被重建清空而汇总仍是旧值。可点「刷新」重跑一次。',
+          ).replace('{n}', String(storedTotal))}
         />
       ) : null}
 

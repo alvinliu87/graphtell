@@ -292,6 +292,37 @@ const dict: Record<Lang, Record<string, string>> = {
     '后端': 'Backend',
     '类型': 'Type',
     '已复制定位': 'Location copied',
+    // 规则检验页（CheckPage）整页文案
+    '已装载规则': 'Rules loaded',
+    '有': 'There are',
+    '条规则': 'rules',
+    '条规则跑了但 0 命中': 'rules ran but matched 0',
+    '条规则判据不成立，已停用': 'rules with unmet criteria are disabled',
+    '条规则不适用于本工程技术栈': 'rules not applicable to this project tech stack',
+    '耗时': 'Elapsed',
+    '跑了': 'ran',
+    '规则': 'Rule',
+    '对象': 'Target',
+    '刷新完成，没有命中任何违规': 'Refresh complete — no violations matched',
+    '重试': 'Retry',
+    '列表已被读取上限截断': 'List truncated at the read limit',
+    '汇总有数但列表为空': 'Summary has counts but the list is empty',
+    '没有命中的违规': 'No matched violations',
+    '落库违规读取失败': 'Failed to read persisted violations',
+    '显示上一次自动检查的结果，点「刷新」可重算':
+      'Shows the last automatic check result; click «Refresh» to recompute',
+    '还没有检查结果 —— 点右上角「刷新」运行一次（新工程建图会自动跑）':
+      'No check result yet — run one via «Refresh» (new projects run automatically after build)',
+    '侧栏角标来自汇总接口，它成功而本列表失败，就会看到「总数不为 0 但结果为空」。':
+      'The sidebar badge comes from the summary endpoint; if it succeeds while this list fails, you will see "total non-zero but results empty".',
+    '规则最危险的失效方式不是误报，而是静默归零：判据用了一个图上不存在的标注或边，于是永远匹配不上。在排除「代码真干净」之前，先怀疑规则瞎了。':
+      'The most dangerous way a rule fails is not a false positive but a silent zero: its criteria reference an annotation or edge absent from the graph, so it never matches. Before assuming the code is clean, suspect the rule has gone blind.',
+    '判据提到的边/标注在本工程图上一个都没有，跑下去只会产出恒真误报（例如「没有 X 入边」在 X 不存在时对每个节点都成立）。宁可不跑，也不要报一堆假的。':
+      'The edges/annotations the criteria mention are entirely absent from this project graph; running it would only produce vacuously-true false positives (e.g. "no X inbound edge" holds for every node when X does not exist). Better not to run than to report a pile of fake ones.',
+    '本工程共 {n} 条违规，当前只列出 {m} 条（读取上限 {limit}）。排序已按严重度优先，被截掉的是最不严重的提示级。':
+      'This project has {n} violations; only {m} are listed (read limit {limit}). Sorting is severity-first, so what is cut off are the least severe info-level ones.',
+    '汇总显示本工程共 {n} 条违规，但当前列表读到了 0 条 —— 常见原因是子工程筛选把结果过滤空了，或上一轮落库被重建清空而汇总仍是旧值。可点「刷新」重跑一次。':
+      'Summary shows {n} violations for this project, but the current list read 0 — common causes: the sub-project filter emptied the results, or the last persisted run was wiped by a rebuild while the summary still holds the old value. Click «Refresh» to re-run.',
     // 诊断页的分组视图
     '这些语言还没有解析器：': 'No parser for these languages: ',
     ' —— 对应子工程只有文件结构，语义召回在这里为空。':
@@ -701,7 +732,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '不适用': 'N/A here',
     '需要': 'requires',
     '条违规': 'violations',
-    '违规': 'violations',
+    '违规': 'Violations',
     '计数随严重度': 'counts follow severity',
     '本工程不是该规则的适用环境，检查时会被自动跳过':
       'This project is not in the rule’s target environment; the check will skip it automatically',
