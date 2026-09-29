@@ -18,6 +18,8 @@ export const router = createBrowserRouter([
       { index: true, element: <ProjectsPage /> },
       { path: 'projects', element: <Navigate to="/" replace /> },
       { path: 'projects/:projectId/graph', element: <GraphPage /> },
+      // 节点浏览入口已停用（侧栏 / 工程表格都注释掉了），但路由与页面**保留**：
+      // 直接访问仍可用，恢复入口时只要解开侧栏那一行。
       { path: 'projects/:projectId/explorer', element: <ExplorerPage /> },
       { path: 'projects/:projectId/coverage', element: <CoveragePage /> },
       { path: 'projects/:projectId/check', element: <CheckPage /> },

@@ -12,12 +12,14 @@ import {
 } from 'antd';
 import {
   ApartmentOutlined,
-  DatabaseOutlined,
+  // 暂时注释：节点浏览入口已停用
+  // DatabaseOutlined,
   DownOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   SafetyCertificateOutlined,
-  ProfileOutlined,
+  // 暂时注释：规则集入口移到合规检查页
+  // ProfileOutlined,
   SearchOutlined,
   UnorderedListOutlined,
   // 暂时注释：设置入口已隐藏
@@ -53,7 +55,7 @@ export function AppShell() {
   const summary = summaryRes.data ?? null;
 
   // 注意：**诊断不在这里取汇总，也不在侧栏挂角标**。
-  // 诊断是"这张图少建了什么"的报告，主体是图 —— 它的入口在图视图页顶部那句覆盖提示里
+  // 诊断是"这张图少建了什么"的报告，主体是图 —— 它的入口在代码图页标题旁 ⓘ 的 Popover 里
   // （见 GraphPage 的「图覆盖」行）。侧栏一个常驻橙色角标只会表达"有东西欠你处理"，
   // 而诊断里绝大多数是引擎局限与预期内，那是在骗人。
 
@@ -88,7 +90,7 @@ export function AppShell() {
     </span>
   );
 
-  // 左侧栏是否收起：图视图路由默认收起（进入即最大化，让出横向空间给图），
+  // 左侧栏是否收起：代码图路由默认收起（进入即最大化，让出横向空间给图），
   // 其余路由默认展开。仅在 pathname 变化时按路由重置；页面内的手动折叠/展开在路由内持续有效。
   // 同时保留 lg 断点的响应式自动收起。
   const [collapsed, setCollapsed] = useState<boolean>(() =>
@@ -104,38 +106,35 @@ export function AppShell() {
 
   // 侧栏只放「工程内视图」；工程导航（选择/切换/总览）移到顶栏下拉，
   // 避免「工程总览」与视图平级带来的上下级歧义。无工程时列表为空，渲染提示。
+  /**
+   * 侧栏只留**三个平铺项**，不再分组、也不要组标题。
+   *
+   * 组标题（"探索" / "质量门禁"）是给"一组 ≥3 个相似项"做路标的；
+   * 现在总共就三项、且各自是不同动作（看图 / 搜代码 / 看结论），
+   * 分组只会让"两个组各一两项"看起来像在凑数 —— 平铺反而一眼看完。
+   *
+   * 规则集**不进菜单**：它调的是"哪些规则启用、阈值多少"，是合规检查的**配置项**，
+   * 不是并列的目的地 —— 用户是在看了结论之后才想去调规则，所以入口放在
+   * 合规检查页页头（见 CheckPage 的「规则集」按钮）。
+   */
   const items = [
     ...(projectId
       ? [
+          { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('代码图') },
+          // 暂时注释：节点浏览入口已停用（工程表格里那个按钮也一并注释了）。
+          // 它真正不可替代的是「按名精确查 / 按类盘点」，但当前形态没兑现：
+          // `limit: 200` 硬顶且无排序（盘点会漏）、列是造图内部字段（fqn / 语言 / 阶段 / 置信度）、
+          // 与代码召回（语义检索）大量重叠。
+          // 路由 `/explorer` 与页面都保留着 —— 恢复只需解开这一行与 ProjectTable 里那一段。
+          // { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
+          { key: withProject('/recall'), icon: <SearchOutlined />, label: t('代码召回') },
           {
-            type: 'group' as const,
-            key: 'group-explore',
-            label: t('探索'),
-            children: [
-              { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('图视图') },
-              { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
-              { key: withProject('/recall'), icon: <SearchOutlined />, label: t('代码召回') },
-            ],
+            key: withProject('/check'),
+            icon: <SafetyCertificateOutlined />,
+            label: checkLabel,
           },
-          {
-            type: 'group' as const,
-            key: 'group-quality',
-            label: t('质量门禁'),
-            children: [
-              {
-                key: withProject('/check'),
-                icon: <SafetyCertificateOutlined />,
-                label: checkLabel,
-              },
-              {
-                key: withProject('/rules'),
-                icon: <ProfileOutlined />,
-                label: t('规则集'),
-              },
-              // 诊断**不**作为菜单项：它是"这张图少建了什么"的报告，
-              // 入口在图视图页顶部的「图覆盖」提示里，不在导航里挂角标。
-            ],
-          },
+          // 暂时注释：规则集改为从合规检查页进入（见上方注释）。
+          // { key: withProject('/rules'), icon: <ProfileOutlined />, label: t('规则集') },
         ]
       : []),
     // 暂时注释：设置页路由已停用，导航入口一并隐藏（以后再考虑加回）。

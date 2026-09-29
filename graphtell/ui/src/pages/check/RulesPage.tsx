@@ -522,6 +522,8 @@ export function RulesPage() {
         subtitle={t('规则由后端 YAML 声明，前端只渲染；可在本工程内覆盖启用态与阈值，保存后自动重跑')}
         extra={
           <Space>
+            {/* 侧栏不再有「规则集」项：这一页的唯一入口是合规检查页页头，所以这里给回路 */}
+            <Button onClick={() => navigate(`/projects/${id}/check`)}>{t('返回合规检查')}</Button>
             <Button onClick={discard} disabled={!dirty || saving}>
               {t('放弃修改')}
             </Button>

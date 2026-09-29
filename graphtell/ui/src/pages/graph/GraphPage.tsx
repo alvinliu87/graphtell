@@ -63,7 +63,7 @@ import { formatNumber } from '@/shared/lib/format';
 import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 import { FullscreenOutlined, InfoCircleOutlined } from '@ant-design/icons';
 
-/** 图视图页：两级筛选 → 单对象链路子图 → 可跳转的结论面板。 */
+/** 代码图页：两级筛选 → 单对象链路子图 → 可跳转的结论面板。 */
 export function GraphPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
@@ -175,7 +175,7 @@ export function GraphPage() {
   const subProjects: SubProject[] = subProjectsData ?? [];
   /**
    * 暂无解析器的语言（P2 写入的 `unsupported_languages` 符号表，经诊断汇总结构化返回）。
-   * 图视图顶部要靠它出横幅：这些子工程只有文件结构、没有语义抽取，
+   * 代码图顶部要靠它出横幅：这些子工程只有文件结构、没有语义抽取，
    * 不说清楚，用户面对近乎空的图会以为是"工程本身没东西"，而不是"工具不支持"。
    */
   const { data: diagSummary } = useAsync<DiagnosticSummary | null>(
@@ -658,7 +658,7 @@ export function GraphPage() {
         compact
         title={
           <>
-            {project ? `${t('图视图')} · ${project.name}` : t('图视图')}
+            {project ? `${t('代码图')} · ${project.name}` : t('代码图')}
             {/*
               使用说明 + 图覆盖 + 建图报告入口，都收进这个 ⓘ（点击打开的 Popover）。
 
@@ -798,6 +798,24 @@ export function GraphPage() {
             </>
           }
         />
+
+        {/*
+          「只画一条链路」这句从标题旁 ⓘ 的浮层里**再往前挪一步**。
+
+          为什么：新手第一次进来最大的疑问不是"图覆盖缺了什么"，而是
+          "我的工程那么大，怎么图就这么几个节点？" —— 这一问必须在该问的地方被回答，
+          也就是**决定这张图画什么的控件正下方**，而不是藏在 hover/点击才出现的浮层里。
+          ⓘ 里仍保留完整说明（含"一级选视角、二级选对象"的操作步骤与图覆盖入口），
+          这里只留结论那一句，避免两处重复同一整段。
+
+          聚合视角不显示：它画的是聚类 / 矩阵，不是"一条链路"，说了反而误导。
+        */}
+        {!isAggregate ? (
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+            {t('只画当前这一条链路；其余以计数与未解析记账呈现。')}
+          </Typography.Text>
+        ) : null}
+
         {/* 暂时注释：IDE 打开入口已移除，按工程覆盖本地根与「当前生效根」展示一并停用（以后再考虑加回）。
         <Collapse
           ghost

@@ -70,20 +70,27 @@ export function ProjectTable({
           width: 140,
           render: (_, p) => (
             <Space size={4}>
-              <Tooltip title={t('图视图')}>
+              <Tooltip title={t('代码图')}>
                 <Button
                   type="text"
                   icon={<ApartmentOutlined />}
                   onClick={() => navigate(`/projects/${p.id}/graph`)}
                 />
               </Tooltip>
-              <Tooltip title={t('节点浏览')}>
+              {/*
+                暂时注释：节点浏览（Explorer）入口已停用（与侧栏同步）。
+                它的独特价值是「按名精确查 / 按类盘点」，但当前形态没兑现：
+                `limit: 200` 硬顶且无排序 → 大盘点会漏；列里 fqn / 语言 / 阶段 / 置信度
+                是造图内部字段；与代码召回（语义检索）大量重叠。
+                页面与路由都保留，恢复时把这一行（与侧栏那一行）解开即可。
+              */}
+              {/* <Tooltip title={t('节点浏览')}>
                 <Button
                   type="text"
                   icon={<AreaChartOutlined />}
                   onClick={() => navigate(`/projects/${p.id}/explorer`)}
                 />
-              </Tooltip>
+              </Tooltip> */}
               <DeleteProjectButton projectId={p.id} name={p.name} onDeleted={onDeleted} />
             </Space>
           ),

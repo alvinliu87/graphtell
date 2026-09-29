@@ -225,7 +225,7 @@ const dict: Record<Lang, Record<string, string>> = {
     '质量门禁': 'Quality Gate',
     '合规检查': 'Compliance',
     '规则集': 'Rule Set',
-    '图视图': 'Graph',
+    '代码图': 'Code Graph',
     '节点浏览': 'Explorer',
     '诊断': 'Diagnostics',
     '建图报告': 'Build Report',
@@ -289,12 +289,17 @@ const dict: Record<Lang, Record<string, string>> = {
     '条（明细有读取上限）：按类型的计数取自全量汇总，仍然准确。':
       ' entries (the entry list is capped): per-type counts come from the full aggregate and stay accurate.',
     '全部类型': 'All types',
-    // 图视图页的「图覆盖」提示（诊断页入口）
+    // 代码图页的「图覆盖」提示（诊断页入口）
     '图覆盖': 'Graph coverage',
     ' 处': ' places',
     '（多为引擎局限与预期内，不改变召回结论）':
       '— mostly engine limits and expected cases; recall conclusions are unaffected.',
-    '回到图视图': 'Back to graph',
+    '回到代码图': 'Back to code graph',
+    '返回合规检查': 'Back to compliance',
+    '建图后自动跑出的规则结论（持久化）；哪些规则启用、阈值多少在「规则集」里调':
+      'Rule conclusions produced automatically after the build (persisted); which rules are enabled and their thresholds are tuned in "Rule Set".',
+    '只画当前这一条链路；其余以计数与未解析记账呈现。':
+      'Draws one link at a time; the rest is shown as counts and unresolved records.',
     '设置': 'Settings',
     '设置项暂未启用': 'Settings are temporarily disabled',
     '本地根模板 / WSL 模式 / 默认 IDE 等设置仅服务于「跳转 IDE」；该入口已移除，相关设置暂时停用。':
@@ -511,8 +516,8 @@ const dict: Record<Lang, Record<string, string>> = {
     '保存设置': 'Save settings',
     '清除模板': 'Clear template',
     '按工程特例': 'Per-project exceptions',
-    '若某个工程的本地根无法用模板表达（盘符 / 目录完全不同），可在其图视图页的「本地工程根（覆盖）」单独填写，覆盖全局设置。':
-      'If a project’s local root can’t be expressed by the template (different drive / dir), fill "Local project root (override)" on its graph page to override global settings.',
+    '若某个工程的本地根无法用模板表达（盘符 / 目录完全不同），可在其代码图页的「本地工程根（覆盖）」单独填写，覆盖全局设置。':
+      'If a project’s local root can’t be expressed by the template (different drive / dir), fill "Local project root (override)" on its code-graph page to override global settings.',
     '存储键：': 'Storage keys: ',
     '（浏览器 localStorage，仅本机生效）': '(browser localStorage, local only)',
 

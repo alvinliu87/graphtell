@@ -16,8 +16,13 @@ import {
   Typography,
   message,
 } from 'antd';
-import { CopyOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
-import { useOutletContext, useParams } from 'react-router-dom';
+import {
+  CopyOutlined,
+  ProfileOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons';
+import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { useAsync } from '@/shared/lib/useAsync';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { StatCard } from '@/shared/ui/StatCard';
@@ -70,6 +75,7 @@ const STORED_LIMIT = 5000;
 export function CheckPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
+  const navigate = useNavigate();
   const { t } = useLocale();
   // 手动重跑/刷新后刷新侧边栏「合规检查」角标。
   const { refreshCheckSummary } = useOutletContext<{ refreshCheckSummary: () => void }>();
@@ -104,7 +110,7 @@ export function CheckPage() {
   const rules = useAsync(() => checkApi.rules(), []);
 
   const violations = report?.violations ?? stored.data ?? [];
-  // 子项目筛选：命中任一所选子工程，或归属为空（共享资源，如图视图「共享节点始终显示」）。
+  // 子项目筛选：命中任一所选子工程，或归属为空（共享资源，如代码图「共享节点始终显示」）。
   const scoped = useMemo(
     () =>
       subFilter.length === 0
@@ -266,11 +272,14 @@ export function CheckPage() {
     <>
       <PageHeader
         title={t('合规检查')}
-        subtitle={t(
-          '建图后自动跑出的规则结论（持久化），规则集见「规则集」页 —— 新增规则无需改前端',
-        )}
+        subtitle={t('建图后自动跑出的规则结论（持久化）；哪些规则启用、阈值多少在「规则集」里调')}
         extra={
           <Space>
+            {/* 规则集的入口在这里（侧栏已不再挂这一项）：调规则的动机来自"看了结论之后"，
+                而不是"我想去逛规则" —— 所以它是结论页的一个动作，不是并列的目的地。 */}
+            <Button icon={<ProfileOutlined />} onClick={() => navigate(`/projects/${id}/rules`)}>
+              {t('规则集')}
+            </Button>
             <Button
               icon={<ReloadOutlined />}
               loading={running}

@@ -162,11 +162,11 @@ export function CoveragePage() {
       <PageHeader
         title={t('建图报告')}
         subtitle={t('根节点缺失、路由指向不存在的 handler、identity 冲突等 —— 这些记录本身就是分析结论')}
-        // 侧栏不再有「诊断」菜单项：这一页的唯一入口是图视图标题旁 ⓘ 的 Popover，
+        // 侧栏不再有「诊断」菜单项：这一页的唯一入口是代码图标题旁 ⓘ 的 Popover，
         // 所以这里必须给出回路，否则用户进来就出不去了（只能靠浏览器后退）。
         extra={
           <Button size="small" onClick={() => navigate(`/projects/${id}/graph`)}>
-            {t('回到图视图')}
+            {t('回到代码图')}
           </Button>
         }
       />

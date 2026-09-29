@@ -243,7 +243,7 @@ export function SettingsPage() {
         showIcon
         style={{ marginTop: 20 }}
         message={t('按工程特例')}
-        description={t('若某个工程的本地根无法用模板表达（盘符 / 目录完全不同），可在其图视图页的「本地工程根（覆盖）」单独填写，覆盖全局设置。')}
+        description={t('若某个工程的本地根无法用模板表达（盘符 / 目录完全不同），可在其代码图页的「本地工程根（覆盖）」单独填写，覆盖全局设置。')}
       />
       <Typography.Paragraph type="secondary" style={{ fontSize: 11, marginTop: 12 }}>
         {t('存储键：')}{WSL_MODE_KEY}、{WSL_DISTRO_KEY}、{ROOT_TEMPLATE_KEY}{t('（浏览器 localStorage，仅本机生效）')}
