@@ -62,6 +62,10 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 
 于是"这个接口动了什么"是一眼看出来的事，而不是人工沿调用链翻十几跳。默认折叠视图**严格只留语义节点与语义边**，语法节点收进 `via` 链。
 
+![语义图：CRMEB 的连通子图（400 节点 / 894 边），按节点类型着色](graphtell/docs/screenshots/graph-crmeb.png)
+
+> 上图为 CRMEB（全量 96,241 节点）的一个连通子图：**400 节点 / 894 边**，按类型着色，可缩放拖拽、点击看细节。
+
 ### ② 基于图的规则校验
 
 规则写在 YAML 里（不是硬编码），判据直接跑在图上 —— 例如"前端调用了后端不存在的接口"、"契约写了 handler 但没解析到方法"、"缓存只读不写"、"端点无人调用"。
@@ -71,6 +75,10 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 ```
 
 产出带 `path:line` 的违规清单，可直接跳转。
+
+![规则校验：违规表可按严重度与规则筛选](graphtell/docs/screenshots/rules-crmeb.png)
+
+> 上图为 CRMEB 的检查结果（1,036 条违规），可按严重度 / 规则筛选。
 
 ### ③ 基于图的提示词增强（省 token）
 
@@ -82,6 +90,8 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 
 **为什么省 token**：AI IDE 的常见做法是把"相关文件**整篇**"注入；GraphTell 只给 **top-N 命中 + 按需读取的那一扇窗口**（±12 行），行号精确指向要改的位置。
 量化方式见 [`tools/token_savings_eval.py`](graphtell/tools/token_savings_eval.py)（可在你自己的工程上复现：对比"整文件注入"与"召回 + 按需读"的字符/token 比）。
+
+![提示词增强：中文问句 → 召回上下文包（种子 + 相关代码 + 图上关系）](graphtell/docs/screenshots/recall.png)
 
 ---
 
