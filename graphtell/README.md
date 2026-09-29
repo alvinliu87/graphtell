@@ -453,6 +453,8 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 标注含 `pii.phone`（19 张表，含通过 `user_phone` 变体列名识别出的 `store_order`）、`data.criticality`、`config.storage:Database`、`entrypoint.login`（10 个端点，含 `POST /apple_login`）。
 
 > **关于样本与发布包**：CRMEB / Bagisto 这类大型第三方工程**不随仓库分发**（授权 + 体积），请设 `GRAPHTELL_SAMPLE_DIR` 自行提供后再复现上述数字。仓库内随附的轻量样本（见 `samples/`）则始终可用，并已被自动生成成**可直接在 GitHub 渲染的展示页**——见下。
+>
+> **样本的授权与分发**：仓库**只分发自造的合成夹具** `samples/frontend-backend-link`（`.gitignore` 用 `**/samples/*` 排除其余样本，仅对该夹具开了例外）；第三方样本默认只存在于本地、不随仓库分发，其来源与许可证见 [`docs/samples-licenses.md`](docs/samples-licenses.md)。
 
 ## 示例 Demo（GitHub 展示）
 
