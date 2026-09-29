@@ -15,13 +15,13 @@ cargo run -p gt-app -- validate                 # 校验内置 FKB
 cargo run -p gt-app -- create --name X --path /repo   # 建图
 ```
 
-后端在进程内起 HTTP 服务，桌面端（Tauri）与 Web 端共用同一套 `/api` 契约；前端在 `ui/`（React + TS + antd，Feature Sliced Design）。
+后端在进程内起 HTTP 服务，桌面端（Tauri）与 Web 端共用同一套 `/api` 契约；前端在 `ui/`（React + TS + antd，自上而下的分层）。
 
 ---
 
 ## 2. 架构约束（改代码前必读）
 
-仓库是**六边形架构 + SOLID**，依赖方向永远指向内核 `gt-domain`：
+仓库是**端口与适配器**分层，依赖方向永远指向内核 `gt-domain`：
 
 - **`gt-domain` 不能依赖任何具体技术**（不得 `use` 任何 adapter / 框架）。所有 IO 通过 `port` 里的 trait 反向注入。
 - **新语言 / 新框架 / 新节点种类优先用声明式方式完成，不要上来就改引擎**。约 90% 的 FKB 可以零引擎改动。

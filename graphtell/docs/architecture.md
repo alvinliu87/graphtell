@@ -5,8 +5,8 @@
 
 把任意代码库**图化**的分析平台：以 `tree-sitter` 解析出语法级节点，再按**框架知识库（FKB）**合成语义节点，最终得到一张可以查询、可以标注、可以做影响面与死代码分析的图。
 
-- 后端：Rust（**六边形架构** + SOLID），SQLite 持久化
-- 前端：React + TypeScript + Ant Design（**Feature Sliced Design**）
+- 后端：Rust（**端口与适配器**分层，内核零 IO 依赖），SQLite 持久化
+- 前端：React + TypeScript + Ant Design（**自上而下**的分层）
 - 桌面常驻：Tauri（后端在**进程内**启动 HTTP 服务，桌面端与 Web 端共用同一套 `/api` 契约）
 - 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约）与 **Java**（Spring Boot）与 **JavaScript/TypeScript**（Uni-app 前端 / NestJS·Express 后端 / TypeORM 实体映射）与 **Python**（FastAPI / Flask / Celery / SQLAlchemy）。完整的支持矩阵与已知边界见 [`SUPPORTED.md`](../SUPPORTED.md)。
 
@@ -62,7 +62,7 @@ cd ui && npm run tauri dev
 
 ## 架构
 
-### 后端：六边形架构（端口与适配器）
+### 后端：端口与适配器分层
 
 ```
                 ┌─────────────────────────────────────────────┐
@@ -90,17 +90,12 @@ cd ui && npm run tauri dev
 
 **依赖方向永远指向内核**：`gt-domain` 不依赖任何具体技术；所有 IO 都通过 `port` 中定义的 trait 反向注入（`Persistence` / `FileSystem` / `FileScanner` / `ParserRegistry` / `KnowledgeProvider` / `PipelineObserver` / `Clock`）。
 
-SOLID 落点：
+其中两处是刻意的设计：
 
-| 原则 | 体现 |
-| --- | --- |
-| S 单一职责 | 每个阶段一个模块；每个端口只暴露一种能力（`ProjectReader` / `GraphSink` / `DiagnosticSink` …） |
-| O 开闭 | `NodeKind` / `EdgeKind` / `Phase` 是**开放字符串** + 常量速记；新语言、新框架、新节点种类都不需要改内核 |
-| L 里氏 | 任何 `Persistence` 实现（SQLite / 内存）可互换 |
-| I 接口隔离 | 持久化被拆成 6 个细粒度 trait，再用 blanket impl 组合成 `Persistence` |
-| D 依赖倒置 | 内核定义端口，适配器实现；`gt-app` 是唯一知道全部具体技术的组装根 |
+- **持久化被拆成 6 个细粒度 trait**（`ProjectReader` / `ProjectWriter` / `GraphSink` / `GraphQuery` / `SymbolTableReader` / `DiagnosticSink`），再用 blanket impl 组合成 `Persistence` —— 实现方只关心自己用得到的那部分，SQLite / 内存实现可互换。
+- **`NodeKind` / `EdgeKind` / `Phase` 是开放字符串 + 常量速记** —— 新语言、新框架、新节点种类都不需要改内核（见文末「扩展新语言 / 新框架」）。
 
-### 前端：Feature Sliced Design
+### 前端：分层与依赖方向
 
 ```
 ui/src
@@ -518,7 +513,7 @@ crates/
 ├── gt-adapter-rules     规则 YAML 装载（CheckRule）
 └── gt-app               组装根 + CLI
 src-tauri/               Tauri 桌面端（独立 workspace）
-ui/                      React + TS + antd（FSD）
+ui/                      React + TS + antd（分层：pages → widgets → … → shared）
 fkb/                     预置框架知识（php/、java/… 框架级；projects/ 项目级）
 rules/                   检查规则（合规检查）
 views/                   视角声明（两级筛选器的一级选项）
