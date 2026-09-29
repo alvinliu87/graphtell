@@ -1,0 +1,58 @@
+[2m2026-09-29T06:18:21.370512Z[0m [32m INFO[0m [2mgt_adapter_sqlite::store[0m[2m:[0m SQLite 已打开: /tmp/graphtell-demo.056oOd/graphtell.sqlite
+[2m2026-09-29T06:18:21.371349Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spring-boot (fkb/java/spring-boot.yaml)
+[2m2026-09-29T06:18:21.372282Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: thinkphp6 (fkb/php/thinkphp6.yaml)
+[2m2026-09-29T06:18:21.372822Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: laravel (fkb/php/laravel.yaml)
+[2m2026-09-29T06:18:21.373004Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/php/crmeb.yaml)
+[2m2026-09-29T06:18:21.373083Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spatie-permission (fkb/php/spatie-permission.yaml)
+[2m2026-09-29T06:18:21.373198Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: symfony (fkb/php/symfony.yaml)
+[2m2026-09-29T06:18:21.373430Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: php-common (fkb/php/common.yaml)
+[2m2026-09-29T06:18:21.373542Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: my-framework (fkb/_template/template.yaml)
+[2m2026-09-29T06:18:21.373646Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastify (fkb/js/fastify.yaml)
+[2m2026-09-29T06:18:21.373828Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: typeorm (fkb/js/typeorm.yaml)
+[2m2026-09-29T06:18:21.373973Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: express (fkb/js/express.yaml)
+[2m2026-09-29T06:18:21.374079Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: koa (fkb/js/koa.yaml)
+[2m2026-09-29T06:18:21.374296Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: nestjs (fkb/js/nestjs.yaml)
+[2m2026-09-29T06:18:21.374555Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js-common (fkb/js/common.yaml)
+[2m2026-09-29T06:18:21.374855Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js (fkb/js/uni-app.yaml)
+[2m2026-09-29T06:18:21.375200Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastapi (fkb/python/fastapi.yaml)
+[2m2026-09-29T06:18:21.375376Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: celery (fkb/python/celery.yaml)
+[2m2026-09-29T06:18:21.375628Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: django (fkb/python/django.yaml)
+[2m2026-09-29T06:18:21.375823Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: flask (fkb/python/flask.yaml)
+[2m2026-09-29T06:18:21.375944Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/projects/crmeb.yaml)
+[2m2026-09-29T06:18:21.375976Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 20 份框架知识
+[2m2026-09-29T06:18:21.376200Z[0m [32m INFO[0m [2mgt_adapter_views[0m[2m:[0m 装载视角声明: target/release/../../views/perspectives.yaml
+[2m2026-09-29T06:18:21.376229Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 10 个视角声明
+[2m2026-09-29T06:18:21.376375Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/java/n1-query.yaml (2 条)
+[2m2026-09-29T06:18:21.376459Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/php/architecture.yaml (1 条)
+[2m2026-09-29T06:18:21.376586Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/php/deadcode.yaml (2 条)
+[2m2026-09-29T06:18:21.376845Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/php/security.yaml (11 条)
+[2m2026-09-29T06:18:21.376953Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/php/n1-query.yaml (2 条)
+[2m2026-09-29T06:18:21.377046Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/php/runtime.yaml (2 条)
+[2m2026-09-29T06:18:21.377169Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/js/deadcode.yaml (3 条)
+[2m2026-09-29T06:18:21.377308Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/global/architecture.yaml (4 条)
+[2m2026-09-29T06:18:21.377438Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/global/contract.yaml (4 条)
+[2m2026-09-29T06:18:21.377524Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/global/deadcode.yaml (2 条)
+[2m2026-09-29T06:18:21.377605Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/global/api-hygiene.yaml (1 条)
+[2m2026-09-29T06:18:21.377675Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/release/../../rules/global/performance.yaml (1 条)
+[2m2026-09-29T06:18:21.377706Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 35 条检查规则
+节点 537 / 边 526 / 标注 1
+  CallSite         337
+  Class            18
+  ConfigKey        128
+  File             31
+  HttpContract     2
+  Method           9
+  Middleware       2
+  Namespace        9
+  Property         1
+  [Resolve] UnresolvedLink Container 解析失败: 容器无法解析 password
+  [CfAst] AliasTargetMissing 基类 PHPUnit\Framework\TestCase 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Foundation\Testing\TestCase 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Tests\TestCase 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Database\Console\Seeds\WithoutModelEvents 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Database\Seeder 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Database\Eloquent\Factories\Factory 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Support\ServiceProvider 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Notifications\Notifiable 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Database\Eloquent\Factories\HasFactory 不在图内（可能被 Ingest 排除），已记占位节点
+  [CfAst] AliasTargetMissing 基类 Illuminate\Foundation\Auth\User 不在图内（可能被 Ingest 排除），已记占位节点

@@ -1,0 +1,49 @@
+{
+  "project_id": 5,
+  "rules_total": 35,
+  "rules_run": 5,
+  "violations": [],
+  "by_severity": {},
+  "by_rule": {},
+  "rules_silent": [
+    "hot-table（候选集为空：图上没有这类节点）",
+    "config-read-hotspot（128 个候选均未命中）",
+    "hotspot-method（9 个候选均未命中）",
+    "dead-table（候选集为空：图上没有这类节点）",
+    "get-with-write-verb（2 个候选均未命中）"
+  ],
+  "rules_not_applicable": [
+    "java-n1-query-in-loop（需要 java，本工程为 php（laravel））",
+    "java-n1-write-in-loop（需要 java，本工程为 php（laravel））",
+    "eventbus-emitted-without-listener（需要 javascript，本工程为 php（laravel））",
+    "eventbus-listened-without-emitter（需要 javascript，本工程为 php（laravel））",
+    "eventbus-orphan（需要 javascript，本工程为 php（laravel））"
+  ],
+  "rules_unavailable": [
+    "pii-table-hot（图上没有任何 pii 标注，`no/has_annotation` 判据不成立）",
+    "orphan-event（图上没有任何 Triggers 边，`no/has_Triggers` 判据不成立）",
+    "orphan-queue（图上没有任何 PublishesTo 边，`no/has_PublishesTo` 判据不成立）",
+    "write-endpoint-with-optional-auth（图上没有任何 auth.optional 标注，`no/has_annotation` 判据不成立）",
+    "raw-sql-sink（图上没有任何 sink 标注，`no/has_annotation` 判据不成立）",
+    "pii-table-needs-review（图上没有任何 pii 标注，`no/has_annotation` 判据不成立）",
+    "sql-injection-raw（图上没有任何 tainted_raw 标注，`no/has_annotation` 判据不成立）",
+    "sql-injection-where-interp（图上没有任何 tainted_where 标注，`no/has_annotation` 判据不成立）",
+    "raw-sql-unknown-source（图上没有任何 tainted_raw_unknown 标注，`no/has_annotation` 判据不成立）",
+    "where-sql-unknown-source（图上没有任何 tainted_where_unknown 标注，`no/has_annotation` 判据不成立）",
+    "cors-reflect-origin（图上没有任何 cors_origin_reflect 标注，`no/has_annotation` 判据不成立）",
+    "sign-compare-loose（图上没有任何 weak_sign_compare 标注，`no/has_annotation` 判据不成立）",
+    "sign-weak-hash（图上没有任何 weak_sign_hash 标注，`no/has_annotation` 判据不成立）",
+    "n1-query-in-loop（图上没有任何 db-query 标注，`no/has_annotation` 判据不成立）",
+    "n1-write-in-loop（图上没有任何 db-write 标注，`no/has_annotation` 判据不成立）",
+    "ext-call-in-loop（图上没有任何 ext-call-in-loop 标注，`no/has_annotation` 判据不成立）",
+    "multi-write-without-tx（图上没有任何 multi-write-without-tx 标注，`no/has_annotation` 判据不成立）",
+    "read-only-table（图上没有任何 WritesDb 边，`no/has_WritesDb` 判据不成立）",
+    "http-contract-handler-unresolved（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "http-contract-without-handler（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "frontend-calls-missing-backend（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "backend-endpoint-never-called（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "write-only-table（图上没有任何 ReadsDb 边，`no/has_ReadsDb` 判据不成立）",
+    "cache-never-written（图上没有任何 ReadsCache 边，`no/has_ReadsCache` 判据不成立）"
+  ],
+  "duration_ms": 1
+}

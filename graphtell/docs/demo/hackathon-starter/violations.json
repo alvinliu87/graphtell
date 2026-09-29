@@ -1,0 +1,68 @@
+{
+  "project_id": 3,
+  "rules_total": 35,
+  "rules_run": 5,
+  "violations": [
+    {
+      "project_id": 3,
+      "rule_id": "get-with-write-verb",
+      "title": "GET 接口却在做写操作",
+      "category": "api-hygiene",
+      "severity": "warning",
+      "node_id": 3000006972,
+      "node_name": "GET /reset/:token",
+      "node_kind": "HttpContract",
+      "message": "契约 GET /reset/:token 是 GET 却包含写动词，违反 REST 只读语义（可能被重试 / 预取误触发写操作）",
+      "remediation": "把该接口改成 POST / DELETE 等写方法；若确为只读的清空 / 删除预览，改名避开写动词",
+      "file": "samples/hackathon-starter/app.js",
+      "line": 266,
+      "sub_project_id": 4
+    }
+  ],
+  "by_severity": {
+    "warning": 1
+  },
+  "by_rule": {
+    "get-with-write-verb": 1
+  },
+  "rules_silent": [
+    "hot-table（候选集为空：图上没有这类节点）",
+    "config-read-hotspot（候选集为空：图上没有这类节点）",
+    "hotspot-method（候选集为空：图上没有这类节点）",
+    "dead-table（候选集为空：图上没有这类节点）"
+  ],
+  "rules_not_applicable": [
+    "java-n1-query-in-loop（需要 java，本工程为 javascript（express/frontend-js））",
+    "java-n1-write-in-loop（需要 java，本工程为 javascript（express/frontend-js））",
+    "pii-table-hot（需要 php，本工程为 javascript（express/frontend-js））",
+    "orphan-event（需要 php，本工程为 javascript（express/frontend-js））",
+    "orphan-queue（需要 php，本工程为 javascript（express/frontend-js））",
+    "write-endpoint-with-optional-auth（需要 php，本工程为 javascript（express/frontend-js））",
+    "raw-sql-sink（需要 php，本工程为 javascript（express/frontend-js））",
+    "pii-table-needs-review（需要 php，本工程为 javascript（express/frontend-js））",
+    "sql-injection-raw（需要 php，本工程为 javascript（express/frontend-js））",
+    "sql-injection-where-interp（需要 php，本工程为 javascript（express/frontend-js））",
+    "raw-sql-unknown-source（需要 php，本工程为 javascript（express/frontend-js））",
+    "where-sql-unknown-source（需要 php，本工程为 javascript（express/frontend-js））",
+    "cors-reflect-origin（需要 php，本工程为 javascript（express/frontend-js））",
+    "sign-compare-loose（需要 php，本工程为 javascript（express/frontend-js））",
+    "sign-weak-hash（需要 php，本工程为 javascript（express/frontend-js））",
+    "n1-query-in-loop（需要 php，本工程为 javascript（express/frontend-js））",
+    "n1-write-in-loop（需要 php，本工程为 javascript（express/frontend-js））",
+    "ext-call-in-loop（需要 php，本工程为 javascript（express/frontend-js））",
+    "multi-write-without-tx（需要 php，本工程为 javascript（express/frontend-js））"
+  ],
+  "rules_unavailable": [
+    "eventbus-emitted-without-listener（图上没有任何 Emits 边，`no/has_Emits` 判据不成立）",
+    "eventbus-listened-without-emitter（图上没有任何 ListensTo 边，`no/has_ListensTo` 判据不成立）",
+    "eventbus-orphan（图上没有任何 Emits 边，`no/has_Emits` 判据不成立）",
+    "read-only-table（图上没有任何 WritesDb 边，`no/has_WritesDb` 判据不成立）",
+    "http-contract-handler-unresolved（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "http-contract-without-handler（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "frontend-calls-missing-backend（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "backend-endpoint-never-called（图上没有任何 HandledBy 边，`no/has_HandledBy` 判据不成立）",
+    "write-only-table（图上没有任何 ReadsDb 边，`no/has_ReadsDb` 判据不成立）",
+    "cache-never-written（图上没有任何 ReadsCache 边，`no/has_ReadsCache` 判据不成立）"
+  ],
+  "duration_ms": 10
+}
