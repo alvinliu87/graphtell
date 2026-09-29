@@ -111,6 +111,15 @@ jobs:
         with:
           context: graphtell
           push: true
+          # 镜像内编译默认 feature（candle + ONNX Runtime）非常重，在 Runner 上
+          # 容易 OOM / 超时 —— 实测该步骤一直是唯一失败项（checkout / buildx /
+          # GHCR 登录均成功，故不是权限问题）。发布镜像改用 `--no-default-features`：
+          # 体积小、构建快且稳定，召回走哈希编码器（离线、零依赖）。
+          #
+          # 需要 bge-m3 语义向量时请本地构建完整镜像（不传此参数）：
+          #   docker build -t graphtell .        （默认即含 candle / ort）
+          build-args: |
+            GT_FEATURES=--no-default-features
           tags: |
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
