@@ -6,9 +6,10 @@
 //! 1. 锁定 6 类真实开发场景的召回基线（监听器浮出 / 业务方法命中 / 质量不崩）；
 //! 2. 将来改召回算法、接 bge 语义路径后，可批量对比「质量档 + 命中节点」是否回归。
 //!
-//! **依赖体积过大的真实样本（不入库），整组标了 `#[ignore]`**：默认 `cargo test`
-//! 不会执行，需先设置 `GRAPHTELL_SAMPLE_DIR` 指向 CRMEB 根，再
-//! `cargo test -- --ignored eval_recall`。无样本时优雅跳过（不是失败）。
+//! **依赖体积过大的真实样本（不入库）+ bge-m3 模型权重**：
+//! 无样本时优雅跳过（不是失败）；有样本但无模型权重时质量档会不达标，
+//! 故 `eval_recall_scenarios` 仍标 `#[ignore]`（原因写在它上方）。
+//! 想强制跑：`cargo test -p gt-app -- --ignored eval_recall`。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -22,7 +23,12 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
 }
 
-/// 在 `dir/samples` 或 `GRAPHTELL_SAMPLE_DIR` 下定位 CRMEB 样本根。
+/// 定位 CRMEB 样本根：优先 `GRAPHTELL_SAMPLE_DIR`，否则从 `CARGO_MANIFEST_DIR`
+/// **向上逐级**在 `samples/` 下递归查找。
+///
+/// 原先只查 `workspace_root()/samples`（内层工作区）且匹配 `samples/*/CRMEB-master`
+/// （一层 + 后缀），与真实布局 `samples/php-projects/thinkphp/CRMEB`（两层、无后缀）
+/// 不符 → 找不到样本 → 用例走软跳过分支、仍计为 passed，实则零覆盖。
 fn find_sample() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -30,19 +36,37 @@ fn find_sample() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let samples = workspace_root().join("samples");
-    let direct = samples.join("CRMEB-master");
-    if direct.is_dir() {
-        return Some(direct);
+    /// 在 `dir` 内最多找 `depth` 层，命中 `CRMEB` / `CRMEB-master`。
+    fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
+        if depth == 0 {
+            return None;
+        }
+        let mut hits: Vec<PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "CRMEB" || name == "CRMEB-master" {
+                hits.push(path);
+            } else if let Some(found) = search(&path, depth - 1) {
+                hits.push(found);
+            }
+        }
+        hits.sort();
+        hits.into_iter().next()
     }
-    let mut hits: Vec<PathBuf> = std::fs::read_dir(&samples)
-        .ok()?
-        .flatten()
-        .map(|e| e.path().join("CRMEB-master"))
-        .filter(|p| p.is_dir())
-        .collect();
-    hits.sort();
-    hits.into_iter().next()
+    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..6 {
+        if let Some(cand) = search(&cur.join("samples"), 3) {
+            return Some(cand);
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    None
 }
 
 struct Built {
@@ -122,8 +146,12 @@ fn threshold_ord(s: &str) -> u8 {
 }
 
 /// 跑 `tests/eval/recall_scenarios.jsonl` 整份语料，逐条校验「期望命中 + 最低质量档」。
+// 这条是**召回质量评测**：期望的「最低质量档 + 命中节点」是按 bge-m3 语义向量校准的。
+// `--no-default-features` 构建没有模型权重、走哈希兜底，实测 6 条语料有 2 条不达标
+// （如 `order_create_notify` 质量 Low、`login_log` 漏 loginSaveVisit）—— 这是编码器能力
+// 差异，不是召回逻辑坏了。因此它额外**依赖模型权重**（GT_BGE_MODEL），保留 ignore。
 #[test]
-#[ignore = "需要 CRMEB-master 样本：设置 GRAPHTELL_SAMPLE_DIR 后运行 `cargo test -- --ignored` 才会执行"]
+#[ignore = "需 bge-m3 模型权重（GT_BGE_MODEL）：哈希兜底下质量档不达标，非召回逻辑问题"]
 fn eval_recall_scenarios() {
     let Some(b) = built() else {
         eprintln!("{}", skip());

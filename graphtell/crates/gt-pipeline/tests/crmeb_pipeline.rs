@@ -314,11 +314,10 @@ fn synthesize_creates_http_contract_including_apple_login() {
     );
 }
 
-// TODO(CRMEB v6)：当前样本是 CRMEB v6.0.0，同一 identity 出现了 2 个 Table 节点
-// （期望 1）。需查 P5 表 identity 合并逻辑 —— 是 v6 的表命名/前缀导致，还是合并本身有缺口。
-// 查清前**显式** ignore 并写明原因，避免像以前那样因样本定位失败而静默跳过。
+// 曾因 `tp6-model-table-convention` 的 identity 缺 `side`（合并键含由此推导的 scope），
+// 与 `tp6-db-name-table` 建出的同名表 scope 不一致 → 同一张表出现 2 个节点。
+// 已在 FKB 补齐 `side: backend`，此用例恢复运行并守住该幂等性。
 #[test]
-#[ignore = "CRMEB v6：同一 identity 出现 2 个 Table 节点，待查表 identity 合并逻辑"]
 fn synthesize_merges_table_identity_idempotently() {
     let Some(b) = built() else {
         eprintln!("{}", common::skip_reason());
@@ -1178,14 +1177,10 @@ fn synthesize_detects_queues_from_framework_fkb() {
     );
 }
 
-// TODO(CRMEB v6)：v6 的 `crmeb/app/api/route/v1.php` 里 `Route::get('crontab/...')`
-// 这批**外部调度路由既没合成 HttpContract 也没合成 Schedule**（后台 `/system/crontab/*`
-// 路由正常，HttpContract 共 1603 个）。项目级 FKB `crmeb` 已加载、探测器路径也存在，
-// 所以问题在框架/项目 FKB 对该注册写法（疑似 `Route::group` 闭包 / `->option()` 链式）
-// 的路由捕获能力；不是把 crontab 目录换个名字就能解决。
-// 支持该写法前**显式** ignore 并写明原因，不静默跳过。
+// 曾因「项目级 FKB 的 id 与框架级重名被 by_id 遮蔽」而合成不出 Schedule
+// （fkb/projects/crmeb.yaml 与 fkb/php/crmeb.yaml 都叫 `crmeb`）。项目级那份已改名
+// 为 `crmeb-project` 后规则生效，此用例恢复运行 —— 它也顺带守住这个 id 唯一性。
 #[test]
-#[ignore = "CRMEB v6：app/api/route/v1.php 的 crontab/* 路由未被捕获，待修 FKB 路由规则"]
 fn synthesize_detects_schedules_from_project_fkb() {
     let Some(b) = built() else {
         eprintln!("{}", common::skip_reason());

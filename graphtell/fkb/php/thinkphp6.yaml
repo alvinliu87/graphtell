@@ -422,6 +422,14 @@ rules:
                 - strip_prefix: []
                 - singularize
                 - trim
+          # 必须带 `side`：identity 的**合并键含 scope**（由 side 推导）。
+          # 少了它，本规则建出的表（`app\model\user\User` → `user`）与
+          # `tp6-db-name-table` 建出的同名表（`Db::name('user')` → `user`）scope
+          # 不一致 → 被判定为两个不同 identity，同一张表在图里出现**两个节点**，
+          # 幂等合并失效（CRMEB 实测：user 表 2 个节点，且各自只有一半来源）。
+          fields:
+            - name: side
+              value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
 

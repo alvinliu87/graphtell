@@ -12,7 +12,11 @@
 # 这些路由既是普通 HttpContract（由 tp6-route-http-contract 合成），又被本规则额外
 # 合成为 Schedule 语义节点并 HandledBy 到对应 CrontabController 方法。
 
-id: crmeb
+# id 必须**唯一**：内核取项目级规则走 `kb.by_id(id)`，而 `by_id` 只返回第一个同 id
+# 的条目。此前这里与 fkb/php/crmeb.yaml（框架作用域）都叫 `crmeb`，框架那份排在前面
+# （目录序），于是本文件的规则（含下面的 crontab → Schedule）被整个遮蔽、从未生效。
+# 改名后两份各归各位：框架级管机制，项目级管业务约定。
+id: crmeb-project
 display_name: CRMEB
 language: php
 scope: project
