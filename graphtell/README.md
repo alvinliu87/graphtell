@@ -41,6 +41,7 @@ cd ui && npm run tauri dev
 ./target/debug/graphtell list
 ./target/debug/graphtell run    --project 1
 ./target/debug/graphtell stats  --project 1
+./target/debug/graphtell export --project 1   # 导出图（节点 / 边 / 文件路径）JSON，供静态 demo / 外部分析
 ./target/debug/graphtell delete --project 1
 
 # 合规检查
@@ -437,28 +438,50 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 ## 在 CRMEB 样本上的实测
 
-`samples/CRMEB-master`（3 个子工程、2178 个源文件）全量建图约 **6 秒**：
+样本：`samples/php-projects/thinkphp/CRMEB`（**v6.0.0**，3 个子工程、2189 个源文件）。
+全量建图约 **25 秒**（耗时由 CfAst 主导，约 18s）：
 
 | 阶段 | 节点 | 边 | 标注 | 耗时 |
 | --- | --- | --- | --- | --- |
-| Ingest | 0 | 0 | 0 | 91ms |
-| CfAst | 57 554 | 57 852 | 0 | 2.8s |
-| Prepare | 0 | 0 | 0 | 0.25s |
-| AnnotatePre | 45 | 19 | 27 | 0.19s |
-| Synthesize | 1 610 | 957 | 0 | 0.36s |
-| AnnotatePost | 0 | 0 | 1 866 | 0.06s |
-| Resolve | 0 | 234 | 0 | 0.13s |
+| Ingest | 0 | 0 | 0 | 146ms |
+| CfAst | 93 608 | 91 351 | 0 | 18.1s |
+| Prepare | 0 | 0 | 0 | 427ms |
+| AnnotatePre | 20 | 19 | 2 287 | 335ms |
+| Synthesize | 2 539 | 2 697 | 0 | 2.9s |
+| GuardCapability | 0 | 0 | 1 204 | 60ms |
+| AnnotatePost | 74 | 106 | 2 592 | 1.18s |
+| Resolve | 0 | 21 029 | 1 606 | 1.88s |
+| Propagate | 0 | 5 730 | 0 | 102ms |
+| Taint | 0 | 0 | 135 | 32ms |
+| Cors | 0 | 0 | 3 | 4ms |
+| Sign | 0 | 0 | 3 | 5ms |
+| External | 0 | 0 | 2 | 4ms |
+| Tx | 0 | 0 | 2 | 29ms |
+| Guard | 0 | 4 436 | 0 | 47ms |
 
-产出：`Class` 1011、`Method` 6620、`CallSite` 47354、**`HttpContract` 1227**、**`Table` 156`、`Event` 45、`ConfigKey` 227；
-标注含 `pii.phone`（19 张表，含通过 `user_phone` 变体列名识别出的 `store_order`）、`data.criticality`、`config.storage:Database`、`entrypoint.login`（10 个端点，含 `POST /apple_login`）。
+建图结果共 **96 241 个节点 / 125 368 条边**，主要节点产出：
+`Class` 1043、`Method` 6724、`CallSite` 80 263、**`HttpContract` 1603**、**`Table` 156**、
+`Function` 1907、`ConfigKey` 278、`Cache` 42、`Queue` 27、`Event` 20、**`Schedule` 17**。
 
-> **关于样本与发布包**：CRMEB / Bagisto 这类大型第三方工程**不随仓库分发**（授权 + 体积），请设 `GRAPHTELL_SAMPLE_DIR` 自行提供后再复现上述数字。仓库内随附的轻量样本（见 `samples/`）则始终可用，并已被自动生成成**可直接在 GitHub 渲染的展示页**——见下。
+其中 `Schedule` 由 CRMEB 的**项目级** FKB 把 `crontab/...` 路由合成而来（此前因项目级 FKB
+与框架级 FKB 的 `id` 重名被遮蔽而恒为 0，已修复）。标注覆盖 `pii.phone`（含通过 `user_phone`
+变体列名识别出的 `store_order`）、`data.criticality`、`config.storage:Database`、`entrypoint.login`
+等通道。
+
+> **关于样本与发布包**：CRMEB / Bagisto 这类大型第三方工程**不随仓库分发**（授权 + 体积），请设 `GRAPHTELL_SAMPLE_DIR` 自行提供后再复现上述数字（上述数字对应 **v6.0.0**，换版本会有出入）。仓库内随附的轻量样本（见 `samples/`）则始终可用，并已被自动生成成**可直接在 GitHub 渲染的展示页**——见下。
 >
 > **样本的授权与分发**：仓库**只分发自造的合成夹具** `samples/frontend-backend-link`（`.gitignore` 用 `**/samples/*` 排除其余样本，仅对该夹具开了例外）；第三方样本默认只存在于本地、不随仓库分发，其来源与许可证见 [`docs/samples-licenses.md`](docs/samples-licenses.md)。
 
 ## 示例 Demo（GitHub 展示）
 
-`tools/gen_demo.sh` 对每个样本跑「建图 → 规则检测 → 召回示例」，把结果落盘为 GitHub 原生可渲染的 Markdown（图规模表格、规则违规表、中文召回上下文包），放在 **[`docs/demo/`](docs/demo/README.md)**。无需模型权重（召回走哈希兜底），推到默认分支即可查看，也可本地 `./tools/gen_demo.sh --build` 重新生成。
+[`tools/gen_demo.sh`](tools/gen_demo.sh) 对每个样本跑「建图 → 规则检测 → 召回示例 → 图导出」，生成两份可直接发布的静态产物，放在 **[`docs/demo/`](docs/demo/README.md)**：
+
+- **交互式站点** [`docs/demo/index.html`](docs/demo/index.html)：多项目切换 + 三个页签 —— **图**（可缩放拖拽的节点-边图，按类型着色，点击看细节）、**规则检验**（违规表，可按严重度 / 规则筛选）、**提示词增强**（中文问句的召回上下文包）。大工程只渲染一个**连通子图**并如实标注完整规模。
+- **Markdown 画廊** `docs/demo/README.md`：GitHub 原生渲染，适合在仓库内直接浏览。
+
+无需模型权重（召回走哈希兜底）。本地重生成：`./tools/gen_demo.sh --build`（样本树默认取仓库根 `samples/`，可用 `GRAPHTELL_SAMPLES_DIR` 覆盖）。
+
+发布：仓库 **Settings → Pages → Source 选 "GitHub Actions"**（一次性），之后推 `master`/`main` 由 [`.github/workflows/deploy-demo.yml`](../.github/workflows/deploy-demo.yml) 自动发布到 `https://<用户名>.github.io/<仓库名>/` —— **免自购域名**。（Gitee 不执行 GitHub Actions，需在其 Gitee Pages 服务里手动部署。）
 
 > 集成测试依赖的样本同样是「软依赖」：仓库内 `samples/` 缺席时（如发布包 / 部分检出），相关测试自动跳过而非失败——与 demo 脚本跳过缺失样本的行为一致。
 
@@ -493,10 +516,18 @@ crates/
 └── gt-app               组装根 + CLI
 src-tauri/               Tauri 桌面端（独立 workspace）
 ui/                      React + TS + antd（FSD）
-fkb/                     预置框架知识
+fkb/                     预置框架知识（php/、java/… 框架级；projects/ 项目级）
 rules/                   检查规则（合规检查）
 views/                   视角声明（两级筛选器的一级选项）
+docs/
+├── demo/                示例 demo：交互式站点 + Markdown 画廊（可发 GitHub Pages）
+└── samples-licenses.md  第三方样本的许可证与来源
+tools/                   分析与演示脚本（gen_demo.sh 等）
+scripts/                 发布脚本（package-release.sh）
 ```
+
+> `samples/`（样本代码库）位于**仓库根**且**不随仓库分发**（`.gitignore` 的 `**/samples/*`
+> 排除，仅自造夹具 `samples/frontend-backend-link` 开了例外）—— 见「样本的授权与分发」。
 
 ## 部署（Docker / 发布包）
 
