@@ -87,6 +87,12 @@ jobs:
   desktop:
     name: 桌面端打包
     runs-on: ubuntu-latest
+    # 桌面端打包会把后端**再编一遍**（默认 feature 含 candle），耗时可观，且依赖
+    # WebKitGTK 等系统库 —— 环境脆弱，在 CI 上反复失败（后端与前端的门禁才是
+    # 每次提交真正要守的）。它只在**发版 tag**时才需要产物，故平时不跑。
+    if: startsWith(github.ref, 'refs/tags/v')
+    # 即便打包失败也不阻断 Release：主交付物是各平台 CLI 包，桌面安装包是附加项。
+    continue-on-error: true
     defaults:
       run:
         working-directory: graphtell
