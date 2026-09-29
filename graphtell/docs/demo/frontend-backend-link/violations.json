@@ -425,5 +425,5 @@
     "read-only-table（图上没有任何 WritesDb 边，`no/has_WritesDb` 判据不成立）",
     "write-only-table（图上没有任何 ReadsDb 边，`no/has_ReadsDb` 判据不成立）"
   ],
-  "duration_ms": 4
+  "duration_ms": 5
 }

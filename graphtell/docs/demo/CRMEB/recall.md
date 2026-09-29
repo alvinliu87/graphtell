@@ -52,7 +52,7 @@
 
 - 位置：`samples/php-projects/thinkphp/CRMEB/crmeb/app/services/order/OtherOrderServices.php:268`
 - 得分：779.8 · 跳数 0 · 来源种子 `zeroYuanPayment` · 直接命中
-- 图上关系：→ ReadsConfig ×7，→ HasCallSite ×3，→ Calls ×2，→ PublishesTo，→ WritesDb
+- 图上关系：→ ReadsConfig ×7，→ HasCallSite ×3，→ Calls ×2，→ PublishesTo，→ ReadsDb
 
 ```
      * @return bool

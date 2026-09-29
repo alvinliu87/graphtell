@@ -1,41 +1,41 @@
-[2m2026-09-29T10:02:59.419204Z[0m [32m INFO[0m [2mgt_adapter_sqlite::store[0m[2m:[0m SQLite 已打开: /tmp/graphtell-demo.nsSDnt/graphtell.sqlite
-[2m2026-09-29T10:02:59.422564Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spring-boot (fkb/java/spring-boot.yaml)
-[2m2026-09-29T10:02:59.427733Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: thinkphp6 (fkb/php/thinkphp6.yaml)
-[2m2026-09-29T10:02:59.430700Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: laravel (fkb/php/laravel.yaml)
-[2m2026-09-29T10:02:59.431587Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/php/crmeb.yaml)
-[2m2026-09-29T10:02:59.431842Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spatie-permission (fkb/php/spatie-permission.yaml)
-[2m2026-09-29T10:02:59.432219Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: symfony (fkb/php/symfony.yaml)
-[2m2026-09-29T10:02:59.433514Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: php-common (fkb/php/common.yaml)
-[2m2026-09-29T10:02:59.433914Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: my-framework (fkb/_template/template.yaml)
-[2m2026-09-29T10:02:59.434259Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastify (fkb/js/fastify.yaml)
-[2m2026-09-29T10:02:59.434995Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: typeorm (fkb/js/typeorm.yaml)
-[2m2026-09-29T10:02:59.435657Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: express (fkb/js/express.yaml)
-[2m2026-09-29T10:02:59.436044Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: koa (fkb/js/koa.yaml)
-[2m2026-09-29T10:02:59.436988Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: nestjs (fkb/js/nestjs.yaml)
-[2m2026-09-29T10:02:59.437961Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js-common (fkb/js/common.yaml)
-[2m2026-09-29T10:02:59.439359Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js (fkb/js/uni-app.yaml)
-[2m2026-09-29T10:02:59.440799Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastapi (fkb/python/fastapi.yaml)
-[2m2026-09-29T10:02:59.441514Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: celery (fkb/python/celery.yaml)
-[2m2026-09-29T10:02:59.442705Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: django (fkb/python/django.yaml)
-[2m2026-09-29T10:02:59.443844Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: flask (fkb/python/flask.yaml)
-[2m2026-09-29T10:02:59.444345Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/projects/crmeb.yaml)
-[2m2026-09-29T10:02:59.444412Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 20 份框架知识
-[2m2026-09-29T10:02:59.446028Z[0m [32m INFO[0m [2mgt_adapter_views[0m[2m:[0m 装载视角声明: target/debug/../../views/perspectives.yaml
-[2m2026-09-29T10:02:59.446110Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 10 个视角声明
-[2m2026-09-29T10:02:59.446639Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/java/n1-query.yaml (2 条)
-[2m2026-09-29T10:02:59.446869Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/architecture.yaml (1 条)
-[2m2026-09-29T10:02:59.447126Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/deadcode.yaml (2 条)
-[2m2026-09-29T10:02:59.448247Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/security.yaml (11 条)
-[2m2026-09-29T10:02:59.448777Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/n1-query.yaml (2 条)
-[2m2026-09-29T10:02:59.449125Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/runtime.yaml (2 条)
-[2m2026-09-29T10:02:59.449459Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/js/deadcode.yaml (3 条)
-[2m2026-09-29T10:02:59.450034Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/architecture.yaml (4 条)
-[2m2026-09-29T10:02:59.450629Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/contract.yaml (4 条)
-[2m2026-09-29T10:02:59.450923Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/deadcode.yaml (2 条)
-[2m2026-09-29T10:02:59.451172Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/api-hygiene.yaml (1 条)
-[2m2026-09-29T10:02:59.451375Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/performance.yaml (1 条)
-[2m2026-09-29T10:02:59.451432Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 35 条检查规则
-节点 96231 / 边 124592 / 标注 7446
+[2m2026-09-29T11:45:48.707356Z[0m [32m INFO[0m [2mgt_adapter_sqlite::store[0m[2m:[0m SQLite 已打开: /tmp/graphtell-demo.fs8ltG/graphtell.sqlite
+[2m2026-09-29T11:45:48.710452Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spring-boot (fkb/java/spring-boot.yaml)
+[2m2026-09-29T11:45:48.714947Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: thinkphp6 (fkb/php/thinkphp6.yaml)
+[2m2026-09-29T11:45:48.717983Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: laravel (fkb/php/laravel.yaml)
+[2m2026-09-29T11:45:48.718882Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/php/crmeb.yaml)
+[2m2026-09-29T11:45:48.719142Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spatie-permission (fkb/php/spatie-permission.yaml)
+[2m2026-09-29T11:45:48.719518Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: symfony (fkb/php/symfony.yaml)
+[2m2026-09-29T11:45:48.720770Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: php-common (fkb/php/common.yaml)
+[2m2026-09-29T11:45:48.721157Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: my-framework (fkb/_template/template.yaml)
+[2m2026-09-29T11:45:48.721584Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastify (fkb/js/fastify.yaml)
+[2m2026-09-29T11:45:48.722259Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: typeorm (fkb/js/typeorm.yaml)
+[2m2026-09-29T11:45:48.722889Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: express (fkb/js/express.yaml)
+[2m2026-09-29T11:45:48.723258Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: koa (fkb/js/koa.yaml)
+[2m2026-09-29T11:45:48.724123Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: nestjs (fkb/js/nestjs.yaml)
+[2m2026-09-29T11:45:48.725201Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js-common (fkb/js/common.yaml)
+[2m2026-09-29T11:45:48.726517Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js (fkb/js/uni-app.yaml)
+[2m2026-09-29T11:45:48.727853Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastapi (fkb/python/fastapi.yaml)
+[2m2026-09-29T11:45:48.728559Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: celery (fkb/python/celery.yaml)
+[2m2026-09-29T11:45:48.729704Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: django (fkb/python/django.yaml)
+[2m2026-09-29T11:45:48.730570Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: flask (fkb/python/flask.yaml)
+[2m2026-09-29T11:45:48.730971Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb-project (fkb/projects/crmeb.yaml)
+[2m2026-09-29T11:45:48.731037Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 20 份框架知识
+[2m2026-09-29T11:45:48.731862Z[0m [32m INFO[0m [2mgt_adapter_views[0m[2m:[0m 装载视角声明: target/debug/../../views/perspectives.yaml
+[2m2026-09-29T11:45:48.731914Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 10 个视角声明
+[2m2026-09-29T11:45:48.732434Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/java/n1-query.yaml (2 条)
+[2m2026-09-29T11:45:48.732718Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/architecture.yaml (1 条)
+[2m2026-09-29T11:45:48.732974Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/deadcode.yaml (2 条)
+[2m2026-09-29T11:45:48.734113Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/security.yaml (11 条)
+[2m2026-09-29T11:45:48.734512Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/n1-query.yaml (2 条)
+[2m2026-09-29T11:45:48.734845Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/runtime.yaml (2 条)
+[2m2026-09-29T11:45:48.735169Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/js/deadcode.yaml (3 条)
+[2m2026-09-29T11:45:48.735683Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/architecture.yaml (4 条)
+[2m2026-09-29T11:45:48.736182Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/contract.yaml (4 条)
+[2m2026-09-29T11:45:48.736466Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/deadcode.yaml (2 条)
+[2m2026-09-29T11:45:48.736799Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/api-hygiene.yaml (1 条)
+[2m2026-09-29T11:45:48.736996Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/performance.yaml (1 条)
+[2m2026-09-29T11:45:48.737137Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 35 条检查规则
+节点 96241 / 边 125368 / 标注 7834
   Cache            42
   CallSite         80263
   Class            1043
@@ -54,8 +54,9 @@
   Page             29
   Property         1024
   Queue            27
+  Schedule         17
   Store            75
-  Table            163
+  Table            156
   Trait            4
   [Check] rule:cache-never-written 缓存 locale 被读取但图上没有任何写入 —— 读到的可能是空 / 旧的，或写路径未被图识别
   [Check] rule:cache-never-written 缓存 pageFoot 被读取但图上没有任何写入 —— 读到的可能是空 / 旧的，或写路径未被图识别

@@ -2,7 +2,7 @@
  "total_nodes": 90602,
  "total_edges": 97035,
  "shown_nodes": 400,
- "shown_edges": 349,
+ "shown_edges": 371,
  "truncated": true,
  "kinds": {
   "CallSite": 76366,

@@ -27,13 +27,14 @@ CRMEB 商城（PHP/ThinkPHP）
 | Page | 29 |
 | Property | 1024 |
 | Queue | 27 |
+| Schedule | 17 |
 | Store | 75 |
-| Table | 163 |
+| Table | 156 |
 | Trait | 4 |
 
 ## 规则检测结果
 
-> 共 1025 条违规（critical 1、error 3、info 681、warning 340）。
+> 共 1036 条违规（critical 1、error 3、info 692、warning 340）。
 
 | 规则 | 严重度 | 位置 | 信息 |
 | --- | --- | --- | --- |
@@ -88,4 +89,4 @@ CRMEB 商城（PHP/ThinkPHP）
 | `frontend-calls-missing-backend` | warning | samples/php-projects/thinkphp/CRMEB/template/admin/src/api/setting.js:413 | 前端调用了 GET /freight/express/:*/edit，图上没有对应后端路由（可能是真幽灵调用，也可能是前端 baseURL 前缀未参与归一） |
 | `frontend-calls-missing-backend` | warning | samples/php-projects/thinkphp/CRMEB/template/admin/src/api/product.js:28 | 前端调用了 GET /goods/goods_category，图上没有对应后端路由（可能是真幽灵调用，也可能是前端 baseURL 前缀未参与归一） |
 
-> …共 1025 条，仅展示前 50。
+> …共 1036 条，仅展示前 50。

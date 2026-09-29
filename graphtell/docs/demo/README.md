@@ -10,4 +10,4 @@
 | express | Express 起步项目（Node） | MIT | 7089 节点 | 1 条 | [详情](express/README.md) |
 | litemall | litemall 电商系统（Java/SpringBoot） | MIT | 48140 节点 | 274 条 | [详情](litemall/README.md) |
 | bagisto | Bagisto 电商系统（PHP/Laravel） | MIT | 90602 节点 | 304 条 | [详情](bagisto/README.md) |
-| CRMEB | CRMEB 商城（PHP/ThinkPHP） | Apache-2.0 | 96231 节点 | 1025 条 | [详情](CRMEB/README.md) |
+| CRMEB | CRMEB 商城（PHP/ThinkPHP） | Apache-2.0 | 96241 节点 | 1036 条 | [详情](CRMEB/README.md) |

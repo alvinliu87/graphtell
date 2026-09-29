@@ -1,8 +1,8 @@
 {
- "total_nodes": 96231,
- "total_edges": 124592,
+ "total_nodes": 96241,
+ "total_edges": 125368,
  "shown_nodes": 400,
- "shown_edges": 850,
+ "shown_edges": 894,
  "truncated": true,
  "kinds": {
   "CallSite": 80263,
@@ -16,13 +16,14 @@
   "ConfigKey": 278,
   "Namespace": 229,
   "Const": 209,
-  "Table": 163,
+  "Table": 156,
   "Store": 75,
   "Cache": 42,
   "Page": 29,
   "EventBus": 28,
   "Queue": 27,
   "Event": 20,
+  "Schedule": 17,
   "Middleware": 10,
   "Interface": 6,
   "Trait": 4
