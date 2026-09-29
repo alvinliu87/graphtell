@@ -24,22 +24,36 @@ use gt_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
 pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
-/// 在 `dir/samples` 下定位 CRMEB 样本：先试 `samples/CRMEB-master`，再遍历一层子目录
-/// `samples/*/CRMEB-master`（样本按技术栈分目录放置时也能命中）。
+/// 在 `dir/samples` 下定位 CRMEB 样本。
+///
+/// 样本实际布局是**按技术栈多层分类**的（如 `samples/php-projects/thinkphp/CRMEB`），
+/// 且目录名可能带或不带 `-master` 后缀。早期只匹配 `samples/*/CRMEB-master`（一层 + 后缀），
+/// 与真实布局不符 → 样本明明在磁盘上却匹配不到 → 测试静默跳过、CI 全绿但零覆盖。
+/// 这里改为在 `samples/` 下**有限深度**递归查找名为 `CRMEB` / `CRMEB-master` 的目录，
+/// 不再依赖具体的层级与命名。
 fn under_samples(dir: &Path) -> Option<PathBuf> {
-    let samples = dir.join("samples");
-    let direct = samples.join("CRMEB-master");
-    if direct.is_dir() {
-        return Some(direct);
+    /// 在 `dir` 内最多找 `depth` 层；返回字典序第一个命中（保证结果稳定）。
+    fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
+        if depth == 0 {
+            return None;
+        }
+        let mut hits: Vec<PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "CRMEB" || name == "CRMEB-master" {
+                hits.push(path);
+            } else if let Some(found) = search(&path, depth - 1) {
+                hits.push(found);
+            }
+        }
+        hits.sort();
+        hits.into_iter().next()
     }
-    let mut hits: Vec<PathBuf> = std::fs::read_dir(&samples)
-        .ok()?
-        .flatten()
-        .map(|e| e.path().join("CRMEB-master"))
-        .filter(|p| p.is_dir())
-        .collect();
-    hits.sort();
-    hits.into_iter().next()
+    search(&dir.join("samples"), 3)
 }
 
 /// 定位 CRMEB 样本根目录。

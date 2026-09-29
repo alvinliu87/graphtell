@@ -33,10 +33,30 @@ struct Fixture {
     project: ProjectId,
 }
 
-/// 建一个临时容器 + 工程。
+/// 定位样本根目录：优先 `GRAPHTELL_SAMPLES_DIR`，否则从 `CARGO_MANIFEST_DIR` 向上
+/// 逐级找含 `frontend-backend-link` 的 `samples/`。
 ///
-/// 用例并行执行，目录名必须**进程内唯一**（时间戳在同一毫秒内会撞车，
-/// 导致两个用例共用同一个 SQLite 文件、互相污染）。
+/// 样本树的位置不固定（可能在工作区根、也可能在上层仓库根），写死某一处会在换机器或
+/// 合并样本目录后**静默找不到样本** —— 测试随之被跳过、变成“CI 全绿但零覆盖”。
+fn samples_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLES_DIR") {
+        let p = PathBuf::from(dir);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..6 {
+        if cur.join("samples").join("frontend-backend-link").is_dir() {
+            return Some(cur.join("samples"));
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    None
+}
+
 /// 建一个临时容器 + 工程。
 ///
 /// 用例并行执行，目录名必须**进程内唯一**（时间戳在同一毫秒内会撞车，
@@ -49,10 +69,8 @@ fn fixture() -> Option<Fixture> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
-    // 样本缺失（发布包 / 部分检出）时软跳过；可用 `GRAPHTELL_SAMPLE_DIR` 指向替身。
-    if !root.join("samples/frontend-backend-link").is_dir() {
-        return None;
-    }
+    // 样本缺失（发布包 / 部分检出）时软跳过；可用 `GRAPHTELL_SAMPLES_DIR` 指向替身。
+    let samples = samples_dir()?;
     let data_dir = std::env::temp_dir().join(format!(
         "graphtell-rules-{}-{}-{}",
         std::process::id(),
@@ -80,7 +98,7 @@ fn fixture() -> Option<Fixture> {
     let project = project_service
         .create(NewProject {
             name: "规则与召回自检".into(),
-            root_path: root.join("samples/frontend-backend-link"),
+            root_path: samples.join("frontend-backend-link"),
             description: None,
             config: None,
         })

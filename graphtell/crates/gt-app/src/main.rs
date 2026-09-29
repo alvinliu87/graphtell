@@ -17,8 +17,8 @@ use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_app::{AppConfig, Container};
 use gt_domain::model::fkb::Action;
 use gt_domain::model::kinds::{EdgeKind, NodeKind};
-use gt_domain::model::NewProject;
-use gt_domain::port::{DiagnosticSink, GraphQuery};
+use gt_domain::model::{NewProject, ProjectId};
+use gt_domain::port::{DiagnosticSink, GraphQuery, NodeFilter, ProjectReader};
 
 #[derive(Debug, Parser)]
 #[command(name = "graphtell", version, about = "代码库图化分析平台")]
@@ -64,6 +64,14 @@ enum Command {
     },
     /// 对工程执行建图。
     Run {
+        #[arg(long)]
+        project: i64,
+    },
+    /// 导出工程图的全部节点与边（JSON），供静态 demo / 外部分析使用。
+    ///
+    /// 输出 `{project_id, nodes, edges, files}`：`files` 是 `file_id -> 路径` 的映射，
+    /// 便于消费方把节点定位回源码文件，而不必再查库。
+    Export {
         #[arg(long)]
         project: i64,
     },
@@ -221,6 +229,50 @@ fn main() -> anyhow::Result<()> {
                 Command::Run { project } => {
                     let out = pipeline.run(gt_domain::model::ProjectId(project), &gt_domain::port::NoopObserver)?;
                     print_outcome(&out, &container);
+                }
+                Command::Export { project } => {
+                    let pid = ProjectId(project);
+                    // `query_nodes` 在 `limit: None` 时**默认只返回 100 条**（store 里
+                    // `limit.unwrap_or(100)`）。大工程（CRMEB 约 9 万节点）若直接取一次
+                    // 会被静默截断 —— 图导出必须是全量，故分页取到不足一页为止。
+                    const PAGE: u32 = 5000;
+                    let mut nodes = Vec::new();
+                    let mut offset = 0u32;
+                    loop {
+                        let batch = container.store.query_nodes(&NodeFilter {
+                            project_id: pid,
+                            kind: None,
+                            name_contains: None,
+                            limit: Some(PAGE),
+                            offset: Some(offset),
+                        })?;
+                        let got = batch.len() as u32;
+                        nodes.extend(batch);
+                        if got < PAGE {
+                            break;
+                        }
+                        offset += got;
+                    }
+                    // 每个节点的出边已覆盖全图（无向视角下入边即别人的出边），
+                    // 一次批量取回，避免逐节点往返。
+                    let ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+                    let outgoing = container.store.edges_outgoing(&ids)?;
+                    let mut edges = Vec::new();
+                    for es in outgoing.values() {
+                        edges.extend(es.iter().cloned());
+                    }
+                    let files = container.store.list_files(pid, None)?;
+                    let file_paths: std::collections::BTreeMap<i64, String> = files
+                        .iter()
+                        .map(|f| (f.id.get(), f.path.clone()))
+                        .collect();
+                    let payload = serde_json::json!({
+                        "project_id": project,
+                        "nodes": nodes,
+                        "edges": edges,
+                        "files": file_paths,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
                 }
                 Command::Stats { project } => {
                     let id = gt_domain::model::ProjectId(project);

@@ -21,9 +21,31 @@ use gt_domain::model::NodeKind;
 use gt_domain::model::ProjectConfig;
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter, ProjectReader};
 
-/// 仓库根下的合成样本目录：
-/// `crates/gt-pipeline` → 上两层到仓库根 → `samples/frontend-backend-link`。
+/// 仓库内的合成样本目录（随仓库分发）。
+///
+/// 样本树的位置**不固定**：可能在内层工作区根，也可能在上层仓库根（合并 `samples/`
+/// 之后）。写死"上两层"会在样本被移动后指向不存在的目录 —— 于是用例失败、或更糟地
+/// 被改成跳过、变成"CI 全绿但零覆盖"。这里改为从 `CARGO_MANIFEST_DIR` **向上逐级**
+/// 查找，并支持 `GRAPHTELL_SAMPLES_DIR` 覆盖；实在找不到才退回原候选路径，
+/// 由调用方的 assert 报出可诊断的缺失提示（该文件刻意要求失败而非跳过）。
 fn synth_root() -> PathBuf {
+    if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLES_DIR") {
+        let candidate = PathBuf::from(dir).join("frontend-backend-link");
+        if candidate.is_dir() {
+            return candidate;
+        }
+    }
+    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..6 {
+        let candidate = cur.join("samples").join("frontend-backend-link");
+        if candidate.is_dir() {
+            return candidate;
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    // 兜底：退回原候选，让调用方的 assert 指出具体缺失路径。
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
     p.pop();
