@@ -12,6 +12,7 @@
  */
 
 import { translate as t } from '@/shared/lib/i18n';
+import { notify } from '@/shared/lib/notify';
 
 export interface ApiResponse<T> {
   ok: boolean;
@@ -48,6 +49,9 @@ async function detectBase(): Promise<string> {
     }
   }
   const fromEnv = import.meta.env.VITE_API_BASE as string | undefined;
+  // 部署到与后端同域时（如 Docker 单端口），用 `same-origin` 让前端走相对路径，
+  // 无需在构建期写死主机名；留空/false 时回落到下方的默认或 localStorage 覆盖。
+  if (fromEnv === 'same-origin') return '';
   if (fromEnv) return fromEnv;
   try {
     return localStorage.getItem('graphtell.api-base') ?? DEFAULT_BASE;
@@ -67,13 +71,22 @@ export function apiBase(): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${base}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (e) {
+    // 传输层失败（后端没起来 / 端口不对 / 网络断了）：和各页自己的领域错误不同，这里
+    // 用户什么都看不到，所以走全局 notify 弹一次。再原样抛出，让各页的 useAsync 决定要不要
+    // 画内联 Alert（ProjectsPage / ExplorerPage 会画；没画的地方至少也有这条 toast 兜底）。
+    notify(t('无法连接后端，请确认服务已启动'));
+    throw e;
+  }
   if (!res.ok) {
     throw new ApiError(`HTTP ${res.status} ${res.statusText}`, res.status);
   }

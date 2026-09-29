@@ -1,4 +1,4 @@
-import { Button, Card, Col, Empty, Row, Space } from 'antd';
+import { Alert, Button, Card, Col, Empty, Row, Space } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useProjects } from '@/entities/project';
@@ -11,7 +11,7 @@ import { DeploymentUnitOutlined, FolderOpenOutlined } from '@ant-design/icons';
 
 /** 工程总览页：CRUD 入口。 */
 export function ProjectsPage() {
-  const { projects, loading, reload, building } = useProjects();
+  const { projects, loading, error, reload, building } = useProjects();
   const [open, setOpen] = useState(false);
   const { t } = useLocale();
 
@@ -35,7 +35,27 @@ export function ProjectsPage() {
         }
       />
 
-      {!loading && projects.length === 0 ? (
+      {/* 后端故障 / 网络不通时**必须**显式报错，不能落到下面的「还没有工程」空态 ——
+          否则会和"确实 0 个工程"长得一模一样，用户以为没数据，实则请求挂了
+          （这一处长期吞错：useProjects() 返回的 error 此前从未被消费）。 */}
+      {!loading && error ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('工程列表加载失败')}
+          description={
+            <div>
+              <div>{error}</div>
+              <div style={{ marginTop: 8 }}>
+                {t('可能是后端未启动或网络不通。点击右上角「刷新」重试。')}
+              </div>
+            </div>
+          }
+        />
+      ) : null}
+
+      {!loading && projects.length === 0 && !error ? (
         <Empty
           style={{ marginTop: 96 }}
           description={t('还没有工程 —— 新建一个开始图化分析')}
@@ -44,7 +64,7 @@ export function ProjectsPage() {
             {t('新建工程')}
           </Button>
         </Empty>
-      ) : (
+      ) : projects.length > 0 && !error ? (
         <>
           <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
             <Col xs={24} sm={8}>
@@ -72,7 +92,7 @@ export function ProjectsPage() {
             <ProjectTable projects={projects} loading={loading} onDeleted={() => void reload()} />
           </Card>
         </>
-      )}
+      ) : null}
 
       <CreateProjectModal
         open={open}

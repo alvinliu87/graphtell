@@ -1,4 +1,4 @@
-import { Card, Input, Select, Space, Table, Tag } from 'antd';
+import { Alert, Card, Input, Select, Space, Table, Tag } from 'antd';
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useNodes } from '@/entities/graph';
@@ -17,11 +17,30 @@ export function ExplorerPage() {
   const [selected, setSelected] = useState<number | undefined>();
   const { t } = useLocale();
 
-  const { nodes, loading, reload } = useNodes(id, { kind, name: name || undefined, limit: 200 });
+  const { nodes, loading, error, reload } = useNodes(id, { kind, name: name || undefined, limit: 200 });
 
   return (
     <>
       <PageHeader title={t('节点浏览')} subtitle={t('检索图上的任意节点，并查看它的标注与相邻边')} />
+
+      {/* 检索失败后 data 落空 → 表格会显示「没有匹配的节点」，与"确实 0 个节点"无法区分；
+          这里把 error 显式报出来，避免把后端故障伪装成空结果。 */}
+      {!loading && error ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('节点检索失败')}
+          description={
+            <div>
+              <div>{error}</div>
+              <div style={{ marginTop: 8 }}>
+                {t('节点检索请求失败，可能是后端未启动或网络不通。可重试。')}
+              </div>
+            </div>
+          }
+        />
+      ) : null}
       <Card
         variant="borderless"
         style={{ borderRadius: 14 }}

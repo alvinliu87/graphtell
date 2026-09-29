@@ -368,10 +368,6 @@ const dict: Record<Lang, Record<string, string>> = {
       'Rule conclusions produced automatically after the build (persisted); which rules are enabled and their thresholds are tuned in "Rule Set".',
     '只画当前这一条链路；其余以计数与未解析记账呈现。':
       'Draws one link at a time; the rest is shown as counts and unresolved records.',
-    '设置': 'Settings',
-    '设置项暂未启用': 'Settings are temporarily disabled',
-    '本地根模板 / WSL 模式 / 默认 IDE 等设置仅服务于「跳转 IDE」；该入口已移除，相关设置暂时停用。':
-      'The local root template / WSL mode / default IDE only served "jump to IDE", which has been removed; these settings are temporarily disabled.',
     '代码库图化分析': 'Codebase graph analysis',
     '展开侧边栏': 'Expand sidebar',
     '收起侧边栏': 'Collapse sidebar',
@@ -532,6 +528,9 @@ const dict: Record<Lang, Record<string, string>> = {
     '工程总数': 'Total projects',
     '已就绪': 'Ready',
     '建图中': 'Indexing',
+    '工程列表加载失败': 'Failed to load projects',
+    '可能是后端未启动或网络不通。点击右上角「刷新」重试。':
+      'The backend may be down or unreachable. Click "Refresh" (top-right) to retry.',
     '全部工程': 'All projects',
     '添加一个工程后会自动开始建图：识别子工程 → 语法建图 → 装载框架知识 → 语义合成 → 动态解析':
       'Adding a project auto-starts graphing: detect sub-projects → syntax graph → load framework knowledge → semantic synthesis → dynamic resolution',
@@ -539,6 +538,14 @@ const dict: Record<Lang, Record<string, string>> = {
     '节点种类': 'Node kind',
     '按名称过滤': 'Filter by name',
     '没有匹配的节点': 'No matching nodes',
+    '节点检索失败': 'Failed to load nodes',
+    '节点检索请求失败，可能是后端未启动或网络不通。可重试。':
+      'The node query failed — the backend may be down or unreachable. Retry to try again.',
+    // 全局错误边界（ErrorBoundary）兜底文案：渲染期崩溃时展示，不直接写进主题文案区
+    '页面出错了': 'Something went wrong',
+    '页面渲染时发生意外错误，已阻止其影响整个应用。可重新加载恢复，或查看浏览器控制台获取详细堆栈。':
+      'An unexpected error occurred while rendering. It has been contained to avoid taking down the whole app. Reload to recover, or open the browser console for the full stack.',
+    '重新加载': 'Reload',
     '完全限定名 / Identity': 'FQN / Identity',
     '详情': 'Details',
     '根节点缺失、路由指向不存在的 handler、identity 冲突等 —— 诊断本身就是分析结论':
@@ -675,6 +682,10 @@ const dict: Record<Lang, Record<string, string>> = {
     '已复制 ': 'Copied ',
     ' 处位置（绝对路径）': ' locations (absolute paths)',
     '未知错误': 'Unknown error',
+    // 全局后端故障兜底：fetch 连不上后端（非 HTTP 错误，是传输层失败）时，http 封装会调
+    // notify() 弹一次。各页自己的 useAsync.error 走内联 Alert 报领域错误，这里只补"连不上"这一种。
+    '无法连接后端，请确认服务已启动':
+      'Cannot reach the backend. Please make sure the server is running.',
 
     '径向布局：中心为当前对象，同心环表示跳数（环 1 = 直接关联）。环半径按各环药丸数量自适应，避免重叠。':
       'Radial layout: center is the current object; concentric rings denote hops (ring 1 = direct). Ring radius adapts to the number of pills per ring to avoid overlap.',
