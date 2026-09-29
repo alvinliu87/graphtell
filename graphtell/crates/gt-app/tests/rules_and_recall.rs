@@ -1,4 +1,4 @@
-//! 规则检测与代码召回的端到端自检。
+//! 规则检测与提示词增强（代码召回）的端到端自检。
 //!
 //! **刻意不依赖外部样本**：这里直接往库里写一小组手工构造的节点与边，
 //! 因此任何时候、任何机器上都必定运行（CRMEB 那类样本测试在样本缺失时会跳过，
@@ -37,10 +37,22 @@ struct Fixture {
 ///
 /// 用例并行执行，目录名必须**进程内唯一**（时间戳在同一毫秒内会撞车，
 /// 导致两个用例共用同一个 SQLite 文件、互相污染）。
-fn fixture() -> Fixture {
+/// 建一个临时容器 + 工程。
+///
+/// 用例并行执行，目录名必须**进程内唯一**（时间戳在同一毫秒内会撞车，
+/// 导致两个用例共用同一个 SQLite 文件、互相污染）。
+///
+/// 返回 `None` 表示样本缺失（例如发布包 / 部分检出没有 `samples/`），调用方应跳过，
+/// 与 `gt-pipeline/tests/common/mod.rs` 的 `sample_root()` 软依赖惯例保持一致：
+/// 样本不在场时测试不应硬失败。
+fn fixture() -> Option<Fixture> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
+    // 样本缺失（发布包 / 部分检出）时软跳过；可用 `GRAPHTELL_SAMPLE_DIR` 指向替身。
+    if !root.join("samples/frontend-backend-link").is_dir() {
+        return None;
+    }
     let data_dir = std::env::temp_dir().join(format!(
         "graphtell-rules-{}-{}-{}",
         std::process::id(),
@@ -69,6 +81,50 @@ fn fixture() -> Fixture {
         .create(NewProject {
             name: "规则与召回自检".into(),
             root_path: root.join("samples/frontend-backend-link"),
+            description: None,
+            config: None,
+        })
+        .expect("工程应可创建");
+    Some(Fixture { container, project: project.id })
+}
+
+/// 仅给「不需要真实样本」的测试用（如性能回归）：建一个临时容器 + 工程。
+///
+/// 与 `fixture()` 不同，这里**不依赖 `samples/`**——`root_path` 用仓库内必定存在的
+/// `fkb` 目录占位即可，因为这类测试只往图里写合成节点，从不读取样本源码。
+/// 这样即便发布包 / 部分检出里没有 `samples/`，性能回归也不会被拖垮或误跳过。
+fn temp_fixture() -> Fixture {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
+    let data_dir = std::env::temp_dir().join(format!(
+        "graphtell-tmp-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        seq
+    ));
+    std::fs::create_dir_all(&data_dir).expect("临时目录应可创建");
+    let config = AppConfig {
+        data_dir,
+        fkb_dir: Some(root.join("fkb")),
+        views_dir: Some(root.join("views")),
+        rules_dir: Some(root.join("rules")),
+        bind: "127.0.0.1".into(),
+        port: 0,
+        ui_dir: None,
+    };
+    let container = gt_app::Container::new(config).expect("容器装配不应失败");
+    let project_service = gt_application::ProjectService::new(
+        container.store.clone() as Arc<dyn Persistence>,
+        Arc::new(gt_domain::port::SystemClock),
+    );
+    let project = project_service
+        .create(NewProject {
+            name: "临时工程".into(),
+            root_path: root.join("fkb"),
             description: None,
             config: None,
         })
@@ -207,7 +263,10 @@ rules:
 
 #[test]
 fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
 
     let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则 YAML 应可解析"));
@@ -250,7 +309,10 @@ fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
 ///（否则"单独重跑 A"会顺手抹掉 B/C，报告会莫名缺一块）。
 #[test]
 fn partial_rerun_only_replaces_its_own_violations() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则应可解析"));
     let svc = RuleService::new(
@@ -277,7 +339,10 @@ fn partial_rerun_only_replaces_its_own_violations() {
 /// 违规落成 `rule:*` 诊断；重跑时**先清旧再写新**，不留历史脏数据。
 #[test]
 fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则应可解析"));
     let svc = RuleService::new(
@@ -302,7 +367,10 @@ fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
 /// 只跑指定规则（`only` 过滤）。
 #[test]
 fn check_can_run_a_subset_of_rules() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则应可解析"));
     let svc = RuleService::new(
@@ -335,7 +403,10 @@ rules:
       - not: { name_contains: unused }
     message: "命中 {name}"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(yaml).expect("规则应可解析"));
     let svc = RuleService::new(
@@ -350,7 +421,10 @@ rules:
 /// 内置规则库必须能装载（防止 `rules/*.yaml` 写坏而无人发现）。
 #[test]
 fn builtin_rules_yaml_loads() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     let set = &f.container.rules;
     assert!(!set.is_empty(), "内置规则库不应为空");
     for r in set.rules() {
@@ -373,7 +447,10 @@ fn builtin_rules_yaml_loads() {
 /// 召回的核心价值：不只是关键词匹配，而是**沿图把相关代码带出来**。
 #[test]
 fn recall_expands_from_seed_along_graph() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -442,7 +519,10 @@ fn recall_expands_from_seed_along_graph() {
 /// 第二次召回必须看得到新写入的节点。
 #[test]
 fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let store = &f.container.store;
     let pid = f.project;
@@ -521,7 +601,10 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
 /// `OrderService`，并把图上的相关代码一并带出。
 #[test]
 fn recall_chinese_intent_bridges_to_english_nodes() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     let store = &f.container.store;
     let pid = f.project;
 
@@ -652,7 +735,10 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
 /// 这条补上"整条管道串起来仍成立"的兜底。
 #[test]
 fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     let store = &f.container.store;
     let pid = f.project;
 
@@ -780,7 +866,10 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
 /// 任何机器上必跑，守住上面两条回归。
 #[test]
 fn recall_event_driven_listener_surfaces_without_quality_collapse() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     let store = &f.container.store;
     let pid = f.project;
 
@@ -997,7 +1086,10 @@ fn recall_real_bge_model_chinese_to_english() {
         return;
     }
 
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     let store = &f.container.store;
     let pid = f.project;
 
@@ -1120,7 +1212,10 @@ fn recall_real_bge_model_chinese_to_english() {
 /// 中文结构提示（"表"）应把结果收敛到对应节点种类。
 #[test]
 fn recall_understands_chinese_kind_hints() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1156,7 +1251,10 @@ fn recall_understands_chinese_kind_hints() {
 /// 建图后它必须消失 —— 这样哪怕本样本一条违规都没命中，也能确证检查真的跑过。
 #[test]
 fn build_runs_check_automatically() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
 
     f.container
         .store
@@ -1223,7 +1321,10 @@ fn set_stack(f: &Fixture, language: &str, frameworks: &[&str]) {
 /// （Emits / ListensTo，前端事件总线）在纯 Java 工程上也不存在。
 #[test]
 fn php_only_rules_are_skipped_on_java_project() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     set_stack(&f, "java", &["spring-boot"]);
 
@@ -1259,7 +1360,10 @@ fn php_only_rules_are_skipped_on_java_project() {
 /// 同一条 PHP 规则在 PHP 工程上必须恢复执行（闸门不能一刀切）。
 #[test]
 fn php_only_rules_run_on_php_project() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     set_stack(&f, "php", &["thinkphp6"]);
 
@@ -1286,7 +1390,10 @@ fn php_only_rules_run_on_php_project() {
 /// "没有死代码"，正是本项目最想避免的失效方式。
 #[test]
 fn js_only_rules_are_skipped_on_backend_only_project() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     set_stack(&f, "java", &["spring-boot"]);
 
@@ -1318,7 +1425,10 @@ fn js_only_rules_are_skipped_on_backend_only_project() {
 /// `no_incoming: CallsHttp` 对每个端点都成立，会把全部端点报成死端点。
 #[test]
 fn rule_is_disabled_when_its_edge_never_occurs() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     // 只放一个没有 CallsHttp 边的图：seed_graph 里本就没有 CallsHttp
     seed_graph(&f);
     set_stack(&f, "php", &[]);
@@ -1379,7 +1489,10 @@ fn builtin_rules_are_organised_per_language() {
 /// 而提示词经常就是这种整句，等于召回功能对中文提问不可用。
 #[test]
 fn recall_splits_chinese_sentence_into_bigrams() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1425,7 +1538,10 @@ fn recall_splits_chinese_sentence_into_bigrams() {
 /// 完整标识符（snake_case 不被拆散）必须能精确命中。
 #[test]
 fn recall_keeps_snake_case_identifiers_intact() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1459,7 +1575,10 @@ fn recall_keeps_snake_case_identifiers_intact() {
 /// 召回必须给出可直接粘给 LLM 的上下文包。
 #[test]
 fn recall_produces_markdown_context_pack() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1563,7 +1682,10 @@ rules:
       - fan_in_gte: 0
     message: "表 {name} 命中了"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
@@ -1613,7 +1735,10 @@ rules:
       - fan_in_gte: 1
     message: "表 {name} 有 {kind} 引用"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     seed_node_with_property(
         &f,
@@ -1654,7 +1779,10 @@ rules:
       - fan_in_gte: 0
     message: "表 {name}"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
@@ -1687,7 +1815,10 @@ rules:
 /// 只认字符串，导致 `property_is` 永远不成立）。现有用例只验证规则能装载、没验证能命中。
 #[test]
 fn java_n1_query_rule_fires_on_loop_db_read() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     set_stack(&f, "java", &["spring-boot"]);
 
     let files = f
@@ -1791,7 +1922,10 @@ rules:
       - name_contains: createOrder
     message: "位置 {file}:{line} 名称 {name}"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
@@ -1826,7 +1960,10 @@ rules:
 /// 召回会退化成关键词过滤，恰恰丢掉它沿图扩展的价值。
 #[test]
 fn recall_kinds_filters_seeds_not_results() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1876,7 +2013,10 @@ fn recall_kinds_filters_seeds_not_results() {
 /// `limit` 必须真的截断结果（旧用例里的 limit 都大于实际命中数，等于没测）。
 #[test]
 fn recall_limit_truncates_results() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1906,7 +2046,10 @@ fn recall_limit_truncates_results() {
 /// 空查询 / 纯噪声查询不能炸，且应给出空结果而不是随便返回点什么。
 #[test]
 fn recall_handles_empty_query() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -2066,7 +2209,10 @@ rules:
           - fan_in_lte: 0
     message: "{name} 既无 pii 也无人引用"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     seed_rich_node(&f, 301, "Class", "OrderService", "App\\Service\\OrderService", "OrderService");
 
@@ -2107,7 +2253,10 @@ rules:
       - no_capability: [Authentication]
     message: "表 {name} 未识别到鉴权能力"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
@@ -2175,7 +2324,10 @@ rules:
       - name_contains: order
     message: "{name} 命中"
 "#;
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
@@ -2192,7 +2344,10 @@ rules:
 /// （含 2MB 保护、行号窗口）没人守 —— 而片段是上下文包里给 LLM 看的内容主体。
 #[test]
 fn recall_reads_snippet_from_real_file() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     // 注册一个磁盘上真实存在的文件（合成样本里的后端控制器）
     let files = f
         .container
@@ -2401,11 +2556,11 @@ fn check_does_not_degenerate_quadratically() {
     const SMALL: usize = 2_000;
     const BIG: usize = 16_000;
 
-    let fs = fixture();
+    let fs = temp_fixture();
     seed_many_tables(&fs, SMALL);
     let (t_small, hit_small) = time_check_on_tables(&fs);
 
-    let fb = fixture();
+    let fb = temp_fixture();
     seed_many_tables(&fb, BIG);
     let (t_big, hit_big) = time_check_on_tables(&fb);
 
@@ -2434,7 +2589,10 @@ fn check_completes_within_budget() {
     const N: usize = 2_000;
     const BUDGET_MS: u128 = 2_000;
 
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_many_tables(&f, N);
     let (ms, hits) = time_check_on_tables(&f);
     eprintln!("[perf] {N} 节点 {ms} ms（预算 {BUDGET_MS} ms）");
@@ -2453,7 +2611,10 @@ fn check_completes_within_budget() {
 /// 行号越界保护）此前零覆盖。
 #[test]
 fn recall_with_snippets_is_safe_when_file_missing() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -2488,7 +2649,10 @@ fn recall_with_snippets_is_safe_when_file_missing() {
 /// （`gt-adapter-http`）从不经过测试，路由拼错 / 参数解错都不会被发现。
 #[tokio::test]
 async fn recall_http_get_endpoint_returns_hits() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let router = f.container.router();
 
@@ -2520,7 +2684,10 @@ async fn recall_http_get_endpoint_returns_hits() {
 /// HTTP 层端到端：POST `/api/projects/{id}/recall` 走 `RecallQuery` 主体解析。
 #[tokio::test]
 async fn recall_http_post_endpoint_returns_hits() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let router = f.container.router();
 
@@ -2556,7 +2723,10 @@ async fn recall_http_post_endpoint_returns_hits() {
 /// "段落被拼进去"（读取失败也必须给出提示，而不是静默丢掉整段）。
 #[tokio::test]
 async fn recall_http_include_body_appends_full_file_section() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let router = f.container.router();
 
@@ -2591,7 +2761,10 @@ async fn recall_http_include_body_appends_full_file_section() {
 /// 对照：不传 `include_body` 时不应出现该段落（默认 false，避免默认输出体积膨胀）。
 #[tokio::test]
 async fn recall_http_without_include_body_has_no_full_file_section() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let router = f.container.router();
 
@@ -2619,7 +2792,10 @@ async fn recall_http_without_include_body_has_no_full_file_section() {
 /// HTTP 层：预热进度端点应返回 warmed / warming 等字段（供 MCP 判断召回是否走冷路径）。
 #[tokio::test]
 async fn warmup_http_endpoint_returns_status_fields() {
-    let f = fixture();
+    let Some(f) = fixture() else {
+        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        return;
+    };
     seed_graph(&f);
     let router = f.container.router();
 
