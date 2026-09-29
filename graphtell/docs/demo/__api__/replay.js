@@ -33,17 +33,20 @@
     const method = (req.method || 'GET').toUpperCase();
     const key = method + ' ' + norm(req.url);
     const base = method + ' ' + new URL(req.url, location.href).pathname;
-    let file = table[key];
-    if (!file && method !== 'GET') {
+    let file = null;
+    if (method !== 'GET') {
+      // 写 / 查询类：优先按 body 精确匹配（例如不同的召回问句各返回各的结果）
       let bodyKey = null;
       try {
         const text = await req.clone().text();
         const obj = JSON.parse(text || '{}');
         bodyKey = key + '|' + JSON.stringify(obj, Object.keys(obj).sort());
       } catch (e) { /* body 不是 JSON，忽略 */ }
-      file = (bodyKey && table[bodyKey]) || table[key + '|*'];
+      file = (bodyKey && table[bodyKey]) || table[key + '|*'] || table[key];
+    } else {
+      file = table[key];
     }
-    // 忽略查询参数 / body 的兜底：命中「同路径第一条」录制，保证页面照常渲染
+    // 忽略查询参数的兜底：命中「同路径第一条」录制，保证页面照常渲染
     if (!file) file = table[base];
     if (!file) {
       console.warn('[demo] 未录制的请求（静态 demo 无后端）:', method, norm(req.url));

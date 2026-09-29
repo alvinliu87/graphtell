@@ -179,17 +179,20 @@ REPLAY_JS = r"""/* 静态 demo 的 API 回放：把 /api/* 请求改从预录的
     const method = (req.method || 'GET').toUpperCase();
     const key = method + ' ' + norm(req.url);
     const base = method + ' ' + new URL(req.url, location.href).pathname;
-    let file = table[key];
-    if (!file && method !== 'GET') {
+    let file = null;
+    if (method !== 'GET') {
+      // 写 / 查询类：优先按 body 精确匹配（例如不同的召回问句各返回各的结果）
       let bodyKey = null;
       try {
         const text = await req.clone().text();
         const obj = JSON.parse(text || '{}');
         bodyKey = key + '|' + JSON.stringify(obj, Object.keys(obj).sort());
       } catch (e) { /* body 不是 JSON，忽略 */ }
-      file = (bodyKey && table[bodyKey]) || table[key + '|*'];
+      file = (bodyKey && table[bodyKey]) || table[key + '|*'] || table[key];
+    } else {
+      file = table[key];
     }
-    // 忽略查询参数 / body 的兜底：命中「同路径第一条」录制，保证页面照常渲染
+    // 忽略查询参数的兜底：命中「同路径第一条」录制，保证页面照常渲染
     if (!file) file = table[base];
     if (!file) {
       console.warn('[demo] 未录制的请求（静态 demo 无后端）:', method, norm(req.url));
@@ -216,6 +219,12 @@ DEMO_README = r"""# GraphTell 静态 Demo
   点节点可展开链路（对象视图）。
 - **规则检验**：`合规` 页签看规则命中与诊断。
 - **提示词增强**：`召回 / 提示词` 页签，对**预置的中文问句**做代码召回并合成提示词。
+
+## 界面预览（真机截图，来自本 demo 本地运行）
+![工程总览](../screenshots/home.png)
+![语义图](../screenshots/graph-crmeb.png)
+![规则检验：违规表](../screenshots/rules-crmeb.png)
+![提示词增强](../screenshots/recall.png)
 
 ## 局限性（设计如此，非 bug）
 - 写操作（新建/删除工程、跑建图、文件浏览）在静态站上不可用——它们需要真后端。

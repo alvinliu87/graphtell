@@ -62,7 +62,7 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 
 于是"这个接口动了什么"是一眼看出来的事，而不是人工沿调用链翻十几跳。默认折叠视图**严格只留语义节点与语义边**，语法节点收进 `via` 链。
 
-![语义图：CRMEB 的连通子图（400 节点 / 894 边），按节点类型着色](graphtell/docs/screenshots/graph-crmeb.png)
+![语义图：CRMEB 路由视角，从选中的接口展开语义依赖（读表 / 读缓存 / 读配置 / 发队列），按节点类型着色](graphtell/docs/screenshots/graph-crmeb.png)
 
 > 上图为 CRMEB（全量 96,241 节点）的一个连通子图：**400 节点 / 894 边**，按类型着色，可缩放拖拽、点击看细节。
 
