@@ -1,14 +1,14 @@
 # GraphTell
 
 > 本文件是**技术文档**（架构 / 流水线 / FKB / 部署 / 实测数据 / 扩展方式）。
-> 产品简介、在线 Demo 与下载见 **[仓库根 README](../README.md)**。
+> 产品简介、在线 Demo 与下载见 **[仓库根 README](../../README.md)**。
 
 把任意代码库**图化**的分析平台：以 `tree-sitter` 解析出语法级节点，再按**框架知识库（FKB）**合成语义节点，最终得到一张可以查询、可以标注、可以做影响面与死代码分析的图。
 
 - 后端：Rust（**六边形架构** + SOLID），SQLite 持久化
 - 前端：React + TypeScript + Ant Design（**Feature Sliced Design**）
 - 桌面常驻：Tauri（后端在**进程内**启动 HTTP 服务，桌面端与 Web 端共用同一套 `/api` 契约）
-- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约）与 **Java**（Spring Boot）与 **JavaScript/TypeScript**（Uni-app 前端 / NestJS·Express 后端 / TypeORM 实体映射）与 **Python**（FastAPI / Flask / Celery / SQLAlchemy）。完整的支持矩阵与已知边界见 [`SUPPORTED.md`](./SUPPORTED.md)。
+- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约）与 **Java**（Spring Boot）与 **JavaScript/TypeScript**（Uni-app 前端 / NestJS·Express 后端 / TypeORM 实体映射）与 **Python**（FastAPI / Flask / Celery / SQLAlchemy）。完整的支持矩阵与已知边界见 [`SUPPORTED.md`](../SUPPORTED.md)。
 
 图建完之后还能回答两个问题：
 
@@ -296,7 +296,7 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 **不判**：回调到底**有没有**验签。这条判据必须跨过程追到 SDK 内部，而 PHP 排除了 `vendor`、Java 不扫 Maven 依赖 —— EasyWeChat / yansongda-pay / 官方 SDK 的 `verify()` 根本不在图里，任何"链路上没有验签调用"的判据都会对每个回调成立（100% 误报）。
 
-需要的图事实同样是 parser 新增的：比较表达式不是调用点，图上原本看不到 `==`，因此加了 [`SignCompareFact`](crates/gt-domain/src/model/syntax.rs)（只收 `==` / `!=` 且至少一侧像签名值），由 P11 `phase::sign` 判定后打 `weak_sign_compare` / `weak_sign_hash` 标注。
+需要的图事实同样是 parser 新增的：比较表达式不是调用点，图上原本看不到 `==`，因此加了 [`SignCompareFact`](../crates/gt-domain/src/model/syntax.rs)（只收 `==` / `!=` 且至少一侧像签名值），由 P11 `phase::sign` 判定后打 `weak_sign_compare` / `weak_sign_hash` 标注。
 
 噪声闸口在 parser 里：**电商代码的 `sign` 绝大多数是"签到"**（`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`）。实测 32 处"含 sign 的 == 比较"里 24 处是签到，因此要求比较两侧都不是字符串字面量、且排除 `sign_type` / `sign_mode` 等签到词。
 
@@ -473,18 +473,18 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 
 > **关于样本与发布包**：CRMEB / Bagisto 这类大型第三方工程**不随仓库分发**（授权 + 体积），请设 `GRAPHTELL_SAMPLE_DIR` 自行提供后再复现上述数字（上述数字对应 **v6.0.0**，换版本会有出入）。仓库内随附的轻量样本（见 `samples/`）则始终可用，并已被自动生成成**可直接在 GitHub 渲染的展示页**——见下。
 >
-> **样本的授权与分发**：仓库**只分发自造的合成夹具** `samples/frontend-backend-link`（`.gitignore` 用 `**/samples/*` 排除其余样本，仅对该夹具开了例外）；第三方样本默认只存在于本地、不随仓库分发，其来源与许可证见 [`docs/samples-licenses.md`](docs/samples-licenses.md)。
+> **样本的授权与分发**：仓库**只分发自造的合成夹具** `samples/frontend-backend-link`（`.gitignore` 用 `**/samples/*` 排除其余样本，仅对该夹具开了例外）；第三方样本默认只存在于本地、不随仓库分发，其来源与许可证见 [`docs/samples-licenses.md`](samples-licenses.md)。
 
 ## 示例 Demo（GitHub 展示）
 
-[`tools/gen_demo.sh`](tools/gen_demo.sh) 对每个样本跑「建图 → 规则检测 → 召回示例 → 图导出」，生成两份可直接发布的静态产物，放在 **[`docs/demo/`](docs/demo/README.md)**：
+[`tools/gen_demo.sh`](../tools/gen_demo.sh) 对每个样本跑「建图 → 规则检测 → 召回示例 → 图导出」，生成两份可直接发布的静态产物，放在 **[`docs/demo/`](demo/README.md)**：
 
-- **交互式站点** [`docs/demo/index.html`](docs/demo/index.html)：多项目切换 + 三个页签 —— **图**（可缩放拖拽的节点-边图，按类型着色，点击看细节）、**规则检验**（违规表，可按严重度 / 规则筛选）、**提示词增强**（中文问句的召回上下文包）。大工程只渲染一个**连通子图**并如实标注完整规模。
+- **交互式站点** [`docs/demo/index.html`](demo/index.html)：多项目切换 + 三个页签 —— **图**（可缩放拖拽的节点-边图，按类型着色，点击看细节）、**规则检验**（违规表，可按严重度 / 规则筛选）、**提示词增强**（中文问句的召回上下文包）。大工程只渲染一个**连通子图**并如实标注完整规模。
 - **Markdown 画廊** `docs/demo/README.md`：GitHub 原生渲染，适合在仓库内直接浏览。
 
 无需模型权重（召回走哈希兜底）。本地重生成：`./tools/gen_demo.sh --build`（样本树默认取仓库根 `samples/`，可用 `GRAPHTELL_SAMPLES_DIR` 覆盖）。
 
-发布：仓库 **Settings → Pages → Source 选 "GitHub Actions"**（一次性），之后推 `master`/`main` 由 [`.github/workflows/deploy-demo.yml`](../.github/workflows/deploy-demo.yml) 自动发布到 `https://<用户名>.github.io/<仓库名>/` —— **免自购域名**。（Gitee 不执行 GitHub Actions，需在其 Gitee Pages 服务里手动部署。）
+发布：仓库 **Settings → Pages → Source 选 "GitHub Actions"**（一次性），之后推 `master`/`main` 由 [`.github/workflows/deploy-demo.yml`](../../.github/workflows/deploy-demo.yml) 自动发布到 `https://<用户名>.github.io/<仓库名>/` —— **免自购域名**。（Gitee 不执行 GitHub Actions，需在其 Gitee Pages 服务里手动部署。）
 
 > 集成测试依赖的样本同样是「软依赖」：仓库内 `samples/` 缺席时（如发布包 / 部分检出），相关测试自动跳过而非失败——与 demo 脚本跳过缺失样本的行为一致。
 

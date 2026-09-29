@@ -1,7 +1,7 @@
 # 支持矩阵（SUPPORTED）
 
 GraphTell 当前已落地的语言 / 框架 / 语义特征，以及**已知的诚实边界**。
-完整的架构与流水线说明见 [`README.md`](./README.md)，FKB 编写方法见 [`docs/fkb-authoring.md`](./docs/fkb-authoring.md)。
+完整的架构与流水线说明见 [`docs/architecture.md`](./docs/architecture.md)，FKB 编写方法见 [`docs/fkb-authoring.md`](./docs/fkb-authoring.md)。
 
 ---
 

@@ -97,7 +97,7 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 
 ## 快速开始
 
-**方式 A：预编译包**（推荐试用） —— 见 [Releases](../../releases) 下载对应平台的包（含二进制与 `fkb/` `rules/` `views/` 运行时资产）。
+**方式 A：预编译包**（推荐试用） —— 到 [Releases](https://github.com/alvinliu87/graphtell/releases) 下载对应平台的包（含二进制与 `fkb/` `rules/` `views/` 运行时资产）；`v0.1.0-beta.1` 起提供。
 
 **方式 B：Docker**
 
@@ -115,13 +115,13 @@ cargo build
 ./target/debug/graphtell serve --port 5177                              # 启动服务
 ```
 
-完整步骤（前端 / 桌面端 / 发布包 / 编码器 feature）见 [`graphtell/README.md`](graphtell/README.md#快速开始)。
+完整步骤（前端 / 桌面端 / 发布包 / 编码器 feature）见 [`graphtell/docs/architecture.md`](graphtell/docs/architecture.md#快速开始)。
 
 ---
 
 ## 仓库结构
 
-> 代码在工作区子目录 `graphtell/` 下；本文件是索引，技术细节见 [`graphtell/README.md`](graphtell/README.md)。
+> 代码在工作区子目录 `graphtell/` 下；本文件是索引，技术细节见 [`graphtell/docs/architecture.md`](graphtell/docs/architecture.md)。
 
 | 路径 | 内容 |
 | --- | --- |
