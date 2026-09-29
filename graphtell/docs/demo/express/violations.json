@@ -1,22 +1,22 @@
 {
-  "project_id": 3,
+  "project_id": 2,
   "rules_total": 35,
   "rules_run": 5,
   "violations": [
     {
-      "project_id": 3,
+      "project_id": 2,
       "rule_id": "get-with-write-verb",
       "title": "GET 接口却在做写操作",
       "category": "api-hygiene",
       "severity": "warning",
-      "node_id": 3000006972,
+      "node_id": 2000006972,
       "node_name": "GET /reset/:token",
       "node_kind": "HttpContract",
       "message": "契约 GET /reset/:token 是 GET 却包含写动词，违反 REST 只读语义（可能被重试 / 预取误触发写操作）",
       "remediation": "把该接口改成 POST / DELETE 等写方法；若确为只读的清空 / 删除预览，改名避开写动词",
-      "file": "samples/hackathon-starter/app.js",
+      "file": "samples/node-projects/express/hackathon-starter/app.js",
       "line": 266,
-      "sub_project_id": 4
+      "sub_project_id": 3
     }
   ],
   "by_severity": {
@@ -64,5 +64,5 @@
     "write-only-table（图上没有任何 ReadsDb 边，`no/has_ReadsDb` 判据不成立）",
     "cache-never-written（图上没有任何 ReadsCache 边，`no/has_ReadsCache` 判据不成立）"
   ],
-  "duration_ms": 10
+  "duration_ms": 22
 }

@@ -1,0 +1,20 @@
+{
+ "total_nodes": 48140,
+ "total_edges": 49469,
+ "shown_nodes": 400,
+ "shown_edges": 617,
+ "truncated": true,
+ "kinds": {
+  "CallSite": 33980,
+  "Method": 11847,
+  "File": 937,
+  "Function": 425,
+  "Class": 412,
+  "HttpContract": 274,
+  "Interface": 141,
+  "Enum": 68,
+  "Table": 34,
+  "Store": 18,
+  "Schedule": 4
+ }
+}

@@ -1,0 +1,63 @@
+[2m2026-09-29T10:00:34.867692Z[0m [32m INFO[0m [2mgt_adapter_sqlite::store[0m[2m:[0m SQLite 已打开: /tmp/graphtell-demo.nsSDnt/graphtell.sqlite
+[2m2026-09-29T10:00:34.871041Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spring-boot (fkb/java/spring-boot.yaml)
+[2m2026-09-29T10:00:34.877153Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: thinkphp6 (fkb/php/thinkphp6.yaml)
+[2m2026-09-29T10:00:34.880086Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: laravel (fkb/php/laravel.yaml)
+[2m2026-09-29T10:00:34.881779Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/php/crmeb.yaml)
+[2m2026-09-29T10:00:34.882142Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spatie-permission (fkb/php/spatie-permission.yaml)
+[2m2026-09-29T10:00:34.882694Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: symfony (fkb/php/symfony.yaml)
+[2m2026-09-29T10:00:34.884792Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: php-common (fkb/php/common.yaml)
+[2m2026-09-29T10:00:34.885404Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: my-framework (fkb/_template/template.yaml)
+[2m2026-09-29T10:00:34.885966Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastify (fkb/js/fastify.yaml)
+[2m2026-09-29T10:00:34.887274Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: typeorm (fkb/js/typeorm.yaml)
+[2m2026-09-29T10:00:34.888157Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: express (fkb/js/express.yaml)
+[2m2026-09-29T10:00:34.888718Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: koa (fkb/js/koa.yaml)
+[2m2026-09-29T10:00:34.890276Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: nestjs (fkb/js/nestjs.yaml)
+[2m2026-09-29T10:00:34.891600Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js-common (fkb/js/common.yaml)
+[2m2026-09-29T10:00:34.893562Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js (fkb/js/uni-app.yaml)
+[2m2026-09-29T10:00:34.895275Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastapi (fkb/python/fastapi.yaml)
+[2m2026-09-29T10:00:34.896184Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: celery (fkb/python/celery.yaml)
+[2m2026-09-29T10:00:34.897553Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: django (fkb/python/django.yaml)
+[2m2026-09-29T10:00:34.898554Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: flask (fkb/python/flask.yaml)
+[2m2026-09-29T10:00:34.899023Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/projects/crmeb.yaml)
+[2m2026-09-29T10:00:34.899123Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 20 份框架知识
+[2m2026-09-29T10:00:34.900016Z[0m [32m INFO[0m [2mgt_adapter_views[0m[2m:[0m 装载视角声明: target/debug/../../views/perspectives.yaml
+[2m2026-09-29T10:00:34.900085Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 10 个视角声明
+[2m2026-09-29T10:00:34.900879Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/java/n1-query.yaml (2 条)
+[2m2026-09-29T10:00:34.901166Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/architecture.yaml (1 条)
+[2m2026-09-29T10:00:34.901483Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/deadcode.yaml (2 条)
+[2m2026-09-29T10:00:34.902714Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/security.yaml (11 条)
+[2m2026-09-29T10:00:34.903170Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/n1-query.yaml (2 条)
+[2m2026-09-29T10:00:34.903510Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/runtime.yaml (2 条)
+[2m2026-09-29T10:00:34.903881Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/js/deadcode.yaml (3 条)
+[2m2026-09-29T10:00:34.904441Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/architecture.yaml (4 条)
+[2m2026-09-29T10:00:34.905035Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/contract.yaml (4 条)
+[2m2026-09-29T10:00:34.905426Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/deadcode.yaml (2 条)
+[2m2026-09-29T10:00:34.905788Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/api-hygiene.yaml (1 条)
+[2m2026-09-29T10:00:34.906075Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/performance.yaml (1 条)
+[2m2026-09-29T10:00:34.906159Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 35 条检查规则
+节点 7089 / 边 6939 / 标注 20
+  CallSite         6775
+  File             83
+  Function         98
+  HttpContract     123
+  Middleware       10
+  [Check] rule:get-with-write-verb 契约 GET /reset/:token 是 GET 却包含写动词，违反 REST 只读语义（可能被重试 / 预取误触发写操作）
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity
+  [Synthesize] IdentityUnresolved 规则 frontend-http-contract 未能算出 identity

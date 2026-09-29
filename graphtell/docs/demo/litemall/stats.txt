@@ -1,0 +1,69 @@
+[2m2026-09-29T10:00:44.628998Z[0m [32m INFO[0m [2mgt_adapter_sqlite::store[0m[2m:[0m SQLite 已打开: /tmp/graphtell-demo.nsSDnt/graphtell.sqlite
+[2m2026-09-29T10:00:44.631910Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spring-boot (fkb/java/spring-boot.yaml)
+[2m2026-09-29T10:00:44.636478Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: thinkphp6 (fkb/php/thinkphp6.yaml)
+[2m2026-09-29T10:00:44.639157Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: laravel (fkb/php/laravel.yaml)
+[2m2026-09-29T10:00:44.640178Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/php/crmeb.yaml)
+[2m2026-09-29T10:00:44.640610Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spatie-permission (fkb/php/spatie-permission.yaml)
+[2m2026-09-29T10:00:44.641010Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: symfony (fkb/php/symfony.yaml)
+[2m2026-09-29T10:00:44.642245Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: php-common (fkb/php/common.yaml)
+[2m2026-09-29T10:00:44.642624Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: my-framework (fkb/_template/template.yaml)
+[2m2026-09-29T10:00:44.642956Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastify (fkb/js/fastify.yaml)
+[2m2026-09-29T10:00:44.643631Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: typeorm (fkb/js/typeorm.yaml)
+[2m2026-09-29T10:00:44.644286Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: express (fkb/js/express.yaml)
+[2m2026-09-29T10:00:44.644689Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: koa (fkb/js/koa.yaml)
+[2m2026-09-29T10:00:44.645568Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: nestjs (fkb/js/nestjs.yaml)
+[2m2026-09-29T10:00:44.646529Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js-common (fkb/js/common.yaml)
+[2m2026-09-29T10:00:44.647763Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js (fkb/js/uni-app.yaml)
+[2m2026-09-29T10:00:44.649128Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastapi (fkb/python/fastapi.yaml)
+[2m2026-09-29T10:00:44.649805Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: celery (fkb/python/celery.yaml)
+[2m2026-09-29T10:00:44.650949Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: django (fkb/python/django.yaml)
+[2m2026-09-29T10:00:44.651798Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: flask (fkb/python/flask.yaml)
+[2m2026-09-29T10:00:44.652199Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/projects/crmeb.yaml)
+[2m2026-09-29T10:00:44.652265Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 20 份框架知识
+[2m2026-09-29T10:00:44.653144Z[0m [32m INFO[0m [2mgt_adapter_views[0m[2m:[0m 装载视角声明: target/debug/../../views/perspectives.yaml
+[2m2026-09-29T10:00:44.653195Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 10 个视角声明
+[2m2026-09-29T10:00:44.653647Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/java/n1-query.yaml (2 条)
+[2m2026-09-29T10:00:44.653849Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/architecture.yaml (1 条)
+[2m2026-09-29T10:00:44.654072Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/deadcode.yaml (2 条)
+[2m2026-09-29T10:00:44.655146Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/security.yaml (11 条)
+[2m2026-09-29T10:00:44.655528Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/n1-query.yaml (2 条)
+[2m2026-09-29T10:00:44.655838Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/runtime.yaml (2 条)
+[2m2026-09-29T10:00:44.656183Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/js/deadcode.yaml (3 条)
+[2m2026-09-29T10:00:44.656801Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/architecture.yaml (4 条)
+[2m2026-09-29T10:00:44.657305Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/contract.yaml (4 条)
+[2m2026-09-29T10:00:44.657611Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/deadcode.yaml (2 条)
+[2m2026-09-29T10:00:44.657854Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/api-hygiene.yaml (1 条)
+[2m2026-09-29T10:00:44.658052Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/performance.yaml (1 条)
+[2m2026-09-29T10:00:44.658111Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 35 条检查规则
+节点 48140 / 边 49469 / 标注 123
+  CallSite         33980
+  Class            412
+  Enum             68
+  File             937
+  Function         425
+  HttpContract     274
+  Interface        141
+  Method           11847
+  Schedule         4
+  Store            18
+  Table            34
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/user 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/topic 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 GET /download/{key:.+} 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 GET /fetch/{key:.+} 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /upload 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/storage 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /clearhistory 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 GET /helper 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/search 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /comment 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /confirm 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /pay-notify 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /h5pay 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /prepay 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/order 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 POST /config 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 GET /config 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/msg 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/issue 有 handler 但没有任何前端调用方，可能是死端点
+  [Check] rule:backend-endpoint-never-called 端点 ANY /wx/index 有 handler 但没有任何前端调用方，可能是死端点

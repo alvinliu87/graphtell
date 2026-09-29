@@ -1,0 +1,22 @@
+{
+ "total_nodes": 83,
+ "total_edges": 45,
+ "shown_nodes": 61,
+ "shown_edges": 32,
+ "truncated": true,
+ "kinds": {
+  "CallSite": 24,
+  "HttpContract": 19,
+  "Function": 14,
+  "File": 11,
+  "Page": 3,
+  "Class": 2,
+  "Method": 2,
+  "Cache": 2,
+  "ConfigKey": 2,
+  "Namespace": 1,
+  "EventBus": 1,
+  "I18nKey": 1,
+  "Store": 1
+ }
+}

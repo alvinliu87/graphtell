@@ -1,0 +1,47 @@
+name: Deploy demo (GitHub Pages)
+
+# 把 graphtell/docs/demo 发布到 GitHub Pages —— 免费 *.github.io 域名，无需自购域名。
+#
+# 首次使用需在仓库 Settings → Pages → Source 里选一次 "GitHub Actions"。
+# 之后每次 docs/demo 有改动就自动发布；也可手动 workflow_dispatch。
+#
+# 说明：demo 数据（图 / 规则违规 / 召回示例）由 `tools/gen_demo.sh` 在本地生成后提交，
+# 因此 CI 不需要样本代码库（它们不随仓库分发），发布的是**已生成的静态产物**。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'graphtell/docs/demo/**'
+      - 'graphtell/tools/gen_demo.sh'
+      - '.github/workflows/deploy-demo.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只跑一次发布，但**不取消**进行中的部署（避免把 Pages 推到半新半旧的状态）。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # 站点根即 demo 目录，故访问路径是 https://<user>.github.io/<repo>/ 直达 demo。
+          path: graphtell/docs/demo
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

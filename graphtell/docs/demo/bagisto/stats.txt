@@ -1,0 +1,78 @@
+[2m2026-09-29T10:02:09.047726Z[0m [32m INFO[0m [2mgt_adapter_sqlite::store[0m[2m:[0m SQLite 已打开: /tmp/graphtell-demo.nsSDnt/graphtell.sqlite
+[2m2026-09-29T10:02:09.051192Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spring-boot (fkb/java/spring-boot.yaml)
+[2m2026-09-29T10:02:09.056664Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: thinkphp6 (fkb/php/thinkphp6.yaml)
+[2m2026-09-29T10:02:09.059684Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: laravel (fkb/php/laravel.yaml)
+[2m2026-09-29T10:02:09.060763Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/php/crmeb.yaml)
+[2m2026-09-29T10:02:09.061045Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: spatie-permission (fkb/php/spatie-permission.yaml)
+[2m2026-09-29T10:02:09.061426Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: symfony (fkb/php/symfony.yaml)
+[2m2026-09-29T10:02:09.062663Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: php-common (fkb/php/common.yaml)
+[2m2026-09-29T10:02:09.063112Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: my-framework (fkb/_template/template.yaml)
+[2m2026-09-29T10:02:09.063455Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastify (fkb/js/fastify.yaml)
+[2m2026-09-29T10:02:09.064197Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: typeorm (fkb/js/typeorm.yaml)
+[2m2026-09-29T10:02:09.064903Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: express (fkb/js/express.yaml)
+[2m2026-09-29T10:02:09.065286Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: koa (fkb/js/koa.yaml)
+[2m2026-09-29T10:02:09.066195Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: nestjs (fkb/js/nestjs.yaml)
+[2m2026-09-29T10:02:09.067210Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js-common (fkb/js/common.yaml)
+[2m2026-09-29T10:02:09.068624Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: frontend-js (fkb/js/uni-app.yaml)
+[2m2026-09-29T10:02:09.070630Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: fastapi (fkb/python/fastapi.yaml)
+[2m2026-09-29T10:02:09.071447Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: celery (fkb/python/celery.yaml)
+[2m2026-09-29T10:02:09.072730Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: django (fkb/python/django.yaml)
+[2m2026-09-29T10:02:09.073642Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: flask (fkb/python/flask.yaml)
+[2m2026-09-29T10:02:09.074069Z[0m [32m INFO[0m [2mgt_adapter_fkb::loader[0m[2m:[0m 装载 FKB: crmeb (fkb/projects/crmeb.yaml)
+[2m2026-09-29T10:02:09.074140Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 20 份框架知识
+[2m2026-09-29T10:02:09.075078Z[0m [32m INFO[0m [2mgt_adapter_views[0m[2m:[0m 装载视角声明: target/debug/../../views/perspectives.yaml
+[2m2026-09-29T10:02:09.075138Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 10 个视角声明
+[2m2026-09-29T10:02:09.075759Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/java/n1-query.yaml (2 条)
+[2m2026-09-29T10:02:09.076034Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/architecture.yaml (1 条)
+[2m2026-09-29T10:02:09.076276Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/deadcode.yaml (2 条)
+[2m2026-09-29T10:02:09.077533Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/security.yaml (11 条)
+[2m2026-09-29T10:02:09.077978Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/n1-query.yaml (2 条)
+[2m2026-09-29T10:02:09.078299Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/php/runtime.yaml (2 条)
+[2m2026-09-29T10:02:09.078639Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/js/deadcode.yaml (3 条)
+[2m2026-09-29T10:02:09.079306Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/architecture.yaml (4 条)
+[2m2026-09-29T10:02:09.079833Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/contract.yaml (4 条)
+[2m2026-09-29T10:02:09.080131Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/deadcode.yaml (2 条)
+[2m2026-09-29T10:02:09.080438Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/api-hygiene.yaml (1 条)
+[2m2026-09-29T10:02:09.080697Z[0m [32m INFO[0m [2mgt_adapter_rules::loader[0m[2m:[0m 装载规则: target/debug/../../rules/global/performance.yaml (1 条)
+[2m2026-09-29T10:02:09.080768Z[0m [32m INFO[0m [2mgt_app::container[0m[2m:[0m 已装载 35 条检查规则
+节点 90602 / 边 97035 / 标注 208
+  Cache            2
+  CallSite         76366
+  Class            1352
+  Column           1124
+  ConfigKey        244
+  Const            208
+  Enum             19
+  EnumCase         134
+  Event            7
+  File             3066
+  Function         304
+  HttpContract     207
+  Interface        123
+  Method           6034
+  Middleware       10
+  Namespace        365
+  Property         797
+  Queue            83
+  Table            141
+  Trait            16
+  [Check] rule:cache-never-written 缓存 phonepe_access_token 被读取但图上没有任何写入 —— 读到的可能是空 / 旧的，或写路径未被图识别
+  [Check] rule:cache-never-written 缓存 Cache 被读取但图上没有任何写入 —— 读到的可能是空 / 旧的，或写路径未被图识别
+  [Check] rule:write-only-table 表 cart_payment 被写入（≥ 1 处）但从不被读取 —— 写进去的数据没人用，可能是死写路径或读路径未被识别
+  [Check] rule:http-contract-without-handler 契约 GET /callback 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /product/{id}/{attribute_id} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /downloadable/download-sample/{type}/{id} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /subscription/{token} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 POST /subscription 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /confirmation/{uuid} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 POST /{orderId}/store 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /{orderId}/create 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 POST /lookup 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /withdrawals/{uuid} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 POST /orders/{orderId}/withdraw 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /orders/{orderId}/withdraw 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /print/Invoice/{id} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 PATCH /edit/{id} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 POST /revoke/{id} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /html-view 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由
+  [Check] rule:http-contract-without-handler 契约 GET /pdf-view 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由

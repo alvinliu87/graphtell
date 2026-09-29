@@ -1,0 +1,29 @@
+{
+ "total_nodes": 90602,
+ "total_edges": 97035,
+ "shown_nodes": 400,
+ "shown_edges": 349,
+ "truncated": true,
+ "kinds": {
+  "CallSite": 76366,
+  "Method": 6034,
+  "File": 3066,
+  "Class": 1352,
+  "Column": 1124,
+  "Property": 797,
+  "Namespace": 365,
+  "Function": 304,
+  "ConfigKey": 244,
+  "Const": 208,
+  "HttpContract": 207,
+  "Table": 141,
+  "EnumCase": 134,
+  "Interface": 123,
+  "Queue": 83,
+  "Enum": 19,
+  "Trait": 16,
+  "Middleware": 10,
+  "Event": 7,
+  "Cache": 2
+ }
+}

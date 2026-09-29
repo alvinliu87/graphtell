@@ -1,0 +1,30 @@
+{
+ "total_nodes": 96231,
+ "total_edges": 124592,
+ "shown_nodes": 400,
+ "shown_edges": 850,
+ "truncated": true,
+ "kinds": {
+  "CallSite": 80263,
+  "Method": 6724,
+  "File": 2189,
+  "Function": 1907,
+  "HttpContract": 1603,
+  "Class": 1043,
+  "Property": 1024,
+  "I18nKey": 358,
+  "ConfigKey": 278,
+  "Namespace": 229,
+  "Const": 209,
+  "Table": 163,
+  "Store": 75,
+  "Cache": 42,
+  "Page": 29,
+  "EventBus": 28,
+  "Queue": 27,
+  "Event": 20,
+  "Middleware": 10,
+  "Interface": 6,
+  "Trait": 4
+ }
+}

@@ -1,0 +1,14 @@
+{
+ "total_nodes": 7089,
+ "total_edges": 6939,
+ "shown_nodes": 111,
+ "shown_edges": 60,
+ "truncated": true,
+ "kinds": {
+  "CallSite": 6775,
+  "HttpContract": 123,
+  "Function": 98,
+  "File": 83,
+  "Middleware": 10
+ }
+}
