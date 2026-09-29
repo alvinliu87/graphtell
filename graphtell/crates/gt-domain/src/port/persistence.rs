@@ -282,6 +282,18 @@ pub trait DiagnosticSink: Send + Sync {
         project_id: ProjectId,
         exclude_prefix: &str,
     ) -> Result<Vec<(String, u64)>>;
+    /// 按 code **排除**某前缀 + 按 `(code, severity_snake_case)` 聚合计数，
+    /// 返回 `(code, severity, count)` 列表。
+    ///
+    /// 与 [`Self::count_diagnostics_excluding`] **同一口径**（都排除 `rule:`），只是聚合粒度更细。
+    /// 为什么要细到 code：一条引擎诊断可能在几百个文件上重复触发（`IdentityUnresolved`
+    /// 在 CRMEB 上就有 349 条），报「349 条」读不出信息量 —— 那是 349 个**同类事实**。
+    /// 报「1 类 · 349 处」才说得清"图少了哪一块、要不要管"。
+    fn count_diagnostics_by_code_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+    ) -> Result<Vec<(String, String, u64)>>;
 }
 
 /// 工程级规则配置端口（按工程覆盖规则的启用态与参数）。

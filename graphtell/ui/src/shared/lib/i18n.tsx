@@ -86,6 +86,42 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.EventHandler': '事件处理器',
     'node.Middleware': '中间件',
     'node.Unknown': '未知',
+    // ---- 建图期诊断（`code` → 人话）----
+    //
+    // 为什么放前端、以 code 为键：诊断 code 是引擎侧的封闭集合（`ws.diagnose(...)` 的调用点），
+    // 与节点 / 边 kind 同类 —— 前端按语言映射成人话，页面就不必再显示 `IdentityUnresolved`
+    // 这种用户读不懂的标识符。未收录的 code 回退为原 code 本身（见 `diagnosticTitle`），
+    // 不会白屏，也不需要改 Rust 内核。
+    'diag.IdentityUnresolved.title': '规则算不出对象的唯一标识',
+    'diag.IdentityUnresolved.what':
+      '合成语义对象（事件 / 配置键 / HTTP 契约等）时算不出它的身份键，于是「这一处不产生语义节点」，只剩文件结构。图因此少一块，相关召回会变弱 —— 但代码本身没问题。',
+    'diag.NoParserForLanguage.title': '这种语言还没有解析器',
+    'diag.NoParserForLanguage.what':
+      '文件被扫进来了，但该语言没注册解析器：只有文件节点，没有类 / 函数 / 调用。子工程的图只有结构层，这里是「看不见」，不是「没有调用」。',
+    'diag.RootRuleUnresolved.title': '框架知识的某项没能解析',
+    'diag.RootRuleUnresolved.what':
+      '框架知识声明的值（如 ThinkPHP 的 db_prefix）在工程里没解析出来。依赖它的规则会整体失效，通常连带出现「表名对不上」这类下游现象。',
+    'diag.AnnotateTargetMissing.title': '规则的标注目标没能解析',
+    'diag.AnnotateTargetMissing.what':
+      '规则本应给对象打标注 / 建边，但目标没解析出来，这一步被跳过。依赖该标注的规则会「静默归零」：看着像「没问题」，其实是判据不成立。',
+    'diag.AliasTargetMissing.title': '父类 / 门面目标不在图内',
+    'diag.AliasTargetMissing.what':
+      '继承或门面调用的目标被 Ingest 排除（vendor 等），已记占位节点。这是「预期内」的：第三方代码不进图。',
+    'diag.EventListenNoConsumer.title': 'Event::listen 没写监听器',
+    'diag.EventListenNoConsumer.what':
+      'event.php 里 `Event::listen(...)` 没有带监听器参数，注册信息不完整，事件挂不到具体消费者上。',
+    'diag.UnresolvedLink.title': '某条关系找不到目标',
+    'diag.UnresolvedLink.what':
+      '调用 / 路由 / 门面指向的目标不在图里。警告级：路由指向不存在的 handler，线上会 500，值得核对；提示级：门面或变量类型推断不出来，目标多半在 vendor，属预期。',
+    'diag.EventTriggerUnresolved.title': "event('…') 找不到已注册的事件",
+    'diag.EventTriggerUnresolved.what':
+      "某处触发了 event('…')，但 event.php 里没有这个键。若该键被写成空数组，监听器会被整体误判成死代码 —— 这是「事件系统看起来没接上」的常见原因。",
+    'diag.EventListenUnresolved.title': "Event::listen('…') 找不到对应事件",
+    'diag.EventListenUnresolved.what':
+      '监听的目标事件没在 event.php 注册。监听器仍可经 `listener` 标注识别，但无法精确挂到具体事件上。',
+    'diag.EventListenTargetMissing.title': 'Event::listen 的监听器不在图内',
+    'diag.EventListenTargetMissing.what':
+      '注册的监听器类不在图里（被排除或没被解析），事件挂不上去。',
     // ---- 通用 ----
     'status.resolved': '已解析',
     'status.unverified': '待验证',
@@ -148,6 +184,37 @@ const dict: Record<Lang, Record<string, string>> = {
     'node.EventHandler': 'Event handler',
     'node.Middleware': 'Middleware',
     'node.Unknown': 'Unknown',
+    // ---- Build-time diagnostics (code → plain language) ----
+    'diag.IdentityUnresolved.title': 'A rule cannot derive an object identity',
+    'diag.IdentityUnresolved.what':
+      'While synthesizing a semantic object (event / config key / HTTP contract…), the rule could not derive its identity key, so no semantic node is created here — only the file structure remains. The graph is missing a piece and recall weakens, but your code itself is fine.',
+    'diag.NoParserForLanguage.title': 'No parser for this language yet',
+    'diag.NoParserForLanguage.what':
+      'Files were scanned, but no parser is registered for this language: file nodes only, no classes / functions / calls. This sub-project has structure only — it is "invisible", not "no calls".',
+    'diag.RootRuleUnresolved.title': 'A framework-knowledge value could not be resolved',
+    'diag.RootRuleUnresolved.what':
+      'A value declared in framework knowledge (e.g. ThinkPHP db_prefix) was not resolved in this project. Rules depending on it fail as a whole, usually surfacing downstream as unmatched table names.',
+    'diag.AnnotateTargetMissing.title': 'A rule could not resolve its annotation target',
+    'diag.AnnotateTargetMissing.what':
+      'A rule should annotate an object or create an edge, but the target did not resolve and the step was skipped. Rules depending on that annotation silently go to zero hits: it looks like "no problem" while the criterion is actually invalid.',
+    'diag.AliasTargetMissing.title': 'Inherited / facade target is not in the graph',
+    'diag.AliasTargetMissing.what':
+      'The target of an inheritance or facade call was excluded by Ingest (vendor etc.) and a placeholder node was recorded. This is expected: third-party code is not ingested.',
+    'diag.EventListenNoConsumer.title': 'Event::listen has no listener',
+    'diag.EventListenNoConsumer.what':
+      'In event.php, `Event::listen(...)` is registered without a listener argument; the registration is incomplete and the event cannot be attached to a concrete consumer.',
+    'diag.UnresolvedLink.title': 'A relation has no resolvable target',
+    'diag.UnresolvedLink.what':
+      'The target of a call / route / facade is not in the graph. Warning level: a route pointing to a non-existent handler returns 500 in production — worth checking. Info level: facade or variable type could not be inferred, the target is likely in vendor — expected.',
+    'diag.EventTriggerUnresolved.title': "event('…') has no registered event",
+    'diag.EventTriggerUnresolved.what':
+      "Something triggers event('…') but the key does not exist in event.php. If that key is an empty array, listeners get misjudged as dead code — a common cause of \"the event system looks disconnected\".",
+    'diag.EventListenUnresolved.title': "Event::listen('…') has no matching event",
+    'diag.EventListenUnresolved.what':
+      'The target event is not registered in event.php. The listener is still detectable via the `listener` annotation, but cannot be attached to a concrete event.',
+    'diag.EventListenTargetMissing.title': 'Event::listen listener is not in the graph',
+    'diag.EventListenTargetMissing.what':
+      'The registered listener class is not in the graph (excluded or unresolved), so the event cannot be attached.',
     'status.resolved': 'resolved',
     'status.unverified': 'unverified',
     'indirect.tooltip':
@@ -161,6 +228,73 @@ const dict: Record<Lang, Record<string, string>> = {
     '图视图': 'Graph',
     '节点浏览': 'Explorer',
     '诊断': 'Diagnostics',
+    '建图报告': 'Build Report',
+    '查看建图报告': 'View build report',
+    // ---- 诊断页（建图期诊断）----
+    '根节点没解析、路由指向不存在的 handler、identity 算不出来…… 说的都是「图少建了一块」。':
+      'Unresolved roots, routes pointing to non-existent handlers, underivable identities — all of them mean "a piece of the graph was not built".',
+    '读法：先看「问题类型」有几类、哪类要管；同一类在几百个文件上重复触发时，条数不代表问题数。':
+      'How to read it: start from the problem types — how many there are and which one matters. When one type fires in hundreds of files, the entry count is not the problem count.',
+    '代码是否违反规则见': 'For rule violations of the code itself, see ',
+    '去质量门禁查看': 'Open Quality Gate',
+    '问题类型': 'Problem types',
+    '这一页是「建图报告」：记录图没建全的地方，不是你的代码违反了规则':
+      'This page is the "Build Report": where the graph is incomplete — not a verdict on your code.',
+    '根节点缺失、路由指向不存在的 handler、identity 冲突等 —— 这些记录本身就是分析结论':
+      'Missing root nodes, routes pointing to non-existent handlers, identity conflicts, etc. — these records are the conclusions.',
+    '暂无建图报告 —— 图没报出任何未解析 / 缺失。':
+      'No build report — the graph reported nothing unresolved or missing.',
+    '暂无建图报告条目': 'No report entries',
+    '条记录，当前列出了': 'records, currently listing',
+    ' 类': ' types',
+    ' 条': ' entries',
+    '共 ': 'Total ',
+    '错误': 'Errors',
+    '警告': 'Warnings',
+    '提示': 'Hints',
+    '严重': 'Critical',
+    '类型': 'Type',
+    '已复制定位': 'Location copied',
+    // 诊断页的分组视图
+    '这些语言还没有解析器：': 'No parser for these languages: ',
+    ' —— 对应子工程只有文件结构，语义召回在这里为空。':
+      ' — those sub-projects have file structure only; semantic recall is empty there.',
+    ' 类问题': ' problem types',
+    '值得看一眼': 'Worth a look',
+    '引擎 / 知识局限': 'Engine / knowledge limits',
+    '预期内': 'Expected',
+    '可能指向真实的代码问题（死路由 / 事件没注册），值得核对。':
+      'May point to a real code problem (dead route / unregistered event) — worth checking.',
+    '引擎或框架知识没能建出这一块：代码本身没问题，但图在这里是缺的，相关召回会弱。':
+      'The engine or framework knowledge could not build this piece: your code is fine, but the graph is missing here and recall weakens.',
+    '目标在 vendor 或被排除，属设计如此，不用管。':
+      'The target is in vendor or excluded by design — nothing to do.',
+    '这一页没有需要你处理的：全部是预期内 / 引擎局限。':
+      'Nothing here needs your attention: all of it is expected or an engine limitation.',
+    '其余是引擎 / 知识局限与预期内：不改变召回结论，除非你要查的正是那一块。':
+      'The rest are engine / knowledge limits and expected cases: they do not change recall conclusions unless that is exactly the part you are looking into.',
+    '按问题类型': 'By type',
+    '逐条明细': 'Entries',
+    '按类型的计数取自全量汇总，不受明细读取上限影响':
+      'Per-type counts come from the full aggregate, unaffected by the entry read cap.',
+    '按类型的计数取自当前读取窗口（汇总接口未返回按类型计数），可能偏小。':
+      'Per-type counts are derived from the current read window (the summary API returned no per-type counts) and may be too small.',
+    '这一类共 ': 'This type has ',
+    '查看明细': 'View entries',
+    '样例位置': 'Sample locations',
+    '处同类，点「查看明细」按此类型筛选':
+      ' more of the same type; use "View entries" to filter by it.',
+    '明细已被读取上限截断': 'Entries truncated by the read limit',
+    '本工程共': 'This project has',
+    '条（明细有读取上限）：按类型的计数取自全量汇总，仍然准确。':
+      ' entries (the entry list is capped): per-type counts come from the full aggregate and stay accurate.',
+    '全部类型': 'All types',
+    // 图视图页的「图覆盖」提示（诊断页入口）
+    '图覆盖': 'Graph coverage',
+    ' 处': ' places',
+    '（多为引擎局限与预期内，不改变召回结论）':
+      '— mostly engine limits and expected cases; recall conclusions are unaffected.',
+    '回到图视图': 'Back to graph',
     '设置': 'Settings',
     '设置项暂未启用': 'Settings are temporarily disabled',
     '本地根模板 / WSL 模式 / 默认 IDE 等设置仅服务于「跳转 IDE」；该入口已移除，相关设置暂时停用。':
@@ -337,7 +471,6 @@ const dict: Record<Lang, Record<string, string>> = {
     '详情': 'Details',
     '根节点缺失、路由指向不存在的 handler、identity 冲突等 —— 诊断本身就是分析结论':
       'Missing root nodes, routes pointing to non-existent handlers, identity conflicts, etc. — diagnostics are the conclusions',
-    '暂无诊断': 'No diagnostics',
     '严重度': 'Severity',
     '阶段': 'Phase',
 

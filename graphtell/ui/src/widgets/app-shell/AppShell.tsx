@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Badge, Button, Divider, Dropdown, Layout, Menu, Segmented, Space, Typography } from 'antd';
+import {
+  Badge,
+  Button,
+  Divider,
+  Dropdown,
+  Layout,
+  Menu,
+  Segmented,
+  Space,
+  Typography,
+} from 'antd';
 import {
   ApartmentOutlined,
   DatabaseOutlined,
@@ -12,13 +22,11 @@ import {
   UnorderedListOutlined,
   // 暂时注释：设置入口已隐藏
   // SettingOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useHealth } from '@/entities/pipeline';
 import { projectApi, type Project } from '@/entities/project';
 import { checkApi, type CheckSummary } from '@/entities/check';
-import { graphApi, type DiagnosticSummary } from '@/entities/graph';
 import { useAsync } from '@/shared/lib/useAsync';
 import { useLocale, type Lang } from '@/shared/lib/i18n';
 
@@ -44,12 +52,10 @@ export function AppShell() {
   );
   const summary = summaryRes.data ?? null;
 
-  // 诊断角标：非规则诊断（根缺失、断链、identity 冲突等）按严重度汇总。
-  const diagRes = useAsync<DiagnosticSummary | null>(
-    () => (projectId ? graphApi.diagnosticsSummary(Number(projectId)) : Promise.resolve(null)),
-    [projectId],
-  );
-  const diagSummary = diagRes.data ?? null;
+  // 注意：**诊断不在这里取汇总，也不在侧栏挂角标**。
+  // 诊断是"这张图少建了什么"的报告，主体是图 —— 它的入口在图视图页顶部那句覆盖提示里
+  // （见 GraphPage 的「图覆盖」行）。侧栏一个常驻橙色角标只会表达"有东西欠你处理"，
+  // 而诊断里绝大多数是引擎局限与预期内，那是在骗人。
 
   // 顶栏工程快捷选择：拉工程列表，当前工程名直接从列表里取（与页面标题同一口径）。
   const projectsRes = useAsync<Project[]>(() => projectApi.list(), []);
@@ -71,17 +77,14 @@ export function AppShell() {
     );
   };
 
-  // 合规检查 / 诊断的菜单标签：带严重度角标，让菜单本身成为质量仪表盘。
+  // 合规检查的菜单标签：带严重度角标，让菜单本身成为质量仪表盘。
+  //
+  // 只有合规检查带角标：它统计的是"代码违反了哪条规则"，条数就是待办数；
+  // 诊断不是（见上方注释），所以不进侧栏。
   const checkLabel = (
     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
       <span>{t('合规检查')}</span>
       {severityBadge(summary)}
-    </span>
-  );
-  const diagnosticsLabel = (
-    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-      <span>{t('诊断')}</span>
-      {severityBadge(diagSummary)}
     </span>
   );
 
@@ -129,11 +132,8 @@ export function AppShell() {
                 icon: <ProfileOutlined />,
                 label: t('规则集'),
               },
-              {
-                key: withProject('/diagnostics'),
-                icon: <WarningOutlined />,
-                label: diagnosticsLabel,
-              },
+              // 诊断**不**作为菜单项：它是"这张图少建了什么"的报告，
+              // 入口在图视图页顶部的「图覆盖」提示里，不在导航里挂角标。
             ],
           },
         ]

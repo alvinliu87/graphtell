@@ -1,11 +1,14 @@
 import {
   Alert,
+  Badge,
   Button,
   Card,
   Col,
   Collapse,
+  Divider,
   Drawer,
   Input,
+  Popover,
   Row,
   Select,
   Space,
@@ -18,7 +21,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useAsync } from '@/shared/lib/useAsync';
 import { useProject, projectApi, type SubProject } from '@/entities/project';
-import { graphApi, type DiagnosticSummary } from '@/entities/graph';
+import {
+  actionableCount,
+  graphApi,
+  groupDiagnostics,
+  type DiagnosticSummary,
+} from '@/entities/graph';
 import {
   useAggregateView,
   useObjectView,
@@ -175,6 +183,23 @@ export function GraphPage() {
     [id],
   );
   const unsupportedLangs = diagSummary?.unsupported_languages ?? [];
+
+  /**
+   * 「图覆盖」提示的数据：建图报告按类型归类的结果。
+   *
+   * 入口挂在标题旁的 ⓘ（Popover，点击打开）里：报告回答的是"这张图少建了什么"，
+   * 主体就是这张图，所以放在解释这张图的地方最贴；又不常看，因此**不占页面一行** ——
+   * 页面上一行常驻的"445 处"对 78% 是引擎局限的内容来说，是在假装那是待办。
+   *
+   * 判定口径与建图报告页共用 `groupDiagnostics` / `actionableCount`，不再单独定义"什么算问题"。
+   * 全提示级的类型不计数：vendor 目标缺失这类属设计如此，不是待办。
+   */
+  const diagGroups = useMemo(() => groupDiagnostics(diagSummary?.by_code, []), [diagSummary]);
+  const diagTypes = diagGroups.filter((g) => g.severity !== 'info').length;
+  const diagTotal = diagSummary
+    ? diagSummary.critical + diagSummary.error + diagSummary.warning + diagSummary.info
+    : 0;
+  const diagActionable = actionableCount(diagGroups);
   const TIER_LABEL: Record<string, string> = {
     frontend: t('前端'),
     backend: t('后端'),
@@ -634,12 +659,66 @@ export function GraphPage() {
         title={
           <>
             {project ? `${t('图视图')} · ${project.name}` : t('图视图')}
-            {/* 使用说明收进 tooltip：这行字只有第一次看有用，不值得常驻一行 */}
-            <Tooltip title={t('一级选视角、二级选对象；只渲染当前这一条链路，被省略的部分以计数与未解析记账呈现')}>
-              <InfoCircleOutlined
-                style={{ fontSize: 13, color: 'rgba(0,0,0,0.35)', marginLeft: 6, cursor: 'help' }}
-              />
-            </Tooltip>
+            {/*
+              使用说明 + 图覆盖 + 建图报告入口，都收进这个 ⓘ（点击打开的 Popover）。
+
+              为什么是 Popover 而不是 Tooltip：里面要放一个**可点的链接**，
+              Tooltip 是 hover 触发，鼠标从 ⓘ 横移进浮层这一路很容易把它关掉；
+              而"点击打开"的浮层会定住，链接点得到、也不必悬空操作。
+
+              为什么藏进浮层而不是常驻一行：这一页的内容 78% 是引擎局限与预期内
+              （同一条诊断在几百个文件上各触发一次），常驻一行等于宣布"这里有东西欠你处理"。
+              又不该完全藏起来 —— 所以只在真有"值得看一眼"时，给 ⓘ 点一个金色小圆点：
+              圆点只说"这里有点东西"，不占版面，也不谎报严重度。
+            */}
+            <Popover
+              trigger="click"
+              placement="bottomLeft"
+              content={
+                <div style={{ maxWidth: 320, fontSize: 12 }}>
+                  <div style={{ color: 'rgba(0,0,0,0.65)' }}>
+                    {t('一级选视角、二级选对象；只渲染当前这一条链路，被省略的部分以计数与未解析记账呈现')}
+                  </div>
+                  {diagTypes > 0 ? (
+                    <>
+                      <Divider style={{ margin: '8px 0' }} />
+                      <div style={{ color: 'rgba(0,0,0,0.65)' }}>
+                        {t('图覆盖')}：{diagTypes} {t(' 类问题')} · {t('共 ')}
+                        {diagTotal}
+                        {t(' 处')}
+                      </div>
+                      {diagActionable > 0 ? (
+                        <Tag color="gold" style={{ marginTop: 6, marginInlineEnd: 0 }}>
+                          {t('值得看一眼')} {diagActionable}
+                        </Tag>
+                      ) : (
+                        <div style={{ marginTop: 4, color: 'rgba(0,0,0,0.45)' }}>
+                          {t('（多为引擎局限与预期内，不改变召回结论）')}
+                        </div>
+                      )}
+                      <div style={{ marginTop: 8 }}>
+                        <Button
+                          type="link"
+                          size="small"
+                          style={{ paddingInline: 0, fontSize: 12, height: 'auto' }}
+                          onClick={() => navigate(`/projects/${id}/coverage`)}
+                        >
+                          {t('查看建图报告')} →
+                        </Button>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              }
+            >
+              {/* 有"值得看一眼"时才点亮：圆点比文字省地方，也比"红色角标"诚实 ——
+                  它只表示"这里面有点东西"，不表示"严重" */}
+              <Badge dot={diagActionable > 0} color="#faad14" offset={[-2, 4]}>
+                <InfoCircleOutlined
+                  style={{ fontSize: 13, color: 'rgba(0,0,0,0.35)', marginLeft: 6, cursor: 'pointer' }}
+                />
+              </Badge>
+            </Popover>
           </>
         }
         extra={<RunPipelineButton projectId={id} onStarted={() => void reloadProject()} />}
@@ -656,6 +735,9 @@ export function GraphPage() {
           description={t('以下语言只建出文件结构，没有类 / 函数 / 调用等语义抽取') + `：${unsupportedLangs.join('、')}`}
         />
       )}
+
+      {/* 图覆盖那一行**不放在页面上**：它已收进标题旁 ⓘ 的 Popover（见上方 `PageHeader`）。
+          这里只留"暂无解析器的语言"这一条 —— 那条是真的会让人误判图是空的，必须直说。 */}
 
       <Card
         variant="borderless"

@@ -1527,15 +1527,8 @@ impl DiagnosticSink for SqliteStore {
             .query_map(rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), |r| {
                 let raw_sev: String = r.get(0)?;
                 let sev = parse_json::<Severity>(&raw_sev).unwrap_or(Severity::Info);
-                let label = match sev {
-                    Severity::Critical => "critical",
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                    Severity::Info => "info",
-                }
-                .to_string();
                 let n: i64 = r.get(1)?;
-                Ok((label, n as u64))
+                Ok((severity_label(sev).to_string(), n as u64))
             })
             .map_err(DomainError::infra)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1547,28 +1540,40 @@ impl DiagnosticSink for SqliteStore {
         project_id: ProjectId,
         exclude_prefix: &str,
     ) -> Result<Vec<(String, u64)>> {
+        // 四档汇总由**同一份**按 code 聚合的结果折出来，而不是另写一条 `GROUP BY severity`：
+        // "排除哪些 code" 的口径只允许存在一处，否则角标与诊断页总有一天会各说各话。
+        let mut acc: Vec<(String, u64)> = Vec::new();
+        for (_code, sev, n) in self.count_diagnostics_by_code_excluding(project_id, exclude_prefix)? {
+            match acc.iter_mut().find(|(s, _)| *s == sev) {
+                Some((_, total)) => *total += n,
+                None => acc.push((sev, n)),
+            }
+        }
+        Ok(acc)
+    }
+
+    fn count_diagnostics_by_code_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+    ) -> Result<Vec<(String, String, u64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT severity, COUNT(*) FROM diagnostics
+                "SELECT code, severity, COUNT(*) FROM diagnostics
                  WHERE project_id = ?1 AND code NOT LIKE ?2 ESCAPE '\\'
-                 GROUP BY severity",
+                 GROUP BY code, severity
+                 ORDER BY COUNT(*) DESC, code ASC",
             )
             .map_err(DomainError::infra)?;
         let pattern = format!("{}%", like_escape(exclude_prefix));
         let rows = stmt
             .query_map(params![project_id.get(), pattern], |r| {
-                let raw_sev: String = r.get(0)?;
+                let code: String = r.get(0)?;
+                let raw_sev: String = r.get(1)?;
                 let sev = parse_json::<Severity>(&raw_sev).unwrap_or(Severity::Info);
-                let label = match sev {
-                    Severity::Critical => "critical",
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                    Severity::Info => "info",
-                }
-                .to_string();
-                let n: i64 = r.get(1)?;
-                Ok((label, n as u64))
+                let n: i64 = r.get(2)?;
+                Ok((code, severity_label(sev).to_string(), n as u64))
             })
             .map_err(DomainError::infra)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1579,6 +1584,16 @@ impl DiagnosticSink for SqliteStore {
 /// 转义 `LIKE` 通配符，避免规则 id 里的 `%` / `_` 被当成通配符。
 fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// `Severity` → 落库 / 接口口径的小写标签（与 serde 的 `snake_case` 一致）。
+fn severity_label(s: Severity) -> &'static str {
+    match s {
+        Severity::Critical => "critical",
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+    }
 }
 
 // ---------------------------------------------------------------- 辅助

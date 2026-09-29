@@ -3,7 +3,7 @@ import { AppShell } from '@/widgets/app-shell';
 import { ProjectsPage } from '@/pages/projects/ProjectsPage';
 import { GraphPage } from '@/pages/graph/GraphPage';
 import { ExplorerPage } from '@/pages/explorer/ExplorerPage';
-import { DiagnosticsPage } from '@/pages/diagnostics/DiagnosticsPage';
+import { CoveragePage } from '@/pages/coverage/CoveragePage';
 import { CheckPage } from '@/pages/check/CheckPage';
 import { RulesPage } from '@/pages/check/RulesPage';
 import { RecallPage } from '@/pages/recall/RecallPage';
@@ -19,7 +19,7 @@ export const router = createBrowserRouter([
       { path: 'projects', element: <Navigate to="/" replace /> },
       { path: 'projects/:projectId/graph', element: <GraphPage /> },
       { path: 'projects/:projectId/explorer', element: <ExplorerPage /> },
-      { path: 'projects/:projectId/diagnostics', element: <DiagnosticsPage /> },
+      { path: 'projects/:projectId/coverage', element: <CoveragePage /> },
       { path: 'projects/:projectId/check', element: <CheckPage /> },
       { path: 'projects/:projectId/rules', element: <RulesPage /> },
       { path: 'projects/:projectId/recall', element: <RecallPage /> },

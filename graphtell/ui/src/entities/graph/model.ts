@@ -65,6 +65,13 @@ export interface Diagnostic {
   payload: Record<string, unknown> | null;
 }
 
+/** 一类诊断的条目数（同一个 `code` + 同一严重度）。 */
+export interface DiagnosticCodeCount {
+  code: string;
+  severity: Severity;
+  count: number;
+}
+
 /** 非规则诊断的严重度汇总（菜单角标用，排除 `rule:` 前缀以免与合规检查重复）。 */
 export interface DiagnosticSummary {
   critical: number;
@@ -73,6 +80,14 @@ export interface DiagnosticSummary {
   info: number;
   /** 暂无解析器的语言（`go` / `rust` …）：这些子工程只有文件结构，没有语义抽取。 */
   unsupported_languages?: string[];
+  /**
+   * 按**问题类型**分开的条目数（全量口径，不受列表读取上限影响）。
+   *
+   * 侧栏角标与诊断页都靠它把「445 条」讲成「6 类问题」——
+   * 一条引擎诊断在几百处重复触发时，只报总数会把"同一件事发生 349 次"
+   * 读成"349 个问题"。老后端可能没有该字段，故可选。
+   */
+  by_code?: DiagnosticCodeCount[];
 }
 
 export interface GraphStats {

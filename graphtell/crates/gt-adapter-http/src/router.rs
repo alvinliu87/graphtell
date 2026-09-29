@@ -458,11 +458,21 @@ async fn symbols(
     }
 }
 
+/// 诊断列表的读取上限。
+///
+/// 不能写小：诊断页要**按问题类型分组**（每类的条数、样例位置、展开清单），
+/// 而分组必须看到全量才能算对。曾经写 200，而 CRMEB 一个工程就有 445 条建图诊断 ——
+/// 于是页面只列最近写入的 200 条（`ORDER BY id DESC`），用户看到的是"写入顺序"，
+/// 不是"有多少问题"，分类计数也跟着错。
+///
+/// 与合规检查页的 `STORED_LIMIT`（5000）同量级：这是"分页前的全量拉取"，页面自己分页。
+const DIAGNOSTIC_LIMIT: u32 = 5000;
+
 async fn diagnostics(
     State(state): State<Shared>,
     Path(id): Path<i64>,
 ) -> Json<ApiResponse<Vec<gt_domain::model::Diagnostic>>> {
-    match state.graphs.diagnostics(ProjectId(id), 200) {
+    match state.graphs.diagnostics(ProjectId(id), DIAGNOSTIC_LIMIT) {
         Ok(v) => Json(ApiResponse::success(v)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }

@@ -29,6 +29,22 @@ pub struct DiagnosticSummary {
     /// 界面要拿它出横幅就得反解字符串。这里给一份结构化的，供 UI 直接读。
     #[serde(default)]
     pub unsupported_languages: Vec<String>,
+    /// 按**问题类型**（诊断 code）分开的条目数，同一 code 的不同严重度各占一行。
+    ///
+    /// 供 UI 把「445 条诊断」讲成「6 类问题」：一条引擎诊断会在几百处重复触发，
+    /// 只给总数会让用户把"同一件事发生 349 次"读成"349 个问题"。
+    /// `#[serde(default)]` 保证老前端 / 老快照缺该字段时不炸。
+    #[serde(default)]
+    pub by_code: Vec<DiagnosticCodeCount>,
+}
+
+/// 一类诊断（同一个 `code` + 同一严重度）的条目数。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticCodeCount {
+    pub code: String,
+    /// `critical` / `error` / `warning` / `info`（与落库口径一致）。
+    pub severity: String,
+    pub count: u64,
 }
 
 impl GraphQueryService {
@@ -100,6 +116,12 @@ impl GraphQueryService {
                 _ => {}
             }
         }
+        s.by_code = self
+            .store
+            .count_diagnostics_by_code_excluding(project_id, RULE_CODE_PREFIX)?
+            .into_iter()
+            .map(|(code, severity, count)| DiagnosticCodeCount { code, severity, count })
+            .collect();
         s.unsupported_languages = self
             .store
             .list_symbols(project_id, "unsupported_languages")?
