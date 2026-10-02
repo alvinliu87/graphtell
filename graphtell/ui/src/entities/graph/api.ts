@@ -17,7 +17,7 @@ const qs = (params: Record<string, string | number | undefined>) => {
   return s ? `?${s}` : '';
 };
 
-/** 图实体的数据访问。 */
+/** Data access for graph entities. */
 export const graphApi = {
   stats: (projectId: number) => http.get<GraphStats>(`/api/projects/${projectId}/stats`),
   nodes: (projectId: number, q: NodeQuery = {}) =>
@@ -31,7 +31,7 @@ export const graphApi = {
   symbols: (projectId: number, table: string) =>
     http.get<SymbolEntry[]>(`/api/symbols/${table}${qs({ project_id: projectId })}`),
   diagnostics: (projectId: number) => http.get<Diagnostic[]>(`/api/projects/${projectId}/diagnostics`),
-  /** 非规则诊断的严重度汇总（菜单角标用，排除 `rule:` 前缀）。 */
+  /** Severity rollup for non-rule diagnostics (menu badge; excludes the `rule:` prefix). */
   diagnosticsSummary: (projectId: number) =>
     http.get<DiagnosticSummary>(`/api/projects/${projectId}/diagnostics/summary`),
 };

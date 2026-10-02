@@ -8,16 +8,16 @@ import type {
   Violation,
 } from './model';
 
-/** 合规检查的数据访问。 */
+/** Data access for compliance checks. */
 export const checkApi = {
-  /** 全部已装载规则（供页面展示"能检查什么"）。 */
+  /** All loaded rules (so the page can show "what can be checked"). */
   rules: () => http.get<CheckRule[]>('/api/rules'),
-  /** 跑一次检查；`ruleIds` 为空表示全部启用规则。 */
+  /** Run one check; an empty `ruleIds` means every enabled rule. */
   check: (projectId: number, ruleIds?: string[]) =>
     http.post<CheckReport>(`/api/projects/${projectId}/check`, {
       rule_ids: ruleIds && ruleIds.length > 0 ? ruleIds : null,
     }),
-  /** 读取上一次落库的违规（不重跑）。`subProjectIds` 非空时按子工程筛选。 */
+  /** Read the last persisted violations (without re-running). Non-empty `subProjectIds` filters by sub-project. */
   violations: (projectId: number, limit = 500, subProjectIds?: number[]) =>
     http.get<Violation[]>(
       `/api/projects/${projectId}/violations?limit=${limit}` +
@@ -25,19 +25,19 @@ export const checkApi = {
           ? `&sub_project_id=${subProjectIds.join(',')}`
           : ''),
     ),
-  /** 上一次检查的严重度汇总（菜单角标用，不重跑规则）。 */
+  /** Severity rollup of the last check (menu badge; does not re-run rules). */
   summary: (projectId: number) =>
     http.get<CheckSummary>(`/api/projects/${projectId}/check/summary`),
-  /** 该工程的规则配置覆盖（key = rule_id）。 */
+  /** Rule config overrides for this project (key = rule_id). */
   ruleConfigs: (projectId: number) =>
     http.get<Record<string, ProjectRuleConfig>>(`/api/projects/${projectId}/rules/config`),
-  /** 写入单条规则配置（省略的字段保持原值）。 */
+  /** Write config for a single rule (omitted fields keep their current value). */
   putRuleConfig: (projectId: number, patch: RuleConfigPatch) =>
     http.put<boolean>(`/api/projects/${projectId}/rules/config`, patch),
-  /** 批量写入（整组 / 整分类启用停用）。 */
+  /** Batch write (enabling / disabling a whole group or category). */
   batchRuleConfig: (projectId: number, items: RuleConfigPatch[]) =>
     http.post<boolean>(`/api/projects/${projectId}/rules/config/batch`, { items }),
-  /** 重置单条规则的工程覆盖，回归 YAML 全局默认。 */
+  /** Reset a single rule's project override, falling back to the YAML global default. */
   resetRuleConfig: (projectId: number, ruleId: string) =>
     http.del<boolean>(`/api/projects/${projectId}/rules/config/${encodeURIComponent(ruleId)}`),
 };

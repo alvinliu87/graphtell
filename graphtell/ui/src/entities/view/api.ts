@@ -17,7 +17,7 @@ const qs = (params: Record<string, string | number | boolean | undefined>) => {
   return s ? `?${s}` : '';
 };
 
-/** 视图实体的数据访问。 */
+/** Data access for view entities. */
 export const viewApi = {
   perspectives: (projectId: number) =>
     http.get<Perspective[]>(`/api/projects/${projectId}/perspectives`),

@@ -4,7 +4,7 @@ import { pipelineApi } from './api';
 import type { RunStatus } from './model';
 
 /**
- * 建图进度：状态为 `indexing` 时轮询，结束后自动停止。
+ * Graph-build progress: polls while the status is `indexing`, stops automatically once it finishes.
  */
 export function useRunStatus(projectId: number | undefined, status?: string) {
   const [snapshot, setSnapshot] = useState<RunStatus | null>(null);
@@ -16,7 +16,7 @@ export function useRunStatus(projectId: number | undefined, status?: string) {
       const s = await pipelineApi.status(projectId);
       setSnapshot(s);
     } catch {
-      /* 忽略轮询错误，避免打断 UI */
+      /* Ignore polling errors so the UI is not interrupted */
     }
   }, [projectId]);
 

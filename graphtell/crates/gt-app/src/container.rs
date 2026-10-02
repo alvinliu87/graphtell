@@ -41,13 +41,13 @@ impl Container {
         let store = Arc::new(SqliteStore::open(config.database_path())?);
 
         let kb = YamlKnowledgeBase::load_dir(&config.resolve_fkb_dir())?;
-        info!("已装载 {} 份框架知识", kb.len());
+        info!("Loaded {} framework-knowledge files", kb.len());
 
         let views = Arc::new(YamlViewRegistry::load_dir(&config.resolve_views_dir())?);
-        info!("已装载 {} 个视角声明", views.registry().perspectives.len());
+        info!("Loaded {} perspective declarations", views.registry().perspectives.len());
 
         let rules = Arc::new(YamlRuleSet::load_dir(&config.resolve_rules_dir())?);
-        info!("已装载 {} 条检查规则", rules.len());
+        info!("Loaded {} check rules", rules.len());
 
         let deps = Arc::new(PipelineDeps {
             fs: Arc::new(StdFileSystem::new()),

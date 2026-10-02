@@ -12,18 +12,21 @@ interface State {
 }
 
 /**
- * 全局渲染错误边界。
+ * Global render error boundary.
  *
- * 为什么需要：整个 UI 此前**没有任何** React 错误边界（`ui/src` 里搜不到 `componentDidCatch`）。
- * 一旦某个组件的渲染期抛错（后端返回畸形 JSON、字段 undefined、某个 antd 用法炸了），
- * React 会一路冒泡到根节点，结果是**整页白屏且无任何降级**——比后端 500 更难排查。
+ * Why it is needed: the UI previously had **no** React error boundary at all (no `componentDidCatch`
+ * anywhere in `ui/src`). Once any component throws during render (malformed JSON from the backend,
+ * an undefined field, a broken antd usage), React bubbles it all the way to the root, and the result
+ * is a **completely blank page with no degradation** — harder to diagnose than a backend 500.
  *
- * 放哪：挂在 `<AntdApp>` 之内、`<RouterProvider>` 之外（见 `app/App.tsx`），这样兜底 UI
- * 仍能享用 antd 的 `App` 上下文与区域化；崩溃源若恰好在 antd 本身则另说，那种情况本边界也兜不住，
- * 但实践中渲染崩溃几乎都来自业务组件 / 数据层。
+ * Where it sits: inside `<AntdApp>` and outside `<RouterProvider>` (see `app/App.tsx`), so the
+ * fallback UI still gets antd's `App` context and locale. If the crash originates inside antd itself
+ * this boundary cannot catch it either, but in practice render crashes almost always come from
+ * business components / the data layer.
  *
- * 职责边界：这里只做"别白屏 + 给个恢复入口 + 把错误打到控制台"。真正的根因
- * （类型错配 / 后端契约漂移）靠浏览器控制台与后端日志兜底，不在前端美化。
+ * Scope: this only does "do not go blank + offer a recovery path + log the error to the console".
+ * The real root cause (type mismatch / backend contract drift) is left to the browser console and
+ * backend logs, not papered over in the frontend.
  */
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
@@ -33,7 +36,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // 渲染期崩溃只在前端兜底，根因靠浏览器控制台与后端日志。
+    // Render-time crashes are only contained here; the root cause lives in the browser console and backend logs.
     console.error('[ErrorBoundary]', error, info.componentStack);
   }
 
@@ -45,13 +48,11 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <Result
           status="error"
-          title={translate('页面出错了')}
-          subTitle={translate(
-            '页面渲染时发生意外错误，已阻止其影响整个应用。可重新加载恢复，或查看浏览器控制台获取详细堆栈。',
-          )}
+          title={translate('Something went wrong')}
+          subTitle={translate('An unexpected error occurred while rendering. It has been contained to avoid taking down the whole app. Reload to recover, or open the browser console for the full stack.')}
           extra={[
             <Button type="primary" icon={<ReloadOutlined />} onClick={this.reload}>
-              {translate('重新加载')}
+              {translate('Reload')}
             </Button>,
           ]}
         >

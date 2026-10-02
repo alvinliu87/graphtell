@@ -1,61 +1,63 @@
 /**
- * 合规检查实体：规则（CheckRule）与违规（Violation）。
+ * Compliance-check entities: rules (`CheckRule`) and violations (`Violation`).
  *
- * 与后端 `gt-domain::model::rules` 一一对应 —— 规则声明在 YAML 里，
- * 前端只是渲染，不认识任何具体规则（后端加一条规则，前端无需改动）。
+ * Mirrors `gt-domain::model::rules` one-to-one — rules are declared in YAML and
+ * the frontend only renders them; it knows no concrete rule (adding a rule on
+ * the backend needs no frontend change).
  */
 
 export type Severity = 'info' | 'warning' | 'error' | 'critical';
 
-/** 规则作用的节点范围。 */
+/** The set of node kinds a rule applies to. */
 export interface RuleScope {
   kinds: string[];
   name_contains?: string | null;
-  /** 候选集上限：字面量数字，或 `"$paramKey"` 形式引用可调参数。 */
+  /** Candidate cap: a literal number, or `"$paramKey"` referencing a tunable param. */
   limit: number | string;
-  /** 适用语言白名单（php / java / javascript / typescript）；为空 = 跨语言通用。 */
+  /** Applicable language allowlist (php / java / javascript / typescript); empty = language-agnostic. */
   languages?: string[];
-  /** 适用框架白名单（thinkphp6 / spring-boot …）；为空 = 不限框架。 */
+  /** Applicable framework allowlist (thinkphp6 / spring-boot …); empty = any framework. */
   frameworks?: string[];
 }
 
-/** 可调参数的种类。 */
+/** Kind of a tunable parameter. */
 export type RuleParamKind = 'number' | 'string' | 'enum' | 'bool';
 
-/** 一条规则暴露给用户的可调参数（在 YAML `params:` 下声明）。 */
+/** A tunable parameter exposed to the user (declared under YAML `params:`). */
 export interface RuleParam {
   key: string;
   label: string;
   description?: string | null;
   kind: RuleParamKind;
-  /** 默认值（与 kind 对应的 JSON 标量）。 */
+  /** Default value (a JSON scalar matching `kind`). */
   default: unknown;
   min?: number | null;
   max?: number | null;
   choices?: string[];
 }
 
-/** 一条检查规则（来自 `rules/*.yaml`）。 */
+/** One check rule (from `rules/*.yaml`). */
 export interface CheckRule {
   id: string;
   title: string;
   description?: string | null;
   severity: Severity;
   category: string;
-  /** YAML 里的**全局默认**启用态；工程级覆盖见 `ProjectRuleConfig`。 */
+  /** The **global default** enabled state from YAML; project overrides live in `ProjectRuleConfig`. */
   enabled: boolean;
   applies_to: RuleScope;
-  /** 可调参数声明；为空表示这条规则没有可调项。 */
+  /** Tunable parameter declarations; empty means this rule has nothing to tune. */
   params?: RuleParam[];
   message: string;
   remediation?: string | null;
 }
 
 /**
- * 工程级对单条规则的配置覆盖。
+ * Per-project override of a single rule's configuration.
  *
- * `enabled === null/undefined` 表示**继承** YAML 全局默认；
- * `options` 只放被覆盖过的键，未覆盖的取 `params` 的默认。
+ * `enabled === null/undefined` means **inherit** the YAML global default;
+ * `options` only carries keys that were actually overridden — the rest fall back
+ * to the `params` defaults.
  */
 export interface ProjectRuleConfig {
   project_id: number;
@@ -64,14 +66,14 @@ export interface ProjectRuleConfig {
   options?: Record<string, unknown> | null;
 }
 
-/** 配置写入请求（省略的字段 = 不改该项）。 */
+/** Config write request (omitted fields = leave that item unchanged). */
 export interface RuleConfigPatch {
   rule_id: string;
   enabled?: boolean | null;
   options?: Record<string, unknown> | null;
 }
 
-/** 一次命中的违规。 */
+/** One matched violation. */
 export interface Violation {
   project_id: number;
   rule_id: string;
@@ -85,11 +87,11 @@ export interface Violation {
   remediation?: string | null;
   file?: string | null;
   line?: number | null;
-  /** 命中节点所属子工程 id；`null` 表示共享资源（如跨子工程的表 / 队列）。 */
+  /** Sub-project owning the matched node; `null` means a shared resource (e.g. a cross-project table / queue). */
   sub_project_id?: number | null;
 }
 
-/** 一次检查的报告。 */
+/** Report for one check run. */
 export interface CheckReport {
   project_id: number;
   rules_total: number;
@@ -98,27 +100,33 @@ export interface CheckReport {
   by_severity: Record<string, number>;
   by_rule: Record<string, number>;
   /**
-   * 跑了但一条都没命中的规则。
+   * Rules that ran but matched nothing.
    *
-   * 必须显式展示：规则最危险的失效方式不是误报，而是**静默归零** ——
-   * 判据用了一个图上不存在的标注/边，于是永远匹配不上。此时"0 条违规"
-   * 会被读成"代码没问题"，比误报危险得多。
+   * Must be shown explicitly: the most dangerous way a rule fails is not a false
+   * positive but a **silent zero** — its criteria reference an annotation or edge
+   * that does not exist on the graph, so it can never match. "0 violations" is
+   * then read as "the code is fine", which is far more dangerous than a false
+   * positive.
    */
   rules_silent: string[];
   /**
-   * 环境不匹配而跳过的规则（声明了 languages / frameworks，本工程没有该栈）。
-   * 这是**预期行为**，不是故障 —— PHP 专属规则不该在纯 Java 工程上跑。
+   * Rules skipped because the environment does not match (they declare
+   * languages / frameworks this project does not use). This is **expected
+   * behaviour**, not a fault — a PHP-only rule should not run on a pure Java
+   * project.
    */
   rules_not_applicable: string[];
   /**
-   * 判据不成立而停用的规则：判据提到的边/标注/能力在本工程图上一个都没有。
-   * 这时跑规则只会产出**恒真误报**（`no_incoming: X` 在 X 不存在时对所有节点成立）。
+   * Rules disabled because their criteria do not hold: the edges / annotations /
+   * capabilities they mention are entirely absent from this project's graph.
+   * Running them would only produce **vacuously-true false positives**
+   * (`no_incoming: X` holds for every node when X does not exist).
    */
   rules_unavailable: string[];
   duration_ms: number;
 }
 
-/** 严重度排序权重（列表默认 error 在前）。 */
+/** Severity sort weight (lists put errors first by default). */
 export const SEVERITY_RANK: Record<Severity, number> = {
   critical: 0,
   error: 1,
@@ -127,23 +135,27 @@ export const SEVERITY_RANK: Record<Severity, number> = {
 };
 
 /**
- * 严重度展示名：列 Tag / 统计卡 / 筛选项共用**同一份**。
+ * Severity display names: the table column tag, the stat cards and the filter
+ * all share **this single source**.
  *
- * 同一组档位曾经在 CheckPage 与 RulesPage 各写一遍，于是必然漂移：统计卡写了 4 档、
- * 而列表的严重度筛选只写了后 3 档 —— 「严重」只能靠「全部」看到，筛不出来。
- * 档位数量的真相只在 `Severity` 类型 + 这里，多余一份列表就是一个未来的不一致。
+ * These tiers used to be written twice — once in CheckPage and once in RulesPage
+ * — so they inevitably drifted: the stat cards listed 4 tiers while the list's
+ * severity filter only listed the last 3, making "critical" visible only under
+ * "All" and unfilterable. The truth about how many tiers exist lives in the
+ * `Severity` type plus this map; any second list is a future inconsistency.
  */
 export const SEVERITY_LABEL: Record<Severity, string> = {
-  critical: '严重',
-  error: '错误',
-  warning: '警告',
-  info: '提示',
+  critical: 'Critical',
+  error: 'Error',
+  warning: 'Warning',
+  info: 'Info',
 };
 
 /**
- * 严重度展示顺序（由 `SEVERITY_RANK` 推导，不另写一份数组）。
+ * Severity display order (derived from `SEVERITY_RANK`, not a second array).
  *
- * 与表格排序、统计卡、筛选项天然同序 —— 三处各写一遍顺序是同一类漂移的来源。
+ * Table sorting, stat cards and the filter are therefore in the same order by
+ * construction — writing the order three times is the same class of drift.
  */
 export const SEVERITY_ORDER: Severity[] = (Object.keys(SEVERITY_RANK) as Severity[]).sort(
   (a, b) => SEVERITY_RANK[a] - SEVERITY_RANK[b],
@@ -157,30 +169,32 @@ export const SEVERITY_COLOR: Record<Severity, string> = {
 };
 
 /**
- * 规则分类 (slug) → 展示名（中文键，再经 `t()` 翻成当前语言）。
+ * Rule category (slug) → display name (English source; translated via `t()`).
  *
- * 分类 slug 来自规则集 YAML（`rules/**\/*.yaml` 的 `category`），是**稳定且有限**的枚举，
- * 但直接显示 `api-hygiene` / `architecture` 这种 slug 对用户是黑话 —— 所以在这里落一份
- * 「slug → 人话」的真相，由 i18n 负责中英切换。
+ * Category slugs come from the rule-set YAML (`category` in `rules/**\/*.yaml`);
+ * they are a **stable, finite** enumeration, but showing `api-hygiene` /
+ * `architecture` raw is jargon to the user — so this is the single place holding
+ * the "slug → plain language" truth, with i18n handling the Chinese switch.
  *
- * 为什么集中在这一处：规则检验页（筛选器分组标题）与规则集页（分组标题 / 整组开关）
- * 都要用；两处各写一份正是「同一分类在两页显示不同名」的漂移来源。
+ * Why centralised: both the inspection page (filter group headings) and the
+ * rule-set page (group headings / group toggles) use it; two copies is exactly
+ * how "the same category is named differently on two pages" happens.
  */
 export const RULE_CATEGORY_LABEL: Record<string, string> = {
-  architecture: '架构',
-  security: '安全',
-  contract: '契约',
-  deadcode: '死代码',
-  performance: '性能',
-  'api-hygiene': '接口卫生',
+  architecture: 'Architecture',
+  security: 'Security',
+  contract: 'Contract',
+  deadcode: 'Dead Code',
+  performance: 'Performance',
+  'api-hygiene': 'API hygiene',
 };
 
-/** 分类 slug 的展示名：未知分类原样回退 slug（FKB 动态引入也不白屏）。 */
+/** Display name for a category slug: unknown slugs fall back to the slug itself (FKB-introduced ones never blank out). */
 export function ruleCategoryLabel(cat: string): string {
   return RULE_CATEGORY_LABEL[cat] ?? cat;
 }
 
-/** 合规检查的严重度汇总（菜单角标用，来自后端按 code 前缀的聚合计数）。 */
+/** Severity rollup for compliance checks (menu badge; aggregated by the backend per code prefix). */
 export interface CheckSummary {
   critical: number;
   error: number;

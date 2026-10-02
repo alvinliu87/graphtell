@@ -1,4 +1,4 @@
-/** 工程实体：与后端 `ProjectDto` 对齐。 */
+/** Project entity: aligned with the backend `ProjectDto`. */
 
 export type ProjectStatus = 'created' | 'indexing' | 'ready' | 'failed';
 
@@ -45,9 +45,10 @@ export interface SubProject {
   facts: Record<string, unknown> | null;
 }
 
+/** Status display metadata; labels are English source strings translated via `t()`. */
 export const STATUS_META: Record<ProjectStatus, { label: string; color: string }> = {
-  created: { label: '待建图', color: 'default' },
-  indexing: { label: '建图中', color: 'processing' },
-  ready: { label: '就绪', color: 'success' },
-  failed: { label: '失败', color: 'error' },
+  created: { label: 'Pending', color: 'default' },
+  indexing: { label: 'Indexing', color: 'processing' },
+  ready: { label: 'Ready', color: 'success' },
+  failed: { label: 'Failed', color: 'error' },
 };

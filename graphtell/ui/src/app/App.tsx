@@ -8,7 +8,7 @@ import { LocaleProvider, useLocale } from '@/shared/lib/i18n';
 import { ErrorBoundary } from '@/shared/ui/ErrorBoundary';
 import { setNotifier } from '@/shared/lib/notify';
 
-/** 应用根：语言 + 主题 + 全局消息上下文 + 路由。 */
+/** App root: language + theme + global message context + router. */
 export function App() {
   return (
     <LocaleProvider>
@@ -17,7 +17,7 @@ export function App() {
   );
 }
 
-/** 语言决定 antd 组件的区域化（如分页 / 空态文案）。 */
+/** The language drives antd component localisation (e.g. pagination / empty-state copy). */
 function LocaleAware() {
   const { lang } = useLocale();
   return (
@@ -47,12 +47,13 @@ function LocaleAware() {
     }
 
     /**
-    * 把 antd 的 `message.error` 注册进全局 notify 桥。
+    * Registers antd's `message.error` into the global notify bridge.
     *
-    * 原因：`shared/api/http.ts` 的 fetch 封装是纯函数，拿不到 React 上下文，无法直接弹
-    * antd 的 message；而 antd 的 message 又必须用 `<App>` 提供的实例（静态 `message.error`
-    * 在用了 ConfigProvider 主题时会丢样式）。所以这里在 `<AntdApp>` 内部用 `App.useApp()`
-    * 拿到正确的 message 实例并注册；组件卸载（热更新 / 应用卸载）时撤掉，避免野指针。
+    * Why: the fetch wrapper in `shared/api/http.ts` is a pure function with no React context, so it
+    * cannot raise an antd `message` directly; and an antd `message` must come from the instance
+    * provided by `<App>` (the static `message.error` loses its styling under a ConfigProvider theme).
+    * So here, inside `<AntdApp>`, `App.useApp()` yields the correct message instance and registers it;
+    * it is removed again on unmount (hot reload / app teardown) to avoid a dangling reference.
     */
     function NotifierBridge() {
     const { message } = AntdApp.useApp();

@@ -27,10 +27,10 @@ export function ProjectTable({
       loading={loading}
       dataSource={projects}
       pagination={false}
-      locale={{ emptyText: t('还没有工程，点击右上角「新建工程」开始') }}
+      locale={{ emptyText: t('No projects yet; click "New project" at top-right to start') }}
       columns={[
         {
-          title: t('名称'),
+          title: t('Name'),
           dataIndex: 'name',
           width: 200,
           ellipsis: true,
@@ -49,9 +49,9 @@ export function ProjectTable({
         // 根目录是**不定长**内容，让它吃掉剩余宽度（不设 width）；若把不设宽度的位置留给
         // 「名称」，固定表格布局下它会独占所有剩余空间，把路径挤成一小截 —— 正是「名字很宽、
         // 路径被截断」的成因。名称反而是短枚举，固定宽度 + ellipsis 更稳。
-        { title: t('根目录'), dataIndex: 'root_path', ellipsis: true },
+        { title: t('Root'), dataIndex: 'root_path', ellipsis: true },
         {
-          title: t('状态'),
+          title: t('Status'),
           dataIndex: 'status',
           width: 100,
           render: (s: Project['status']) => (
@@ -59,23 +59,23 @@ export function ProjectTable({
           ),
         },
         {
-          title: t('完整流程'),
+          title: t('Full pipeline'),
           dataIndex: ['config', 'full_pipeline'],
           width: 90,
-          render: (v: boolean) => (v ? t('是') : t('仅基础阶段')),
+          render: (v: boolean) => (v ? t('Yes') : t('basic stages only')),
         },
         {
-          title: t('创建时间'),
+          title: t('Created'),
           dataIndex: 'created_at',
           width: 180,
           render: (v: number) => formatTime(v),
         },
         {
-          title: t('操作'),
+          title: t('Actions'),
           width: 140,
           render: (_, p) => (
             <Space size={4}>
-              <Tooltip title={t('代码图')}>
+              <Tooltip title={t('Code Graph')}>
                 <Button
                   type="text"
                   icon={<ApartmentOutlined />}
@@ -89,7 +89,7 @@ export function ProjectTable({
                 是造图内部字段；与提示词增强（语义检索）大量重叠。
                 页面与路由都保留，恢复时把这一行（与侧栏那一行）解开即可。
               */}
-              {/* <Tooltip title={t('节点浏览')}>
+              {/* <Tooltip title={t('Explorer')}>
                 <Button
                   type="text"
                   icon={<AreaChartOutlined />}

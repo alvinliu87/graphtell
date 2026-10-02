@@ -86,7 +86,7 @@ export function AppShell() {
   // 诊断不是（见上方注释），所以不进侧栏。
   const checkLabel = (
     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-      <span>{t('规则检验')}</span>
+      <span>{t('Rule inspection')}</span>
       {severityBadge(summary)}
     </span>
   );
@@ -121,25 +121,25 @@ export function AppShell() {
   const items = [
     ...(projectId
       ? [
-          { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('代码图') },
+          { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('Code Graph') },
           // 暂时注释：节点浏览入口已停用（工程表格里那个按钮也一并注释了）。
           // 它真正不可替代的是「按名精确查 / 按类盘点」，但当前形态没兑现：
           // `limit: 200` 硬顶且无排序（盘点会漏）、列是造图内部字段（fqn / 语言 / 阶段 / 置信度）、
           // 与提示词增强（语义检索）大量重叠。
           // 路由 `/explorer` 与页面都保留着 —— 恢复只需解开这一行与 ProjectTable 里那一段。
-          // { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('节点浏览') },
-          { key: withProject('/recall'), icon: <SearchOutlined />, label: t('提示词增强') },
+          // { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('Explorer') },
+          { key: withProject('/recall'), icon: <SearchOutlined />, label: t('Prompt augmentation') },
           {
             key: withProject('/check'),
             icon: <SafetyCertificateOutlined />,
             label: checkLabel,
           },
           // 暂时注释：规则集改为从规则检验页进入（见上方注释）。
-          // { key: withProject('/rules'), icon: <ProfileOutlined />, label: t('规则集') },
+          // { key: withProject('/rules'), icon: <ProfileOutlined />, label: t('Rule Set') },
         ]
       : []),
     // 暂时注释：设置页路由已停用，导航入口一并隐藏（以后再考虑加回）。
-    // { key: '/settings', icon: <SettingOutlined />, label: t('设置') },
+    // { key: '/settings', icon: <SettingOutlined />, label: t('Settings') },
   ];
 
   return (
@@ -180,7 +180,7 @@ export function AppShell() {
             {projectId && (
               <Button
                 type="text"
-                aria-label={collapsed ? t('展开侧边栏') : t('收起侧边栏')}
+                aria-label={collapsed ? t('Expand sidebar') : t('Collapse sidebar')}
                 icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
                 onClick={toggleSider}
               />
@@ -201,13 +201,13 @@ export function AppShell() {
               >
                 GT
               </div>
-              {/* Header 自带 line-height:64px 会把多行文字撑爆 56px 高度，必须显式收敛行高 */}
+              {/* The Header's built-in line-height:64px blows multi-line text past the 56px height, so the line height must be constrained explicitly */}
               <div style={{ lineHeight: 1.25, whiteSpace: 'nowrap' }}>
                 <div style={{ fontWeight: 700, letterSpacing: '-0.02em', fontSize: 15 }}>
                   GraphTell
                 </div>
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)' }}>
-                  {t('代码库图化分析')}
+                  {t('Codebase graph analysis')}
                 </div>
               </div>
             </div>
@@ -224,7 +224,7 @@ export function AppShell() {
                   {
                     key: '__list__',
                     icon: <UnorderedListOutlined />,
-                    label: t('工程总览'),
+                    label: t('Projects'),
                   },
                 ],
                 onClick: ({ key }) => {
@@ -234,14 +234,14 @@ export function AppShell() {
               }}
             >
               <Button>
-                {projectName ?? t('选择工程')} <DownOutlined />
+                {projectName ?? t('Select project')} <DownOutlined />
               </Button>
             </Dropdown>
           </Space>
           {/* 右侧：仅语言切换 + 离线告警。框架知识 / 语言等静态信息已从顶栏移除（可在工程详情查看），
               后端在线时无提示（应用能跑即代表在线），仅在异常时冒出红点告警，避免日常噪音。 */}
           <Space size={10} align="center">
-            <Tooltip title={t('界面语言')}>
+            <Tooltip title={t('UI language')}>
               <Segmented
                 size="small"
                 value={lang}
@@ -252,10 +252,10 @@ export function AppShell() {
                 ]}
               />
             </Tooltip>
-            {/* 暂时注释：设置入口已隐藏
+            {/* Temporarily commented out: the settings entry is hidden
             <Button
               type="text"
-              aria-label={t('设置')}
+              aria-label={t('Settings')}
               icon={<SettingOutlined />}
               onClick={() => navigate('/settings')}
             />
@@ -263,7 +263,7 @@ export function AppShell() {
             {health && health.status !== 'ok' && (
               <>
                 <Divider type="vertical" style={{ marginInline: 2 }} />
-                <Badge status="error" text={t('后端未连接')} />
+                <Badge status="error" text={t('Backend disconnected')} />
               </>
             )}
           </Space>

@@ -18,19 +18,19 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
     const detail = phases
       .map(
         (r) =>
-          `${t(PHASE_LABEL[r.phase] ?? r.phase)} ${formatDuration(r.duration_ms)} · ${t('节点 ')}${formatNumber(r.nodes_created)} · ${t('边 ')}${formatNumber(r.edges_created)}`,
+          `${t(PHASE_LABEL[r.phase] ?? r.phase)} ${formatDuration(r.duration_ms)} · ${t('Nodes ')}${formatNumber(r.nodes_created)} · ${t('edges ')}${formatNumber(r.edges_created)}`,
       )
       .join('\n');
     return (
       <Card variant="borderless" style={{ borderRadius: 14 }}>
         <Space size={8} wrap align="center" style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
           <Tag color="green" style={{ marginInlineEnd: 0 }}>
-            {t('建图完成')}
+            {t('Graphing complete')}
           </Tag>
-          <span>{t('总耗时 ') + formatDuration(sum((p) => p.duration_ms))}</span>
-          <span>{t('节点 ') + formatNumber(sum((p) => p.nodes_created))}</span>
-          <span>{t('边 ') + formatNumber(sum((p) => p.edges_created))}</span>
-          <span>{t('标注 ') + formatNumber(sum((p) => p.annotations_created))}</span>
+          <span>{t('Total ') + formatDuration(sum((p) => p.duration_ms))}</span>
+          <span>{t('Nodes ') + formatNumber(sum((p) => p.nodes_created))}</span>
+          <span>{t('edges ') + formatNumber(sum((p) => p.edges_created))}</span>
+          <span>{t('annotations ') + formatNumber(sum((p) => p.annotations_created))}</span>
           <Tooltip title={detail}>
             <InfoCircleOutlined style={{ cursor: 'help', color: 'rgba(0,0,0,0.35)' }} />
           </Tooltip>
@@ -46,7 +46,7 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
           <Alert
             type="info"
             showIcon
-            message={t('正在执行 ') + (run?.current_phase ? t(PHASE_LABEL[run.current_phase] ?? run.current_phase) : t('建图')) + t(' …')}
+            message={t('Running ') + (run?.current_phase ? t(PHASE_LABEL[run.current_phase] ?? run.current_phase) : t('Build')) + t(' …')}
             description={run?.current_phase ? t(PHASE_HINT[run.current_phase] ?? '') : undefined}
           />
         ) : null}
@@ -68,7 +68,7 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
                   </Typography.Text>
                   <Tag>{formatDuration(r.duration_ms)}</Tag>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('节点 ') + formatNumber(r.nodes_created) + t(' · 边 ') + formatNumber(r.edges_created) + t(' · 标注 ') + formatNumber(r.annotations_created) + t(' · 别名 ') + formatNumber(r.aliases_created)}
+                    {t('Nodes ') + formatNumber(r.nodes_created) + t(' · edges ') + formatNumber(r.edges_created) + t(' · annotations ') + formatNumber(r.annotations_created) + t(' · aliases ') + formatNumber(r.aliases_created)}
                   </Typography.Text>
                 </Space>
                 <Progress
@@ -82,7 +82,7 @@ export function PipelineProgress({ run, indexing }: { run: RunStatus | null; ind
             ))}
           </Space>
         ) : (
-          <Typography.Text type="secondary">{t('暂无运行记录')}</Typography.Text>
+          <Typography.Text type="secondary">{t('No run records')}</Typography.Text>
         )}
       </Space>
     </Card>

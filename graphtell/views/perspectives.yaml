@@ -1,188 +1,201 @@
-# 视角注册表
+# Perspective registry
 #
-# 顶部「两级筛选器」的一级选项，以及「点击节点切换视角」的映射规则。
+# The level-one options of the top "two-level filter", plus the mapping rules for
+# "click a node to switch perspective".
 #
-# 两类视角语义完全不同，不可混用：
-#   mode: object    —— 对象类。**只渲染当前这一个对象**的链路子图，
-#                      其它对象的链路边直接不画（不是变暗），
-#                      靠 hidden 计数 + unresolved 记账 + 可切换来守住诚实性。
-#   mode: aggregate —— 聚合类。**不是单链路**，而是聚合概览（聚类框 / 矩阵）。
+# The two kinds of perspective are semantically completely different and must not be mixed:
+#   mode: object    — object perspective. **Renders the link subgraph of this one object only**;
+#                     link edges of other objects are simply not drawn (not dimmed); honesty is
+#                     upheld by the hidden counts + unresolved tally + switchability.
+#   mode: aggregate — aggregate perspective. **Not a single link**, but an aggregate overview
+#                     (cluster boxes / matrix).
 #
-# 对象类视角**默认折叠**：只渲染"语义节点"（Table / HttpContract / ConfigKey /
-# I18nKey / Event / Queue / Cache / Topic / Schedule…）与"语义边"（HandledBy /
-# CallsHttp / Triggers / PublishesTo / ReadsDb / WritesDb / MapsTo / ReadsConfig /
-# ReadsCache / ResolvesTo），判定权威来自 `gt-domain/src/model/kinds.rs`；语法节点
-# （Method / CallSite / Class…）折叠起来，前端点击可展开查看调用链。
+# Object perspectives are **folded by default**: only "semantic nodes" (Table / HttpContract /
+# ConfigKey / I18nKey / Event / Queue / Cache / Topic / Schedule…) and "semantic edges" (HandledBy /
+# CallsHttp / Triggers / PublishesTo / ReadsDb / WritesDb / MapsTo / ReadsConfig / ReadsCache /
+# ResolvesTo) are rendered; the authority for that decision is `gt-domain/src/model/kinds.rs`. Syntax
+# nodes (Method / CallSite / Class…) are folded and can be expanded by clicking to inspect the call chain.
 #
-# 进程外中介（Event / Queue / Cache / Topic）各自是独立种类，视角**直接按种类**
-# 显示（事件 / 队列 / 缓存 / 消息 Topic），不再有笼统的"外部系统"伞。
+# Out-of-process mediators (Event / Queue / Cache / Topic) are each their own kind, and perspectives
+# **show them directly by kind** (event / queue / cache / message topic); there is no umbrella
+# "external system" anymore.
 #
-# `Middleware` 是**唯一由语法节点晋升而来**的语义节点：P2 先按 `Class` 建出它，
-# P14 确认它挂在路由上之后把 kind 改成 `Middleware`（改身份、不新建节点 —— 否则
-# 同一份代码在图里出现两次）。因此路由视角里它会作为**第一环邻居**直接出现。
+# `Middleware` is the **only semantic node promoted from a syntax node**: P2 first builds it as a
+# `Class`, then P14 — once it is confirmed to be attached to a route — changes its kind to
+# `Middleware` (changing identity, not creating a node; otherwise the same code would appear twice
+# in the graph). So in the route perspective it shows up directly as a **first-ring neighbour**.
 #
-# node_views 里**没有**列出的节点种类不会切换顶部筛选器，
-# 只打开右侧 Inspector —— 例如 ConfigKey / KeyPattern / Component /
-# SecretLocation 这类资产/结构节点没有"单链路"语义。
+# Node kinds **not** listed in `node_views` do not switch the top filter, they only open the
+# Inspector on the right — asset / structural nodes such as ConfigKey / KeyPattern / Component /
+# SecretLocation have no "single link" semantics.
 
 perspectives:
-  # ---------------- 对象类视角（单链路）----------------
+  # ---------------- object perspectives (single link) ----------------
   - id: route
-    label: 路由视角
+    label: Route perspective
     mode: object
     node_kind: HttpContract
-    # 折叠掉语法层后，路由视图传到布局的图是**近似星形**（几乎所有边都碰中心，
-    # 仅个别表间 ForeignKey 是叶子间边）——对星形，自顶向下分层没有优势：
-    # 「契约 → 表/缓存」的边要从中间件行中间穿过去（实测截图）。
-    # radial 入口按图形状自适应：星形走中心辐射（0 交叉、0 穿节点），
-    # 真多层链路走同心环。计划任务视角保留 layered，因为那是真实执行链。
+    # After folding the syntax layer, the graph handed to the layout for the route view is an
+    # **approximate star** (almost every edge touches the centre; only a few inter-table ForeignKeys
+    # are leaf-to-leaf edges) — for a star, top-down layering has no advantage: the
+    # "contract → table/cache" edges would have to pass straight through the middleware row
+    # (observed in screenshots). The radial entry point adapts to the graph shape: a star takes
+    # hub-and-spoke (0 crossings, 0 node penetrations), a genuine multi-layer link takes concentric
+    # rings. The schedule perspective keeps layered, because that is a real execution chain.
     layout: radial
-    # 为什么是 4 而不是 2：视图**只渲染语义节点**，中间的语法层（Controller / Services /
-    # Dao / Model）全部折叠。四层架构（CRMEB：Controller → Services → Dao → Model → Table）
-    # 里第一张表要第 4 跳才出现，depth=2 时路由视角几乎全空 —— 实测 CRMEB 抽样 60 个契约，
-    # 「无任何语义邻居」从 43/60 降到 28/60（depth=5 为 26/60，之后饱和）。
+    # Why 4 and not 2: the view **renders semantic nodes only**, and the whole intermediate syntax
+    # layer (Controller / Services / Dao / Model) is folded. In a four-layer architecture
+    # (CRMEB: Controller → Services → Dao → Model → Table) the first table only appears at hop 4, so
+    # with depth=2 the route perspective is almost empty — measured on 60 sampled CRMEB contracts,
+    # "no semantic neighbour at all" drops from 43/60 to 28/60 (depth=5 gives 26/60, then saturates).
     depth: 4
     collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
-    description: 以一个 HTTP 契约为中心，看它被谁处理、被谁调用、读写了哪些表
+    description: One HTTP contract at the centre — who handles it, who calls it, which tables it reads and writes
 
   - id: table
-    label: 表视角
+    label: Table perspective
     mode: object
     node_kind: Table
     layout: radial
     depth: 2
-    description: 以一张表为中心的入边汇聚：谁在读写它、PII 与关键度
+    description: Inbound edges converging on one table — who reads and writes it, PII and criticality
 
   - id: event
-    label: 事件视角
+    label: Event perspective
     mode: object
     node_kind: Event
-    # 只收后端领域事件（`side=backend`）：`Event::dispatch` / `Event::listen` 等。
-    # 前端组件间事件总线（uni-app `uni.$emit`）合成的是 `EventBus` 节点，被拆到
-    # 「前端事件」视角，不再混进这里（与缓存前后端拆分同构）。
+    # Backend domain events only (`side=backend`): `Event::dispatch` / `Event::listen`, etc.
+    # Front-end inter-component event buses (uni-app `uni.$emit`) synthesize `EventBus` nodes and were
+    # split out into the "front-end events" perspective instead of being mixed in here (same shape as
+    # the front-end / back-end split for cache).
     side: backend
     layout: radial
     depth: 2
-    description: 后端事件：谁发布、谁监听（Event::dispatch/listen，节点种类 Event，side=backend）
+    description: Backend events — who publishes, who listens (Event::dispatch/listen, node kind Event, side=backend)
 
   - id: event_bus
-    label: 前端事件
+    label: Front-end events
     mode: object
     node_kind: EventBus
-    # 只收前端组件间事件总线（`side=frontend`）：`uni.$emit` / `bus.$emit` / `$eventHub.$emit`。
+    # Front-end inter-component event buses only (`side=frontend`): `uni.$emit` / `bus.$emit` / `$eventHub.$emit`.
     side: frontend
     layout: radial
     depth: 2
-    description: 前端事件总线：谁发射、谁监听（uni.$emit/bus.$emit，节点种类 EventBus，side=frontend）
+    description: Front-end event bus — who emits, who listens (uni.$emit/bus.$emit, node kind EventBus, side=frontend)
 
   - id: queue
-    label: 队列视角
+    label: Queue perspective
     mode: object
     node_kind: Queue
     layout: radial
     depth: 2
-    description: 消息队列：谁投递、谁消费（节点种类 Queue）
+    description: Message queues — who publishes, who consumes (node kind Queue)
 
   - id: cache
-    label: 缓存视角
+    label: Cache perspective
     mode: object
     node_kind: Cache
-    # 只收后端缓存（`side=backend`）：`Cache::*` / `Redis::*` / `*CacheService::*`。
-    # 前端本地存储被拆到「本地存储」视角，不再混进这里。
+    # Backend caches only (`side=backend`): `Cache::*` / `Redis::*` / `*CacheService::*`.
+    # Front-end local storage was split out into the "local storage" perspective and is no longer mixed in here.
     side: backend
     layout: radial
     depth: 2
-    description: 后端缓存：谁读、谁写（Cache::/Redis::/*CacheService::，节点种类 Cache，side=backend）
+    description: Backend cache — who reads, who writes (Cache::/Redis::/*CacheService::, node kind Cache, side=backend)
 
   - id: local_storage
-    label: 本地存储
+    label: Local storage
     mode: object
     node_kind: Cache
-    # 只收前端本地存储（`side=frontend`）：`uni.getStorageSync` / `localStorage`。
+    # Front-end local storage only (`side=frontend`): `uni.getStorageSync` / `localStorage`.
     side: frontend
     layout: radial
     depth: 2
-    description: 前端本地存储：谁读、谁写（uni.setStorageSync/localStorage，节点种类 Cache，side=frontend）
+    description: Front-end local storage — who reads, who writes (uni.setStorageSync/localStorage, node kind Cache, side=frontend)
 
   - id: schedule
-    label: 计划任务
+    label: Scheduled tasks
     mode: object
     node_kind: Schedule
-    # 定时任务是"一条执行链路"，自顶向下的层 = 跳数，比径向更能体现执行流向。
+    # A scheduled task is "one execution chain"; a top-down layer = hops expresses the execution flow
+    # better than a radial layout.
     layout: layered
-    # 与路由视角同理：定时任务同样是"入口 → 控制器 → 服务 → Dao → 表"的调用流，
-    # 折叠掉语法层后要 4 跳才够得着语义资源。
+    # Same reasoning as the route perspective: a scheduled task is likewise an
+    # "entry → controller → service → dao → table" call flow, and after folding the syntax layer it
+    # takes 4 hops to reach the semantic resources.
     depth: 4
-    description: 定时任务的执行链路（由项目级 FKB 合成 Schedule 节点，如 CRMEB 的 crontab 路由）
+    description: Execution chain of scheduled tasks (Schedule nodes are synthesized by project-level FKB, e.g. CRMEB crontab routes)
 
   - id: topic
-    label: 消息 Topic
+    label: Message topic
     mode: object
     node_kind: Topic
     layout: radial
     depth: 2
-    description: 消息 topic 的生产与消费（节点种类 Topic）
+    description: Producers and consumers of a message topic (node kind Topic)
 
-  # 中间件：形状与「表视角」同构 —— 一个中心 + 一圈"谁经过了它"。
-  # 表视角看的是"谁在读写这张表"，中间件视角看的是"哪些端点过了这个守卫"。
+  # Middleware: the same shape as the "table perspective" — one centre plus a ring of "who passed through it".
+  # The table perspective asks "who reads and writes this table"; the middleware perspective asks
+  # "which endpoints pass this guard".
   #
-  # depth 刻意取 **1** 而不是 2：一个鉴权中间件常守几百个端点（CRMEB 的
-  # AllowOriginMiddleware 守 280 个），再往外扩一跳会把它守的端点接触到的
-  # 所有表 / 配置一起拉进来 —— 那不是"这个中间件守了谁"，而是一张全图。
-  # 要看某个端点后续动了什么资源，点那个端点切到路由视角即可。
+  # `depth` is deliberately **1** and not 2: one auth middleware often guards hundreds of endpoints
+  # (CRMEB's AllowOriginMiddleware guards 280), and expanding one more hop would pull in every table /
+  # config touched by the endpoints it guards — that is not "who does this middleware guard", it is the
+  # whole graph. To see what resources a given endpoint touches afterwards, click the endpoint and
+  # switch to the route perspective.
   - id: middleware
-    label: 中间件视角
+    label: Middleware perspective
     mode: object
     node_kind: Middleware
     layout: radial
     depth: 1
     collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class]
-    description: 以中间件为中心，看它守了哪些端点（端点后续接触的资源请点端点切到路由视角）
+    description: One middleware at the centre — which endpoints it guards (for the resources an endpoint touches afterwards, click the endpoint and switch to the route perspective)
 
-  # ---------------- 以下视角 MVP 暂不实现，先注释 ----------------
+  # ---------------- the perspectives below are not implemented in the MVP; commented out for now ----------------
   # - id: page
-  #   label: 页面视角
+  #   label: Page perspective
   #   mode: object
   #   node_kind: Page
   #   layout: radial
   #   depth: 2
-  #   description: 前端页面发起的调用链（当前流水线尚未产出 Page 节点）
+  #   description: Call chains started by a front-end page (the pipeline does not produce Page nodes yet)
   #
   # - id: domain
-  #   label: 领域聚合
+  #   label: Domain aggregate
   #   mode: aggregate
   #   layout: compound
   #   group_by: { property: domain }
-  #   description: 按业务领域分框概览（图里还没有 domain 属性时给出诚实提示）
+  #   description: Boxed overview grouped by business domain (gives an honest hint when the graph has no domain property yet)
   #
   # - id: deploy_unit
-  #   label: 部署单元
+  #   label: Deployment unit
   #   mode: aggregate
   #   layout: compound
   #   group_by: sub_project
-  #   description: 按子工程（部署单元）分框概览
+  #   description: Boxed overview grouped by sub-project (deployment unit)
   #
   # - id: platform
-  #   label: 多端对比
+  #   label: Multi-end comparison
   #   mode: aggregate
   #   layout: matrix
   #   row_from: sub_project
   #   col_from: node_kind
-  #   description: 子工程 × 节点种类的矩阵：谁产出了哪类资产
+  #   description: Sub-project x node-kind matrix — which sub-project produces which kind of asset
   #
   # - id: er
-  #   label: 表关系 / ER
+  #   label: Table relations / ER
   #   mode: aggregate
   #   layout: er
   #   group_by: node_kind
-  #   description: 表与表之间的正交关系视图
+  #   description: Orthogonal relation view between tables
 
-# 点击节点时切换到哪个视角。
-# 只有"在顶部筛选器中有对应视角"的种类才列在这里。
+# Which perspective to switch to when a node is clicked.
+# Only kinds that "have a matching perspective in the top filter" are listed here.
 node_views:
   HttpContract: route
   Table: table
-  # 进程外中介各自是独立种类，直接切到对应具体视角（不再有"外部系统"伞）。
+  # Out-of-process mediators are each their own kind and switch directly to the matching concrete
+  # perspective (there is no "external system" umbrella anymore).
   Cache: cache
   Event: event
   EventBus: event_bus
@@ -190,4 +203,4 @@ node_views:
   Schedule: schedule
   Topic: topic
   Middleware: middleware
-  # MVP 暂不支持：Page / Domain / DeployUnit / Platform 不入映射。
+  # Not supported in the MVP: Page / Domain / DeployUnit / Platform are not in the mapping.

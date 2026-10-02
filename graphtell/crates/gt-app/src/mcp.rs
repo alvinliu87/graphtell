@@ -30,7 +30,7 @@ impl McpBridge {
     /// 从 stdin 逐行读 JSON-RPC，把响应写回 stdout；EOF 退出。
     pub fn run(&self) -> anyhow::Result<()> {
         eprintln!(
-            "graphtell mcp: 连接常驻服务 {} 工程 #{}",
+            "graphtell mcp: connected to service {} project #{}",
             self.base, self.project
         );
         let stdin = std::io::stdin();
@@ -102,58 +102,58 @@ impl McpBridge {
             "tools": [
                 {
                     "name": "recall_code",
-                    "description": "按自然语言/标识符提示词在代码图上召回相关代码，返回紧凑的 Markdown 上下文（文件路径、行号、片段、调用关系）。把这段上下文注入给生成代码的 LLM，可替代它自行读取全仓或多次 grep，显著节省 token。返回的上下文顶部带**质量档位**（高/中/低 + 置信度）：当质量为「低」时说明多数特征词未命中、前排可能是泛词噪声，**不要直接采信**，应按文末给出的特征词自行检索或直接阅读相关文件；质量为「中」时结果可能不完整，建议补充检索。",
+                    "description": "Recall code related to a natural-language / identifier prompt on the code graph; returns a compact Markdown context (file paths, line numbers, snippets, call relations). Injecting this context into a code-generating LLM replaces reading the whole repo or repeated greps and saves a lot of tokens. The context carries a **quality tier** at the top (high / medium / low + confidence): when the quality is \"low\" most feature terms missed and the top rows may be generic-term noise — **do not trust it directly**; search again with the feature terms listed at the end, or open the relevant files. A \"medium\" result may be incomplete, so consider an extra search.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "query": {"type":"string","description":"提示词，可中英文混写，如「修改订单优惠」「payment callback」"},
-                            "limit": {"type":"integer","description":"返回命中上限，默认 20"},
-                            "hops": {"type":"integer","description":"沿调用边扩展跳数，默认 2"},
-                            "include_body": {"type":"boolean","description":"是否把命中涉及的完整文件源码也一并附上（默认 false）。开启后 LLM 可直接阅读实现，省去再发 read 拉全文的一轮往返；仅返回排名最前的少数文件，超大文件会被截断"}
+                            "query": {"type":"string","description":"Prompt; Chinese and English may be mixed, e.g. 'modify order discount' or 'payment callback'"},
+                            "limit": {"type":"integer","description":"Maximum number of hits returned, default 20"},
+                            "hops": {"type":"integer","description":"Hops to expand along call edges, default 2"},
+                            "include_body": {"type":"boolean","description":"Also append the full source of the files touched by the hits (default false). When enabled the LLM can read the implementation directly instead of spending another round trip on a full read; only the top-ranked few files are returned and very large files are truncated"}
                         },
                         "required": ["query"]
                     }
                 },
                 {
                     "name": "compose_prompt",
-                    "description": "在召回到的相关代码上下文之上再拼上「用户任务意图 + 质量约束」，产出一段可直接投喂代码生成 LLM 的完整提示词。与 Web UI 的「提示词增强」页（/compose）共用服务端同一套模板，结果完全一致；LLM 拿着它可直接开工，不必自行拼装上下文与约束。",
+                    "description": "On top of the recalled code context, append the \"user task intent + quality constraints\" to produce a complete prompt that can be fed straight to a code-generating LLM. It shares the same server-side template as the Web UI prompt-augmentation page (/compose), so the result is identical; the LLM can start work immediately without assembling context and constraints itself.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "query": {"type":"string","description":"用于召回代码的检索词，可中英文混写，如「修改订单优惠」"},
-                            "intent": {"type":"string","description":"用户的任务意图/补充说明；留空则要求 LLM 依据上下文推断"},
-                            "limit": {"type":"integer","description":"召回命中上限，默认 20"},
-                            "hops": {"type":"integer","description":"沿调用边扩展跳数，默认 2"},
-                            "with_snippets": {"type":"boolean","description":"是否附带源码片段，默认 true"}
+                            "query": {"type":"string","description":"Search terms used to recall code; Chinese and English may be mixed, e.g. 'modify order discount'"},
+                            "intent": {"type":"string","description":"The user's task intent / extra context; leave empty to ask the LLM to infer it from the context"},
+                            "limit": {"type":"integer","description":"Maximum number of recall hits, default 20"},
+                            "hops": {"type":"integer","description":"Hops to expand along call edges, default 2"},
+                            "with_snippets": {"type":"boolean","description":"Whether to include source snippets, default true"}
                         },
                         "required": ["query"]
                     }
                 },
                 {
                     "name": "check_compliance",
-                    "description": "对工程跑合规检查（已建图的规则集），返回严重度汇总与违规清单（文件:行 + 原因）。用于让 LLM 在改动前/后了解合规风险。",
+                    "description": "Run a compliance check on the project (rule set already loaded into the graph) and return a severity rollup plus a violation list (file:line + reason). Lets the LLM understand compliance risk before / after a change.",
                     "inputSchema": {
                         "type":"object",
                         "properties": {
-                            "rule_ids": {"type":"array","items":{"type":"string"},"description":"只跑指定规则；留空跑全部启用规则"}
+                            "rule_ids": {"type":"array","items":{"type":"string"},"description":"Run only the given rules; empty means every enabled rule"}
                         },
                         "required": []
                     }
                 },
                 {
                     "name": "list_violations",
-                    "description": "读取最近一次合规检查落库的违规（不重跑规则）。",
+                    "description": "Read the violations persisted by the most recent compliance check (does not re-run rules).",
                     "inputSchema": {
                         "type":"object",
                         "properties": {
-                            "limit": {"type":"integer","description":"最多返回条数，默认 200"}
+                            "limit": {"type":"integer","description":"Maximum number of entries returned, default 200"}
                         },
                         "required": []
                     }
                 },
                 {
                     "name": "warmup_status",
-                    "description": "查询当前工程的后台语义向量预热进度。返回是否已预热完成（warmed）、是否正在预热（warming）以及已完成/总节点数。IDE 可据此判断召回是否还在走冷路径（质量偏弱），决定是否稍后重试。",
+                    "description": "Query the background semantic-vector warm-up progress for the current project. Returns whether warm-up finished (warmed), whether it is running (warming), and done / total node counts. The IDE can use this to tell whether recall is still on the cold path (weaker quality) and decide to retry later.",
                     "inputSchema": {
                         "type":"object",
                         "properties": {},
@@ -173,7 +173,7 @@ impl McpBridge {
             "check_compliance" => self.check(&args),
             "list_violations" => self.violations(&args),
             "warmup_status" => self.warmup_status(),
-            other => (format!("未知工具: {other}"), true),
+            other => (format!("Unknown tool: {other}"), true),
         };
         Some(json!({
             "content": [{"type":"text","text": text}],
@@ -186,7 +186,7 @@ impl McpBridge {
     fn recall(&self, args: &Value) -> (String, bool) {
         let query = match args.get("query").and_then(|q| q.as_str()) {
             Some(q) if !q.trim().is_empty() => q.to_string(),
-            _ => return ("缺少 query 参数".to_string(), true),
+            _ => return ("missing query parameter".to_string(), true),
         };
         let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
         let hops = args.get("hops").and_then(|h| h.as_u64()).unwrap_or(2) as u32;
@@ -214,11 +214,11 @@ impl McpBridge {
                         false,
                     )
                 }
-                Err(e) => (format!("解析召回响应失败: {e}"), true),
+                Err(e) => (format!("Failed to parse the recall response: {e}"), true),
             },
             Err(e) => (
                 format!(
-                    "连接常驻服务失败（{}）：{}\n请确认 `graphtell serve` 正在运行。",
+                    "Cannot reach the service ({}): {}\nPlease make sure `graphtell serve` is running.",
                     self.base, e
                 ),
                 true,
@@ -231,7 +231,7 @@ impl McpBridge {
     fn compose(&self, args: &Value) -> (String, bool) {
         let query = match args.get("query").and_then(|q| q.as_str()) {
             Some(q) if !q.trim().is_empty() => q.to_string(),
-            _ => return ("缺少 query 参数".to_string(), true),
+            _ => return ("missing query parameter".to_string(), true),
         };
         let intent = args
             .get("intent")
@@ -255,11 +255,11 @@ impl McpBridge {
         match http_call(&self.base, &path, "POST", Some(&body)) {
             Ok(resp) => match extract_prompt(&resp) {
                 Ok(p) => (p, false),
-                Err(e) => (format!("解析合成响应失败: {e}"), true),
+                Err(e) => (format!("Failed to parse the compose response: {e}"), true),
             },
             Err(e) => (
                 format!(
-                    "连接常驻服务失败（{}）：{}\n请确认 `graphtell serve` 正在运行。",
+                    "Cannot reach the service ({}): {}\nPlease make sure `graphtell serve` is running.",
                     self.base, e
                 ),
                 true,
@@ -280,7 +280,7 @@ impl McpBridge {
         let path = format!("/api/projects/{}/check", self.project);
         match http_call(&self.base, &path, "POST", Some(&body)) {
             Ok(resp) => format_check(&resp),
-            Err(e) => (format!("连接常驻服务失败: {e}"), true),
+            Err(e) => (format!("Cannot reach the service: {e}"), true),
         }
     }
 
@@ -289,7 +289,7 @@ impl McpBridge {
         let path = format!("/api/projects/{}/violations?limit={limit}", self.project);
         match http_call(&self.base, &path, "GET", None) {
             Ok(resp) => format_violations(&resp),
-            Err(e) => (format!("连接常驻服务失败: {e}"), true),
+            Err(e) => (format!("Cannot reach the service: {e}"), true),
         }
     }
 
@@ -298,7 +298,7 @@ impl McpBridge {
         let path = format!("/api/projects/{}/warmup", self.project);
         match http_call(&self.base, &path, "GET", None) {
             Ok(resp) => format_warmup(&resp),
-            Err(e) => (format!("连接常驻服务失败: {e}"), true),
+            Err(e) => (format!("Cannot reach the service: {e}"), true),
         }
     }
 }
@@ -351,7 +351,7 @@ fn extract_warmup_note(resp: &str) -> String {
         let done = w.get("done").and_then(|x| x.as_u64()).unwrap_or(0);
         let total = w.get("total").and_then(|x| x.as_u64()).unwrap_or(0);
         return format!(
-            "\n\n---\n⏳ **语义向量预热中（已完成 {done}/{total}）**：当前召回暂走冷路径（快速向量/词面），质量偏弱。稍后重试可获得完整语义召回。"
+            "\n\n---\n⏳ **Semantic vectors warming up ({done}/{total} done)**: recall is currently on the cold path (fast vector / lexical) and quality is weaker. Retry later for full semantic recall."
         );
     }
     String::new()
@@ -369,7 +369,7 @@ fn with_quality_guidance(
     missing: &[String],
 ) -> String {
     let kw = if missing.is_empty() {
-        "（无可用特征词，建议换更具体的说法重试）".to_string()
+        "(no usable feature terms; try a more specific phrasing)".to_string()
     } else {
         missing
             .iter()
@@ -379,12 +379,12 @@ fn with_quality_guidance(
     };
     match quality {
         "low" => format!(
-            "{md}\n\n---\n⚠️ **召回质量低（置信度 {confidence:.2}）—— 不要只依赖以上上下文。**\n\
-             请改用这些特征词自行检索：{kw}。仍无法确定时，直接打开相关文件阅读。"
+            "{md}\n\n---\n⚠️ **Recall quality low (confidence {confidence:.2}) — do not rely on the context above alone.**\n\
+             Search again with these feature terms: {kw}. If still unsure, open the relevant files and read them."
         ),
         "medium" => format!(
-            "{md}\n\n---\nℹ️ **召回质量中等（置信度 {confidence:.2}）**：结果可能不完整。\n\
-             未命中的特征词：{kw}。建议补充检索后再下结论。"
+            "{md}\n\n---\nℹ️ **Recall quality medium (confidence {confidence:.2})**: results may be incomplete.\n\
+             Unmatched feature terms: {kw}. Search a bit more before concluding."
         ),
         _ => md,
     }
@@ -393,14 +393,14 @@ fn with_quality_guidance(
 fn extract_markdown(resp: &str) -> anyhow::Result<String> {
     let v: Value = serde_json::from_str(resp)?;
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
-        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("未知错误");
-        anyhow::bail!("服务返回失败: {err}");
+        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+        anyhow::bail!("Service returned a failure: {err}");
     }
-    let data = v.get("data").ok_or_else(|| anyhow::anyhow!("响应缺少 data"))?;
+    let data = v.get("data").ok_or_else(|| anyhow::anyhow!("Response is missing data"))?;
     let md = data
         .get("markdown")
         .and_then(|m| m.as_str())
-        .ok_or_else(|| anyhow::anyhow!("响应缺少 markdown"))?;
+        .ok_or_else(|| anyhow::anyhow!("Response is missing markdown"))?;
     Ok(md.to_string())
 }
 
@@ -408,34 +408,34 @@ fn extract_markdown(resp: &str) -> anyhow::Result<String> {
 fn extract_prompt(resp: &str) -> anyhow::Result<String> {
     let v: Value = serde_json::from_str(resp)?;
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
-        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("未知错误");
-        anyhow::bail!("服务返回失败: {err}");
+        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+        anyhow::bail!("Service returned a failure: {err}");
     }
-    let data = v.get("data").ok_or_else(|| anyhow::anyhow!("响应缺少 data"))?;
+    let data = v.get("data").ok_or_else(|| anyhow::anyhow!("Response is missing data"))?;
     let p = data
         .get("prompt")
         .and_then(|m| m.as_str())
-        .ok_or_else(|| anyhow::anyhow!("响应缺少 prompt"))?;
+        .ok_or_else(|| anyhow::anyhow!("Response is missing prompt"))?;
     Ok(p.to_string())
 }
 
 fn format_check(resp: &str) -> (String, bool) {
     let v: Value = match serde_json::from_str(resp) {
         Ok(v) => v,
-        Err(e) => return (format!("解析检查响应失败: {e}"), true),
+        Err(e) => return (format!("Failed to parse the check response: {e}"), true),
     };
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
-        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("未知错误");
-        return (format!("服务返回失败: {err}"), true);
+        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+        return (format!("Service returned a failure: {err}"), true);
     }
     let d = match v.get("data") {
         Some(d) => d,
-        None => return ("响应缺少 data".into(), true),
+        None => return ("Response is missing data".into(), true),
     };
     let rules_run = d.get("rules_run").and_then(|x| x.as_u64()).unwrap_or(0);
     let dur = d.get("duration_ms").and_then(|x| x.as_u64()).unwrap_or(0);
     let sev = d.get("by_severity").cloned().unwrap_or(Value::Null);
-    let mut out = format!("合规检查：运行 {rules_run} 条规则，耗时 {dur}ms\n严重度：");
+    let mut out = format!("Compliance check: ran {rules_run} rules in {dur}ms\nSeverity: ");
     for k in ["critical", "error", "warning", "info"] {
         let n = sev.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
         out.push_str(&format!("{k}={n} "));
@@ -443,7 +443,7 @@ fn format_check(resp: &str) -> (String, bool) {
     out.push('\n');
     if let Some(vs) = d.get("violations").and_then(|x| x.as_array()) {
         let cap = 60;
-        out.push_str(&format!("违规（显示前 {cap} 条，共 {} 条）：\n", vs.len()));
+        out.push_str(&format!("Violations (showing first {cap} of {}):\n", vs.len()));
         for v in vs.iter().take(cap) {
             out.push_str(&format_violation(v));
         }
@@ -454,17 +454,17 @@ fn format_check(resp: &str) -> (String, bool) {
 fn format_violations(resp: &str) -> (String, bool) {
     let v: Value = match serde_json::from_str(resp) {
         Ok(v) => v,
-        Err(e) => return (format!("解析失败: {e}"), true),
+        Err(e) => return (format!("Failed to parse: {e}"), true),
     };
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
         let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
-        return (format!("服务返回失败: {err}"), true);
+        return (format!("Service returned a failure: {err}"), true);
     }
     let vs = match v.get("data").and_then(|d| d.as_array()) {
         Some(a) => a,
-        None => return ("无违规".into(), false),
+        None => return ("No violations".into(), false),
     };
-    let mut out = format!("违规（共 {} 条）：\n", vs.len());
+    let mut out = format!("Violations ({} in total):\n", vs.len());
     for v in vs.iter().take(200) {
         out.push_str(&format_violation(v));
     }
@@ -484,28 +484,28 @@ fn format_violation(v: &Value) -> String {
 fn format_warmup(resp: &str) -> (String, bool) {
     let v: Value = match serde_json::from_str(resp) {
         Ok(v) => v,
-        Err(e) => return (format!("解析预热响应失败: {e}"), true),
+        Err(e) => return (format!("Failed to parse the warm-up response: {e}"), true),
     };
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
         let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
-        return (format!("服务返回失败: {err}"), true);
+        return (format!("Service returned a failure: {err}"), true);
     }
     let d = match v.get("data") {
         Some(d) => d,
-        None => return ("无预热状态".into(), false),
+        None => return ("No warm-up status".into(), false),
     };
     let warmed = d.get("warmed").and_then(|x| x.as_bool()).unwrap_or(false);
     let warming = d.get("warming").and_then(|x| x.as_bool()).unwrap_or(false);
     let done = d.get("done").and_then(|x| x.as_u64()).unwrap_or(0);
     let total = d.get("total").and_then(|x| x.as_u64()).unwrap_or(0);
     let status = if warmed {
-        "✅ 已预热完成（召回走完整语义路）".to_string()
+        "✅ warm-up finished (recall uses the full semantic path)".to_string()
     } else if warming {
-        format!("⏳ 预热中（已完成 {done}/{total}），召回暂走冷路径质量偏弱")
+        format!("⏳ warming up ({done}/{total} done); recall is on the cold path with weaker quality")
     } else {
-        "❄️ 未预热（召回走冷路径；首次查询会触发后台预热）".to_string()
+        "❄️ not warmed yet (recall uses the cold path; the first query triggers a background warm-up)".to_string()
     };
-    (format!("预热状态：{status}"), false)
+    (format!("Warm-up status: {status}"), false)
 }
 
 // ---------------------------------------------------------------- 极简本地 HTTP 客户端
@@ -543,10 +543,10 @@ fn parse_base(base: &str) -> anyhow::Result<(String, u16)> {
     let s = base.trim_end_matches('/').strip_prefix("http://").unwrap_or(base);
     let (host, port) = s
         .rsplit_once(':')
-        .ok_or_else(|| anyhow::anyhow!("非法服务地址: {base}"))?;
+        .ok_or_else(|| anyhow::anyhow!("Invalid service address: {base}"))?;
     let port = port
         .parse::<u16>()
-        .map_err(|_| anyhow::anyhow!("非法端口: {port}"))?;
+        .map_err(|_| anyhow::anyhow!("Invalid port: {port}"))?;
     Ok((host.to_string(), port))
 }
 

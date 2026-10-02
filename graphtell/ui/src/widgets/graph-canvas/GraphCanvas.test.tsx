@@ -55,7 +55,7 @@ describe('GraphCanvas', () => {
         <GraphCanvas mode="radial" center={null} rings={[]} edges={[]} loading />,
       );
     });
-    expect(container.textContent).toContain('加载视图');
+    expect(container.textContent).toContain('Loading view');
 
     // 关键：同一实例上的更新。Hook 数量若发生变化，这里会抛错。
     expect(() => {
@@ -83,7 +83,7 @@ describe('GraphCanvas', () => {
       });
     }).not.toThrow();
 
-    expect(container.textContent).toContain('位置');
+    expect(container.textContent).toContain('Location');
   });
 
   it('边少于阈值时标注边的种类（合成边 id 为负也能正确取值）', () => {
@@ -92,9 +92,9 @@ describe('GraphCanvas', () => {
     });
     const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
     // 两条边各有各的种类，不能因为 id 重复/为负而全部退化成第一条的种类。
-    // 未包 `LocaleProvider` 时 `t` 原样回退为 i18n 键（如 `edge.MapsTo`），故按键断言。
-    expect(labels).toContain('edge.MapsTo');
-    expect(labels).toContain('edge.ReadsConfig');
+    // Without a `LocaleProvider`, `t` falls back to the English source label (e.g. `edge.MapsTo` → 'maps to'), so assert on that.
+    expect(labels).toContain('maps to');
+    expect(labels).toContain('reads config');
   });
 
   it('同一 (id, from, to) 的多条平行路径各自独立：悬浮只点亮一条、卡片显示各自的链路', () => {
@@ -139,13 +139,13 @@ describe('GraphCanvas', () => {
     act(() => {
       hits[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     });
-    expect(container.textContent).toContain('途经 4 跳');
-    expect(container.textContent).not.toContain('途经 6 跳');
+    expect(container.textContent).toContain('via 4 hops');
+    expect(container.textContent).not.toContain('via 6 hops');
 
     act(() => {
       hits[1].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     });
-    expect(container.textContent).toContain('途经 6 跳');
+    expect(container.textContent).toContain('via 6 hops');
   });
 
   it('直接传 hiddenNodeKinds 可隐藏该类节点（过滤逻辑）', () => {
@@ -188,7 +188,7 @@ describe('GraphCanvas', () => {
 
     // 图例默认展开，直接找「表」图例项并点击。
     const tableRow = Array.from(container.querySelectorAll('span')).find(
-      (s) => s.textContent === 'node.Table',
+      (s) => s.textContent === 'Table',
     );
     expect(tableRow).toBeTruthy();
     act(() => {
@@ -226,6 +226,6 @@ describe('GraphCanvas', () => {
     expect(labels).toContain('wechat_user'); // 仍挂着 MapsTo 边的点保留
     expect(labels).toContain('POST /apple_login'); // 中心恒保留作锚点
     // 连带收起要有可见反馈，否则用户会以为图例按钮失灵。
-    expect(container.textContent).toContain('连带收起 1 点');
+    expect(container.textContent).toContain('1 node(s) collapsed');
   });
 });

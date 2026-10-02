@@ -40,7 +40,7 @@ export function DirectoryPickerModal({
         if (alive) setEntries(list);
       })
       .catch((e) => {
-        if (alive) setError(e instanceof Error ? e.message : '读取失败');
+        if (alive) setError(e instanceof Error ? e.message : 'Read failed');
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -57,18 +57,18 @@ export function DirectoryPickerModal({
 
   return (
     <Modal
-      title={t('选择代码库根目录')}
+      title={t('Select codebase root')}
       open={open}
       onCancel={onClose}
       onOk={() => onSelect(path)}
-      okText={t('选择此目录')}
-      cancelText={t('取消')}
+      okText={t('Select this directory')}
+      cancelText={t('Cancel')}
       width={560}
       destroyOnClose
     >
       <Space style={{ marginBottom: 12 }} wrap>
         <Button size="small" icon={<ArrowLeftOutlined />} onClick={goUp}>
-          {t('上级目录')}
+          {t('Up')}
         </Button>
         <Button size="small" icon={<HomeOutlined />} onClick={() => setPath('/home')}>
           /home
@@ -77,7 +77,7 @@ export function DirectoryPickerModal({
           /
         </Button>
         <Button size="small" onClick={() => setPath('/mnt')}>
-          /mnt（{t('WSL 磁盘')}）
+          /mnt（{t('WSL disk')}）
         </Button>
       </Space>
 
@@ -85,7 +85,7 @@ export function DirectoryPickerModal({
         type="secondary"
         style={{ display: 'block', marginBottom: 8, wordBreak: 'break-all' }}
       >
-        {t('当前目录：')}{path}
+        {t('Current directory: ')}{path}
       </Typography.Text>
 
       {error && (
@@ -120,7 +120,7 @@ export function DirectoryPickerModal({
             </div>
           ))}
           {!loading && !error && entries.length === 0 && (
-            <div style={{ padding: 16, color: '#999' }}>{t('该目录下没有子目录')}</div>
+            <div style={{ padding: 16, color: '#999' }}>{t('No sub-directories in this directory')}</div>
           )}
         </div>
       </Spin>

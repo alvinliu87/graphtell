@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
- * 极简异步数据 hook。
+ * Minimal async data hook.
  *
- * 不引入 react-query 等依赖：本项目的数据量小、刷新频率低，
- * 一个带 `reload` 的 hook 足够，也避免为了「状态管理」而增加心智负担。
+ * No react-query-style dependency: this project has small data volumes and low
+ * refresh rates, so a hook with a `reload` is enough — and it avoids adding
+ * "state management" cognitive load.
  */
 function depsEqual(a: unknown[], b: unknown[]): boolean {
   if (a.length !== b.length) return false;
@@ -19,8 +20,9 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
   const [error, setError] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
   const mounted = useRef(true);
-  // 最近一次「成功 fetch」所对应的 deps。loading 据此 + fetching 派生，
-  // 完全不依赖「渲染期 setState」的时序，从根本上杜绝首屏 / 切换视角时的空态闪烁。
+  // The deps of the most recent *successful* fetch. `loading` is derived from this plus `fetching`,
+  // so it never depends on the timing of a setState during render — which is what removes the
+  // empty-state flash on first paint and when switching perspective.
   const fetchedDeps = useRef<unknown[] | null>(null);
 
   useEffect(() => {
@@ -31,9 +33,9 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
   }, []);
 
   /**
-   * @param silent 静默刷新：不置 `fetching`，因此不闪 spinner / 不遮罩表格。
-   *   用于**轮询**——列表里"建图中"的转圈应该代表"真的在跟进"，
-   *   而不是每 3 秒把表格糊一层遮罩。
+   * @param silent Silent refresh: does not set `fetching`, so no spinner flashes and the table is not masked.
+   *   Used for **polling** — the spinner next to "indexing" in the list should mean "really making
+   *   progress", not "mask the whole table every 3 seconds".
    */
   const run = useCallback(
     async (silent = false) => {
@@ -48,7 +50,8 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
         return null;
       } finally {
         if (mounted.current) {
-          // 成败都标记本轮 deps 已结算：成功→数据就绪；失败→停止 spinner 并展示 error，避免永久转圈
+          // Mark this round of deps as settled either way: success → data ready; failure → stop the
+          // spinner and show the error, so it can never spin forever.
           fetchedDeps.current = deps;
           if (!silent) setFetching(false);
         }
@@ -63,8 +66,9 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run]);
 
-  // 首帧（fetchedDeps 为 null）或依赖已变 → 数据尚未就绪 → loading 为 true（spinner）；
-  // 与 fetching（主动拉取中）取或。同步派生，第一帧即为 true，绝不先露空态。
+  // First frame (fetchedDeps null) or deps changed → data not ready → loading true (spinner);
+  // ORed with `fetching` (an active pull). Derived synchronously, so the very first frame is
+  // already true and an empty state is never shown.
   const ready = fetchedDeps.current !== null && depsEqual(fetchedDeps.current, deps);
   const loading = !ready || fetching;
 
@@ -74,7 +78,7 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
   return { data, loading, error, reload, silentReload };
 }
 
-/** 轮询：用于建图进度。 */
+/** Polling: used for graph-build progress. */
 export function usePolling(fn: () => Promise<unknown>, intervalMs: number, active: boolean) {
   const saved = useRef(fn);
   useEffect(() => {

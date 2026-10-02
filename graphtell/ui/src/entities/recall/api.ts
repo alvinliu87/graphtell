@@ -1,16 +1,17 @@
 import { http } from '@/shared/api/http';
 import type { ComposePromptRequest, ComposePromptResult, RecallQuery, RecallResult } from './model';
 
-/** 提示词增强（代码召回 + 提示词合成）的数据访问。 */
+/** Data access for prompt augmentation (code recall + prompt composition). */
 export const recallApi = {
   recall: (projectId: number, q: RecallQuery) =>
     http.post<RecallResult>(`/api/projects/${projectId}/recall`, q),
   /**
-   * 合成提示词：图谱召回上下文 + 用户任务 → 一段可直接投喂 LLM 的提示词。
+   * Compose a prompt: graph-recalled context + user task → a prompt ready to feed an LLM.
    *
-   * 页面主流程走这一个接口而不是先 recall 再本地拼：提示词模板（角色 + 【本次任务】
-   * + 【要求】）在后端 `compose_prompt_text` 里，前端不该复制一份模板 ——
-   * 否则 MCP、CLI、Web 三处提示词迟早各说各话。
+   * The page's main flow calls this one endpoint instead of recalling first and assembling locally:
+   * the prompt template (role + TASK + REQUIREMENTS) lives in the backend `compose_prompt_text`,
+   * and the frontend must not keep a second copy of that template — otherwise the MCP, CLI and Web
+   * prompts inevitably start saying different things.
    */
   compose: (projectId: number, body: ComposePromptRequest) =>
     http.post<ComposePromptResult>(`/api/projects/${projectId}/prompt`, body),

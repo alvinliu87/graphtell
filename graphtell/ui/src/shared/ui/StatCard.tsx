@@ -1,7 +1,7 @@
 import { Card, Statistic } from 'antd';
 import type { ReactNode } from 'react';
 
-/** 概览卡片：数字 + 图标。 */
+/** Overview card: number + icon. */
 export function StatCard({
   title,
   value,

@@ -333,8 +333,8 @@ fn object_view_default_is_semantic_only() {
         return;
     };
     assert!(
-        top.badge.as_deref().unwrap_or("").contains("语义依赖"),
-        "候选 badge 应带价值（语义依赖数），实际 {:?}",
+        top.badge.as_deref().unwrap_or("").contains("semantic dependencies"),
+        "the candidate badge should carry a value (semantic dependency count), got {:?}",
         top.badge
     );
 
@@ -1112,7 +1112,7 @@ fn schedule_view_follows_outgoing_chain() {
         let value: usize = c
             .badge
             .as_deref()
-            .and_then(|b| b.strip_prefix("语义依赖 "))
+            .and_then(|b| b.strip_prefix("semantic dependencies "))
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
@@ -1128,7 +1128,7 @@ fn schedule_view_follows_outgoing_chain() {
             dead.push(format!("{}（徽标 {:?}）", c.name, c.badge));
         }
     }
-    assert!(checked > 0, "应有语义依赖 > 0 的计划任务候选");
+    assert!(checked > 0, "there should be a scheduled-task candidate with semantic dependencies > 0");
     assert!(
         dead.is_empty(),
         "这些计划任务有语义依赖，视图却画出空图：\n{}",
@@ -1159,23 +1159,23 @@ fn empty_entry_view_carries_hint() {
             let ov = views
                 .object_view(b.project_id, perspective, c.id, Some(3))
                 .expect("object_view");
-            let has_hint = ov.conclusions.get("提示").is_some();
+            let has_hint = ov.conclusions.get("hint").is_some();
             assert_eq!(
                 ov.edges.is_empty(),
                 has_hint,
                 "{perspective} {} 空图与提示必须同时出现/消失：edges={} hint={:?}",
                 c.name,
                 ov.edges.len(),
-                ov.conclusions.get("提示")
+                ov.conclusions.get("hint")
             );
             if has_hint {
                 empty_seen += 1;
-                let msg = ov.conclusions["提示"].as_str().unwrap_or("");
+                let msg = ov.conclusions["hint"].as_str().unwrap_or("");
                 assert!(
                     msg.contains(if perspective == "schedule" {
-                        "定时任务"
+                        "scheduled task"
                     } else {
-                        "路由"
+                        "route"
                     }),
                     "{perspective} {} 的提示应点明入口类型，实际 {msg}",
                     c.name

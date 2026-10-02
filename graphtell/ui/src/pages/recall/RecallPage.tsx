@@ -43,10 +43,10 @@ function RecallQualityBanner({
   const { t } = useLocale();
   const meta =
     result.quality === 'low'
-      ? { color: 'red', label: t('低'), type: 'error' as const }
+      ? { color: 'red', label: t('Low'), type: 'error' as const }
       : result.quality === 'medium'
-        ? { color: 'orange', label: t('中'), type: 'warning' as const }
-        : { color: 'green', label: t('高'), type: 'success' as const };
+        ? { color: 'orange', label: t('Medium'), type: 'warning' as const }
+        : { color: 'green', label: t('High'), type: 'success' as const };
 
   return (
     <Alert
@@ -55,10 +55,10 @@ function RecallQualityBanner({
       style={{ marginBottom: 10 }}
       message={
         <Space size={6} wrap>
-          <Typography.Text strong>{t('召回质量')}</Typography.Text>
+          <Typography.Text strong>{t('Recall quality')}</Typography.Text>
           <Tag color={meta.color}>{meta.label}</Tag>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {t('置信度')} {(result.confidence ?? 1).toFixed(2)}
+            {t('Confidence')} {(result.confidence ?? 1).toFixed(2)}
           </Typography.Text>
         </Space>
       }
@@ -68,7 +68,7 @@ function RecallQualityBanner({
           {result.missing_terms?.length ? (
             <div style={{ marginTop: 6 }}>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('建议改用这些特征词检索')}：
+                {t('Try searching with these feature words instead')}：
               </Typography.Text>
               {result.missing_terms.map((m) => (
                 <Tag
@@ -118,7 +118,7 @@ export function RecallPage() {
   const run = async (override?: string) => {
     const q = (override ?? query).trim();
     if (!q) {
-      message.warning(t('先描述你要找什么'));
+      message.warning(t('Describe what you are looking for first'));
       return;
     }
     setLoading(true);
@@ -146,26 +146,24 @@ export function RecallPage() {
   const copyLocation = async (file?: string | null, line?: number | null) => {
     if (!file) return;
     await navigator.clipboard?.writeText(line ? `${file}:${line}` : file);
-    message.success(t('已复制定位'));
+    message.success(t('Location copied'));
   };
 
   const copyPack = async (md: string) => {
     await navigator.clipboard?.writeText(md);
-    message.success(t('上下文包已复制，可直接粘贴给 LLM'));
+    message.success(t('Context pack copied — paste it straight into your LLM'));
   };
 
   const copyPrompt = async (p: string) => {
     await navigator.clipboard?.writeText(p);
-    message.success(t('提示词已复制，可直接粘贴给 IDE'));
+    message.success(t('Prompt copied — paste it into your IDE'));
   };
 
   return (
     <>
       <PageHeader
-        title={t('提示词增强')}
-        subtitle={t(
-          '把你本来要发给 IDE 的那段话写在这里，系统按图召回相关代码并合成进去 —— 这一页不调用大模型，只做检索与拼装',
-        )}
+        title={t('Prompt augmentation')}
+        subtitle={t('Paste the message you would send to your IDE; the system recalls related code from the graph and composes it in — this page calls no LLM, it only retrieves and assembles.')}
       />
 
       {/*
@@ -191,15 +189,15 @@ export function RecallPage() {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void run();
           }}
           autoSize={{ minRows: 3, maxRows: 8 }}
-          placeholder={t('你要找什么 / 想让 IDE 帮你做什么 —— 这段会原样写进提示词的【本次任务】')}
+          placeholder={t('What are you looking for / what should the IDE do — this is copied verbatim into the prompt’s TASK section')}
           style={{ maxWidth: 720 }}
         />
         <Space align="center" style={{ marginTop: 10 }}>
           <Button type="primary" loading={loading} onClick={() => void run()}>
-            {t('生成提示词')}
+            {t('Compose prompt')}
           </Button>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {t('⌘/Ctrl + Enter 直接生成')}
+            {t('⌘/Ctrl + Enter to generate')}
           </Typography.Text>
         </Space>
 
@@ -208,23 +206,23 @@ export function RecallPage() {
           placement="bottomLeft"
           content={
             <Space direction="vertical" size={10}>
-              <Tooltip title={t('从种子沿调用链向外扩展几跳')}>
+              <Tooltip title={t('How many hops to expand outward from the seeds along the call chain')}>
                 <InputNumber
                   min={0}
                   max={4}
                   value={hops}
                   onChange={(v) => setHops(Number(v ?? 0))}
-                  addonBefore={t('跳数')}
+                  addonBefore={t('Hops')}
                   style={{ width: 140 }}
                 />
               </Tooltip>
-              <Tooltip title={t('最多返回多少条')}>
+              <Tooltip title={t('Maximum number of results to return')}>
                 <InputNumber
                   min={1}
                   max={100}
                   value={limit}
                   onChange={(v) => setLimit(Number(v ?? 20))}
-                  addonBefore={t('条数')}
+                  addonBefore={t('Count')}
                   style={{ width: 140 }}
                 />
               </Tooltip>
@@ -233,7 +231,7 @@ export function RecallPage() {
         >
           {/* 折叠但**不隐藏**：当前值始终以一行小字显示，用户知道这里有旋钮 */}
           <Button type="text" size="small" style={{ paddingInline: 0, marginTop: 4, fontSize: 12 }}>
-            {t('参数')}：{t('跳数')} {hops} · {t('条数')} {limit} ▸
+            {t('Options')}：{t('Hops')} {hops} · {t('Count')} {limit} ▸
           </Button>
         </Popover>
 
@@ -250,11 +248,11 @@ export function RecallPage() {
             />
             <Space size={6} wrap>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('解析出的查询词')}：
+                {t('Parsed query terms')}：
               </Typography.Text>
               {result.recall.terms.length === 0 ? (
                 <Typography.Text type="warning" style={{ fontSize: 12 }}>
-                  {t('没有可用于匹配的词 —— 纯中文且不含结构提示时目前无法召回')}
+                  {t('No terms to match against — pure Chinese without structural hints cannot be recalled yet')}
                 </Typography.Text>
               ) : (
                 result.recall.terms.map((term) => (
@@ -265,7 +263,7 @@ export function RecallPage() {
               )}
               {result.recall.kind_hints.map((k) => (
                 <Tag key={k} color="purple">
-                  {t('结构提示')}：{k}
+                  {t('Structural hints')}：{k}
                 </Tag>
               ))}
             </Space>
@@ -289,9 +287,9 @@ export function RecallPage() {
           <Empty
             description={
               <div style={{ fontSize: 13 }}>
-                <div>{t('用一句话描述你要找的代码')}</div>
+                <div>{t('Describe the code you are looking for in one sentence')}</div>
                 <div style={{ marginTop: 4, color: 'rgba(0,0,0,0.45)' }}>
-                  {t('系统会按图召回相关代码，并合成成一段可直接粘给 IDE 的提示词')}
+                  {t('The system recalls related code from the graph and composes a prompt you can paste into your IDE.')}
                 </div>
               </div>
             }
@@ -309,23 +307,23 @@ export function RecallPage() {
             style={{ borderRadius: 14, marginBottom: 16 }}
             title={
               <Space size={8} wrap>
-                <span>{t('增强后的提示词')}</span>
+                <span>{t('Augmented prompt')}</span>
                 <Tag color="geekblue">≈ {result.approx_tokens} tokens</Tag>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('命中')} {result.hit_count}{t(' 条')} · {t('种子')} {result.seed_count}
+                  {t('Hits')} {result.hit_count}{t(' entries')} · {t('seeds')} {result.seed_count}
                 </Typography.Text>
               </Space>
             }
             extra={
               <Space>
                 <Button type="link" onClick={() => setShowPrompt((v) => !v)}>
-                  {showPrompt ? t('收起') : t('展开全文')}
+                  {showPrompt ? t('Collapse') : t('Show full text')}
                 </Button>
                 <Button icon={<CopyOutlined />} onClick={() => void copyPrompt(result.prompt)}>
-                  {t('复制提示词')}
+                  {t('Copy prompt')}
                 </Button>
                 <Button icon={<CopyOutlined />} onClick={() => void copyPack(result.markdown)}>
-                  {t('复制上下文包')}
+                  {t('Copy context pack')}
                 </Button>
               </Space>
             }
@@ -348,7 +346,7 @@ export function RecallPage() {
               </pre>
             ) : null}
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {t('提示词 = 你的任务 + 按图召回的代码上下文 + 质量约束；上下文包只有中间那段，可自行裁剪')}
+              {t('Prompt = your task + graph-recalled code context + quality constraints; the context pack is only the middle part, trim it as you like.')}
             </Typography.Text>
           </Card>
 
@@ -356,12 +354,12 @@ export function RecallPage() {
           <Col xs={24} lg={8}>
             <Card
               variant="borderless"
-              title={t('种子（直接命中）')}
+              title={t('Seeds (direct hits)')}
               style={{ borderRadius: 14 }}
               styles={{ body: { paddingTop: 8 } }}
             >
               {result.recall.seeds.length === 0 ? (
-                <Empty description={t('没有命中任何种子')} />
+                <Empty description={t('No seed matched')} />
               ) : (
                 <Space direction="vertical" style={{ width: '100%' }} size={6}>
                   {result.recall.seeds.map((s) => (
@@ -396,12 +394,12 @@ export function RecallPage() {
           <Col xs={24} lg={16}>
             <Card
               variant="borderless"
-              title={`${t('相关代码')} · ${result.recall.hits.length}`}
+              title={`${t('Related code')} · ${result.recall.hits.length}`}
               style={{ borderRadius: 14 }}
               styles={{ body: { paddingTop: 8 } }}
             >
               {result.recall.hits.length === 0 ? (
-                <Empty description={t('没有召回结果')} />
+                <Empty description={t('No recall results')} />
               ) : (
                 <Space direction="vertical" style={{ width: '100%' }} size={10}>
                   {result.recall.hits.map((h, i) => (
@@ -427,11 +425,11 @@ export function RecallPage() {
                         <Tag color="geekblue">{h.kind}</Tag>
                         <span style={{ fontWeight: 600 }}>{h.name}</span>
                         {h.direct ? (
-                          <Tag color="green">{t('直接命中')}</Tag>
+                          <Tag color="green">{t('Direct hit')}</Tag>
                         ) : (
-                          <Tooltip title={t('靠图的调用链扩展带出来的')}>
+                          <Tooltip title={t('Pulled in by call-chain expansion on the graph')}>
                             <Tag color="default">
-                              {t('扩展')} · {t('跳数')} {h.hop}
+                              {t('Expanded')} · {t('Hops')} {h.hop}
                             </Tag>
                           </Tooltip>
                         )}
@@ -460,7 +458,7 @@ export function RecallPage() {
                         >
                           {h.file
                             ? `${h.file.split('/').pop()}${h.line ? `:${h.line}` : ''}`
-                            : t('无位置信息')}
+                            : t('No location')}
                         </Button>
                         {h.relations.map((r) => (
                           <Tag key={r} bordered={false} style={{ margin: 0 }}>
@@ -469,7 +467,7 @@ export function RecallPage() {
                         ))}
                         {!h.direct ? (
                           <Typography.Text type="secondary">
-                            ← {t('来自种子')} <b>{h.seed}</b>
+                            ← {t('From a seed')} <b>{h.seed}</b>
                           </Typography.Text>
                         ) : null}
                       </div>

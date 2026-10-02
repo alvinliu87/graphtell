@@ -1,14 +1,14 @@
 /**
- * HTTP 客户端。
+ * HTTP client.
  *
- * 单一职责：只负责「怎么请求」与「请求打到哪」，不关心业务语义
- * （业务在 `entities/*\/api.ts`）。
+ * Single responsibility: only "how to request" and "where the request goes"; it
+ * knows nothing about business semantics (those live in `entities/*\/api.ts`).
  *
- * 基地址解析顺序：
- * 1. Tauri 桌面端：进程内后端由内核分配端口，通过 `api_port` 命令获取
- * 2. 环境变量 `VITE_API_BASE`（部署到别的机器时）
- * 3. `localStorage` 覆盖（调试用）
- * 4. 默认 `http://127.0.0.1:5177`
+ * Base URL resolution order:
+ * 1. Tauri desktop: the in-process backend gets a kernel-assigned port, read via the `api_port` command
+ * 2. Environment variable `VITE_API_BASE` (when deployed to another machine)
+ * 3. `localStorage` override (for debugging)
+ * 4. Default `http://127.0.0.1:5177`
  */
 
 import { translate as t } from '@/shared/lib/i18n';
@@ -31,7 +31,7 @@ const DEFAULT_BASE = 'http://127.0.0.1:5177';
 
 let base: string = DEFAULT_BASE;
 
-/** Tauri v2 暴露的内部桥接（无需引入 @tauri-apps/api 依赖）。 */
+/** Internal bridge exposed by Tauri v2 (avoids depending on @tauri-apps/api). */
 interface TauriInternals {
   invoke?: (cmd: string, args?: unknown) => Promise<unknown>;
 }
@@ -45,12 +45,13 @@ async function detectBase(): Promise<string> {
       if (info?.base_url) return info.base_url;
       if (info?.port) return `http://127.0.0.1:${info.port}`;
     } catch {
-      /* 非 Tauri 环境或命令未注册：走下面的兜底 */
+      /* Not a Tauri environment or the command is not registered: fall through below. */
     }
   }
   const fromEnv = import.meta.env.VITE_API_BASE as string | undefined;
-  // 部署到与后端同域时（如 Docker 单端口），用 `same-origin` 让前端走相对路径，
-  // 无需在构建期写死主机名；留空/false 时回落到下方的默认或 localStorage 覆盖。
+  // When deployed same-origin as the backend (e.g. Docker single port), `same-origin` makes the
+  // frontend use relative paths so no host name is baked in at build time; empty/false falls back
+  // to the default below or the localStorage override.
   if (fromEnv === 'same-origin') return '';
   if (fromEnv) return fromEnv;
   try {
@@ -60,7 +61,7 @@ async function detectBase(): Promise<string> {
   }
 }
 
-/** 应用启动前调用一次，确定后端基地址。 */
+/** Called once before app start to resolve the backend base URL. */
 export async function initApiBase(): Promise<string> {
   base = await detectBase();
   return base;
@@ -81,10 +82,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
     });
   } catch (e) {
-    // 传输层失败（后端没起来 / 端口不对 / 网络断了）：和各页自己的领域错误不同，这里
-    // 用户什么都看不到，所以走全局 notify 弹一次。再原样抛出，让各页的 useAsync 决定要不要
-    // 画内联 Alert（ProjectsPage / ExplorerPage 会画；没画的地方至少也有这条 toast 兜底）。
-    notify(t('无法连接后端，请确认服务已启动'));
+    // Transport-level failure (backend down / wrong port / network gone): unlike each page's own
+    // domain errors, the user would otherwise see nothing at all, so raise one global notification.
+    // The error is then rethrown so each page's useAsync decides whether to draw an inline Alert
+    // (ProjectsPage / ExplorerPage do; anywhere else at least gets this toast as a fallback).
+    notify(t('Cannot reach the backend. Please make sure the server is running.'));
     throw e;
   }
   if (!res.ok) {
@@ -92,7 +94,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const body = (await res.json()) as ApiResponse<T>;
   if (!body.ok || body.data === null) {
-    throw new ApiError(body.error ?? t('未知错误'), res.status);
+    throw new ApiError(body.error ?? t('Unknown error'), res.status);
   }
   return body.data;
 }

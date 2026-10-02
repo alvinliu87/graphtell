@@ -1,4 +1,4 @@
-/** 图实体：节点、边、标注、符号表、诊断。 */
+/** Graph entities: nodes, edges, annotations, symbol table, diagnostics. */
 
 export interface IdentityKey {
   kind: string;
@@ -65,27 +65,29 @@ export interface Diagnostic {
   payload: Record<string, unknown> | null;
 }
 
-/** 一类诊断的条目数（同一个 `code` + 同一严重度）。 */
+/** Entry count for one diagnostic type (same `code` + same severity). */
 export interface DiagnosticCodeCount {
   code: string;
   severity: Severity;
   count: number;
 }
 
-/** 非规则诊断的严重度汇总（菜单角标用，排除 `rule:` 前缀以免与合规检查重复）。 */
+/** Severity rollup for non-rule diagnostics (menu badge; excludes the `rule:` prefix so it does not double-count compliance). */
 export interface DiagnosticSummary {
   critical: number;
   error: number;
   warning: number;
   info: number;
-  /** 暂无解析器的语言（`go` / `rust` …）：这些子工程只有文件结构，没有语义抽取。 */
+  /** Languages with no parser yet (`go` / `rust` …): those sub-projects have file structure only, no semantic extraction. */
   unsupported_languages?: string[];
   /**
-   * 按**问题类型**分开的条目数（全量口径，不受列表读取上限影响）。
+   * Entry counts broken down by **problem type** (full scope, unaffected by the
+   * list read cap).
    *
-   * 侧栏角标与诊断页都靠它把「445 条」讲成「6 类问题」——
-   * 一条引擎诊断在几百处重复触发时，只报总数会把"同一件事发生 349 次"
-   * 读成"349 个问题"。老后端可能没有该字段，故可选。
+   * Both the sidebar badge and the diagnostics page rely on it to turn "445
+   * entries" into "6 problem types" — when one engine diagnostic fires in
+   * hundreds of places, reporting only the total makes "the same thing happened
+   * 349 times" read as "349 problems". Older backends may omit it, hence optional.
    */
   by_code?: DiagnosticCodeCount[];
 }
@@ -97,7 +99,7 @@ export interface GraphStats {
   by_kind: Record<string, number>;
 }
 
-/** 不同节点种类的配色（可视化用）。 */
+/** Palette per node kind (visualisation only). */
 export const NODE_COLORS: Record<string, string> = {
   Class: '#3d7eff',
   Interface: '#7c5cff',
@@ -114,15 +116,16 @@ export const NODE_COLORS: Record<string, string> = {
   HttpContract: '#ef4444',
   ConfigKey: '#8b5cf6',
   I18nKey: '#eab308',
-  // 进程外中介（Event / Queue / Cache / Topic）同色族，便于一眼识别。
+  // Out-of-process mediators (Event / Queue / Cache / Topic) share one colour family so they are recognisable at a glance.
   Cache: '#f97316',
   Event: '#f97316',
   Queue: '#f97316',
   Topic: '#f97316',
-  // 事件 / 队列的消费者（监听器 / 消费者类）在画布上重标为此角色，与 Event / Queue 同族。
+  // Consumers of events / queues (listeners / consumer classes) are relabelled to this role on the canvas, same family as Event / Queue.
   EventHandler: '#fb923c',
-  // 中间件：挂在路由上的守门人，与契约（HttpContract）同冷色族，读图时"入口 → 守卫 → 资源"
-  // 的层次一眼可辨（守卫不属于业务资源，刻意不与 Table / Cache 的暖色混）。
+  // Middleware: the gatekeeper attached to a route, sharing the cool family with contracts (HttpContract) so the
+  // "entry → guard → resource" layering is obvious when reading the graph (a guard is not a business resource,
+  // deliberately kept out of the warm Table / Cache colours).
   Middleware: '#0ea5e9',
   Unknown: '#9ca3af',
 };
@@ -131,19 +134,19 @@ export function nodeColor(kind: string): string {
   return NODE_COLORS[kind] ?? NODE_COLORS.Unknown;
 }
 
-/** 边的配色。 */
+/** Palette per edge kind. */
 export const EDGE_COLORS: Record<string, string> = {
   Extends: '#94a3b8',
   Implements: '#94a3b8',
   UsesTrait: '#c4b5fd',
   Calls: '#60a5fa',
   HasCallSite: '#e2e8f0',
-  // 读/写库：冷暖对比，避免琥珀/橙混成一片。
-  ReadsDb: '#3b82f6', // 读库：蓝色（冷、只读）
-  WritesDb: '#ea580c', // 写库：深橙色（暖、变更）
-  MapsTo: '#64748b', // 结构映射（Model→Table），移出"读/写库"暖色族，改为中性石板色
+  // DB read/write: a cool/warm contrast so amber and orange do not blur together.
+  ReadsDb: '#3b82f6', // reads DB: blue (cool, read-only)
+  WritesDb: '#ea580c', // writes DB: deep orange (warm, mutating)
+  MapsTo: '#64748b', // structural mapping (Model→Table), moved out of the warm read/write-DB family to a neutral slate
   ReadsConfig: '#a78bfa',
-  ReadsCache: '#14b8a6', // 读缓存：青色，可见度足够且不与读配置紫冲突
+  ReadsCache: '#14b8a6', // reads cache: teal, visible enough and not clashing with the config-read purple
   HandledBy: '#ef4444',
   CallsHttp: '#22c55e',
   Triggers: '#fb7185',
@@ -151,8 +154,8 @@ export const EDGE_COLORS: Record<string, string> = {
   Declares: '#e5e7eb',
   Contains: '#e5e7eb',
   ResolvesTo: '#38bdf8',
-  // 中间件边：用中间件的天蓝；与 `HandledBy`（红 = 谁处理这个端点）区分开 ——
-  // 一个是"路过谁"，一个是"落到谁"。
+  // Middleware edge: the middleware sky blue, kept apart from `HandledBy` (red = who handles this endpoint) —
+  // one is "who you pass through", the other is "where you land".
   PassesThrough: '#0ea5e9',
 };
 

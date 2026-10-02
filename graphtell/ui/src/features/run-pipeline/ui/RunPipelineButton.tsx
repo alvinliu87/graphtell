@@ -3,7 +3,7 @@ import { useLocale } from '@/shared/lib/i18n';
 import { ThunderboltOutlined } from '@ant-design/icons';
 import { pipelineApi } from '@/entities/pipeline';
 
-/** 触发建图（后台线程执行，前端轮询进度）。 */
+/** Trigger a graph build (runs on a background thread; the frontend polls progress). */
 export function RunPipelineButton({
   projectId,
   onStarted,
@@ -15,16 +15,16 @@ export function RunPipelineButton({
   const run = async () => {
     try {
       await pipelineApi.run(projectId);
-      message.success(t('已开始建图'));
+      message.success(t('Graphing started'));
       onStarted?.();
     } catch (e) {
-      message.error(e instanceof Error ? e.message : t('启动失败'));
+      message.error(e instanceof Error ? e.message : t('Failed to start'));
     }
   };
 
   return (
     <Button type="primary" icon={<ThunderboltOutlined />} onClick={run}>
-      {t('重新建图')}
+      {t('Rebuild graph')}
     </Button>
   );
 }

@@ -201,23 +201,23 @@ export function GraphPage() {
     : 0;
   const diagActionable = actionableCount(diagGroups);
   const TIER_LABEL: Record<string, string> = {
-    frontend: t('前端'),
-    backend: t('后端'),
-    library: t('库'),
-    unknown: t('未知'),
+    frontend: t('Frontend'),
+    backend: t('Backend'),
+    library: t('DB'),
+    unknown: t('Unknown'),
   };
   const KIND_LABEL: Record<string, string> = {
-    admin: t('管理后台'),
-    'mini-program': t('小程序'),
-    mobile: t('移动端'),
+    admin: t('Admin'),
+    'mini-program': t('Mini program'),
+    mobile: t('Mobile'),
     h5: t('H5'),
     api: t('API'),
-    worker: t('任务/队列'),
+    worker: t('Jobs / queues'),
     bff: t('BFF'),
     web: t('Web'),
   };
   const roleLabel = (r?: string | null) => {
-    if (!r) return t('未知');
+    if (!r) return t('Unknown');
     const [tier, kind] = r.split(':');
     if (kind) return KIND_LABEL[kind] ?? kind;
     return TIER_LABEL[tier] ?? tier;
@@ -636,12 +636,12 @@ export function GraphPage() {
   // const wslDistro = getWslMode() ? getWslDistro() : undefined;
   // // 仅用于界面核对：本工程实际生效根来自哪一层（覆盖 > 模板 / WSL > 后端）。
   // const rootSource = localRoot
-  //   ? t('按工程覆盖')
+  //   ? t('Per-project override')
   //   : getWslMode()
-  //     ? t('WSL 模式') + '（' + (getWslDistro() || 'Ubuntu') + '）'
+  //     ? t('WSL mode') + '（' + (getWslDistro() || 'Ubuntu') + '）'
   //     : effectiveTemplate()
-  //       ? t('全局根模板')
-  //       : t('后端 root_path');
+  //       ? t('Global root template')
+  //       : t('backend root_path');
 
   // 复制绝对路径用的本地根：暂不做模板 / WSL / 覆盖变换，直接用后端 root_path。
   const projectRoot = project?.root_path;
@@ -649,7 +649,7 @@ export function GraphPage() {
   const wslDistro: string | undefined = undefined;
 
   if (projectId === undefined || Number.isNaN(id)) {
-    return <Alert type="error" message={t('缺少工程 ID')} />;
+    return <Alert type="error" message={t('Missing project ID')} />;
   }
 
   return (
@@ -658,7 +658,7 @@ export function GraphPage() {
         compact
         title={
           <>
-            {project ? `${t('代码图')} · ${project.name}` : t('代码图')}
+            {project ? `${t('Code Graph')} · ${project.name}` : t('Code Graph')}
             {/*
               使用说明 + 图覆盖 + 建图报告入口，都收进这个 ⓘ（点击打开的 Popover）。
 
@@ -677,23 +677,23 @@ export function GraphPage() {
               content={
                 <div style={{ maxWidth: 320, fontSize: 12 }}>
                   <div style={{ color: 'rgba(0,0,0,0.65)' }}>
-                    {t('一级选视角、二级选对象；只渲染当前这一条链路，被省略的部分以计数与未解析记账呈现')}
+                    {t('Pick a perspective, then an object; only this one link is rendered. Omitted parts are shown as counts and an unresolved tally.')}
                   </div>
                   {diagTypes > 0 ? (
                     <>
                       <Divider style={{ margin: '8px 0' }} />
                       <div style={{ color: 'rgba(0,0,0,0.65)' }}>
-                        {t('图覆盖')}：{diagTypes} {t(' 类问题')} · {t('共 ')}
+                        {t('Graph coverage')}：{diagTypes} {t(' problem types')} · {t('Total ')}
                         {diagTotal}
-                        {t(' 处')}
+                        {t(' places')}
                       </div>
                       {diagActionable > 0 ? (
                         <Tag color="gold" style={{ marginTop: 6, marginInlineEnd: 0 }}>
-                          {t('值得看一眼')} {diagActionable}
+                          {t('Worth a look')} {diagActionable}
                         </Tag>
                       ) : (
                         <div style={{ marginTop: 4, color: 'rgba(0,0,0,0.45)' }}>
-                          {t('（多为引擎局限与预期内，不改变召回结论）')}
+                          {t('— mostly engine limits and expected cases; recall conclusions are unaffected.')}
                         </div>
                       )}
                       <div style={{ marginTop: 8 }}>
@@ -703,7 +703,7 @@ export function GraphPage() {
                           style={{ paddingInline: 0, fontSize: 12, height: 'auto' }}
                           onClick={() => navigate(`/projects/${id}/coverage`)}
                         >
-                          {t('查看建图报告')} →
+                          {t('View build report')} →
                         </Button>
                       </div>
                     </>
@@ -731,8 +731,8 @@ export function GraphPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 10 }}
-          message={t('该工程含暂无解析器的语言')}
-          description={t('以下语言只建出文件结构，没有类 / 函数 / 调用等语义抽取') + `：${unsupportedLangs.join('、')}`}
+          message={t('This project contains languages with no parser yet')}
+          description={t('For these languages only file structure is built — no class / function / call extraction') + `：${unsupportedLangs.join('、')}`}
         />
       )}
 
@@ -771,15 +771,15 @@ export function GraphPage() {
           extra={
             <>
               {/* 图标化 + tooltip：省下来的宽度留给面包屑，避免这一行换行把画布往下推 */}
-              <Tooltip title={t('重置缩放与平移，使整张图完整显示在当前视窗内')}>
+              <Tooltip title={t('Reset zoom and pan so the whole graph fits the current viewport')}>
                 <Button size="small" icon={<FullscreenOutlined />} onClick={() => setFitSignal((s) => s + 1)} />
               </Tooltip>
               <Button size="small" type="primary" ghost onClick={() => setDrawerOpen(true)}>
-                {t('结论 / 导航')}
+                {t('Conclusions / Navigation')}
               </Button>
               {Object.keys(expanded).length > 0 && (
                 <Button size="small" onClick={() => setExpanded({})}>
-                  {t('收起调用') + '（' + Object.keys(expanded).length + '）'}
+                  {t('Collapse calls') + '（' + Object.keys(expanded).length + '）'}
                 </Button>
               )}
               <Select
@@ -787,7 +787,7 @@ export function GraphPage() {
                 allowClear
                 size="small"
                 style={{ minWidth: 200 }}
-                placeholder={t('全部子工程')}
+                placeholder={t('All sub-projects')}
                 value={subFilter}
                 onChange={(v) => setSubFilter(v ?? [])}
                 options={subProjects.map((s) => ({
@@ -812,7 +812,7 @@ export function GraphPage() {
         */}
         {!isAggregate ? (
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
-            {t('只画当前这一条链路；其余以计数与未解析记账呈现。')}
+            {t('Draws one link at a time; the rest is shown as counts and unresolved records.')}
           </Typography.Text>
         ) : null}
 
@@ -827,30 +827,30 @@ export function GraphPage() {
               key: 'override',
               label: (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('高级 · 按工程覆盖本地根（特殊场景才需要）')}
+                  {t('Advanced · Per-project local root override (only for special cases)')}
                 </Typography.Text>
               ),
               children: (
                 <Space align="center" wrap>
-                  <Tooltip title={t('本地工程根仅用于 IDE 跳转与复制，不改后端数据。优先级：此处「按工程覆盖」> 全局根模板（设置页）> 后端 root_path。留空即按后两者解析。')}>
+                  <Tooltip title={t('Local project root is only for IDE jumping and copying, not for changing backend data. Priority: this "per-project override" > global root template (Settings) > backend root_path. Empty falls back to the latter two.')}>
                     <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                      {t('本地工程根（覆盖）')}
+                      {t('Local project root (override)')}
                     </Typography.Text>
                   </Tooltip>
                   <Input
                     size="small"
                     style={{ width: 420 }}
-                    placeholder={project?.root_path ?? t('按工程覆盖的本地绝对路径，留空则取全局模板 / 后端路径')}
+                    placeholder={project?.root_path ?? t('Absolute local path override; empty uses global template / backend path')}
                     value={localRoot}
                     onChange={(e) => updateLocalRoot(e.target.value)}
                   />
                   {localRoot ? (
                     <Button size="small" type="link" onClick={() => updateLocalRoot('')}>
-                      {t('用全局 / 后端路径')}
+                      {t('Use global / backend path')}
                     </Button>
                   ) : null}
                   <Button size="small" type="link" onClick={() => navigate('/settings')}>
-                    {t('全局根模板设置')}
+                    {t('Global root template settings')}
                   </Button>
                 </Space>
               ),
@@ -861,9 +861,9 @@ export function GraphPage() {
           type="secondary"
           style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}
         >
-          {t('本工程当前生效根（来源：') + rootSource + t('）：')}
+          {t('Effective root for this project (source: ') + rootSource + t('）：')}
           <Typography.Text code style={{ fontSize: 12 }}>
-            {projectRoot || t('（无法解析，请检查后端 root_path 或上方覆盖）')}
+            {projectRoot || t('(unresolvable; check backend root_path or the override above)')}
           </Typography.Text>
         </Typography.Paragraph>
         */}
@@ -880,12 +880,12 @@ export function GraphPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={t('对象 #') + state.n + t(' 在「') + (current?.label ?? state.p) + t('」视角下取不到链路')}
-          description={t('可能已被删除、或不属于该视角（') + errText(objectError) + t('）。请在左侧一级视角重新选择。')}
+          message={t('Object #') + state.n + t(' in perspective ') + (current?.label ?? state.p) + t(' has no link under this perspective')}
+          description={t('It may have been deleted, or not belong to this perspective (') + errText(objectError) + t('). Please re-select from the left perspective.')}
           action={
             candidates.length > 0 ? (
               <Button size="small" onClick={() => setState((s) => ({ ...s, n: suggestedNodeId ?? candidates[0]?.id }))}>
-                {t('换第一个对象')}
+                {t('Use first object')}
               </Button>
             ) : null
           }
@@ -927,12 +927,12 @@ export function GraphPage() {
             />
 
           {/* 入口类视角（路由 / 定时任务）无链路时给出说明，避免"画面空了 = 坏了"的错觉 */}
-          {view && view.conclusions['提示'] ? (
+          {view && view.conclusions['hint'] ? (
             <Alert
               type="info"
               showIcon
               style={{ marginTop: 16 }}
-              message={String(view.conclusions['提示'])}
+              message={String(view.conclusions['hint'])}
             />
           ) : null}
 
@@ -952,14 +952,14 @@ export function GraphPage() {
               }}
             >
               <span>
-                {t('已画 ') + view.hidden.shown + t(' 条边，折叠 ') + (view.hidden.total - view.hidden.shown) + t(' 个语法节点')}
+                {t('Drawn: ') + view.hidden.shown + t(' edges; folded ') + (view.hidden.total - view.hidden.shown) + t(' syntax nodes')}
               </span>
               {Object.entries(view.hidden.by_kind).map(([k, v]) => (
                 <Tag key={k} style={{ marginInlineEnd: 0 }}>
                   {k} {v}
                 </Tag>
               ))}
-              <span>{t('单击任意边可查看它经由的每一跳及调用处')}</span>
+              <span>{t('Click any edge to inspect every hop and call site along its path')}</span>
             </div>
           ) : null}
 
@@ -975,7 +975,7 @@ export function GraphPage() {
                 style={{ padding: 0, height: 'auto', fontSize: 12 }}
                 onClick={() => setOrphansOpen((v) => !v)}
               >
-                {t('另有直连访问 ') + (view.orphans?.length ?? 0) + t(' 处找不到语义入口')}
+                {t('Also ') + (view.orphans?.length ?? 0) + t(' direct accesses with no semantic entry (CLI / cron / event) — listed here, not drawn')}
                 {orphansOpen ? ' ▾' : ' ▸'}
               </Button>
               {orphansOpen ? (
@@ -1022,7 +1022,7 @@ export function GraphPage() {
               variant="borderless"
               style={{ borderRadius: 14, marginTop: 16 }}
               size="small"
-              title={t('未解析记账')}
+              title={t('Unresolved tally')}
               extra={<Tag color="orange">{view.unresolved.length}</Tag>}
             >
               <Table
@@ -1031,9 +1031,9 @@ export function GraphPage() {
                 dataSource={view.unresolved}
                 pagination={false}
                 columns={[
-                  { title: t('代码'), dataIndex: 'code', width: 170 },
-                  { title: t('说明'), dataIndex: 'message' },
-                  { title: t('位置'), dataIndex: 'location', width: 220, ellipsis: true },
+                  { title: t('Code'), dataIndex: 'code', width: 170 },
+                  { title: t('Description'), dataIndex: 'message' },
+                  { title: t('Location'), dataIndex: 'location', width: 220, ellipsis: true },
                 ]}
               />
             </Card>
@@ -1042,7 +1042,7 @@ export function GraphPage() {
       </Row>
 
       <Drawer
-        title={t('结论与导航')}
+        title={t('Conclusions / navigation')}
         placement="right"
         width={360}
         open={drawerOpen}
@@ -1055,23 +1055,23 @@ export function GraphPage() {
         <Card
           variant="borderless"
           size="small"
-          title={t('环上节点')}
+          title={t('Nodes on rings')}
           extra={
             view ? (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('入边 ') +
-                  fmt(view.conclusions['入边']) +
+                {t('In-edges ') +
+                  fmt(view.conclusions['in_edges']) +
                   ' · ' +
-                  t('出边 ') +
-                  fmt(view.conclusions['出边']) +
+                  t('Out-edges ') +
+                  fmt(view.conclusions['out_edges']) +
                   // 孤儿直连访问：不占画布，但要在"结论"里留一个可查的数字。
-                  (view.conclusions['其它直连访问']
-                    ? ' · ' + t('其它直连访问 ') + fmt(view.conclusions['其它直连访问'])
+                  (view.conclusions['other_direct_access']
+                    ? ' · ' + t('orphan access: ') + fmt(view.conclusions['other_direct_access'])
                     : '')}
               </Typography.Text>
             ) : aggView ? (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('分组数 ') + aggView.clusters.length}
+                {t('Groups ') + aggView.clusters.length}
               </Typography.Text>
             ) : null
           }
@@ -1081,7 +1081,7 @@ export function GraphPage() {
               {(view?.rings ?? []).map((ring, i) => (
                 <div key={i}>
                   <Typography.Text strong style={{ fontSize: 12 }}>
-                    {t('环') + (i + 1) + '（' + ring.length + '）'}
+                    {t('Ring') + (i + 1) + '（' + ring.length + '）'}
                   </Typography.Text>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
                     {ring.slice(0, 12).map((n) => (
@@ -1098,29 +1098,29 @@ export function GraphPage() {
                   </div>
                 </div>
               ))}
-              {Array.from(new Set(asArray(view.conclusions['标注']))).length > 0 ||
-              view.conclusions['schema 列数'] !== undefined ||
-              view.conclusions['经过中间件'] ||
-              view.conclusions['路由表登记'] ? (
+              {Array.from(new Set(asArray(view.conclusions['annotations']))).length > 0 ||
+              view.conclusions['schema_columns'] !== undefined ||
+              view.conclusions['middleware'] ||
+              view.conclusions['route_registered'] ? (
                 <Space size={6} wrap style={{ marginTop: 4 }}>
-                  {Array.from(new Set(asArray(view.conclusions['标注']))).map((a) => (
+                  {Array.from(new Set(asArray(view.conclusions['annotations']))).map((a) => (
                     <Tag key={a} color="volcano" style={{ marginInlineEnd: 0 }}>
                       {a}
                     </Tag>
                   ))}
-                  {view.conclusions['schema 列数'] !== undefined ? (
+                  {view.conclusions['schema_columns'] !== undefined ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {t('schema 列数：') + String(view.conclusions['schema 列数'])}
+                      {t('Schema columns: ') + String(view.conclusions['schema_columns'])}
                     </Typography.Text>
                   ) : null}
-                  {view.conclusions['经过中间件'] ? (
+                  {view.conclusions['middleware'] ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {t('经过中间件：') + String(view.conclusions['经过中间件'])}
+                      {t('Middleware: ') + String(view.conclusions['middleware'])}
                     </Typography.Text>
                   ) : null}
-                  {view.conclusions['路由表登记'] ? (
+                  {view.conclusions['route_registered'] ? (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {t('路由表登记 handler：') + String(view.conclusions['路由表登记'])}
+                      {t('Route-registered handler: ') + String(view.conclusions['route_registered'])}
                     </Typography.Text>
                   ) : null}
                 </Space>
@@ -1129,11 +1129,11 @@ export function GraphPage() {
           ) : aggView ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {aggView.matrix
-                ? t('共 ') + formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0)) + t(' 个单元格取值')
-                : t('选择一个对象后显示结论')}
+                ? t('Total ') + formatNumber(aggView.matrix.cells.flat().reduce((a, b) => a + b, 0)) + t(' cell values')
+                : t('Select an object to see conclusions')}
             </Typography.Text>
           ) : (
-            <Typography.Text type="secondary">{t('选择一个对象后显示结论')}</Typography.Text>
+            <Typography.Text type="secondary">{t('Select an object to see conclusions')}</Typography.Text>
           )}
         </Card>
 
@@ -1214,5 +1214,5 @@ function asArray(v: unknown): string[] {
 function errText(e: unknown): string {
   if (typeof e === 'string') return e;
   if (e instanceof Error) return e.message;
-  return '请求失败';
+  return 'Request failed';
 }

@@ -3,14 +3,14 @@ import type { SourceLocation } from '@/entities/view';
 import { translate as t } from '@/shared/lib/i18n';
 
 /**
- * 跳转 IDE。
+ * Jumping to an IDE.
  *
- * 设计要点：
- * * 定位用 **path + symbol + line 三元组** —— 行号会漂移，符号不会
- * * `vscode://` / JetBrains scheme 只是"首选"，**必须配复制路径作为 fallback**
- *   （CI / Web / 无 IDE / 远程容器场景都打不开 scheme）
- * * 敏感节点（`SecretLocation`）只允许跳到**键名**位置，绝不显示值 ——
- *   在"源码高度开源"的前提下，分析工具不能成为泄露源
+ * Design points:
+ * * Locations use the **path + symbol + line triple** — line numbers drift, symbols do not
+ * * `vscode://` / JetBrains schemes are only the *preferred* route; **copying the path must
+ *   exist as a fallback** (CI / web / no IDE / remote container cannot open a scheme)
+ * * Sensitive nodes (`SecretLocation`) may only jump to the **key name** position, never
+ *   display the value — given how open source code is, an analysis tool must not become a leak
  */
 
 export type IdeTarget = 'vscode' | 'vscode-insiders' | 'idea' | 'webstorm' | 'phpstorm' | 'cursor';
@@ -24,7 +24,7 @@ export const IDE_LABEL: Record<IdeTarget, string> = {
   cursor: 'Cursor',
 };
 
-/** 构造 IDE URL（只用相对路径 + 行号，不暴露任何值）。 */
+/** Build an IDE URL (relative path + line number only; never exposes a value). */
 export function ideUrl(
   target: IdeTarget,
   loc: SourceLocation,
@@ -32,10 +32,10 @@ export function ideUrl(
   wslDistro?: string,
 ): string {
   const raw = absolutePath(loc.file, projectRoot);
-  // scheme URL 里统一用正斜杠；Windows 反斜杠会被编码或误解。
+  // Scheme URLs always use forward slashes; Windows backslashes get encoded or misread.
   const file = raw.replace(/\\/g, '/');
-  // WSL 模式：VS Code / Cursor 必须用专属远程 scheme 才能打开——
-  // vscode://file/ 配 \\wsl$\ 前缀在 WSL 场景下打不开。
+  // WSL mode: VS Code / Cursor must use their dedicated remote scheme —
+  // vscode://file/ with a \\wsl$\ prefix does not open under WSL.
   if (wslDistro && (target === 'vscode' || target === 'vscode-insiders' || target === 'cursor')) {
     return `vscode://vscode-remote/wsl+${wslDistro}${file}:${loc.line}`;
   }
@@ -43,14 +43,15 @@ export function ideUrl(
     case 'vscode':
     case 'vscode-insiders':
     case 'cursor':
-      // vscode URL: vscode://file/<path>，path 本身不能再带前导 '/'，否则成 'vscode://file//home/...'
-      // 会被系统/IDE 解释为 UNC 路径 \\home\...，导致"Path does not exist"。
+      // vscode URL: vscode://file/<path>; the path itself must not carry a leading '/', otherwise it
+      // becomes 'vscode://file//home/...' which the OS/IDE reads as the UNC path \\home\... and
+      // reports "Path does not exist".
       const clean = file.startsWith('/') ? file.slice(1) : file;
       return `${target}://file/${clean}:${loc.line}`;
     default:
-      // WSL 模式下给 JetBrains 补 \\wsl$\<distro> UNC 前缀，使其能定位 WSL 文件。
+      // Under WSL mode, prepend the \\wsl$\<distro> UNC prefix for JetBrains so it can locate WSL files.
       const jbFile = wslDistro ? `\\\\wsl$\\${wslDistro}${file}` : file;
-      // JetBrains 系：?line= 支持行号，symbol 追加在后面便于人工核对
+      // JetBrains family: ?line= carries the line number; the symbol is appended for manual checking.
       const symbol = loc.symbol ? `#${encodeURIComponent(loc.symbol)}` : '';
       return `jetbrains://${target}/navigate/reference?project=&path=${encodeURIComponent(
         jbFile,
@@ -64,14 +65,15 @@ export function absolutePath(file: string, projectRoot?: string): string {
   return `/${file}`;
 }
 
-// ---- 工程根解析：全局「根模板」+ 按工程「覆盖」 ----
-// 通用工具不内嵌任何特定场景（WSL / Docker / 远程）的假设：
-// 用户用根模板描述"后端根 → 本地根"的通用变换，{root} 占位后端的 root_path；
-// 按工程覆盖优先级最高，用于模板表达不了的特例（如本地与后端完全不同的盘符/目录）。
+// ---- Project root resolution: a global "root template" plus a per-project "override" ----
+// The generic tool embeds no assumption about a specific scenario (WSL / Docker / remote):
+// the user describes the generic "backend root → local root" transform with a template, where
+// {root} is a placeholder for the backend root_path. The per-project override has the highest
+// priority and covers cases the template cannot express (e.g. a completely different local drive/dir).
 
 export const ROOT_TEMPLATE_KEY = 'em.rootTemplate';
 
-/** 全局根模板（含 {root} 占位符），空串表示不启用。 */
+/** Global root template (with the {root} placeholder); an empty string means disabled. */
 export function getRootTemplate(): string {
   try {
     return localStorage.getItem(ROOT_TEMPLATE_KEY) ?? '';
@@ -80,7 +82,7 @@ export function getRootTemplate(): string {
   }
 }
 
-/** 保存全局根模板；传空串即清除。 */
+/** Save the global root template; passing an empty string clears it. */
 export function setRootTemplate(template: string): void {
   try {
     const t = template.trim();
@@ -91,16 +93,17 @@ export function setRootTemplate(template: string): void {
   }
 }
 
-// ---- WSL 快捷预设 ----
-// 通用工具不内嵌 WSL 假设；这里只把它做成"一键预设"：开启时用 {root}（后端 Linux 路径）作根，
-// 并把 distro 透传给 ideUrl / 复制逻辑，由它们生成正确的 VS Code 远程 scheme 与 JetBrains UNC 前缀。
-// 注意：distro 不可省——\\wsl$\Ubuntu 与 \\wsl$\Debian 是不同的挂载点。
+// ---- WSL quick preset ----
+// The generic tool embeds no WSL assumption; this only makes WSL a "one-click preset": when enabled
+// {root} (the backend Linux path) is used as the root and the distro is passed through to ideUrl /
+// the copy logic, which generate the correct VS Code remote scheme and JetBrains UNC prefix.
+// Note: the distro is mandatory — \\wsl$\Ubuntu and \\wsl$\Debian are different mount points.
 
 export const WSL_MODE_KEY = 'em.wslMode';
 export const WSL_DISTRO_KEY = 'em.wslDistro';
 export const WSL_CONFIGURED_KEY = 'em.wslConfigured';
 
-/** 是否开启 WSL 模式。 */
+/** Whether WSL mode is on. */
 export function getWslMode(): boolean {
   try {
     return localStorage.getItem(WSL_MODE_KEY) === '1';
@@ -109,7 +112,7 @@ export function getWslMode(): boolean {
   }
 }
 
-/** 用户是否已手动配置过 WSL 设置（手动配置优先于后端自动探测）。 */
+/** Whether the user has configured WSL settings manually (manual config wins over backend auto-detection). */
 export function getWslConfigured(): boolean {
   try {
     return localStorage.getItem(WSL_CONFIGURED_KEY) === '1';
@@ -118,7 +121,7 @@ export function getWslConfigured(): boolean {
   }
 }
 
-/** 保存 WSL 开关（'1' 表示开，清除即关），并标记为已手动配置。 */
+/** Save the WSL switch ('1' = on, cleared = off) and mark it as manually configured. */
 export function setWslMode(on: boolean): void {
   try {
     if (on) localStorage.setItem(WSL_MODE_KEY, '1');
@@ -129,7 +132,7 @@ export function setWslMode(on: boolean): void {
   }
 }
 
-/** WSL 发行版名（默认 Ubuntu）。 */
+/** WSL distro name (defaults to Ubuntu). */
 export function getWslDistro(): string {
   try {
     return localStorage.getItem(WSL_DISTRO_KEY) ?? 'Ubuntu';
@@ -138,7 +141,7 @@ export function getWslDistro(): string {
   }
 }
 
-/** 保存 WSL 发行版名，并标记为已手动配置。 */
+/** Save the WSL distro name and mark it as manually configured. */
 export function setWslDistro(distro: string): void {
   try {
     localStorage.setItem(WSL_DISTRO_KEY, distro.trim() || 'Ubuntu');
@@ -149,8 +152,8 @@ export function setWslDistro(distro: string): void {
 }
 
 /**
- * 由后端环境自动套用 WSL 设置；不标记为"已手动配置"，
- * 以便后端环境变化时下次启动可重新探测。
+ * Apply WSL settings automatically from the backend environment; does *not* mark them as
+ * "manually configured", so a later backend change can be re-detected on the next start.
  */
 export function applyWslAuto(on: boolean, distro: string): void {
   try {
@@ -166,16 +169,18 @@ export function applyWslAuto(on: boolean, distro: string): void {
 }
 
 /**
- * 实际生效的根模板：WSL 开启时为 `{root}`（即后端 Linux 路径，具体 WSL 变换交给 ideUrl / 复制逻辑），
- * 否则用用户填的通用模板。按工程覆盖仍高于此结果。
+ * The root template actually in effect: `{root}` when WSL mode is on (i.e. the backend Linux path,
+ * with the WSL transform itself handled by ideUrl / the copy logic), otherwise the user's generic
+ * template. A per-project override still outranks this result.
  */
 export function effectiveTemplate(): string {
   return getWslMode() ? '{root}' : getRootTemplate();
 }
 
 /**
- * 解析最终用于 IDE 跳转 / 复制的本地工程根。
- * 优先级：按工程覆盖 > 全局根模板（对后端根做 {root} 替换） > 后端 root_path。
+ * Resolve the local project root finally used for IDE jumps / copying.
+ * Priority: per-project override > global root template ({root} substitution on the backend root) >
+ * backend root_path.
  */
 export function resolveProjectRoot(
   backendRoot: string | undefined,
@@ -190,18 +195,18 @@ export function resolveProjectRoot(
 
 const IDE_STORAGE_KEY = 'em.preferredIde';
 
-/** 用户偏好的 IDE（持久化在 localStorage，默认 VS Code）。点路径跳转时用它。 */
+/** The user's preferred IDE (persisted in localStorage, defaults to VS Code). Used when jumping to a path. */
 export function preferredIde(): IdeTarget {
   try {
     const saved = localStorage.getItem(IDE_STORAGE_KEY);
     if (saved && saved in IDE_LABEL) return saved as IdeTarget;
   } catch {
-    /* localStorage 不可用（隐私模式 / SSR）时静默降级 */
+    /* localStorage unavailable (privacy mode / SSR): degrade silently */
   }
   return 'vscode';
 }
 
-/** 记住用户最近选择的 IDE，下次直接用它。 */
+/** Remember the IDE the user picked most recently and use it directly next time. */
 export function setPreferredIde(target: IdeTarget): void {
   try {
     localStorage.setItem(IDE_STORAGE_KEY, target);
@@ -210,7 +215,7 @@ export function setPreferredIde(target: IdeTarget): void {
   }
 }
 
-/** 打开（失败时自动降级为复制路径）。 */
+/** Open in the IDE (falls back to copying the path on failure). */
 export async function openInIde(
   target: IdeTarget,
   loc: SourceLocation,
@@ -219,22 +224,23 @@ export async function openInIde(
 ): Promise<void> {
   const url = ideUrl(target, loc, projectRoot, wslDistro);
   try {
-    // 用隐藏 iframe 触发 scheme，避免整页跳转（Tauri / 浏览器都适用）
+    // Trigger the scheme through a hidden iframe so the whole page does not navigate (works in Tauri and browsers).
     const iframe = document.createElement('iframe');
     iframe.style.display = 'none';
     iframe.src = url;
     document.body.appendChild(iframe);
     window.setTimeout(() => iframe.remove(), 1500);
-    message.success(t('已请求 ') + IDE_LABEL[target] + t(' 打开 ') + `${loc.file}:${loc.line}`);
+    message.success(t('Requested ') + IDE_LABEL[target] + t(' to open ') + `${loc.file}:${loc.line}`);
   } catch {
     await copyPath(loc, projectRoot);
   }
 }
 
-/** fallback：复制绝对 `path:line`，任何环境都能用（便于粘到终端 / go-to-file）。
- * 不带 WSL / 远程前缀——复制的就是仓库内的真实相对路径拼上本地根，用户自行决定怎么用。
- * 注意：不附加 symbol，因为用户复制后通常是 Ctrl+P / go-to-file 直接定位文件，
- * 括号里的符号会污染路径，导致 IDE 找不到。 */
+/** Fallback: copy the absolute `path:line`, usable in any environment (easy to paste into a terminal / go-to-file).
+ * No WSL / remote prefix — what is copied is the real in-repo relative path joined with the local root, and the
+ * user decides what to do with it. Note: no symbol is appended, because after copying the user usually goes
+ * straight to the file via Ctrl+P / go-to-file, and a symbol in parentheses would pollute the path so the IDE
+ * cannot find it. */
 export async function copyPath(
   loc: SourceLocation,
   projectRoot?: string,
@@ -243,14 +249,14 @@ export async function copyPath(
   const text = `${file}:${loc.line}`;
   try {
     await navigator.clipboard.writeText(text);
-    message.success(t('已复制 ') + text);
+    message.success(t('Copied ') + text);
   } catch {
     message.info(text);
   }
 }
 
-/** 一次性复制所有位置（绝对路径，每行一个），便于粘到终端 / IDE 的 go-to-file。
- * 不附加 symbol，理由同上；同样不带 WSL / 远程前缀。 */
+/** Copy all locations at once (absolute paths, one per line) for pasting into a terminal / IDE go-to-file.
+ * No symbol, for the same reason; likewise no WSL / remote prefix. */
 export async function copyAllLocations(
   locations: SourceLocation[],
   projectRoot?: string,
@@ -264,17 +270,16 @@ export async function copyAllLocations(
   const text = lines.join('\n');
   try {
     await navigator.clipboard.writeText(text);
-    message.success(t('已复制 ') + locations.length + t(' 处位置（绝对路径）'));
+    message.success(t('Copied ') + locations.length + t(' locations (absolute paths)'));
   } catch {
     message.info(text);
   }
 }
 
 /**
- * 判断是否为"只应暴露键名"的敏感位置。
- * 命中时不返回行内容，只返回 key 的位置。
+ * Whether a location is "key name only" sensitive.
+ * When it matches, no line content is returned — only the position of the key.
  */
 export function isSensitive(kind: string): boolean {
   return kind === 'SecretLocation';
 }
-

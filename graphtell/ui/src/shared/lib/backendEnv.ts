@@ -1,11 +1,11 @@
 import { http } from '@/shared/api/http';
 import { applyWslAuto, getWslConfigured } from './ide';
 
-/** 后端运行环境（含 WSL 探测），由 `/api/health` 提供。 */
+/** Backend runtime environment (including WSL detection), provided by `/api/health`. */
 export interface BackendEnv {
   isWsl: boolean;
   wslDistro: string;
-  /** 访问前端的客户端操作系统；只有 Windows 才需要 WSL 的 UNC / 远程 scheme 映射。 */
+  /** Operating system of the client visiting the frontend; only Windows needs the WSL UNC / remote scheme mapping. */
   clientPlatform: 'windows' | 'linux' | 'mac' | 'unknown';
 }
 
@@ -37,11 +37,11 @@ function detectClientPlatform(): BackendEnv['clientPlatform'] {
 }
 
 /**
- * 拉取后端环境（含 WSL 探测），缓存一次。
+ * Fetch the backend environment (including WSL detection) and cache it once.
  *
- * 仅当 WSL 设置尚未被用户手动配置过时，才把探测结果自动套用：
- * 后端在 WSL 且客户端是 Windows 时启用 WSL 映射，否则不启用。
- * 这样既不覆盖用户显式选择，也让常驻 WSL + Windows 的用户零配置即可用。
+ * The detection result is auto-applied only when WSL settings have not been configured manually:
+ * WSL mapping is enabled when the backend runs in WSL and the client is Windows, otherwise not.
+ * That never overrides an explicit user choice, while users on WSL + Windows work with zero setup.
  */
 export async function fetchBackendEnv(): Promise<BackendEnv> {
   const clientPlatform = detectClientPlatform();
@@ -52,7 +52,7 @@ export async function fetchBackendEnv(): Promise<BackendEnv> {
     isWsl = h.is_wsl;
     if (h.wsl_distro && h.wsl_distro.trim()) wslDistro = h.wsl_distro.trim();
   } catch {
-    /* 健康接口不可达：保守当作非 WSL */
+    /* Health endpoint unreachable: conservatively treat as non-WSL. */
   }
   cached = { isWsl, wslDistro, clientPlatform };
   if (!getWslConfigured()) {

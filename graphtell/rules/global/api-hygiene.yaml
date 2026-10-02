@@ -1,28 +1,29 @@
-# 接口卫生（REST 语义）规则。
+# API hygiene (REST semantics) rules.
 #
-# 这批规则只依赖 HttpContract 节点的 name / identity —— 而 name 是跨语言
-# 归一化后的（PHP 的路由、Java 的 @RequestMapping、JS 的前端契约都汇成
-# "GET /api/xxx" 这种形状），所以放在 global 层、不声明 languages 也能跑。
+# These rules only depend on the `name` / `identity` of an HttpContract node — and `name` is
+# normalised across languages (PHP routes, Java @RequestMapping and JS front-end contracts all
+# collapse into a shape like "GET /api/xxx"), so they live in the global layer and run without
+# declaring `languages`.
 #
-# 为什么动词表只用强动词：edit / update / modify 常被用作「编辑表单」这种
-# GET 视图（返回 HTML 表单、本身只读），算进来会把一批正常页面报成违规；
-# delete / remove / destroy / truncate / insert / reset / purge / clear / wipe
-# 才是无歧义的写动作。要放宽就改下面的 any_of 列表。
+# Why the verb list uses strong verbs only: edit / update / modify are often used for "edit form"
+# GET views (returning an HTML form, itself read-only), so including them would flag a batch of
+# normal pages as violations. delete / remove / destroy / truncate / insert / reset / purge /
+# clear / wipe are the unambiguous write actions. To loosen it, edit the `any_of` list below.
 
 rules:
   - id: get-with-write-verb
-    title: GET 接口却在做写操作
+    title: GET endpoint performs a write
     description: >-
-      名字以 GET 开头、却包含写动词（delete / remove / destroy / truncate /
-      insert / reset / purge / clear / wipe）的 HTTP 契约。REST 语义里 GET
-      必须是只读的：带删除 / 清空动作的 GET 既破坏缓存与重试安全，也容易被
-      爬虫或浏览器预取误触发写操作。
+      An HTTP contract whose name starts with GET but contains a write verb (delete / remove /
+      destroy / truncate / insert / reset / purge / clear / wipe). REST semantics require GET to be
+      read-only: a GET carrying a delete / clear action breaks cache and retry safety, and is easily
+      triggered by crawlers or browser prefetch.
     severity: warning
     category: api-hygiene
     params:
       - key: name_filter
-        label: 只看匹配的契约
-        description: 名称子串过滤（大小写不敏感），留空 = 全部契约。
+        label: Only matching contracts
+        description: Substring filter on the name (case-insensitive); empty = all contracts.
         kind: string
         default: ""
     applies_to:
@@ -40,5 +41,5 @@ rules:
           - name_contains: purge
           - name_contains: clear
           - name_contains: wipe
-    message: "契约 {name} 是 GET 却包含写动词，违反 REST 只读语义（可能被重试 / 预取误触发写操作）"
-    remediation: "把该接口改成 POST / DELETE 等写方法；若确为只读的清空 / 删除预览，改名避开写动词"
+    message: "Contract {name} is a GET but contains a write verb, violating REST read-only semantics (a retry or prefetch may trigger the write)"
+    remediation: "Change the endpoint to a write method such as POST / DELETE; if it really is a read-only clear / delete preview, rename it to avoid the write verb"

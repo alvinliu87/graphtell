@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "GraphTell · 代码库图化分析",
+        "title": "GraphTell · Codebase graph analysis",
         "width": 1440,
         "height": 900,
         "minWidth": 1024,

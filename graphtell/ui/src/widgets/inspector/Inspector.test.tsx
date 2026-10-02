@@ -93,15 +93,15 @@ describe('Inspector 边面板', () => {
 
     // Drawer 走 portal，内容挂在 body 上。
     const text = document.body.textContent ?? '';
-    expect(text).toContain('起点');
-    expect(text).toContain('终点');
+    expect(text).toContain('start');
+    expect(text).toContain('end');
     expect(text).toContain('save');
     expect(text).toContain('store_product_services');
     // 中间那一行 = 边的 `to_call_site`（本链路访问该资源的位置）。
     expect(text).toContain('StoreProductServices.php:800');
     // 没有折叠掉的中间节点，标题就不该谎称"折叠"。
-    expect(text).not.toContain('折叠掉的调用链');
-    expect(text).toContain('调用链');
+    expect(text).not.toContain('Collapsed call chain');
+    expect(text).toContain('Call chain');
     // 链路已给出本边那一行，不应再单列一份"证据位置"。
     expect(text).not.toContain('证据位置');
   });

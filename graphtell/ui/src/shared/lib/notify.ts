@@ -1,26 +1,29 @@
 /**
- * 极简全局通知桥。
+ * Minimal global notification bridge.
  *
- * 模块级的 `notify()` 让非 React 层的代码（如 `shared/api/http.ts` 的 fetch 封装）
- * 也能弹出 antd 的 `message` —— 但 antd 的 `message` 必须来自 `<App>` 上下文
- * （`App.useApp()`），而 fetch 封装是纯函数、拿不到 hook。所以这里用"注册回调"解耦：
- * `App` 挂载后在桥组件里把 `message.error` 注册进来，卸载时撤掉。
+ * A module-level `notify()` lets non-React code (such as the fetch wrapper in
+ * `shared/api/http.ts`) raise antd's `message` — but antd's `message` must come
+ * from the `<App>` context (`App.useApp()`), and the fetch wrapper is a pure
+ * function with no access to hooks. So this decouples the two with a registered
+ * callback: `App` registers `message.error` from the bridge component on mount
+ * and clears it on unmount.
  *
- * 为什么只报"传输层失败"：HTTP 错误状态码（4xx/5xx）是领域错误，由各页自己的
- * `useAsync.error` 走内联 `Alert` 呈现；这里只兜底"后端根本连不上"（fetch 抛网络错误），
- * 避免和页面内联告警重复刷屏。
+ * Why it only reports "transport-level failure": HTTP error statuses (4xx/5xx)
+ * are domain errors, rendered by each page's own `useAsync.error` as an inline
+ * `Alert`; this only covers "the backend is unreachable at all" (fetch threw a
+ * network error), so it does not flood the screen alongside the inline alerts.
  */
 type Notifier = (msg: string) => void;
 
 let notifier: Notifier | null = null;
 let lastAt = 0;
 
-/** `App` 桥组件在挂载时注册、卸载时清空。 */
+/** Registered by the `App` bridge component on mount, cleared on unmount. */
 export function setNotifier(fn: Notifier | null) {
   notifier = fn;
 }
 
-/** 弹出一条全局错误提示（5 秒内同类不重复，防止后端宕机时瞬间刷一堆）。 */
+/** Raise one global error toast (deduplicated within 5s so a down backend cannot spam the screen). */
 export function notify(msg: string) {
   const now = Date.now();
   if (now - lastAt < 5000) return;

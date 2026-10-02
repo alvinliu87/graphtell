@@ -87,6 +87,6 @@ pub fn require_parser<'a>(
     language: &Language,
 ) -> Result<&'a dyn LanguageParser> {
     registry.parser_for(language).ok_or_else(|| {
-        DomainError::Unsupported(format!("暂不支持的语言: {}", language))
+        DomainError::Unsupported(format!("Language not supported yet: {}", language))
     })
 }

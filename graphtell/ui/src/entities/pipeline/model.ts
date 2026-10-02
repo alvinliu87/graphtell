@@ -1,4 +1,4 @@
-/** 建图流水线实体。 */
+/** Graph-building pipeline entities. */
 
 export interface PhaseReport {
   phase: string;
@@ -22,7 +22,7 @@ export interface RunAccepted {
   accepted: boolean;
 }
 
-/** 阶段顺序（与后端 P0→P7 一致）。 */
+/** Phase order (matches the backend P0→P7 sequence). */
 export const PHASE_ORDER = [
   'Ingest',
   'CfAst',
@@ -33,24 +33,30 @@ export const PHASE_ORDER = [
   'Resolve',
 ];
 
+/**
+ * Phase display names.
+ *
+ * English is the source language: these values are passed through `t()` at the
+ * call site and the `zh-CN` dictionary carries the Chinese overrides.
+ */
 export const PHASE_LABEL: Record<string, string> = {
-  Ingest: '摄取',
-  CfAst: '语法建图',
-  Prepare: '知识装载',
-  AnnotatePre: '源码标注',
-  Synthesize: '语义合成',
-  AnnotatePost: '汇聚标注',
-  Resolve: '动态解析',
+  Ingest: 'Ingest',
+  CfAst: 'Syntax graph',
+  Prepare: 'Knowledge load',
+  AnnotatePre: 'Source annotation',
+  Synthesize: 'Semantic synthesis',
+  AnnotatePost: 'Aggregate annotation',
+  Resolve: 'Dynamic resolve',
 };
 
 export const PHASE_HINT: Record<string, string> = {
-  Ingest: '识别子工程与待分析文件，排除依赖目录与静态资源',
-  CfAst: '从语言语法创建 Class / Method / Property / CallSite 节点与继承边',
-  Prepare: '装载框架知识，解析 AppRoot、容器绑定、事件表、数据库 schema 等权威源',
-  AnnotatePre: '按框架知识规则给调用点打安全标记与框架语义标签',
-  Synthesize: '合成 Table / HttpContract / ConfigKey / Event 等语义节点并幂等合并',
-  AnnotatePost: '在汇聚结果上打隐私字段、关键度、配置可变性等标签并注册别名',
-  Resolve: '漏斗式解析容器/事件/门面/路由，建立动态边',
+  Ingest: 'Detect sub-projects and files to analyze, excluding dependency dirs and static assets',
+  CfAst: 'Create Class / Method / Property / CallSite nodes and inheritance edges from language syntax',
+  Prepare: 'Load framework knowledge; resolve authoritative sources like AppRoot, container bindings, event tables, DB schema',
+  AnnotatePre: 'Mark call sites with safety flags and framework semantic tags per framework-knowledge rules',
+  Synthesize: 'Synthesize Table / HttpContract / ConfigKey / Event semantic nodes and merge them idempotently',
+  AnnotatePost: 'Tag aggregated results with privacy fields, criticality, config mutability and register aliases',
+  Resolve: 'Resolve containers / events / facades / routes through a funnel and build dynamic edges',
 };
 
 export interface HealthDto {

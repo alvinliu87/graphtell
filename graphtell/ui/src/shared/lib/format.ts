@@ -1,4 +1,4 @@
-/** 展示层格式化工具（无副作用、可单元测试）。 */
+/** Presentation-layer formatting helpers (side-effect free, unit-testable). */
 
 export function formatNumber(n: number): string {
   if (!Number.isFinite(n)) return '-';
@@ -20,7 +20,7 @@ export function formatTime(epochMillis: number): string {
   return new Date(epochMillis).toLocaleString('zh-CN', { hour12: false });
 }
 
-/** 把 FQN 的最后一段取出来做展示。 */
+/** Take the last segment of an FQN for display. */
 export function shortName(fqn: string | null | undefined): string {
   if (!fqn) return '-';
   const parts = fqn.split(/[\\/:]/);
@@ -33,11 +33,13 @@ export function truncate(text: string, max = 60): string {
 }
 
 /**
- * 中间省略：保留头尾，中间以单个省略号代替，适合 `GET /v2/order/.../create` 这类长路径。
- * 与 `truncate`（尾部省略）互补：路径前半（动词 + 基路径）和后半（末级资源）往往最有信息量。
+ * Middle elision: keep head and tail, replace the middle with a single ellipsis — good for long
+ * paths like `GET /v2/order/.../create`. Complements `truncate` (tail elision): the first half of a
+ * path (verb + base path) and its last half (the leaf resource) usually carry the most information.
  *
- * `max` 按**视觉宽度**计（与 `layout/types.ts` 的 `units()` 一致：CJK / 全角 ≈ 拉丁的 1.8 倍宽），
- * 而非字符数。这样 40 个汉字（≈ 72 视觉位）不会把药丸顶破——纯拉丁名 40 字符 ≈ 40 宽，行为不变。
+ * `max` counts **visual width** (same as `units()` in `layout/types.ts`: CJK / full-width ≈ 1.8x a
+ * Latin char), not character count. That way 40 Chinese characters (≈ 72 visual units) cannot burst
+ * the pill, while a pure Latin name of 40 chars stays ≈ 40 wide — behaviour unchanged.
  */
 const WIDE_CP = 0x2e7f;
 function charUnits(s: string): number {
@@ -49,7 +51,7 @@ function charUnits(s: string): number {
 export function truncateMiddle(text: string, max = 40): string {
   const s = text == null ? '' : String(text);
   if (charUnits(s) <= max) return s;
-  const half = (max - 1) / 2; // 头尾各半，中间留 1 位给省略号
+  const half = (max - 1) / 2; // half for the head, half for the tail, 1 unit reserved for the ellipsis
   let head = '';
   let hu = 0;
   for (const ch of s) {

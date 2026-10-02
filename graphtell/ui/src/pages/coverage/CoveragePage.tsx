@@ -49,25 +49,26 @@ const SEVERITY_ACCENT: Record<Severity, string> = {
 };
 
 /**
- * 分类徽章：三类的处置完全不同，所以徽章必须显式 —— 用户读到「349 条」时的第一反应是
- * "我是不是有 349 个 bug"，而真相往往是"1 类引擎局限发生了 349 次"。
+ * Category badge: the three categories are handled completely differently, so the badge has to be
+ * explicit — reading “349 entries” the user's first reaction is “do I have 349 bugs?”, while the
+ * truth is usually “one engine limitation occurred 349 times”.
  */
 const CATEGORY_TEXT: Record<DiagnosticCategory, { label: string; hint: string }> = {
   actionable: {
-    label: '值得看一眼',
-    hint: '可能指向真实的代码问题（死路由 / 事件没注册），值得核对。',
+    label: 'Worth a look',
+    hint: 'May point at a real code problem (dead route / unregistered event) — worth checking.',
   },
   engine: {
-    label: '引擎 / 知识局限',
-    hint: '引擎或框架知识没能建出这一块：代码本身没问题，但图在这里是缺的，相关召回会弱。',
+    label: 'Engine / knowledge limits',
+    hint: 'The engine or framework knowledge could not build this piece: your code is fine, but the graph is missing here and recall weakens.',
   },
   expected: {
-    label: '预期内',
-    hint: '目标在 vendor 或被排除，属设计如此，不用管。',
+    label: 'Expected',
+    hint: 'The target is in vendor or excluded by design — nothing to do.',
   },
 };
 
-/** 每类问题最多直接列出的样例位置数（其余计数而已，不宜把页面铺成一堵墙）。 */
+/** Maximum number of sample locations listed per problem type (the rest is only counted; the page should not become a wall). */
 const SAMPLE_LIMIT = 3;
 
 /**
@@ -137,7 +138,7 @@ export function CoveragePage() {
   const copyLocation = (loc: string | null | undefined) => {
     if (!loc) return;
     void navigator.clipboard?.writeText(loc);
-    message.success(t('已复制定位'));
+    message.success(t('Location copied'));
   };
 
   const focusOn = (c: string) => {
@@ -160,13 +161,13 @@ export function CoveragePage() {
   return (
     <>
       <PageHeader
-        title={t('建图报告')}
-        subtitle={t('根节点缺失、路由指向不存在的 handler、identity 冲突等 —— 这些记录本身就是分析结论')}
+        title={t('Build Report')}
+        subtitle={t('Missing root nodes, routes pointing to non-existent handlers, identity conflicts, etc. — these records are the conclusions.')}
         // 侧栏不再有「诊断」菜单项：这一页的唯一入口是代码图标题旁 ⓘ 的 Popover，
         // 所以这里必须给出回路，否则用户进来就出不去了（只能靠浏览器后退）。
         extra={
           <Button size="small" onClick={() => navigate(`/projects/${id}/graph`)}>
-            {t('回到代码图')}
+            {t('Back to code graph')}
           </Button>
         }
       />
@@ -175,23 +176,23 @@ export function CoveragePage() {
         type={s && s.error + s.critical > 0 ? 'warning' : 'info'}
         showIcon
         style={{ marginBottom: 12 }}
-        message={t('这一页是「建图报告」：记录图没建全的地方，不是你的代码违反了规则')}
+        message={t('This page is the "Build Report": where the graph is incomplete — not a verdict on your code.')}
         description={
           <div>
             <div>
-              {t('根节点没解析、路由指向不存在的 handler、identity 算不出来…… 说的都是「图少建了一块」。')}
+              {t('Unresolved roots, routes pointing to non-existent handlers, underivable identities — all of them mean "a piece of the graph was not built".')}
             </div>
             <div style={{ marginTop: 4 }}>
-              {t('读法：先看「问题类型」有几类、哪类要管；同一类在几百个文件上重复触发时，条数不代表问题数。')}
+              {t('How to read it: start from the problem types — how many there are and which one matters. When one type fires in hundreds of files, the entry count is not the problem count.')}
             </div>
             {checkTotal > 0 ? (
               <div style={{ marginTop: 8 }}>
                 <Space size={8} wrap>
                   <span>
-                    {t('代码是否违反规则见')}
-                    {t('规则检验')}：{t('共 ')}
+                    {t('For rule violations of the code itself, see ')}
+                    {t('Rule inspection')}：{t('Total ')}
                     {checkTotal}
-                    {t(' 条')}（
+                    {t(' entries')}（
                     {SEVERITY_ORDER.map((sev, i) => (
                       <span key={sev}>
                         {i > 0 ? ' · ' : ''}
@@ -201,7 +202,7 @@ export function CoveragePage() {
                     ）
                   </span>
                   <Button size="small" onClick={() => navigate(`/projects/${id}/check`)}>
-                    {t('查看规则检验')}
+                    {t('View rule inspection')}
                   </Button>
                 </Space>
               </div>
@@ -215,18 +216,18 @@ export function CoveragePage() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={t('这些语言还没有解析器：') + unsupported.join(' · ')}
-          description={t(' —— 对应子工程只有文件结构，语义召回在这里为空。')}
+          message={t('No parser for these languages: ') + unsupported.join(' · ')}
+          description={t(' — those sub-projects have file structure only; semantic recall is empty there.')}
         />
       ) : null}
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} md={8}>
           <StatCard
-            title={t('问题类型')}
+            title={t('Problem types')}
             value={groups.length}
             accent="#7c5cff"
-            suffix={groups.length ? t(' 类') : undefined}
+            suffix={groups.length ? t(' types') : undefined}
           />
         </Col>
         {SEVERITY_ORDER.map((sev) => (
@@ -247,21 +248,21 @@ export function CoveragePage() {
           style={{ marginBottom: 12 }}
           message={
             <span>
-              {groups.length} {t(' 类问题')}
-              {actionable > 0 ? ` · ${t('值得看一眼')} ${actionable} ${t(' 条')}` : ''}
+              {groups.length} {t(' problem types')}
+              {actionable > 0 ? ` · ${t('Worth a look')} ${actionable} ${t(' entries')}` : ''}
             </span>
           }
           description={
             actionable > 0
-              ? t('其余是引擎 / 知识局限与预期内：不改变召回结论，除非你要查的正是那一块。')
-              : t('这一页没有需要你处理的：全部是预期内 / 引擎局限。')
+              ? t('The rest are engine / knowledge limits and expected cases: they do not change recall conclusions unless that is exactly the part you are looking into.')
+              : t('Nothing here needs your attention: all of it is expected or an engine limitation.')
           }
         />
       ) : null}
 
       {total === 0 && !summary.loading && !summary.error ? (
         <Card variant="borderless" style={{ borderRadius: 14 }}>
-          <Empty description={t('暂无建图报告 —— 图没报出任何未解析 / 缺失。')} />
+          <Empty description={t('No build report — the graph reported nothing unresolved or missing.')} />
         </Card>
       ) : null}
 
@@ -275,26 +276,26 @@ export function CoveragePage() {
               value={view}
               onChange={(v) => setView(v as 'types' | 'list')}
               options={[
-                { label: `${t('按问题类型')}（${groups.length}）`, value: 'types' },
-                { label: `${t('逐条明细')}（${listed}）`, value: 'list' },
+                { label: `${t('By type')}（${groups.length}）`, value: 'types' },
+                { label: `${t('Entries')}（${listed}）`, value: 'list' },
               ]}
             />
           }
           extra={
             byCodeAccurate ? (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('按类型的计数取自全量汇总，不受明细读取上限影响')}
+                {t('Per-type counts come from the full aggregate, unaffected by the entry read cap.')}
               </Typography.Text>
             ) : (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('按类型的计数取自当前读取窗口（汇总接口未返回按类型计数），可能偏小。')}
+                {t('Per-type counts are derived from the current read window (the summary API returned no per-type counts) and may be too small.')}
               </Typography.Text>
             )
           }
         >
           {view === 'types' ? (
             groups.length === 0 ? (
-              <Empty description={t('暂无建图报告条目')} />
+              <Empty description={t('No report entries')} />
             ) : (
               <>
                 {groups.map((g) => {
@@ -323,15 +324,15 @@ export function CoveragePage() {
                           <code>{g.code}</code>
                         </Typography.Text>
                         <span style={{ marginLeft: 'auto', fontSize: 12, color: 'rgba(0,0,0,0.55)' }}>
-                          {t('这一类共 ')}
+                          {t('This type has ')}
                           <b>{g.count}</b>
-                          {t(' 条')}
+                          {t(' entries')}
                           {severitySplit(g) && severitySplit(g) !== `${t(SEVERITY_LABEL[g.severity])} ${g.count}`
                             ? `（${severitySplit(g)}）`
                             : ''}
                         </span>
                         <Button size="small" type="link" onClick={() => focusOn(g.code)}>
-                          {t('查看明细')}
+                          {t('View entries')}
                         </Button>
                       </div>
 
@@ -347,7 +348,7 @@ export function CoveragePage() {
                       {samples.length > 0 ? (
                         <div style={{ marginTop: 6 }}>
                           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            {t('样例位置')}
+                            {t('Sample locations')}
                           </Typography.Text>
                           <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
                             {samples.map((d, i) => (
@@ -360,7 +361,7 @@ export function CoveragePage() {
                                     onClick={() => copyLocation(d.location)}
                                     style={{ paddingInline: 0, fontSize: 12, height: 'auto', maxWidth: '100%' }}
                                   >
-                                    {/* 位置可能是整条绝对路径（如框架根目录诊断），必须自己截断 —— 否则会把卡片撑破 */}
+                                    {/* A location can be a whole absolute path (e.g. a framework-root diagnostic), so it must be truncated here — otherwise it bursts the card */}
                                     <span
                                       style={{
                                         display: 'inline-block',
@@ -380,7 +381,7 @@ export function CoveragePage() {
                           </ul>
                           {g.count > samples.length ? (
                             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                              {t('另有')} {g.count - samples.length} {t('处同类，点「查看明细」按此类型筛选')}
+                              {t('Also')} {g.count - samples.length} {t(' more of the same type; use "View entries" to filter by it.')}
                             </Typography.Text>
                           ) : null}
                         </div>
@@ -397,9 +398,9 @@ export function CoveragePage() {
                   type="info"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message={t('明细已被读取上限截断')}
+                  message={t('Entries truncated by the read limit')}
                   description={
-                    `${t('本工程共')} ${total} ${t('条记录，当前列出了')} ${listed} ${t('条（明细有读取上限）：按类型的计数取自全量汇总，仍然准确。')}`
+                    `${t('This project has')} ${total} ${t('records, currently listing')} ${listed} ${t(' entries (the entry list is capped): per-type counts come from the full aggregate and stay accurate.')}`
                   }
                 />
               ) : null}
@@ -409,7 +410,7 @@ export function CoveragePage() {
                   value={severity}
                   onChange={(v) => setSeverity(v as Severity | 'all')}
                   options={[
-                    { label: t('全部'), value: 'all' },
+                    { label: t('All'), value: 'all' },
                     ...SEVERITY_ORDER.map((sev) => ({
                       label: `${t(SEVERITY_LABEL[sev])} ${s?.[sev] ?? 0}`,
                       value: sev,
@@ -427,7 +428,7 @@ export function CoveragePage() {
                   showSearch
                   optionFilterProp="label"
                   options={[
-                    { label: t('全部类型'), value: 'all' },
+                    { label: t('All types'), value: 'all' },
                     ...groups.map((g) => ({
                       label: `${codeTitle(g.code)}（${g.count}）`,
                       value: g.code,
@@ -440,10 +441,10 @@ export function CoveragePage() {
                 loading={list.loading && !list.data}
                 dataSource={rows}
                 pagination={{ pageSize: 20 }}
-                locale={{ emptyText: t('暂无建图报告条目') }}
+                locale={{ emptyText: t('No report entries') }}
                 columns={[
                   {
-                    title: t('严重度'),
+                    title: t('Severity'),
                     dataIndex: 'severity',
                     width: 90,
                     render: (sev: Severity) => (
@@ -451,7 +452,7 @@ export function CoveragePage() {
                     ),
                   },
                   {
-                    title: t('类型'),
+                    title: t('Type'),
                     dataIndex: 'code',
                     width: 260,
                     render: (c: string) => (
@@ -463,9 +464,9 @@ export function CoveragePage() {
                       </Space>
                     ),
                   },
-                  { title: t('阶段'), dataIndex: 'phase', width: 120 },
+                  { title: t('Phase'), dataIndex: 'phase', width: 120 },
                   {
-                    title: t('位置'),
+                    title: t('Location'),
                     dataIndex: 'location',
                     width: 300,
                     ellipsis: true,
@@ -486,7 +487,7 @@ export function CoveragePage() {
                         <Typography.Text type="secondary">—</Typography.Text>
                       ),
                   },
-                  { title: t('说明'), dataIndex: 'message' },
+                  { title: t('Description'), dataIndex: 'message' },
                 ]}
               />
             </>

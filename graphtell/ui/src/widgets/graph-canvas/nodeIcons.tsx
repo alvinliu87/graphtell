@@ -26,7 +26,7 @@ import {
   UnorderedListOutlined,
 } from '@ant-design/icons';
 
-/** 图标组件接受的极简 props 类型（antd 图标兼容此超集）。 */
+/** Minimal props type accepted by icon components (antd icons satisfy this superset). */
 export type IconComp = ComponentType<{
   width?: number | string;
   height?: number | string;
@@ -34,9 +34,9 @@ export type IconComp = ComponentType<{
 }>;
 
 /**
- * 每种节点 kind 对应的图标（@ant-design/icons，无需自绘）。
- * 渲染端用 `nodeIcon(kind)` 取组件；颜色由调用方按 kind 色（nodeColor）注入。
- * 找不到时回退到 QuestionOutlined，避免缺图。
+ * Icon per node kind (from @ant-design/icons — nothing is hand-drawn).
+ * The renderer gets the component via `nodeIcon(kind)`; the colour is injected by the caller from the
+ * kind colour (nodeColor). Unknown kinds fall back to QuestionOutlined so an icon is never missing.
  */
 export const NODE_ICONS: Record<string, IconComp> = {
   File: FileOutlined,
@@ -61,10 +61,11 @@ export const NODE_ICONS: Record<string, IconComp> = {
   Queue: CloudOutlined,
   Cache: ThunderboltOutlined,
   Topic: MessageOutlined,
-  // 中间件：挂在路由上的守门人 —— 盾牌图标，与"缓存 ⚡ / 配置 ⚙ / 契约 🔗"的语义区分开。
+  // Middleware: the gatekeeper attached to a route — a shield icon, semantically distinct from
+  // "cache / config / contract".
   Middleware: SafetyOutlined,
-  // 事件 / 队列的消费者在画布上重标为这个角色（见 view_service 的视图层重标），
-  // 此前没有图标、一直回退成问号。
+  // Event / queue consumers are relabelled to this role on the canvas (see the view-layer relabelling
+  // in view_service); they had no icon before and always fell back to a question mark.
   EventHandler: NotificationOutlined,
   Unknown: QuestionOutlined,
 };
@@ -73,7 +74,7 @@ export function nodeIcon(kind: string): IconComp {
   return NODE_ICONS[kind] ?? QuestionOutlined;
 }
 
-/** 图例用：仅导出已被用到的 kind（按传入列表去重，保持出现顺序）。 */
+/** For the legend: export only the kinds actually used (deduped against the given list, preserving order). */
 export function usedKinds(kinds: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];

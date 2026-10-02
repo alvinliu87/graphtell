@@ -10,7 +10,7 @@ const m = http as unknown as { get: ReturnType<typeof vi.fn> };
 
 beforeEach(() => m.get.mockReset());
 
-describe('viewApi 请求路径', () => {
+describe('viewApi request paths', () => {
   it('perspectives', async () => {
     m.get.mockResolvedValue([]);
     await viewApi.perspectives(1);

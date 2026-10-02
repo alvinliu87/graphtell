@@ -100,7 +100,7 @@ export function PerspectivePicker({
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-      {/* 一行：一级视角（下拉）+ 二级对象 + 布局 + 面包屑 + 操作区 */}
+      {/* One row: level-one perspective (dropdown) + level-two object + layout + breadcrumb + actions */}
       <Space size={10} wrap align="center">
         <Select
           style={{ width: 200 }}
@@ -121,12 +121,12 @@ export function PerspectivePicker({
           }))}
         />
         {isAggregate ? (
-          <Tag>{t('聚合视角没有"单个对象"')}</Tag>
+          <Tag>{t('Aggregate perspective has no single object')}</Tag>
         ) : (
           <Select
             showSearch
             style={{ width: 360 }}
-            placeholder={loading ? t('加载候选…') : t('选择一个对象')}
+            placeholder={loading ? t('Loading candidates…') : t('Select an object')}
             value={node ?? undefined}
             loading={loading}
             onChange={(v: number) => onNodeChange(v)}
@@ -153,7 +153,7 @@ export function PerspectivePicker({
             overflow: 'hidden',
           }}
         >
-          <span style={{ color: 'rgba(0,0,0,0.45)' }}>{t('回退：')}</span>
+          <span style={{ color: 'rgba(0,0,0,0.45)' }}>{t('Back: ')}</span>
           {trailOffset > 0 ? <span style={{ color: 'rgba(0,0,0,0.25)' }}>… ›</span> : null}
           {shownTrail.map((item, i) => {
             const index = trailOffset + i;

@@ -1426,7 +1426,7 @@ pub struct RecallQuery {
     /// 是否带源码片段（需要读文件，成本略高）。
     #[serde(default = "default_true")]
     pub with_snippets: bool,
-    /// 是否把命中涉及的完整文件源码也一并附上（默认 false）。
+    /// Whether to also append the full source of the files touched by the hits (default false).
     ///
     /// MCP / IDE 场景下 LLM 拿到的上下文可直接阅读实现，省去再发 `read` 去拉全文的一轮往返。
     /// 仅取排名最前的少数命中文件（见 [`INCLUDE_BODY_MAX_FILES`]），且单文件超过
@@ -2463,27 +2463,27 @@ fn persist_vectors(
         };
 
         let reason = if unevaluable {
-            "查询未包含可评估的意图概念（多为领域专有词 / 生僻说法），无法确认召回质量，结果需自行判断".to_string()
+            "The query contains no evaluable intent concepts (mostly domain-specific or unusual wording); recall quality cannot be confirmed — judge the results yourself".to_string()
         } else if quality == RecallQuality::Low && coverage >= 0.5 {
-            "各概念分别被互不相关的节点命中（无任何命中同时覆盖两个概念），多为泛词各自撞名".to_string()
+            "Each concept was matched by unrelated nodes (no single hit covers two concepts) — likely generic terms colliding by name".to_string()
         } else {
             match quality {
             RecallQuality::Low => format!(
-                "多数特征词未命中（{}），前排为泛词匹配 —— 建议改用 grep 或自行阅读确认",
+                "Most feature terms missed ({}) and the top rows are generic-term matches — grep or read the code yourself to confirm",
                 if missing_zh.is_empty() {
-                    "命中过少".to_string()
+                    "too few hits".to_string()
                 } else {
                     missing_zh.join("、")
                 }
             ),
             RecallQuality::Medium => {
                 if missing_zh.is_empty() {
-                    "特征词已命中但头部区分度不足，结果可能分散".to_string()
+                    "Feature terms matched but the top rows are not distinctive enough; results may be scattered".to_string()
                 } else {
-                    format!("部分特征词未命中（{}），结果可能不完整", missing_zh.join("、"))
+                    format!("Some feature terms missed ({}); results may be incomplete", missing_zh.join("、"))
                 }
             }
-            RecallQuality::High => "特征词基本命中、头部区分度健康".to_string(),
+            RecallQuality::High => "Feature terms mostly matched and the top rows are healthily distinctive".to_string(),
             }
         };
 
@@ -2505,14 +2505,14 @@ fn persist_vectors(
             return String::new();
         }
         let label = match quality {
-            RecallQuality::Low => "低",
-            RecallQuality::Medium => "中",
-            RecallQuality::High => "高",
+            RecallQuality::Low => "low",
+            RecallQuality::Medium => "medium",
+            RecallQuality::High => "high",
         };
-        let mut s = format!("> ⚠️ **召回质量：{}（置信度 {:.2}）** — {}\n", label, confidence, reason);
+        let mut s = format!("> ⚠️ **Recall quality: {} (confidence {:.2})** — {}\n", label, confidence, reason);
         if !missing.is_empty() {
             s.push_str(&format!(
-                ">\n> 建议改用以下特征词自行检索：{}\n",
+                ">\n> Try searching again with these feature terms: {}\n",
                 missing.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join("、")
             ));
         }
@@ -2521,11 +2521,11 @@ fn persist_vectors(
         // 读哪类文件，比笼统的"头部区分度不足"更有操作性。
         if event {
             s.push_str(
-                ">\n> 该查询疑似事件 / 流程驱动（X 之后怎么 Y）。图上正解多为事件监听器 \
-                 （`*Listener` / `*Subscriber` / `@EventListener` / `@OnEvent`）或订阅者，\
-                 方法名通常很泛（统一叫 `handle`），词面召回难以命中。建议直接阅读工程里 \
-                 `listener` / `event` / `observer` / `subscriber` 目录下的对应监听器，以及相关的 \
-                 `*Services` 实现，确认「触发 → 监听器 → 处理器」链路。\n",
+                ">\n> This query looks event / flow driven (\"what happens after X\"). On the graph the right answer is usually an event listener \
+                 (`*Listener` / `*Subscriber` / `@EventListener` / `@OnEvent`) or a subscriber, whose method names are very generic \
+                 (uniformly `handle`), so lexical recall rarely hits them. Read the corresponding listeners under the project's \
+                 `listener` / `event` / `observer` / `subscriber` directories and the related `*Services` implementations to confirm \
+                 the \"trigger → listener → handler\" chain.\n",
             );
         }
         s.push('\n');
@@ -4216,7 +4216,7 @@ fn append_file_bodies(fs: &dyn FileSystem, hits: &[RecallHit], mut md: String) -
     if files.is_empty() {
         return md;
     }
-    md.push_str("\n\n## 完整文件（include_body）\n\n");
+    md.push_str("\n\n## Full files (include_body)\n\n");
     for f in &files {
         md.push_str(&format!("### {f}\n\n"));
         match fs.read_to_string(Path::new(f)) {
@@ -4225,7 +4225,7 @@ fn append_file_bodies(fs: &dyn FileSystem, hits: &[RecallHit], mut md: String) -
                     let mut s = text;
                     s.truncate(INCLUDE_BODY_MAX_BYTES);
                     format!(
-                        "{s}\n\n…（内容超过 {}KB，已截断）",
+                        "{s}\n\n… (content exceeds {}KB, truncated)",
                         INCLUDE_BODY_MAX_BYTES / 1024
                     )
                 } else {
@@ -4234,7 +4234,7 @@ fn append_file_bodies(fs: &dyn FileSystem, hits: &[RecallHit], mut md: String) -
                 md.push_str(&format!("```\n{content}\n```\n\n"));
             }
             Err(_) => {
-                md.push_str("_（文件读取失败，可能已被移动或删除）_\n\n");
+                md.push_str("_(file could not be read; it may have been moved or deleted)_\n\n");
             }
         }
     }
@@ -4254,37 +4254,37 @@ fn render_markdown(
     advisory: &str,
 ) -> String {
     let mut s = String::new();
-    s.push_str(&format!("# 召回上下文：{}\n\n", q.query));
+    s.push_str(&format!("# Recall context: {}\n\n", q.query));
     if !advisory.is_empty() {
         s.push_str(advisory);
     }
     s.push_str(&format!(
-        "- 工程：#{}\n- 查询词：{}\n",
+        "- Project: #{}  \n- Query terms: {}\n",
         project_id,
-        if terms.is_empty() { "（无）".to_string() } else { terms.join(", ") }
+        if terms.is_empty() { "(none)".to_string() } else { terms.join(", ") }
     ));
     if !hints.is_empty() {
-        s.push_str(&format!("- 结构提示：{}\n", hints.join(", ")));
+        s.push_str(&format!("- Structural hints: {}\n", hints.join(", ")));
     }
-    s.push_str(&format!("- 跳数上限：{}，命中 {} 条\n\n", q.hops, hits.len()));
+    s.push_str(&format!("- Hop limit: {}, {} hit(s)\n\n", q.hops, hits.len()));
 
     if !seeds.is_empty() {
-        s.push_str("## 种子（直接命中关键词）\n\n");
+        s.push_str("## Seeds (direct keyword hits)\n\n");
         for sd in seeds {
-            s.push_str(&format!("- `{}` {}（得分 {:.1}）\n", sd.name, sd.kind, sd.score));
+            s.push_str(&format!("- `{}` {} (score {:.1})\n", sd.name, sd.kind, sd.score));
         }
         s.push('\n');
     }
 
-    s.push_str("## 相关代码\n\n");
+    s.push_str("## Related code\n\n");
     for (i, h) in hits.iter().enumerate() {
         let loc = match (&h.file, h.line) {
             (Some(f), Some(l)) => format!("`{f}:{l}`"),
             (Some(f), None) => format!("`{f}`"),
-            _ => "（无位置信息）".to_string(),
+            _ => "(no location)".to_string(),
         };
         s.push_str(&format!(
-            "### {}. {} `{}`\n\n- 位置：{}\n- 得分：{:.1} · 跳数 {} · 来源种子 `{}`{}\n",
+            "### {}. {} `{}`\n\n- Location: {}  \n- Score: {:.1} · hops {} · source seed `{}`{}\n",
             i + 1,
             h.kind,
             h.name,
@@ -4292,10 +4292,10 @@ fn render_markdown(
             h.score,
             h.hop,
             h.seed,
-            if h.direct { " · 直接命中" } else { "" }
+            if h.direct { " · direct hit" } else { "" }
         ));
         if !h.relations.is_empty() {
-            s.push_str(&format!("- 图上关系：{}\n", h.relations.join("，")));
+            s.push_str(&format!("- Relations on the graph: {}\n", h.relations.join(", ")));
         }
         // 仅排名前 SNIPPET_TOP 的命中附带源码片段，控制默认输出体积（见 [`SNIPPET_TOP`]）。
         if i < SNIPPET_TOP {
@@ -5593,8 +5593,8 @@ mod tests {
         let hits = vec![qhit(1, 500.0, &["express"]), qhit(2, 100.0, &["delivery"])];
         let (q, _conf, reason, _missing) =
             RecallService::assess_quality("zzzqqx", &hits, &HashSet::new(), &builtin_aliases());
-        assert_ne!(q, RecallQuality::High, "无可评估概念时不得判 High");
-        assert!(reason.contains("无法确认"), "应说明无法确认质量：{reason}");
+        assert_ne!(q, RecallQuality::High, "must not report High when no concept is evaluable");
+        assert!(reason.contains("cannot be confirmed"), "should say quality cannot be confirmed: {reason}");
     }
 
     #[test]
@@ -5764,7 +5764,7 @@ mod tests {
         let hits = vec![hit_with_file("/src/A.php"), hit_with_file("/src/A.php")];
         let out = append_file_bodies(&fs, &hits, "# 上下文\n".to_string());
         assert!(out.starts_with("# 上下文\n"), "应在原上下文之后追加：{out}");
-        assert!(out.contains("## 完整文件（include_body）"), "应带小节标题：{out}");
+        assert!(out.contains("## Full files (include_body)"), "should carry the section heading: {out}");
         assert_eq!(out.matches("class A {}").count(), 1, "同一文件正文只应出现一次：{out}");
     }
 
@@ -5774,7 +5774,7 @@ mod tests {
         let hits = vec![hit_with_file("/src/missing.php")];
         // 文件读不到时要说明原因，而不是静默丢掉整段（否则调用方以为是"没有命中文件"）。
         let out = append_file_bodies(&fs, &hits, "ctx".to_string());
-        assert!(out.contains("文件读取失败"), "读不到文件应给出提示：{out}");
+        assert!(out.contains("file could not be read"), "an unreadable file should be reported: {out}");
     }
 
     #[test]

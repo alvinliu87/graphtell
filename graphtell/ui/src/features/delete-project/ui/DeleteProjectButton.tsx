@@ -3,7 +3,7 @@ import { useLocale } from '@/shared/lib/i18n';
 import { DeleteOutlined } from '@ant-design/icons';
 import { projectApi } from '@/entities/project';
 
-/** 删除工程（连带删除其全部图数据）。 */
+/** Delete a project (along with all of its graph data). */
 export function DeleteProjectButton({
   projectId,
   name,
@@ -17,20 +17,20 @@ export function DeleteProjectButton({
   const remove = async () => {
     try {
       await projectApi.remove(projectId);
-      message.success(t('已删除「') + name + t('」'));
+      message.success(t('Deleted "') + name + t('」'));
       onDeleted?.();
     } catch (e) {
-      message.error(e instanceof Error ? e.message : t('删除失败'));
+      message.error(e instanceof Error ? e.message : t('Delete failed'));
     }
   };
 
   return (
     <Popconfirm
-      title={t('删除工程「') + name + t('」？')}
-      description={t('该工程的全部节点、边、标注与符号表都会被清除，且不可恢复。')}
-      okText={t('删除')}
+      title={t('Delete project "') + name + t('」？')}
+      description={t('All nodes, edges, annotations and symbol tables of this project will be cleared, unrecoverably.')}
+      okText={t('Delete')}
       okButtonProps={{ danger: true }}
-      cancelText={t('取消')}
+      cancelText={t('Cancel')}
       onConfirm={remove}
     >
       <Button type="text" danger icon={<DeleteOutlined />} />

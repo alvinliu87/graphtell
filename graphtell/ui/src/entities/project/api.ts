@@ -1,7 +1,7 @@
 import { http } from '@/shared/api/http';
 import type { CreateProjectInput, Project, SubProject, UpdateProjectInput } from './model';
 
-/** 工程实体的数据访问（唯一知道 `/api/projects` 这一契约的地方）。 */
+/** Data access for project entities (the only place that knows the `/api/projects` contract). */
 export const projectApi = {
   list: () => http.get<Project[]>('/api/projects'),
   get: (id: number) => http.get<Project>(`/api/projects/${id}`),

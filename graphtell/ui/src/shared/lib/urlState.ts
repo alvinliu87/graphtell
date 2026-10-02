@@ -1,24 +1,27 @@
 /**
- * 视图现场（URL 即状态）。
+ * View state (the URL *is* the state).
  *
- * 为什么必须进 URL：
- * * **刷新** —— 用户 F5 后必须回到同一张图，否则一次误刷新就丢掉几分钟的排查现场
- * * **前进 / 后退** —— 切视角是有成本的导航动作，浏览器返回键必须能撤销
- * * **分享 / 报告** —— 一条链接就是一个结论（"看这个端点的链路"）
+ * Why it has to live in the URL:
+ * * **Refresh** — after F5 the user must land on the same graph, otherwise one stray refresh throws
+ *   away several minutes of investigation
+ * * **Back / forward** — switching perspective is a costly navigation action, so the browser back
+ *   button must be able to undo it
+ * * **Sharing / reporting** — one link is one conclusion ("look at this endpoint's link")
  *
- * 采用短键名以保持 URL 可读：`p` 视角、`n` 中心、`d` 深度、`i` Inspector。
- * （曾有 `m` 布局覆盖：布局由 `views/perspectives.yaml` 按视角声明，不再暴露给用户。）
+ * Short keys keep the URL readable: `p` perspective, `n` centre, `d` depth, `i` Inspector.
+ * (There used to be an `m` layout override: layout is declared per perspective in
+ * `views/perspectives.yaml` and is no longer exposed to the user.)
  */
 export interface ViewState {
-  /** 一级：视角 id。 */
+  /** Level one: perspective id. */
   p: string | null;
-  /** 二级：中心对象节点 id。 */
+  /** Level two: id of the centre object node. */
   n: number | null;
-  /** 跳数。 */
+  /** Hop count. */
   d: number;
-  /** Inspector 选中的节点（不切视角）。 */
+  /** Node selected in the Inspector (does not switch perspective). */
   i: number | null;
-  /** Inspector 选中的边。 */
+  /** Edge selected in the Inspector. */
   e: number | null;
 }
 
@@ -52,20 +55,22 @@ export function decodeViewState(search: string): ViewState {
   };
 }
 
-/** 两个现场是否等价（用于避免写入重复的历史记录）。 */
+/** Whether two states are equivalent (used to avoid writing duplicate history entries). */
 export function sameViewState(a: ViewState, b: ViewState): boolean {
   return a.p === b.p && a.n === b.n && a.d === b.d && a.i === b.i && a.e === b.e;
 }
 
 /**
- * 修正现场：URL 可能是手写的、过期的（比如视角被删了）。
- * 这里只做"能修就修"，**绝不静默把用户换到一张无关的图上**。
+ * Reconcile the state: a URL can be hand-written or stale (e.g. the perspective was deleted).
+ * This only repairs what can be repaired, and **never silently moves the user to an unrelated graph**.
  *
- * 特别注意：**不用候选列表判断某个节点是否存在**。候选列表是给二级选择器用的
- * （有 `limit` 上限且可能被后端过滤），拿它当存在性判据，会把刚点进来的、
- * 恰好排在前 N 之外的节点误判为"已删除"，再被页面自动替换成第一个候选——
- * 那恰恰就是"静默展示一张无关的图"。节点是否真的可用，由 `/view/{p}?node=`
- * 的响应来回答；取不到就在页面上如实报错，让用户重新选。
+ * Special care: **do not use the candidate list to decide whether a node exists**. The candidate list
+ * exists for the level-two picker (it has a `limit` and may be filtered by the backend); treating it as
+ * an existence check would misjudge a node the user just clicked — one that happens to rank beyond the
+ * first N — as "deleted", and the page would then auto-replace it with the first candidate. That is
+ * precisely "silently showing an unrelated graph". Whether a node is really usable is answered by the
+ * response to `/view/{p}?node=`; if it cannot be fetched, the page reports that honestly and lets the
+ * user pick again.
  */
 export function reconcileViewState(
   state: ViewState,
@@ -77,7 +82,7 @@ export function reconcileViewState(
     return { ...EMPTY_STATE, p: first?.id ?? null, d: first?.depth ?? 2 };
   }
   if (exists.mode === 'aggregate') {
-    // 聚合视角没有"单个对象"
+    // An aggregate perspective has no "single object"
     return { ...state, n: null };
   }
   return state;

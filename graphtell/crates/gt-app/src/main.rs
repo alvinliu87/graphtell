@@ -1,4 +1,4 @@
-//! GraphTell —— 代码库图化分析平台。
+//! GraphTell —— Codebase graph analysis platform。
 //!
 //! ```text
 //! graphtell serve                      启动 HTTP 服务（Tauri / Web UI 共用）
@@ -21,7 +21,7 @@ use gt_domain::model::{NewProject, ProjectId};
 use gt_domain::port::{DiagnosticSink, GraphQuery, NodeFilter, ProjectReader};
 
 #[derive(Debug, Parser)]
-#[command(name = "graphtell", version, about = "代码库图化分析平台")]
+#[command(name = "graphtell", version, about = "Codebase graph analysis platform")]
 struct Cli {
     /// 数据目录。
     #[arg(long, default_value = "./data")]
@@ -132,7 +132,7 @@ enum Command {
     /// 还是阈值 / 排序问题。
     ///
     /// 例：`graphtell cosine --project 1 --query "商品库存扣减失败回滚" --names stock`
-    /// 若目标符号余弦本就低于阈值 → 模型 / 节点文本问题；若余弦够高却没召回 → 阈值 / 排序问题。
+    /// 若目标符号余弦本就below threshold → 模型 / 节点文本问题；若余弦够高却没召回 → 阈值 / 排序问题。
     Cosine {
         #[arg(long)]
         project: i64,
@@ -213,7 +213,7 @@ fn main() -> anyhow::Result<()> {
                         description,
                         config: None,
                     })?;
-                    println!("已创建工程 #{} {}", project.id, project.name);
+                    println!("Created project #{} {}", project.id, project.name);
                     let out = pipeline.run(project.id, &gt_domain::port::NoopObserver)?;
                     print_outcome(&out, &container);
                 }
@@ -224,7 +224,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 Command::Delete { project } => {
                     projects.delete(gt_domain::model::ProjectId(project))?;
-                    println!("已删除工程 #{project}");
+                    println!("Deleted project #{project}");
                 }
                 Command::Run { project } => {
                     let out = pipeline.run(gt_domain::model::ProjectId(project), &gt_domain::port::NoopObserver)?;
@@ -277,7 +277,7 @@ fn main() -> anyhow::Result<()> {
                 Command::Stats { project } => {
                     let id = gt_domain::model::ProjectId(project);
                     let stats = container.store.stats(id)?;
-                    println!("节点 {} / 边 {} / 标注 {}", stats.nodes, stats.edges, stats.annotations);
+                    println!("nodes {} / edges {} / annotations {}", stats.nodes, stats.edges, stats.annotations);
                     for (kind, count) in stats.by_kind {
                         println!("  {:<16} {}", kind, count);
                     }
@@ -308,12 +308,12 @@ fn main() -> anyhow::Result<()> {
                         return Ok(());
                     }
                     println!(
-                        "规则 {}/{}，命中 {} 条违规，耗时 {}ms{}",
+                        "Rules {}/{}: {} violation(s) matched, {}ms{}",
                         report.rules_run,
                         report.rules_total,
                         report.violations.len(),
                         report.duration_ms,
-                        if dry_run { "（预览，未写库）" } else { "" }
+                        if dry_run { "(preview, nothing persisted)" } else { "" }
                     );
                     for (sev, n) in &report.by_severity {
                         println!("  {:<10} {}", sev, n);
@@ -321,7 +321,7 @@ fn main() -> anyhow::Result<()> {
                     if !report.rules_silent.is_empty() {
                         println!();
                         println!(
-                            "  ⚠ {} 条规则跑了但 0 命中 —— 在排除\"代码真干净\"之前，先怀疑规则瞎了：",
+                            "  ⚠ {} rules ran but matched 0 — before concluding\"the code is clean\", suspect the rule has gone blind:",
                             report.rules_silent.len()
                         );
                         for s in &report.rules_silent {
@@ -331,7 +331,7 @@ fn main() -> anyhow::Result<()> {
                     if !report.rules_unavailable.is_empty() {
                         println!();
                         println!(
-                            "  ⊘ {} 条规则判据不成立，已停用（跑下去只会产出恒真误报）：",
+                            "  ⊘ {} rules have unmet criteria and are disabled (running them would only yield vacuously-true positives):",
                             report.rules_unavailable.len()
                         );
                         for s in &report.rules_unavailable {
@@ -341,7 +341,7 @@ fn main() -> anyhow::Result<()> {
                     if !report.rules_not_applicable.is_empty() {
                         println!();
                         println!(
-                            "  · {} 条规则不适用于本工程技术栈（预期行为，非故障）：",
+                            "  · {} rules are not applicable to this project's tech stack (expected, not a fault):",
                             report.rules_not_applicable.len()
                         );
                         for s in &report.rules_not_applicable {
@@ -357,7 +357,7 @@ fn main() -> anyhow::Result<()> {
                         println!("        {}", v.message);
                     }
                     if report.violations.len() > 50 {
-                        println!("  … 另有 {} 条未显示（用 --json 查看全部）", report.violations.len() - 50);
+                        println!("  … {} more not shown (use --json to see all)", report.violations.len() - 50);
                     }
                 }
                 Command::Embed { project } => {
@@ -365,7 +365,7 @@ fn main() -> anyhow::Result<()> {
                         .recall_service()
                         .warm_up(gt_domain::model::ProjectId(project))?;
                     println!(
-                        "已为工程 #{project} 计算并持久化 {n} 个节点向量（data/embeddings/{project}.rmp）"
+                        "Computed and persisted {n} node vectors for project #{project} (data/embeddings/{project}.rmp)"
                     );
                 }
                 Command::Cosine {
@@ -387,12 +387,12 @@ fn main() -> anyhow::Result<()> {
                         top,
                     )?;
                     let th = gt_application::recall_service::VECTOR_THRESHOLD;
-                    println!("查询「{query}」与节点向量的余弦（阈值 {th}）：");
+                    println!("Cosine between query '{query}' and node vectors (threshold {th}):");
                     if rows.is_empty() {
-                        println!("  （无匹配节点：放宽 --names 或去掉该参数）");
+                        println!("  (no matching nodes: relax --names or drop the flag)");
                     }
                     for (kind, name, c) in rows {
-                        let flag = if c >= th { "过阈值" } else { "低于阈值" };
+                        let flag = if c >= th { "above threshold" } else { "below threshold" };
                         println!("  {c:.4}  [{flag}]  {kind}  {name}");
                     }
                 }
@@ -413,14 +413,14 @@ fn main() -> anyhow::Result<()> {
                         return Ok(());
                     }
                     println!(
-                        "查询词：{}   结构提示：{}   种子 {} 个   命中 {} 条",
+                        "Query terms: {}   structural hints: {}   {} seed(s)   {} hit(s)",
                         if result.terms.is_empty() {
-                            "（无）".to_string()
+                            "(none)".to_string()
                         } else {
                             result.terms.join(", ")
                         },
                         if result.kind_hints.is_empty() {
-                            "（无）".to_string()
+                            "(none)".to_string()
                         } else {
                             result.kind_hints.join(", ")
                         },
@@ -434,7 +434,7 @@ fn main() -> anyhow::Result<()> {
                             _ => "—".to_string(),
                         };
                         println!(
-                            "  {:>2}. {:<14} {:<40} {:>8.1}  跳数 {}  {}",
+                            "  {:>2}. {:<14} {:<40} {:>8.1}  hops {}  {}",
                             i + 1,
                             h.kind,
                             h.name,
@@ -452,7 +452,7 @@ fn main() -> anyhow::Result<()> {
                                 .and_then(|s| s.parse::<i64>().ok())
                         })
                         .ok_or_else(|| {
-                            anyhow::anyhow!("缺少 --project 或环境变量 GRAPHTELL_PROJECT_ID")
+                            anyhow::anyhow!("missing --project or the GRAPHTELL_PROJECT_ID environment variable")
                         })?;
                     let bridge = mcp::McpBridge::new(base_url, project);
                     return bridge.run();
@@ -474,10 +474,10 @@ fn severity_name(s: gt_domain::model::Severity) -> &'static str {
 }
 
 fn print_outcome(out: &gt_pipeline::runner::PipelineOutcome, container: &Container) {
-    println!("子工程 {} / 文件 {}", out.sub_projects.len(), out.files.len());
+    println!("Sub-projects {} / files {}", out.sub_projects.len(), out.files.len());
     for r in &out.reports {
         println!(
-            "  {:<14} 节点 {:>7}  边 {:>7}  标注 {:>6}  {:>6}ms",
+            "  {:<14} nodes {:>7}  edges {:>7}  annotations {:>6}  {:>6}ms",
             r.phase, r.nodes_created, r.edges_created, r.annotations_created, r.duration_ms
         );
     }
@@ -493,12 +493,12 @@ fn print_outcome(out: &gt_pipeline::runner::PipelineOutcome, container: &Contain
 ///   `semantic_edge_kinds` / `bridge_edge_kinds` 声明里 —— 不会被当语义/桥边渲染。
 fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
     if !dir.exists() {
-        anyhow::bail!("FKB 目录不存在: {}", dir.display());
+        anyhow::bail!("FKB directory does not exist: {}", dir.display());
     }
     let mut files = Vec::new();
     collect_yaml(dir, &mut files);
     if files.is_empty() {
-        println!("未在 {} 找到任何 *.yaml/*.yml", dir.display());
+        println!("No *.yaml/*.yml found under {}", dir.display());
         return Ok(());
     }
 
@@ -544,7 +544,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
                                 .any(|k| k == &kind);
                             if !builtin_node.contains(&kind) && !declared {
                                 warns.push(format!(
-                                    "节点种类 `{kind}` 既不在内核清单也不在 semantic_kinds —— 折叠视图会隐藏它"
+                                    "Node kind `{kind}` is in neither the kernel list nor semantic_kinds — the folded view will hide it"
                                 ));
                             }
                         }
@@ -560,7 +560,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
                         if let Some(ek) = edge_kind {
                             if !builtin_edge.contains(&ek) && !declared_edge.contains(&ek) {
                                 warns.push(format!(
-                                    "边种类 `{ek}` 不在内核 SEMANTIC/BRIDGE，也没被任何 FKB 的 semantic_edge_kinds/bridge_edge_kinds 声明 —— 不会被当语义/桥边渲染"
+                                    "Edge kind `{ek}` is not in the kernel SEMANTIC/BRIDGE and is not declared by any FKB's semantic_edge_kinds/bridge_edge_kinds — it will not be rendered as a semantic / bridge edge"
                                 ));
                             }
                         }
@@ -589,7 +589,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
                     )
                 };
                 println!(
-                    "✓ {}  (id={}, 语言={}, 规则 {} 条, 合成 {} 条{}{})",
+                    "✓ {}  (id={}, language={}, {} rule(s), {} synthesis rule(s){}{})",
                     path.display(),
                     fk.id,
                     fk.language.0,
@@ -604,14 +604,14 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
             }
             Err(e) => {
                 broken += 1;
-                println!("✗ {}  —— 解析失败: {e}", path.display());
+                println!("✗ {}  — failed to parse: {e}", path.display());
             }
         }
     }
     println!();
-    println!("共 {} 个文件: {} 通过, {} 失败", files.len(), ok, broken);
+    println!("{} file(s) in total: {} passed, {} failed", files.len(), ok, broken);
     if broken > 0 {
-        anyhow::bail!("存在无法解析的 FKB 文件");
+        anyhow::bail!("Some FKB files could not be parsed");
     }
     Ok(())
 }

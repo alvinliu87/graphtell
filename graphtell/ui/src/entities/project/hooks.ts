@@ -3,15 +3,16 @@ import { useAsync, usePolling } from '@/shared/lib/useAsync';
 import { projectApi } from './api';
 import type { Project } from './model';
 
-/** 有工程还在建图 / 待建图时，列表的静默轮询间隔。 */
+/** Silent polling interval for the list while some project is still indexing / pending. */
 const PROJECTS_POLL_MS = 3000;
 
 /**
- * 工程列表（含手动刷新 + 建图期间自动跟进）。
+ * Project list (manual refresh + automatic follow-up while a build runs).
  *
- * 列表本身是**快照**：不做轮询的话，「建图中」的转圈只是一个静态装饰 —— 既不跟进进度，
- * 也不会在完成后自动变成「就绪」（得手动刷新才知道）。有工程在建图时静默轮询，
- * 让动效名副其实；全部就绪后轮询自动停止，不留后台请求。
+ * The list is a **snapshot**: without polling, the spinner next to "indexing" is just static
+ * decoration — it neither tracks progress nor turns into "ready" on its own (you would have to
+ * refresh by hand to find out). While a project is building we poll silently so the animation means
+ * something; once everything is ready polling stops by itself, leaving no background requests.
  */
 export function useProjects() {
   const { data, loading, error, reload, silentReload } = useAsync<Project[]>(
@@ -24,7 +25,7 @@ export function useProjects() {
   return { projects, loading, error, reload, building };
 }
 
-/** 单个工程。 */
+/** A single project. */
 export function useProject(id: number | undefined) {
   const fn = useCallback(() => (id === undefined ? Promise.resolve(null) : projectApi.get(id)), [id]);
   const { data, loading, error, reload } = useAsync(fn, [id]);

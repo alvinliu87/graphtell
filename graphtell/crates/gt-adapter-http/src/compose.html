@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>提示词增强 · graphtell</title>
+<title>Prompt augmentation · graphtell</title>
 <style>
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:#f6f7fb;color:#1b1f2a;line-height:1.6}
@@ -42,43 +42,43 @@
 </head>
 <body>
 <header>
-  <h1>提示词增强</h1>
-  <p>把「用户意图」与「图谱召回的代码上下文」拼成可直接投喂 LLM 的提示词 —— 省掉 LLM 自己探索代码所耗费的 token，质量由实时代码图谱保证。</p>
+  <h1>Prompt augmentation</h1>
+  <p>Combines the "user intent" with the "code context recalled from the graph" into a prompt you can feed straight to an LLM — saving the tokens the LLM would spend exploring the code itself, with quality guaranteed by the live code graph.</p>
 </header>
 
 <div class="wrap">
   <div class="card">
-    <h2>① 配置</h2>
+    <h2>① Setup</h2>
     <div class="field">
-      <label for="proj">工程</label>
-      <select id="proj"><option value="">加载中…</option></select>
+      <label for="proj">Project</label>
+      <select id="proj"><option value="">Loading…</option></select>
     </div>
     <div class="field">
-      <label for="q">检索词（用于召回代码）</label>
-      <input type="text" id="q" placeholder="如：修改订单优惠 / 支付回调通知商户" />
-      <div class="hint">自然语言或标识符皆可，决定召回哪些代码。</div>
+      <label for="q">Search terms (used to recall code)</label>
+      <input type="text" id="q" placeholder="e.g. modify order discount / payment callback notifies merchant" />
+      <div class="hint">Natural language or identifiers both work; this decides which code is recalled.</div>
     </div>
     <div class="field">
-      <label for="intent">任务意图 / 补充说明</label>
-      <textarea id="intent" placeholder="如：在下单校验里增加余额不足的拦截，并返回明确错误码。"></textarea>
-      <div class="hint">写给 LLM 的任务描述；留空则让 LLM 依据上下文推断。</div>
+      <label for="intent">Task intent / extra context</label>
+      <textarea id="intent" placeholder="e.g. add an insufficient-balance guard to the order validation and return an explicit error code."></textarea>
+      <div class="hint">The task description for the LLM; leave empty to have the LLM infer it from the context.</div>
     </div>
     <div class="row">
-      <div class="field"><label for="limit">召回条数</label><input type="number" id="limit" value="20" min="1" max="100" /></div>
-      <div class="field"><label for="hops">扩展跳数</label><input type="number" id="hops" value="2" min="0" max="4" /></div>
+      <div class="field"><label for="limit">Recall count</label><input type="number" id="limit" value="20" min="1" max="100" /></div>
+      <div class="field"><label for="hops">Expansion hops</label><input type="number" id="hops" value="2" min="0" max="4" /></div>
     </div>
-    <div class="field check"><input type="checkbox" id="snip" checked /><label for="snip">附带源码片段</label></div>
-    <button class="btn block" id="go">生成提示词</button>
+    <div class="field check"><input type="checkbox" id="snip" checked /><label for="snip">Include source snippets</label></div>
+    <button class="btn block" id="go">Compose prompt</button>
     <div class="status" id="st"></div>
   </div>
 
   <div class="card">
-    <h2>② 生成的提示词</h2>
+    <h2>② Generated prompt</h2>
     <div class="meta" id="meta"></div>
-    <textarea id="out" readonly placeholder="点击左侧「生成提示词」后，这里会出现可直接复制的完整提示词…"></textarea>
+    <textarea id="out" readonly placeholder="After clicking “Compose prompt”, the complete prompt appears here, ready to copy…"></textarea>
     <div class="actions">
-      <button class="btn ghost" id="copy">复制到剪贴板</button>
-      <button class="btn ghost" id="dl">下载 .md</button>
+      <button class="btn ghost" id="copy">Copy to clipboard</button>
+      <button class="btn ghost" id="dl">Download .md</button>
     </div>
     <div class="status" id="st2"></div>
   </div>
@@ -86,8 +86,8 @@
 </div>
 
 <footer>
-  提示：IDE 侧想让 LLM 直接调用同一套能力，用 <code>graphtell mcp --project &lt;id&gt;</code> 以 MCP(stdio) 接入，
-  调用 <code>recall_code</code> 工具即可拿到同样的上下文。
+  Tip: to let an LLM in the IDE call the same capability directly, connect it over MCP (stdio) with <code>graphtell mcp --project &lt;id&gt;</code>,
+  then call the <code>recall_code</code> tool to get the same context.
 </footer>
 
 <script>
@@ -99,9 +99,9 @@ async function loadBackend() {
     const r = await fetch('/api/server/status');
     const j = await r.json();
     if (j && j.data) {
-      $('#be').textContent = '检索后端：' + j.data.embedding_backend + '  ·  ' + j.data.embedding_dim + ' 维';
+      $('#be').textContent = 'Retrieval backend: ' + j.data.embedding_backend + '  ·  ' + j.data.embedding_dim + ' dims';
     }
-  } catch (e) { /* 状态不可用时静默 */ }
+  } catch (e) { /* Stay silent when the status is unavailable */ }
 }
 loadBackend();
 
@@ -113,7 +113,7 @@ async function loadProjects() {
     const sel = $('#proj');
     sel.innerHTML = '';
     if (!list.length) {
-      sel.innerHTML = '<option value="">（暂无工程，请先在客户端建图）</option>';
+      sel.innerHTML = '<option value="">(no projects yet; build a graph in the client first)</option>';
       return;
     }
     list.forEach(p => {
@@ -123,21 +123,21 @@ async function loadProjects() {
       sel.appendChild(o);
     });
   } catch (e) {
-    $('#st').textContent = '工程列表加载失败：' + e;
+    $('#st').textContent = 'Failed to load projects: ' + e;
     $('#st').classList.add('err');
   }
 }
 
-function fail(m) { $('#st').textContent = '失败：' + m; $('#st').classList.add('err'); }
+function fail(m) { $('#st').textContent = 'Failed: ' + m; $('#st').classList.add('err'); }
 
 $('#go').addEventListener('click', async () => {
   const id = $('#proj').value;
   const q = $('#q').value.trim();
-  if (!id) return fail('请选择工程');
-  if (!q) return fail('请填写检索词');
+  if (!id) return fail('Please select a project');
+  if (!q) return fail('Please enter search terms');
 
   $('#go').disabled = true;
-  $('#go').textContent = '生成中…';
+  $('#go').textContent = 'Composing…';
   $('#st').textContent = '';
   $('#st').classList.remove('err');
   $('#st2').textContent = '';
@@ -155,32 +155,32 @@ $('#go').addEventListener('click', async () => {
       })
     });
     const j = await res.json();
-    if (j.ok === false || !j.data) throw new Error(j.error || '合成失败');
+    if (j.ok === false || !j.data) throw new Error(j.error || 'Composition failed');
     const d = j.data;
     $('#out').value = d.prompt;
     $('#meta').innerHTML =
-      '<span class="pill">种子 ' + d.seed_count + '</span>' +
-      '<span class="pill">命中 ' + d.hit_count + '</span>' +
+      '<span class="pill">seeds ' + d.seed_count + '</span>' +
+      '<span class="pill">hits ' + d.hit_count + '</span>' +
       '<span class="pill">≈ ' + d.approx_tokens + ' tokens</span>';
-    $('#st2').textContent = '已生成，可直接复制使用。';
+    $('#st2').textContent = 'Generated — ready to copy.';
   } catch (e) {
     fail(e.message || String(e));
   } finally {
     $('#go').disabled = false;
-    $('#go').textContent = '生成提示词';
+    $('#go').textContent = 'Compose prompt';
   }
 });
 
 $('#copy').addEventListener('click', async () => {
   const t = $('#out').value;
-  if (!t) { $('#st2').textContent = '还没有内容可复制。'; return; }
+  if (!t) { $('#st2').textContent = 'Nothing to copy yet.'; return; }
   try {
     await navigator.clipboard.writeText(t);
-    $('#st2').textContent = '已复制到剪贴板。';
+    $('#st2').textContent = 'Copied to clipboard.';
   } catch (e) {
     $('#out').select();
     document.execCommand('copy');
-    $('#st2').textContent = '已复制（兼容模式）。';
+    $('#st2').textContent = 'Copied (compatibility mode).';
   }
 });
 

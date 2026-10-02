@@ -6,10 +6,11 @@ import { fetchBackendEnv } from '@/shared/lib/backendEnv';
 import './styles/global.css';
 
 const container = document.getElementById('root');
-if (!container) throw new Error('#root 节点不存在');
+if (!container) throw new Error('#root element not found');
 
-// 先确定后端基地址（桌面端由 Tauri 注入端口），再拉取后端环境（含 WSL 探测），
-// 最后渲染，避免首屏请求打空、且 WSL 设置能在首屏即生效。
+// Resolve the backend base URL first (the desktop build gets its port injected by Tauri), then
+// fetch the backend environment (including WSL detection), and only then render — so the first
+// requests never go to an empty base and the WSL settings apply on the very first screen.
 void initApiBase()
   .then(() => fetchBackendEnv().catch(() => {}))
   .then(() => {

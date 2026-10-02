@@ -1617,9 +1617,9 @@ fn recall_produces_markdown_context_pack() {
         )
         .expect("召回不应失败");
     let md = &result.markdown;
-    assert!(md.contains("# 召回上下文"), "上下文包应有标题");
-    assert!(md.contains("种子"), "上下文包应说明种子");
-    assert!(md.contains("相关代码"), "上下文包应列出相关代码");
+    assert!(md.contains("# Recall context"), "the context pack should have a heading");
+    assert!(md.contains("Seeds"), "the context pack should describe the seeds");
+    assert!(md.contains("Related code"), "the context pack should list the related code");
 }
 
 /// 谓词枚举可直接构造（保证新增谓词不必改内核的调用点）。
@@ -2771,8 +2771,8 @@ async fn recall_http_include_body_appends_full_file_section() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
     let md = json["data"]["markdown"].as_str().expect("应有 markdown");
     assert!(
-        md.contains("## 完整文件（include_body）"),
-        "include_body=true 时应附上完整文件段：{md}"
+        md.contains("## Full files (include_body)"),
+        "with include_body=true the full-file section should be appended: {md}"
     );
 }
 
@@ -2802,8 +2802,8 @@ async fn recall_http_without_include_body_has_no_full_file_section() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
     let md = json["data"]["markdown"].as_str().expect("应有 markdown");
     assert!(
-        !md.contains("## 完整文件（include_body）"),
-        "默认不应附完整文件段：{md}"
+        !md.contains("## Full files (include_body)"),
+        "by default the full-file section should not be appended: {md}"
     );
 }
 

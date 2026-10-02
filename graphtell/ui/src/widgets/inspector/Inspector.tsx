@@ -76,7 +76,7 @@ export function Inspector({
 
   return (
     <Drawer
-      title={nodeId !== null ? t('节点详情') : t('边证据链')}
+      title={nodeId !== null ? t('Node details') : t('Edge evidence chain')}
       open={open}
       onClose={onClose}
       width={560}
@@ -121,33 +121,33 @@ function NodePanel({
   );
   const { t } = useLocale();
 
-  if (loading) return <Typography.Text type="secondary">{t('加载中…')}</Typography.Text>;
-  if (!data) return <Empty description={t('未找到该节点')} />;
+  if (loading) return <Typography.Text type="secondary">{t('Loading…')}</Typography.Text>;
+  if (!data) return <Empty description={t('Node not found')} />;
 
   return (
     <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
       <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label={t('种类')}>
+        <Descriptions.Item label={t('Kind')}>
           <Tag color={nodeColor(data.kind)} style={{ color: '#fff' }}>
             {data.kind}
           </Tag>
         </Descriptions.Item>
-        <Descriptions.Item label={t('名称')}>{data.name}</Descriptions.Item>
-        <Descriptions.Item label={t('节点类型')}>
-          {data.synthetic ? t('合成节点（语义对象）') : t('语法节点')}
+        <Descriptions.Item label={t('Name')}>{data.name}</Descriptions.Item>
+        <Descriptions.Item label={t('Node type')}>
+          {data.synthetic ? t('Synthetic node (semantic object)') : t('Syntax node')}
         </Descriptions.Item>
-        <Descriptions.Item label={t('位置')}>
+        <Descriptions.Item label={t('Location')}>
           <LocationBadge count={data.locations.length} />
         </Descriptions.Item>
-        <Descriptions.Item label={t('引用')}>{data.reference_count + t(' 条入边')}</Descriptions.Item>
+        <Descriptions.Item label={t('References')}>{data.reference_count + t(' in-edges')}</Descriptions.Item>
       </Descriptions>
 
       {data.synthetic ? (
         <Alert
           type="info"
           showIcon
-          message={t('这是合成节点：它由多处来源汇聚而成')}
-          description={t('下面列出全部出处，请按需逐条验证；这里不会替你挑一个\'看起来像\'的位置。')}
+          message={t('This is a synthetic node: aggregated from multiple sources')}
+          description={t("All sources are listed below; verify each as needed. We will not pick a 'looks-like' location for you.")}
         />
       ) : null}
 
@@ -155,7 +155,7 @@ function NodePanel({
 
       {data.reference_count > 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('另有 ') + data.reference_count + t(' 处引用指向它。')}
+          {t(' plus ') + data.reference_count + t(' references point to it.')}
         </Typography.Text>
       ) : null}
     </Space>
@@ -201,11 +201,11 @@ function EdgePanel({
         <Alert
           type="info"
           showIcon
-          message={t('合成边（折叠汇总）')}
+          message={t('Synthetic edge (collapsed aggregate)')}
           description={
             via.length > 0
-              ? t('这条边是把多条调用链聚合后归纳出的语义边，没有与之对应的单一源码位置；下面是被它折叠的中间节点（自起点到终点），可据此逐跳核对。')
-              : t('这条边是把多条调用链聚合后归纳出的语义边，图里没有与之对应的单条直接边，也没有可定位的触发点，因此没有逐跳证据可查。')
+              ? t('This edge is a semantic edge aggregated from multiple call chains; there is no single corresponding source location. Below are the intermediate nodes it collapsed (start to end); verify hop by hop.')
+              : t('This edge is a semantic edge aggregated from multiple call chains; there is no single corresponding direct edge in the graph and no locatable trigger point, so there is no hop-by-hop evidence.')
           }
         />
         {via.length > 0 && edgeView ? (
@@ -223,14 +223,14 @@ function EdgePanel({
     );
   }
 
-  if (loading && !edgeView) return <Typography.Text type="secondary">{t('加载中…')}</Typography.Text>;
+  if (loading && !edgeView) return <Typography.Text type="secondary">{t('Loading…')}</Typography.Text>;
 
   // **以"用户点击的那条边"为准**：它带着 via / hops，状态与置信度也与图上悬浮卡一致。
   // `/edges/{id}/evidence` 返回的是**提拉前的 raw 边**——它的端点、状态、置信度都可能不同，
   // 之前拿它冒充这条边，才出现"悬浮卡 0.80/已解析、抽屉 0.54/待验证"的自相矛盾。
   // 现在只把 raw 边当作"底层位置"的来源，并如实标注，绝不顶替这条边本身。
   const edge = edgeView ?? data?.edge ?? null;
-  if (!edge) return <Empty description={t('未找到该边')} />;
+  if (!edge) return <Empty description={t('Edge not found')} />;
   const unresolved = !edge.resolved;
   // 证据位置的来源：优先用后端 `/edges/{id}/evidence`（真实边）；
   // 合成边按 id 查不到它，此时退到边自己内联的 `to_call_site` ——
@@ -253,25 +253,25 @@ function EdgePanel({
   return (
     <Space direction="vertical" size={SP.block} style={{ width: '100%' }}>
       <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label={t('关系')}>
+        <Descriptions.Item label={t('Relation')}>
           {edgeKindLabel(t, edge.kind, edge.also_kinds)}
         </Descriptions.Item>
-        <Descriptions.Item label={t('状态')}>
+        <Descriptions.Item label={t('Status')}>
           {unresolved ? <Tag color="orange">{t('status.unverified')}</Tag> : <Tag color="green">{t('status.resolved')}</Tag>}
         </Descriptions.Item>
         {edge.indirect ? (
-          <Descriptions.Item label={t('性质')}>
+          <Descriptions.Item label={t('Nature')}>
             <Space size={4}>
-              <Tag color="gold">{t('间接（沿调用链传播）')}</Tag>
+              <Tag color="gold">{t('Indirect (propagated along the call chain)')}</Tag>
               <Tooltip title={t('indirect.tooltip')}>
                 <InfoCircleOutlined style={{ color: '#d48806', cursor: 'help' }} />
               </Tooltip>
             </Space>
           </Descriptions.Item>
         ) : null}
-        <Descriptions.Item label={t('置信度')}>{edge.confidence.toFixed(2)}</Descriptions.Item>
+        <Descriptions.Item label={t('Confidence')}>{edge.confidence.toFixed(2)}</Descriptions.Item>
         {edge.hops !== null ? (
-          <Descriptions.Item label={t('跳数')}>{t('途经 ') + edge.hops + t(' 跳')}</Descriptions.Item>
+          <Descriptions.Item label={t('Hops')}>{t('via ') + edge.hops + t(' hops')}</Descriptions.Item>
         ) : null}
       </Descriptions>
 
@@ -291,7 +291,7 @@ function EdgePanel({
 
       {unresolved && !chainCoversProof ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('未解析的边是推断结果：下面每个位置都是可亲自验证的落点，核对后再采信。')}
+          {t('Unresolved edges are inferences: each location below is verifiable; verify before trusting.')}
         </Typography.Text>
       ) : null}
 
@@ -308,7 +308,7 @@ function EdgePanel({
       {evidenceLocations.length > 0 && !chainCoversProof ? (
         <div>
           <Typography.Text strong style={{ fontSize: 13 }}>
-            {t('证据位置')}
+            {t('Evidence locations')}
           </Typography.Text>
           <div style={{ marginTop: 8 }}>
             <LocationList
@@ -316,7 +316,7 @@ function EdgePanel({
               ordered
               projectRoot={projectRoot}
               wslDistro={wslDistro}
-              emptyHint={t('这条边没有可跳转的证据位置（可能来自权威源推断）')}
+              emptyHint={t('This edge has no jumpable evidence location (may come from authoritative-source inference)')}
             />
           </div>
         </div>
@@ -477,11 +477,11 @@ function CollapsedChain({
   //    （它已在上一行的调用语句里显示过，这里再给一个复制按钮方便跳转）。
   const definitionButton = (s: Step): ReactNode => {
     if (s.locations.length === 0 && !s.callSite) return null;
-    const onPath = s.role === '终点' ? s.callSite ?? s.locations[0] : s.locations[0];
+    const onPath = s.role === 'end' ? s.callSite ?? s.locations[0] : s.locations[0];
     if (!onPath) return null;
     const tip = [onPath.note, onPath.symbol].filter(Boolean).join(' · ');
     return (
-      <Tooltip title={tip || t('复制 path:line')}>
+      <Tooltip title={tip || t('Copy path:line')}>
         <Button
           size="small"
           type="text"
@@ -498,7 +498,7 @@ function CollapsedChain({
     // 与被调方的「定义处」同属一个文件，读起来是「route 调 detail / detail 调 tidyOrder …」的自然叙述。
     // 定义处已提到节点名右侧的「定义」按钮（见 definitionButton），这里只保留调用语句这一主干。
     const cs = nextCallSite;
-    const isEnd = s.role === '终点';
+    const isEnd = s.role === 'end';
 
     const rows: ReactNode[] = [];
     // 与上一行「调用语句」同址时不重复渲染（如 相邻两跳恰好落在同一 file:line）。
@@ -513,10 +513,10 @@ function CollapsedChain({
         <Typography.Text
           key="cs"
           type="secondary"
-          title={t('该跳不是直接的 Calls 边（如 路由→handler 的绑定，或调用未解析），后端未给出「调用处」')}
+          title={t('This hop is not a direct Calls edge (e.g. a route→handler binding, or an unresolved call), so the backend provides no call site.')}
           style={{ fontSize: 11 }}
         >
-          {t('未解析到调用语句')}
+          {t('Call statement not resolved')}
         </Typography.Text>,
       );
     }
@@ -534,7 +534,7 @@ function CollapsedChain({
 
   const renderPath = (p: ViaNode[]) => {
     const steps: Step[] = [
-      { key: `from-${edge.from}`, id: edge.from, kind: null, name: name(edge.from), role: '起点', locations: locs[edge.from]?.locations ?? [], callSite: null },
+      { key: `from-${edge.from}`, id: edge.from, kind: null, name: name(edge.from), role: 'start', locations: locs[edge.from]?.locations ?? [], callSite: null },
       ...p.map((v) => ({
         key: `via-${v.id}`,
         id: v.id,
@@ -544,7 +544,7 @@ function CollapsedChain({
         locations: locs[v.id]?.locations ?? [],
         callSite: v.call_site ?? null,
       })),
-      { key: `to-${edge.to}`, id: edge.to, kind: null, name: name(edge.to), role: '终点', locations: locs[edge.to]?.locations ?? [], callSite: edge.to_call_site ?? null },
+      { key: `to-${edge.to}`, id: edge.to, kind: null, name: name(edge.to), role: 'end', locations: locs[edge.to]?.locations ?? [], callSite: edge.to_call_site ?? null },
     ];
     return (
       <Timeline
@@ -556,9 +556,9 @@ function CollapsedChain({
                 const isEndpoint = !s.kind;
                 // 端点（起点/终点）用描边淡标签：白底 + 彩边 + 彩字，与中间节点「按 kind 实心填充」分层、不抢眼。
                 const stroke = isEndpoint
-                  ? s.role === '起点'
+                  ? s.role === 'start'
                     ? '#16a34a'
-                    : s.role === '终点'
+                    : s.role === 'end'
                       ? '#dc2626'
                       : '#1677ff'
                   : '#1677ff';
@@ -582,7 +582,7 @@ function CollapsedChain({
                     <Typography.Link
                       style={{ fontSize: 13, fontWeight: 600, wordBreak: 'break-all', color: NODE_NAME_COLOR }}
                       onClick={() => onNodeClick?.(s.id)}
-                      title={t('在主图中以该节点为中心重绘')}
+                      title={t('Re-center the main graph on this node')}
                     >
                       {s.name}
                     </Typography.Link>
@@ -607,9 +607,9 @@ function CollapsedChain({
       <Typography.Text strong style={{ fontSize: 13 }}>
         {/* 有中间跳被折掉才叫「折叠掉的调用链」；直达边只有 起点↔终点 两跳，标题如实写「调用链」，
             版式与路由链路完全一致。 */}
-        {t(pathList.some((p) => p.length > 0) ? '折叠掉的调用链' : '调用链')}
+        {t(pathList.some((p) => p.length > 0) ? 'Collapsed call chain' : 'Call chain')}
         {/* 多路径时保留条数汇总（有用）；单路径的"跳数"已由顶部 Descriptions 的「跳数」给出，这里不再重复。 */}
-        {pathList.length > 1 ? `（${pathList.length}${t(' 条路径')}）` : null}
+        {pathList.length > 1 ? `（${pathList.length}${t(' paths')}）` : null}
       </Typography.Text>
       {/* 标题与下方第一个节点之间留出呼吸间隙，避免标题贴住时间线圆点。 */}
       <div style={{ marginTop: SP.section }}>
@@ -621,7 +621,7 @@ function CollapsedChain({
             size="small"
             items={pathList.map((p, idx) => ({
               key: String(idx),
-              label: `${t('路径 ') + (idx + 1)}`,
+              label: `${t('Path ') + (idx + 1)}`,
               children: renderPath(p),
             }))}
           />

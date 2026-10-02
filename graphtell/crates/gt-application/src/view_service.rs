@@ -133,7 +133,7 @@ impl ViewService {
             .views
             .registry()
             .by_id(perspective)
-            .ok_or_else(|| DomainError::NotFound(format!("视角 {perspective}")))?;
+            .ok_or_else(|| DomainError::NotFound(format!("perspective {perspective}")))?;
         let Some(kind) = &spec.node_kind else {
             return Ok(Vec::new());
         };
@@ -218,7 +218,7 @@ impl ViewService {
                     Candidate {
                         id: n.id,
                         name: n.name.clone(),
-                        badge: Some(format!("语义依赖 {value} · 语义入边 {fan}")),
+                        badge: Some(format!("semantic dependencies {value} · semantic in-edges {fan}")),
                         sub_project_id: n.sub_project_id,
                     },
                 )
@@ -295,11 +295,11 @@ impl ViewService {
         let registry = self.views.registry();
         let spec = registry
             .by_id(perspective)
-            .ok_or_else(|| DomainError::NotFound(format!("视角 {perspective}")))?;
+            .ok_or_else(|| DomainError::NotFound(format!("perspective {perspective}")))?;
         let center_node = self
             .store
             .get_node(center_id)?
-            .ok_or_else(|| DomainError::NotFound(format!("节点 {center_id}")))?;
+            .ok_or_else(|| DomainError::NotFound(format!("node {center_id}")))?;
         let depth = depth.unwrap_or(spec.depth).clamp(1, 6);
         // 第三方 / 库子工程（role == "library"）节点作为终点，不向外展开。
         let library_subs: HashSet<i64> = self
@@ -400,7 +400,7 @@ impl ViewService {
 
         let center_view = self
             .build_node_view(center_id, 0, &d.in_edges, &d.out_edges)?
-            .ok_or_else(|| DomainError::NotFound(format!("节点 {center_id}")))?;
+            .ok_or_else(|| DomainError::NotFound(format!("node {center_id}")))?;
         // 事件 / 队列视角语义化（仅视图层重标，不改 DB、免重建图）：
         //   · 消费方（沿 `HandledBy` / `PublishesTo` 连接的 `Class` 端点 —— 监听器 /
         //     消费者类）重标为 `EventHandler`，与画布其它语义节点（Event / Table …）同族；
@@ -458,8 +458,8 @@ impl ViewService {
             shown: shown_edges.len(),
             by_kind: hidden_by_kind,
             note: format!(
-                "当前视图已折叠语法节点（Method / CallSite 等），只保留语义节点与它们之间的依赖边：\
-                 已画 {} 条边，另有 {} 个语法节点被折叠。单击任意一条边可查看它经由的每一跳及调用处。",
+                "The current view has folded syntax nodes (Method / CallSite, etc.) and keeps only semantic nodes and the dependency edges between them:\
+                 {} edge(s) drawn, {} syntax node(s) folded. Click any edge to see every hop and call site it passes through.",
                 shown_edges.len(),
                 hidden_total
             ),
@@ -478,7 +478,7 @@ impl ViewService {
         // 恰恰关心它），不能因为不占画布就消失。
         if !orphans.is_empty() {
             if let Some(obj) = conclusions.as_object_mut() {
-                obj.insert("其它直连访问".into(), json!(orphans.len()));
+                obj.insert("other_direct_access".into(), json!(orphans.len()));
             }
         }
 
@@ -1056,7 +1056,7 @@ impl ViewService {
                                 file,
                                 line,
                                 symbol: None,
-                                note: Some("本链路访问该资源的位置".to_string()),
+                                note: Some("location where this link accesses the resource".to_string()),
                                 snippet: ev
                                     .get("snippet")
                                     .and_then(|v| v.as_str())
@@ -1873,7 +1873,7 @@ impl ViewService {
         let registry = self.views.registry();
         let spec = registry
             .by_id(perspective)
-            .ok_or_else(|| DomainError::NotFound(format!("视角 {perspective}")))?;
+            .ok_or_else(|| DomainError::NotFound(format!("perspective {perspective}")))?;
 
         let target_kind = spec.node_kind.clone().unwrap_or_default();
         let mut nodes = self.store.query_nodes(&NodeFilter {
@@ -1943,7 +1943,7 @@ impl ViewService {
         let total: usize = cluster_count_holder.iter().map(|c| c.count).sum();
         let notice = if cluster_count_holder.is_empty() {
             Some(format!(
-                "图里还没有可用于「{}」聚合的节点，因此这里不给任何聚类结论。",
+                "The graph has no nodes that can be aggregated under \"{}\", so no clustering conclusion is given here.",
                 spec.label
             ))
         } else {
@@ -1960,7 +1960,7 @@ impl ViewService {
                 total,
                 shown: clusters.len(),
                 by_kind: BTreeMap::new(),
-                note: "聚合视图按分组只展示样例成员，完整成员数以计数呈现。".into(),
+                note: "The aggregate view shows only sample members per group; full member counts are given as numbers.".into(),
             },
             unresolved: self.unresolved_for(project_id, ""),
             conclusions: json!({ "clusters": clusters.len() }),
@@ -2038,7 +2038,7 @@ impl ViewService {
                 total: nodes.len(),
                 shown: nodes.len(),
                 by_kind: BTreeMap::new(),
-                note: "矩阵单元格为两维度下的节点数量（0 表示该组合确实没有产出）。".into(),
+                note: "A matrix cell holds the node count for the two dimensions (0 means that combination really has no output).".into(),
             },
             unresolved: Vec::new(),
             conclusions: json!({ "cells": nodes.len() }),
@@ -2063,15 +2063,15 @@ impl ViewService {
                 .and_then(|s| sub_names.get(&s.get()).cloned())
                 .unwrap_or_else(|| {
                     node.sub_project_id
-                        .map(|s| format!("子工程 #{}", s))
-                        .unwrap_or_else(|| "未归属".into())
+                        .map(|s| format!("sub-project #{}", s))
+                        .unwrap_or_else(|| "unassigned".into())
                 }),
             Some(GroupBy::Property(name)) => node
                 .properties
                 .get(name)
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "(无)".to_string()),
+                .unwrap_or_else(|| "(none)".to_string()),
             None => node.kind.to_string(),
         }
     }
@@ -2081,7 +2081,7 @@ impl ViewService {
         let node = self
             .store
             .get_node(node_id)?
-            .ok_or_else(|| DomainError::NotFound(format!("节点 {node_id}")))?;
+            .ok_or_else(|| DomainError::NotFound(format!("node {node_id}")))?;
         let (synthetic, locations) = self.locations_of_node(&node, &NodeCache::default())?;
         let reference_count = self
             .store
@@ -2118,7 +2118,7 @@ impl ViewService {
                     file: path,
                     line: node.span.start_line,
                     symbol: node.fqn.clone(),
-                    note: Some(format!("{} 定义", node.kind)),
+                    note: Some(format!("{} definition", node.kind)),
                     snippet: node
                         .properties
                         .get("snippet")
@@ -2156,7 +2156,7 @@ impl ViewService {
                             file: file.to_string(),
                             line: entry.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                             symbol: Some(name.clone()),
-                            note: Some(format!("权威源 {table}")),
+                            note: Some(format!("authoritative source {table}")),
                             snippet: None,
                         });
                     }
@@ -2171,7 +2171,7 @@ impl ViewService {
                                     file,
                                     line,
                                     symbol: Some(name.clone()),
-                                    note: Some(format!("{table} 来源")),
+                                    note: Some(format!("{table} source")),
                                     snippet: None,
                                 });
                             }
@@ -2202,7 +2202,7 @@ impl ViewService {
                     file,
                     line,
                     symbol: None,
-                    note: Some("边建立时的证据位置".into()),
+                    note: Some("evidence location recorded when the edge was created".into()),
                     // P5 建边时一并存入的调用语句原文。
                     snippet: ev
                         .get("snippet")
@@ -2223,7 +2223,7 @@ impl ViewService {
                         file: path,
                         line: from.span.start_line,
                         symbol: from.fqn.clone(),
-                        note: Some("起点定义".into()),
+                        note: Some("start definition".into()),
                         snippet: from
                             .properties
                             .get("snippet")
@@ -2240,7 +2240,7 @@ impl ViewService {
                         file: path,
                         line: to.span.start_line,
                         symbol: to.fqn.clone(),
-                        note: Some("终点定义".into()),
+                        note: Some("end definition".into()),
                         snippet: to
                             .properties
                             .get("snippet")
@@ -2254,7 +2254,7 @@ impl ViewService {
         // 仅在「未解析且无任何可定位证据」时提示：有真实调用点/证据位置的边不应被冤枉为"推断边"。
         if !view.resolved && locations.is_empty() {
             reason = Some(format!(
-                "该边（{}）没有可定位的证据位置，可能来自规则补全，请谨慎采信。",
+                "This edge ({}) has no locatable evidence position; it may come from rule completion, so treat it with care.",
                 edge.kind
             ));
         }
@@ -2812,18 +2812,18 @@ impl ViewService {
         drawn_edges: usize,
     ) -> Value {
         let mut out = serde_json::Map::new();
-        out.insert("视角".into(), json!(spec.label));
-        out.insert("对象".into(), json!(name));
+        out.insert("perspective".into(), json!(spec.label));
+        out.insert("object".into(), json!(name));
         out.insert(
-            "入边".into(),
+            "in_edges".into(),
             json!(center.metrics.get("fan_in").cloned().unwrap_or(json!(0))),
         );
         out.insert(
-            "出边".into(),
+            "out_edges".into(),
             json!(center.metrics.get("fan_out").cloned().unwrap_or(json!(0))),
         );
         if !center.annotations.is_empty() {
-            out.insert("标注".into(), json!(center.annotations));
+            out.insert("annotations".into(), json!(center.annotations));
         }
         // 权威源补充（能补就补，补不了就不写，绝不编造）
         if let Ok(Some(entry)) = self.store.get_symbol(project_id, "schema", name) {
@@ -2832,11 +2832,11 @@ impl ViewService {
                 .and_then(|c| c.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            out.insert("schema 列数".into(), json!(cols));
+            out.insert("schema_columns".into(), json!(cols));
         }
         if let Ok(Some(entry)) = self.store.get_symbol(project_id, "route_list", name) {
             out.insert(
-                "路由表登记".into(),
+                "route_registered".into(),
                 entry.get("handler").cloned().unwrap_or(json!(null)),
             );
             // 经过的中间件：这是看单个端点时最先想确认的事（要不要登录 / 限流）。
@@ -2856,7 +2856,7 @@ impl ViewService {
                         })
                         .collect();
                     if !list.is_empty() {
-                        out.insert("经过中间件".into(), json!(list.join(" · ")));
+                        out.insert("middleware".into(), json!(list.join(" · ")));
                     }
                 }
             }
@@ -2871,11 +2871,11 @@ impl ViewService {
             )
         {
             let hint = if center.kind.as_str() == NodeKind::SCHEDULE {
-                "该定时任务暂无可展开的语义依赖：crontab 路由未解析到 handler，或 handler 未接触任何语义资源（表 / 配置 / 缓存 / 事件）。这通常是真实情况，并非视图缺失。"
+                "This scheduled task has no expandable semantic dependencies yet: the crontab route did not resolve to a handler, or the handler touches no semantic resource (table / config / cache / event). This is usually the real situation, not a missing view."
             } else {
-                "该路由暂无可展开的语义依赖：路由未解析到 handler，或 handler 未接触任何语义资源。这通常是真实情况，并非视图缺失。"
+                "This route has no expandable semantic dependencies yet: the route did not resolve to a handler, or the handler touches no semantic resource. This is usually the real situation, not a missing view."
             };
-            out.insert("提示".into(), json!(hint));
+            out.insert("hint".into(), json!(hint));
         }
         Value::Object(out)
     }

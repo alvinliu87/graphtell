@@ -21,15 +21,15 @@ export function ProjectsPage() {
   return (
     <>
       <PageHeader
-        title={t('工程总览')}
-        subtitle={t('添加一个工程后会自动开始建图：识别子工程 → 语法建图 → 装载框架知识 → 语义合成 → 动态解析')}
+        title={t('Projects')}
+        subtitle={t('Adding a project auto-starts graphing: detect sub-projects → syntax graph → load framework knowledge → semantic synthesis → dynamic resolution')}
         extra={
           <Space>
             <Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>
-              {t('刷新')}
+              {t('Refresh')}
             </Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
-              {t('新建工程')}
+              {t('New project')}
             </Button>
           </Space>
         }
@@ -43,12 +43,12 @@ export function ProjectsPage() {
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message={t('工程列表加载失败')}
+          message={t('Failed to load projects')}
           description={
             <div>
               <div>{error}</div>
               <div style={{ marginTop: 8 }}>
-                {t('可能是后端未启动或网络不通。点击右上角「刷新」重试。')}
+                {t('The backend may be down or unreachable. Click "Refresh" (top-right) to retry.')}
               </div>
             </div>
           }
@@ -58,10 +58,10 @@ export function ProjectsPage() {
       {!loading && projects.length === 0 && !error ? (
         <Empty
           style={{ marginTop: 96 }}
-          description={t('还没有工程 —— 新建一个开始图化分析')}
+          description={t('No projects yet — create one to start graphing')}
         >
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
-            {t('新建工程')}
+            {t('New project')}
           </Button>
         </Empty>
       ) : projects.length > 0 && !error ? (
@@ -69,25 +69,25 @@ export function ProjectsPage() {
           <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
             <Col xs={24} sm={8}>
               <StatCard
-                title={t('工程总数')}
+                title={t('Total projects')}
                 value={projects.length}
                 accent="#3d7eff"
                 icon={<FolderOpenOutlined />}
               />
             </Col>
             <Col xs={24} sm={8}>
-              <StatCard title={t('已就绪')} value={ready} accent="#16a34a" icon={<DeploymentUnitOutlined />} />
+              <StatCard title={t('Ready')} value={ready} accent="#16a34a" icon={<DeploymentUnitOutlined />} />
             </Col>
             <Col xs={24} sm={8}>
-              {/* 转圈只在**真在跟进**时转（列表在建图期间静默轮询），不是装饰 */}
-              <StatCard title={t('建图中')} value={indexing} accent="#f59e0b" icon={<ReloadOutlined spin={building} />} />
+              {/* The spinner only spins while it is **really tracking** (the list polls silently during a build) — it is not decoration */}
+              <StatCard title={t('Indexing')} value={indexing} accent="#f59e0b" icon={<ReloadOutlined spin={building} />} />
             </Col>
           </Row>
 
           <Card
             variant="borderless"
             style={{ borderRadius: 14 }}
-            title={t('全部工程')}
+            title={t('All projects')}
           >
             <ProjectTable projects={projects} loading={loading} onDeleted={() => void reload()} />
           </Card>

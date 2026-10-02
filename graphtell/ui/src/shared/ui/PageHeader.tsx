@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react';
 
-/** 页面标题 + 右侧操作区。 */
+/** Page title + right-hand action area. */
 export function PageHeader({
   title,
   subtitle,
   extra,
-  /** 紧凑模式：页头是"图上方要少占高度"的第一刀 —— 收掉外边距与副标题行距。 */
+  /** Compact mode: the page header is the first place to cut "height above the graph" — tighter margins and subtitle spacing. */
   compact,
 }: {
   title: ReactNode;

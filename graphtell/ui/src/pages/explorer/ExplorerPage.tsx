@@ -21,7 +21,7 @@ export function ExplorerPage() {
 
   return (
     <>
-      <PageHeader title={t('节点浏览')} subtitle={t('检索图上的任意节点，并查看它的标注与相邻边')} />
+      <PageHeader title={t('Explorer')} subtitle={t('Search any node on the graph and view its annotations and adjacent edges')} />
 
       {/* 检索失败后 data 落空 → 表格会显示「没有匹配的节点」，与"确实 0 个节点"无法区分；
           这里把 error 显式报出来，避免把后端故障伪装成空结果。 */}
@@ -30,12 +30,12 @@ export function ExplorerPage() {
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message={t('节点检索失败')}
+          message={t('Failed to load nodes')}
           description={
             <div>
               <div>{error}</div>
               <div style={{ marginTop: 8 }}>
-                {t('节点检索请求失败，可能是后端未启动或网络不通。可重试。')}
+                {t('The node query failed — the backend may be down or unreachable. Retry to try again.')}
               </div>
             </div>
           }
@@ -48,7 +48,7 @@ export function ExplorerPage() {
           <Space>
             <Select
               allowClear
-              placeholder={t('节点种类')}
+              placeholder={t('Node kind')}
               style={{ width: 180 }}
               value={kind}
               onChange={setKind}
@@ -69,7 +69,7 @@ export function ExplorerPage() {
             />
             <Input.Search
               allowClear
-              placeholder={t('按名称过滤')}
+              placeholder={t('Filter by name')}
               style={{ width: 260 }}
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -84,10 +84,10 @@ export function ExplorerPage() {
           dataSource={nodes}
           scroll={{ x: 900 }}
           pagination={{ pageSize: 15, showSizeChanger: false }}
-          locale={{ emptyText: t('没有匹配的节点') }}
+          locale={{ emptyText: t('No matching nodes') }}
           columns={[
             {
-              title: t('种类'),
+              title: t('Kind'),
               dataIndex: 'kind',
               width: 130,
               render: (k: string) => (
@@ -96,24 +96,24 @@ export function ExplorerPage() {
                 </Tag>
               ),
             },
-            { title: t('名称'), dataIndex: 'name', width: 220, ellipsis: true },
+            { title: t('Name'), dataIndex: 'name', width: 220, ellipsis: true },
             {
-              title: t('完全限定名 / Identity'),
+              title: t('FQN / Identity'),
               width: 340,
               render: (_, n) => truncate(n.fqn ?? n.identity?.value ?? '-', 64),
             },
-            { title: t('语言'), dataIndex: 'language', width: 90 },
-            { title: t('阶段'), dataIndex: 'phase', width: 120 },
+            { title: t('Language'), dataIndex: 'language', width: 90 },
+            { title: t('Phase'), dataIndex: 'phase', width: 120 },
             {
-              title: '置信度',
+              title: 'Confidence',
               dataIndex: 'confidence',
               width: 90,
               render: (v: number) => v.toFixed(2),
             },
             {
-              title: t('操作'),
+              title: t('Actions'),
               width: 90,
-              render: (_, n) => <a onClick={() => setSelected(n.id)}>{t('详情')}</a>,
+              render: (_, n) => <a onClick={() => setSelected(n.id)}>{t('Details')}</a>,
             },
           ]}
         />

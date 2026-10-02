@@ -21,10 +21,10 @@ import { useLocale } from '@/shared/lib/i18n';
 type Phase = 'editing' | 'submitting' | 'building' | 'ready' | 'failed';
 
 /**
- * 代码库根目录字段：只读输入框 +「选择目录」按钮。
+ * Codebase root field: a read-only input plus a “Select directory” button.
  *
- * 作为 `Form.Item` 的直接子节点，由 antd 注入 `value` / `onChange`，
- * 避免把 `Space.Compact` 当成表单控件导致回填失效。
+ * It is a direct child of `Form.Item` so antd injects `value` / `onChange`, which avoids treating
+ * `Space.Compact` as the form control and breaking the back-fill.
  */
 function RootPathField({
   value,
@@ -43,11 +43,11 @@ function RootPathField({
       <Input
         readOnly
         value={value}
-        placeholder={t('点击右侧按钮选择目录')}
+        placeholder={t('Click the button on the right to select a directory')}
         onChange={(e) => onChange?.(e.target.value)}
       />
       <Button icon={<FolderOpenOutlined />} onClick={onPick} disabled={disabled}>
-        {t('选择目录')}
+        {t('Select directory')}
       </Button>
     </Space.Compact>
   );
@@ -100,7 +100,7 @@ export function CreateProjectModal({
         if (p.status === 'failed') {
           setPhase('failed');
           stopPolling();
-          message.error(`工程「${p.name}」建图失败，请检查代码库根目录`);
+          message.error(`Graphing failed for project “${p.name}” — please check the codebase root.`);
           return;
         }
       } catch {
@@ -147,7 +147,7 @@ export function CreateProjectModal({
       onCreated?.(project.id);
       startPolling(project.id);
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '创建失败');
+      message.error(e instanceof Error ? e.message : 'Creation failed');
       setPhase('editing');
     }
   };
@@ -162,20 +162,20 @@ export function CreateProjectModal({
 
   const okText =
     phase === 'ready' || phase === 'failed'
-      ? '关闭'
+      ? t('Close')
       : phase === 'building'
-        ? '建图中…'
-        : '创建并开始建图';
+        ? t('Graphing…')
+        : t('Create and start graphing');
 
   return (
     <>
       <Modal
-        title={t('新建工程')}
+        title={t('New project')}
         open={open}
         onCancel={handleClose}
         onOk={handleOk}
         okText={okText}
-        cancelText={t('取消')}
+        cancelText={t('Cancel')}
         okButtonProps={{ disabled: phase === 'building', loading: phase === 'submitting' }}
         cancelButtonProps={{ disabled: locked }}
         maskClosable={!locked}
@@ -186,8 +186,8 @@ export function CreateProjectModal({
           <Space direction="vertical" style={{ width: '100%' }} size={16}>
             <Result
               status="success"
-              title={t('建图完成')}
-              subTitle={t('工程已就绪，可查看代码结构图')}
+              title={t('Graphing complete')}
+              subTitle={t('Project is ready; you can view the code structure graph')}
             />
             <Card
               hoverable
@@ -204,7 +204,7 @@ export function CreateProjectModal({
             >
               <EyeOutlined style={{ fontSize: 24, color: '#3d7eff' }} />
               <div style={{ marginTop: 8, fontSize: 15, fontWeight: 600, color: '#3d7eff' }}>
-                {t('点击查看图')}
+                {t('Click to view graph')}
               </div>
             </Card>
           </Space>
@@ -218,28 +218,28 @@ export function CreateProjectModal({
           >
             <Form.Item
               name="name"
-              label={t('工程名称')}
-              rules={[{ required: true, message: t('请输入名称') }]}
+              label={t('Project name')}
+              rules={[{ required: true, message: t('Please enter a name') }]}
             >
-              <Input placeholder={t('例如：CRMEB')} />
+              <Input placeholder={t('e.g. CRMEB')} />
             </Form.Item>
             <Form.Item
               name="root_path"
-              label={t('代码库根目录')}
-              rules={[{ required: true, message: t('请选择目录') }]}
-              extra={t('将自动识别其中的子工程（composer.json / package.json / pom.xml 等）')}
+              label={t('Codebase root')}
+              rules={[{ required: true, message: t('Please select a directory') }]}
+              extra={t('Sub-projects are auto-detected (composer.json / package.json / pom.xml, etc.)')}
             >
               <RootPathField onPick={() => setPickerOpen(true)} disabled={locked} />
             </Form.Item>
-            <Form.Item name="description" label={t('描述')}>
-              <Input.TextArea rows={2} placeholder={t('可选')} />
+            <Form.Item name="description" label={t('Description')}>
+              <Input.TextArea rows={2} placeholder={t('Optional')} />
             </Form.Item>
-            <Form.Item name="full_pipeline" label={t('执行完整建图流程')} valuePropName="checked">
+            <Form.Item name="full_pipeline" label={t('Run full pipeline')} valuePropName="checked">
               <Switch />
             </Form.Item>
             {phase === 'failed' && (
               <Typography.Text type="danger">
-                {t('建图失败，可关闭后重试或检查代码库根目录。')}
+                {t('Graphing failed; close and retry, or check the codebase root.')}
               </Typography.Text>
             )}
           </Form>

@@ -69,28 +69,28 @@ const FIT_MAX_K = 1;
 /** fit 时内容四周留白（世界坐标 px）。 */
 const FIT_PAD = 16;
 // 悬浮聚焦时非聚焦元素的淡出深度：随边数连续变化（边越少压得越浅，边越多压得越深），避免稀疏图像"全图消失"。
-const DIM_OPACITY_MIN = 0.12; // 稠密图最深
-const DIM_OPACITY_MAX = 0.4; // 稀疏图最浅
-const DIM_EDGE_LOW = 4; // 边数低于此取最浅
+const DIM_OPACITY_MIN = 0.12; // deepest, for dense graphs
+const DIM_OPACITY_MAX = 0.4; // lightest, for sparse graphs
+const DIM_EDGE_LOW = 4; // below this many edges use the lightest
 /** 子工程配色：每种子工程一个稳定色相，多个前端 / 多个后端各自不同色（不再压成蓝 / 橙两桶）。 */
 const SUB_PROJECT_PALETTE = [
   '#0ea5e9', '#f97316', '#22c55e', '#a855f7', '#eab308',
   '#ec4899', '#14b8a6', '#6366f1', '#ef4444', '#84cc16',
   '#06b6d4', '#f43f5e',
 ];
-const ROLE_LABEL: Record<string, string> = { frontend: '前端', backend: '后端' };
+const ROLE_LABEL: Record<string, string> = { frontend: 'Frontend', backend: 'Backend' };
 const KIND_LABEL: Record<string, string> = {
-  admin: '管理后台',
-  'mini-program': '小程序',
-  mobile: '移动端',
+  admin: 'Admin',
+  'mini-program': 'Mini program',
+  mobile: 'Mobile',
   h5: 'H5',
   api: 'API',
-  worker: '任务/队列',
+  worker: 'Jobs / queues',
   bff: 'BFF',
   web: 'Web',
 };
 function roleLabel(r?: string | null): string {
-  if (!r) return '未知';
+  if (!r) return 'Unknown';
   const [tier, kind] = r.split(':');
   if (kind) return KIND_LABEL[kind] ?? kind;
   return ROLE_LABEL[tier] ?? tier;
@@ -720,7 +720,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         {/* `tip` 只在 nest / fullscreen 模式下生效，这里用文字并列避免 antd 告警 */}
         <Space direction="vertical" align="center" size={8}>
           <Spin />
-          <Typography.Text type="secondary">{t('加载视图…')}</Typography.Text>
+          <Typography.Text type="secondary">{t('Loading view…')}</Typography.Text>
         </Space>
       </div>
     );
@@ -728,7 +728,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   if (!layout) {
     return (
       <div style={{ height, display: 'grid', placeItems: 'center' }}>
-        <Empty description={t('该视角下暂无可展示的对象')} />
+        <Empty description={t('No displayable objects under this perspective')} />
       </div>
     );
   }
@@ -829,7 +829,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 textAnchor="middle"
                 style={{ pointerEvents: 'none', userSelect: 'none' }}
               >
-                {g.label + t(' 跳')}
+                {g.label + t(' hops')}
               </text>
             </g>
           ))}
@@ -852,7 +852,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 {truncate(g.label, 22)}
               </text>
               <text x={g.x + g.w - 14} y={g.y + 22} fontSize={11} fill="#94a3b8" textAnchor="end">
-                {g.count + t(' 个成员')}
+                {g.count + t(' members')}
               </text>
             </g>
           ))}
@@ -1032,7 +1032,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
             // 同一份内容、叠在卡片上互相遮挡。见 `<g>` 上的注释。
             const ariaLabel =
               meta?.category && meta.category !== n.kind
-                ? `${t(`node.${n.kind}`)}（类别 ${meta.category}）· ${n.name}`
+                ? `${t(`node.${n.kind}`)} (${meta.category}) · ${n.name}`
                 : `${t(`node.${n.kind}`)} · ${n.name}`;
             // 节点统一为 rect 药丸，文字内嵌于框内，无需外伸标签。
             // 前端 HTTP 调用方填充种类色（淡），从匿名白底语法药丸升级为「一等节点」观感；
@@ -1201,7 +1201,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
             />
             <b>{t(`node.${hoveredNode.kind}`)}</b>
             {hoveredNode.category && hoveredNode.category !== hoveredNode.kind ? (
-              <span style={{ color: '#94a3b8' }}>{t('类别 ') + hoveredNode.category}</span>
+              <span style={{ color: '#94a3b8' }}>{t('Category ') + hoveredNode.category}</span>
             ) : null}
           </div>
           <div style={{ fontSize: 13, fontWeight: 600, marginTop: 2, wordBreak: 'break-all' }}>
@@ -1211,8 +1211,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
             <div style={{ color: '#64748b', wordBreak: 'break-all' }}>{hoveredNode.fqn}</div>
           ) : null}
           <div style={{ color: '#64748b' }}>
-            入边 {hoveredNode.metrics?.fan_in ?? 0} · 出边 {hoveredNode.metrics?.fan_out ?? 0} ·{' '}
-            位置 {hoveredNode.locations?.length ?? 0}
+            {t('In-edges ') + (hoveredNode.metrics?.fan_in ?? 0)} · {t('Out-edges ') + (hoveredNode.metrics?.fan_out ?? 0)} ·{' '}
+            {t('Location') + ' ' + (hoveredNode.locations?.length ?? 0)}
           </div>
           {hoveredNode.annotations && hoveredNode.annotations.length > 0 ? (
             <div style={{ marginTop: 4 }}>
@@ -1227,8 +1227,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
             style={{ marginTop: 6, color: hoveredNode.own_view ? '#1677ff' : '#94a3b8' }}
           >
             {hoveredNode.own_view
-              ? `单击 → 一级切到「${hoveredNode.own_view}」视角，二级为「${hoveredNode.name}」`
-              : '单击展开调用链 · 右键看位置'}
+              ? `Click → level one switches to the “${hoveredNode.own_view}” perspective, level two becomes “${hoveredNode.name}”`
+              : t('Click to expand the call chain · right-click for locations')}
           </div>
         </div>
       ) : null}
@@ -1271,10 +1271,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
             {nodeById.get(hoveredEdge.to)?.name ?? `#${hoveredEdge.to}`}
           </div>
           <div style={{ color: '#64748b' }}>
-            {t('置信度') + ' ' + hoveredEdge.confidence.toFixed(2)}
-            {hoveredEdge.hops != null ? ` · ${t('途经 ') + hoveredEdge.hops + t(' 跳')}` : ''}
+            {t('Confidence') + ' ' + hoveredEdge.confidence.toFixed(2)}
+            {hoveredEdge.hops != null ? ` · ${t('via ') + hoveredEdge.hops + t(' hops')}` : ''}
           </div>
-          <div style={{ marginTop: 6, color: '#94a3b8' }}>{t('单击查看证据链')}</div>
+          <div style={{ marginTop: 6, color: '#94a3b8' }}>{t('Click to view the evidence chain')}</div>
         </div>
       ) : null}
 
@@ -1292,8 +1292,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
           alignItems: 'center',
         }}
       >
-        <span>{t('虚线 = 经调用链间接；实线 = 直接调用')}</span>
-        <Tooltip title={t(layout.note) + ' ' + t('滚轮缩放 · 拖拽平移 · 左键单击切视角 · 右键打开位置')}>
+        <span>{t('Dashed = indirect via call chain; solid = direct call')}</span>
+        <Tooltip title={t(layout.note) + ' ' + t('Scroll to zoom · drag to pan · left-click to switch perspective · right-click to open location')}>
           <InfoCircleOutlined style={{ cursor: 'help', color: 'rgba(0,0,0,0.35)' }} />
         </Tooltip>
       </div>
@@ -1327,7 +1327,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
               userSelect: 'none',
             }}
           >
-            <span>图例</span>
+            <span>{t('Legend')}</span>
             <span style={{ color: 'rgba(0,0,0,0.35)' }}>{legendOpen ? '▾' : '▸'}</span>
             {/* 不常驻「点击筛选」字样：勾选框的勾/空两态已经把"可点"说清楚了，
                 再写一遍只会和「图例 ▾」「连带收起 N 点」「重置」抢这 240px 的标题行；
@@ -1336,7 +1336,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 给个可见反馈，否则用户点了图例却看到"点也少了"，会以为按钮失灵。 */}
             {cascadeHidden > 0 ? (
               <span
-                title={t('这些点只经由被隐藏的关系相连，已一并收起')}
+                title={t('These nodes were only reachable through hidden relations, so they are collapsed too')}
                 style={{
                   marginLeft: 'auto',
                   fontSize: 11,
@@ -1344,7 +1344,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   color: '#94a3b8',
                 }}
               >
-                {t('连带收起 {{n}} 点').replace('{{n}}', String(cascadeHidden))}
+                {t('{{n}} node(s) collapsed').replace('{{n}}', String(cascadeHidden))}
               </span>
             ) : null}
             {hasLegendFilter ? (
@@ -1361,7 +1361,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   cursor: 'pointer',
                 }}
               >
-                {t('重置')}
+                {t('Reset')}
               </span>
             ) : null}
           </div>
@@ -1376,14 +1376,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 overflow: 'auto',
               }}
             >
-              <div style={LEGEND_SECTION_TITLE} title={t('隐藏某类节点时，连到它的边一并收起')}>
-                {t('节点类型')}
+              <div style={LEGEND_SECTION_TITLE} title={t('Hiding a node type also collapses the edges touching it')}>
+                {t('Node type')}
               </div>
               {/* 节点类型：点击 = 在画布显隐该类节点（中心节点恒保留作锚点） */}
               {legendNodeKinds.map((k) => {
                 const Icon = nodeIcon(k);
                 const hidden = hiddenNodeSet.has(k);
-                const hint = t('点击显隐此类节点') + t('（连到它的边一并收起）');
+                const hint = t('Click to show/hide this node type') + t(' (edges touching it collapse too)');
                 return (
                   <Fragment key={`n:${k}`}>
                     <span
@@ -1429,12 +1429,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
               {legendEdgeKinds.length > 0 ? (
                 <Fragment>
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
-                  <div style={LEGEND_SECTION_TITLE} title={t('隐藏某类关系时，只经由它相连的点一并收起')}>
-                    {t('关系类型')}
+                  <div style={LEGEND_SECTION_TITLE} title={t('Hiding a relation type also collapses nodes reachable only through it')}>
+                    {t('Relation type')}
                   </div>
                   {legendEdgeKinds.map((k) => {
                     const hidden = hiddenEdgeSet.has(k);
-                    const hint = t('点击显隐此类边') + t('（只经由它相连的点一并收起）');
+                    const hint = t('Click to show/hide this edge type') + t(' (nodes reachable only via it collapse too)');
                     return (
                       <Fragment key={`e:${k}`}>
                         <span
@@ -1478,8 +1478,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
                   {/* 子工程只作配色说明、不可点：首列留空（没有勾选框）本身就是
                       "这段不参与筛选"的视觉区分，避免和上面两类筛选项混为一谈。 */}
-                  <div style={LEGEND_SECTION_TITLE} title={t('仅配色，不参与筛选')}>
-                    {t('子工程')}
+                  <div style={LEGEND_SECTION_TITLE} title={t('Color key only — not clickable')}>
+                    {t('Sub-project')}
                   </div>
                   {subProjects.map((sp) => (
                     <Fragment key={sp.id}>

@@ -52,11 +52,11 @@ import { useLocale } from '@/shared/lib/i18n';
 type StateFilter = 'all' | 'enabled' | 'disabled' | 'overridden' | 'not_applicable';
 
 const STATE_FILTERS: { value: StateFilter; label: string }[] = [
-  { value: 'all', label: '全部' },
-  { value: 'enabled', label: '已启用' },
-  { value: 'disabled', label: '已停用' },
-  { value: 'overridden', label: '本工程改过' },
-  { value: 'not_applicable', label: '不适用' },
+  { value: 'all', label: 'All' },
+  { value: 'enabled', label: 'Enabled' },
+  { value: 'disabled', label: 'Disabled' },
+  { value: 'overridden', label: 'Overridden here' },
+  { value: 'not_applicable', label: 'N/A here' },
 ];
 
 /**
@@ -296,7 +296,7 @@ export function RulesPage() {
       const report = await checkApi.check(id);
       refreshCheckSummary();
       message.success(
-        t('已保存并重跑：命中 {{n}} 条违规（跑 {{run}}/{{total}} 条规则）')
+        t('Saved & re-run: {{n}} violation(s) ({{run}}/{{total}} rules executed)')
           .replace('{{n}}', String(report.violations.length))
           .replace('{{run}}', String(report.rules_run))
           .replace('{{total}}', String(report.rules_total)),
@@ -314,7 +314,7 @@ export function RulesPage() {
 
   const discard = () => {
     setDrafts(draftsOf(saved));
-    message.info(t('已放弃未保存的修改'));
+    message.info(t('Unsaved changes discarded'));
   };
 
   const runOne = async (ruleId: string) => {
@@ -322,7 +322,7 @@ export function RulesPage() {
     try {
       await checkApi.check(id, [ruleId]);
       refreshCheckSummary();
-      message.success(t('已单独重跑该规则，跳转到结果页'));
+      message.success(t('Re-ran this rule alone — jumping to the results page'));
       navigate(`/projects/${id}/check`);
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
@@ -368,7 +368,7 @@ export function RulesPage() {
           size="small"
           style={{ width: 220 }}
           value={String(value ?? '')}
-          placeholder={t('留空 = 不过滤')}
+          placeholder={t('Empty = no filter')}
           onChange={(e) => setParam(rule.id, p.key, e.target.value)}
         />
       );
@@ -383,7 +383,7 @@ export function RulesPage() {
           </Typography.Text>
           {overridden ? (
             <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-              {t('已覆盖')}
+              {t('Overridden')}
             </Tag>
           ) : null}
         </Space>
@@ -394,7 +394,7 @@ export function RulesPage() {
           </Typography.Text>
         ) : null}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('默认')} {String(p.default) === '' ? t('（空）') : String(p.default)}
+          {t('Default')} {String(p.default) === '' ? t('(empty)') : String(p.default)}
         </Typography.Text>
       </div>
     );
@@ -418,7 +418,7 @@ export function RulesPage() {
         style={{ borderRadius: 14, opacity: effective && fits ? 1 : 0.6 }}
         title={
           <Space size={8} wrap>
-            <Tooltip title={fits ? '' : t('本工程不是该规则的适用环境，检查时会被自动跳过')}>
+            <Tooltip title={fits ? '' : t('This project is not in the rule’s target environment; the check will skip it automatically')}>
               <Switch
                 size="small"
                 checked={effective}
@@ -432,20 +432,20 @@ export function RulesPage() {
               {r.id}
             </Typography.Text>
             <Tag color={hits > 0 ? 'volcano' : 'default'}>
-              {hits} {t('条违规')}
+              {hits} {t('violations')}
             </Tag>
             {d.enabled === null ? (
               <Tag>
-                {t('继承默认')}：{r.enabled ? t('启用') : t('停用')}
+                {t('Inherits default')}：{r.enabled ? t('On') : t('Off')}
               </Tag>
             ) : (
               <Tag color={d.enabled ? 'green' : 'default'}>
-                {t('工程覆盖')}：{d.enabled ? t('启用') : t('停用')}
+                {t('Project override')}：{d.enabled ? t('On') : t('Off')}
               </Tag>
             )}
             {fits ? null : (
               <Tag color="default">
-                {t('不适用')}：{t('需要')} {needs}
+                {t('N/A here')}：{t('requires')} {needs}
               </Tag>
             )}
           </Space>
@@ -459,15 +459,15 @@ export function RulesPage() {
                   icon={<SettingOutlined />}
                   onClick={() => setEditing(r)}
                 >
-                  {t('参数设置')}
-                  {paramOverridden ? ` · ${t('已改')}` : ''}
+                  {t('Parameters')}
+                  {paramOverridden ? ` · ${t('changed')}` : ''}
                 </Button>
               </Badge>
             ) : null}
             {overridden ? (
-              <Tooltip title={t('清除本工程的覆盖，回到 YAML 全局默认')}>
+              <Tooltip title={t('Clear this project override and fall back to the YAML global default')}>
                 <Button size="small" icon={<UndoOutlined />} onClick={() => setDraft(r.id, INHERIT)}>
-                  {t('恢复默认')}
+                  {t('Reset to default')}
                 </Button>
               </Tooltip>
             ) : null}
@@ -477,31 +477,31 @@ export function RulesPage() {
               loading={running === r.id}
               onClick={() => void runOne(r.id)}
             >
-              {t('只跑这条规则')}
+              {t('Run this rule only')}
             </Button>
           </Space>
         }
       >
         <div style={{ color: 'rgba(0,0,0,0.65)', fontSize: 13 }}>
-          <div>{r.description ?? t('（无说明）')}</div>
+          <div>{r.description ?? t('(no description)')}</div>
           <div style={{ marginTop: 8 }}>
             <Typography.Text type="secondary">
-              {t('作用范围')}：{r.applies_to.kinds.join(', ') || t('不限种类')}
+              {t('Scope')}：{r.applies_to.kinds.join(', ') || t('Any kind')}
             </Typography.Text>
           </div>
           <div style={{ marginTop: 6 }}>
             <Typography.Text type="secondary">
-              {t('适用环境')}：
+              {t('Applies to')}：
               {r.applies_to.languages?.length
                 ? r.applies_to.languages.join(', ')
-                : t('跨语言通用')}
+                : t('Language-agnostic')}
               {r.applies_to.frameworks?.length ? ` · ${r.applies_to.frameworks.join(', ')}` : ''}
             </Typography.Text>
           </div>
           {r.remediation ? (
             <div style={{ marginTop: 6 }}>
               <Typography.Text type="secondary">
-                {t('处理建议')}：{r.remediation}
+                {t('Suggested action')}：{r.remediation}
               </Typography.Text>
             </div>
           ) : null}
@@ -514,27 +514,27 @@ export function RulesPage() {
   return (
     <>
       <PageHeader
-        title={t('规则集')}
-        subtitle={t('规则由后端 YAML 声明，前端只渲染；可在本工程内覆盖启用态与阈值，保存后自动重跑')}
+        title={t('Rule Set')}
+        subtitle={t('Rules are declared in backend YAML and only rendered here; you can override enabled state and thresholds per project — saving triggers a re-check.')}
         extra={
           <Space>
-            {/* 侧栏不再有「规则集」项：这一页的唯一入口是规则检验页页头，所以这里给回路 */}
-            <Button onClick={() => navigate(`/projects/${id}/check`)}>{t('返回规则检验')}</Button>
+            {/* The sidebar no longer has a “Rule Set” item: the only entry to this page is the check page header, so a way back is given here */}
+            <Button onClick={() => navigate(`/projects/${id}/check`)}>{t('Back to rule inspection')}</Button>
             <Button onClick={discard} disabled={!dirty || saving}>
-              {t('放弃修改')}
+              {t('Discard changes')}
             </Button>
             <Popconfirm
-              title={t('保存并重跑')}
-              description={t('将对 {{n}} 条规则写入覆盖，并重跑一次全量检查').replace(
+              title={t('Save & re-run')}
+              description={t('Will write overrides for {{n}} rule(s) and re-run a full check').replace(
                 '{{n}}',
                 String(dirtyIds.length),
               )}
-              okText={t('保存并重跑')}
-              cancelText={t('取消')}
+              okText={t('Save & re-run')}
+              cancelText={t('Cancel')}
               onConfirm={() => void save()}
             >
               <Button type="primary" loading={saving || running === '__all__'} disabled={!dirty}>
-                {t('保存并重跑')}
+                {t('Save & re-run')}
               </Button>
             </Popconfirm>
           </Space>
@@ -542,9 +542,9 @@ export function RulesPage() {
       />
 
       {rules.loading ? (
-        <Typography.Text type="secondary">{t('加载中…')}</Typography.Text>
+        <Typography.Text type="secondary">{t('Loading…')}</Typography.Text>
       ) : sorted.length === 0 ? (
-        <Empty description={t('没有装载任何规则')} />
+        <Empty description={t('No rules loaded')} />
       ) : (
         <>
           <Space size={8} wrap style={{ marginBottom: 12 }}>
@@ -553,7 +553,7 @@ export function RulesPage() {
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               prefix={<SearchOutlined style={{ color: 'rgba(0,0,0,0.35)' }} />}
-              placeholder={t('搜索规则 id / 名称 / 说明')}
+              placeholder={t('Search rule id / name / description')}
               style={{ width: 260 }}
             />
             <Select<Severity[]>
@@ -561,7 +561,7 @@ export function RulesPage() {
               allowClear
               value={severities}
               onChange={setSeverities}
-              placeholder={t('严重度')}
+              placeholder={t('Severity')}
               style={{ minWidth: 170 }}
               options={SEVERITY_ORDER.map((s) => ({ value: s, label: t(SEVERITY_LABEL[s]) }))}
             />
@@ -575,15 +575,15 @@ export function RulesPage() {
             </Typography.Text>
             {filterActive ? (
               <Button size="small" type="link" onClick={clearFilters}>
-                {t('清除筛选')}
+                {t('Clear filters')}
               </Button>
             ) : null}
           </Space>
 
           {filtered.length === 0 ? (
-            <Empty description={t('没有匹配的规则')}>
+            <Empty description={t('No matching rules')}>
               <Button size="small" onClick={clearFilters}>
-                {t('清除筛选')}
+                {t('Clear filters')}
               </Button>
             </Empty>
           ) : (
@@ -604,22 +604,22 @@ export function RulesPage() {
                       <span style={{ fontWeight: 600 }}>{t(ruleCategoryLabel(cat))}</span>
                       <Tag>{list.length}</Tag>
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        {t('启用')} {on}
+                        {t('On')} {on}
                       </Typography.Text>
                       <Tag color={hits > 0 ? 'volcano' : 'default'}>
-                        {t('违规')} {hits}
+                        {t('Violations')} {hits}
                       </Tag>
                     </Space>
                   ),
                   // 阻止冒泡：否则点"整组启用"会顺手把分组折叠掉。
                   extra: (
-                    <Tooltip title={t('只对当前筛选出的规则生效')}>
+                    <Tooltip title={t('Applies only to the currently filtered rules')}>
                       <Space size={4} onClick={(e) => e.stopPropagation()}>
                         <Button size="small" onClick={() => setCategoryEnabled(cat, true)}>
-                          {t('全部启用')}
+                          {t('Enable all')}
                         </Button>
                         <Button size="small" onClick={() => setCategoryEnabled(cat, false)}>
-                          {t('全部停用')}
+                          {t('Disable all')}
                         </Button>
                       </Space>
                     </Tooltip>
@@ -636,8 +636,8 @@ export function RulesPage() {
         type="info"
         showIcon
         style={{ marginTop: 16 }}
-        message={t('规则是知识库驱动的：新增 / 修改 YAML 规则后前端无需改动，建图或点「刷新」即生效')}
-        description={t('工程级覆盖只记「与全局默认不同的那部分」：恢复默认 = 删除覆盖行，规则随 YAML 演进')}
+        message={t('Rules are knowledge-driven: after adding or editing YAML rules the frontend needs no change — rebuild or click «Refresh» to apply')}
+        description={t('Project overrides only store what differs from the global default: "reset to default" deletes the override row, so rules keep evolving with YAML.')}
       />
 
       <Modal
@@ -656,8 +656,8 @@ export function RulesPage() {
             ''
           )
         }
-        okText={t('完成')}
-        cancelText={t('取消')}
+        okText={t('Done')}
+        cancelText={t('Cancel')}
         onOk={() => setEditing(null)}
         // 「恢复默认」放在左侧：它是破坏性操作，不能和「完成/取消」混成一排随手点到。
         footer={(_, { OkBtn, CancelBtn }) => (
@@ -669,10 +669,10 @@ export function RulesPage() {
                 if (!editing) return;
                 const d = draftFor(editing.id);
                 setDraft(editing.id, { ...d, options: {} });
-                message.success(t('已恢复规则默认参数，点「保存并重跑」生效'));
+                message.success(t('Parameters reset to rule defaults; click "Save & re-run" to apply'));
               }}
             >
-              {t('参数恢复默认')}
+              {t('Reset parameters')}
             </Button>
             <Space>
               <CancelBtn />
@@ -684,7 +684,7 @@ export function RulesPage() {
         {editing ? (
           <>
             <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 18 }}>
-              {t('改动只进草稿：关掉这个窗口后，点右上角「保存并重跑」才会写库并重跑检查')}
+              {t('Changes stay in the draft: after closing, click "Save & re-run" at the top-right to persist and re-run')}
             </Typography.Paragraph>
             {editing.params?.map((p) => renderParam(editing, p))}
           </>

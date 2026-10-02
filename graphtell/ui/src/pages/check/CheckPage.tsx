@@ -50,8 +50,8 @@ const SEVERITY_ACCENT: Record<Severity, string> = {
 };
 
 const SUB_ROLE_LABEL: Record<string, string> = {
-  frontend: '前端',
-  backend: '后端',
+  frontend: 'Frontend',
+  backend: 'Backend',
 };
 
 /**
@@ -136,7 +136,7 @@ export function CheckPage() {
       void stored.reload();
       void summary.reload();
       if (r.violations.length === 0 && r.rules_silent.length === 0) {
-        message.success(t('刷新完成，没有命中任何违规'));
+        message.success(t('Refresh complete — no violations matched'));
       }
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e));
@@ -228,7 +228,7 @@ export function CheckPage() {
     }
     const cats = [...byCat.keys()].sort((a, b) => a.localeCompare(b));
     return [
-      { label: t('全部规则'), value: 'all' },
+      { label: t('All rules'), value: 'all' },
       ...cats.map((cat) => ({
         label: t(ruleCategoryLabel(cat)),
         options: byCat
@@ -266,27 +266,27 @@ export function CheckPage() {
     const loc = v.file ? `${v.file}${v.line ? `:${v.line}` : ''}` : '';
     if (!loc) return;
     void navigator.clipboard?.writeText(loc);
-    message.success(t('已复制定位'));
+    message.success(t('Location copied'));
   };
 
   return (
     <>
       <PageHeader
-        title={t('规则检验')}
-        subtitle={t('建图后自动跑出的规则结论（持久化）；哪些规则启用、阈值多少在「规则集」里调')}
+        title={t('Rule inspection')}
+        subtitle={t('Rule conclusions produced automatically after the build (persisted); which rules are enabled and their thresholds are tuned in "Rule Set".')}
         extra={
           <Space>
             {/* 规则集的入口在这里（侧栏已不再挂这一项）：调规则的动机来自"看了结论之后"，
                 而不是"我想去逛规则" —— 所以它是结论页的一个动作，不是并列的目的地。 */}
             <Button icon={<ProfileOutlined />} onClick={() => navigate(`/projects/${id}/rules`)}>
-              {t('规则集')}
+              {t('Rule Set')}
             </Button>
             <Button
               icon={<ReloadOutlined />}
               loading={running}
               onClick={() => void refresh()}
             >
-              {t('刷新')}
+              {t('Refresh')}
             </Button>
           </Space>
         }
@@ -301,10 +301,8 @@ export function CheckPage() {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message={t('列表已被读取上限截断')}
-          description={t(
-            '本工程共 {n} 条违规，当前只列出 {m} 条（读取上限 {limit}）。排序已按严重度优先，被截掉的是最不严重的提示级。',
-          )
+          message={t('List truncated at the read limit')}
+          description={t('This project has {n} violations; only {m} are listed (read limit {limit}). Sorting is severity-first, so what is cut off are the least severe info-level ones.')
             .replace('{n}', String(storedTotal))
             .replace('{m}', String(scoped.length))
             .replace('{limit}', String(STORED_LIMIT))}
@@ -316,13 +314,11 @@ export function CheckPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message={`${t('有')} ${report.rules_silent.length} ${t('条规则跑了但 0 命中')}`}
+          message={`${t('There are')} ${report.rules_silent.length} ${t('rules ran but matched 0')}`}
           description={
             <div>
               <div>
-                {t(
-                  '规则最危险的失效方式不是误报，而是静默归零：判据用了一个图上不存在的标注或边，于是永远匹配不上。在排除「代码真干净」之前，先怀疑规则瞎了。',
-                )}
+                {t('The most dangerous way a rule fails is not a false positive but a silent zero: its criteria reference an annotation or edge absent from the graph, so it never matches. Before assuming the code is clean, suspect the rule has gone blind.')}
               </div>
               <ul style={{ marginBlock: 8, paddingLeft: 20 }}>
                 {report.rules_silent.map((s) => (
@@ -339,13 +335,11 @@ export function CheckPage() {
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message={`${t('有')} ${report.rules_unavailable.length} ${t('条规则判据不成立，已停用')}`}
+          message={`${t('There are')} ${report.rules_unavailable.length} ${t('rules with unmet criteria are disabled')}`}
           description={
             <div>
               <div>
-                {t(
-                  '判据提到的边/标注在本工程图上一个都没有，跑下去只会产出恒真误报（例如「没有 X 入边」在 X 不存在时对每个节点都成立）。宁可不跑，也不要报一堆假的。',
-                )}
+                {t('The edges/annotations the criteria mention are entirely absent from this project graph; running it would only produce vacuously-true false positives (e.g. "no X inbound edge" holds for every node when X does not exist). Better not to run than to report a pile of fake ones.')}
               </div>
               <ul style={{ marginBlock: 8, paddingLeft: 20 }}>
                 {report.rules_unavailable.map((s) => (
@@ -362,7 +356,7 @@ export function CheckPage() {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message={`${t('有')} ${report.rules_not_applicable.length} ${t('条规则不适用于本工程技术栈')}`}
+          message={`${t('There are')} ${report.rules_not_applicable.length} ${t('rules not applicable to this project tech stack')}`}
           description={
             <ul style={{ marginBlock: 8, paddingLeft: 20 }}>
               {report.rules_not_applicable.map((s) => (
@@ -378,18 +372,18 @@ export function CheckPage() {
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message={t('落库违规读取失败')}
+          message={t('Failed to read persisted violations')}
           description={
             <div>
               <div>{stored.error}</div>
               <div style={{ marginTop: 8 }}>
-                {t('侧栏角标来自汇总接口，它成功而本列表失败，就会看到「总数不为 0 但结果为空」。')}
+                {t('The sidebar badge comes from the summary endpoint; if it succeeds while this list fails, you will see "total non-zero but results empty".')}
               </div>
             </div>
           }
           action={
             <Button size="small" onClick={() => void stored.reload()}>
-              {t('重试')}
+              {t('Retry')}
             </Button>
           }
         />
@@ -400,16 +394,14 @@ export function CheckPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message={t('汇总有数但列表为空')}
-          description={t(
-            '汇总显示本工程共 {n} 条违规，但当前列表读到了 0 条 —— 常见原因是子工程筛选把结果过滤空了，或上一轮落库被重建清空而汇总仍是旧值。可点「刷新」重跑一次。',
-          ).replace('{n}', String(storedTotal))}
+          message={t('Summary has counts but the list is empty')}
+          description={t('Summary shows {n} violations for this project, but the current list read 0 — common causes: the sub-project filter emptied the results, or the last persisted run was wiped by a rebuild while the summary still holds the old value. Click «Refresh» to re-run.').replace('{n}', String(storedTotal))}
         />
       ) : null}
 
       {!hasResults && !stored.loading && !loadFailed && !emptyButShouldHaveData ? (
         <Empty
-          description={t('还没有检查结果 —— 点右上角「刷新」运行一次（新工程建图会自动跑）')}
+          description={t('No check result yet — run one via «Refresh» (new projects run automatically after build)')}
           style={{ marginBlock: 48 }}
         />
       ) : null}
@@ -419,7 +411,7 @@ export function CheckPage() {
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             <Col xs={12} md={4}>
               <StatCard
-                title={t('已装载规则')}
+                title={t('Rules loaded')}
                 value={report?.rules_total ?? rules.data?.length ?? 0}
                 accent="#7c5cff"
               />
@@ -440,15 +432,15 @@ export function CheckPage() {
           <Card
             variant="borderless"
             style={{ borderRadius: 14 }}
-            title={t('违规')}
+            title={t('Violations')}
             extra={
               report ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('耗时')} {report.duration_ms}ms · {t('跑了')} {report.rules_run} {t('条规则')}
+                  {t('Elapsed')} {report.duration_ms}ms · {t('ran')} {report.rules_run} {t('rules')}
                 </Typography.Text>
               ) : (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('显示上一次自动检查的结果，点「刷新」可重算')}
+                  {t('Shows the last automatic check result; click «Refresh» to recompute')}
                 </Typography.Text>
               )
             }
@@ -459,7 +451,7 @@ export function CheckPage() {
                 value={severity}
                 onChange={(v) => setSeverity(v as Severity | 'all')}
                 options={[
-                  { label: t('全部'), value: 'all' },
+                  { label: t('All'), value: 'all' },
                   ...SEVERITY_ORDER.map((s) => ({ label: t(SEVERITY_LABEL[s]), value: s })),
                 ]}
               />
@@ -483,7 +475,7 @@ export function CheckPage() {
               <Space size={6}>
                 <Switch size="small" checked={countBySeverity} onChange={setCountBySeverity} />
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('计数随严重度')}
+                  {t('counts follow severity')}
                 </Typography.Text>
               </Space>
               <Select
@@ -491,7 +483,7 @@ export function CheckPage() {
                 mode="multiple"
                 allowClear
                 style={{ minWidth: 200 }}
-                placeholder={t('全部子工程')}
+                placeholder={t('All sub-projects')}
                 value={subFilter}
                 onChange={(v) => setSubFilter(v ?? [])}
                 options={subs.map((s) => ({
@@ -505,19 +497,19 @@ export function CheckPage() {
               loading={stored.loading && !report}
               dataSource={filtered}
               pagination={{ pageSize: limit }}
-              locale={{ emptyText: t('没有命中的违规') }}
+              locale={{ emptyText: t('No matched violations') }}
               columns={[
                 {
-                  title: t('严重度'),
+                  title: t('Severity'),
                   dataIndex: 'severity',
                   width: 92,
                   render: (s: Severity) => (
                     <Tag color={SEVERITY_COLOR[s]}>{t(SEVERITY_LABEL[s])}</Tag>
                   ),
                 },
-                { title: t('规则'), dataIndex: 'rule_id', width: 190, ellipsis: true },
+                { title: t('Rule'), dataIndex: 'rule_id', width: 190, ellipsis: true },
                 {
-                  title: t('对象'),
+                  title: t('Target'),
                   dataIndex: 'node_name',
                   width: 220,
                   ellipsis: true,
@@ -527,9 +519,9 @@ export function CheckPage() {
                     </Tooltip>
                   ),
                 },
-                { title: t('说明'), dataIndex: 'message' },
+                { title: t('Description'), dataIndex: 'message' },
                 {
-                  title: t('位置'),
+                  title: t('Location'),
                   dataIndex: 'file',
                   width: 190,
                   ellipsis: true,

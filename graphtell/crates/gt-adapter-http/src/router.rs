@@ -559,7 +559,7 @@ async fn object_view(
     Query(q): Query<ViewQuery>,
 ) -> Json<ApiResponse<gt_domain::model::ObjectView>> {
     let Some(node) = q.node else {
-        return Json(ApiResponse::failure("缺少 node 参数"));
+        return Json(ApiResponse::failure("missing node parameter"));
     };
     match state
         .views
@@ -866,28 +866,28 @@ async fn compose_prompt(
     }
 }
 
-/// 提示词模板：先给证据（召回上下文），再给任务，末尾约束质量。
+/// Prompt template: evidence first (the recall context), then the task, quality constraints last.
 fn compose_prompt_text(query: &str, intent: Option<&str>, markdown: &str) -> String {
     let intent_text = intent
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| "（未填写，请依据下方代码上下文推断本次任务目标）".to_string());
+        .unwrap_or_else(|| "(not provided; please infer the task goal from the code context below)".to_string());
 
     format!(
-        "你是一名资深软件工程师。下面是为本次任务从代码知识图谱中检索出的【相关代码上下文】，\
-已按相关度精选出最相关的文件、符号与调用/数据关系，并给出文件路径、行号与关键片段。\n\n\
-========== 相关代码上下文（图谱召回） ==========\n\
+        "You are a senior software engineer. Below is the [RELEVANT CODE CONTEXT] retrieved from a code knowledge graph for this task:\
+the most relevant files, symbols and call / data relations have been selected by relevance, with file paths, line numbers and key snippets.\n\n\
+========== RELEVANT CODE CONTEXT (graph recall) ==========\n\
 {markdown}\n\
 ==============================================\n\n\
-【本次任务】\n\
+[TASK]\n\
 {intent}\n\n\
-（召回该上下文所用的检索词：{query}）\n\n\
-【要求】\n\
-1. 优先复用上下文中的文件、类、函数与字段命名；不要臆造上下文中不存在的接口或字段。\n\
-2. 上面只是“地图”：片段用于定位，如需完整实现细节，请按给出的文件路径与行号精准读取对应文件。\n\
-3. 改动范围收敛到与任务相关的文件，给出最小且可评审的改动。\n\
-4. 若上下文不足以支撑改动，请明确说明还缺什么，而不是凭空补全。\n",
+(Recall query used to build this context: {query})\n\n\
+[REQUIREMENTS]\n\
+1. Reuse the file, class, function and field names from the context; do not invent interfaces or fields that are absent from it.\n\
+2. The above is only a \"map\": snippets are for locating. For full implementation details, read the exact file at the given path and line number.\n\
+3. Keep the change scoped to task-relevant files and make it minimal and reviewable.\n\
+4. If the context is insufficient, say explicitly what is missing instead of filling the gaps by imagination.\n",
         markdown = markdown,
         intent = intent_text,
         query = query
@@ -1001,7 +1001,7 @@ async fn browse_fs(State(_state): State<Shared>, Query(q): Query<BrowseQuery>) -
             Json(ApiResponse::success(dirs))
         }
         Err(e) => Json(ApiResponse::failure(format!(
-            "无法读取目录「{}」: {}",
+            "Cannot read directory '{}': {}",
             candidate, e
         ))),
     }

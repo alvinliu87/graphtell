@@ -25,7 +25,7 @@ export function LocationList({
   kind,
   projectRoot,
   wslDistro,
-  emptyHint = '该节点没有可用的源码位置（可能是纯语义合成对象）',
+  emptyHint = 'This node has no usable source location (possibly a pure semantic synthetic object)',
   ordered = false,
   showCopyAll = true,
 }: {
@@ -52,7 +52,7 @@ export function LocationList({
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       {sensitive ? (
         <Typography.Text type="warning" style={{ fontSize: 12 }}>
-          {t('敏感位置：只跳到键名所在行，不展示任何值')}
+          {t('Sensitive location: jump only to the key-name line, no values shown')}
         </Typography.Text>
       ) : null}
       {locations.map((loc, i) => {
@@ -84,7 +84,7 @@ export function LocationList({
                   {loc.file}:{loc.line}
                 </Typography.Text>
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>
-                  {loc.note ?? (loc.symbol ? t('符号 ') + loc.symbol : '')}
+                  {loc.note ?? (loc.symbol ? t('symbol ') + loc.symbol : '')}
                 </div>
                 {loc.snippet ? (
                   <pre
@@ -107,12 +107,12 @@ export function LocationList({
               <Space size={4}>
                 {/*
                 <Dropdown menu={{ items }} trigger={['click']}>
-                  <Tooltip title={t('在 IDE 中打开（失败会自动复制路径）')}>
+                  <Tooltip title={t('Open in IDE (falls back to copying path on failure)')}>
                     <Button size="small" type="text" icon={<ExportOutlined />} />
                   </Tooltip>
                 </Dropdown>
                 */}
-                <Tooltip title={t('复制绝对 path:line')}>
+                <Tooltip title={t('Copy absolute path:line')}>
                   <Button
                     size="small"
                     type="text"
@@ -135,10 +135,10 @@ export function LocationList({
           size="small"
           block
           onClick={() =>
-            void copyAllLocations(locations, projectRoot, `${locations.length}${t(' 处来源位置')}`)
+            void copyAllLocations(locations, projectRoot, `${locations.length}${t(' source locations')}`)
           }
         >
-          {t('复制全部位置（绝对路径）')}
+          {t('Copy all locations (absolute paths)')}
         </Button>
       ) : null}
     </Space>
@@ -148,7 +148,7 @@ export function LocationList({
 /** 位置数量的角标。 */
 export function LocationBadge({ count }: { count: number }) {
   const { t } = useLocale();
-  if (count === 0) return <Tag>{t('无位置')}</Tag>;
-  if (count === 1) return <Tag color="blue">{1 + t(' 处位置')}</Tag>;
-  return <Tag color="blue">{count + t(' 处来源位置')}</Tag>;
+  if (count === 0) return <Tag>{t('No location')}</Tag>;
+  if (count === 1) return <Tag color="blue">{1 + t(' locations')}</Tag>;
+  return <Tag color="blue">{count + t(' source locations')}</Tag>;
 }

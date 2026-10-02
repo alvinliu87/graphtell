@@ -13,9 +13,9 @@ export function usePerspectives(projectId: number | undefined) {
 }
 
 /**
- * 对象类视角：只取"当前这一个对象"的链路子图。
+ * Object perspective: fetch the link subgraph of "just this one object".
  *
- * 恒为折叠视图：语法节点收进边的 `via` 链并带每跳调用处，单击边即可逐跳核对。
+ * Always a folded view: syntax nodes are folded into each edge's `via` chain with the call site of every hop, so a single click on an edge verifies it hop by hop.
  */
 export function useObjectView(
   projectId: number | undefined,
@@ -34,7 +34,7 @@ export function useObjectView(
   return { view: data, loading, error };
 }
 
-/** 聚合类视角：不是单链路，而是分组概览 / 矩阵。 */
+/** Aggregate perspective: not a single link but a grouped overview / matrix. */
 export function useAggregateView(
   projectId: number | undefined,
   perspective: string | undefined,
