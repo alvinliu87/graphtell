@@ -19,60 +19,60 @@ import { layoutOf, type LayoutInput, type LayoutResult } from './layout/types';
 import { nodeIcon, usedKinds } from './nodeIcons';
 
 /**
- * 超过这个边数就只在"悬浮 / 选中"时标注边类型。
+ * Beyond this many edges, label edge types only on "hover / selection".
  *
- * 边类型是语义图的"谓语"（`ReadsConfig` / `MapsTo` / `ReadsCache`…），标出来才读得懂；
- * 但共享资源视图可能有上百条边，全部标注会糊成一片 —— 所以边多时退化成"按需标注"，
- * 悬浮详情卡始终给出完整信息。
+ * The edge type is the semantic graph's "predicate" (`ReadsConfig` / `MapsTo` / `ReadsCache` …); labeling it is what makes the graph readable;
+ * but a shared-resource view can have hundreds of edges, and labeling them all turns into mush -- so with many edges it degrades to "label on demand",
+ * while the hover detail card always gives the full information.
  *
- * 40 是按"横向分层图"定的：标签沿各层散开，不太会叠。星形视图（一个中心拖 27 个
- * 配置键）所有边的中点都挤在中心附近那一小圈里，二十几个标签必然叠成一摞 ——
- * 所以这个阈值必须按"标签会不会物理重叠"取值，14 条以上星形就已经叠了。
+ * 40 was chosen for a "horizontal layered graph": labels spread across layers and rarely overlap. In a star view (one center dragging 27
+ * config keys) every edge's midpoint crowds into the small ring around the center, so twenty-odd labels inevitably stack --
+ * hence this threshold must be set by "will the labels physically overlap"; past 14 edges a star already overlaps.
  *
- * 这是**唯一**判据，不与缩放挂钩：标签与边同处一层 `scale(k)`，等比缩放不改变它们
- * 之间的相对排布 —— "缩小后更挤"是错觉，k=1 时不叠的在 k=0.5 时也不叠。
- * 缩放只改变字的物理像素，那件事由下面的反向补偿字号负责。
+ * This is the **only** criterion and is not tied to zoom: labels and edges live in the same `scale(k)` layer, and uniform scaling doesn't change
+ * their relative layout -- "more crowded when zoomed out" is an illusion; what doesn't overlap at k=1 doesn't overlap at k=0.5 either.
+ * Zooming only changes the glyph's physical pixels, which the compensating font size below takes care of.
  */
 const EDGE_LABEL_LIMIT = 14;
-/** 边标签基准字号（世界坐标，k=1 时的屏幕像素）。 */
+/** Base font size for edge labels (world coords, screen px at k=1). */
 const EDGE_LABEL_FONT = 10;
 /**
- * 反向补偿的字号上限（世界坐标）。
+ * Upper bound for the compensating font size (world coords).
  *
- * 缩小时若任由字号等比衰减，k=0.5 下只剩 5px —— 那是噪声不是信息；
- * 所以按 `10 / min(k, 1)` 反向放大。**必须封顶**：一是再大就要碰相邻标签（此时边不再
- * 等比变小，纯粹是字在长大），二是不能超过节点名（11px）—— 谓语比主语还响就把主次
- * 读反了。取 16 意味着补偿生效区间是 k∈[0.62, 1]，再往下才重新随图缩小（fit 下限 0.5
- * 时屏幕约 8px，仍认得出）。
+ * If the font were left to decay proportionally when zooming out, only 5px would remain at k=0.5 -- that's noise, not information;
+ * so we scale up inversely by `10 / min(k, 1)`. **It must be capped**: any larger and it collides with neighboring labels (the edge no longer
+ * shrinks proportionally, it's purely the glyph growing), and it must not exceed the node name (11px) -- a predicate louder than the subject
+ * reads the priority backwards. 16 means compensation is active over k∈[0.62, 1]; below that it shrinks with the graph again (at the fit floor
+ * of 0.5 it's about 8px on screen, still legible).
  */
 const EDGE_LABEL_MAX_FONT = 16;
 /**
- * 密图的放大逃生口：缩放 ≥ 此值时**无视边数**全部标注。
+ * Escape hatch for dense graphs: at or above this zoom, label **everything regardless of edge count**.
  *
- * 虽如上所述等比缩放不改变相对重叠，但放大会把大部分标签推出视口 —— 视野内的标签
- * 密度确实降下来了，这正是"凑近看细节"的时刻，此时给足谓语是划算的。
+ * As noted, uniform scaling doesn't change relative overlap, but zooming in pushes most labels out of the viewport -- the density of labels
+ * actually in view does drop, which is exactly the "zoom in for detail" moment, so giving full predicates then is worth it.
  */
 const EDGE_LABEL_DETAIL_K = 1.15;
 /**
- * 「适应屏幕」的缩放区间。
+ * Zoom range for "fit to screen".
  *
- * 下限 0.5：星形大图（一个中心拖 27 个药丸，包围盒 2000px+）在 0.85 下根本放不进
- * 视口 —— fit 把中心对到视口中央、两边照样被裁，"适应屏幕"名存实亡，只能盲滚。
- * 取舍从「宁可滚，也不缩字」改为「先见全貌，再看细节」：0.5 时 13px 字约 6.5px，
- * 认结构足够、认内容吃力。疏散图（≤ `EDGE_LABEL_LIMIT` 条边）在缩小时仍显示边标签
- * 且字号已反向补偿（见 `EDGE_LABEL_MAX_FONT`），所以这个尺度下依旧读得出谓语；
- * 密图才退化为按需标注。结构轮廓 + 滚轮放大看细节始终是这个尺度下的正确用法。
- * 上限是 1：小图不放大成巨号字。
+ * Lower bound 0.5: a large star graph (one center dragging 27 pills, bounding box 2000px+) simply doesn't fit the
+ * viewport at 0.85 -- fit centers it but both sides still get cut, so "fit to screen" exists in name only and you can only scroll blindly.
+ * The trade-off moved from "rather scroll than shrink text" to "see the whole first, then zoom for detail": at 0.5 a 13px glyph is about 6.5px,
+ * enough for structure, hard for content. Sparse graphs (≤ `EDGE_LABEL_LIMIT` edges) still show edge labels when zoomed out
+ * with the compensating font (see `EDGE_LABEL_MAX_FONT`), so predicates stay readable at that scale;
+ * only dense graphs degrade to on-demand labeling. Structure outline + wheel-zoom for detail is always the right usage at this scale.
+ * Upper bound 1: a small graph isn't blown up into giant text.
  */
 const FIT_MIN_K = 0.5;
 const FIT_MAX_K = 1;
-/** fit 时内容四周留白（世界坐标 px）。 */
+/** Padding around content when fitting (world px). */
 const FIT_PAD = 16;
-// 悬浮聚焦时非聚焦元素的淡出深度：随边数连续变化（边越少压得越浅，边越多压得越深），避免稀疏图像"全图消失"。
+// Fade depth for non-focused elements on hover focus: varies continuously with edge count (fewer edges = shallower, more edges = deeper), so a sparse graph never "disappears entirely".
 const DIM_OPACITY_MIN = 0.12; // deepest, for dense graphs
 const DIM_OPACITY_MAX = 0.4; // lightest, for sparse graphs
 const DIM_EDGE_LOW = 4; // below this many edges use the lightest
-/** 子工程配色：每种子工程一个稳定色相，多个前端 / 多个后端各自不同色（不再压成蓝 / 橙两桶）。 */
+/** Sub-project colors: one stable hue per sub-project; multiple frontends / backends each get their own color (no longer collapsed into blue / orange buckets). */
 const SUB_PROJECT_PALETTE = [
   '#0ea5e9', '#f97316', '#22c55e', '#a855f7', '#eab308',
   '#ec4899', '#14b8a6', '#6366f1', '#ef4444', '#84cc16',
@@ -96,10 +96,10 @@ function roleLabel(r?: string | null): string {
   return ROLE_LABEL[tier] ?? tier;
 }
 /**
- * 图例分区小标题（跨满两列网格）。
+ * Legend section subheading (spans both grid columns).
  *
- * 两个筛选维度（实体 / 关系）在链式视角下效果相近，光看图标列不出区别；
- * 加标题 + 悬浮说明，把"这两个开关各管什么"讲清楚，避免被当成同义按钮。
+ * The two filter dimensions (entity / relation) behave similarly under a chained perspective; icons alone don't show the difference;
+ * add a heading + hover explanation spelling out "what each toggle controls", so they aren't mistaken for synonymous buttons.
  */
 const LEGEND_SECTION_TITLE: CSSProperties = {
   gridColumn: '1 / -1',
@@ -110,21 +110,21 @@ const LEGEND_SECTION_TITLE: CSSProperties = {
 };
 
 /**
- * 图例项的勾选框：把「图例 = 筛选器」这件事直接画出来。
+ * The legend item checkbox: draws out the fact that "the legend is a filter".
  *
- * 只靠"悬浮才出现 pointer + 变淡删除线"传达可点击太弱：第一次看图例的人会把它
- * 当成配色说明（尤其下面还混着不可点的子工程配色行）。勾 / 空两态是筛选控件最
- * 通用的视觉语法（ECharts / Grafana 图例同款），不悬浮也能一眼看出
- * "这里能点"以及"当前是开还是关"。
+ * Relying only on "a pointer appears and it fades with a strikethrough on hover" to signal clickability is too weak: someone seeing the legend
+ * for the first time reads it as a color key (especially with non-clickable sub-project color rows mixed in below). Checked / empty is the most
+ * universal visual grammar for a filter control (same as ECharts / Grafana legends) -- without hovering you can see at a glance
+ * "this is clickable" and "is it currently on or off".
  *
- * 为什么**不跟随 kind 色**、统一中性灰：
- * * 浅色 kind（如 `HasCallSite: '#e2e8f0'`）填充后，白 ✓ 与边框在白底上都看不见，
- *   "勾了像没勾" —— 控件状态不能依赖语义色的明度碰运气；
- * * 颜色身份已由行内的节点图标 / 边线样承载，控件再上一次色只会让一行里同一颜色
- *   重复两三次，面板更像色卡而不是筛选器；
- * * 蓝色是调色板里的语义色（读库 `#3b82f6`、子工程 `#0ea5e9`），也是「重置」链接色，
- *   蓝色勾选框会被误读成"读库"那类；中性灰 `#64748b` 不与任何语义色撞车，
- *   与白 ✓ 的对比度约 4.8:1，可读。
+ * Why it **doesn't follow the kind color** and is uniformly neutral gray:
+ * * with a light kind color (e.g. `HasCallSite: '#e2e8f0'`) as fill, the white ✓ and the border are both invisible on white --
+ *   "checked looks unchecked" -- a control's state must not depend on the luck of a semantic color's lightness;
+ * * color identity is already carried by the node icon / edge line sample in the row; coloring the control too would repeat the same color
+ *   two or three times in one row, making the panel look like a swatch card rather than a filter;
+ * * blue is a semantic color in the palette (DB read `#3b82f6`, sub-project `#0ea5e9`) and also the "reset" link color, so a blue checkbox
+ would be misread as "DB read"-ish; neutral gray `#64748b` collides with no semantic color,
+ and its contrast against the white ✓ is about 4.8:1, readable.
  */
 function LegendCheck({ checked }: { checked: boolean }): ReactElement {
   return (
@@ -148,33 +148,33 @@ function LegendCheck({ checked }: { checked: boolean }): ReactElement {
     </span>
   );
 }
-const DIM_EDGE_HIGH = 40; // 边数高于此取最深
+const DIM_EDGE_HIGH = 40; // Above this edge count, use the deepest fade
 
 /**
- * 边的稳定唯一键。
+ * A stable unique key for an edge.
  *
- * 折叠视图里存在"合成边"（提拉 / 反向汇总得到，没有真实行），只靠 `id` 会撞键；
- * 同一对端点也可能有多条不同种类的边，所以带上端点一起构成键。
+ * The collapsed view has "synthetic edges" (produced by lifting / reverse aggregation, with no real line), so `id` alone collides;
+ * the same endpoint pair can also carry multiple edges of different kinds, so endpoints join the key.
  *
- * 还不够：正向视角下同一条传播边（seed）会被展开成**多条路径**，而 `view_service.rs`
- * 的 `push_edge` 给它们复用同一个 evidence 边 id —— 于是会出现 `(id, from, to)` 完全相同的
- * 两条边，只按 `id:from->to` 仍然撞键（表现为"悬浮一条高亮全部、悬浮卡永远显示第一条链"）。
- * 因此再带上 `seq`（该边在 `edges` 输入数组中的下标）。`EdgeView` 侧由 `viewEdgeKeys`
- * 用下标补齐同样的 `seq`，两处键才对齐。
+ * Still not enough: in a forward perspective one propagated edge (seed) expands into **multiple paths**, and `view_service.rs`'s
+ * `push_edge` reuses one evidence edge id for them -- so two edges can share an identical `(id, from, to)`, and keying by `id:from->to` alone
+ * still collides (showing up as "hovering one highlights all, the hover card always shows the first chain").
+ * Hence `seq` joins the key too (this edge's index in the input `edges` array). On the `EdgeView` side `viewEdgeKeys`
+ * pads the same `seq` with the index, so the two keys align.
  */
 const edgeKey = (e: { id: number; from: number; to: number; seq?: number }) =>
   `${e.seq ?? '?'}:${e.id}:${e.from}->${e.to}`;
 
 /**
- * 边标签锚点。
+ * Edge label anchor.
  *
- * 取折线**真实几何中点**（按累计长度），标签**嵌在边正中**：文字垂直居中
- * （渲染侧 `dominantBaseline="central"`）压在线上，白色描边在文字背后挖缺口，
- * 线从文字两侧露出 —— 所有边（水平 / 斜 / 竖）观感一致。
+ * Takes the polyline's **true geometric midpoint** (by accumulated length); the label is **embedded mid-edge**: text is vertically centered
+ * (render side `dominantBaseline="central"`) pressed onto the line, a white stroke cuts a gap behind the text,
+ * and the line shows through on both sides -- consistent for all edges (horizontal / diagonal / vertical).
  *
- * 不能用 `points[Math.floor(len / 2)]`：直线边只有两个点，索引 1 就是**终点**，
- * 标签会被后绘制的目标节点药丸（不透明白底）整块盖住 —— 表现就是
- * "只有悬浮时才能在卡片里看到边名"。
+ * Can't use `points[Math.floor(len / 2)]`: a straight edge has only two points, index 1 is the **endpoint**,
+ * and the label would be covered entirely by the later-drawn target pill (opaque white) -- showing up as
+ * "you can only see the edge name in the card on hover".
  */
 function labelAnchor(points: Array<[number, number]>): { x: number; y: number } {
   if (points.length === 0) return { x: 0, y: 0 };
@@ -202,17 +202,17 @@ function labelAnchor(points: Array<[number, number]>): { x: number; y: number } 
 }
 
 /**
- * 末段线段与节点矩形（中心 `cx,cy`、尺寸 `w×h`）的裁剪求交（Liang–Barsky），
- * 返回箭头尖应落的边界点：
+ * Clipping intersection (Liang–Barsky) of the last segment with the node rect (center `cx,cy`, size `w×h`),
+ * returning the boundary point where the arrow tip should land:
  *
- * - 终点在矩形**外/上**（辐射布局：终点本来就是药丸近侧边缘）⇒ 取线段离开矩形的交点，
- *   即终点自身 —— 箭头钉在**边的尽头**；
- * - 终点在矩形**内**（旧布局：终点是节点中心）⇒ 取线段进入矩形的交点，与旧
- *   `clipToRect` 行为一致。
+ * - endpoint **outside/above** the rect (radial layout: the endpoint is already the pill's near edge) => take where the segment leaves the rect,
+ *   i.e. the endpoint itself -- the arrow is pinned at **the edge's end**;
+ * - endpoint **inside** the rect (old layout: the endpoint is the node center) => take where the segment enters the rect, matching the old
+ *   `clipToRect` behavior.
  *
- * 不能用"指向中心的射线求交"替代：对宽扁药丸 + 斜入射的线，那条射线会先撞到
- * 矩形**底边**，箭头就悬到药丸正下方的空白里（真实出现过）。也不能用"沿方向退回
- * 半个药丸宽度"近似：入射角陡时会把箭头甩到药丸外面。
+ * Can't be replaced by "intersect a ray toward the center": for a wide flat pill with an oblique incoming line, that ray hits the rect's
+ * **bottom edge** first and the arrow hangs in the blank space right below the pill (this really happened). Nor by the approximation
+ * "pull back half a pill width along the direction": a steep incidence angle throws the arrow outside the pill.
  */
 function clipArrowTip(
   from: [number, number],
@@ -226,13 +226,13 @@ function clipArrowTip(
   const hh = h / 2;
   const dx = to[0] - from[0];
   const dy = to[1] - from[1];
-  // 终点在矩形内 ⇒ 取进入交点；在外/上 ⇒ 取离开交点（= 尽头处）
+  // Endpoint inside the rect => take the entry intersection; outside/above => take the exit intersection (= the far end)
   const toInside =
     Math.abs(to[0] - cx) <= hw + 1e-6 && Math.abs(to[1] - cy) <= hh + 1e-6;
   let t0 = 0;
   let t1 = 1;
   const clip = (p: number, q: number): boolean => {
-    if (Math.abs(p) < 1e-9) return q >= 0; // 平行且在界外 ⇒ 无交
+    if (Math.abs(p) < 1e-9) return q >= 0; // Parallel and outside bounds => no intersection
     const r = q / p;
     if (p < 0) {
       if (r > t1) return false;
@@ -248,7 +248,7 @@ function clipArrowTip(
     clip(dx, cx + hw - from[0]) &&
     clip(-dy, from[1] - (cy - hh)) &&
     clip(dy, cy + hh - from[1]);
-  if (!ok) return to; // 线段与矩形不相交（不该发生）：保底用终点
+  if (!ok) return to; // Segment doesn't intersect the rect (shouldn't happen): fall back to the endpoint
   const t = toInside ? t0 : t1;
   return [from[0] + dx * t, from[1] + dy * t];
 }
@@ -256,19 +256,19 @@ function clipArrowTip(
 export interface CanvasNode {
   id: number;
   kind: string;
-  /** 语义节点的类别（目前与 kind 一致）；语法节点为 null。 */
+/** Category of a semantic node (currently the same as kind); null for syntactic nodes. */
   category?: string | null;
-  /** 该节点对应的视角 id（点击即切）；无则为 null。 */
+/** The perspective id for this node (click to switch); null if none. */
   own_view?: string | null;
-  /** 节点所属「端」：`frontend` / `backend`（由 FKB 标注的 `side`）。用于图上区分前后端子工程。 */
+/** The "side" the node belongs to: `frontend` / `backend` (from the FKB-annotated `side`). Used to tell frontend / backend sub-projects apart on the graph. */
   side?: string | null;
-  /** 节点所属子工程 id（后端 `NodeView.sub_project_id`）。图着色 / 过滤以子工程为单位，而非二元前后端。 */
+/** The sub-project id the node belongs to (backend `NodeView.sub_project_id`). Graph coloring / filtering is per sub-project, not a binary frontend/backend. */
   sub_project_id?: number | null;
   name: string;
   ring: number;
   /**
-   * 以下为悬浮卡片的补充信息，**全部可选**：调用方可能只给出最小画布节点，
-   * 卡片必须能容忍它们缺失（曾经这里按 `NodeView` 强转后直接 `.length`，一悬浮就崩）。
+   * The following is supplementary info for the hover card, **all optional**: a caller may pass only a minimal canvas node,
+   * and the card must tolerate their absence (this once did `.length` right after an `as NodeView` cast and crashed on hover).
    */
   fqn?: string | null;
   locations?: SourceLocation[];
@@ -297,66 +297,66 @@ export interface GraphCanvasProps {
   clusters?: CanvasCluster[];
   matrix?: CanvasMatrix;
   loading?: boolean;
-  /** 上一个中心（切视角后保留为邻居并标记 `from`）。 */
+/** The previous center (kept as a neighbor and marked `from` after switching perspective). */
   originId?: number | null;
   selectedId?: number | null;
   hoverEnabled?: boolean;
   width?: number;
   height?: number;
-  /** 单击节点：`ownView` 为对应视角 id 时，一级视角切到它、二级对象设为该节点。 */
+/** Click a node: when `ownView` is its perspective id, switch the level-1 perspective to it and set the level-2 object to that node. */
   onNodeClick?: (id: number, kind: string, ownView: string | null) => void;
-  /** 右键 / 详情图标：打开 Inspector 或跳转，不切视角。 */
+/** Right-click / detail icon: open Inspector or navigate; does not switch perspective. */
   onNodeContextMenu?: (id: number, kind: string, event: React.MouseEvent) => void;
   onEdgeClick?: (edge: EdgeView) => void;
   locationsOf?: (id: number) => SourceLocation[];
-  /** 是否在边上标注边的类型（如 `ReadsConfig`）。默认开启，边过多或缩小时自动隐藏。 */
+/** Whether to label edge types on the edges (e.g. `ReadsConfig`). On by default; auto-hidden when there are too many edges or when zoomed out. */
   showEdgeLabels?: boolean;
   /**
-   * 图「语义内容」的标识。当其变化时（切换视角 / 选中对象 / 切聚合视图 / 展开语法），
-   * 重置平移缩放到「整图 fit」初始态。悬浮聚焦、手动缩放平移、单节点就地展开**不**改变它，
-   * 以免打断在当前图内的探索。
+   * Identity of the graph's "semantic content". When it changes (switch perspective / select object / switch aggregate view / expand syntax),
+   * reset pan/zoom to the "whole-graph fit" initial state. Hover focus, manual zoom/pan, and in-place single-node expansion do **not** change it,
+   * so they don't interrupt exploration within the current graph.
    */
   fitKey?: string | number;
-  /** 手动触发 fit 的信号：每次自增即把视图重置回整图 fit（工具栏「适应屏幕」按钮）。 */
+/** Manual fit signal: each increment resets the view back to whole-graph fit (the toolbar "fit to screen" button). */
   fitSignal?: number;
   /**
-   * 子工程过滤：按 `sub_project_id` 多选显示节点与边，中心节点始终保留作为锚点。
-   * 空数组（默认）表示不过滤、全部显示。多个前端 / 多个后端各自成一类，
-   * 不再被压成「前端 / 后端」两个桶。
+   * Sub-project filter: show nodes and edges by multi-selected `sub_project_id`; the center node is always kept as an anchor.
+   * An empty array (default) means no filtering, show everything. Multiple frontends / backends each form their own category,
+   * no longer collapsed into two "frontend / backend" buckets.
    */
   subFilter?: number[];
-  /** 当前工程的子工程列表（含 id / name / role），用于着色与图例。 */
+/** The current project's sub-project list (with id / name / role), used for coloring and the legend. */
   subProjects?: SubProject[];
   /**
-   * 图例即筛选：被隐藏的节点 kind 列表（按节点种类显隐）。
-   * 中心节点永远保留作锚点，即使它的 kind 在列表里。空数组（默认）表示不隐藏。
-   * 状态由父组件持有以便 URL 同步。
+   * The legend is the filter: the list of hidden node kinds (toggle by node kind).
+   * The center node is always kept as an anchor even if its kind is listed. Empty array (default) means hide nothing.
+   * State is held by the parent so it can be synced to the URL.
    */
   hiddenNodeKinds?: string[];
   /**
-   * 图例即筛选：被隐藏的边 kind 列表（按边种类显隐，如关掉全部「读库」即去掉所有
-   * `ReadsDb` 边）。空数组（默认）表示不隐藏。
-   * 连带效果：只经由被隐藏的边才能到达的点会一并收起（派生，不进状态）。
+   * The legend is the filter: the list of hidden edge kinds (toggle by edge kind, e.g. turning off all "DB read" removes every
+   * `ReadsDb` edge). Empty array (default) means hide nothing.
+   * Side effect: points reachable only through hidden edges are collapsed too (derived, not stored in state).
    */
   hiddenEdgeKinds?: string[];
-  /** 点击图例节点项：切换该 kind 的显隐。 */
+/** Click a legend node item: toggle visibility of that kind. */
   onToggleNodeKind?: (kind: string) => void;
-  /** 点击图例边项：切换该 kind 的显隐。 */
+/** Click a legend edge item: toggle visibility of that kind. */
   onToggleEdgeKind?: (kind: string) => void;
-  /** 一键清空所有图例筛选。 */
+/** Clear all legend filters at once. */
   onResetLegendFilters?: () => void;
 }
 
 /**
- * 图画布。
+ * The graph canvas.
  *
- * 交互分工（严格分离，避免"想跳代码却把视角切走了"）：
- * * **悬停** —— 只高亮，不改变任何状态
- * * **左键单击节点** —— 仅在节点有对应视角时切视角（导航）
- * * **右键 / 详情图标** —— 打开位置与跳转，不切视角
- * * **单击边** —— 打开边的证据链
+ * Interaction split (strictly separated, to avoid "wanting to jump to code but switching the perspective instead"):
+ * * **hover** -- highlight only, changes no state
+ * * **left-click a node** -- switch perspective only when the node has a matching perspective (navigation)
+ * * **right-click / detail icon** -- open locations and jump, no perspective switch
+ * * **click an edge** -- open the edge's evidence chain
  *
- * 位置全部由 `layoutOf(mode)` 决定，**不存在力导向自由漂移**。
+ * Positions are entirely decided by `layoutOf(mode)`; there is **no force-directed free drift**.
  */
 export function GraphCanvas(props: GraphCanvasProps) {
   const {
@@ -391,37 +391,37 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const [pointer, setPointer] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   /**
-   * 手动平移缩放。`null` 表示"未手动干预"，此时用 `fitTransform`（自动适应屏幕）。
+   * Manual pan/zoom. `null` means "no manual intervention", in which case `fitTransform` (auto fit to screen) is used.
    *
-   * 用 null 而不是存一份 fit 快照，是为了让首帧宽度未知（默认 1040）到
-   * ResizeObserver 量出真实宽度这段时间内，视图始终跟着布局自动重算，
-   * 而不是钉死在按 1040 算出来的那一次 fit 上。
+   * Using null rather than storing a fit snapshot lets the view keep recomputing from the layout during the window when the first-frame
+   * width is unknown (default 1040) until ResizeObserver measures the real width,
+   * instead of being pinned to the one fit computed from 1040.
    */
   const [transform, setTransform] = useState<{ x: number; y: number; k: number } | null>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
 
-  // 语义图内容切换（fitKey 变化）时，把平移缩放重置回「整图 fit」初始态。
-  // 悬浮聚焦 / 手动缩放平移 / 单节点就地展开不改变 fitKey，故不触发重置。
+  // On semantic-graph content switch (fitKey change), reset pan/zoom back to the "whole-graph fit" initial state.
+  // Hover focus / manual zoom-pan / in-place single-node expansion don't change fitKey, so they don't trigger a reset.
   useEffect(() => {
     setTransform(null);
   }, [fitKey]);
 
-  // 工具栏「适应屏幕」按钮：fitSignal 自增即重置为整图 fit。
+  // Toolbar "fit to screen" button: incrementing fitSignal resets to whole-graph fit.
   useEffect(() => {
     if (fitSignal === undefined) return;
     setTransform(null);
   }, [fitSignal]);
 
-  // 用真实容器宽度喂给布局，避免"按 1040 设计、再被窄列整体缩小"导致的拥挤。
-  // 首帧用默认 width，挂载后 ResizeObserver 量出真实宽度并触发一次重排（无感）。
+  // Feed the real container width to the layout, avoiding the crowding caused by "designing at 1040 and then being scaled down by a narrow column".
+  // The first frame uses a default width; after mount, ResizeObserver measures the real width and triggers one reflow (imperceptible).
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
   const renderW = measuredWidth ?? width;
-  // 角落图例（只列本次数据实际出现的 kind；可折叠）。默认展开，便于首次看懂图标含义。
+  // Corner legend (lists only the kinds actually present in this data; collapsible). Expanded by default so icon meanings are clear on first look.
   const [legendOpen, setLegendOpen] = useState(true);
 
-  // 本次视图实际出现的不同 kind 数：≤ 2 时（同质视图，如「谁调用了 X」几乎全是 Method）
-  // 图标在节点上全是同一种，既占横向空间又毫无区分度，退化成「只靠颜色」；≥ 3 才画图标。
+  // Number of distinct kinds actually present in this view: when ≤ 2 (a homogeneous view, e.g. "who calls X" is almost all Method)
+  // the icons would all look the same on nodes -- taking horizontal space with zero discriminative value, degrading to "color only"; draw icons only when ≥ 3.
   const showNodeIcons = useMemo(() => {
     const ks = new Set<string>();
     if (center) ks.add(center.kind);
@@ -430,9 +430,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return ks.size >= 3;
   }, [center, rings, clusters]);
 
-  // 子工程过滤：以 `sub_project_id` 为单位筛选节点与边，中心节点始终保留作为锚点；
-  // `sub_project_id == null` 的共享 / 未知节点在任一具体过滤下仍保留（属于所有子工程）。
-  // 过滤后的集合同时喂给布局、上色与前端调用方判断。
+  // Sub-project filtering: filter nodes and edges by `sub_project_id`; the center node is always kept as an anchor;
+  // shared / unknown nodes with `sub_project_id == null` stay under any concrete filter (they belong to all sub-projects).
+  // The filtered set feeds the layout, the coloring, and the frontend caller's decisions.
   const { fCenter, fRings, fEdges } = useMemo(() => {
     if (!subFilter || subFilter.length === 0) {
       return { fCenter: center, fRings: rings ?? [], fEdges: edges };
@@ -450,15 +450,15 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return { fCenter: center, fRings, fEdges };
   }, [center, rings, edges, subFilter]);
 
-  // 图例即筛选：在「子工程过滤」结果上，再按节点 kind / 边 kind 显隐。
+  // The legend is the filter: on top of "sub-project filtering", also toggle by node kind / edge kind.
   //
-  // 不变式：画面 = **可见边连成的子图**，中心恒保留作锚点。三步：
-  // 1. 按节点 kind 定候选点集，边两端有一个不在集合内就不画（避免悬空边）；
-  // 2. 按边 kind 剔除关系；
-  // 3. 收起「在可见边上度数为 0」的点 —— 只经由被隐藏的边才能到达的点（如关掉
-  //    「读缓存」后那些仅靠读缓存连着的点）在这张图里读不出任何信息，留着只会被
-  //    布局兜底排进列里占位（见 `layout/types.ts` 右列兜底），看上去像"筛了没筛掉"。
-  //    收起是**派生的**（不进状态），取消筛选即恢复。
+  // Invariant: the picture = **the subgraph formed by visible edges**, with the center always kept as an anchor. Three steps:
+  // 1. Pick the candidate node set by node kind; don't draw an edge if either endpoint is outside the set (avoid dangling edges);
+  // 2. Remove relations by edge kind;
+  // 3. Collapse points whose "degree over visible edges is 0" -- points reachable only via hidden edges (e.g. after turning off
+  //    "read cache", those reachable only through read-cache) carry no information in this graph, and keeping them just lets
+  //    the layout fallback place them in a column (see the right-column fallback in `layout/types.ts`), looking like "filtered but not really".
+  //    Collapsing is **derived** (not stored in state); cancelling the filter restores them.
   const { vCenter, vRings, vEdges, cascadeHidden } = useMemo(() => {
     const hn = hiddenNodeKinds ?? [];
     const he = hiddenEdgeKinds ?? [];
@@ -467,7 +467,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     }
     const hiddenNodeK = new Set(hn);
     const hiddenEdgeK = new Set(he);
-    // 候选点集：kind 未被隐藏的点；中心恒保留作锚点。
+    // Candidate node set: points whose kind isn't hidden; the center is always kept as an anchor.
     const candidates = new Set<number>();
     if (fCenter) candidates.add(fCenter.id);
     for (const ring of fRings) {
@@ -478,14 +478,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
     const vEdges = fEdges.filter(
       (e) => !hiddenEdgeK.has(e.kind) && candidates.has(e.from) && candidates.has(e.to),
     );
-    // 可见边 → 仍在图上的点（中心恒在）。
+    // Visible edges -> points still on the graph (the center always is).
     const linked = new Set<number>();
     if (fCenter) linked.add(fCenter.id);
     for (const e of vEdges) {
       linked.add(e.from);
       linked.add(e.to);
     }
-    // 连带收起的点数：本身 kind 没被隐藏、却在可见边上已无任何连接的点。
+    // Count of additionally collapsed points: those whose own kind isn't hidden but that have no connection left over visible edges.
     let collapsed = 0;
     const vRings = fRings.map((ring) =>
       ring.filter((n) => {
@@ -498,7 +498,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return { vCenter: fCenter, vRings, vEdges, cascadeHidden: collapsed };
   }, [fCenter, fRings, fEdges, hiddenNodeKinds, hiddenEdgeKinds]);
 
-  // 图例项取「未过滤」的全集：即便某 kind 已被隐藏也要留在图例里，才能重新点开。
+  // Legend items take the **unfiltered** full set: even a hidden kind must stay in the legend so it can be re-enabled.
   const legendNodeKinds = useMemo(
     () => usedKinds([...(fCenter ? [fCenter.kind] : []), ...(fRings ?? []).flat().map((n) => n.kind)]),
     [fCenter, fRings],
@@ -511,7 +511,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const hiddenEdgeSet = new Set(hiddenEdgeKinds ?? []);
   const hasLegendFilter = hiddenNodeSet.size > 0 || hiddenEdgeSet.size > 0;
 
-  // 子工程配色：按 id 排序后稳定映射到调色板，同一子工程颜色恒定、多个前端各自不同色。
+  // Sub-project coloring: map stably onto the palette after sorting by id; a sub-project always has the same color, and multiple frontends each get a different color.
   const subProjectColors = useMemo(() => {
     const m = new Map<number, string>();
     const ids = (subProjects ?? [])
@@ -522,7 +522,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return m;
   }, [subProjects]);
 
-  // 节点 → 子工程 id 映射（仅用于上色，用未过滤的全集，过滤不改变颜色语义）。
+  // Node -> sub-project id map (for coloring only; uses the unfiltered full set, filtering doesn't change color semantics).
   const subProjectOf = useMemo(() => {
     const m = new Map<number, number>();
     const add = (n?: CanvasNode | null) => {
@@ -540,7 +540,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     const input: LayoutInput = {
       center: vCenter ?? { id: -1, kind: 'Unknown', name: '', ring: 0 },
       rings: vCenter ? vRings : [],
-      // 带上 `seq`（下标）：同一 (id, from, to) 的多条路径靠它区分，见 `edgeKey` 的说明。
+      // With `seq` (index): multiple paths with the same (id, from, to) are distinguished by it, see `edgeKey`'s note.
       edges: vEdges.map((e, i) => ({ id: e.id, from: e.from, to: e.to, seq: i })),
       clusters: clusters?.map((c) => ({
         key: c.key,
@@ -556,10 +556,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return layoutOf(mode)(input);
   }, [mode, vCenter, vRings, vEdges, clusters, matrix, renderW, height]);
 
-  // 节点尺寸表：箭头回退量 / 选中描边要按节点实际形状（矩形药丸需按半宽，而非固定 12px）。
-  // x/y 也要存：箭头边界求交必须以**节点中心**为靶点（clipToRect 的约定），
-  // 不能拿折线终点凑——辐射布局的终点落在药丸近侧边缘而非中心，拿它当中心会把
-  // 箭头沿射线推离药丸半个宽度，悬在半空。
+  // Node size table: arrow pullback / selection stroke must follow the node's real shape (rect pills need half-width, not a fixed 12px).
+  // x/y must be stored too: arrow boundary intersection must target the **node center** (clipToRect's contract);
+  // you can't just use the polyline endpoint -- under a radial layout the endpoint lands on the pill's near edge, not the center,
+  // and treating it as the center pushes the arrow off the pill by half a width, leaving it hanging in mid-air.
   const nodeRectById = useMemo(() => {
     const m = new Map<number, { shape: 'circle' | 'rect'; x: number; y: number; w: number; h: number }>();
     layout?.nodes.forEach((n) =>
@@ -568,8 +568,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return m;
   }, [layout]);
 
-  // 依赖 loading / layout：loading 与空态返回的是不带 ref 的占位 div，
-  // 只有真正挂载图表容器（带 ref 的 div）后这里才观察得到真实宽度。
+  // Depends on loading / layout: loading and empty states return a placeholder div without a ref,
+  // so the real width is only observable once the chart container (the div with the ref) is actually mounted.
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -581,19 +581,19 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return () => ro.disconnect();
   }, [loading, layout]);
 
-  // 视口高度（世界坐标）。svg 的 viewBox 与渲染尺寸 1:1 —— 缩放**全部**交给内层 <g transform>。
-  // 旧实现把 viewBox 设成 `layout.width`（分层布局下可能 3000px+），浏览器按 `meet` 把整张图
-  // 连文字一起等比压回容器宽，于是"出边一多字就糊"；同时滚轮以光标为锚点的换算也失准
-  // （那段代码假设 viewBox 与屏幕 1:1）。
+  // Viewport height (world coords). The svg's viewBox is 1:1 with the render size -- **all** zooming is handed to the inner <g transform>.
+  // The old implementation set viewBox to `layout.width` (which under a layered layout can be 3000px+), so the browser's `meet`
+  // scaled the whole graph back down to the container width, text included -- hence "text goes blurry as soon as there are many out-edges";
+  // at the same time the cursor-anchored wheel conversion broke (that code assumed viewBox was 1:1 with the screen).
   const viewH = Math.max(320, layout ? layout.height : height);
-  // 图区实际可视高度（受外层 `maxHeight` 限制）：fit 按**看得见的那块**算，
-  // 而不是按滚动总高 —— 否则内容一高就被缩得比必要更小。
+  // The graph area's actual visible height (limited by the outer `maxHeight`): fit computes against **the visible slice**,
+  // not the total scroll height -- otherwise tall content gets shrunk smaller than necessary.
   const viewportH = Math.min(height, viewH);
 
   /**
-   * 真正的 zoom-to-fit：按**内容包围盒**（`layout.content`，缺失时退回整块画布）算缩放与居中。
+   * A true zoom-to-fit: compute scale and centering from the **content bounding box** (`layout.content`, falling back to the whole canvas).
    *
-   * 旧实现只是 `setTransform({x:0,y:0,k:1})`，等于"不缩放"，所以「适应屏幕」按钮按了跟没按一样。
+   * The old implementation was just `setTransform({x:0,y:0,k:1})`, i.e. "no scaling", so the "fit to screen" button did nothing.
    */
   const fitTransform = useMemo(() => {
     if (!layout) return null;
@@ -609,50 +609,50 @@ export function GraphCanvas(props: GraphCanvasProps) {
     };
   }, [layout, renderW, viewportH]);
 
-  // 供滚轮 / 拖拽在"尚未手动干预"时以 fit 态为起点做增量（ref 稳定，不进 useCallback 依赖）。
+  // Lets wheel / drag move incrementally from the fit state while "not yet manually intervened" (stable ref, not a useCallback dependency).
   const fitRef = useRef(fitTransform);
   fitRef.current = fitTransform;
 
-  // **必须在所有提前返回之前声明**，否则 loading 时它不执行、数据返回后多出一个 Hook，
-  // 会直接触发 "Rendered more hooks than during the previous render" 白屏
-  // （`GraphCanvas.test.tsx` 就是守这个用例的）。
+  // **Must be declared before all early returns**, otherwise it won't run while loading and an extra Hook appears after data arrives,
+  // directly triggering "Rendered more hooks than during the previous render" and a blank screen
+  // (`GraphCanvas.test.tsx` guards exactly this case).
   //
-  // 按 id 建索引：后端会为同一对端点的**不同路径**各出一条边。
-  // 注意 `id` **不保证互不相同** —— 正向视角下同一条传播边（seed）展开出的多条路径会复用
-  // 同一个 evidence 边 id。所以这里只是**兜底**（首个命中），真正的精确匹配靠 `seq` + `viewEdgeKeys`。
+  // Index by id: the backend emits one edge per **distinct path** between the same endpoint pair.
+  // Note `id` is **not guaranteed unique** -- in a forward perspective, multiple paths expanded from the same propagated edge (seed)
+  // reuse the same evidence edge id. So this is only a **fallback** (first hit); exact matching relies on `seq` + `viewEdgeKeys`.
   const edgeById = useMemo(() => {
     const m = new Map<number, EdgeView>();
     for (const e of edges) if (!m.has(e.id)) m.set(e.id, e);
     return m;
   }, [edges]);
-  // 兜底：就地展开的子图可能带来与主图重复的 id，此时退回按端点查。
+  // Fallback: an in-place expanded subgraph may bring ids duplicated with the main graph; fall back to lookup by endpoints.
   const edgeByPair = useMemo(() => {
     const m = new Map<string, EdgeView>();
     for (const e of edges) m.set(`${e.from}->${e.to}`, e);
     return m;
   }, [edges]);
-  // `EdgeView` → 唯一键：用**下标**补齐 `seq`，与布局产出的 `edgeKey`（带 `seq`）对齐。
-  // 有了它，`(id, from, to)` 相同、`via` 不同的多条平行路径也能各自独立悬浮 / 点击：
-  // 悬浮谁只点亮谁，点开抽屉也显示**这条路径自己的** `via` 链路。
+  // `EdgeView` -> unique key: pad `seq` with the **index** to align with the layout's `edgeKey` (which carries `seq`).
+  // With it, multiple parallel paths that share (id, from, to) but differ in `via` can each be hovered / clicked independently:
+  // hovering lights only the hovered one, and the drawer shows **that path's own** `via` chain.
   const viewEdgeKeys = useMemo(() => {
     const m = new Map<EdgeView, string>();
     edges.forEach((e, i) => m.set(e, edgeKey({ id: e.id, from: e.from, to: e.to, seq: i })));
     return m;
   }, [edges]);
-  // 前端 HTTP 调用方：作为 `CallsHttp` 边起点的函数节点。它本质上是「前端 API 入口」，
-  // 与后端 Method 同构、是被契约桥显式带入图的关键节点，不该以匿名语法药丸呈现。
-  // 这里只做**视觉升级**（带种类色填充），不改其 kind —— 既让它一眼读成「一等节点」，
-  // 又不破坏折叠视图「语义节点 / 塌缩兜底」的既有不变量与后端判定。
-  // 必须在提前 return 之前声明：loading→数据 两次渲染 Hook 数量不一致会白屏。
+  // Frontend HTTP caller: a function node that is the source of a `CallsHttp` edge. It is essentially a "frontend API entry",
+  // isomorphic to a backend Method and a key node explicitly brought into the graph by the contract bridge, so it shouldn't appear as an anonymous syntax pill.
+  // Here we only do a **visual upgrade** (kind-colored fill), without changing its kind -- making it read at a glance as a "first-class node"
+  // while preserving the collapsed view's existing invariants (semantic nodes / collapse fallback) and backend determinations.
+  // Must be declared before the early return: a loading→data Hook count mismatch would blank the screen.
   const frontendCallerIds = useMemo(() => {
     const s = new Set<number>();
     for (const e of fEdges) if (e.kind === 'CallsHttp') s.add(e.from);
     return s;
   }, [fEdges]);
 
-  // 聚焦：悬浮 node / edge 时，保留"目标 + 其直连邻居"全亮，其余淡出成鬼影（仍留结构轮廓）。
-  // 必须放在提前 return 之前，否则 loading→数据 两次渲染 Hook 数量不一致会白屏。
-  // 各视角一致：悬浮永远聚焦；淡出深度随边数自适应（稀疏图只轻微压暗、不整页消失）。
+  // Focus: when hovering a node / edge, keep "the target + its direct neighbors" fully lit, fade the rest to ghosts (structure outline still visible).
+  // Must be placed before the early return, otherwise a loading→data Hook count mismatch would blank the screen.
+  // Consistent across perspectives: hovering always focuses; fade depth adapts to edge count (a sparse graph only dims slightly, never vanishes).
   const focus = useMemo(() => {
     const nodes = new Set<number>();
     const edgeKeys = new Set<string>();
@@ -680,30 +680,30 @@ export function GraphCanvas(props: GraphCanvasProps) {
     }
     return { nodes, edgeKeys, hasFocus: hover != null || hoverEdge != null };
   }, [hover, hoverEdge, edges, viewEdgeKeys]);
-  // 悬浮聚焦：始终在悬浮 node / edge 时保留"目标 + 直连邻居"全亮、其余淡出（各视角一致）。
-  // 淡出深度随边数连续插值：4 条边≈0.4（轻微强调），40 条边≈0.12（深度压暗），中间线性过渡。
+  // Hover focus: always keep "the target + direct neighbors" fully lit and fade the rest when hovering a node / edge (same across perspectives).
+  // Fade depth interpolates continuously with edge count: 4 edges ≈ 0.4 (light emphasis), 40 edges ≈ 0.12 (deep dim), linear in between.
   const focusing = focus.hasFocus;
   const dimT = Math.min(1, Math.max(0, (edges.length - DIM_EDGE_LOW) / (DIM_EDGE_HIGH - DIM_EDGE_LOW)));
   const dimOpacity = DIM_OPACITY_MAX - (DIM_OPACITY_MAX - DIM_OPACITY_MIN) * dimT;
 
-  // 滚轮缩放必须用原生非 passive 监听器：React 合成 onWheel 在根上被注册为 passive，
-  // 调用 preventDefault 无效，会导致页面被一起滚动。这里用回调 ref，在 svg 真正挂载时挂上监听
-  // （loading / 空态提前返回期间 svg 不存在，回调 ref 会在挂载后自动重新触发），并显式 passive:false。
-  // 必须放在提前 return 之前，否则 loading→数据 两次渲染的 Hook 数量不一致会白屏。
+  // Wheel zoom must use a native non-passive listener: React's synthetic onWheel is registered as passive at the root,
+  // so preventDefault has no effect and the page scrolls along. Here a callback ref attaches the listener when the svg actually mounts
+  // (during loading / empty early returns the svg doesn't exist; the callback ref re-fires on mount), with explicit passive:false.
+  // Must be placed before the early return, otherwise a loading→data render would have a mismatched Hook count and blank the screen.
   const svgWheelRef = useCallback(
     (el: SVGSVGElement | null) => {
       if (!el) return;
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
         const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        // 以光标为锚点缩放：保持光标下的世界坐标点不动（viewBox 与渲染 1:1）。
+        // Zoom anchored at the cursor: keep the world point under the cursor fixed (viewBox is 1:1 with the render).
         const rect = el.getBoundingClientRect();
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
         setTransform((prev) => {
           const t = prev ?? fitRef.current ?? { x: 0, y: 0, k: 1 };
-          // 范围收窄到 0.6–2：缩放是"看空间关系"的手段，不是字号开关 ——
-          // 0.25 会把字压到 3px（不可读），3 会把药丸撑成巨块，两端都没有信息增量。
+          // Range narrowed to 0.6–2: zooming is a way to "see spatial relations", not a font-size switch --
+          // 0.25 squeezes text to 3px (unreadable), 3 blows pills into giant blocks; neither end adds information.
           const k = Math.max(0.6, Math.min(2, t.k * factor));
           const ratio = k / t.k;
           return { k, x: cx - ratio * (cx - t.x), y: cy - ratio * (cy - t.y) };
@@ -717,7 +717,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   if (loading) {
     return (
       <div style={{ height, display: 'grid', placeItems: 'center' }}>
-        {/* `tip` 只在 nest / fullscreen 模式下生效，这里用文字并列避免 antd 告警 */}
+        {/* `tip` only takes effect in nest / fullscreen mode; the text is placed side by side here to avoid an antd warning */}
         <Space direction="vertical" align="center" size={8}>
           <Spin />
           <Typography.Text type="secondary">{t('Loading view…')}</Typography.Text>
@@ -733,8 +733,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
     );
   }
 
-  // 就用 `CanvasNode` 的真实类型：早先这里 `as NodeView` 谎报了字段，
-  // 于是悬浮卡片访问 `locations.length` 时数据在、类型在、运行时没有 —— 直接崩。
+  // Use `CanvasNode`'s real type: earlier this lied with `as NodeView` about fields,
+  // so the hover card had the data and the type but not the runtime value when accessing `locations.length` -- a hard crash.
   const nodeById = new Map<number, CanvasNode>();
   const allNodes: CanvasNode[] = [];
   if (center) allNodes.push(center);
@@ -752,12 +752,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const hoveredEdge =
     hoverEdge != null ? edges.find((x) => viewEdgeKeys.get(x) === hoverEdge) ?? null : null;
 
-  // 生效的变换：未手动缩放平移时自动适应屏幕。
-  // 取名 `tf` 而非 `view`，避免与边渲染里的局部 `view`（EdgeView）混淆。
+  // Effective transform: auto-fit to screen when not manually zoomed/panned.
+  // Named `tf` rather than `view` to avoid confusion with the local `view` (EdgeView) in edge rendering.
   const tf = transform ?? fitTransform ?? { x: 0, y: 0, k: 1 };
 
-  // 边标签字号：**只在缩小时**反向补偿（`min(k, 1)`）。放大时保持不变，让标签随图一起
-  // 长大 —— 那才是"凑近看细节"的预期；`EDGE_LABEL_MAX_FONT` 负责封顶。
+  // Edge label font size: compensate inversely **only when zooming out** (`min(k, 1)`). When zooming in it stays put so labels
+  // grow with the graph -- which is the expected "zoom in for detail"; `EDGE_LABEL_MAX_FONT` caps it.
   const edgeLabelFont = Math.min(EDGE_LABEL_MAX_FONT, EDGE_LABEL_FONT / Math.min(tf.k, 1));
 
   return (
@@ -779,8 +779,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
         setHoverEdge(null);
       }}
     >
-      {/* 内容比视口高时改为滚动查看。旧实现用 `min(height, layout.height)` + `overflow:hidden`，
-          超出部分被直接裁掉且**无法**滚动 —— 分层图一深就"下半截凭空消失"。 */}
+      {/* When content is taller than the viewport, switch to scrolling. The old implementation used `min(height, layout.height)` + `overflow:hidden`,
+          so the overflow was cut off and **could not** be scrolled -- "the bottom half vanishes into thin air" as soon as a layered graph got deep. */}
       <div style={{ maxHeight: height, overflow: 'auto' }}>
         <svg
           width="100%"
@@ -806,12 +806,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
           style={{ cursor: 'grab', display: 'block' }}
         >
         <g transform={`translate(${tf.x},${tf.y}) scale(${tf.k})`}>
-          {/* 同心环引导线：显式标出"环 = 跳数"，仅视觉参照，不参与命中 */}
+          {/* Concentric ring guides: explicitly mark "ring = hop count", visual reference only, not part of hit-testing */}
           {layout.guides?.map((g, i) => (
             <g key={`guide${i}`}>
-              {/* 以下线宽一律 `non-scaling-stroke`：缩放只改变**空间关系**，不把线一起放大/压细
-                  （地图语义）。放大时不糊成粗杠，缩小时也不会细到看不见。
-                  文字与其描边白底**不**在此列 —— 它们要跟着字号走，否则描边与字脱节。 */}
+              {/* All stroke widths below use `non-scaling-stroke`: zooming changes **spatial relations** only, it doesn't fatten/thin the lines
+                  (map semantics). No mush into thick bars when zooming in, no invisibility when zooming out.
+                  Text and its white stroke backing are **not** in that group -- they follow the font size, otherwise stroke and glyph drift apart. */}
               <circle
                 cx={g.cx}
                 cy={g.cy}
@@ -834,7 +834,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
             </g>
           ))}
 
-          {/* 聚类框 */}
+          {/* Cluster boxes */}
           {layout.groups?.map((g) => (
             <g key={g.key}>
               <rect
@@ -857,7 +857,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
             </g>
           ))}
 
-          {/* 矩阵 */}
+          {/* Matrix */}
           {layout.cells?.map((c, i) => (
             <Tooltip
               key={i}
@@ -908,38 +908,38 @@ export function GraphCanvas(props: GraphCanvasProps) {
             </text>
           ))}
 
-          {/* 边 */}
+          {/* Edges */}
           {layout.edges.map((e) => {
-            // 精确回指：`seq` = 这条边在 `edges` 中的下标 ⇒ 直接取到**含各自 via 的那条** EdgeView。
-            // 同一 (id, from, to) 的多条平行路径因此不再共用同一个 view（否则悬浮卡永远显示第一条）。
-            // 仅当布局未带 `seq`（历史 / 合成路径）时才退回按 id / 端点查。
+            // Exact back-reference: `seq` = this edge's index in `edges` => directly get **the EdgeView that carries its own via**.
+            // Multiple parallel paths sharing (id, from, to) therefore no longer share one view (otherwise the hover card always showed the first).
+            // Falls back to lookup by id / endpoints only when the layout carries no `seq` (legacy / synthetic paths).
             const view =
               (e.seq != null ? edges[e.seq] : undefined) ??
               edgeById.get(e.id) ??
               edgeByPair.get(`${e.from}->${e.to}`) ??
               edges.find((x) => x.id === e.id);
-            // 聚焦：悬浮时保留"目标边 + 其两端 node"全亮，其余按密度压暗。
+            // Focus: when hovering, keep "the target edge + its two endpoint nodes" fully lit and dim the rest by density.
             const inFocus = focus.edgeKeys.has(edgeKey(e));
             const dim = focusing && !inFocus;
             const active = inFocus;
             const d = e.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]},${p[1]}`).join(' ');
-            // 标签锚点：真实几何中点 + 法线偏移，避免落在边线上或目标节点底下
+            // Label anchor: the true geometric midpoint + normal offset, to avoid landing on the edge line or under the target node
             const lp = labelAnchor(e.points);
-            // 方向箭头：沿末段方向在终点前回退若干 px 画小三角，避免被节点盖住。
-            // 矩形药丸按半宽回退，圆形按固定量回退。
+            // Direction arrow: draw a small triangle pulled back a few px before the endpoint along the last segment, to avoid being covered by the node.
+            // Rect pills pull back by half-width, circles by a fixed amount.
             const _pts = e.points;
             const _p1 = _pts[_pts.length - 1];
             const _p0 = _pts[_pts.length - 2] ?? _pts[0];
             const _ang = Math.atan2(_p1[1] - _p0[1], _p1[0] - _p0[0]);
             const _toRect = nodeRectById.get(e.to);
-            // 箭头尖 = 末段线段与目标矩形的交点：终点在药丸边缘时就是终点本身（钉在边的尽头），
-            // 终点在中心时退化为进入交点（旧布局行为不变）。
+            // Arrow tip = intersection of the last segment with the target rect: when the endpoint is on the pill edge it is the endpoint itself (pinned at the edge's end),
+            // when the endpoint is at the center it degrades to the entry intersection (old layout behavior unchanged).
             const _border = _toRect
               ? clipArrowTip(_p0, _p1, _toRect.x, _toRect.y, _toRect.w, _toRect.h)
               : _p1;
             const _len = Math.hypot(_p1[0] - _p0[0], _p1[1] - _p0[1]) || 1;
-            // 箭头尖直接落在边界交点上（不再回退 3px）：终点已由布局钉在药丸近侧边缘，
-            // 回退只会产生"差一点没到尽头"的空隙（用户实测反馈）。
+            // Arrow tip lands directly on the boundary intersection (no longer pulled back 3px): the endpoint is already pinned to the pill's near edge by the layout,
+            // and pulling back only creates a "just short of the end" gap (from real user feedback).
             const _tipx = _border[0];
             const _tipy = _border[1];
             const _a = 6;
@@ -950,7 +950,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const _ay2 = _tipy - _a * Math.sin(_ang + _s);
             return (
               <g key={edgeKey(e)} style={{ opacity: dim ? dimOpacity : 1, transition: 'opacity 140ms' }}>
-                {/* 加宽的透明命中区，便于悬浮细边 */}
+                {/* Widened transparent hit area, to make thin edges easy to hover */}
                 <path
                   d={d}
                   fill="none"
@@ -971,23 +971,23 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   vectorEffect="non-scaling-stroke"
                   style={{ pointerEvents: 'none', transition: 'stroke-width 140ms ease, stroke-opacity 140ms ease' }}
                 />
-                {/* 方向箭头：点明有向依赖的流向（consumer→table / handler→config…）。
-                    折叠的"经 N 跳"边同样画箭头——方向仍成立，非直连已由虚线 + 注解表达。 */}
+                {/* Direction arrow: shows the flow of a directed dependency (consumer→table / handler→config …).
+                    A folded "via N hops" edge also gets an arrow -- the direction still holds, and non-directness is already expressed by the dashed line + annotation. */}
                 <polygon
                   points={`${_tipx},${_tipy} ${_ax1},${_ay1} ${_ax2},${_ay2}`}
                   fill={edgeColor(view?.kind ?? '')}
                   fillOpacity={active ? 1 : 0.7}
                   style={{ pointerEvents: 'none' }}
                 />
-                {/* 边的类型：语义边种类（`ReadsConfig` / `MapsTo`…）就是这个图的"谓语"，
-                    标出来才读得懂。默认**常显**（不再要求悬浮）：只有边数超过阈值才
-                    退化为"只标悬浮/选中那条"以防糊成一片。悬浮时其它边只淡出、不隐藏
-                    标签（不因聚焦而丢信息）。
-                    阈值只看**密度**（且用 `layout.edges` 而非入参 `edges` —— 折叠视图会
-                    合成 / 去重，真正画出来的是前者）：标签与图同为等比缩放，相对排布不
-                    随 zoom 改变，所以"要不要标"取决于会否重叠（边数 / 锚点分布），
-                    与放大缩小无关；字号另由 `edgeLabelFont` 反向补偿保住可读性。
-                    例外是 `EDGE_LABEL_DETAIL_K`：放大到那个尺度 = 用户在看细节，密图也全标。 */}
+                {/* Edge type: the semantic edge kind (`ReadsConfig` / `MapsTo` …) is this graph's "predicate";
+                    labeling it is what makes it readable. **Always shown** by default (no longer requires hover): only when the edge count
+                    exceeds the threshold does it degrade to "label just the hovered / selected one" to avoid mush. On hover other edges only fade, never hide
+                    their labels (focus never loses information).
+                    The threshold looks only at **density** (and uses `layout.edges` rather than the input `edges` -- the collapsed view synthesizes /
+                    dedupes, and the former is what actually gets drawn): labels and graph scale together, so relative layout doesn't
+                    change with zoom -- whether to label depends on possible overlap (edge count / anchor distribution),
+                    not on zooming in or out; font size is separately kept readable by `edgeLabelFont`'s compensation.
+                    The exception is `EDGE_LABEL_DETAIL_K`: zooming to that scale = the user is looking at detail, so even dense graphs label everything. */}
                 {view &&
                 showEdgeLabels &&
                 (active ||
@@ -1001,24 +1001,24 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     textAnchor="middle"
                     dominantBaseline="central"
                     stroke="#ffffff"
-                    // 挖缺口的白色描边随字号等比变化：补偿后字变大了，描边若固定 3.5
-                    // 会相对变细，压不住底下的边线。
+                    // The white stroke cutout scales with font size: after compensation the text is bigger, and a fixed 3.5 stroke
+                    // would be relatively thinner, unable to cover the edge line underneath.
                     strokeWidth={edgeLabelFont * 0.35}
                     strokeLinejoin="round"
                     paintOrder="stroke"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}
                   >
-                    {/* 边种类（按语言本地化为语义谓语，如 `PublishesTo` → `投递到`） */}
+                    {/* Edge kind (localized per language into a semantic predicate, e.g. `PublishesTo` → "publishes to") */}
                     <tspan fill={edgeColor(view.kind)}>{t(`edge.${view.kind}`)}</tspan>
-                    {/* 折叠的间接依赖（跨 N 个语法节点）靠虚线 + 图例区分，具体跳数在悬浮卡里给，
-                        不再挤进线上标签以免加长白缺口、和相邻边叠。 */}
+                    {/* Folded indirect dependencies (spanning N syntactic nodes) are distinguished by the dashed line + legend; the exact hop count is given in the
+                        hover card rather than squeezed into the on-line label, which would lengthen the white gap and overlap neighbors. */}
                   </text>
                 ) : null}
               </g>
             );
           })}
 
-          {/* 节点 */}
+          {/* Nodes */}
           {layout.nodes.map((n) => {
             const meta = nodeById.get(n.id);
             const isCenter = center?.id === n.id;
@@ -1027,16 +1027,16 @@ export function GraphCanvas(props: GraphCanvasProps) {
             const h = n.h ?? 26;
             const fill = nodeColor(n.kind);
             const isFrontendCaller = frontendCallerIds.has(n.id);
-            // 节点描述：种类 / 类别 / 名称。只挂 `aria-label` 给读屏，不做视觉 tooltip ——
-            // 悬浮详情卡已经给出这些信息（还更多），原生 `<title>` 会晚约 1 秒在光标处再弹一遍
-            // 同一份内容、叠在卡片上互相遮挡。见 `<g>` 上的注释。
+            // Node description: kind / category / name. Only `aria-label` for screen readers, no visual tooltip --
+            // the hover detail card already gives this information (and more), and a native `<title>` would pop the same content
+            // again at the cursor ~1 second later, overlapping and occluding the card. See the note on `<g>`.
             const ariaLabel =
               meta?.category && meta.category !== n.kind
                 ? `${t(`node.${n.kind}`)} (${meta.category}) · ${n.name}`
                 : `${t(`node.${n.kind}`)} · ${n.name}`;
-            // 节点统一为 rect 药丸，文字内嵌于框内，无需外伸标签。
-            // 前端 HTTP 调用方填充种类色（淡），从匿名白底语法药丸升级为「一等节点」观感；
-            // 其余节点保持白底 + 种类色描边。
+            // Nodes are uniformly rect pills with text inside the box; no external labels needed.
+            // Frontend HTTP callers get a kind-colored fill (light), upgraded from anonymous white syntax pills to a "first-class node" look;
+            // other nodes keep a white fill with a kind-colored stroke.
             return (
               <g
                 key={n.id}
@@ -1055,9 +1055,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   onNodeContextMenu?.(n.id, n.kind, e);
                 }}
               >
-                {/* 所有节点统一用 1.4px 种类色描边；中心节点的强调改由尺寸 + 字重承担，
-                    不再靠加粗边框堆层级，避免同 kind 节点描边粗细看着不一致。
-                    前端 HTTP 调用方额外填充淡种类色，凸显其「一等入口」地位。 */}
+                {/* All nodes use a uniform 1.4px kind-colored stroke; center emphasis is carried by size + font weight instead,
+                    no longer stacking hierarchy via thicker borders, which made same-kind nodes' stroke widths look inconsistent.
+                    Frontend HTTP callers additionally get a light kind fill to highlight their "first-class entry" status. */}
                 <rect
                   x={-w / 2}
                   y={-h / 2}
@@ -1071,8 +1071,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   vectorEffect="non-scaling-stroke"
                   style={{ transition: 'stroke-width 140ms ease' }}
                 />
-                {/* 前后端标记：节点右上角的色点（蓝=前端 / 橙=后端），一眼区分该节点属于哪一端。
-                    颜色与图例一致；无 `side` 的语法节点（File / Class …）不画。 */}
+                {/* Frontend/backend marker: a color dot at the node's top-right (blue = frontend / orange = backend) tells at a glance which side a node belongs to.
+                    Colors match the legend; syntactic nodes without `side` (File / Class …) get none. */}
                 {(() => {
                   const sid = subProjectOf.get(n.id);
                   if (sid == null) return null;
@@ -1101,19 +1101,19 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     from
                   </text>
                 ) : null}
-                {/* 这里**不**放原生 `<title>` 作 tooltip：悬浮详情卡（见下方）在悬浮瞬间就给出
-                    「种类 / 类别 / 名称 / 入出边 / 位置 / 下一步」，而原生 title 会在约 1 秒后
-                    在光标处再弹一遍同一份信息，正好压在卡片上互相遮挡（两套 tooltip 抢同一块地方）。
-                    同一份文案改挂 `aria-label`（见 `<g>`）：读屏仍可拿到，但零视觉副作用。 */}
-                {/* 种类图标：以 kind 色填充，替代原来的彩色 kind 文字前缀 —— 省下横向空间给名字，
-                    长路径（如路由）就能显示更完整。图标固定 12px：主体是名字，图标只是辅助认出种类；
-                    14px 时图标比 13px 的字还高，反而抢过名字（截图里最明显的观感问题）。
-                    12px 也是这类细描边图标的清晰下限，再小笔画会糊。
-                    `pillWidth` 的 `ICON_AREA` / 文字起点必须同步（21 = 左内边距 6 + 图标 12 + 间隔 3）。
-                    仅当本次视图出现的 kind ≥ 3 时才画（同质视图退化为只靠颜色，见 `showNodeIcons`）。
-                    必须包 `<foreignObject>`：antd 图标根元素是 HTML `<span>`，直接放进 SVG `<g>`
-                    会被浏览器按 SVG 命名空间丢弃（表现为图标消失、但 21px 图标位仍占着 —— 空白假象）。
-                    尺寸用 fontSize 控制（span 上的 width/height 属性无效），与图例渲染口径一致。 */}
+                {/* A native `<title>` tooltip is deliberately **not** placed here: the hover detail card (below) already gives
+                    "kind / category / name / in-out edges / locations / next steps" the instant you hover, while a native title would pop the same
+                    information again at the cursor about 1 second later, landing right on top of the card (two tooltips fighting over the same spot).
+                    The same copy is hung on `aria-label` instead (see `<g>`): screen readers still get it, with zero visual side effects. */}
+                {/* Kind icon: filled with the kind color, replacing the old colored kind text prefix -- saves horizontal space for the name,
+                    so long paths (e.g. routes) show more completely. Icon fixed at 12px: the name is the subject, the icon only helps recognize the kind;
+                    at 14px the icon is taller than the 13px text and steals attention from the name (the most obvious issue in screenshots).
+                    12px is also the clarity floor for this kind of thin-stroke icon; below that the strokes mush.
+                    `pillWidth`'s `ICON_AREA` / text start must stay in sync (21 = left padding 6 + icon 12 + gap 3).
+                    Drawn only when this view has ≥ 3 kinds (a homogeneous view degrades to color only, see `showNodeIcons`).
+                    Must be wrapped in `<foreignObject>`: an antd icon's root element is an HTML `<span>`; put directly inside an SVG `<g>`
+                    the browser drops it under the SVG namespace (showing up as the icon vanishing while the 21px icon slot is still reserved -- a blank illusion).
+                    Size is controlled via fontSize (width/height attributes on a span have no effect), consistent with the legend's rendering. */}
                 {showNodeIcons ? (
                   (() => {
                     const Icon = nodeIcon(n.kind);
@@ -1131,10 +1131,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
                     );
                   })()
                 ) : null}
-                {/* 名称字号 / 字重：中心 13px/600，其它 11px/500。
-                    中心已有三重强调 —— 位置（居中 / 左列锚点）、字号（13 vs 11）、颜色（#0f172a vs #475569），
-                    再加 700 就是第四重，13px 下字面又黑又挤，长路由名还更占宽度；600 仍明显重于 500，
-                    且与产品里其它强调保持一致（图例标题 / 聚类标签 / 悬浮卡名字都是 600，700 只留给角标级小字）。 */}
+                {/* Name font size / weight: center 13px/600, others 11px/500.
+                    The center already has threefold emphasis -- position (centered / left-column anchor), size (13 vs 11), color (#0f172a vs #475569);
+                    adding 700 would be a fourth, and at 13px the glyphs get heavy and cramped, and long route names take more width; 600 is still clearly
+                    heavier than 500 and stays consistent with other emphasis in the product (legend headings / cluster labels / hover card names are all 600; 700 is reserved for badge-level small text). */}
                 <text
                   x={-w / 2 + (showNodeIcons ? 21 : 8)}
                   y={4}
@@ -1144,14 +1144,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   textAnchor="start"
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 >
-                  {/* 语义名（如 `store_order_refund_service` / `GET /v2/order/.../create`）才是人
-                      真正在找的实体，做主。种类已由左侧图标 + 色表达，不再喧宾夺主。长名按**视觉宽度**
-                      中间截断 40 位（保头尾，CJK 一字计 1.8 位），与布局 `pillWidth` 估算一致，不会溢出药丸。
-                      `tspan` 已删：它原本把父级同样的字号 / 字重再写一遍，还和父级不一致（400 vs 500），
-                      留下只有两个真相来源的风险。 */}
+                  {/* The semantic name (e.g. `store_order_refund_service` / `GET /v2/order/.../create`) is what a person
+                      is actually looking for, so it leads. Kind is already conveyed by the left icon + color and no longer competes. Long names are truncated
+                      in the middle at 40 by **visual width** (keeping head and tail; a CJK char counts as 1.8), matching the layout's `pillWidth` estimate so they don't overflow the pill.
+                      `tspan` was removed: it repeated the parent's same font size / weight and was even inconsistent with it (400 vs 500),
+                      leaving the risk of two sources of truth. */}
                   {truncateMiddle(n.name, 40)}
                 </text>
-                {/* 选中环只给"非中心的选中节点"留（当前交互下不会出现，留作扩展点） */}
+                {/* The selection ring is kept only for "non-center selected nodes" (unreachable in the current interaction; left as an extension point) */}
                 {selectedId === n.id && !isCenter ? (
                   <rect
                     x={-w / 2 - 3}
@@ -1171,7 +1171,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         </svg>
       </div>
 
-      {/* 悬浮详情卡：取代"其它节点 / 边变淡"的旧行为 —— 悬浮即给出可读属性 */}
+      {/* Hover detail card: replaces the old "fade other nodes / edges" behavior -- hovering immediately gives readable attributes */}
       {hoveredNode ? (
         <div
           style={{
@@ -1278,8 +1278,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
         </div>
       ) : null}
 
-      {/* 底部只常驻**图例**（虚线 = 间接是这张图最易误读的点）；
-          布局说明与操作提示收进 ⓘ —— 都是看一次就够的文案，不值得占一行。 */}
+      {/* Only the **legend** is permanently pinned at the bottom (dashed = indirect is the most easily misread point of this graph);
+          layout notes and usage hints are folded into the ⓘ -- copy you read once, not worth a line. */}
       <div
         style={{
           padding: '8px 14px',
@@ -1297,8 +1297,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
           <InfoCircleOutlined style={{ cursor: 'help', color: 'rgba(0,0,0,0.35)' }} />
         </Tooltip>
       </div>
-      {/* 角落图例：列出本次数据实际出现的 kind → 图标 / 本地化名，可折叠。
-          图标与节点内图标同源（nodeIcon），颜色取该 kind 色 —— 看图即可对上号。 */}
+      {/* Corner legend: lists the kinds actually present in this data -> icon / localized name, collapsible.
+          Icons come from the same source as the in-node icons (nodeIcon), colored by that kind -- you can match them by looking at the graph. */}
       {layout.nodes.length > 0 ? (
         <div
           style={{
@@ -1329,11 +1329,11 @@ export function GraphCanvas(props: GraphCanvasProps) {
           >
             <span>{t('Legend')}</span>
             <span style={{ color: 'rgba(0,0,0,0.35)' }}>{legendOpen ? '▾' : '▸'}</span>
-            {/* 不常驻「点击筛选」字样：勾选框的勾/空两态已经把"可点"说清楚了，
-                再写一遍只会和「图例 ▾」「连带收起 N 点」「重置」抢这 240px 的标题行；
-                "点一下会发生什么"由每行的悬浮提示解释（一次就够的文案不占常驻位置）。 */}
-            {/* 连带收起的点数：因为某些关系被关掉而失去全部可见连接的点。
-                给个可见反馈，否则用户点了图例却看到"点也少了"，会以为按钮失灵。 */}
+            {/* A permanent "click to filter" label is deliberately absent: the checkbox's checked/empty states already say "clickable";
+                writing it again would compete for the 240px title row with "legend ▾", "N points collapsed", "reset";
+                "what happens on click" is explained by each row's hover hint (copy you read once shouldn't take a permanent slot). */}
+            {/* Count of additionally collapsed points: points that lost all visible connections because some relations were turned off.
+                Give visible feedback, otherwise a user clicks the legend, sees "fewer points too", and thinks the button is broken. */}
             {cascadeHidden > 0 ? (
               <span
                 title={t('These nodes were only reachable through hidden relations, so they are collapsed too')}
@@ -1379,7 +1379,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
               <div style={LEGEND_SECTION_TITLE} title={t('Hiding a node type also collapses the edges touching it')}>
                 {t('Node type')}
               </div>
-              {/* 节点类型：点击 = 在画布显隐该类节点（中心节点恒保留作锚点） */}
+              {/* Node types: click = show/hide that node class on the canvas (the center node is always kept as an anchor) */}
               {legendNodeKinds.map((k) => {
                 const Icon = nodeIcon(k);
                 const hidden = hiddenNodeSet.has(k);
@@ -1405,8 +1405,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                         opacity: hidden ? 0.45 : 1,
                       }}
                     >
-                      {/* 图标 12px 与画布药丸同尺寸；首列固定 14px 宽并居中，好让
-                          节点段（图标）与关系段（14px 线样）的文字列起点对齐。 */}
+                      {/* Icon 12px, same size as the canvas pills; the first column is a fixed 14px wide and centered so the
+                          node section's (icon) and relation section's (14px line sample) text columns start aligned. */}
                       <span
                         style={{
                           display: 'inline-flex',
@@ -1424,8 +1424,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   </Fragment>
                 );
               })}
-              {/* 边类型：点击 = 在画布显隐该类边（如关掉全部「读库」即去除所有 ReadsDb 边）。
-                  连带收起只经由它相连的点，保证画面 = 可见边连成的子图（见过滤 memo）。 */}
+              {/* Edge types: click = show/hide that edge class on the canvas (e.g. turning off all "DB read" removes every ReadsDb edge).
+                  Collapsing also removes points connected only via it, keeping the picture = the subgraph formed by visible edges (see the filter memo). */}
               {legendEdgeKinds.length > 0 ? (
                 <Fragment>
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
@@ -1476,8 +1476,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
               {subProjects && subProjects.length > 0 ? (
                 <Fragment>
                   <div style={{ height: 1, background: '#eef1f6', margin: '3px 0', gridColumn: '1 / -1' }} />
-                  {/* 子工程只作配色说明、不可点：首列留空（没有勾选框）本身就是
-                      "这段不参与筛选"的视觉区分，避免和上面两类筛选项混为一谈。 */}
+                  {/* Sub-projects are a color key only and not clickable: leaving the first column empty (no checkbox) is itself the visual
+                      distinction for "this section doesn't participate in filtering", avoiding confusion with the two clickable filter groups above. */}
                   <div style={LEGEND_SECTION_TITLE} title={t('Color key only — not clickable')}>
                     {t('Sub-project')}
                   </div>

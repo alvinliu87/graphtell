@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""实测「整文件注入」vs「召回 + 按需读」的 token 消耗，量化 GraphTell 省 token 的比例。
+"""Measure the token cost of "whole-file injection" vs "recall + read on demand", quantifying GraphTell's token savings.
 
-做法（每个评测用例）：
-  * IDE 整文件基线：读取"答案所在文件"的全文 token 数（AI IDE 默认把相关文件整篇注入）。
-  * GraphTell 路径：recall 命令的 markdown 输出（含种子 + 命中列表 + 行号）token 数
-    + 模型按需读的那一扇区窗口（±12 行）token 数。
-  两侧用同一估算器（字符数 / 4，代码≈4 字符/token），故比值稳健。
+Method (per eval case):
+  * IDE whole-file baseline: token count of the full "answer file" (an AI IDE injects related files whole by default).
+  * GraphTell path: token count of the recall command's markdown output (seeds + hit list + line numbers)
+    plus the one sector window the model reads on demand (±12 lines).
+  Both sides use the same estimator (chars / 4, code ≈ 4 chars/token), so the ratio is robust.
 
-用法：
+Usage:
     python3 tools/token_savings_eval.py
     python3 tools/token_savings_eval.py --project 1
 """
@@ -22,11 +22,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "target", "release", "graphtell")
 DB = os.path.join(ROOT, "data", "graphtell.sqlite")
-WINDOW = 12  # 模型按需读取的上下行数
+WINDOW = 12  # Number of context lines the model reads on demand
 
 
 def est_tokens(text: str) -> int:
-    # 同一估算器用于两侧，比值与精确 tokenizer 无关（量级正确即可）。
+    # The same estimator is used on both sides; the ratio is independent of an exact tokenizer (order of magnitude suffices).
     return max(1, len(text) // 4)
 
 
@@ -48,7 +48,7 @@ HIT_RE = re.compile(
 
 
 def parse_hits(md):
-    """从 recall markdown 解析命中：(名称, 绝对路径, 行号)。"""
+    """Parse hits from the recall markdown: (name, absolute path, line number)."""
     out = []
     for line in md.splitlines():
         m = HIT_RE.match(line)
@@ -58,7 +58,7 @@ def parse_hits(md):
 
 
 def answer_file(md, targets):
-    """答案节点所在文件 = recall 命名单中名字含 target 子串的那条（即模型会导航到的文件）。"""
+    """The file holding the answer node = the entry in recall's name list whose name contains a target substring (i.e. the file the model navigates to)."""
     hits = parse_hits(md)
     for t in targets:
         for name, path, line in hits:
@@ -140,8 +140,8 @@ def main():
           f"(召回列表 {sum(r['md'] for r in rows):,} + 按需窗口 {sum(r['win'] for r in rows):,})")
     if tot_gt:
         print(f"      => 整体约 {tot_ide/tot_gt:.1f}x 缩减，省 {(1-tot_gt/tot_ide)*100:.0f}% token")
-    # 关键模式：召回列表有固定开销（~{rows[0]['md'] if rows else 0} tokens/次），
-    # 只在"答案文件够大"时划算；小文件整读本就便宜。
+    # Key pattern: the recall list has a fixed overhead (~{rows[0]['md'] if rows else 0} tokens/call),
+    # so it only pays off when "the answer file is big enough"; small files are cheap to read whole anyway.
     big = [r for r in rows if r["whole"] >= 1000]
     small = [r for r in rows if r["whole"] < 1000]
     bw = sum(1 for r in big if r["gt"] < r["whole"])

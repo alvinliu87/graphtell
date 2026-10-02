@@ -1,416 +1,541 @@
-# 支持矩阵（SUPPORTED）
+# Support matrix (SUPPORTED)
 
-GraphTell 当前已落地的语言 / 框架 / 语义特征，以及**已知的诚实边界**。
-完整的架构与流水线说明见 [`docs/architecture.md`](./docs/architecture.md)，FKB 编写方法见 [`docs/fkb-authoring.md`](./docs/fkb-authoring.md)。
+The languages / frameworks / semantic features GraphTell currently supports, plus the **known honest
+boundaries**.
+
+For the full architecture and pipeline see [`docs/architecture.md`](./docs/architecture.md); for FKB
+authoring see [`docs/fkb-authoring.md`](./docs/fkb-authoring.md).
 
 ---
 
-## 1. 语言与框架
+## 1. Languages and frameworks
 
-| 语言 | 框架 / 形态 | 语义提取 | 合规规则 |
+| Language | Framework / form | Semantic extraction | Compliance rules |
 | --- | --- | --- | --- |
-| **PHP** | ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约 / **Symfony（PHP 8 属性路由，见 §3.3）** | 完整（表 / **ORM 关联** / **表外键** / 路由 / 配置 / 国际化 / 缓存 / 事件 / 队列 / 验签 …，见 §3.2） | 完整（含 N+1、验签、循环内外部调用、多写无事务等） |
-| **Java** | Spring Boot（Spring Cache / ApplicationEvent / Spring AMQP / Spring Kafka / Spring Scheduling / JPA / MyBatis-Plus） | 完整（见 §2） | 复用 `rules/global/`（按图拓扑判定的规则）；框架专属规则（`orphan-event` / `orphan-queue` 等）尚未为 Java 写 |
-| **JavaScript / TypeScript** | Uni-app 前端（事件总线 / 本地存储 / 页面 / Store） | 完整 | `rules/js/`（前端事件总线死代码） |
-| **JavaScript / TypeScript** | **Node 后端**：NestJS（装饰器路由 / 控制器）/ Express（成员式路由）/ **Koa** / **Fastify** | 路由契约（NestJS 另含 `HandledBy` 连到方法节点，见 §3.1） | 复用 `rules/global/`（按图拓扑）；框架专属规则尚未为 Node 写 |
-| **Python** | FastAPI / Flask / Celery / SQLAlchemy / **Django（ORM：表 / 列 / 关系 / 表外键，见 §3.4）** | 路由 / 依赖注入 / 配置 / 缓存 / 表映射 / 任务队列 / 定时 / Django 模型表（见 §3） | 复用 `rules/global/`（按图拓扑）；框架专属规则尚未为 Python 写 |
+| **PHP** | ThinkPHP 6 / CRMEB / Laravel / Uni-app backend contracts / **Symfony (PHP 8 attribute routes, §3.3)** | complete (tables / **ORM relations** / **table foreign keys** / routes / config / i18n / cache / events / queues / signature verification …, §3.2) | complete (including N+1, signature verification, external call in loop, multi-write without tx) |
+| **Java** | Spring Boot (Spring Cache / ApplicationEvent / Spring AMQP / Spring Kafka / Spring Scheduling / JPA / MyBatis-Plus) | complete (§2) | reuses `rules/global/` (topology-based rules); framework-specific rules (`orphan-event` / `orphan-queue` …) not yet written for Java |
+| **JavaScript / TypeScript** | Uni-app frontend (event bus / local storage / pages / Store) | complete | `rules/js/` (frontend event bus dead code) |
+| **JavaScript / TypeScript** | **Node backend**: NestJS (decorator routes / controllers) / Express (member-style routes) / **Koa** / **Fastify** | route contracts (NestJS additionally links `HandledBy` to method nodes, §3.1) | reuses `rules/global/` (topology-based); framework-specific rules not yet written for Node |
+| **Python** | FastAPI / Flask / Celery / SQLAlchemy / **Django (ORM: tables / columns / relations / table foreign keys, §3.4)** | routes / dependency injection / config / cache / table mapping / task queues / scheduling / Django model tables (§3) | reuses `rules/global/` (topology-based); framework-specific rules not yet written for Python |
 
-> 新语言 = 实现 `gt_domain::port::LanguageParser` 把语法树翻译成 `SyntaxFacts`（参考 `gt-adapter-parser/src/java`），在 `DefaultParserRegistry` 注册即可，内核零改动。
-
----
-
-## 2. Java（Spring Boot）语义特征
-
-所有语义节点都来自 `fkb/java/spring-boot.yaml`（声明式 FKB，**没改内核**）。
-注解在内核里被建模成调用点（`callee` = 注解名），方法调用实参按位置捕获字面量。
-
-| 语义 | 触发 | 节点 | 边 | 备注 |
-| --- | --- | --- | --- | --- |
-| **Cache** | `@Cacheable` / `@CachePut` / `@CacheEvict` | `Cache` | `ReadsCache` / `WritesCache` | 缓存名取自注解实参 `arg0` |
-| **Event** | `@EventListener(handler)` / `publisher.publishEvent(new X())` | `Event` | `ListensTo` / `Emits` | **类型级归并**：同一事件类型的发布方与订阅方归并到同一节点（见 §5） |
-| **Queue** | `@RabbitListener(queues="q")` / `rabbitTemplate.convertAndSend("q", …)` | `Queue` | `ListensTo` / `PublishesTo` | 消费端来自注解，生产端来自方法调用实参 |
-| **Topic** | `@KafkaListener(topics="t")` / `kafkaTemplate.send("t", …)` | `Topic` | `ListensTo` / `PublishesTo` | 生产端按 receiver 变量名约定匹配（见 §5） |
-| **Schedule** | `@Scheduled` | `Schedule` | `Triggers` | 调度器触发该方法（出边） |
-| **HttpContract** | `@RequestMapping` / `@GetMapping` / `@PostMapping` … | `HttpContract` | `HandledBy` | 契约 `METHOD /path` 归一，可与前端 `uni.request` 契约桥接 |
-| **Table** | `@TableName("x")` / `@Table(name="x")` / MyBatis `mapper/*.xml` | `Table` | `MapsTo` / `ReadsDb` / `WritesDb` | MyBatis-Plus 与 JPA 表名；XML 语句按读写落边 |
-| **ConfigKey** | `@Value("${app.name}")` | `ConfigKey` | `ReadsConfig` | 去 `${` `}` 得到配置键 |
-
-端到端自检见 `crates/gt-pipeline/tests/java_spring_features.rs`（合成样本，无需外部工程）。
+> A new language = implement `gt_domain::port::LanguageParser` to translate the syntax tree into
+> `SyntaxFacts` (reference: `gt-adapter-parser/src/java`) and register it in `DefaultParserRegistry`;
+> zero core changes.
 
 ---
 
-## 3. Python（FastAPI / Flask / Celery / SQLAlchemy）语义特征
+## 2. Java (Spring Boot) semantic features
 
-Python 是**第三个落地的语言**：只实现了一个 `LanguageParser` 并注册进来，语义全部由
-`fkb/python/*.yaml` 声明，**内核零改动**。关键建模是**装饰器 ≡ 调用点**（与 Java 注解同机制），
-所以 `@app.get("/x")` 能被 `kind: call` 选择器直接命中 —— 这也是 Flask 这类「同语言的第 N 个
-框架」几乎零成本的原因（只多一份 YAML）。
+All semantic nodes come from `fkb/java/spring-boot.yaml` (declarative FKB, **no core changes**).
+Annotations are modeled as call sites in the core (`callee` = annotation name); method call arguments
+capture literals positionally.
 
-| 语义 | 触发 | 节点 | 边 | 备注 |
+| Semantics | Trigger | Node | Edge | Notes |
 | --- | --- | --- | --- | --- |
-| **HttpContract**（FastAPI / Flask 2.x） | `@app.get/post/put/delete/patch("/x")` | `HttpContract` | `HandledBy` | 方法由装饰器名推导 |
-| **HttpContract**（Flask） | `@app.route("/x")` / `@bp.route` | `HttpContract` | `HandledBy` | 写了 `methods=["POST"]` 时解码首项；未声明时按 Flask 默认语义落 `GET` |
-| **依赖注入** | `def h(db=Depends(get_db))` | 不造节点（两端都是已有函数节点） | `DependsOn` | 依赖写在**形参默认值**里；`DependsOn` 由本 FKB 用 `bridge_edge_kinds` 声明 |
+| **Cache** | `@Cacheable` / `@CachePut` / `@CacheEvict` | `Cache` | `ReadsCache` / `WritesCache` | cache name from annotation arg `arg0` |
+| **Event** | `@EventListener(handler)` / `publisher.publishEvent(new X())` | `Event` | `ListensTo` / `Emits` | **type-level merging**: publishers and subscribers of the same event type merge into one node (§5) |
+| **Queue** | `@RabbitListener(queues="q")` / `rabbitTemplate.convertAndSend("q", …)` | `Queue` | `ListensTo` / `PublishesTo` | consumer side from the annotation, producer side from the method call argument |
+| **Topic** | `@KafkaListener(topics="t")` / `kafkaTemplate.send("t", …)` | `Topic` | `ListensTo` / `PublishesTo` | producer matched by receiver variable-name convention (§5) |
+| **Schedule** | `@Scheduled` | `Schedule` | `Triggers` | the scheduler triggers this method (out-edge) |
+| **HttpContract** | `@RequestMapping` / `@GetMapping` / `@PostMapping` … | `HttpContract` | `HandledBy` | contract `METHOD /path` normalized, bridgeable with frontend `uni.request` contracts |
+| **Table** | `@TableName("x")` / `@Table(name="x")` / MyBatis `mapper/*.xml` | `Table` | `MapsTo` / `ReadsDb` / `WritesDb` | MyBatis-Plus and JPA table names; XML statements land edges by read / write |
+| **ConfigKey** | `@Value("${app.name}")` | `ConfigKey` | `ReadsConfig` | strips `${` `}` to get the config key |
+
+End-to-end self-check: `crates/gt-pipeline/tests/java_spring_features.rs` (synthetic sample, no
+external project needed).
+
+---
+
+## 3. Python (FastAPI / Flask / Celery / SQLAlchemy) semantic features
+
+Python is the **third language landed**: only one `LanguageParser` was implemented and registered;
+all semantics are declared by `fkb/python/*.yaml`, with **zero core changes**. The key modeling is
+**decorator ≡ call site** (same mechanism as Java annotations), so `@app.get("/x")` is hit directly
+by a `kind: call` selector -- which is why a framework like Flask (the Nth framework of the same
+language) costs almost nothing (just one more YAML).
+
+| Semantics | Trigger | Node | Edge | Notes |
+| --- | --- | --- | --- | --- |
+| **HttpContract** (FastAPI / Flask 2.x) | `@app.get/post/put/delete/patch("/x")` | `HttpContract` | `HandledBy` | method derived from the decorator name |
+| **HttpContract** (Flask) | `@app.route("/x")` / `@bp.route` | `HttpContract` | `HandledBy` | decodes the first item when `methods=["POST"]` is written; otherwise lands `GET` per Flask's default semantics |
+| **Dependency injection** | `def h(db=Depends(get_db))` | no node created (both ends are existing function nodes) | `DependsOn` | the dependency is written in a **parameter default**; `DependsOn` is declared by this FKB via `bridge_edge_kinds` |
 | **ConfigKey** | `os.environ.get("K")` / `os.getenv("K")` | `ConfigKey` | `ReadsConfig` | |
 | **Cache** | `cache/redis::{get,set}` | `Cache` | `ReadsCache` / `WritesCache` | |
-| **Table**（SQLAlchemy） | 类属性 `__tablename__ = "users"` | `Table` | `MapsTo` | 走 P6 的**图节点选择器** + `HasProperty`（不靠调用点） |
-| **Queue**（Celery） | `@celery_app.task` / `@shared_task` 与 `.delay()` / `.apply_async()` | `Queue` | `ListensTo` / `PublishesTo` | 生产端与消费端按任务名**归并到同一节点** |
-| **Schedule**（Celery beat） | `add_periodic_task(30.0, …)` | `Schedule` | `Triggers` | |
+| **Table** (SQLAlchemy) | class attribute `__tablename__ = "users"` | `Table` | `MapsTo` | uses a P6 **graph-node selector** + `HasProperty` (not a call site) |
+| **Queue** (Celery) | `@celery_app.task` / `@shared_task` with `.delay()` / `.apply_async()` | `Queue` | `ListensTo` / `PublishesTo` | producer and consumer **merge into one node** by task name |
+| **Schedule** (Celery beat) | `add_periodic_task(30.0, …)` | `Schedule` | `Triggers` | |
 
-解析器侧同时补齐了几项**通用**能力（不专为 Python）：关键字实参按名可取、列表 / 元组字面量
-以下标为键可取、形参默认值里的调用会被记成调用点、类体内字面量赋值登记为 `Property`。
+The parser side also added several **generic** capabilities (not Python-specific): keyword arguments
+can be taken by name, list / tuple literals can be accessed keyed by index, calls inside parameter
+defaults are recorded as call sites, and literal assignments in a class body register as `Property`.
 
-端到端自检（均为合成样本，无需外部工程）：
-`crates/gt-pipeline/tests/python_fastapi_features.rs`、
-`crates/gt-pipeline/tests/python_flask_features.rs`。
+End-to-end self-checks (all synthetic samples, no external projects):
+`crates/gt-pipeline/tests/python_fastapi_features.rs`,
+`crates/gt-pipeline/tests/python_flask_features.rs`.
 
-### 3.4 Django（Python）语义特征
+### 3.4 Django (Python) semantic features
 
-Django 是 Python 生态体量最大的框架，本文件补上它的 **ORM 建模**（表 / 列 / 关系 / 表级外键），
-与 Node（TypeORM）、PHP（Laravel / ThinkPHP）**同一套边**（`References` / `ForeignKey` / `HasColumn` /
-`MapsTo`），`ForeignKey` 直接复用通用的 `Project` 动作。几乎只写 YAML —— 仅 Python 解析器加了一处
-中性的「类体内 `name = Call(...)` 字段声明」捕获（与 JS 字段装饰器、Java 字段注解同机制）。
+Django is the largest framework in the Python ecosystem, and this file adds its **ORM modeling**
+(tables / columns / relations / table-level foreign keys) using **the same edges** as Node (TypeORM)
+and PHP (Laravel / ThinkPHP) (`References` / `ForeignKey` / `HasColumn` / `MapsTo`), with `ForeignKey`
+directly reusing the generic `Project` action. It is almost YAML-only -- the Python parser gained just
+one neutral capability: capturing "a `name = Call(...)` field declaration inside a class body" (same
+mechanism as JS field decorators and Java field annotations).
 
-| 语义 | 触发 | 节点 | 边 | 备注 |
+| Semantics | Trigger | Node | Edge | Notes |
 | --- | --- | --- | --- | --- |
-| **Table** | `class Post(models.Model)` | `Table` | `MapsTo` | 表名取类短名（`snake_plural` + `short_name` + `singularize`：`Post` → `post`）；Django 真实表名是 `app_label_modelname`，这里取不到 app_label，先用类短名复数兜底 |
-| **列** | `name = models.CharField(max_length=200)` | `Column` | `HasColumn`（模型类 → 列） | 身份取 `模型类.字段`（`app.models.Post.title`），模型类已 `MapsTo` → `表`，故「表 → 列」是 表 ←MapsTo— 模型 —HasColumn→ 列 两跳；只收列字段类型，`ForeignKey` / `OneToOneField` / `ManyToManyField` 算关系 |
-| **模型关联** | `author = models.ForeignKey(User, on_delete=...)` | —（两端都是已有模型类节点） | `References`（声明方 → 目标模型） | 目标取首个位置实参的类名（解析器按 import 或模块前缀解析成 FQN，存入 `entity`），只建外键持有方 |
-| **表外键** | 由上面的 `References` 投影而来 | —（两端都是已有表节点） | `ForeignKey`（表 → 表） | P6 用 `Project`：遍历每条 `References`，两端各沿 `MapsTo` 走一跳 |
-| **HTTP 路由** | `path("users/", user_list)`（`urls.py`） | `HttpContract` | `HandledBy`（契约 → 视图） | 见下方「路由」说明 |
+| **Table** | `class Post(models.Model)` | `Table` | `MapsTo` | table name from the class short name (`snake_plural` + `short_name` + `singularize`: `Post` → `post`); Django's real table name is `app_label_modelname`, and `app_label` isn't available here, so the pluralized class short name is used as a fallback |
+| **Column** | `name = models.CharField(max_length=200)` | `Column` | `HasColumn` (model class → column) | identity is `model-class.field` (`app.models.Post.title`); the model class already `MapsTo` → `table`, so "table → column" is two hops: table ←MapsTo— model —HasColumn→ column; only column field types are collected, while `ForeignKey` / `OneToOneField` / `ManyToManyField` count as relations |
+| **Model relation** | `author = models.ForeignKey(User, on_delete=...)` | — (both ends are existing model-class nodes) | `References` (declaring side → target model) | target is the class name of the first positional argument (the parser resolves it to an FQN via import or module prefix and stores it in `entity`); only the foreign-key holder is built |
+| **Table foreign key** | projected from the `References` above | — (both ends are existing table nodes) | `ForeignKey` (table → table) | P6 uses `Project`: walk each `References`, and each end walks one hop along `MapsTo` |
+| **HTTP route** | `path("users/", user_list)` (`urls.py`) | `HttpContract` | `HandledBy` (contract → view) | see "Routes" below |
 
-**路由（`path()` / `re_path()` / `url()`）**：Django 把 URL 与视图写在 `urls.py`、且**不编码 HTTP method**
-（一个视图处理所有方法），故契约方法用通配 `ANY`（`is_wildcard_http_method` 认定 `ANY` 匹配任意前端调用
-方法），既避免把 Django 端点误标成具体动词，也避免读写启发式对「未知方法 → 读」的误判。路径取 route 字面量
-（规整成前导 `/`）；视图（`arg1`）由解析器解析成全 FQN 存入 `entity`，再经 `HandledBy` 连到视图节点
-（函数不在短名索引里，必须给全 FQN 才能 `find_by_name` 命中 —— 与 FastAPI 用 `owner_class` 全 FQN 命中同一机制）。
+**Routes (`path()` / `re_path()` / `url()`)**: Django writes URLs and views in `urls.py` and **doesn't
+encode the HTTP method** (one view handles all methods), so the contract method uses the wildcard `ANY`
+(`is_wildcard_http_method` treats `ANY` as matching any frontend call method) -- avoiding both
+mislabeling Django endpoints with a concrete verb and the read/write heuristic's misjudgment of
+"unknown method → read". The path comes from the route literal (normalized to a leading `/`); the view
+(`arg1`) is resolved by the parser into a full FQN stored in `entity`, then linked to the view node via
+`HandledBy` (functions aren't in the short-name index, so a full FQN is required for `find_by_name` to
+hit -- the same mechanism as FastAPI using `owner_class` FQN).
 
-**前置（解析器侧，语言中性的扩展）**：`gt-adapter-parser/src/python/mod.rs`
-1. 把类体内的 `name = SomeCallable(...)` 翻成调用点，owner 精确到「类.字段」（`owner_class` = 模型类、
-   `owner_member` = 字段名），故 FKB 取 `owner_class.owner_member` 即列身份；关系字段首个位置实参
-   （类名标识符）解析成 FQN 存入 `entity`，供 `References` 直接连到目标模型类。该扩展**不认识 Django**，
-   只是「类体内裸标识符 = 调用」这一中性语法形态，SQLAlchemy 之外的其它「字段式 ORM」也能直接受益。
-2. `path()` / `re_path()` / `url()` 调用的**视图实参**解析成全 FQN 存入 `entity`（同上理由：函数节点
-   不在短名索引，必须全 FQN 才能连上）。
-3. **修复相对导入**：`from .views import user_list` 此前解析成错误的 `views.user_list`，现按当前模块父包
-   还原成 `myapp.views.user_list`（前导点层数对齐父包层级）；绝对导入不受影响。
+**Prerequisites (parser side, language-neutral extensions)**:
+`gt-adapter-parser/src/python/mod.rs`
+1. Turn `name = SomeCallable(...)` inside a class body into a call site, with the owner precise to
+   "class.field" (`owner_class` = model class, `owner_member` = field name), so FKB can take
+   `owner_class.owner_member` as the column identity; the relation field's first positional argument
+   (a class-name identifier) is resolved to an FQN stored in `entity` for `References` to link directly
+   to the target model class. This extension **doesn't know Django** -- it's just the neutral syntax
+   shape "bare identifier = call inside a class body", so other "field-style ORMs" beyond SQLAlchemy
+   benefit directly.
+2. Resolve the **view argument** of `path()` / `re_path()` / `url()` calls into a full FQN stored in
+   `entity` (same reason: function nodes aren't in the short-name index, so a full FQN is required to
+   link).
+3. **Fixed relative imports**: `from .views import user_list` previously resolved to the wrong
+   `views.user_list`; now it's restored to `myapp.views.user_list` against the current module's parent
+   package (leading dot count aligned to parent-package depth); absolute imports are unaffected.
 
-**诚实边界**：
-- **Django 惯用法是 `from django.db import models` 后写 `models.CharField`**：若项目改成
-  `from django.db.models import CharField` 直接写 `CharField(...)`，当前 callee 匹配不到
-  （裸字段名太通用，不愿放宽以免误伤普通变量）。
-- **字符串引用的关系不解析**：`tags = models.ManyToManyField("Tag")` 的实参是字符串、
-  且 `Tag` 未必在同一编译单元，解析器不解析字符串里的类名，按 `require_class` 跳过、不建悬空边
-  （与 PHP 的 `morphTo()` 同处理）。要支持字符串外键需额外解析。
-- **未读 `class Meta: db_table`**：显式指定的真实表名当前未取，表名用类短名复数兜底；
-  若项目大量用 `db_table`，需补一条读 `Meta` 属性的能力。
-- **路由视图解析的三种写法都已支持**：① 裸名 `from .views import user_list` 后 `path("x/", user_list)`；
-  ② 模块属性 `from . import views` 后 `path("x/", views.user_list)`（`resolve_symbol` 现递归还原
-  模块前缀 → `myapp.views.user_list`）；③ CBV `path("x/", ArticleListView.as_view())`（只认 `as_view()`
-  这一 Django 惯用法，取被调对象类名）。三种都能经 `HandledBy` 连到视图节点。
-- **`path("api/", include("api.urls"))` 这类「前缀 + include」**：会被当成一条端点契约（无 handler 边），
-  属于已知噪声（include 挂载的子路由真正端点在其子 `urls.py` 里）。
+**Honest boundaries**:
+- **The Django idiom is `from django.db import models` then `models.CharField`**: if a project instead
+  does `from django.db.models import CharField` and writes `CharField(...)` directly, the current
+  callee won't match (bare field names are too generic to loosen without hurting ordinary variables).
+- **String-referenced relations aren't resolved**: in `tags = models.ManyToManyField("Tag")` the
+  argument is a string and `Tag` may not be in the same compilation unit; the parser doesn't resolve
+  class names inside strings, so it skips per `require_class` and builds no dangling edge (same
+  handling as PHP's `morphTo()`). Supporting string foreign keys needs extra parsing.
+- **`class Meta: db_table` isn't read**: the explicitly specified real table name isn't taken;
+  the table name falls back to the pluralized class short name. If a project uses `db_table` heavily,
+  a capability to read `Meta` attributes must be added.
+- **All three route-view forms are supported**: ① bare name -- `from .views import user_list` then
+  `path("x/", user_list)`; ② module attribute -- `from . import views` then
+  `path("x/", views.user_list)` (`resolve_symbol` now recursively restores the module prefix →
+  `myapp.views.user_list`); ③ CBV -- `path("x/", ArticleListView.as_view())` (only the `as_view()`
+  Django idiom is recognized, taking the called object's class name). All three link to the view node
+  via `HandledBy`.
+- **`path("api/", include("api.urls"))` style "prefix + include"**: this is treated as one endpoint
+  contract (with no handler edge) -- known noise, since the real endpoints mounted by `include` live in
+  its child `urls.py`.
 
-端到端自检（合成工程，无需外部样本）：`crates/gt-pipeline/tests/django_features.rs`（含表 / 列 / 关系 /
-外键 / 路由四条）。
+End-to-end self-check (synthetic project, no external sample):
+`crates/gt-pipeline/tests/django_features.rs` (covering table / column / relation / foreign key /
+route).
 
 ---
 
-## 3.1 Node 后端（NestJS / Express）语义特征
+## 3.1 Node backend (NestJS / Express) semantic features
 
-Node 后端**不需要新解析器**：`JsFrontendParser` 早已把 TS 的**类 / 方法**装饰器建模成调用点
-（`crates/gt-adapter-parser/src/js/mod.rs` 的 `nestjs_decorators_become_call_sites` 单测即证明，
-`callee` 带 `@` 前缀以区别于普通的 `obj.get()` 成员调用），与 FastAPI 的 `@app.get` 同机制。
-Express 的 `app.get('/x')` 则是普通成员调用（receiver `app`、method `get`），形态同 FastAPI 的动词快捷方式。
-所以路由 / 依赖注入 / 实体映射三类语义都只靠 `fkb/js/*.yaml` 声明。
+The Node backend needs **no new parser**: `JsFrontendParser` already models TS **class / method**
+decorators as call sites (proven by the `nestjs_decorators_become_call_sites` unit test in
+`crates/gt-adapter-parser/src/js/mod.rs`; `callee` carries an `@` prefix to distinguish it from an
+ordinary `obj.get()` member call) -- the same mechanism as FastAPI's `@app.get`. Express's
+`app.get('/x')` is an ordinary member call (receiver `app`, method `get`), the same shape as FastAPI's
+verb shortcuts. So routes / dependency injection / entity mapping are all declared purely by
+`fkb/js/*.yaml`.
 
-**表级外键**另需一处**通用**能力：新增 `Project` 动作 —— 把一类边投影到另一层
-（遍历匹配节点的每条 `along` 出边，两端各沿自己的边种类链走到落点，在两落点间建边）。
-「类 → 它映射的表」本质是**沿 `MapsTo` 走一跳**，而 `ValueSource` 只认名字、取不到"边的那一头"；
-且一个实体可能有多个 `@ManyToOne`，必须一对多地投影（`Link` 两端各只能取一个名字，会静默丢边）。
-走哪些边仍由 FKB 声明，内核依旧不认识 TypeORM。
+**Table-level foreign keys** additionally need one **generic** capability: the new `Project` action --
+projecting a class of edges onto another layer (walk each `along` out-edge of the matching node, have
+each end walk its own edge-kind chain to a landing point, and build an edge between the two landing
+points). "Class → the table it maps to" is essentially **one hop along `MapsTo`**, while `ValueSource`
+only knows names and can't reach "the far end of an edge"; and one entity may have several
+`@ManyToOne`, so projection must be one-to-many (`Link` takes only one name per end and would silently
+drop edges). Which edges to walk is still declared by FKB; the core still knows nothing about TypeORM.
 
-**字段级语义**（`@Column`）另需两处**通用**能力（不为 Node 专属，其它语言同享）：
-① 解析器把**字段装饰器**挂到字段 FQN（`Class.field`）—— 此前只挂类 / 方法装饰器，
-`@Column` 会被整条丢掉；② P2 在调用点 `owner_fqn` 精确查不到节点时**退回所属类**
-（此前整份退到文件节点，导致 `@Column` 的 `HasCallSite` / 语义边从 `File` 发出）。
+**Field-level semantics** (`@Column`) need two more **generic** capabilities (not Node-specific; other
+languages share them): ① the parser attaches **field decorators** to the field FQN (`Class.field`) --
+previously only class / method decorators were attached and `@Column` was dropped entirely; ② at P2,
+when a node can't be found precisely by the call site's `owner_fqn`, it **falls back to the owning
+class** (previously it fell all the way back to the file node, so `@Column`'s `HasCallSite` / semantic
+edges originated from `File`).
 
-| 框架 | 触发 | 节点 | 边 | 备注 |
+| Framework | Trigger | Node | Edge | Notes |
 | --- | --- | --- | --- | --- |
-| **NestJS** 路由 | `@Get('user')` / `@Post('users')` … | `HttpContract` | `HandledBy`（由契约指出，连到 `Class.method` 节点） | 方法名取装饰器名（去掉 `@`）；路径取实参 |
-| **NestJS** 控制器 | `@Controller()` | `Controller` | — | 纯结构展示节点 |
-| **NestJS** 依赖注入 | `constructor(private svc: UserService)` | —（provider 即类节点） | `DependsOn`（`UserController --DependsOn--> UserService`） | 构造器**带访问修饰符**的形参类型 = provider；解析器记成 `@Inject` 调用点，FKB 建边 |
-| **TypeORM** 实体 | `@Entity('user')` | `Table` | `MapsTo`（实体类 → 表） | 表名取实参；无实参的 `@Entity()` / 对象式 `@Entity({name})` 跳过 |
-| **TypeORM** 列 | `@Column()` / `@PrimaryGeneratedColumn()` / `@CreateDateColumn()` … | `Column` | `HasColumn`（实体类 → 列） | 列身份取 `实体类.字段`（`UserEntity.username`），故同名列（`id`）在不同实体各算各的；`Column` / `HasColumn` 由本 FKB 用 `semantic_kinds` / `semantic_edge_kinds` 声明 |
-| **TypeORM** 关联 | `@ManyToOne` / `@ManyToMany` / `@OneToOne` | —（两端都是已有实体类节点） | `References`（引用方 → 被引用实体） | 目标实体取**字段类型注解**（箭头函数实参 `type => X` 取不到字面量）；只建**外键持有方**，`@OneToMany` 是反向声明、不重复建边 |
-| **TypeORM** 表外键 | 由上面的 `References` 投影而来 | —（两端都是已有表节点） | `ForeignKey`（表 → 表） | P6 用 `Project` 动作：遍历每条 `References`，两端各沿 `MapsTo` 走一跳落到表。**一对多**，一个实体有几条 `@ManyToOne` 就产出几条 |
-| **Express** 路由 | `app.get('/login')` / `router.post(...)` | `HttpContract` | — | 方法取成员名（get/post…）；路径取 arg0 |
-| **Koa** 路由 | `router.get('/users')` / `admin.post(...)` | `HttpContract` | — | 同上；接收者只认 Router 实例（**不含 `app`** —— Koa 的 app 只用来 `use()`）。`router.all(...)` 归一化成 `ANY` |
-| **Fastify** 路由 | `fastify.get('/users')` / `server.put(...)` | `HttpContract` | — | 同上；接收者 `fastify` / `app` / `server`。`fastify.route({method,url})` 的 schema 写法暂不支持 |
+| **NestJS** route | `@Get('user')` / `@Post('users')` … | `HttpContract` | `HandledBy` (pointing **out** of the contract, to the `Class.method` node) | method from the decorator name (minus `@`); path from the argument |
+| **NestJS** controller | `@Controller()` | `Controller` | — | purely structural display node |
+| **NestJS** dependency injection | `constructor(private svc: UserService)` | — (the provider is a class node) | `DependsOn` (`UserController --DependsOn--> UserService`) | constructor parameters **with an access modifier** = provider; the parser records it as an `@Inject` call site and FKB builds the edge |
+| **TypeORM** entity | `@Entity('user')` | `Table` | `MapsTo` (entity class → table) | table name from the argument; argument-less `@Entity()` and object-form `@Entity({name})` are skipped |
+| **TypeORM** column | `@Column()` / `@PrimaryGeneratedColumn()` / `@CreateDateColumn()` … | `Column` | `HasColumn` (entity class → column) | column identity is `entity-class.field` (`UserEntity.username`), so same-named columns (`id`) count separately per entity; `Column` / `HasColumn` are declared by this FKB via `semantic_kinds` / `semantic_edge_kinds` |
+| **TypeORM** relation | `@ManyToOne` / `@ManyToMany` / `@OneToOne` | — (both ends are existing entity-class nodes) | `References` (referencing side → referenced entity) | target entity taken from the **field type annotation** (an arrow-function argument `type => X` yields no literal); only the **foreign-key holder** is built, since `@OneToMany` is the reverse declaration and would duplicate |
+| **TypeORM** table foreign key | projected from the `References` above | — (both ends are existing table nodes) | `ForeignKey` (table → table) | P6 uses the `Project` action: walk each `References`, both ends walk one hop along `MapsTo` to land on a table. **One-to-many** -- an entity with N `@ManyToOne` produces N edges |
+| **Express** route | `app.get('/login')` / `router.post(...)` | `HttpContract` | — | method from the member name (get/post…); path from arg0 |
+| **Koa** route | `router.get('/users')` / `admin.post(...)` | `HttpContract` | — | same as above; the receiver must be a Router instance (**not `app`** -- Koa's app is only for `use()`). `router.all(...)` normalizes to `ANY` |
+| **Fastify** route | `fastify.get('/users')` / `server.put(...)` | `HttpContract` | — | same as above; receivers `fastify` / `app` / `server`. The `fastify.route({method,url})` schema form isn't supported yet |
 
-Koa / Fastify **零解析器改动**（与 Express 同一形态：`receiver.method(path, handler)` 就是普通
-成员调用），只各加一份 FKB。三者接收者不同，故分开写：Express 是 `app`/`router`/`api`，
-Koa 是 `router`（不含 `app`），Fastify 是 `fastify`/`app`/`server`。
-端到端自检：`crates/gt-pipeline/tests/node_koa_fastify_features.rs`。
+Koa / Fastify need **zero parser changes** (same shape as Express: `receiver.method(path, handler)` is
+an ordinary member call), each just adding one FKB. The three have different receivers, so they're
+written separately: Express uses `app` / `router` / `api`, Koa uses `router` (not `app`), Fastify uses
+`fastify` / `app` / `server`.
+End-to-end self-check: `crates/gt-pipeline/tests/node_koa_fastify_features.rs`.
 
-> 两类路由的 **HandledBy 方向**不同，容易踩坑：NestJS 用 `link.direction: to_target`
-> （边由 `HttpContract` **指出**到方法节点），所以查的是「契约的**出边**」，而非「方法的出边」。
+> The **HandledBy direction** differs between the two route styles, which is easy to trip over: NestJS
+> uses `link.direction: to_target` (the edge points **out** of `HttpContract` to the method node), so
+> what's queried is "the contract's **out-edge**", not "the method's out-edge".
 
-**验证样本**：除合成自检外，另下载了真实开源工程做端到端验证（git 忽略、不入库）：
-`lujakob/nestjs-realworld-example-app`（NestJS + TypeORM）、`sahat/hackathon-starter`（Express）。
-`crates/gt-pipeline/tests/node_real_samples.rs` 在样本存在时跑真实建图断言、缺失则跳过。
+**Verification samples**: besides the synthetic self-checks, real open-source projects were downloaded
+for end-to-end verification (git-ignored, not committed):
+`lujakob/nestjs-realworld-example-app` (NestJS + TypeORM), `sahat/hackathon-starter` (Express).
+`crates/gt-pipeline/tests/node_real_samples.rs` runs real build assertions when the samples exist and
+skips when they're missing.
 
-**诚实边界**：
-- **NestJS 控制器前缀不向前缀拼接**：`@Controller('user')` 的前缀未与 `@Get('user')` 的方法路径合并，
-  仅取方法装饰器的实参路径（`n1-query-in-loop` 这类跨装饰器合并需要额外的 FKB 能力）。
-- **Express 不连 `HandledBy`**：Express 的路由与处理器**解耦**（`handler` 在另一文件），模块级路由的
-  owner 是文件路径、没有对应节点；为避免悬空边，Express 仅落成契约节点。
-- **依赖注入只认"构造器带修饰符的形参"**：`constructor(private svc: UserService)` 算，
-  `constructor(plain: Foo)` 不算；provider 类型解析不到对应类节点（泛型 / 接口 / 未导入）时静默跳过。
-- **TypeORM 只认字符串实参的 `@Entity('user')`**：对象式 `@Entity({ name: 'user' })` 与无参 `@Entity()`
-  暂不提取表名（取不到字面量就跳过，宁可缺不可猜）—— 这类实体的 `Column` 仍会挂在实体类上，但**没有**对应的 `Table`
-  （真实样本里 `Comment` 即此形态：2 个列节点、无表节点）。
-- **列只收"列"装饰器**：`@Column` / `@PrimaryGeneratedColumn` / `@CreateDateColumn` / `@UpdateDateColumn` /
-  `@DeleteDateColumn` 算列；关系装饰器（`@ManyToOne` …）不是列，走 `References` 边单独建模。
-  列名取字段名（TypeORM 默认），`@Column({ name: 'x' })` 的显式重命名尚未提取。
-- **关联只建外键持有方**：`@ManyToOne` / `@ManyToMany` / `@OneToOne` 建 `References`；
-  `@OneToMany` 是反向声明，与配对的那条 `@ManyToOne` 描述同一关系，再建就是冗余反向边，故跳过 ——
-  **单向 `@OneToMany`（没有配对的 ManyToOne）因此不建边**。`@JoinColumn` / `@JoinTable` 只标 JOIN 形态，不单独建边。
-- **表外键只覆盖"有表"的实体**：外键由 `References` 投影而来，两端都要能沿 `MapsTo` 走到 `Table`。
-  无参 `@Entity()` 的实体没有表节点，它的外键不入图（真实样本里 `Comment → article` 正因此缺失；
-  `article → user` 与 `user → article` 正常产出）。
-- **路由 receiver 靠变量名约定收窄**（同 Python）：`app` / `router` / `api` 等；裸 `get/post` 太通用。
+**Honest boundaries**:
+- **NestJS controller prefixes aren't concatenated**: the `@Controller('user')` prefix isn't merged
+  with the `@Get('user')` method path; only the method decorator's argument path is taken (cross-decorator
+  merging like `n1-query-in-loop` would need extra FKB capability).
+- **Express doesn't link `HandledBy`**: Express routes and handlers are **decoupled** (the handler
+  lives in another file); a module-level route's owner is the file path with no matching node, so to
+  avoid dangling edges Express only lands contract nodes.
+- **Dependency injection only recognizes "constructor params with a modifier"**:
+  `constructor(private svc: UserService)` counts, `constructor(plain: Foo)` doesn't; when the provider
+  type can't be resolved to a class node (generics / interfaces / not imported) it's silently skipped.
+- **TypeORM only recognizes string-argument `@Entity('user')`**: object form `@Entity({ name: 'user' })`
+  and argument-less `@Entity()` don't yield a table name yet (no literal → skip; better missing than
+  guessed) -- such entities' `Column`s still attach to the entity class, but there is **no**
+  corresponding `Table` (in the real sample, `Comment` is exactly this shape: 2 column nodes, no table
+  node).
+- **Only "column" decorators are collected**: `@Column` / `@PrimaryGeneratedColumn` /
+  `@CreateDateColumn` / `@UpdateDateColumn` / `@DeleteDateColumn` count as columns; relation decorators
+  (`@ManyToOne` …) aren't columns and are modeled separately via `References` edges. The column name is
+  taken from the field name (TypeORM default); explicit renaming via `@Column({ name: 'x' })` isn't
+  extracted yet.
+- **Only the foreign-key holder gets a relation**: `@ManyToOne` / `@ManyToMany` / `@OneToOne` build
+  `References`; `@OneToMany` is the reverse declaration describing the same relation as its paired
+  `@ManyToOne`, so building it would be a redundant reverse edge -- hence skipped, meaning a
+  **one-way `@OneToMany` (with no paired ManyToOne) builds no edge**. `@JoinColumn` / `@JoinTable` only
+  mark JOIN shape and build no edge of their own.
+- **Table foreign keys only cover entities that have a table**: foreign keys are projected from
+  `References`, so both ends must reach a `Table` along `MapsTo`. An entity with argument-less
+  `@Entity()` has no table node, so its foreign keys don't enter the graph (in the real sample
+  `Comment → article` is missing exactly for this reason; `article → user` and `user → article` are
+  produced normally).
+- **Route receivers are narrowed by variable-name convention** (as with Python): `app` / `router` /
+  `api` etc.; bare `get/post` is too generic.
 
 ---
 
-## 3.2 PHP（ThinkPHP 6 / Laravel）ORM 语义特征
+## 3.2 PHP (ThinkPHP 6 / Laravel) ORM semantic features
 
-PHP 侧的**表映射**早已有之（比 Node 侧更成熟：还有 `db_verbs` 支撑 `ReadsDb` / `WritesDb` 读写分类）。
-本轮补上的是**模型关联**与**表级外键** —— 与 Node 侧同一套边（`References` / `ForeignKey`），
-`ForeignKey` 直接复用 §3.1 引入的 `Project` 动作。
+**Table mapping** on the PHP side has existed for a while (more mature than the Node side: it also has
+`db_verbs` backing the `ReadsDb` / `WritesDb` read / write classification). This round adds **model
+relations** and **table-level foreign keys** -- using the same edges as the Node side (`References` /
+`ForeignKey`), with `ForeignKey` directly reusing the `Project` action introduced in §3.1.
 
-| 语义 | 触发 | 节点 | 边 | 备注 |
+| Semantics | Trigger | Node | Edge | Notes |
 | --- | --- | --- | --- | --- |
-| **Table**（既有） | `Db::name('x')`（TP6）/ `DB::table('x')`（Laravel）/ 模型约定 `extends Model` | `Table` | `MapsTo`（+ P7 的 `ReadsDb` / `WritesDb`） | 每个框架各写一份（表名来源不同） |
-| **模型关联** | `$this->hasMany(Post::class)` / `belongsTo` / `belongsToMany` / `morphXxx` … | —（两端都是已有模型类节点） | `References`（声明方 → 目标模型） | 目标取 arg0 的类常量；**两侧都建**，见下 |
-| **表外键** | 由上面的 `References` 投影而来 | —（两端都是已有表节点） | `ForeignKey`（表 → 表） | P6 用 `Project`：遍历每条 `References`，两端各沿 `MapsTo` 走一跳 |
-| **列** | ① SQL 安装脚本的 `CREATE TABLE`；② Laravel migration `database/migrations/*.php` | `Column` | `HasColumn`（表 → 列） | 两个装载器都写权威 `schema` 符号表（**并集**，装载顺序无关），内核在 P6 末尾沉淀成图节点 |
+| **Table** (existing) | `Db::name('x')` (TP6) / `DB::table('x')` (Laravel) / model convention `extends Model` | `Table` | `MapsTo` (+ P7's `ReadsDb` / `WritesDb`) | written per framework (table-name sources differ) |
+| **Model relation** | `$this->hasMany(Post::class)` / `belongsTo` / `belongsToMany` / `morphXxx` … | — (both ends are existing model-class nodes) | `References` (declaring side → target model) | target from arg0's class constant; **built on both sides**, see below |
+| **Table foreign key** | projected from the `References` above | — (both ends are existing table nodes) | `ForeignKey` (table → table) | P6 uses `Project`: walk each `References`, both ends walk one hop along `MapsTo` |
+| **Column** | ① `CREATE TABLE` in SQL install scripts; ② Laravel migration `database/migrations/*.php` | `Column` | `HasColumn` (table → column) | both loaders write the authoritative `schema` symbol table (**union**, loader order irrelevant), and the core materializes it into graph nodes at the end of P6 |
 
-**为什么这里两侧都建、而 Node 侧只建持有方**：TypeORM 的 `@ManyToOne` / `@OneToMany` 通常**成对**写，
-只建持有方即可避免反向冗余；Laravel / ThinkPHP **常只声明一侧**（最常见就是 `User hasMany Post`，
-不写反向 `belongsTo`），只建一侧会大面积漏边 —— 宁可冗余也不漏。
+**Why both sides here but only the holder on the Node side**: TypeORM's `@ManyToOne` / `@OneToMany` are
+usually written **in pairs**, so building only the holder avoids reverse redundancy; Laravel / ThinkPHP
+**often declare only one side** (most commonly `User hasMany Post`, with no reverse `belongsTo`), so
+building one side would miss edges broadly -- better redundant than missing.
 
-规则按 `db_verbs` 的先例**各框架各写一份**（`fkb/php/laravel.yaml` 与 `fkb/php/thinkphp6.yaml`），
-不抽到 `php-common.yaml` —— 关系方法属于 **ORM 强假设**，而 `php-common` 声明了
-`apply_without_detection: true`、**对所有 PHP 工程无条件生效**。
+Following the precedent of `db_verbs`, the rules are **written per framework**
+(`fkb/php/laravel.yaml` and `fkb/php/thinkphp6.yaml`) rather than factored into `php-common.yaml` --
+relation methods are a **strong ORM assumption**, while `php-common` declares
+`apply_without_detection: true` and **applies unconditionally to all PHP projects**.
 
-### 列从哪来：沉淀权威 schema，而不是啃 migration
+### Where columns come from: precipitate the authoritative schema, don't chew on migrations
 
-PHP ORM 的模型**通常不声明字段**（字段在 migration / 表结构里），没有 TypeORM `@Column` 那样的
-字段级声明源。更关键的是：**Laravel migration 的 `$table->string('email')` 写在闭包里**，
-调用点的 owner 是闭包而非模型类，纯 FKB 拿不到它属于哪张表 —— 这条路走不通。
+PHP ORM models **usually don't declare fields** (fields live in migrations / table structure), so
+there's no field-level declaration source like TypeORM's `@Column`. More critically: **Laravel
+migration's `$table->string('email')` is written inside a closure**, so the call site's owner is the
+closure rather than the model class, and pure FKB can't tell which table it belongs to -- that path
+doesn't work.
 
-故改为**沉淀权威 schema**：`schema` 符号表（P3 从 SQL 安装脚本解析 `CREATE TABLE`、并从源码
-表名调用点补齐）里的列，在 P6 末尾由内核物化成 `Table --HasColumn--> Column`。
-这是**语言 / 框架无关**的能力 —— 只认「`Table` 节点 + schema 里有它的列」，
-任何有 SQL 安装脚本的工程都自动获得字段级图节点。列身份带表名作用域（`user.email`），
-故同名列（`id` / `created`）在不同表各算各的。
+Hence **precipitate the authoritative schema**: columns from the `schema` symbol table (parsed from
+`CREATE TABLE` in SQL install scripts at P3, plus table-name call sites found in source) are
+materialized by the core into `Table --HasColumn--> Column` at the end of P6. This is a **language /
+framework-agnostic** capability -- it only recognizes "a `Table` node + the schema having its columns",
+so any project with SQL install scripts automatically gets field-level graph nodes. Column identity
+carries table-name scope (`user.email`), so same-named columns (`id` / `created`) count separately per
+table.
 
-**Laravel 的列来自 migration 装载器**（`php_migration_schema`，扫描 `database/migrations/*.php`
-的 `Schema::create` / `Schema::table`）。两个装载器写同一张 `schema` 表，内部做**并集** ——
-否则后跑的会整份覆盖先跑的（装载顺序不保证）。
+**Laravel's columns come from the migration loader** (`php_migration_schema`, scanning `Schema::create`
+/ `Schema::table` in `database/migrations/*.php`). Both loaders write the same `schema` table and take
+a **union** internally -- otherwise the later one would overwrite the earlier one wholesale (loader
+order isn't guaranteed).
 
-解析只认**列声明方法白名单**（`$table->string('email')`），不能"取第一个字符串实参"：
-`->comment('说明')` / `->after('col')` / `->dropColumn('x')` 这类修饰符与非列声明也带字符串实参，
-会被误当列名。无实参的声明按 Laravel 约定补列名：`id()` → `id`、
-`timestamps()` → `created_at` / `updated_at`、`softDeletes()` → `deleted_at`。
+Parsing only recognizes a **whitelist of column-declaration methods** (`$table->string('email')`); it
+must not just "take the first string argument": modifiers and non-column declarations such as
+`->comment('说明')` / `->after('col')` / `->dropColumn('x')` also carry string arguments and would be
+mistaken for column names. Declarations without arguments get a column name per Laravel convention:
+`id()` → `id`, `timestamps()` → `created_at` / `updated_at`, `softDeletes()` → `deleted_at`.
 
-### 列**默认不进折叠视图**（刻意）
+### Columns deliberately **don't enter the collapsed view**
 
-列是「表数 × 列数」的量级（几十张表 × 十几列 = 几百个节点）。若把 `Column` 算作语义节点，
-折叠视图会被撑爆，还会吃掉可达语义节点统计的 `MAX_NODES = 400` 预算，把真正的表 / 契约挤掉。
-故：
+Columns are on the order of "table count × column count" (dozens of tables × a dozen columns = several
+hundred nodes). If `Column` counted as a semantic node, the collapsed view would be blown out, and it
+would eat the `MAX_NODES = 400` budget for reachable semantic nodes, squeezing out the real tables /
+contracts. Hence:
 
-* `Column` **不在** `NodeKind::SYNTHESIZED` 里 —— 折叠视图（`is_semantic()` 过滤）不画列；
-  节点照建、`HasColumn` 边照连，影响面照样能下到字段级。
-* **点开表仍能看到列**：`NodeView.columns` 把列作为**节点属性**带出来（裸列名），
-  故"展开一张表看看有哪些字段"不受影响 —— 列只是在折叠视图里不占位。
-  视图侧两条取列路径：PHP 是 `Table --HasColumn--> Column`；TypeORM 是
-  `Table <--MapsTo-- 实体类 --HasColumn--> Column`（`@Column` 挂在实体类上，要绕一跳）。
-* `HasColumn` 归入**桥边**而非语义边：因此**不计入**「语义入边 / 出边 N」
-  （它是组成关系，不是资源依赖；算语义边会让一张 15 列的表出边数直接 +15、口径失真），
-  但仍留在 `is_chain_edge` 里**可遍历**。
-* `ForeignKey`（表 → 表）两端都是语义节点、是真正的资源依赖 → 语义边，会计入 fan、会画。
+* `Column` is **not** in `NodeKind::SYNTHESIZED` -- the collapsed view (filtered by `is_semantic()`)
+  doesn't draw columns; nodes are still built and `HasColumn` edges still linked, so blast radius can
+  still drill to field level.
+* **Opening a table still shows its columns**: `NodeView.columns` brings columns out as **node
+  attributes** (bare column names), so "expand a table to see its fields" is unaffected -- columns just
+  don't take a slot in the collapsed view. Two column paths on the view side: PHP is
+  `Table --HasColumn--> Column`; TypeORM is
+  `Table <--MapsTo-- entity class --HasColumn--> Column` (`@Column` attaches to the entity class, so
+  it's one hop around).
+* `HasColumn` is classified as a **bridge edge** rather than a semantic edge, so it is **not counted**
+  in "semantic in-edges / out-edges N" (it's a composition relation, not a resource dependency;
+  counting it as semantic would make a 15-column table's out-edge count jump by 15 and distort the
+  metric), but it stays in `is_chain_edge` so it remains **traversable**.
+* `ForeignKey` (table → table) has semantic nodes at both ends and is a genuine resource dependency →
+  it is a semantic edge, counts toward fan, and is drawn.
 
-一个必须知道的机制细节：**FKB 的 `semantic_kinds` / `semantic_edge_kinds` 是全局注册的**
-（`register_semantic_kinds` 在 `load_dir` 里对所有 FKB 无条件登记，语言过滤只发生在选规则时）。
-所以想"只让某个框架的列可见"做不到 —— 任何一份 FKB 声明 `Column` 为语义，
-会让**所有工程**（含 PHP）的列都变语义。要按语言区分必须先改装载逻辑按语言登记。
+One mechanism detail you must know: **FKB's `semantic_kinds` / `semantic_edge_kinds` are registered
+globally** (`register_semantic_kinds` registers unconditionally for every FKB in `load_dir`; language
+filtering only happens when selecting rules). So "make columns visible for only one framework" is
+impossible -- any FKB declaring `Column` as semantic makes columns semantic in **all projects**
+(including PHP). Distinguishing by language requires first changing the loading logic to register per
+language.
 
-**诚实边界**：
-- **migration 只认 Laravel 的 `database/migrations/*.php`**：ThinkPHP 的列来源仍是 SQL 安装脚本
-  （它没有等价的 migration 目录约定）。`$table->xxx()` 之外的写法（如 `$table->morphs('taggable')`
-  产生的 `taggable_id` / `taggable_type`）按白名单补充，未覆盖的方言会被跳过（宁可缺不可猜）。
-- **表名单复数**：表节点名经 `singularize`（`user`），而 DDL / migration 常写复数（`users`），
-  沉淀时会再试一次复数形式兜底；`ColumnsMatch` 谓词**没有**这层兜底，故 PII 打标在复数表名上仍可能漏。
-- **`morphTo()` 不建边**：它没有类常量实参（多态目标运行时才定），取不到目标就跳过，不建悬空边。
+**Honest boundaries**:
+- **Migrations only recognize Laravel's `database/migrations/*.php`**: ThinkPHP's column source is
+  still the SQL install script (it has no equivalent migration directory convention). Forms outside
+  `$table->xxx()` (e.g. `taggable_id` / `taggable_type` produced by `$table->morphs('taggable')`) are
+  added to the whitelist; uncovered dialects are skipped (better missing than guessed).
+- **Table names are singularized**: table node names go through `singularize` (`user`), while DDL /
+  migrations often write the plural (`users`); precipitation retries the plural form as a fallback, but
+  the `ColumnsMatch` predicate does **not** have that fallback, so PII tagging can still miss plural
+  table names.
+- **`morphTo()` builds no edge**: it has no class-constant argument (the polymorphic target is only
+  determined at runtime), so with no target it's skipped and no dangling edge is built.
 
-端到端自检（合成工程，无需外部样本）：`crates/gt-pipeline/tests/php_orm_features.rs`。
+End-to-end self-check (synthetic project, no external sample):
+`crates/gt-pipeline/tests/php_orm_features.rs`.
 
-### 中间件：只落地挂载，不收全局
+### Middleware: only route-level mounting, not global
 
-| 语义 | 触发 | 节点 | 边 | 备注 |
+| Semantics | Trigger | Node | Edge | Notes |
 | --- | --- | --- | --- | --- |
-| **中间件** | `Route::group(fn){...}->middleware(X::class[, true])` / 单条路由自带 `->middleware(...)` | `Middleware`（由 `Class` **晋升**，不新建） | `PassesThrough` | P3 抽挂载 → P5.5 能力标注 → P14 建边 + 晋升；路由视角「结论」面板另有「经过中间件」一行 |
+| **Middleware** | `Route::group(fn){...}->middleware(X::class[, true])` / a single route carrying `->middleware(...)` | `Middleware` (**promoted** from `Class`, not newly created) | `PassesThrough` | P3 extracts mounting → P5.5 capability annotation → P14 builds the edge + promotes; the route perspective's "conclusions" panel has an extra "passes through middleware" row |
 
-**晋升而非合成**：中间件的 identity 就是类的 FQN，而 P2 早已为该 `Class` 建了节点，
-再合成一个等于同一份代码两个实体（扇入分裂、跳转给出两份位置）。故 P14 走
-`GraphDelta::kind_patches` **只改 kind，节点仍只有一个**。
+**Promotion rather than synthesis**: a middleware's identity is the class's FQN, and P2 already created
+a node for that `Class`; synthesizing another would mean two entities for the same code (split fan-in,
+two sets of jump locations). So P14 uses `GraphDelta::kind_patches` to **change only the kind, keeping
+a single node**.
 
-**为什么边名叫「经过」而不是「由…守卫」**：中间件里有会拒绝请求的守卫
-（`AuthToken` / `Blocker` / `throttle`），也有只加响应头 / 记日志的旁路
-（`AllowOrigin` / `AdminLog`）。统一叫"守卫"是替后者**过度声明** —— 与 `MapsTo`
-不写成 `ReadsDb` 同一条纪律（静态归属 ≠ 动作，路过 ≠ 守卫）。
-"这个端点要不要鉴权"由 `Capability: Authentication` 标注回答，不由边名承担。
+**Why the edge is named "passes through" rather than "guarded by"**: middleware includes guards that
+reject requests (`AuthToken` / `Blocker` / `throttle`) as well as bypasses that only add response
+headers or log (`AllowOrigin` / `AdminLog`). Calling them all "guards" would **over-claim** for the
+latter -- the same discipline as not writing `MapsTo` as `ReadsDb` (static ownership ≠ action; passing
+through ≠ guarding). "Does this endpoint need auth" is answered by the `Capability: Authentication`
+annotation, not by the edge name.
 
-**为什么只收路由 / 路由组级挂载**：全局中间件（`app/middleware.php`、`Kernel::$middleware`）
-对每个端点都成立，是**环境常量而非信息** —— 画上去只会让每张图重复同一句废话
-（这正是 `write-endpoint-without-auth` 被停用的同型教训：把全局事实当端点级事实，
-1603 个契约里 1529 个被判成公开端点）。
+**Why only route / route-group-level mounting is collected**: global middleware
+(`app/middleware.php`, `Kernel::$middleware`) holds for every endpoint -- it's an **environment
+constant, not information**; drawing it would just repeat the same tautology on every graph (exactly
+the same lesson as `write-endpoint-without-auth` being disabled: treating a global fact as an
+endpoint-level fact judged 1529 of 1603 contracts as public).
 
-CRMEB 实测（流水线重跑）：`route_list` 键与契约名**1265 / 1265** 对上 → **4436 条**
-`PassesThrough` 边、**10 个**类晋升为 `Middleware`、`auth.public` 从 1529 降到 894
-（被误判为"公开"的端点得到纠正）。
-组合分布：12 种，最大一种占 **63%** —— 准确的说法是区分度**不在单个端点之间，而在
-app 之间**（管理端 / 用户端 / 客服端 / 公开），同一个 app 内部确实是同一套中间件。
+Measured on CRMEB (pipeline rerun): `route_list` keys and contract names matched **1265 / 1265** →
+**4436** `PassesThrough` edges, **10** classes promoted to `Middleware`, and `auth.public` dropped from
+1529 to 894 (endpoints wrongly judged "public" got corrected).
+Combination distribution: 12 kinds, the largest at **63%** -- the accurate statement is that
+discriminative power lies **not between individual endpoints but between apps** (admin / user / support
+/ public); within one app it really is the same middleware set.
 
-**Laravel 侧**（`fkb/php/laravel.yaml` 新增 `php_routes` / `php_middleware_aliases` 两个装载器）：
+**Laravel side** (`fkb/php/laravel.yaml` gained two loaders, `php_routes` / `php_middleware_aliases`):
 
-| 项目 | 实测 |
+| Project | Measurement |
 | --- | --- |
-| bagisto | `route_list` **0 → 207** 行（此前 Laravel 工程根本没有路由表，"路由表登记 handler"结论恒不显示）；24 条契约带守卫 |
-| aimeos | 16 条契约带守卫（`auth:sanctum` / `guest` …） |
+| bagisto | `route_list` **0 → 207** rows (previously Laravel projects had no route table at all, so the "route table registers handler" conclusion never showed); 24 contracts with guards |
+| aimeos | 16 contracts with guards (`auth:sanctum` / `guest` …) |
 
-两点已解决：① 修饰符前置写法 `Route::middleware('auth')->group(fn)` —— 链根改取 `group`；
-② 数组形式 `->middleware(['auth','throttle:60'])` —— 每一项各算一次挂载。
+Two things resolved: ① the modifier-first form `Route::middleware('auth')->group(fn)` -- the chain root
+now takes `group`; ② the array form `->middleware(['auth','throttle:60'])` -- each item counts as one
+mount.
 
-已知边界（诚实声明，不为这批写法硬撑）：
-- **别名 → 类**依赖 `app/Http/Kernel.php` 的 `$routeMiddleware`。3 个样本里只有 aimeos 有
-  `Http/Kernel.php` 且**没有**声明 `$routeMiddleware`（用的是 Laravel 内置别名），故别名
-  基本还原不出类名：守卫名字照常显示（`web` / `guest` / `throttle:5,1`），但**连不到类节点**。
-  裸短名（`NoCacheMiddleware`）走 `resolve_short_name` 兜底能连上（bagisto 实测 4 条边），
-  歧义短名一律拒绝。
-- Laravel 内置中间件（`auth` / `guest` / `throttle`）的类在 `vendor` 里，P0 已排除 ——
-  即使别名还原成功也未必有节点可连，这是**图的边界**，不是还原逻辑的缺陷。
+Known boundaries (stated honestly, not papered over for these forms):
+- **Alias → class** depends on `$routeMiddleware` in `app/Http/Kernel.php`. Of the 3 samples only aimeos
+  has `Http/Kernel.php`, and it does **not** declare `$routeMiddleware` (it uses Laravel's built-in
+  aliases), so aliases mostly can't be restored to class names: guard names still show (`web` / `guest`
+  / `throttle:5,1`), but they **don't link to class nodes**. Bare short names (`NoCacheMiddleware`) fall
+  back through `resolve_short_name` and can link (4 edges measured on bagisto); ambiguous short names
+  are always rejected.
+- Laravel's built-in middleware classes (`auth` / `guest` / `throttle`) live in `vendor`, already
+  excluded at P0 -- even a successful alias restore may find no node to link. That's a **boundary of
+  the graph**, not a defect of the restore logic.
 
-### 3.3 Symfony（PHP）路由语义特征
+### 3.3 Symfony (PHP) route semantic features
 
-Symfony 是 PHP 生态体量最大的框架之一，本轮补上它的 **PHP 8 属性路由**（`#[Route]` /
-`#[Get]` / `#[Post]` …）→ `HttpContract` + `HandledBy`，与 Spring（注解）、
-FastAPI（装饰器）、Django（`path()`）**同一套语义**。
+Symfony is one of the largest frameworks in the PHP ecosystem, and this round adds its **PHP 8
+attribute routes** (`#[Route]` / `#[Get]` / `#[Post]` …) → `HttpContract` + `HandledBy`, using the
+**same semantics** as Spring (annotations), FastAPI (decorators) and Django (`path()`).
 
-解析器侧（`gt-adapter-parser/src/php/mod.rs` 的 `collect_method`）把每个路由属性
-**合成成调用点**（此前 PHP 解析器不认 `attribute_list` 这类 PHP 8 属性节点）：
+On the parser side (`collect_method` in `gt-adapter-parser/src/php/mod.rs`) each route attribute is
+**synthesized into a call site** (previously the PHP parser didn't recognize PHP 8 attribute nodes like
+`attribute_list`):
 
-| 写法 | 契约方法 | 说明 |
+| Form | Contract method | Notes |
 | --- | --- | --- |
-| `#[Route('/x', methods: ['GET'])]` | `GET` | 读具名实参 `methods` 数组 |
-| `#[Route('/x', methods: ['GET','POST'])]` | `GET` + `POST` | 拆成**两条**契约（每个 `(方法, 路径)` 一条） |
-| `#[Route('/x')]`（无 methods） | `ANY` | Symfony 不限制方法 → 通配 |
-| `#[Get('/x')]` / `#[Post('/x')]` … | `GET` / `POST` | 快捷属性隐含方法 |
+| `#[Route('/x', methods: ['GET'])]` | `GET` | reads the named argument `methods` array |
+| `#[Route('/x', methods: ['GET','POST'])]` | `GET` + `POST` | split into **two** contracts (one per `(method, path)`) |
+| `#[Route('/x')]` (no methods) | `ANY` | Symfony doesn't restrict the method → wildcard |
+| `#[Get('/x')]` / `#[Post('/x')]` … | `GET` / `POST` | shortcut attributes imply the method |
 
-合成调用点的 `callee_text` 带 **`attr.` 前缀**（如 `attr.Route`）。这是必须的：FKB 的
-`callee` 模式不是正则 —— 单冒号被解释成 `receiver:method`、裸名会**按方法名**匹配，
-故 `attr:Route` 匹配不上（receiver=`attr`、method=`Route`），而裸 `Get` 会误命中
-`$cache->Get()` 这类调用。`entity` 指向控制器方法自身，FKB 用
-`to: { entity: true, resolve: class_const }` 连成 `HandledBy`。
+The synthesized call site's `callee_text` carries an **`attr.` prefix** (e.g. `attr.Route`). This is
+required: FKB's `callee` pattern isn't a regex -- a single colon is interpreted as `receiver:method`,
+and a bare name matches **by method name**, so `attr:Route` wouldn't match (receiver=`attr`,
+method=`Route`), while a bare `Get` would wrongly hit calls like `$cache->Get()`. `entity` points at
+the controller method itself, and FKB uses
+`to: { entity: true, resolve: class_const }` to link `HandledBy`.
 
-端到端自检（合成工程）：`crates/gt-pipeline/tests/symfony_route_features.rs`。
+End-to-end self-check (synthetic project): `crates/gt-pipeline/tests/symfony_route_features.rs`.
 
-**诚实边界**：
-- **只认方法级属性**：类级 `#[Route]` 前缀（`#[Route('/api')] class X`）当前不处理
-  （不做前缀拼接），这类路由不会成契约。
-- **只认这 8 个属性名**（`Route` / `Get` / `Post` / `Put` / `Delete` / `Patch` /
-  `Options` / `Head`），其余属性（如 `#[ORM\Entity]`、`#[IsGranted]`）忽略。
-- **`use ... Route as MyRoute` 别名**不还原，`#[MyRoute('/x')]` 识别不到。
-- 路由路径里的占位符保留原文（`/api/users/{id}`），不与该路径的模板变量做别名归并。
+**Honest boundaries**:
+- **Only method-level attributes are recognized**: a class-level `#[Route]` prefix
+  (`#[Route('/api')] class X`) isn't handled (no prefix concatenation), so such routes don't become
+  contracts.
+- **Only these 8 attribute names are recognized** (`Route` / `Get` / `Post` / `Put` / `Delete` /
+  `Patch` / `Options` / `Head`); other attributes (e.g. `#[ORM\Entity]`, `#[IsGranted]`) are ignored.
+- **`use ... Route as MyRoute` aliases aren't restored**, so `#[MyRoute('/x')]` isn't recognized.
+- Placeholders in route paths are kept verbatim (`/api/users/{id}`) and aren't alias-merged with that
+  path's template variables.
 
 ---
 
-## 4. 合规检查（rules）
+## 4. Compliance check (rules)
 
-规则按适用环境分目录装载，内核不认识任何具体规则：
+Rules are loaded per applicable environment by directory; the core knows no concrete rule:
 
-| 目录 | 适用 | 内容 |
+| Directory | Applies to | Content |
 | --- | --- | --- |
-| `rules/global/` | 跨语言通用（只依赖图拓扑） | 契约桥（`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`）、热点表（`hot-table`）、配置读取热点（`config-read-hotspot`）、死表（`dead-table`）、只写不读 / 只读不写表、高扇出方法（`hotspot-method`） |
-| `rules/php/` | 仅 PHP 工程 | 原始 SQL 执行点、PII 表、从未触发的事件 / 队列、循环内逐条读写库（N+1）、循环内外部调用、多写无事务、验签质量 |
-| `rules/java/` | 仅 Java 工程 | 循环内逐条读写库（N+1）—— 判据与 PHP 版同构，见 §5 |
-| `rules/js/` | 含前端子工程的工程 | 前端事件总线死代码 |
+| `rules/global/` | language-agnostic (topology-only) | contract bridge (`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`), hot tables (`hot-table`), config-read hotspots (`config-read-hotspot`), dead tables (`dead-table`), write-only / read-only tables, high-fan-out methods (`hotspot-method`) |
+| `rules/php/` | PHP projects only | raw SQL execution points, PII tables, never-triggered events / queues, per-row DB read/write in a loop (N+1), external call in loop, multi-write without tx, signature verification quality |
+| `rules/java/` | Java projects only | per-row DB read/write in a loop (N+1) -- the criterion is isomorphic to the PHP version, see §5 |
+| `rules/js/` | projects with a frontend sub-project | frontend event bus dead code |
 
-内置约 30 条规则。规则用 `applies_to.languages` / `applies_to.frameworks` 先验声明适用范围；环境不匹配直接跳过（`rules_not_applicable`），判据依赖的事实图里没有则停用（`rules_unavailable`），避免"0 命中"这种比误报更危险的静默失效。详见 README「规则怎么知道该在哪跑」。
-
----
-
-## 5. 已知边界（诚实声明）
-
-这些是**当前图的真实缺口**，不是 bug，写规则与解读图时都要考虑：
-
-- **Java 的 N+1（循环内逐条读写库）：已做通**（`rules/java/n1-query.yaml`）。补齐了三环：
-  P7 的读 / 写分类要求**接收者类型有 `MapsTo` 边**，而 Spring FKB 只给 `@Table` /
-  `@TableName` 标注的**实体类**建 `MapsTo → Table`；JPA Repository / MyBatis Mapper 接口
-  （`UserRepository extends JpaRepository<User, Long>`）本身没有该边，故
-  `userRepository.save()` 落不出 `WritesDb`。三步分别是：
-
-  1. **Java parser 捕获 `extends` 的泛型实参** —— **已完成**。`interface UserRepository
-     extends JpaRepository<User, Long>` 现能取出 `User`，记成 `generic.JpaRepository`
-     合成调用点（`entity` = 实体名）。顺带修掉一个既有缺陷：接口的 `extends` 在
-     tree-sitter-java 里是 **`extends_interfaces` 节点且不带字段名**，`child_by_field_name`
-     永远取不到，此前「接口继承接口」整条继承关系是丢失的。
-  2. **加规则把 Repository / Mapper → 实体 → 表串起来** —— **已打通**。`spring-boot.yaml`
-     里写好 `Link`（DAO → 实体的 `References`）+ `Project`（沿实体 `MapsTo` 投影成
-     DAO → 表），`crates/gt-pipeline/tests/java_db_verbs.rs` 验证通过。两个坑：
-     * `Action::Link` 是 `ev.string(src)` 后直接 `find_by_name`，**顶层 `resolve` 不参与**，
-       必须写在每个 `ValueSource` 上；
-     * 泛型实参是**裸名**（实体与 DAO 同包、没有 import），而短名索引只收 import，
-       故 parser 必须按 DAO 所在包把它补成 FQN，否则 `find_by_name` 落空、不产边。
-
-  3. **字段声明类型按同包补成 FQN** —— 也是关键一环。`private UserRepository repo;`
-     在源码里是**短名**，而 `mapped_tables` 用 FQN 查 `MapsTo`，短名查不到 ⇒
-     `repo.save()` 仍落不出动作边。parser 现按所在类的包补齐（`com.demo.UserRepository`）。
-
-  端到端自检（合成工程）：`crates/gt-pipeline/tests/java_db_verbs.rs`，覆盖
-  「实体 → 表」「DAO → 表（MapsTo）」「`findById` → ReadsDb / `save` → WritesDb」。
-
-  **诚实边界**：
-  * **只认同包的裸类型名**：字段类型若来自**跨包 import**（`import com.other.User;`），
-    当前按本包补齐会得到错误的 FQN，故这类调用落不出动作边（宁可缺不可猜）。
-  * **JPA 派生查询不在动词表**：`findByEmail` / `countByStatus` 这类名字不固定，
-    无法枚举，不会落 `ReadsDb`。
-  * **DAO 泛型实参只取第一个**：`JpaRepository<User, Long>` 取 `User`（实体），符合惯例。
-
-     注：不能用 `Synthesize` 绕过 —— `Synthesize` 是「造节点再连边」，而这里需要连的
-     是**已存在的** Table 节点；从实体名 `User` 推不出表名 `eb_user`（`@TableName`
-     给的值），另造一个会重复建表。MyBatis **XML** mapper 那条路（`mybatis::select`
-     等伪调用点）已经能直出 `ReadsDb` / `WritesDb`，不受此限制。
-- **Kafka 生产端靠 receiver 变量名约定匹配**：`kafkaTemplate` / `kafkaProducer` / `producer` 三个常见字段名 + `KafkaTemplate.sendDefault`（专属方法名兜底）。项目若用别的字段名（如 `kt`），需把变量名加进 FKB 的 `callee` 备选。裸方法名 `send` 不能直用（会和 `sendError` / `email.send` 等误伤）。
-- **事件类型级归并的兜底**：`publishEvent(var)`（实参是变量而非 `new X()`），或解析不出 handler 形参类型时，身份退回 `owner_member`（收发方法名）——此时不归并，但 `ListensTo` / `Emits` 边不丢。`entity` 取的是裸类型名（泛型已剥离）。
-- **消息生产端 destination 依赖「方法调用实参字面量」的位置级捕获**：`convertAndSend` 同样来自 `RedisTemplate` / `JmsTemplate`，统一落 `Queue`；若需区分可按 receiver 伞名细化。
-- **语法层无类型**：`rabbitTemplate` / `kafkaTemplate` 是变量名，不能还原成类，所以 producer 匹配用变量名约定而非类型（要更稳需符号表）。
-- **Python 的路由 / 缓存靠 receiver 变量名约定收窄**：`app` / `router` / `api_router` / `cache` / `redis` …。Python 的 `get` / `set` 太通用，裸方法名会把 `requests.get("/api")` 之类误伤成路由。项目若用别的变量名（如 `v1_router`），需把它加进 FKB 的 `callee` 备选（与 Java 侧 `kafkaTemplate::send` 同一类取舍）。
-- **Flask 的 `methods=` 只在 arg1 解码**：写在更靠后的位置会退回 `GET`；多方法路由（`["GET","POST"]`）只取第一个。
-- **Celery 任务归并用 `short_name` 归一化**：不同模块的**同名任务会合并成一个节点**（归并优先于区分）。
-- **Celery beat 的 `Triggers` 指向注册点函数**，而非被触发的任务 —— 后者在实参里且非字面量，当前无法作为链接目标（宁可不连，不编造边）。
-- **`Depends` 的嵌套依赖不展开**：`get_db` 自己再 `Depends(...)` 不再递归。
-- **无解析器的语言会告警，但图仍然为空**：Go / Rust / Kotlin / C# / Ruby 会被识别成子工程、文件也扫得进来，只是没有解析器 —— P2 产出 `NoParserForLanguage` 诊断并跳过。**它消除了静默失败，但没有消除能力缺口**：真正支持仍需各自补一个 `LanguageParser`。
-- **不做向量、不调 LLM**：纯中文且不含标识符的召回做不到（见 README「提示词增强」）。
+About 30 rules ship built-in. Rules **declare their scope up front** via `applies_to.languages` /
+`applies_to.frameworks`; an environment mismatch skips them (`rules_not_applicable`), and if the facts
+a criterion depends on aren't in the graph the rule is disabled (`rules_unavailable`) -- avoiding the
+"0 hits" silent failure that's more dangerous than false positives. See the README's "How a rule knows
+where to run".
 
 ---
 
-## 6. 如何扩展 / 验证
+## 5. Known boundaries (stated honestly)
 
-- 加框架 = 在 `fkb/` 加一份 YAML（detectors / root_rules / loaders / rules / resolvers），跑 `graphtell validate` 校验。
-- 加语言 = 实现 `LanguageParser`（范本：`gt-adapter-parser/src/java` 为"第二语言"、`src/python` 为"第三语言"；后者额外示范了装饰器建模、模块级函数的 `owner_class` 回填等动态语言问题）。
-- 加语言时若**暂时不写解析器**，请知悉：该文件仍会被扫描、子工程仍会被识别，P2 会报 `NoParserForLanguage`。不要把 `MARKERS` 里的标记当作"已支持"。
-- 加合规规则 = 在 `rules/<env>/` 加 YAML，先在样本库（5 个 ThinkPHP + 3 个 Spring Boot 已建图工程）量一遍命中数：既不能是 0（静默失效），也不能刷屏（噪声），再决定是否发货。
-- 改了 FKB 不触发重新建图；改了解析器 / 引擎才需要重建图。
+These are **real gaps in the current graph**, not bugs; keep them in mind when writing rules and
+reading graphs:
+
+- **Java N+1 (per-row DB read/write in a loop): done** (`rules/java/n1-query.yaml`). Three rings were
+  closed: P7's read / write classification requires the **receiver type to have a `MapsTo` edge**,
+  while Spring FKB only builds `MapsTo → Table` for **entity classes** annotated with `@Table` /
+  `@TableName`; JPA Repository / MyBatis Mapper interfaces
+  (`UserRepository extends JpaRepository<User, Long>`) don't have that edge, so `userRepository.save()`
+  can't land a `WritesDb`. The three steps:
+
+  1. **The Java parser captures `extends` generic arguments** -- **done**.
+     `interface UserRepository extends JpaRepository<User, Long>` can now extract `User`, recording it
+     as a `generic.JpaRepository` synthesized call site (`entity` = entity name). This also fixed a
+     pre-existing defect: an interface's `extends` is an **`extends_interfaces` node without a field
+     name** in tree-sitter-java, so `child_by_field_name` could never fetch it, and "interface extends
+     interface" inheritance was previously lost entirely.
+  2. **Add rules chaining Repository / Mapper → entity → table** -- **done**. `spring-boot.yaml` writes
+     the `Link` (DAO → entity's `References`) + `Project` (project along the entity's `MapsTo` into
+     DAO → table), verified by `crates/gt-pipeline/tests/java_db_verbs.rs`. Two pitfalls:
+     * `Action::Link` does `ev.string(src)` then `find_by_name`; the **top-level `resolve` doesn't
+       participate** and must be written on each `ValueSource`.
+     * The generic argument is a **bare name** (entity and DAO are in the same package, no import),
+       while the short-name index only collects imports, so the parser must complete it into an FQN
+       using the DAO's package, otherwise `find_by_name` misses and no edge is produced.
+
+  3. **Field declaration types completed to an FQN using the same package** -- also a key ring.
+     `private UserRepository repo;` is a **short name** in source, while `mapped_tables` looks up
+     `MapsTo` by FQN, so a short name finds nothing ⇒ `repo.save()` still lands no action edge. The
+     parser now completes it using the enclosing class's package (`com.demo.UserRepository`).
+
+  End-to-end self-check (synthetic project): `crates/gt-pipeline/tests/java_db_verbs.rs`, covering
+  "entity → table", "DAO → table (MapsTo)", "`findById` → ReadsDb / `save` → WritesDb".
+
+  **Honest boundaries**:
+  * **Only same-package bare type names are recognized**: if a field type comes from a **cross-package
+    import** (`import com.other.User;`), completing it against the current package yields a wrong FQN,
+    so such calls land no action edge (better missing than guessed).
+  * **JPA derived queries aren't in the verb table**: names like `findByEmail` / `countByStatus` aren't
+    fixed and can't be enumerated, so they land no `ReadsDb`.
+  * **Only the first DAO generic argument is taken**: `JpaRepository<User, Long>` takes `User` (the
+    entity), matching convention.
+
+    Note: `Synthesize` can't be used to bypass this -- `Synthesize` means "create a node then link",
+    while what's needed here is to link to an **already existing** Table node; the table name
+    `eb_user` can't be derived from the entity name `User` (that value comes from `@TableName`), and
+    creating another would duplicate the table. The MyBatis **XML** mapper path (`mybatis::select` and
+    other pseudo call sites) already emits `ReadsDb` / `WritesDb` directly and isn't subject to this
+    limitation.
+- **Kafka producer matching relies on receiver variable-name conventions**: `kafkaTemplate` /
+  `kafkaProducer` / `producer` (three common field names) plus `KafkaTemplate.sendDefault` (an
+  exclusive method name as fallback). If a project uses another field name (e.g. `kt`), add the
+  variable name to FKB's `callee` alternatives. The bare method name `send` can't be used directly (it
+  would misfire on `sendError` / `email.send` …).
+- **Fallback for event type-level merging**: with `publishEvent(var)` (the argument is a variable
+  rather than `new X()`), or when the handler parameter type can't be resolved, identity falls back to
+  `owner_member` (the send / receive method name) -- then no merging happens, but the `ListensTo` /
+  `Emits` edges aren't lost. `entity` takes the bare type name (generics stripped).
+- **The message producer's destination depends on positional capture of "method-call argument
+  literals"**: `convertAndSend` also comes from `RedisTemplate` / `JmsTemplate`, unified into `Queue`;
+  distinguishing them would require refining by receiver umbrella name.
+- **The syntax layer has no types**: `rabbitTemplate` / `kafkaTemplate` are variable names and can't be
+  restored to classes, so producer matching uses variable-name conventions rather than types (a symbol
+  table would be needed for robustness).
+- **Python routes / cache are narrowed by receiver variable-name conventions**: `app` / `router` /
+  `api_router` / `cache` / `redis` …. Python's `get` / `set` are too generic; bare method names would
+  misfire on things like `requests.get("/api")` as routes. If a project uses another variable name
+  (e.g. `v1_router`), add it to FKB's `callee` alternatives (the same trade-off as Java's
+  `kafkaTemplate::send`).
+- **Flask's `methods=` is only decoded at arg1**: written further back it falls back to `GET`;
+  multi-method routes (`["GET","POST"]`) take only the first.
+- **Celery task merging uses `short_name` normalization**: same-named tasks in **different modules
+  merge into one node** (merging wins over distinguishing).
+- **Celery beat's `Triggers` points at the registration function**, not the triggered task -- the latter
+  is an argument and not a literal, so it can't currently be a link target (better no link than a
+  fabricated edge).
+- **Nested `Depends` isn't expanded**: if `get_db` itself has another `Depends(...)`, it isn't
+  recursed.
+- **Languages without a parser warn, but the graph is still empty**: Go / Rust / Kotlin / C# / Ruby are
+  recognized as sub-projects and their files are scanned, but with no parser -- P2 produces a
+  `NoParserForLanguage` diagnostic and skips. **This removes the silent failure, but not the capability
+  gap**: real support still needs a `LanguageParser` for each.
+- **No vectors, no LLM calls**: recall for pure Chinese with no identifier doesn't work (see the
+  README's "prompt augmentation").
+
+---
+
+## 6. How to extend / verify
+
+- Add a framework = add a YAML under `fkb/` (detectors / root_rules / loaders / rules / resolvers) and
+  run `graphtell validate`.
+- Add a language = implement `LanguageParser` (reference: `gt-adapter-parser/src/java` as the "second
+  language", `src/python` as the "third"; the latter additionally demonstrates decorator modeling,
+  `owner_class` backfill for module-level functions, and other dynamic-language issues).
+- If you add a language but **don't write a parser yet**, be aware: its files are still scanned and
+  sub-projects still recognized, and P2 reports `NoParserForLanguage`. Don't treat a marker in
+  `MARKERS` as "supported".
+- Add a compliance rule = add a YAML under `rules/<env>/`, then measure hits against the sample library
+  (5 ThinkPHP + 3 Spring Boot projects already built): it must be neither 0 (silent failure) nor
+  flooding (noise) before you decide to ship it.
+- Changing FKB doesn't trigger a rebuild; changing the parser / engine does.

@@ -2,7 +2,7 @@ import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Tauri 环境下固定端口，方便 Rust 侧注入；Web 开发时用代理。
+// Pin the port under Tauri so the Rust side can inject it; use a proxy for web development.
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({

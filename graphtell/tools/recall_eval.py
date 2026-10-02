@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""召回质量评测：对评测集里每个查询跑一次召回，统计 hit@5 / hit@10 / hit@20。
+"""Recall quality eval: run one recall per query in the eval set, counting hit@5 / hit@10 / hit@20.
 
-用法（需先启动常驻服务）：
+Usage (needs the resident service first):
     graphtell serve --port 5177
-    python3 tools/recall_eval.py                          # 评测并打印
-    python3 tools/recall_eval.py --out tools/baseline.json # 同时存基线
-    python3 tools/recall_eval.py --compare tools/baseline.json  # 与基线对比
+    python3 tools/recall_eval.py                          # evaluate and print
+    python3 tools/recall_eval.py --out tools/baseline.json # also save a baseline
+    python3 tools/recall_eval.py --compare tools/baseline.json  # compare against a baseline
 
-判据：命中的节点名（小写）包含任一 target（小写）即算命中。
-每个 case 附带英文对照（lang=en）：中文不中而英文中 → 跨语言桥的问题；
-两者都不中 → 检索 / 排序本身的问题。
+Criterion: a hit node name (lowercased) containing any target (lowercased) counts as a hit.
+Each case also carries an English control (lang=en): Chinese misses but English hits -> a
+cross-lingual bridge problem; both miss -> a retrieval / ranking problem.
 """
 import argparse
 import json
@@ -69,8 +69,8 @@ def main():
             print("请先启动：graphtell serve", file=sys.stderr)
             return 2
         hits = {k: hit_at(names, c["targets"], k) for k in KS}
-        # 预热状态：落盘文件存在 → 语义路径；否则仍在快速（哈希）路径。
-        # 两种路径的质量差异很大，必须分开看，不能混在同一份汇总里。
+        # Warmup state: the persisted file exists -> semantic path; otherwise still on the fast (hash) path.
+        # The two paths differ a lot in quality, so they must be viewed separately, never mixed in one summary.
         warm = os.path.exists(f"data/embeddings/{c['project']}.json")
         results.append(
             {
@@ -83,7 +83,7 @@ def main():
             }
         )
 
-    # ---- 打印
+    # ---- print
     print(f"{'工程':<6}{'预热':<6}{'语':<4}{'查询':<26}{'@5':<6}{'@10':<6}{'@20':<6} 命中前3")
     print("-" * 102)
     for r in results:
@@ -137,7 +137,7 @@ def main():
             b = bmap.get((r["project"], r["query"]))
             if not b:
                 continue
-            # JSON 往返后键会变成字符串，统一转回 int 再比。
+            # After a JSON round-trip keys become strings; convert them all back to int before comparing.
             bh = {int(kk): vv for kk, vv in b["hit"].items()}
             for k in KS:
                 if r["hit"][k] != bh[k]:

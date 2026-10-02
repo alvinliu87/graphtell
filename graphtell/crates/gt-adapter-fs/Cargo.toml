@@ -1,6 +1,6 @@
 [package]
 name = "gt-adapter-fs"
-description = "文件系统适配器：工程扫描、子工程识别、文件读取"
+description = "Filesystem adapter: project scan, sub-project detection, file reading"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

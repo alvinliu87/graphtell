@@ -1,240 +1,290 @@
-# FKB 编写指南（Framework Knowledge Base Authoring）
+# FKB authoring guide (Framework Knowledge Base)
 
-FKB 是 GraphTell 的「框架知识」层：**一份 YAML 描述一个框架怎么识别、怎么从源码里抽出语义节点和边**。
-内核**不认识任何具体框架**——新增对某个框架/语言的支持，只需要加一份 YAML，不需要改 Rust 代码。
+FKB is GraphTell's "framework knowledge" layer: **one YAML describes how a framework is recognized
+and how semantic nodes and edges are extracted from source**. The core **knows no concrete
+framework** -- adding support for a framework / language only means adding a YAML, with no Rust
+changes.
 
-本指南面向「想让 GraphTell 支持某个新框架」的你（无论是手写还是用 AI 生成）。
-
----
-
-## 1. 它是怎么被加载的（先懂机制，少踩坑）
-
-- **目录自动发现**：启动时递归扫描 `fkb/<任意子目录>/*.yaml`，丢一份新文件就自动加载，**无需注册清单**。
-- **语义种类自动登记**：FKB 里声明的 `semantic_kinds` 在装载时自动登记进内核（见 §5.2），新增节点种类不必改内核。
-- **可插件式、不改核心仓库**：用 `--fkb-dir <目录>` 或环境变量 `GRAPHTELL_FKB_DIR` 指向你自己的 FKB 目录，Engine 会整体改用它。别人可以自带一套规则跑你的 Engine，完全不用来提 PR。
-- **损坏文件优雅跳过**：某份 YAML 写坏不会让程序崩溃，只会 warn 并跳过。
-
-> 校验：写好一份 FKB 后，先跑 `graphtell validate`（见 §8）再做建图，能省掉大量「写了没反应」的沉默失败。
+This guide is for you if you want GraphTell to support a new framework (whether you hand-write it
+or generate it with AI).
 
 ---
 
-## 2. 一份 FKB 长什么样（顶层字段）
+## 1. How it gets loaded (understand the mechanism, trip over less)
+
+- **Directory auto-discovery**: on startup it recursively scans `fkb/<any-subdir>/*.yaml`; drop in a
+  new file and it loads automatically -- **no registry manifest needed**.
+- **Semantic kinds auto-registered**: `semantic_kinds` declared in FKB are registered into the core
+  at load time (§5.2); a new node kind needs no core change.
+- **Pluggable, without touching the core repo**: point `--fkb-dir <dir>` or the environment variable
+  `GRAPHTELL_FKB_DIR` at your own FKB directory and the Engine uses it wholesale. Others can ship
+  their own rule set against your Engine without opening a PR at all.
+- **Graceful skip for broken files**: a malformed YAML won't crash the program; it warns and skips.
+
+> Validation: after writing an FKB, run `graphtell validate` (§8) before building a graph -- it saves
+> a lot of "wrote it, nothing happened" silent failures.
+
+---
+
+## 2. What an FKB looks like (top-level fields)
 
 ```yaml
-id: my-framework          # 必须，全局唯一；同 id 的外部目录会覆盖内置
+id: my-framework          # required, globally unique; an external dir with the same id overrides built-in
 display_name: My Framework
-language: php             # 开放字符串：php / java / javascript / … 决定哪些子工程应用它
-version_hint: ">=2.0"     # 仅展示用
+language: php             # open string: php / java / javascript / … decides which sub-projects it applies to
+version_hint: ">=2.0"     # display only
 
-detectors: [...]          # 如何「识别」本框架（命中后才生效，除非 apply_without_detection）
-root_rules: [...]         # 如何解析框架根（如 app 目录）
-loaders: [...]            # P3 装载权威符号表（schema / config_keys / i18n / facade_map …）
-resolvers: [...]          # P7 动态解析声明（容器 make / 事件 / 门面 / handler …）
+detectors: [...]          # how to "recognize" this framework (takes effect only on a hit, unless apply_without_detection)
+root_rules: [...]         # how to resolve the framework root (e.g. the app dir)
+loaders: [...]            # P3 loads authoritative symbol tables (schema / config_keys / i18n / facade_map …)
+resolvers: [...]          # P7 dynamic resolution declarations (container make / event / facade / handler …)
 
-rules: [...]              # ★ 核心：本框架的抽取规则
-semantic_kinds: []        # 本 FKB 引入的「新语义节点种类」（不在内核清单里时必须声明，见 §5.2）
+rules: [...]              # ★ core: this framework's extraction rules
+semantic_kinds: []        # "new semantic node kinds" introduced by this FKB (must be declared if not on the core list, §5.2)
 
-scope: framework          # framework（通用框架）| project（项目专有，仅该项目识别时加载）
-apply_without_detection: false  # true=对所有同语言子工程生效（用于「语言通用层」，不含框架假设）
+scope: framework          # framework (generic) | project (project-specific, loaded only when that project is recognized)
+apply_without_detection: false  # true = applies to all sub-projects of that language (for a "language-generic layer", no framework assumptions)
 exclude_globs: ["node_modules/**", "dist/**"]
 
-# 框架特定约定（都不含框架假设的放语言通用层，含强假设的留在这里）：
-handler: {...}            # 路由 handler 字符串如何还原成「类 + 方法」
-db_verbs: {read: [...], write: [...]}   # 模型 CRUD 动词 → 读/写分类
-magic_delegation: {...}   # @method 注解 + __call 转发到某属性
-external_calls: [...]     # 会发起网络请求的 callee（供「循环内外部调用」判定）
-tx_calls: [...]           # 事务边界标记
-entry_methods: [...]      # 消费入口方法名候选（handle/fire/doJob/__invoke/run …）
+# Framework-specific conventions (those with no framework assumptions go in the language-generic layer; strong assumptions stay here):
+handler: {...}            # how a route handler string resolves back to "class + method"
+db_verbs: {read: [...], write: [...]}   # model CRUD verbs -> read / write classification
+magic_delegation: {...}   # @method annotation + __call forwarding to some property
+external_calls: [...]     # callees that make network requests (for "external call inside a loop" detection)
+tx_calls: [...]           # transaction boundary markers
+entry_methods: [...]      # candidate consumer entry method names (handle/fire/doJob/__invoke/run …)
 ```
 
-**核心原则**：`rules` 才是重点；`detectors` 决定「这份知识对谁生效」；`semantic_kinds` 决定「你造的新节点会不会被看见」。
+**Core principle**: `rules` is the point; `detectors` decides "who this knowledge applies to";
+`semantic_kinds` decides "whether the node you create is visible".
 
 ---
 
-## 3. 规则 = 阶段 + 选择器 + 动作
+## 3. A rule = phase + selector + action
 
 ```yaml
 - id: my-rule
-  phase: Synthesize        # 流水线阶段（见 §3.1）
-  selector:                # 作用于什么
+  phase: Synthesize        # pipeline phase (see §3.1)
+  selector:                # what it acts on
     kind: call
-    callee: "Cache::get|*Cache::*"   # 见 §3.2
-  binding:                 # 命中后做什么（可多个动作）
-    - Synthesize: {...}     # 造一个语义节点（最常用）
-    # - Link: {...}        # 只建一条边
-    # - Project: {...}     # 把一类边投影到另一层（见 §3.4）
-    # - Annotate: {...}     # 打标注
+    callee: "Cache::get|*Cache::*"   # see §3.2
+  binding:                 # what to do on a hit (multiple actions allowed)
+    - Synthesize: {...}     # create a semantic node (most common)
+    # - Link: {...}        # just create an edge
+    # - Project: {...}     # project a class of edges onto another layer (§3.4)
+    # - Annotate: {...}     # add an annotation
   confidence: 0.9
 ```
 
-### 3.1 阶段（phase）
+### 3.1 Phase
 
-| 值 | 含义 |
+| Value | Meaning |
 |---|---|
-| `Synthesize` | **P5 合成非代码语义节点**（Cache / Event / Table / HttpContract …）。绝大多数抽取规则用这个。 |
-| `AnnotatePre` | P4 按源码选择器打标注 |
-| `AnnotatePost` | P6 在汇聚结果上打标 / 注册别名 |
+| `Synthesize` | **P5 synthesizes non-code semantic nodes** (Cache / Event / Table / HttpContract …). The vast majority of extraction rules use this. |
+| `AnnotatePre` | P4 annotates by source selector |
+| `AnnotatePost` | P6 annotates / registers aliases on the aggregated result |
 
-（其余 `Ingest`/`CfAst`/`Prepare`/`Alias` 由内核与装载流程使用，一般不在手写规则里出现。）
+(The others -- `Ingest` / `CfAst` / `Prepare` / `Alias` -- are used by the core and the loading
+pipeline, and generally don't appear in hand-written rules.)
 
-### 3.2 选择器（selector）
+### 3.2 Selector
 
-最常用的是 `call`：
+The most common is `call`:
 
 ```yaml
 selector:
   kind: call
-  callee: "Cache::get|Cache::has|*Cache::get"   # `|` = 或；`*` = 通配（按语言分隔符匹配，如 `think\facade\Cache`）
-  where: []                                      # 可选谓词收窄（见源码 Predicate 枚举）
+  callee: "Cache::get|Cache::has|*Cache::get"   # `|` = or; `*` = wildcard (matched by the language separator, e.g. `think\facade\Cache`)
+  where: []                                      # optional narrowing predicates (see the Predicate enum in source)
 ```
 
-其它选择器：`inheritance`（继承/实现）、`config_entry`（配置项）、`declaration`（语法声明）、`node`（图上已有节点）、`dynamic`（P7 动态解析调用）。
+Other selectors: `inheritance` (extends / implements), `config_entry` (config item), `declaration`
+(syntax declaration), `node` (an existing graph node), `dynamic` (P7 dynamic-resolution call).
 
-### 3.3 动作（binding）
+### 3.3 Action (binding)
 
-- `Synthesize`：物化一个语义节点（见 §4）。
-- `Link`：只建一条边（`kind` + `from`/`to` 两个 `ValueSource` + `resolve`）。
-- `Project`：把**一类边投影到另一层**（见 §3.4）。
-- `Annotate`：打标注（合规/资产标记用）。
+- `Synthesize`: materialize a semantic node (§4).
+- `Link`: create just one edge (`kind` + two `ValueSource`s `from`/`to` + `resolve`).
+- `Project`: project **a class of edges onto another layer** (§3.4).
+- `Annotate`: add an annotation (used by compliance / asset marking).
 
-### 3.4 Project 动作：把一类边投影到另一层
+### 3.4 The Project action: projecting a class of edges onto another layer
 
-`Link` 的两端只能各取**一个名字**，取不到"边的那一头"。当你要的是
-「A 关联 B，而 A、B 各自映射到 A'、B'，把关联搬到 A'、B' 之间」时，用 `Project`：
+`Link` can only take **one name** per end; it can't reach "the far end of an edge". When what you
+want is "A relates to B, and A and B each map to A' and B', so move the relation to between A' and
+B'", use `Project`:
 
 ```yaml
 - Project:
-    kind: ForeignKey      # 产出的边种类
-    along: References     # 遍历匹配节点的每条**此类**出边（一对多）
-    from: [MapsTo]        # 从边的**起点**沿此边种类链走到落点（空 = 起点自身）
-    to:   [MapsTo]        # 从边的**终点**沿此边种类链走到落点（空 = 终点自身）
+    kind: ForeignKey      # the produced edge kind
+    along: References     # walk each **out-edge of this kind** of the matching node (one-to-many)
+    from: [MapsTo]        # from the edge's **source**, walk this kind-chain to a landing point (empty = the source itself)
+    to:   [MapsTo]        # from the edge's **target**, walk this kind-chain to a landing point (empty = the target itself)
     confidence: 0.7
 ```
 
-要点：
+Key points:
 
-- **一对多**：一个节点有几条 `along` 边就产出几条边。"一个实体有多个 `@ManyToOne`"
-  因此不会只建第一条（`Link` 会静默丢边）。
-- **落点走不到就跳过这条**：实体没有对应的 `Table` 时，它的外键不入图 —— 宁可缺不可猜。
-- 通常配 `phase: AnnotatePost` + `selector: { kind: node }`：投影需要 P5 建好的边都已就位。
-- 走哪条边完全由 FKB 声明，内核依旧不认识任何框架。
+- **One-to-many**: a node produces as many edges as it has `along` edges. So "one entity has several
+  `@ManyToOne`" won't collapse to only the first one (which `Link` would silently drop).
+- **Skip the edge if the landing point is unreachable**: when an entity has no corresponding `Table`,
+  its foreign key doesn't enter the graph -- better missing than guessed.
+- Usually paired with `phase: AnnotatePost` + `selector: { kind: node }`: projection needs the edges
+  built by P5 to be in place.
+- Which edge to walk is declared entirely by FKB; the core still knows no framework.
 
 ---
 
-## 4. Synthesize 动作：如何造一个语义节点
+## 4. The Synthesize action: how to create a semantic node
 
 ```yaml
 - Synthesize:
-    node: Cache            # 节点种类（开放字符串）。★ 现代写法直接写具体种类，不要再写 `node: ExternalSystem, subtype: Cache`（旧写法，仍兼容）
-    # subtype: Cache       # 旧机制：若填则「提升为 kind」（node 被忽略）。新规则请用上面的直接写法
+    node: Cache            # node kind (open string). ★ The modern way writes the concrete kind directly; don't write `node: ExternalSystem, subtype: Cache` (old style, still supported)
+    # subtype: Cache       # old mechanism: if set, it is "promoted to kind" (node ignored). New rules should use the direct form above
     identity:
-      kind: Named          # Fqn | Named | ContractId（见 §4.1）
-      value: { arg: 0, require_literal: true }   # 取第 0 个实参且必须是字面量
-      value_fallback: { literal: "Cache" }        # 取不到时的兜底
+      kind: Named          # Fqn | Named | ContractId (see §4.1)
+      value: { arg: 0, require_literal: true }   # take argument 0 and it must be a literal
+      value_fallback: { literal: "Cache" }        # fallback when it can't be taken
     fields:
       - name: key
         value: { arg: 0, require_literal: true }
-      - name: side          # ★★★ 见 §5.1：进程外中介/资产类节点必须带 side
+      - name: side          # ★★★ see §5.1: out-of-process mediator / asset nodes must carry side
         value: { literal: "backend" }
     link:
-      kind: ReadsCache      # 边种类（见 §5.4）
-      direction: incoming   # incoming（调用方→本节点）| outgoing | to_target
+      kind: ReadsCache      # edge kind (see §5.4)
+      direction: incoming   # incoming (caller → this node) | outgoing | to_target
     confidence: 0.85
 ```
 
-### 4.1 identity（决定「哪些调用合并成同一个节点」）
+### 4.1 identity (decides "which calls merge into one node")
 
-- `Named`：具名（`{ value: { arg: 0 } }` 取实参作为名字，如缓存 key、事件名）。
-- `Fqn`：完全限定名（如 `Table:store_order`）。
-- `ContractId`：HTTP 契约 `METHOD /path`（用于 `HttpContract`，配合 `method`/`path` 两个来源）。
+- `Named`: named (`{ value: { arg: 0 } }` takes an argument as the name, e.g. a cache key, an event
+  name).
+- `Fqn`: fully-qualified name (e.g. `Table:store_order`).
+- `ContractId`: HTTP contract `METHOD /path` (for `HttpContract`, with `method` / `path` sources).
 
-> **幂等合并**：三条不同规则只要算出相同 `identity`，就合并成一个节点。所以「后端 `Cache::get('token')`」和「前端 `uni.setStorageSync('token')`」靠 `side`（见下）区分成两个节点。
+> **Idempotent merging**: three different rules that compute the same `identity` merge into one node.
+> That's why "backend `Cache::get('token')`" and "frontend `uni.setStorageSync('token')`" are split
+> into two nodes by `side` (below).
 
-### 4.2 ValueSource（取值，FKB 表达力的核心）
+### 4.2 ValueSource (taking values -- the core of FKB's expressiveness)
 
-常见来源（详见 `gt-domain/src/model/fkb.rs` 的 `ValueSource`）：
+Common sources (see `ValueSource` in `gt-domain/src/model/fkb.rs`):
 
-`arg`(第 n 实参) · `element`(实参是数组取下标) · `field`(对象字面量取字段) · `property`(类属性) ·
-`method_name`(调用的方法名) · `owner_class`(产生调用的类) · `owner_member`(产生调用的方法/字段) ·
-`receiver_class`(被调接收者类，经 import 别名还原) · `entity`(调用点关切的**主领域类型**，由 parser 按调用种类填入，如 `@EventListener` 的首个形参类型、`publishEvent(new X())` 的 `X`；取不到时返回 None，交 `value_fallback` 兜底) ·
-`literal`(字面量) · `require_literal`(只接受字面量，拒绝变量) ·
-`require_class`(解析结果须是真实类，否则整体 None) · `transform`(snake_plural/lower/…) · `normalize`(归一化链)。
+`arg` (nth argument) · `element` (argument is an array, take an index) · `field` (take a field of an
+object literal) · `property` (class property) · `method_name` (the called method's name) ·
+`owner_class` (the class producing the call) · `owner_member` (the method / field producing the call)
+· `receiver_class` (the called receiver class, resolved through import aliases) · `entity` (the
+**primary domain type** the call site is about, filled by the parser per call kind -- e.g. the first
+parameter type of `@EventListener`, or `X` in `publishEvent(new X())`; returns None when it can't be
+taken, leaving it to `value_fallback`) · `literal` (a literal) · `require_literal` (accept literals
+only, reject variables) · `require_class` (the resolution must be a real class, else None overall) ·
+`transform` (snake_plural / lower / …) · `normalize` (normalization chain).
 
-> `entity` 的典型用途是**类型级归并**：Spring 的 `@EventListener` 与 `publishEvent` 都用事件类型（而非收发方法名）作身份，使同一事件类型的发布方与订阅方归并到同一个 `Event` 节点（见 `fkb/java/spring-boot.yaml` 的 `spring-event-*` 规则 + 端到端测试 `tests/java_spring_features.rs`）。
+> A typical use of `entity` is **type-level merging**: Spring's `@EventListener` and `publishEvent`
+> both use the event type (rather than the send / receive method name) as identity, so publishers and
+> subscribers of the same event type merge into one `Event` node (see the `spring-event-*` rules in
+> `fkb/java/spring-boot.yaml` + the end-to-end test `tests/java_spring_features.rs`).
 
-> **取关键字实参 / 列表元素**（Python 侧引入，机制上语言通用）：Python 解析器把关键字实参捕成
-> `[("queue", 值)]`、把列表 / 元组字面量捕成**以下标为键**的 `[("0", 值), ("1", 值)]`。于是：
-> * `{ arg: 1, field: "queue" }` —— 按名取关键字实参（如 Celery 的 `apply_async(queue=…)`）；
-> * `{ source: { arg: 1, field: "methods" }, field: "0" }` —— 取列表首元素（如 Flask 的 `methods=["POST"]`）。
+> **Taking keyword arguments / list elements** (introduced on the Python side, mechanism is
+> language-general): the Python parser captures keyword arguments as `[("queue", value)]` and list /
+> tuple literals as `[("0", value), ("1", value)]` **keyed by index**. Hence:
+> * `{ arg: 1, field: "queue" }` -- take a keyword argument by name (e.g. Celery's
+>   `apply_async(queue=…)`);
+> * `{ source: { arg: 1, field: "methods" }, field: "0" }` -- take the first list element (e.g.
+>   Flask's `methods=["POST"]`).
 >
-> 注意 `element` 只对**顶层 `arg`** 生效；嵌套取值要用 `field` 按名取，这也是列表用下标作键的原因。
+> Note `element` only works on a **top-level `arg`**; nested access must use `field` by name, which is
+> why lists are keyed by index.
 
-> **`short_name` 归一化**：取点分 / 命名空间路径的最后一段（`app.tasks.send_email` → `send_email`）。
-> 用于「同一实体的完全限定名与短名要归并成同一个节点」——例如 Celery 任务的注册方只有短名、
-> 投递方却因 `import` 还原成了完全限定名。与 `strip_namespace` 的差别：它额外按 `.` 切分
-> （`strip_namespace` 刻意不拆 `.`，否则会把 Java 自动路由的包名一起拆掉）。
+> **`short_name` normalization**: take the last segment of a dotted / namespaced path
+> (`app.tasks.send_email` → `send_email`). Used when "an entity's fully-qualified name and its short
+> name must merge into one node" -- e.g. a Celery task's registration side has only the short name
+> while the dispatch side resolved to the fully-qualified name via `import`. The difference from
+> `strip_namespace`: it additionally splits on `.` (`strip_namespace` deliberately doesn't split `.`,
+> otherwise it would strip Java auto-routed package names too).
 
 ---
 
-## 5. 约定（最容易踩坑的地方，请务必读）
+## 5. Conventions (the easiest place to trip -- please read)
 
-### 5.1 `side`：前后端拆分（最重要）
+### 5.1 `side`: splitting frontend and backend (most important)
 
-进程外中介（Cache / ConfigKey / Event / Queue / Topic）和资产类节点**必须**在 `fields` 里写明它属于哪一端：
+Out-of-process mediators (Cache / ConfigKey / Event / Queue / Topic) and asset-class nodes **must**
+state in `fields` which side they belong to:
 
 ```yaml
 fields:
   - name: side
-    value: { literal: "backend" }   # 或 "frontend"
+    value: { literal: "backend" }   # or "frontend"
 ```
 
-**为什么必须**：Engine 会把 `side` 注入节点 `identity` 的 scope（见 `engine.rs` 的 `with_scope`）。
-没有它，前端 `uni.setStorageSync('token')` 和后端 `Cache::get('token')` 同名会被合并成**同一个** Cache 节点，图就乱了。
-这也是「缓存视角 / 事件视角」按 `side` 分流的依据（`views/perspectives.yaml` 里 `side: backend` / `side: frontend`）。
+**Why it's mandatory**: the Engine injects `side` into the node `identity`'s scope (see `with_scope`
+in `engine.rs`). Without it, frontend `uni.setStorageSync('token')` and backend `Cache::get('token')`
+share a name and merge into **the same** Cache node, and the graph becomes a mess. It is also what
+the "cache perspective / event perspective" split by `side` relies on (`side: backend` /
+`side: frontend` in `views/perspectives.yaml`).
 
-### 5.2 `semantic_kinds`：引入新节点种类
+### 5.2 `semantic_kinds`: introducing a new node kind
 
-**内置语义节点种类**（折叠视图默认只显示这些）：
-`Table` · `HttpContract` · `ConfigKey` · `I18nKey` · `Event` · `Queue` · `Cache` · `Topic` · `Schedule` · `Page` · `EventBus` · `EventHandler`。
+**Built-in semantic node kinds** (the collapsed view shows only these by default):
+`Table` · `HttpContract` · `ConfigKey` · `I18nKey` · `Event` · `Queue` · `Cache` · `Topic` ·
+`Schedule` · `Page` · `EventBus` · `EventHandler`.
 
-若你的 FKB 用了一个**不在上面清单里的新 kind**（例如 `Store`），**必须**在顶层声明：
+If your FKB uses a **new kind not on that list** (e.g. `Store`), you **must** declare it at the top
+level:
 
 ```yaml
 semantic_kinds: [Store]
 ```
 
-否则该节点不会被当作语义节点，折叠视图会把它藏起来（看起来「写了没反应」）。
-参考：`fkb/js/uni-app.yaml` 声明了 `semantic_kinds: [Store, Page, EventBus]`（`Store` 不在内置清单，必须声明）。
+Otherwise the node isn't treated as semantic and the collapsed view hides it (it looks like "wrote
+it, nothing happened"). Reference: `fkb/js/uni-app.yaml` declares
+`semantic_kinds: [Store, Page, EventBus]` (`Store` isn't built-in, so it must be declared).
 
-### 5.3 让节点进某个「视角」
+### 5.3 Getting a node into a "perspective"
 
-节点要显示在某个视角里，其 `kind`（及 `side`）必须在 `views/perspectives.yaml` 注册：
+For a node to show up in a perspective, its `kind` (and `side`) must be registered in
+`views/perspectives.yaml`:
 
-- 内置 kind 已有对应视角（cache / local_storage / event / event_bus / queue / topic / route / table …）。
-- 你若用了**新 kind**，需要在 `perspectives.yaml` 加一条 perspective（声明 `node_kind` + 可选 `side`）并在 `node_views` 加映射，否则点该节点只会开 Inspector、不会切到视角。
+- Built-in kinds already have matching perspectives (cache / local_storage / event / event_bus /
+  queue / topic / route / table …).
+- If you use a **new kind**, add a perspective to `perspectives.yaml` (declaring `node_kind` +
+  optional `side`) and a mapping in `node_views`; otherwise clicking that node only opens the
+  Inspector instead of switching perspective.
 
-### 5.4 边种类：新边种类也能「只写 FKB、零代码」（与节点同构）
+### 5.4 Edge kinds: new edge kinds can also be "FKB-only, zero code" (isomorphic to nodes)
 
-**内置语义边**：`Triggers` · `PublishesTo` · `ReadsDb` · `WritesDb` · `MapsTo` · `ReadsConfig` · `ResolvesTo` · `WritesCache` · `Mutates` · `NavigatesTo` · `Emits` · `ListensTo` · `ReadsCache`。
-**内置桥边**：`HandledBy` · `CallsHttp`。
+**Built-in semantic edges**: `Triggers` · `PublishesTo` · `ReadsDb` · `WritesDb` · `MapsTo` ·
+`ReadsConfig` · `ResolvesTo` · `WritesCache` · `Mutates` · `NavigatesTo` · `Emits` · `ListensTo` ·
+`ReadsCache`.
+**Built-in bridge edges**: `HandledBy` · `CallsHttp`.
 
-绝大多数情况请**复用已有的边种类**，别发明新词。但如果你确实需要一个全新的边种类，现在也**不用改 `kinds.rs`**——直接在 FKB 顶层声明即可，装载时自动登记进注册表：
+In most cases **reuse existing edge kinds**; don't invent new vocabulary. But if you genuinely need a
+brand-new edge kind, you now **don't need to change `kinds.rs`** either -- just declare it at the FKB
+top level and it is registered into the registry at load time:
 
 ```yaml
-semantic_edge_kinds: [SendsWebhook]   # 新语义边：会被当语义边计数 / 绘制
-bridge_edge_kinds:   [MyBridge]       # 新桥边：连接语义节点 ↔ 语法节点
+semantic_edge_kinds: [SendsWebhook]   # new semantic edge: counted / drawn as a semantic edge
+bridge_edge_kinds:   [MyBridge]       # new bridge edge: connects a semantic node ↔ a syntactic node
 ```
 
-声明后，`is_semantic` / `is_bridge` / `is_chain_edge` 会自动把它当一等公民（与 `semantic_kinds` 对节点的处理同构），渲染与「入边 N」计数都会正确。
-> 注：引擎对**全新**边种类的「专属渲染」（如 `HandledBy`/`CallsHttp` 的桥边布局）仍是内置特例；新边种类会走默认渲染。这与「节点无需改码即可显示」一致——分类零代码，专属样式才需小改。
+After declaring, `is_semantic` / `is_bridge` / `is_chain_edge` treat it as a first-class citizen
+automatically (isomorphic to how `semantic_kinds` handles nodes), so rendering and the "N in-edges"
+count are correct.
+> Note: the engine's **dedicated rendering** for **brand-new** edge kinds (e.g. the bridge-edge
+> layout of `HandledBy` / `CallsHttp`) is still a built-in special case; a new edge kind falls back to
+> default rendering. This matches "nodes display without code changes" -- classification is zero-code,
+> only dedicated styling needs a small change.
 
-`graphtell validate` 也认这套声明：某条边种类只要在内核清单**或**任意 FKB 的 `semantic_edge_kinds`/`bridge_edge_kinds` 里，就不会报「未注册」警告。
+`graphtell validate` understands this too: an edge kind is not reported as "unregistered" as long as
+it is in the core list **or** in any FKB's `semantic_edge_kinds` / `bridge_edge_kinds`.
 
 ---
 
-## 6. 完整示例
+## 6. Complete examples
 
-### 6.1 后端缓存（节选自 `fkb/php/common.yaml`）—— 展示 `side: backend`
+### 6.1 Backend cache (excerpt from `fkb/php/common.yaml`) -- shows `side: backend`
 
 ```yaml
 - id: php-common-cache-read
@@ -258,12 +308,12 @@ bridge_edge_kinds:   [MyBridge]       # 新桥边：连接语义节点 ↔ 语�
         confidence: 0.85
 ```
 
-### 6.2 前端事件总线（`fkb/js/uni-app.yaml`）—— 展示 `semantic_kinds` + `side: frontend`
+### 6.2 Frontend event bus (`fkb/js/uni-app.yaml`) -- shows `semantic_kinds` + `side: frontend`
 
 ```yaml
 id: frontend-js
 language: javascript
-semantic_kinds: [Store, Page, EventBus]   # Store 不在内置清单，必须声明
+semantic_kinds: [Store, Page, EventBus]   # Store isn't built-in, so it must be declared
 rules:
   - id: frontend-emit
     phase: Synthesize
@@ -284,7 +334,7 @@ rules:
             direction: outgoing
 ```
 
-### 6.3 Java HTTP 契约（`fkb/java/spring-boot.yaml`）—— 展示 `ContractId` identity
+### 6.3 Java HTTP contract (`fkb/java/spring-boot.yaml`) -- shows `ContractId` identity
 
 ```yaml
 - id: spring-mapping-http-contract
@@ -304,45 +354,61 @@ rules:
 
 ---
 
-## 7. 用 AI 批量生成 FKB（推荐）
+## 7. Generating FKB in bulk with AI (recommended)
 
-FKB 是声明式 YAML + 固定匹配语义，非常适合交给 LLM 从框架文档/源码里提炼：
+FKB is declarative YAML with fixed matching semantics, which suits an LLM distilling from framework
+docs / source:
 
-1. 把**本指南** + **2~3 份参考样例**（`fkb/php/common.yaml`、`fkb/js/uni-app.yaml`、`fkb/java/spring-boot.yaml`）+ 目标框架的文档/源码 交给 LLM。
-2. 让它产出一份 FKB YAML（重点：用已有节点/边种类、记得 `side`、新种类记得 `semantic_kinds`）。
-3. 跑 `graphtell validate --fkb-dir <你的目录>` 做语法 + 约定校验。
-4. 用 `graphtell create --path <样本仓库>` 跑一份真实代码，**肉眼看图画得对不对**。
+1. Give the LLM **this guide** + **2–3 reference samples** (`fkb/php/common.yaml`,
+   `fkb/js/uni-app.yaml`, `fkb/java/spring-boot.yaml`) + the target framework's docs / source.
+2. Have it produce one FKB YAML (key points: use existing node / edge kinds, remember `side`, and
+   remember `semantic_kinds` for new kinds).
+3. Run `graphtell validate --fkb-dir <your-dir>` for syntax + convention checks.
+4. Run `graphtell create --path <sample-repo>` against real code and **look at whether the graph is
+   drawn correctly**.
 
-> ⚠ AI 会写出「看起来对、实际误匹配/漏匹配」的 FKB——必须第 4 步验证，不能只信生成。
-
----
-
-## 8. `validate` 子命令
-
-```
-graphtell validate            # 校验内置 FKB 目录
-graphtell validate --fkb-dir ./my-fkbs   # 校验你自己的目录
-```
-
-逐文件报告：
-
-- `✓` 解析成功：打印 `id` / 语言 / 规则数 / 其中合成节点数 / `semantic_kinds`。
-- `✗` 解析失败：打印具体错误（字段级）。
-- `⚠` 约定警告（最有价值）：
-  - 某条规则造出的节点种类既不在内核清单、也不在 `semantic_kinds` —— 折叠视图会隐藏它；
-  - 某条边种类不在 `kinds.rs` 的 `SEMANTIC`/`BRIDGE` 清单 —— 不会被当语义/桥边渲染。
-
-最后汇总「N 通过 / M 失败」，有失败会非零退出。
+> ⚠ AI will produce FKB that "looks right but actually mis- or under-matches" -- step 4 must be done;
+> never trust the generation alone.
 
 ---
 
-## 9. 何时需要改引擎（而不是只写 FKB）
+## 8. The `validate` subcommand
 
-以下情况**只写 FKB 不够**，需要动 Rust：
+```
+graphtell validate            # validate the built-in FKB directory
+graphtell validate --fkb-dir ./my-fkbs   # validate your own directory
+```
 
-1. 引入**全新的边种类**（§5.4）—— 给 `kinds.rs` 的 `SEMANTIC`/`BRIDGE` 加一行。
-2. 需要的**匹配/取值能力引擎还不支持**（例如某种新的参数提取、新的解析策略）—— 扩展 `ValueSource` / `ResolveStrategy` / 选择器。
-3. 某节点种类需要**渲染特殊处理**（如 `view_service.rs` 里硬编码的 `Event|Queue|Topic` 分支）。
+Reports per file:
 
-绝大多数真实框架（Spring / Laravel / Django / Rails / Express …）都能映射到**已有的** Cache/Event/Queue/HttpContract/Table/ConfigKey 种类，
-所以约 90% 的 FKB 可以**零引擎改动**完成。
+- `✓` parsed: prints `id` / language / rule count / of which synthesized nodes / `semantic_kinds`.
+- `✗` parse failed: prints the concrete error (field-level).
+- `⚠` convention warnings (most valuable):
+  - a rule produces a node kind that is neither on the core list nor in `semantic_kinds` -- the
+    collapsed view will hide it;
+  - an edge kind is neither in `kinds.rs`'s `SEMANTIC` / `BRIDGE` list nor declared in any FKB's
+    `semantic_edge_kinds` / `bridge_edge_kinds` -- it won't render as a semantic / bridge edge
+    (§5.4: declaring it in the FKB is enough; no `kinds.rs` change).
+
+Finally it summarizes "N passed / M failed", exiting non-zero on failure.
+
+---
+
+## 9. When you need to change the engine (instead of just writing FKB)
+
+In these cases **FKB alone isn't enough**, and Rust must be touched:
+
+1. The engine doesn't yet support a **matching / value-taking capability** you need (e.g. some new
+   parameter extraction, a new resolution strategy) -- extend `ValueSource` / `ResolveStrategy` /
+   selectors.
+2. A node or edge kind needs **dedicated rendering** (e.g. the `Event|Queue|Topic` branches hardcoded
+   in `view_service.rs`, or the bridge-edge layout of `HandledBy` / `CallsHttp`). Declaring a new edge
+   kind itself needs no code -- see §5.4.
+
+> Note: a **brand-new edge kind** used to require a line in `SEMANTIC` / `BRIDGE` in `kinds.rs`. That
+> is no longer true -- declare `semantic_edge_kinds` / `bridge_edge_kinds` at the FKB top level
+> instead (§5.4). Only *dedicated rendering* for such a kind still needs an engine change.
+
+Most real frameworks (Spring / Laravel / Django / Rails / Express …) map onto the **existing**
+Cache/Event/Queue/HttpContract/Table/ConfigKey kinds, so about 90% of FKB can be done with **zero
+engine changes**.

@@ -1,6 +1,6 @@
 [package]
 name = "gt-adapter-sqlite"
-description = "SQLite 持久化适配器（图数据 + 工程元数据）"
+description = "SQLite persistence adapter (graph data + project metadata)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

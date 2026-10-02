@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""余弦诊断：孤立地重放召回流程的「向量种子」一步 —— 把中文/英文查询用 bge 编码后，
-对所有已落盘节点向量做纯余弦排序，看「真答案节点」落在第几名。
+"""Cosine diagnostic: replay, in isolation, the "vector seed" step of the recall pipeline -- encode the
+Chinese/English query with bge, then rank all persisted node vectors by pure cosine and see where the "true answer node" lands.
 
-目的：判定中文召回差距（中文@20≈46%）到底是
-  (A) 检索/排序问题：真答案在余弦空间里其实很靠前，只是被 lexical 种子 / BFS 展开 / top-k
-      截断「漏掉」了 → 便宜可修（改种子选择、扩展策略）。
-  (B) 嵌入问题：真答案在余弦空间里就排不进前 k → 跨语言桥本身不够，要更强桥/更好 doc 文本。
+Purpose: decide whether the Chinese recall gap (Chinese @20 ≈ 46%) is
+  (A) a retrieval / ranking problem: the true answer is actually high in cosine space but got
+      "missed" by the lexical seeds / BFS expansion / top-k truncation -> cheap to fix (change seed selection, expansion policy).
+  (B) an embedding problem: the true answer doesn't rank within top-k even in cosine space -> a stronger bridge / better doc text is needed.
 
-判定口径与 recall_eval.py 完全一致（命中名包含任一 target 即算命中），所以可直接和
-recall_baseline.json（流水线结果）对照：
-  - 纯余弦命中 但 流水线漏掉  → 检索/排序 bug（便宜修）
-  - 纯余弦也漏掉              → 嵌入/桥问题（难）
+The hit criterion is exactly the same as recall_eval.py (a hit name containing any target counts),
+so it can be compared directly against recall_baseline.json (pipeline results):
+  - pure cosine hits but the pipeline misses -> retrieval / ranking bug (cheap fix)
+  - pure cosine also misses -> embedding / bridge problem (hard)
 
-用法：
+Usage:
     python3 tools/cosine_diag.py
     python3 tools/cosine_diag.py --project 13
 """
@@ -70,7 +70,7 @@ def main():
         cases = [c for c in cases if c["project"] in want]
     projects = spec.get("projects", {})
 
-    # 流水线基线（用于对照「纯余弦命中 vs 流水线漏掉」）
+    # Pipeline baseline (to compare "pure cosine hits vs pipeline misses")
     base = {}
     if a.baseline and os.path.exists(a.baseline):
         with open(a.baseline, encoding="utf-8") as f:
@@ -78,7 +78,7 @@ def main():
                 base[(b["project"], b["query"])] = b
 
     db = sqlite3.connect(a.db)
-    # 预加载：每个工程 (id->name, name->[ids])
+    # Preload: per project (id->name, name->[ids])
     proj_nodes = {}
     proj_vecs = {}
 
@@ -89,15 +89,15 @@ def main():
         with open(ep, encoding="utf-8") as f:
             emb = json.load(f)
         vecs = emb["vectors"]
-        # 转 numpy 矩阵 + id 列表
+        # Convert to a numpy matrix + id list
         ids = list(vecs.keys())
         mat = np.array([vecs[i] for i in ids], dtype=np.float32)
-        # 归一化（落盘已是 L2，但保险）
+        # Normalize (already L2 on disk, but just in case)
         norms = np.linalg.norm(mat, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         mat = mat / norms
         proj_vecs[pid] = (ids, mat)
-        # 节点名映射
+        # Node name mapping
         name_to_ids = {}
         id_to_name = {}
         for nid, name in db.execute(
@@ -107,7 +107,7 @@ def main():
             name_to_ids.setdefault(name.lower(), []).append(str(nid))
         proj_nodes[pid] = (name_to_ids, id_to_name)
 
-    # 先收集每个工程要用到的查询（去重）并编码
+    # First collect (dedup) and encode the queries each project needs
     queries = {}
     for c in cases:
         queries.setdefault(c["query"], None)
@@ -121,17 +121,17 @@ def main():
         ids, mat = proj_vecs[pid]
         name_to_ids, id_to_name = proj_nodes[pid]
         qvec = queries[c["query"]]
-        # 所有节点余弦 = dot（已归一化）
+        # Cosine to all nodes = dot (already normalized)
         sims = mat @ qvec
         order = np.argsort(-sims)
-        # 真答案节点
+        # True answer node
         true_ids = set()
         for t in c["targets"]:
             tl = t.lower()
             for nm, nids in name_to_ids.items():
                 if tl in nm:
                     true_ids.update(nids)
-        # 找最佳真答案名次
+        # Find the best rank of a true answer
         best_rank = None
         best_id = None
         for rank, idx in enumerate(order, 1):
@@ -156,7 +156,7 @@ def main():
             }
         )
 
-    # ---- 打印
+    # ---- print
     print(f"{'工程':<6}{'语':<4}{'查询':<24}{'真答案名次':<10}{'@5':<6}{'@10':<6}{'@20':<6} 对照(流水线)")
     print("-" * 110)
     for r in rows:
@@ -189,7 +189,7 @@ def main():
         )
         print(f"  {label}:{line}")
 
-    # 关键诊断：中文漏掉里，多少是「纯余弦能救」（检索/排序 bug）
+    # Key diagnostic: of the Chinese misses, how many are "rescuable by pure cosine" (retrieval / ranking bug)
     print("\n=== 诊断：中文差距归因 ===")
     zh = [r for r in rows if r["lang"] == "zh"]
     miss20 = [r for r in zh if not r["hit"][20]]

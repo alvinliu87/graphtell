@@ -1,6 +1,6 @@
 [package]
 name = "gt-adapter-fkb"
-description = "FKB YAML 知识库适配器：装载、校验、索引"
+description = "FKB YAML knowledge-base adapter: load, validate, index"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

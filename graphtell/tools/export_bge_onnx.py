@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""把经 ModelScope 拉取的 bge-m3 pytorch 权重导出为 ONNX（供 Rust `tract` 加载）。
+"""Export the ModelScope-pulled bge-m3 pytorch weights to ONNX (for Rust `tract` loading).
 
-导出 XLM-RoBERTa backbone 的 last_hidden_state。关键点：`position_ids` 作为显式输入
-传入，避免 ONNX 内部生成 `Range` 节点（tract 对 int64 的 Range 类型推断会失败）。
-Rust 侧取 [CLS]（首 token）做句向量并 L2 归一化，与 bge 官方用法一致。
+Exports the XLM-RoBERTa backbone's last_hidden_state. Key point: `position_ids` is passed as an explicit
+input to avoid ONNX generating an internal `Range` node (tract fails type inference on int64 Range).
+The Rust side takes [CLS] (first token) as the sentence vector and L2-normalizes it, matching bge's official usage.
 """
 import os
 import shutil
@@ -15,7 +15,7 @@ SRC = os.path.join(ROOT, "models", "bge-m3-ms")
 DST_DIR = os.path.join(ROOT, "models", "bge-m3-onnx")
 DST = os.path.join(DST_DIR, "model.onnx")
 
-# 清掉旧的外部数据文件，避免脏数据残留
+# Clear old external-data files to avoid stale leftovers
 if os.path.isdir(DST_DIR):
     shutil.rmtree(DST_DIR)
 os.makedirs(DST_DIR, exist_ok=True)

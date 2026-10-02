@@ -4,13 +4,13 @@ import { PHASE_HINT, PHASE_LABEL, PHASE_ORDER, type RunStatus } from '@/entities
 import { useLocale } from '@/shared/lib/i18n';
 import { formatDuration, formatNumber } from '@/shared/lib/format';
 
-/** 建图进度：进行中显示阶段步骤条；完成后压成一行汇总（各阶段明细收进 ⓘ）。 */
+/** Build progress: show a phase stepper while running; collapse into one summary line when done (per-phase details folded into ⓘ). */
 export function PipelineProgress({ run, indexing }: { run: RunStatus | null; indexing: boolean }) {
   const currentIndex = run?.current_phase ? PHASE_ORDER.indexOf(run.current_phase) : -1;
   const { t } = useLocale();
 
-  // 完成态：8 个阶段的耗时/计数是调参信息，不是分析结论 —— 常驻 8 行 + 满格进度条
-  // 会把"结论与导航"抽屉变成构建日志。压成一行汇总，明细收进 ⓘ tooltip。
+  // In the done state, the 8 phases' timings / counts are tuning info, not analysis conclusions -- a permanent 8 rows + full-width progress bar
+  // would turn the "conclusions and navigation" drawer into a build log. Collapse into one summary line, with details in the ⓘ tooltip.
   if (!indexing && run && run.phases.length > 0) {
     const phases = run.phases;
     const sum = (f: (p: (typeof phases)[number]) => number) =>

@@ -1,4 +1,4 @@
-# 构建上下文清理：避免把大目录 / 敏感文件塞进 docker build context
+# Build-context cleanup: keep large directories / sensitive files out of the docker build context
 target/
 **/target/
 ui/node_modules/

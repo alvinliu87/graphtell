@@ -1,6 +1,6 @@
 [package]
 name = "gt-app"
-description = "GraphTell 组装根与 CLI"
+description = "GraphTell composition root and CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -38,11 +38,11 @@ http-body-util = { workspace = true }
 
 [features]
 default = ["model-candle", "model-ort"]
-# 端到端验证真实模型召回：转发到 gt-application 的 model-candle（纯 Rust bge-m3）。
-# 设为默认后，CLI 直接走真实 bge-m3 语义召回；若不想编译 candle，可用
-# `cargo build -p gt-app --no-default-features` 退回本地哈希编码器（零依赖）。
+# End-to-end verification of real-model recall: forwards to gt-application's model-candle (pure Rust bge-m3).
+# Set as default so the CLI uses real bge-m3 semantic recall; if you don't want to compile candle, use
+# `cargo build -p gt-app --no-default-features` to fall back to the local hash embedder (zero deps).
 model-candle = ["gt-application/model-candle"]
-# ONNX + tract（纯 Rust 推理，零系统依赖）。与 candle 组合成**混合编码器**：
-# 查询侧走 tract（~140ms，candle ~810ms，快约 5.8 倍），节点批量编码仍走 candle
-# （~35ms/条，tract 批量 307ms/条）。缺 ONNX 权重时自动回退纯 candle，行为不变。
+# ONNX + tract (pure Rust inference, zero system deps). Combined with candle into a **hybrid embedder**:
+# the query side goes through tract (~140ms vs candle ~810ms, about 5.8x faster), while batch node encoding still uses candle
+# (~35ms/item vs tract batch 307ms/item). Missing ONNX weights auto-falls back to pure candle, behavior unchanged.
 model-ort = ["gt-application/model-ort"]

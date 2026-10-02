@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""对比新旧 serve 二进制在 CRMEB(project=1) 上的召回延迟。
+"""Compare recall latency of the old vs new serve binary on CRMEB (project=1).
 
-场景：
-  warmup : 第一次查询（冷：候选装载 / 节点编码 / 落盘 / 查询编码都跑）
-  repeat : 同一句再问（IDE 里重试 / 多轮很常见）
-  diff   : 换一句不同查询（同工程，不同语义向量）
+Scenarios:
+  warmup : first query (cold: candidate loading / node encoding / persistence / query encoding all run)
+  repeat : ask the same sentence again (retries / multi-turn are common in an IDE)
+  diff   : switch to a different query (same project, different semantic vector)
 """
 import json
 import time
@@ -31,7 +31,7 @@ def recall(port, q, snippets=False):
                                  headers={"Content-Type": "application/json"})
     t0 = time.perf_counter()
     with urllib.request.urlopen(req, timeout=120) as r:
-        r.read()  # 丢弃响应体，只测服务端计算 + 传输
+        r.read()  # Discard the response body, measure only server-side computation + transfer
     return time.perf_counter() - t0
 
 
@@ -40,7 +40,7 @@ def bench(port, label):
     # warmup
     t = recall(port, QUERIES[0])
     print(f"  warmup  单句 {QUERIES[0][:10]}…  {t*1000:7.1f} ms")
-    # 多轮：repeat 同句 + diff 不同句
+    # Multi-turn: repeat the same sentence + diff a different one
     reps, diffs = [], []
     for i in range(5):
         q_same = QUERIES[0]

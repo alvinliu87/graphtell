@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""用真实 `graphtell recall` 流水线逐个跑评测集，统计 hit@5/10/20。
+"""Run the eval set case by case through the real `graphtell recall` pipeline, counting hit@5/10/20.
 
-与 recall_eval.py 的区别：不依赖常驻 serve，直接拉起 CLI（每次冷加载 bge ~4s，
-30 用例约 2 分钟）。判定口径完全一致：命中节点名（小写）含任一 target 即算命中。
-用法：
+Difference from recall_eval.py: no resident serve needed, it invokes the CLI directly (cold-loads bge ~4s each time,
+~2 minutes for 30 cases). The hit criterion is identical: a hit node name (lowercased) containing any target counts.
+Usage:
     python3 tools/recall_cli_eval.py
     python3 tools/recall_cli_eval.py --project 15
-    python3 tools/recall_cli_eval.py --workers 4   # 并发跑，用例多了可省时间
+    python3 tools/recall_cli_eval.py --workers 4   # run concurrently; saves time with many cases
 """
 import argparse
 import json

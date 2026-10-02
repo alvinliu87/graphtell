@@ -12,13 +12,13 @@ export interface BreadcrumbItem {
 }
 
 /**
- * 两级筛选器。
+ * Two-level filter.
  *
- * * 一级 = **视角**（路由 / 表 / 外部系统 / 领域聚合 …）
- * * 二级 = **对象**（该视角下的某一个具体对象）
- * * 聚合类视角不是单链路，因此**没有二级**
+ * * level 1 = **perspective** (routes / tables / external systems / domain aggregates …)
+ * * level 2 = **object** (one concrete object under that perspective)
+ * * aggregate perspectives aren't a single chain, so they have **no level 2**
  *
- * 选中后只渲染「当前这一个对象」的链路；切换靠这里，而不是靠图里长出其它边。
+ * After selecting, render only "this one object"'s chain; switching happens here, not by growing other edges in the graph.
  */
 export function PerspectivePicker({
   perspectives,
@@ -30,13 +30,13 @@ export function PerspectivePicker({
   onSearch,
   onOpenChange,
   nodeName,
-  /** 当前二级搜索词。非空时下拉处于"搜索中"，兜底选项只有名字命中搜索词才显示。 */
+  /** Current level-2 search term. When non-empty the dropdown is "searching", and the fallback option shows only if its name matches the term. */
   searchText,
   trail,
   onTrailClick,
   loading,
-  /** 追加在筛选行末尾的操作区（把「适应屏幕 / 结论·导航」等塞进同一行，
-   *  避免图上方再占一条工具栏 —— 每多一行，图就要往上挤 40px）。 */
+  /** An action area appended at the end of the filter row (fitting "fit to screen / conclusions·navigation" into the same row
+   *  to avoid another toolbar line above the graph -- every extra line pushes the graph up 40px). */
   extra,
 }: {
   perspectives: Perspective[];
@@ -46,16 +46,16 @@ export function PerspectivePicker({
   node: number | null;
   onNodeChange: (id: number) => void;
   onSearch?: (input: string) => void;
-  /** 二级对象下拉展开/收起时回调，供上层做"按需加载候选"。 */
+  /** Callback when the level-2 dropdown opens/closes, for the parent to "load candidates on demand". */
   onOpenChange?: (open: boolean) => void;
-  /** 当前搜索框输入词；非空表示用户正在搜索，见 `nodeOptions` 中的兜底过滤。 */
+  /** Current search-box input; non-empty means the user is searching, see the fallback filtering in `nodeOptions`. */
   searchText?: string;
   /**
-   * 当前选中节点的**兜底显示名**。
+   * The **fallback display name** of the currently selected node.
    *
-   * 点图导航是直接给节点 id（不经候选列表），而候选是按需加载的 —— 两者叠加时
-   * 下拉里找不到匹配 `value` 的选项，antd 会把 value 原样渲染成裸 id（`57601`）。
-   * 有了它就能补一个选项，显示名字；候选已加载且命中时本字段不生效。
+   * Graph navigation passes a node id directly (not via the candidate list), and candidates are loaded on demand -- combined,
+   * the dropdown has no option matching `value`, and antd renders the value as a bare id (`57601`).
+   * This lets us add an option showing the name; it has no effect once candidates are loaded and match.
    */
   nodeName?: string | null;
   trail: BreadcrumbItem[];
@@ -68,14 +68,14 @@ export function PerspectivePicker({
   const { t } = useLocale();
 
   /**
-   * 二级下拉的选项。
+   * Options for the level-2 dropdown.
    *
-   * 选中节点若不在候选里（点图导航后候选尚未加载，或价值排序把它挤出前 N），
-   * 必须**补一个选项**，否则 antd 会把 `value` 直接渲染成裸 id。
+   * If the selected node isn't in the candidates (candidates not yet loaded after graph navigation, or value ranking pushed it out of the top N),
+   * an option **must be added**, otherwise antd renders `value` as a bare id.
    *
-   * 但用户**正在搜索**时（`searchText` 非空），这条兜底选项只有名字也命中搜索词
-   * 才显示 —— 否则后端搜不到时，下拉会冒出一条与搜索词无关的"当前选中"，
-   * 看起来就像搜索错误地匹配了（如输入 `1` 却出现 `store_product_services`）。
+   * But while the user is **searching** (`searchText` non-empty), this fallback option shows only if its name also matches the search term --
+   * otherwise when the backend finds nothing, the dropdown would show a "current selection" unrelated to the term,
+   * looking like the search matched wrongly (e.g. typing `1` shows `store_product_services`).
    */
   const nodeOptions = useMemo(() => {
     const options = candidates.map((c) => ({
@@ -92,8 +92,8 @@ export function PerspectivePicker({
     return options;
   }, [candidates, node, nodeName, searchText]);
 
-  // 面包屑只保留最近几步：它是一条"可回退"的辅助信息，宽屏也放不下十几步，
-  // 而最该能点的是**最近**几步；更早的用「…」表示存在但不占宽度。
+  // The breadcrumb keeps only the recent few steps: it's auxiliary "go back" info, and even a wide screen can't fit a dozen steps,
+  // while the **most recent** steps are what you most need to click; earlier ones use "…" to show existence without taking width.
   const MAX_TRAIL = 3;
   const shownTrail = trail.length > MAX_TRAIL ? trail.slice(-MAX_TRAIL) : trail;
   const trailOffset = trail.length - shownTrail.length;
@@ -138,8 +138,8 @@ export function PerspectivePicker({
         )}
       </Space>
 
-      {/* 面包屑：可回退到任意一步。与筛选器同一行，超宽时**横向裁剪**而不是换行，
-          换行会把下面的画布整体往下推。 */}
+      {/* Breadcrumb: go back to any step. Same row as the filter; when too wide it **clips horizontally** rather than wrapping,
+               because wrapping would push the canvas below down entirely. */}
       {trail.length > 1 ? (
         <div
           style={{
@@ -157,8 +157,8 @@ export function PerspectivePicker({
           {trailOffset > 0 ? <span style={{ color: 'rgba(0,0,0,0.25)' }}>… ›</span> : null}
           {shownTrail.map((item, i) => {
             const index = trailOffset + i;
-            // 当前这一步"点了也白点"（= 原地不动），所以不当链接渲染：不显示手型指针，
-            // 也不暗示它有跳转。
+            // Clicking the current step "does nothing" (= stays put), so it isn't rendered as a link: no hand cursor,
+            // and no hint that it navigates.
             const isCurrentStep = index === trail.length - 1;
             const text = (
               <>

@@ -18,9 +18,9 @@ const diag = (code: string, severity: Diagnostic['severity'], location: string):
   payload: null,
 });
 
-describe('诊断归类', () => {
-  it('按 code 聚合，计数取自全量汇总而不是明细窗口', () => {
-    // 明细窗口里只有 2 条 IdentityUnresolved，汇总说 349 条 —— 必须报 349。
+describe('diagnostic grouping', () => {
+  it('aggregates by code; counts come from the full summary rather than the detail window', () => {
+    // The detail window holds only 2 IdentityUnresolved rows while the summary says 349 -- it must report 349.
     const byCode: DiagnosticCodeCount[] = [
       { code: 'IdentityUnresolved', severity: 'warning', count: 349 },
       { code: 'UnresolvedLink', severity: 'warning', count: 21 },
@@ -37,26 +37,26 @@ describe('诊断归类', () => {
     expect(identity.samples).toHaveLength(2);
     expect(identity.samples[0].location).toBe('a.vue:1');
 
-    // 同一 code 的不同严重度合成一类，但分布保留：警告 21 + 提示 35。
+    // Different severities of the same code merge into one class, but the distribution is kept: warning 21 + info 35.
     const link = groups.find((g) => g.code === 'UnresolvedLink')!;
     expect(link.count).toBe(56);
     expect(link.bySeverity).toEqual({ warning: 21, info: 35 });
     expect(link.severity).toBe('warning');
   });
 
-  it('同一 code 在两种严重度下含义不同时，最重的一档决定分类', () => {
-    // UnresolvedLink 警告级 = 路由指向不存在的 handler（值得看）；提示级 = vendor，属预期。
+  it('when the same code means different things at two severities, the heaviest tier decides the grouping', () => {
+    // UnresolvedLink at warning level = a route pointing at a non-existent handler (worth a look); at info level = vendor, which is expected.
     expect(categoryOf('UnresolvedLink', 'warning')).toBe('actionable');
     expect(categoryOf('IdentityUnresolved', 'warning')).toBe('engine');
     expect(categoryOf('AliasTargetMissing', 'info')).toBe('expected');
   });
 
-  it('未收录的 code 不猜含义，按严重度兜底', () => {
+  it('an unlisted code doesn’t get a guessed meaning; it falls back by severity', () => {
     expect(categoryOf('SomeBrandNewCode', 'warning')).toBe('actionable');
     expect(categoryOf('SomeBrandNewCode', 'info')).toBe('expected');
   });
 
-  it('汇总缺失时退回数明细窗口（计数偏小，但不空）', () => {
+  it('when the summary is missing it falls back to counting the detail window (the count is low, but not empty)', () => {
     const items = [
       diag('IdentityUnresolved', 'warning', 'a.vue:1'),
       diag('IdentityUnresolved', 'warning', 'b.vue:2'),
@@ -69,7 +69,7 @@ describe('诊断归类', () => {
     ]);
   });
 
-  it('排序：严重度优先 → 条数降序', () => {
+  it('ordering: severity first → count descending', () => {
     const groups = groupDiagnostics(
       [
         { code: 'AliasTargetMissing', severity: 'info', count: 30 },
@@ -83,13 +83,13 @@ describe('诊断归类', () => {
       'UnresolvedLink',
       'AliasTargetMissing',
     ]);
-    // 排序是纯函数：同一份数据多次排序结果一致。
+    // Sorting is a pure function: the same data sorts identically every time.
     expect(sortGroups([...groups].reverse()).map((g) => g.code)).toEqual(
       groups.map((g) => g.code),
     );
   });
 
-  it('「值得看一眼」的条数只算 actionable 类', () => {
+  it('the “worth a look” count only counts actionable classes', () => {
     const groups = groupDiagnostics(
       [
         { code: 'IdentityUnresolved', severity: 'warning', count: 349 },
@@ -101,7 +101,7 @@ describe('诊断归类', () => {
     expect(actionableCount(groups)).toBe(21);
   });
 
-  it('严重度字符串未知时按最轻一档处理，不抛错', () => {
+  it('an unknown severity string is treated as the lightest tier, without throwing', () => {
     expect(asSeverity('bogus')).toBe('info');
   });
 });

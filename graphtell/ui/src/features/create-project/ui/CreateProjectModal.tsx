@@ -54,11 +54,11 @@ function RootPathField({
 }
 
 /**
- * 创建工程。
+ * Create a project.
  *
- * 创建成功后后端会**自动开始建图**（P0→P7）。本弹窗不会立即关闭，而是进入「建图中」
- * 状态：表单置灰不可编辑、提交按钮显示「建图中…」；轮询建图状态，建好后将提交按钮
- * 变为「关闭」，表单内容变为「点击查看图」。
+ * After successful creation the backend **automatically starts building** (P0→P7). This modal doesn't close immediately; it enters the "building"
+ * state: the form is greyed out and uneditable, and the submit button shows "building…"; it polls the build status, and once done turns the submit
+ * button into "close" and the form content into "click to view the graph".
  */
 export function CreateProjectModal({
   open,
@@ -104,7 +104,7 @@ export function CreateProjectModal({
           return;
         }
       } catch {
-        /* 网络抖动等：继续轮询 */
+        /* Transient issues like network jitter: keep polling */
       }
       pollRef.current = window.setTimeout(tick, 2000);
     };
@@ -113,7 +113,7 @@ export function CreateProjectModal({
 
   useEffect(() => () => stopPolling(), []);
 
-  // 每次打开重置为初始态
+  // Reset to the initial state every time it opens
   useEffect(() => {
     if (open) {
       stopPolling();

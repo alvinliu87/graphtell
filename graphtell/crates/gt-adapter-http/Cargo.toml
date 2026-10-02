@@ -1,6 +1,6 @@
 [package]
 name = "gt-adapter-http"
-description = "axum HTTP 入站适配器"
+description = "axum HTTP inbound adapter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

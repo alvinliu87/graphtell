@@ -7,13 +7,13 @@ import type { EdgeView } from '@/entities/view';
 import { GraphCanvas, type CanvasNode } from './GraphCanvas';
 
 /**
- * 回归：Hook 顺序必须稳定。
+ * Regression: Hook order must be stable.
  *
- * 曾经把 `useMemo` 放在 `if (loading) return …` **之后**，于是：
- * 首次渲染（loading）只跑了 6 个 Hook，数据返回后再渲染多跑 1 个 →
- * React 直接抛 "Rendered more hooks than during the previous render" 白屏。
+ * Once `useMemo` was placed **after** `if (loading) return …`, so:
+ * the first render (loading) ran only 6 Hooks, and the re-render after data arrived ran 1 more ->
+ * React threw "Rendered more hooks than during the previous render" and blanked the screen.
  *
- * 这个用例模拟真实的"加载中 → 有数据"更新路径，任何 Hook 数量变化都会被抓到。
+ * This case simulates the real "loading -> has data" update path; any change in Hook count gets caught.
  */
 
 declare global {
@@ -49,7 +49,7 @@ describe('GraphCanvas', () => {
     container.remove();
   });
 
-  it('从「加载中」更新到「有数据」不会破坏 Hook 顺序', () => {
+  it('updating from “loading” to “has data” does not break Hook order', () => {
     act(() => {
       root.render(
         <GraphCanvas mode="radial" center={null} rings={[]} edges={[]} loading />,
@@ -57,7 +57,7 @@ describe('GraphCanvas', () => {
     });
     expect(container.textContent).toContain('Loading view');
 
-    // 关键：同一实例上的更新。Hook 数量若发生变化，这里会抛错。
+    // Key: an update on the same instance. If the Hook count changed, this would throw.
     expect(() => {
       act(() => {
         root.render(<GraphCanvas mode="radial" center={center} rings={rings} edges={edges} />);
@@ -65,13 +65,13 @@ describe('GraphCanvas', () => {
     }).not.toThrow();
   });
 
-  it('悬浮节点不出错：补充字段缺失时悬浮卡片也要能渲染', () => {
+  it('hovering a node doesn’t crash: the hover card must still render when supplementary fields are missing', () => {
     act(() => {
       root.render(<GraphCanvas mode="radial" center={center} rings={rings} edges={edges} />);
     });
 
-    // 悬浮卡片曾把 `CanvasNode` 当 `NodeView` 用，直接读 `locations.length`，
-    // 而画布节点根本没有这个字段 —— 鼠标一进节点就白屏。
+    // The hover card once treated `CanvasNode` as `NodeView` and read `locations.length` directly,
+    // but a canvas node has no such field -- the screen blanked as soon as the mouse entered a node.
     const label = Array.from(container.querySelectorAll('svg text')).find((t) =>
       t.textContent?.includes('wechat_user'),
     );
@@ -86,21 +86,21 @@ describe('GraphCanvas', () => {
     expect(container.textContent).toContain('Location');
   });
 
-  it('边少于阈值时标注边的种类（合成边 id 为负也能正确取值）', () => {
+  it('labels edge kinds when edges are below the threshold (a synthetic negative edge id still resolves)', () => {
     act(() => {
       root.render(<GraphCanvas mode="radial" center={center} rings={rings} edges={edges} />);
     });
     const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
-    // 两条边各有各的种类，不能因为 id 重复/为负而全部退化成第一条的种类。
+    // The two edges each have their own kind; they must not all degrade to the first edge's kind just because ids repeat or are negative.
     // Without a `LocaleProvider`, `t` falls back to the English source label (e.g. `edge.MapsTo` → 'maps to'), so assert on that.
     expect(labels).toContain('maps to');
     expect(labels).toContain('reads config');
   });
 
-  it('同一 (id, from, to) 的多条平行路径各自独立：悬浮只点亮一条、卡片显示各自的链路', () => {
-    // 正向视角下同一条传播边会被展开成多条路径，`push_edge` 复用同一个 evidence 边 id ——
-    // 于是出现 (id, from, to) 完全相同的两条边。旧实现只按 `id:from->to` 做键，
-    // 悬浮会同时点亮两条、卡片永远显示第一条（`edges.find` 首个命中）。
+  it('multiple parallel paths with the same (id, from, to) stay independent: hovering lights only one, the card shows each one’s own chain', () => {
+    // In a forward perspective one propagated edge expands into multiple paths and `push_edge` reuses the same evidence edge id --
+    // so two edges can share an identical (id, from, to). The old implementation keyed only by `id:from->to`,
+    // so hovering lit both at once and the card always showed the first (`edges.find` first hit).
     const c: CanvasNode = { id: 1, kind: 'HttpContract', name: 'GET /x', ring: 0 };
     const ringNodes: CanvasNode[][] = [[{ id: 2, kind: 'Cache', name: 'cache', ring: 1 }]];
     const parallel: EdgeView[] = [
@@ -148,7 +148,7 @@ describe('GraphCanvas', () => {
     expect(container.textContent).toContain('via 6 hops');
   });
 
-  it('直接传 hiddenNodeKinds 可隐藏该类节点（过滤逻辑）', () => {
+  it('passing hiddenNodeKinds directly hides that node class (filter logic)', () => {
     act(() => {
       root.render(
         <GraphCanvas
@@ -161,11 +161,11 @@ describe('GraphCanvas', () => {
       );
     });
     const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
-    expect(labels).not.toContain('wechat_user'); // 表节点被隐藏
-    expect(labels).toContain('h5_avatar'); // 其它类节点仍在
+    expect(labels).not.toContain('wechat_user'); // A table node is hidden
+    expect(labels).toContain('h5_avatar'); // Other kinds of nodes remain
   });
 
-  it('点击图例节点项会隐藏该类节点（点击接线 + 过滤端到端）', () => {
+  it('clicking a legend node item hides that node class (click wiring + filter end-to-end)', () => {
     let hidden: string[] = [];
     const onToggle = (k: string) => {
       hidden = hidden.includes(k) ? hidden.filter((x) => x !== k) : [...hidden, k];
@@ -186,7 +186,7 @@ describe('GraphCanvas', () => {
       });
     render2();
 
-    // 图例默认展开，直接找「表」图例项并点击。
+    // The legend is expanded by default; find the "table" legend item and click it.
     const tableRow = Array.from(container.querySelectorAll('span')).find(
       (s) => s.textContent === 'Table',
     );
@@ -196,20 +196,20 @@ describe('GraphCanvas', () => {
     });
     expect(hidden).toContain('Table');
 
-    // 套用过滤后的 hiddenNodeKinds 重渲染，验证画布真的去掉了表节点。
+    // Re-render with the filtered hiddenNodeKinds to verify the canvas really dropped table nodes.
     render2();
     const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
-    expect(labels).not.toContain('wechat_user'); // 表节点被隐藏
-    expect(labels).toContain('h5_avatar'); // 其它类节点仍在
+    expect(labels).not.toContain('wechat_user'); // A table node is hidden
+    expect(labels).toContain('h5_avatar'); // Other kinds of nodes remain
   });
 
   /**
-   * 回归：隐藏某类边时，只经由它相连的点要一并收起。
+   * Regression: when hiding an edge class, points connected only via it must be collapsed too.
    *
-   * 否则这些点没有任何可见边，却仍会被布局兜底排进列里占位（见 `layout/types.ts`
-   * 的右侧列兜底），看上去像"筛了但没筛掉"。
+   * Otherwise those points have no visible edges yet still get placed in a column by the layout fallback (see the right-column
+   * fallback in `layout/types.ts`), looking like "filtered but not really filtered".
    */
-  it('隐藏某类边时，只经由它相连的点一并收起', () => {
+  it('when hiding an edge class, points connected only via it are collapsed too', () => {
     act(() => {
       root.render(
         <GraphCanvas
@@ -222,10 +222,10 @@ describe('GraphCanvas', () => {
       );
     });
     const labels = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
-    expect(labels).not.toContain('h5_avatar'); // 只靠 ReadsConfig 连着的点被连带收起
-    expect(labels).toContain('wechat_user'); // 仍挂着 MapsTo 边的点保留
-    expect(labels).toContain('POST /apple_login'); // 中心恒保留作锚点
-    // 连带收起要有可见反馈，否则用户会以为图例按钮失灵。
+    expect(labels).not.toContain('h5_avatar'); // The point connected only via ReadsConfig is collapsed
+    expect(labels).toContain('wechat_user'); // The point still carrying a MapsTo edge is kept
+    expect(labels).toContain('POST /apple_login'); // The center is always kept as an anchor
+    // Collapsing needs visible feedback, otherwise users think the legend button is broken.
     expect(container.textContent).toContain('1 node(s) collapsed');
   });
 });

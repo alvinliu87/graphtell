@@ -40,7 +40,7 @@ import { useLocale } from '@/shared/lib/i18n';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { StatCard } from '@/shared/ui/StatCard';
 
-/** 统计卡强调色（`SEVERITY_COLOR` 是 antd 语义色名，给 Tag 用，两者用途不同）。 */
+/** Accent color for the stat cards (`SEVERITY_COLOR` is an antd semantic color name used for Tags; the two serve different purposes). */
 const SEVERITY_ACCENT: Record<Severity, string> = {
   critical: '#a8071a',
   error: '#ff4d4f',
@@ -72,17 +72,17 @@ const CATEGORY_TEXT: Record<DiagnosticCategory, { label: string; hint: string }>
 const SAMPLE_LIMIT = 3;
 
 /**
- * 建图报告页：**建图期**诊断（冲突、缺失、未解析链接）—— 这些本身就是有价值的发现。
+ * Build-report page: **build-time** diagnostics (conflicts, missing, unresolved links) -- these are themselves valuable findings.
  *
- * 两条设计主线（都是踩过坑才有的）：
+ * Two design threads (both earned the hard way):
  *
- * 1. **规则检验的结论刻意不在这里**：两者虽然都存在诊断表里，但性质不同
- *    （"图没建全" vs "代码违反了规则"），混在一张表里只会让两类结论都读不懂。
- *    这里给一个显式入口指过去，避免用户以为"一条错误都没有"。
- * 2. **按问题类型分组，而不是平铺条目**：诊断天生长尾重复（同一条引擎诊断在几百个文件上
- *    各触发一次），平铺的表格会把"同一件事发生 349 次"呈现成"349 个问题"，
- *    且 `ORDER BY id DESC` 的截断让用户看到的是写入顺序、不是严重程度。
- *    分组 + 分类 + 人话说明之后，"要不要管"才是读得出来的。
+ * 1. **Rule-check conclusions are deliberately not here**: although both live in the diagnostics table, they differ in nature
+ *    ("the graph isn't fully built" vs "the code violated a rule"), and mixing them in one table makes both kinds unreadable.
+ *    An explicit entry pointing there avoids users thinking "there isn't a single error".
+ * 2. **Group by problem type, don't flatten entries**: diagnostics are inherently long-tailed and repetitive (one engine diagnostic
+ *    fires once per hundreds of files), so a flat table presents "the same thing happened 349 times" as "349 problems",
+ *    and `ORDER BY id DESC` truncation shows write order rather than severity.
+ *    After grouping + categorizing + plain-language explanation, "should I care" becomes readable.
  */
 export function CoveragePage() {
   const { projectId } = useParams();
@@ -94,7 +94,7 @@ export function CoveragePage() {
   const summary = useAsync<DiagnosticSummary>(() => graphApi.diagnosticsSummary(id), [id]);
   const check = useAsync(() => checkApi.summary(id), [id]);
 
-  /** 视图：按类型归类的卡片 / 逐条明细表。默认归类 —— 它才是"读得懂"的那一层。 */
+  /** View: cards grouped by type / per-item detail table. Grouped by default -- that's the "readable" layer. */
   const [view, setView] = useState<'types' | 'list'>('types');
   const [severity, setSeverity] = useState<Severity | 'all'>('all');
   const [code, setCode] = useState<string | 'all'>('all');
@@ -110,7 +110,7 @@ export function CoveragePage() {
   const actionable = actionableCount(groups);
   const byCodeAccurate = (summary.data?.by_code?.length ?? 0) > 0;
 
-  /** 明细表：严重度优先 → 类型，与「按类型」视图同一份严重度权重。 */
+  /** Detail table: severity first → type, using the same severity weights as the "by type" view. */
   const rows = useMemo(
     () =>
       (list.data ?? [])
@@ -123,7 +123,7 @@ export function CoveragePage() {
     [list.data, severity, code],
   );
 
-  /** 通俗名：词条未收录的 code 原样显示，绝不猜含义（`t` 未命中时回退为键本身）。 */
+  /** Plain name: a code not in the glossary shows as-is, never guessing a meaning (`t` falls back to the key itself on a miss). */
   const codeTitle = (c: string) => {
     const key = `diag.${c}.title`;
     const v = t(key);
@@ -147,7 +147,7 @@ export function CoveragePage() {
     setView('list');
   };
 
-  /** 类的严重度分布，如「警告 349 · 提示 65」：同一 code 在不同严重度下含义可能不同。 */
+  /** A class's severity distribution, e.g. "warning 349 · info 65": the same code can mean different things at different severities. */
   const severitySplit = (g: DiagnosticGroup) =>
     SEVERITY_ORDER.filter((sev) => (g.bySeverity[sev] ?? 0) > 0)
       .map((sev) => `${t(SEVERITY_LABEL[sev])} ${g.bySeverity[sev]}`)
@@ -163,8 +163,8 @@ export function CoveragePage() {
       <PageHeader
         title={t('Build Report')}
         subtitle={t('Missing root nodes, routes pointing to non-existent handlers, identity conflicts, etc. — these records are the conclusions.')}
-        // 侧栏不再有「诊断」菜单项：这一页的唯一入口是代码图标题旁 ⓘ 的 Popover，
-        // 所以这里必须给出回路，否则用户进来就出不去了（只能靠浏览器后退）。
+        // The sidebar no longer has a "diagnostics" menu item: this page's only entry is the ⓘ Popover beside the code-graph title,
+        // so a way back must be given here, otherwise users who come in can't get out (only the browser Back button).
         extra={
           <Button size="small" onClick={() => navigate(`/projects/${id}/graph`)}>
             {t('Back to code graph')}
@@ -417,9 +417,9 @@ export function CoveragePage() {
                     })),
                   ]}
                 />
-                {/* 类型用下拉而不是 Segmented：诊断类型可随 FKB 增加，
-                    Segmented 会在窄屏（本项目常见的侧栏 + 画布布局）横向溢出，
-                    而 Select 自己会截断。 */}
+                {/* Type uses a dropdown rather than Segmented: diagnostic types can grow with FKB,
+                         and Segmented overflows horizontally on narrow screens (a sidebar + canvas layout is common in this project),
+                         while Select truncates by itself. */}
                 <Select
                   size="small"
                   style={{ minWidth: 280 }}

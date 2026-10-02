@@ -9,42 +9,42 @@ import { useAsync } from '@/shared/lib/useAsync';
 import { LocationBadge, LocationList } from './LocationList';
 import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 
-/** 稳定的空 via 引用：`?? []` 每次渲染都会生成新数组，会让折叠链的取数 effect 反复触发。 */
+/** A stable empty-via reference: `?? []` creates a new array every render, which would retrigger the collapsed-chain fetch effect. */
 const NO_VIA: ViaNode[] = [];
 
-/** Inspector 纵向 / 横向节奏统一间距，避免散落 magic number。 */
+/** Unified spacing for the Inspector's vertical / horizontal rhythm, avoiding scattered magic numbers. */
 const SP = {
-  /** 大区块之间：Descriptions ↔ 链 ↔ Alert 等（外层 Space）。 */
+  /** Between major blocks: Descriptions <-> chain <-> Alert etc. (the outer Space). */
   block: 16,
-  /** 小节标题与其内容的间距：如「折叠掉的调用链」↔ 时间线。 */
+  /** Gap between a subsection heading and its content: e.g. "collapsed call chain" <-> timeline. */
   section: 14,
-  /** 时间线各跳之间。 */
+  /** Between timeline hops. */
   step: 12,
-  /** 跳内分行：节点名 ↔ 位置块、标签行之间。 */
+  /** Line breaks within a hop: node name <-> location block, between label rows. */
   row: 8,
-  /** 最紧凑：同标签下多个路径之间。 */
+  /** Tightest: between multiple paths under the same label. */
   tight: 4,
-  /** 节点名前 Tag ↔ 节点名。 */
+  /** The Tag before a node name <-> the node name. */
   tagGap: 6,
 } as const;
 
-/** 节点名前 Tag 的最小宽度；同时作为下方「调用语句 / 定义复制按钮」相对节点名左缘的缩进基准。 */
+/** Minimum width for the Tag before a node name; also the indent baseline for the "call statement / definition copy button" below, relative to the node name's left edge. */
 const TAG_W = 64;
-/** 下方调用语句、定义复制按钮统一缩进到与节点名同列：NAME_INDENT = TAG_W + tagGap。 */
+/** The call statement and definition copy button below are uniformly indented to the same column as the node name: NAME_INDENT = TAG_W + tagGap. */
 const NAME_INDENT = TAG_W + SP.tagGap; // 64 + 6 = 70
 
-/** 节点名文字色：中性近黑而非彩色，避免与「Tag 的 kind 色」和「文件名的蓝 Link」堆叠出过多颜色。 */
+/** Node name text color: neutral near-black rather than colored, to avoid stacking too many colors with "the Tag's kind color" and "the filename's blue Link". */
 const NODE_NAME_COLOR = '#1f2937';
-/** 时间线圆点色：统一中性灰，不再按 kind 上色（kind 已由 Tag 表达），减少整屏色彩。 */
+/** Timeline dot color: uniform neutral gray, no longer colored by kind (kind is already conveyed by the Tag), reducing overall screen color. */
 const TIMELINE_DOT_COLOR = '#94a3b8';
 
 /**
- * 右侧 Inspector。
+ * The Inspector on the right.
  *
- * 两类用途：
- * 1. **没有对应视角的节点**（`ConfigKey` / `KeyPattern` / `Component` / `SecretLocation`）
- *    —— 点它**不切顶部筛选器**，只在这里显示属性与"另有 N 处引用"
- * 2. 边 —— 显示证据链：一律按 起点 → 各跳 → 终点（语义节点）列出，直达边即为 起点/终点 两跳
+ * Two kinds of use:
+ * 1. **Nodes with no matching perspective** (`ConfigKey` / `KeyPattern` / `Component` / `SecretLocation`)
+ *    -- clicking them **does not switch the top filter**, it only shows properties and "N other references" here
+ * 2. Edges -- show the evidence chain: always listed as source → hops → target (semantic nodes); a direct edge is just the source/target two hops
  */
 export function Inspector({
   nodeId,
@@ -59,14 +59,14 @@ export function Inspector({
   nodeId: number | null;
   edgeId: number | null;
   /**
-   * 点击的那条边本身。折叠视图里的"直连"其实是提拉出来的，
-   * 中间节点只存在于当次视图结果中（按 id 重查拿不到），所以要把它带进来。
+   * The edge that was clicked. A "direct" edge in the collapsed view is actually lifted,
+   * and the middle nodes exist only in that view result (unreachable by id), so it must be carried in.
    */
   edgeView?: EdgeView | null;
-  /** 端点 id → 名字；用于把折叠链首尾两个语义节点也标出名字。 */
+  /** Endpoint id -> name; used to also label the first and last semantic nodes of the collapsed chain. */
   nodeNameOf?: (id: number) => string;
   projectRoot?: string;
-  /** WSL 发行版名；非空时跳转 / 复制按 WSL 处理（远程 scheme + UNC 前缀）。 */
+  /** WSL distro name; when non-empty, jump / copy is handled as WSL (remote scheme + UNC prefix). */
   wslDistro?: string;
   onClose: () => void;
   onJumpToReference?: (nodeId: number) => void;
@@ -183,17 +183,17 @@ function EdgePanel({
   );
   const { t } = useLocale();
 
-  // 这条边折叠掉的中间节点：只存在于点击时的视图结果里（按 id 重查拿不到）。
+  // The middle nodes this edge folded away: they exist only in the view result at click time (unreachable by id).
   const via = edgeView?.via ?? NO_VIA;
 
-  // 负数 id = 折叠视图汇总出的合成边（没有对应的单条原始边），按 id 查证据注定查不到。
-  // 与其显示"未找到该边"让人以为坏了，不如直说它是什么，并把折叠掉的中间节点逐跳列出来。
-  // 先于 loading 判断：这条边的证据请求注定失败，没必要先闪一下"加载中…"。
+  // A negative id = a synthetic edge aggregated by the collapsed view (no corresponding single raw edge), so looking up evidence by id is bound to fail.
+  // Rather than showing "edge not found" and making it look broken, say plainly what it is and list the folded-away middle nodes hop by hop.
+  // Before the loading check: this edge's evidence request is bound to fail, so there's no need to flash "loading…" first.
   //
-  // 但"合成"**不等于"没有证据"**：反向视角（资源类中心）的边一律是负 id，其中不少就是
-  // 一条真实的直接边（如 `paySuccess --Triggers--> 事件`），它内联了触发点（`to_call_site`）
-  // 与端点位置（`node_locations`） —— 这些必须照常渲染，不能一句"没有证据"就盖过去。
-  // 只有三者全无时才是真的无据可查。
+  // But "synthetic" does **not** mean "no evidence": in a reverse perspective (resource-type center) all edges have negative ids, and many of them are
+  // a real direct edge (e.g. `paySuccess --Triggers--> event`) that inlines the trigger point (`to_call_site`)
+  // and endpoint locations (`node_locations`) -- these must render normally, not be covered by a blanket "no evidence".
+  // Only when all three are missing is it truly unevidenced.
   const hasOwnEvidence = !!edgeView?.to_call_site || (edgeView?.node_locations?.length ?? 0) > 0;
   if (edgeId < 0 && (via.length > 0 || !hasOwnEvidence)) {
     return (
@@ -225,29 +225,29 @@ function EdgePanel({
 
   if (loading && !edgeView) return <Typography.Text type="secondary">{t('Loading…')}</Typography.Text>;
 
-  // **以"用户点击的那条边"为准**：它带着 via / hops，状态与置信度也与图上悬浮卡一致。
-  // `/edges/{id}/evidence` 返回的是**提拉前的 raw 边**——它的端点、状态、置信度都可能不同，
-  // 之前拿它冒充这条边，才出现"悬浮卡 0.80/已解析、抽屉 0.54/待验证"的自相矛盾。
-  // 现在只把 raw 边当作"底层位置"的来源，并如实标注，绝不顶替这条边本身。
+  // **Take "the edge the user clicked" as authoritative**: it carries via / hops, and its state and confidence match the graph's hover card.
+  // `/edges/{id}/evidence` returns the **pre-lift raw edge** -- its endpoints, state and confidence may differ;
+  // passing it off as this edge is what produced the self-contradiction "hover card 0.80/resolved, drawer 0.54/unverified".
+  // Now the raw edge is used only as the source of "underlying locations", clearly labeled, never standing in for this edge itself.
   const edge = edgeView ?? data?.edge ?? null;
   if (!edge) return <Empty description={t('Edge not found')} />;
   const unresolved = !edge.resolved;
-  // 证据位置的来源：优先用后端 `/edges/{id}/evidence`（真实边）；
-  // 合成边按 id 查不到它，此时退到边自己内联的 `to_call_site` ——
-  // `paySuccess --Triggers--> 事件` 这类直接语义边就是靠它给出 `event('X')` 那一行。
+  // Source of evidence locations: prefer the backend `/edges/{id}/evidence` (a real edge);
+  // a synthetic edge can't be found by id, so fall back to the edge's own inlined `to_call_site` --
+  // direct semantic edges like `paySuccess --Triggers--> event` get the `event('X')` line from it.
   const evidenceLocations = data?.locations?.length
     ? data.locations
     : edgeView?.to_call_site
       ? [edgeView.to_call_site]
       : [];
 
-  // 只要点边时随身带了这条边本身（`from` / `to` / 内联位置），就把它画成「起点 → 各跳 → 终点」，
-  // 与路由链路的呈现完全一致。此前仅在"折叠出了中间节点"（`via` 非空）时才画链，于是
-  // `save --投递到--> 队列` 这类**直达语义边**只剩孤零零一个位置：既看不到起点 `save`，
-  // 也看不到终点的语义节点 —— 看起来像"这条边没建好"。
+  // As long as the click carried this edge itself (`from` / `to` / inlined locations), draw it as "source → hops → target",
+  // exactly like the route chain presentation. Previously the chain was drawn only when "middle nodes were folded" (`via` non-empty), so a
+  // **direct semantic edge** like `save --publishes to--> queue` was left with a single lonely location: you could see neither the source `save`
+  // nor the target semantic node -- it looked like "this edge wasn't built properly".
   const showChain = !!edgeView;
-  // 链路里是否已给出「本边自己那一行」（`via` 各跳的调用处，或直达边的 `to_call_site`）：
-  // 给了就不必再单列一份证据位置，否则同一行会在链路的起点跳与「证据位置」里各出现一次。
+  // Whether the chain already gives "this edge's own line" (the call sites of each `via` hop, or a direct edge's `to_call_site`):
+  // if it does, don't list an evidence location separately, otherwise the same line appears both at the chain's source hop and under "evidence locations".
   const chainCoversProof = via.length > 0 || !!edgeView?.to_call_site;
 
   return (
@@ -303,8 +303,8 @@ function EdgePanel({
         </Space>
       ) : null}
 
-      {/* 链路已把每一跳的调用处逐条列出（直达边的 `to_call_site` 也在其中），raw 边的位置是其子集，
-          无需重复展示；只在链路没给出本边那一行时显示。 */}
+      {/* The chain already lists each hop's call site (including a direct edge's `to_call_site`), and the raw edge's locations are a subset, so there's
+              no need to show them again; only shown when the chain didn't give this edge's own line. */}
       {evidenceLocations.length > 0 && !chainCoversProof ? (
         <div>
           <Typography.Text strong style={{ fontSize: 13 }}>
@@ -326,15 +326,15 @@ function EdgePanel({
 }
 
 /**
- * 调用链：把这条边按 起点 → 中间各跳 → 终点（语义节点）逐跳列出。
+ * Call chain: list this edge hop by hop as source → middle hops → target (semantic node).
  *
- * 折叠提拉边在图上看似直连，其实是一条多跳调用链被折叠后的结果；被折掉的中间节点只存在于
- * **当次视图结果**（`EdgeView.via`）里，按边 id 重查是拿不到的 —— 所以必须由点击方随身带入。
- * via 节点只带 id/kind/name，因此每一跳的源码位置要按节点 id 现查，才能给出真正的"调用处"。
+ * A lifted edge looks directly connected on the graph, but is really a multi-hop call chain after folding; the folded-away middle nodes exist only in
+ * **that view result** (`EdgeView.via`) and can't be re-queried by edge id -- so the clicker must carry them in.
+ * via nodes carry only id/kind/name, so each hop's source location must be looked up by node id to give the real "call site".
  *
- * **直达语义边**（`via` 为空，如 `save --投递到--> 队列`）也走这里：只有 起点/终点 两跳，
- * 中间那一行取自边的 `to_call_site`。这样"点边看链"在两种情形下是同一套版式 ——
- * 都能看见起点是谁、终点是哪个语义节点，而不是只剩一行孤立的位置。
+ * **Direct semantic edges** (`via` empty, e.g. `save --publishes to--> queue`) go through here too: just the source/target two hops,
+ * with the middle line taken from the edge's `to_call_site`. That way "click an edge to see the chain" uses the same layout in both cases --
+ * you always see who the source is and which semantic node the target is, instead of a single isolated location.
  */
 function CollapsedChain({
   edge,
@@ -346,34 +346,34 @@ function CollapsedChain({
   onNodeClick,
 }: {
   edge: EdgeView;
-  /** 兼容旧调用：单条路径。 */
+  /** Backwards-compatible call: a single path. */
   via?: ViaNode[];
-  /** 多条路径（优先）；缺省用 `via` 包成单条。路由到表常有多条调用路径（如直查 `value` 与主列表 `getGoodsList`），用此字段呈现分叉。 */
+  /** Multiple paths (preferred); defaults to wrapping `via` as a single one. Route-to-table often has several call paths (e.g. the direct `value` lookup and the main list `getGoodsList`); this field presents the branching. */
   paths?: ViaNode[][];
   nodeNameOf?: (id: number) => string;
   projectRoot?: string;
   wslDistro?: string;
-  /** 点击某跳的节点名 → 在主图中以该节点为中心重绘。 */
+  /** Click a hop's node name -> redraw the main graph centered on that node. */
   onNodeClick?: (id: number) => void;
 }) {
   const { t } = useLocale();
   const name = (id: number) => nodeNameOf?.(id) ?? `#${id}`;
   const pathList = paths && paths.length > 0 ? paths : via ? [via] : [];
 
-  // 所有路径上的节点都要取位置（含起止），避免第一跳"调用处"断头。
+  // Locations for nodes on all paths (including endpoints) are needed, otherwise the first hop's "call site" is headless.
   const allIds = useMemo(() => {
     const s = new Set<number>([edge.from, edge.to]);
     pathList.forEach((p) => p.forEach((v) => s.add(v.id)));
     return [...s];
   }, [pathList, edge.from, edge.to]);
 
-  // 存整个 `NodeLocations`：需要 `synthetic` 来决定如何标注"定义处"。
-  // 共享节点（ConfigKey / Table / Cache …）由同键多处共现合成，
-  // 它的**全部出处并不都属于当前链路** —— 混着展示会让人以为链路串到了无关文件。
+  // Store the whole `NodeLocations`: `synthetic` is needed to decide how to label the "definition site".
+  // Shared nodes (ConfigKey / Table / Cache …) are synthesized from multiple co-occurrences of the same key,
+  // and **not all of their occurrences belong to the current chain** -- showing them mixed in makes it look like the chain runs into unrelated files.
   //
-  // 优先用后端**内联**在 `edge.node_locations` 里的位置（折叠视图链路是临时提拉的，
-  // 中间跳按边 id 重查不到，所以后端一次给全）。只对缺失的节点回退到原接口，
-  // 避免对每一跳都发一次 `/nodes/{id}/locations`（N+1）。
+  // Prefer the locations the backend **inlines** in `edge.node_locations` (a collapsed-view chain is a temporary lift, so middle hops
+  // can't be re-queried by edge id -- the backend gives them all at once). Fall back to the original endpoint only for missing nodes,
+  // avoiding one `/nodes/{id}/locations` per hop (N+1).
   const inline = useMemo(() => {
     const m: Record<number, NodeLocations> = {};
     for (const e of edge.node_locations ?? []) {
@@ -416,7 +416,7 @@ function CollapsedChain({
     };
   }, [missingKey]);
 
-  // 内联数据优先；仅补上后端没有内联的节点。
+  // Inlined data wins; only fill in nodes the backend didn't inline.
   const locs = useMemo(() => ({ ...fetched, ...inline }), [fetched, inline]);
 
   type Step = {
@@ -429,10 +429,10 @@ function CollapsedChain({
     callSite: SourceLocation | null;
   };
 
-  // 单条位置的紧凑渲染：只保留 `file:line · symbol` 与（可选）snippet。
-  // 相比 `LocationList` 的整块灰卡，去掉外框与重复按钮，让链路每一跳更轻。
-  // `symbol` 是机器合成的全限定名（如 `A::b#C::d:252`），与上方 `Tag + 节点名` 重复，
-  // 且会让一行路径换行参差；改为只在悬停时显示（`note` 同理），可见行只保留 `file:line` + 可选 snippet。
+  // Compact rendering for a single location: keep only `file:line · symbol` and (optionally) the snippet.
+  // Compared with `LocationList`'s full gray card, drop the frame and duplicate buttons so each chain hop is lighter.
+  // `symbol` is a machine-composed fully-qualified name (e.g. `A::b#C::d:252`) that duplicates the `Tag + node name` above,
+  // and makes a row of paths wrap unevenly; change to show it only on hover (same for `note`), keeping just `file:line` + optional snippet visible.
   const locationNode = (loc: SourceLocation) => {
     const tip = [loc.note, loc.symbol].filter(Boolean).join(' · ');
     const title = loc.file + ':' + loc.line + (tip ? ' — ' + tip : '');
@@ -469,12 +469,12 @@ function CollapsedChain({
     );
   };
 
-  // 这是「边链路视图」（点边打开），只应展示与本边相关（on-path）的位置，**绝不**展示资源在全代码库的
-  // 共现足迹（"全部出处 N 处"）。资源的完整足迹属于「点节点」场景（NodePanel / LocationList），
-  // 在边证据链里出现会让人误以为 N 处都在链上——其实只有 1 处在链上，其余只是「同类共现」。
-  //  - 非终点：节点自身定义处（s.locations[0]），即链路途经的方法 / 类位置；
-  //  - 终点：本边到达它的那一行（s.callSite = edge.to_call_site），即上一跳调用它的位置
-  //    （它已在上一行的调用语句里显示过，这里再给一个复制按钮方便跳转）。
+  // This is the "edge chain view" (opened by clicking an edge) and should show only locations relevant to this edge (on-path) -- **never** the resource's
+  // co-occurrence footprint across the whole codebase ("all N occurrences"). The resource's full footprint belongs to the "click a node" scenario (NodePanel / LocationList);
+  // showing it in an edge evidence chain makes people think all N are on the chain -- when really only 1 is, the rest are just "same-kind co-occurrences".
+  //  - non-target: the node's own definition site (s.locations[0]), i.e. the method / class location the chain passes through;
+  //  - target: the line where this edge reaches it (s.callSite = edge.to_call_site), i.e. where the previous hop called it
+  //    (already shown in the previous row's call statement; a copy button here is added for convenient jumping).
   const definitionButton = (s: Step): ReactNode => {
     if (s.locations.length === 0 && !s.callSite) return null;
     const onPath = s.role === 'end' ? s.callSite ?? s.locations[0] : s.locations[0];
@@ -494,21 +494,21 @@ function CollapsedChain({
   };
 
   const stepDescription = (s: Step, nextCallSite?: SourceLocation | null, prevNextCallSite?: SourceLocation | null): ReactNode => {
-    // 调用方归属：cs = 本节点体内「调下一跳」的那一行（即下一跳的 call_site，指向本节点文件内），
-    // 与被调方的「定义处」同属一个文件，读起来是「route 调 detail / detail 调 tidyOrder …」的自然叙述。
-    // 定义处已提到节点名右侧的「定义」按钮（见 definitionButton），这里只保留调用语句这一主干。
+    // Caller attribution: cs = the line in this node's body that "calls the next hop" (i.e. the next hop's call_site, pointing inside this node's file),
+    // which is in the same file as the callee's "definition site", reading as a natural narrative "route calls detail / detail calls tidyOrder …".
+    // The definition site is already promoted to the "definition" button on the right of the node name (see definitionButton); only the call statement trunk stays here.
     const cs = nextCallSite;
     const isEnd = s.role === 'end';
 
     const rows: ReactNode[] = [];
-    // 与上一行「调用语句」同址时不重复渲染（如 相邻两跳恰好落在同一 file:line）。
+    // Don't render again when it's the same location as the previous row's "call statement" (e.g. two adjacent hops landing on the same file:line).
     const dupCallSite =
       !!prevNextCallSite && !!cs && prevNextCallSite.file === cs.file && prevNextCallSite.line === cs.line;
     if (cs && !dupCallSite) {
       rows.push(<Fragment key="cs">{locationNode(cs)}</Fragment>);
     } else if (!isEnd && !cs) {
-      // 非终点却拿不到「调下一跳」的调用语句：该跳不是直接的 `Calls` 边（如 路由→handler 的绑定，或调用未解析），
-      // 后端 `call_site_between` 两种来源都落空。如实标注，避免调用链在这里看起来莫名断掉。
+      // A non-target hop with no "calls the next hop" statement: this hop isn't a direct `Calls` edge (e.g. a route→handler binding, or an unresolved call),
+      // and both sources of the backend's `call_site_between` come up empty. Label it honestly so the call chain doesn't look mysteriously broken here.
       rows.push(
         <Typography.Text
           key="cs"
@@ -522,7 +522,7 @@ function CollapsedChain({
     }
     if (rows.length === 0) return null;
 
-    // 统一缩进到与节点名同列（NAME_INDENT），调用语句的 file:line / snippet 上下对齐。
+    // Indent uniformly to the same column as the node name (NAME_INDENT), so the call statement's file:line / snippet align vertically.
     return (
       <div style={{ paddingLeft: NAME_INDENT }}>
         <Space direction="vertical" size={SP.row} style={{ width: '100%' }}>
@@ -554,7 +554,7 @@ function CollapsedChain({
             <div style={{ marginBottom: SP.step }}>
               {(() => {
                 const isEndpoint = !s.kind;
-                // 端点（起点/终点）用描边淡标签：白底 + 彩边 + 彩字，与中间节点「按 kind 实心填充」分层、不抢眼。
+                // Endpoints (source/target) use an outlined light tag: white fill + colored border + colored text, layered against the middle nodes' "solid kind-colored fill" so they don't steal attention.
                 const stroke = isEndpoint
                   ? s.role === 'start'
                     ? '#16a34a'
@@ -577,8 +577,8 @@ function CollapsedChain({
                     >
                       {s.kind ?? t(s.role ?? '')}
                     </Tag>
-                    {/* 节点名走中性近黑，不跟着 Tag 上色：颜色额度只留两处 —— Tag（kind 色）与文件名（可跳转的蓝 Link）。
-                        否则绿起点 / 蓝 Method / 红终点 + 蓝文件名，一屏全是颜色。可点性由加粗与悬停提示表达。 */}
+                    {/* The node name uses neutral near-black and does not follow the Tag's color: the color budget is spent in only two places -- the Tag (kind color) and the filename (the clickable blue Link).
+                             Otherwise a green source / blue Method / red target + blue filename means a screen full of color. Clickability is conveyed by bold + hover hint. */}
                     <Typography.Link
                       style={{ fontSize: 13, fontWeight: 600, wordBreak: 'break-all', color: NODE_NAME_COLOR }}
                       onClick={() => onNodeClick?.(s.id)}
@@ -590,8 +590,8 @@ function CollapsedChain({
                   </Space>
                 );
               })()}
-              {/* 调用语句归属调用方：行 i 展示「本节点体内调下一跳」的那一行，故传入下一跳的 callSite；
-                  终点无下一跳，自然只留定义处。上一行的 nextCallSite 用于同址去重。 */}
+              {/* The call statement belongs to the caller: row i shows "the line inside this node that calls the next hop", so it passes the next hop's callSite;
+                      the target has no next hop, so naturally only the definition site remains. The previous row's nextCallSite is used for same-location dedup. */}
               <div style={{ marginTop: SP.row }}>{stepDescription(s, i < steps.length - 1 ? steps[i + 1].callSite : null, i > 0 ? steps[i].callSite : null)}</div>
             </div>
           ),
@@ -605,13 +605,13 @@ function CollapsedChain({
   return (
     <div>
       <Typography.Text strong style={{ fontSize: 13 }}>
-        {/* 有中间跳被折掉才叫「折叠掉的调用链」；直达边只有 起点↔终点 两跳，标题如实写「调用链」，
-            版式与路由链路完全一致。 */}
+        {/* Only when middle hops were folded away is it a "collapsed call chain"; a direct edge has just the source↔target two hops, so the heading says "call chain" honestly,
+                with a layout identical to the route chain. */}
         {t(pathList.some((p) => p.length > 0) ? 'Collapsed call chain' : 'Call chain')}
-        {/* 多路径时保留条数汇总（有用）；单路径的"跳数"已由顶部 Descriptions 的「跳数」给出，这里不再重复。 */}
+        {/* With multiple paths, keep the count summary (useful); for a single path the "hop count" is already given by "hops" in the Descriptions above, so it isn't repeated here. */}
         {pathList.length > 1 ? `（${pathList.length}${t(' paths')}）` : null}
       </Typography.Text>
-      {/* 标题与下方第一个节点之间留出呼吸间隙，避免标题贴住时间线圆点。 */}
+      {/* Leave breathing room between the heading and the first node below, so the heading doesn't stick to the timeline dot. */}
       <div style={{ marginTop: SP.section }}>
         {pathList.length === 1 ? (
           renderPath(pathList[0])

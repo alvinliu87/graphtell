@@ -9,7 +9,7 @@ import { StatCard } from '@/shared/ui/StatCard';
 import { useLocale } from '@/shared/lib/i18n';
 import { DeploymentUnitOutlined, FolderOpenOutlined } from '@ant-design/icons';
 
-/** 工程总览页：CRUD 入口。 */
+/** Project overview page: CRUD entry point. */
 export function ProjectsPage() {
   const { projects, loading, error, reload, building } = useProjects();
   const [open, setOpen] = useState(false);
@@ -35,9 +35,9 @@ export function ProjectsPage() {
         }
       />
 
-      {/* 后端故障 / 网络不通时**必须**显式报错，不能落到下面的「还没有工程」空态 ——
-          否则会和"确实 0 个工程"长得一模一样，用户以为没数据，实则请求挂了
-          （这一处长期吞错：useProjects() 返回的 error 此前从未被消费）。 */}
+      {/* On backend failure / no network the error **must** be reported explicitly, not fall through to the "no projects yet" empty state below --
+               otherwise it looks exactly like "genuinely 0 projects": the user thinks there's no data when the request actually failed
+               (this spot swallowed errors for a long time: the error returned by useProjects() was never consumed). */}
       {!loading && error ? (
         <Alert
           type="error"

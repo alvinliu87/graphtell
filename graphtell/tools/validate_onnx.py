@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""验证导出的 bge-m3 ONNX 与 sentence-transformers 版本产出一致（同一套 token + CLS + L2）。"""
+"""Verify the exported bge-m3 ONNX matches the sentence-transformers output (same tokens + CLS + L2)."""
 import os
 import numpy as np
 import onnxruntime as ort

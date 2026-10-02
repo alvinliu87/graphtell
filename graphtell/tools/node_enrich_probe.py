@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""节点文本富化探针：用工程自身 i18n 桥（反向索引）给节点嵌入文本补「中文短语 + 同义词」，
-验证能否把中文查询真答案的余弦抬进前 20。
+"""Node-text enrichment probe: use the project's own i18n bridge (reverse index) to add
+"Chinese phrase + synonyms" to node embed text, testing whether it lifts the true answer's cosine into the top 20.
 
-只改节点嵌入文本，不动查询。先量「真答案节点」富化后的余弦相对当前排名门槛是否够高，
-避免盲改 Rust 后花 56 分钟重预热才发现方向错。
+Only the node embed text changes, not the query. First measure whether the enriched "true answer node" cosine is high enough
+relative to the current ranking threshold, to avoid blind-editing Rust and spending 56 minutes re-warming only to find the direction wrong.
 
-依赖：与 cosine_diag.py 一致的 ONNX bge 路径（查询侧仍用 expand_intent_aliases + 工程桥）。
+Dependencies: the same ONNX bge path as cosine_diag.py (the query side still uses expand_intent_aliases + the project bridge).
 """
 import argparse
 import json
@@ -21,7 +21,7 @@ ONNX = os.path.join(ROOT, "models", "bge-m3-onnx", "model.onnx")
 TOK = os.path.join(ROOT, "models", "bge-m3", "tokenizer.json")
 PREFIX = "Represent this sentence for searching relevant passages: "
 
-# ---- 复刻 Rust 侧的 key_tokens / location_tokens / 桥 ----
+# ---- replicate the Rust-side key_tokens / location_tokens / bridge ----
 STOPWORDS = {"template","templates","src","app","apps","pages","page","components","component",
     "views","view","index","main","static","assets","public","utils","util","common","shared",
     "lib","libs","core","vendor","dist","build","admin","api","js","ts","vue","jsx","tsx","php",
@@ -32,7 +32,7 @@ CJK = re.compile(r'[\u4e00-\u9fff]')
 def contains_cjk(s): return bool(CJK.search(s))
 
 def split_camel(seg):
-    # 粗略驼峰切分：在大写前 / 数字边界断开
+    # Rough camel split: break before capitals / at digit boundaries
     out = []
     buf = ""
     prev = ""
@@ -71,8 +71,8 @@ def location_tokens(props):
                     if t not in out: out.append(t)
     return out
 
-# ---- 复刻 query 侧展开（INTENT_ALIASES + 工程桥）----
-# 精简版通用词典（与 Rust INTENT_ALIASES 同义，仅用于探针）
+# ---- replicate the query-side expansion (INTENT_ALIASES + project bridge) ----
+# A trimmed generic dictionary (synonymous with Rust's INTENT_ALIASES, probe-only)
 GENERIC = {
     "查询":"query find search", "获取":"get fetch find load", "列表":"list all index",
     "新增":"add create insert", "添加":"add create insert", "创建":"create add insert",
@@ -108,7 +108,7 @@ def expand_query(query, bridge):
         if zh in query:
             for t in en.split():
                 if t not in terms: terms.append(t)
-    # 工程桥：命中中文短语 → 其英文 token
+    # Project bridge: a hit Chinese phrase -> its English tokens
     for zh, toks in bridge:
         if zh in query:
             for t in toks:
@@ -116,7 +116,7 @@ def expand_query(query, bridge):
     return terms
 
 def build_bridge(db, project):
-    """复刻 project_bridge：遍历 i18n/中文/源码中文片段 节点。"""
+    """Replicate project_bridge: walk the i18n / Chinese / source-Chinese-fragment nodes."""
     rows = db.execute(
         "SELECT name, properties FROM nodes WHERE project_id=?", (project,)).fetchall()
     entries = []
@@ -124,12 +124,12 @@ def build_bridge(db, project):
         try: props = json.loads(props_json) if props_json else {}
         except Exception: props = {}
         if not isinstance(props, dict): continue
-        # 英文侧 token
+        # English-side tokens
         toks = key_tokens(name)
         for t in location_tokens(props):
             if t not in toks: toks.append(t)
         if not toks: continue
-        # 中文侧短语
+        # Chinese-side phrases
         texts = []
         texts_obj = props.get("texts")
         if isinstance(texts_obj, dict):
@@ -141,7 +141,7 @@ def build_bridge(db, project):
         if isinstance(snip, str):
             for r in CJK.findall(snip):
                 pass
-            # 粗取中文连续串
+            # Coarsely grab contiguous Chinese runs
             for m in re.finditer(r'[\u4e00-\u9fff]{2,30}', snip):
                 texts.append(m.group(0))
         added = 0
@@ -166,7 +166,7 @@ def node_enrichment(node_name, fqn, inv, cap=8):
     seen = set(); added = []
     for t in toks:
         for zh, btoks in inv.get(t, []):
-            # 追加「中文短语 + 其余英文 token」
+            # Append "Chinese phrase + remaining English tokens"
             chunk = [zh] + [x for x in btoks if x != t]
             for c in chunk:
                 if c not in seen:
@@ -223,18 +223,18 @@ def main():
         qvec = embed(f"{q} {' '.join(qterms)}") if qterms else embed(q)
         sims = mat @ qvec
         order = np.argsort(-sims)
-        # 当前排名门槛（第20名余弦）
+        # Current ranking threshold (cosine of the 20th)
         thr20 = sims[order[19]] if len(order) > 19 else -1
         true_ids = set()
         for t in c["targets"]:
             tl = t.lower()
             for nm, nids in name_to_ids.items():
                 if tl in nm: true_ids.update(nids)
-        # 真答案当前名次
+        # True answer's current rank
         cur_rank = None
         for r, idx in enumerate(order, 1):
             if ids[idx] in true_ids: cur_rank = r; break
-        # 富化真答案节点并重新编码
+        # Enrich the true answer node and re-encode
         new_cos = {}
         for t in c["targets"]:
             tl = t.lower()

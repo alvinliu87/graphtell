@@ -13,17 +13,17 @@ import {
 } from 'antd';
 import {
   ApartmentOutlined,
-  // 暂时注释：节点浏览入口已停用
+  // Temporarily commented out: the node-browse entry is disabled
   // DatabaseOutlined,
   DownOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   SafetyCertificateOutlined,
-  // 暂时注释：规则集入口移到规则检验页
+  // Temporarily commented out: the rule-set entry moved to the rule-check page
   // ProfileOutlined,
   SearchOutlined,
   UnorderedListOutlined,
-  // 暂时注释：设置入口已隐藏
+  // Temporarily commented out: the settings entry is hidden
   // SettingOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -37,10 +37,10 @@ type SeverityCounts = { critical: number; error: number; warning: number; info: 
 
 const { Sider, Content, Header } = Layout;
 
-/** 顶栏工程下拉最多直接展示的工程数，更多走底部「工程总览」进列表页。 */
+/** Max projects shown directly in the top-bar project dropdown; more go through the bottom "project overview" into the list page. */
 const MAX_PROJECTS = 8;
 
-/** 应用外壳：侧边导航 + 顶栏 + 内容区。 */
+/** App shell: side navigation + top bar + content area. */
 export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -48,25 +48,25 @@ export function AppShell() {
   const { health } = useHealth();
   const { lang, setLang, t } = useLocale();
 
-  // 菜单角标：自动检查落库的违规汇总（建图后自动跑，这里只读不重跑）。
+  // Menu badge: the summary of violations persisted by the automatic check (run automatically after a build; here we only read, never rerun).
   const summaryRes = useAsync<CheckSummary | null>(
     () => (projectId ? checkApi.summary(Number(projectId)) : Promise.resolve(null)),
     [projectId],
   );
   const summary = summaryRes.data ?? null;
 
-  // 注意：**诊断不在这里取汇总，也不在侧栏挂角标**。
-  // 诊断是"这张图少建了什么"的报告，主体是图 —— 它的入口在代码图页标题旁 ⓘ 的 Popover 里
-  // （见 GraphPage 的「图覆盖」行）。侧栏一个常驻橙色角标只会表达"有东西欠你处理"，
-  // 而诊断里绝大多数是引擎局限与预期内，那是在骗人。
+  // Note: **diagnostics do not fetch a summary here, and get no sidebar badge**.
+  // Diagnostics are a report of "what this graph failed to build", and their subject is the graph -- their entry is in the ⓘ Popover beside the code-graph page title
+  // (see the "graph coverage" row in GraphPage). A permanent orange sidebar badge would only say "something here needs your attention",
+  // while the vast majority of diagnostics are engine limitations and expected -- that would be lying.
 
-  // 顶栏工程快捷选择：拉工程列表，当前工程名直接从列表里取（与页面标题同一口径）。
+  // Top-bar project quick-select: fetch the project list; the current project name comes straight from the list (same criterion as the page title).
   const projectsRes = useAsync<Project[]>(() => projectApi.list(), []);
   const projects = projectsRes.data ?? [];
   const currentProject = projects.find((p) => String(p.id) === projectId) ?? null;
   const projectName = currentProject?.name ?? null;
 
-  // 把严重度汇总渲染成菜单右对齐角标：error/critical 红、warning 橙，全清则无。
+  // Render the severity summary as a right-aligned menu badge: error/critical red, warning orange, nothing when all clear.
   const severityBadge = (s: SeverityCounts | null) => {
     if (!s || s.critical + s.error + s.warning === 0) return null;
     const alarm = s.critical + s.error;
@@ -80,10 +80,10 @@ export function AppShell() {
     );
   };
 
-  // 规则检验的菜单标签：带严重度角标，让菜单本身成为质量仪表盘。
+  // The rule-check menu label carries a severity badge, making the menu itself a quality dashboard.
   //
-  // 只有规则检验带角标：它统计的是"代码违反了哪条规则"，条数就是待办数；
-  // 诊断不是（见上方注释），所以不进侧栏。
+  // Only rule-check gets a badge: it counts "which rule the code violated", and the count is the to-do count;
+  // diagnostics aren't (see the comment above), so they stay out of the sidebar.
   const checkLabel = (
     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
       <span>{t('Rule inspection')}</span>
@@ -91,9 +91,9 @@ export function AppShell() {
     </span>
   );
 
-  // 左侧栏是否收起：代码图路由默认收起（进入即最大化，让出横向空间给图），
-  // 其余路由默认展开。仅在 pathname 变化时按路由重置；页面内的手动折叠/展开在路由内持续有效。
-  // 同时保留 lg 断点的响应式自动收起。
+  // Whether the left sidebar is collapsed: the code-graph route defaults to collapsed (maximize on entry, giving horizontal space to the graph),
+  // other routes default to expanded. Reset by route only when pathname changes; manual collapse/expand within a page persists across that route.
+  // The responsive auto-collapse at the lg breakpoint is kept too.
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     /^\/projects\/\d+\/graph$/.test(location.pathname),
   );
@@ -105,28 +105,28 @@ export function AppShell() {
 
   const withProject = (path: string) => (projectId ? `/projects/${projectId}${path}` : '/');
 
-  // 侧栏只放「工程内视图」；工程导航（选择/切换/总览）移到顶栏下拉，
-  // 避免「工程总览」与视图平级带来的上下级歧义。无工程时列表为空，渲染提示。
+  // The sidebar holds only "in-project views"; project navigation (select / switch / overview) moved to the top-bar dropdown,
+  // avoiding the hierarchy ambiguity of putting "project overview" at the same level as views. With no project the list is empty and a hint renders.
   /**
-   * 侧栏只留**三个平铺项**，不再分组、也不要组标题。
+   * The sidebar keeps only **three flat items** -- no grouping, no group headings.
    *
-   * 组标题（"探索" / "质量门禁"）是给"一组 ≥3 个相似项"做路标的；
-   * 现在总共就三项、且各自是不同动作（看图 / 搜代码 / 看结论），
-   * 分组只会让"两个组各一两项"看起来像在凑数 —— 平铺反而一眼看完。
+   * Group headings ("explore" / "quality gate") are signposts for "a group of ≥3 similar items";
+   * now there are only three items in total, each a different action (view graph / search code / view conclusions);
+   * grouping would make "two groups of one or two" look like padding -- flat actually reads in one glance.
    *
-   * 规则集**不进菜单**：它调的是"哪些规则启用、阈值多少"，是规则检验的**配置项**，
-   * 不是并列的目的地 —— 用户是在看了结论之后才想去调规则，所以入口放在
-   * 规则检验页页头（见 CheckPage 的「规则集」按钮）。
+   * The rule set **stays out of the menu**: it tunes "which rules are enabled and at what threshold" -- it is a **configuration** of rule checking,
+   * not a parallel destination -- users want to tune rules after seeing conclusions, so the entry lives in
+   * the rule-check page header (see the "rule set" button in CheckPage).
    */
   const items = [
     ...(projectId
       ? [
           { key: withProject('/graph'), icon: <ApartmentOutlined />, label: t('Code Graph') },
-          // 暂时注释：节点浏览入口已停用（工程表格里那个按钮也一并注释了）。
-          // 它真正不可替代的是「按名精确查 / 按类盘点」，但当前形态没兑现：
-          // `limit: 200` 硬顶且无排序（盘点会漏）、列是造图内部字段（fqn / 语言 / 阶段 / 置信度）、
-          // 与提示词增强（语义检索）大量重叠。
-          // 路由 `/explorer` 与页面都保留着 —— 恢复只需解开这一行与 ProjectTable 里那一段。
+          // Temporarily commented out: the node-browse entry is disabled (the button in the project table is commented out too).
+          // Its truly irreplaceable part is "exact lookup by name / inventory by kind", but the current form doesn't deliver:
+          // `limit: 200` hard cap with no sorting (inventory misses entries), columns are internal graph-building fields (fqn / language / phase / confidence),
+          // and it overlaps heavily with prompt augmentation (semantic search).
+          // The route `/explorer` and the page are both kept -- restoring only needs uncommenting this line and that block in ProjectTable.
           // { key: withProject('/explorer'), icon: <DatabaseOutlined />, label: t('Explorer') },
           { key: withProject('/recall'), icon: <SearchOutlined />, label: t('Prompt augmentation') },
           {
@@ -134,11 +134,11 @@ export function AppShell() {
             icon: <SafetyCertificateOutlined />,
             label: checkLabel,
           },
-          // 暂时注释：规则集改为从规则检验页进入（见上方注释）。
+          // Temporarily commented out: the rule set is now entered from the rule-check page (see the comment above).
           // { key: withProject('/rules'), icon: <ProfileOutlined />, label: t('Rule Set') },
         ]
       : []),
-    // 暂时注释：设置页路由已停用，导航入口一并隐藏（以后再考虑加回）。
+    // Temporarily commented out: the settings page route is disabled and the nav entry hidden along with it (revisit later).
     // { key: '/settings', icon: <SettingOutlined />, label: t('Settings') },
   ];
 
@@ -238,8 +238,8 @@ export function AppShell() {
               </Button>
             </Dropdown>
           </Space>
-          {/* 右侧：仅语言切换 + 离线告警。框架知识 / 语言等静态信息已从顶栏移除（可在工程详情查看），
-              后端在线时无提示（应用能跑即代表在线），仅在异常时冒出红点告警，避免日常噪音。 */}
+          {/* Right side: language switch + offline alert only. Static info like framework knowledge / languages was removed from the top bar (viewable in project details);
+                   no hint while the backend is online (the app running at all means it's online); a red dot alert appears only on anomalies, avoiding daily noise. */}
           <Space size={10} align="center">
             <Tooltip title={t('UI language')}>
               <Segmented

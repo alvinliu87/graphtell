@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeView, SourceLocation } from '@/entities/view';
 
-// 面板一打开就会按边 id 查证据。单测里没有后端，让它"查不到" ——
-// 这正是合成边（负 id）在真实环境里的情形：证据只能来自边自身内联的 `to_call_site`。
+// The panel queries evidence by edge id as soon as it opens. In a unit test there's no backend, so let it "not find" --
+// which is exactly the situation for a synthetic edge (negative id) in production: evidence can only come from the edge's own inlined `to_call_site`.
 vi.mock('@/entities/view', () => ({
   viewApi: {
     edgeEvidence: async () => null,
@@ -30,11 +30,11 @@ const at = (line: number, note: string, snippet: string): SourceLocation => ({
 });
 
 /**
- * 直达语义边：`save --投递到--> 队列`。
+ * Direct semantic edge: `save --publishes to--> queue`.
  *
- * 它没有折叠掉的中间节点（`via` 为空），但在图上依然是"方法 → 语义节点"的一跳。
- * 曾因"只有 via 非空才画链"，这类边在抽屉里只剩一行孤立位置：看不到起点 `save`，
- * 也看不到终点的语义节点，看起来像"这条边没建好"。
+ * It has no folded-away middle nodes (`via` empty), but on the graph it is still one hop "method → semantic node".
+ * Because the chain was once drawn only when `via` was non-empty, such an edge left just one isolated location in the drawer: you couldn't see the source `save`,
+ * nor the target semantic node, so it looked like "this edge wasn't built properly".
  */
 const direct: EdgeView = {
   id: -3,
@@ -45,23 +45,23 @@ const direct: EdgeView = {
   confidence: 0.8,
   hops: null,
   via: [],
-  to_call_site: at(800, '本链路访问该资源的位置', "ProductCopyJob::dispatch('copySliderImage', [$res->id]);"),
+  to_call_site: at(800, 'where this chain accesses the resource', "ProductCopyJob::dispatch('copySliderImage', [$res->id]);"),
   node_locations: [
-    { id: 7, synthetic: false, locations: [at(742, '定义', 'public function save()')] },
-    { id: 9, synthetic: true, locations: [at(800, '定义', "ProductCopyJob::dispatch('copySliderImage', [$res->id]);")] },
+    { id: 7, synthetic: false, locations: [at(742, 'Definition', 'public function save()')] },
+    { id: 9, synthetic: true, locations: [at(800, 'Definition', "ProductCopyJob::dispatch('copySliderImage', [$res->id]);")] },
   ],
 };
 
 const nameOf = (id: number) =>
   id === 7 ? 'save' : id === 9 ? 'store_product_services' : `#${id}`;
 
-describe('Inspector 边面板', () => {
+describe('Inspector edge panel', () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-    // antd 的 Drawer 经 `useBreakpoint` 用到 `matchMedia`，jsdom 未实现。
+    // antd's Drawer uses `matchMedia` via `useBreakpoint`, which jsdom doesn't implement.
     if (!window.matchMedia) {
       window.matchMedia = ((query: string) => ({
         matches: false,
@@ -84,25 +84,25 @@ describe('Inspector 边面板', () => {
     container.remove();
   });
 
-  it('直达边也按「起点 → 终点」画链，且与路由链路同版式（不重复列证据位置）', async () => {
+  it('a direct edge also draws a chain as “source → target”, with the same layout as the route chain (no duplicate evidence-location listing)', async () => {
     await act(async () => {
       root.render(
         <Inspector nodeId={null} edgeId={direct.id} edgeView={direct} nodeNameOf={nameOf} onClose={() => {}} />,
       );
     });
 
-    // Drawer 走 portal，内容挂在 body 上。
+    // The Drawer goes through a portal, so its content is mounted on body.
     const text = document.body.textContent ?? '';
     expect(text).toContain('start');
     expect(text).toContain('end');
     expect(text).toContain('save');
     expect(text).toContain('store_product_services');
-    // 中间那一行 = 边的 `to_call_site`（本链路访问该资源的位置）。
+    // The middle line = the edge's `to_call_site` (where this chain accesses the resource).
     expect(text).toContain('StoreProductServices.php:800');
-    // 没有折叠掉的中间节点，标题就不该谎称"折叠"。
+    // With no folded-away middle nodes, the heading must not claim "collapsed".
     expect(text).not.toContain('Collapsed call chain');
     expect(text).toContain('Call chain');
-    // 链路已给出本边那一行，不应再单列一份"证据位置"。
-    expect(text).not.toContain('证据位置');
+    // The chain already gives this edge's own line, so a separate "evidence location" section shouldn't be listed.
+    expect(text).not.toContain('Evidence location');
   });
 });

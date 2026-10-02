@@ -9,10 +9,10 @@ import { useEffect, useState } from 'react';
 import { fsApi, type DirEntry } from '@/entities/fs';
 
 /**
- * 目录选择器：通过后端 `/api/fs/browse` 浏览宿主文件系统。
+ * Directory picker: browse the host filesystem through the backend `/api/fs/browse`.
  *
- * 后端进程运行在宿主系统（含 WSL），因此可访问 `/mnt/c` 等挂载路径，
- * 天然支持 WSL 下的 Windows 磁盘。
+ * The backend process runs on the host system (including WSL), so it can access mount paths like `/mnt/c`,
+ * naturally supporting Windows disks under WSL.
  */
 export function DirectoryPickerModal({
   open,

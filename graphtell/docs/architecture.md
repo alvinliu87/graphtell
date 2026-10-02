@@ -1,137 +1,154 @@
 # GraphTell
 
-> 本文件是**技术文档**（架构 / 流水线 / FKB / 部署 / 实测数据 / 扩展方式）。
-> 产品简介、在线 Demo 与下载见 **[仓库根 README](../../README.md)**。
+> This file is the **technical documentation** (architecture / pipeline / FKB / deployment /
+> measured data / extension).
+> For the product overview, online demo and downloads see **[the repo-root README](../../README.md)**.
 
-把任意代码库**图化**的分析平台：以 `tree-sitter` 解析出语法级节点，再按**框架知识库（FKB）**合成语义节点，最终得到一张可以查询、可以标注、可以做影响面与死代码分析的图。
+An analysis platform that turns any codebase into a **graph**: `tree-sitter` parses syntactic nodes,
+then the **Framework Knowledge Base (FKB)** synthesizes semantic nodes, yielding a graph you can
+query, annotate, and analyze for blast radius and dead code.
 
-- 后端：Rust（**端口与适配器**分层，内核零 IO 依赖），SQLite 持久化
-- 前端：React + TypeScript + Ant Design（**自上而下**的分层）
-- 桌面常驻：Tauri（后端在**进程内**启动 HTTP 服务，桌面端与 Web 端共用同一套 `/api` 契约）
-- 目标：用 tree-sitter 兼容所有主流技术栈 —— 当前已落地 **PHP**（ThinkPHP 6 / CRMEB / Laravel / Uni-app 后端契约）与 **Java**（Spring Boot）与 **JavaScript/TypeScript**（Uni-app 前端 / NestJS·Express 后端 / TypeORM 实体映射）与 **Python**（FastAPI / Flask / Celery / SQLAlchemy）。完整的支持矩阵与已知边界见 [`SUPPORTED.md`](../SUPPORTED.md)。
+- Backend: Rust (**ports-and-adapters** layering, core has zero IO dependencies), SQLite persistence
+- Frontend: React + TypeScript + Ant Design (**top-down** layering)
+- Desktop resident app: Tauri (the backend starts an HTTP service **in-process**; the desktop and web
+  apps share the same `/api` contract)
+- Goal: cover all mainstream stacks via tree-sitter -- currently landed **PHP** (ThinkPHP 6 / CRMEB /
+  Laravel / Uni-app backend contracts), **Java** (Spring Boot), **JavaScript/TypeScript** (Uni-app
+  frontend / NestJS·Express backend / TypeORM entity mapping) and **Python** (FastAPI / Flask /
+  Celery / SQLAlchemy). The full support matrix and known boundaries are in
+  [`SUPPORTED.md`](../SUPPORTED.md).
 
-图建完之后还能回答两个问题：
+Once the graph is built it can answer two more questions:
 
-| 能力 | 输入 | 输出 |
+| Capability | Input | Output |
 | --- | --- | --- |
-| **合规检查**（[见下](#合规检查在图上跑规则)） | `rules/*.yaml` 里声明的规则 | 违规清单（`path:line` 可跳转） |
-| **提示词增强**（[见下](#提示词增强按提示词查图)） | 一段提示词 | 该看哪些代码 + 可直接粘给 LLM 的上下文包 |
+| **Compliance check** ([below](#compliance-check-running-rules-on-the-graph)) | rules declared in `rules/*.yaml` | violation list (`path:line`, jumpable) |
+| **Prompt augmentation** ([below](#prompt-augmentation-querying-the-graph-by-prompt)) | a prompt | which code to look at + a context pack you can paste into an LLM |
 
 ---
 
-## 快速开始
+## Quick start
 
 ```bash
-# 1) 构建后端
+# 1) build the backend
 cargo build
 
-# 2) 创建工程并自动建图（P0 → P7）
+# 2) create a project and build the graph automatically (P0 → P7)
 ./target/debug/graphtell create --name CRMEB --path /path/to/CRMEB-master
 
-# 3) 启动 HTTP 服务（Web / Tauri 前端共用）
+# 3) start the HTTP service (shared by web / Tauri frontends)
 ./target/debug/graphtell serve --port 5177
 
-# 4) 前端
+# 4) frontend
 cd ui && npm install && npm run dev      # http://localhost:5173
 
-# 5) 桌面端（需要系统 WebView：Windows WebView2 / macOS WKWebView / Linux webkit2gtk）
+# 5) desktop app (needs a system WebView: Windows WebView2 / macOS WKWebView / Linux webkit2gtk)
 cd ui && npm run tauri dev
 ```
 
-其它命令：
+Other commands:
 
 ```bash
 ./target/debug/graphtell list
 ./target/debug/graphtell run    --project 1
 ./target/debug/graphtell stats  --project 1
-./target/debug/graphtell export --project 1   # 导出图（节点 / 边 / 文件路径）JSON，供静态 demo / 外部分析
+./target/debug/graphtell export --project 1   # export the graph (nodes / edges / file paths) as JSON, for the static demo / external analysis
 ./target/debug/graphtell delete --project 1
 
-# 合规检查
+# compliance check
 ./target/debug/graphtell rules
-./target/debug/graphtell check  --project 1                 # 全量检查并写库
-./target/debug/graphtell check  --project 1 --rule hot-table  # 只跑一条规则
-./target/debug/graphtell check  --project 1 --dry-run --json  # 预览，输出完整报告
+./target/debug/graphtell check  --project 1                 # full check and write to the DB
+./target/debug/graphtell check  --project 1 --rule hot-table  # run a single rule
+./target/debug/graphtell check  --project 1 --dry-run --json  # preview, print the full report
 
-# 提示词增强
+# prompt augmentation
 ./target/debug/graphtell recall --project 1 --query "store_order 订单表"
-./target/debug/graphtell recall --project 1 --query "优惠券相关代码" --markdown  # 输出 LLM 上下文包
+./target/debug/graphtell recall --project 1 --query "优惠券相关代码" --markdown  # print the LLM context pack
 ```
 
 ---
 
-## 架构
+## Architecture
 
-### 后端：端口与适配器分层
+### Backend: ports-and-adapters layering
 
 ```
                 ┌─────────────────────────────────────────────┐
    inbound      │  gt-adapter-http (axum)   src-tauri (Tauri) │
    adapters     └───────────────┬─────────────────────────────┘
-                                │ 用例调用
+                                │ use-case calls
                 ┌───────────────▼─────────────────────────────┐
    application  │  gt-application：ProjectService /            │
                 │  PipelineService / GraphQueryService         │
                 └───────────────┬─────────────────────────────┘
-                                │ 领域服务
+                                │ domain services
                 ┌───────────────▼─────────────────────────────┐
    pipeline     │  gt-pipeline：P0 Ingest → P2 CfAst → P3      │
                 │  Prepare → P4 AnnotatePre → P5 Synthesize    │
                 │  → P6 AnnotatePost → P7 Resolve              │
                 └───────────────┬─────────────────────────────┘
-                                │ 端口（trait）
+                                │ ports (traits)
                 ┌───────────────▼─────────────────────────────┐
-   domain       │  gt-domain：实体 / 值对象 / 端口 trait        │
+   domain       │  gt-domain：entities / value objects / port traits
                 └─────────────────────────────────────────────┘
 
    outbound     gt-adapter-parser(tree-sitter)  gt-adapter-fkb(YAML)
-   adapters     gt-adapter-sqlite(SQLite)       gt-adapter-fs(扫描)
+   adapters     gt-adapter-sqlite(SQLite)       gt-adapter-fs(scanning)
 ```
 
-**依赖方向永远指向内核**：`gt-domain` 不依赖任何具体技术；所有 IO 都通过 `port` 中定义的 trait 反向注入（`Persistence` / `FileSystem` / `FileScanner` / `ParserRegistry` / `KnowledgeProvider` / `PipelineObserver` / `Clock`）。
+**Dependencies always point inward**: `gt-domain` depends on no concrete technology; all IO is
+injected backwards through the traits defined in `port` (`Persistence` / `FileSystem` / `FileScanner`
+/ `ParserRegistry` / `KnowledgeProvider` / `PipelineObserver` / `Clock`).
 
-其中两处是刻意的设计：
+Two deliberate design choices:
 
-- **持久化被拆成 6 个细粒度 trait**（`ProjectReader` / `ProjectWriter` / `GraphSink` / `GraphQuery` / `SymbolTableReader` / `DiagnosticSink`），再用 blanket impl 组合成 `Persistence` —— 实现方只关心自己用得到的那部分，SQLite / 内存实现可互换。
-- **`NodeKind` / `EdgeKind` / `Phase` 是开放字符串 + 常量速记** —— 新语言、新框架、新节点种类都不需要改内核（见文末「扩展新语言 / 新框架」）。
+- **Persistence is split into 6 fine-grained traits** (`ProjectReader` / `ProjectWriter` / `GraphSink`
+  / `GraphQuery` / `SymbolTableReader` / `DiagnosticSink`), then composed into `Persistence` via a
+  blanket impl -- an implementer only cares about the part it uses, and the SQLite / in-memory
+  implementations are interchangeable.
+- **`NodeKind` / `EdgeKind` / `Phase` are open strings + constant shorthands** -- a new language,
+  framework or node kind needs no core change (see "Extending to a new language / framework" at the
+  end).
 
-### 前端：分层与依赖方向
+### Frontend: layering and dependency direction
 
 ```
 ui/src
-├── app/        应用入口：主题、路由、全局样式
+├── app/        app entry: theme, routes, global styles
 ├── pages/      ProjectsPage / GraphPage / ExplorerPage / DiagnosticsPage
 ├── widgets/    AppShell / ProjectTable / PipelineProgress / GraphCanvas
 ├── features/   create-project / delete-project / run-pipeline / node-detail
-├── entities/   project / graph / pipeline（模型 + api + hooks）
+├── entities/   project / graph / pipeline (model + api + hooks)
 └── shared/     api(HTTP) / lib(format, useAsync) / ui(PageHeader, StatCard)
 ```
 
-依赖只能**从上往下**：`pages → widgets → features → entities → shared`。
+Dependencies may only go **top-down**: `pages → widgets → features → entities → shared`.
 
 ---
 
-## 流水线
+## Pipeline
 
-| 阶段 | 做什么 | 产物 |
+| Phase | What it does | Output |
 | --- | --- | --- |
-| **P0 Ingest** | 识别子工程（`composer.json` / `package.json` / `pom.xml` …），排除 `vendor`、`node_modules`、`target`、静态资源、编译产物 | 子工程 + 待分析文件 |
-| **P2 CfAst** | 语言无关地把 `SyntaxFacts` 落成节点 | `Class` / `Interface` / `Trait` / `Enum` / `Method` / `Function` / `Property` / `Const` / `Namespace` / **`CallSite`**；`imports` 表（短名→FQN）；`by_name` 索引；继承/实现/trait 边 |
-| **P3 Prepare** | 按 FKB 识别框架、解析 `AppRoot`、装载权威源 | `app_root`、容器绑定、事件表、`schema`、`config_keys`、`i18n`、`facade_map`、`route_list`、`nginx` |
-| **P4 AnnotatePre** | 选择器作用在**源码**上 | Taint（`source` / `sanitizer` / `sink`）、`listener` 等标签 |
-| **P5 Synthesize** | 按 `identity` **幂等合成**语义节点 | `Table` / `HttpContract` / `ConfigKey` / `I18nKey` / `Event` / `Queue` / `Cache` / `Topic` + `HandledBy` 等边 |
-| **P6 AnnotatePost** | 选择器作用在**图节点**上 | `pii.phone`、`data.criticality`、`config.storage`、`auth.public`、`entrypoint.login`、`i18n.missing_locale`；注册 `by_alias` |
-| **P7 Resolve** | 漏斗式解析（L1 字面 → L2 注册表 → L3 别名 → L4 约定 → L6 与全集求交）+ **不动点迭代** | 动态边：`ResolvesTo` / `Triggers` / `HandledBy` |
+| **P0 Ingest** | recognizes sub-projects (`composer.json` / `package.json` / `pom.xml` …), excludes `vendor`, `node_modules`, `target`, static assets, build outputs | sub-projects + files to analyze |
+| **P2 CfAst** | language-agnostically lands `SyntaxFacts` as nodes | `Class` / `Interface` / `Trait` / `Enum` / `Method` / `Function` / `Property` / `Const` / `Namespace` / **`CallSite`**; `imports` table (short name → FQN); `by_name` index; extends / implements / trait edges |
+| **P3 Prepare** | recognizes frameworks per FKB, resolves `AppRoot`, loads authoritative sources | `app_root`, container bindings, event table, `schema`, `config_keys`, `i18n`, `facade_map`, `route_list`, `nginx` |
+| **P4 AnnotatePre** | selectors act on **source** | Taint (`source` / `sanitizer` / `sink`), `listener`, and other tags |
+| **P5 Synthesize** | **idempotently synthesizes** semantic nodes by `identity` | `Table` / `HttpContract` / `ConfigKey` / `I18nKey` / `Event` / `Queue` / `Cache` / `Topic` + edges like `HandledBy` |
+| **P6 AnnotatePost** | selectors act on **graph nodes** | `pii.phone`, `data.criticality`, `config.storage`, `auth.public`, `entrypoint.login`, `i18n.missing_locale`; registers `by_alias` |
+| **P7 Resolve** | funnel resolution (L1 literal → L2 registry → L3 alias → L4 convention → L6 intersect with the full set) + **fixpoint iteration** | dynamic edges: `ResolvesTo` / `Triggers` / `HandledBy` |
 
-阶段的**顺序不可颠倒**：P5 要查 P3 的权威符号表；P6 要查 P5 的汇聚结果（fan_in 只有汇聚完才算得准）；P7 要查 P6 注册的别名。
+The phase **order cannot be reversed**: P5 queries P3's authoritative symbol table; P6 queries P5's
+aggregated result (fan_in is only accurate after aggregation); P7 queries the aliases P6 registered.
 
 ---
 
-## 关键设计
+## Key design
 
-### 1. `identity` 幂等合并
+### 1. `identity` idempotent merging
 
-三条不同规则（`Db::name('store_order')`、Model 的 `$table`、类名约定）只要算出相同的 `identity`，就合并成**同一个** `Table` 节点：
+Three different rules (`Db::name('store_order')`, a Model's `$table`, a class-name convention) merge
+into **the same** `Table` node as long as they compute the same `identity`:
 
 ```yaml
 identity:
@@ -140,25 +157,31 @@ identity:
   normalize: [ { strip_prefix: [] }, singularize, { strip_prefix: [] } ]
 ```
 
-`strip_prefix: []`（空列表）表示「使用当前工程探测到的表前缀」，而非写死某个具体前缀。
-前缀在 P3 由 FKB 的 `db_prefix` root_rule 从框架配置（如 ThinkPHP 的 `config/database.php`
-的 `connections.mysql.prefix`，支持 `env('KEY', 'default')` 默认值）自动读出，或来自工程配置
-`ProjectConfig.table_prefixes`；通用层 `ProjectConfig::default()` 不再内置任何项目特定前缀。
+`strip_prefix: []` (an empty list) means "use the table prefix detected for the current project",
+rather than hardcoding a specific prefix. The prefix is read automatically at P3 by FKB's `db_prefix`
+root_rule from framework config (e.g. ThinkPHP's `connections.mysql.prefix` in `config/database.php`,
+supporting the `env('KEY', 'default')` default), or comes from project config
+`ProjectConfig.table_prefixes`; the generic layer `ProjectConfig::default()` no longer bakes in any
+project-specific prefix.
 
-归一化让 `store_order` / `eb_store_order` / `store_orders` 收敛到一个节点；否则 fan_in 会从 200 变成 67+66+67，影响面分析与死表检测全部失真。
+Normalization makes `store_order` / `eb_store_order` / `store_orders` converge onto one node;
+otherwise fan_in would become 67+66+67 instead of 200, and blast-radius analysis plus dead-table
+detection would all be distorted.
 
-### 2. 契约桥：`HttpContract`
+### 2. The contract bridge: `HttpContract`
 
-后端 `Route::post('apple_login', 'Login/appleLogin')` 与前端 `uni.request({url:'/api/apple_login', method:'POST'})`
-归一化出**同一个 identity** `POST /apple_login` → 合并为一个节点。
-于是「死端点（只有后端）」与「幽灵调用（只有前端）」自动可检。
+Backend `Route::post('apple_login', 'Login/appleLogin')` and frontend
+`uni.request({url:'/api/apple_login', method:'POST'})` normalize to **the same identity**
+`POST /apple_login` → merged into one node. So "dead endpoint (backend only)" and "ghost call
+(frontend only)" become detectable automatically.
 
-### 3. 一切靠 FKB，不硬编码
+### 3. Everything through FKB, nothing hardcoded
 
-`fkb/` 下的每份 YAML 声明：如何识别框架、如何解析 `AppRoot`、装载哪些权威表、各阶段跑哪些规则。
-新增框架 = 新增一份 YAML。内核不认识 ThinkPHP、CRMEB 或 Uni-app。
+Each YAML under `fkb/` declares: how to recognize the framework, how to resolve `AppRoot`, which
+authoritative tables to load, which rules run at which phase. Adding a framework = adding one YAML.
+The core knows nothing about ThinkPHP, CRMEB or Uni-app.
 
-例如 `AppRoot` 的解析（`composer.json` 的 `autoload.psr-4`）：
+For example, `AppRoot` resolution (`autoload.psr-4` in `composer.json`):
 
 ```json
 {"value": "app", "confidence": 1.0,
@@ -166,280 +189,399 @@ identity:
  "fallback_used": false}
 ```
 
-### 4. 诊断是一等产物
+### 4. Diagnostics are a first-class product
 
-`UnresolvedLink`（路由指向不存在的 handler → 运行时 500）、`AnnotateTargetMissing`、
-`AliasTargetMissing`（目标在 vendor，属预期）、`IdentityUnresolved` 都会进诊断表并在 UI 展示。
+`UnresolvedLink` (a route pointing at a non-existent handler → runtime 500),
+`AnnotateTargetMissing`, `AliasTargetMissing` (target is in vendor, which is expected) and
+`IdentityUnresolved` all land in the diagnostics table and are shown in the UI.
 
 ---
 
-## 交互范式：从「理解」到「行动」
+## Interaction model: from "understanding" to "acting"
 
-### 1. 两级筛选器 + 单对象链路
+### 1. Two-level filter + single-object chain
 
-顶部固定两级：**一级选视角，二级选对象**。选中后只渲染**当前这一个对象**的链路子图，
-其它对象的链路边**直接不画**（不是变暗）。被刻意省略的部分靠三件事守住诚实性：
+Two fixed levels at the top: **level 1 picks the perspective, level 2 picks the object**. After
+selecting, only **this one object**'s chain subgraph is rendered; other objects' chain edges are
+**not drawn at all** (not dimmed). Honesty about the deliberately omitted parts is kept by three
+things:
 
-* **计数提示** —— `已画 74 条边，另有 96 条属于其它对象的链路边被刻意省略`
-* **未解析记账** —— 面板列出 `UnresolvedLink` / `AnnotateTargetMissing` 等
-* **可切换** —— 二级列表随时切到别的对象
+* **Count hint** -- `74 edges drawn; another 96 belonging to other objects' chains deliberately omitted`
+* **Unresolved accounting** -- the panel lists `UnresolvedLink` / `AnnotateTargetMissing` etc.
+* **Switchable** -- the level-2 list can switch to another object at any time
 
-视角由 `views/perspectives.yaml` 声明，分两类，语义完全不同：
+Perspectives are declared in `views/perspectives.yaml`, in two categories with completely different
+semantics:
 
-| | 对象类视角 | 聚合类视角 |
+| | Object perspective | Aggregate perspective |
 | --- | --- | --- |
-| 例子 | 路由 / 表 / Schedule / Event / Queue / Cache / Topic | Domain / DeployUnit / Platform |
-| 语义 | **单链路**：中心 + 同心环 | **聚合概览**：聚类框 / 矩阵，不是单链路 |
-| 二级筛选器 | 有 | 无 |
+| Examples | route / table / Schedule / Event / Queue / Cache / Topic | Domain / DeployUnit / Platform |
+| Semantics | **single chain**: center + concentric rings | **aggregate overview**: cluster boxes / matrix, not a single chain |
+| Level-2 filter | yes | no |
 
-### 2. 布局由算法决定，任何节点都不允许自由漂移
+### 2. Layout is decided by the algorithm; no node may drift freely
 
-| 视图模式 | 布局 | 边样式 |
+| View mode | Layout | Edge style |
 | --- | --- | --- |
-| 对象入口子图（默认） | **径向 / 同心环**（环 = 跳数） | 直线 |
-| 分层调用链 | **分层**（自上而下） | 90° 正交折线 |
-| 路径模式（取证） | **线性 Spine**（最长链排成主轴） | 直线 |
-| 聚合全貌 | **聚类 Compound**（大框 + 计数） | 直线 |
-| 多端对比 | **矩阵**（行列两维度，单元格色块） | 无 |
-| 表关系 / ER | **ER 正交** | 90° |
+| Object entry subgraph (default) | **radial / concentric rings** (ring = hop count) | straight |
+| Layered call chain | **layered** (top-down) | 90° orthogonal polyline |
+| Path mode (forensics) | **linear Spine** (longest chain as the main axis) | straight |
+| Aggregate overview | **compound clusters** (big box + counts) | straight |
+| Multi-end comparison | **matrix** (two dimensions, cell color blocks) | none |
+| Table relations / ER | **ER orthogonal** | 90° |
 
-同一份输入必然得到同一份输出 —— 可复现、可截图对比、可写单测。
+The same input always yields the same output -- reproducible, screenshot-comparable, unit-testable.
 
-### 3. 单击切视角（只对有视角的节点）
+### 3. Click to switch perspective (only for nodes that have one)
 
-| 节点 | 单击行为 |
+| Node | Click behavior |
 | --- | --- |
-| `HttpContract` / `Table` / `Schedule` / `Event` / `Queue` / `Cache` / `Topic` / `Middleware` | 切到对应**对象视角**，二级同步为该节点 |
-| `Domain` / `DeployUnit` / `Platform` | 切到**聚合视角**（框 + 计数 / 矩阵） |
-| `ConfigKey` / `KeyPattern` / `Component` / `SecretLocation` | **不切**顶部筛选器，只开右侧 Inspector |
+| `HttpContract` / `Table` / `Schedule` / `Event` / `Queue` / `Cache` / `Topic` / `Middleware` | switch to the corresponding **object perspective**, level 2 synced to that node |
+| `Domain` / `DeployUnit` / `Platform` | switch to the **aggregate perspective** (box + count / matrix) |
+| `ConfigKey` / `KeyPattern` / `Component` / `SecretLocation` | **don't switch** the top filter, only open the right-side Inspector |
 
-配套约束：悬停只高亮、单击才切、右键与详情图标不切、面包屑可回退、旧中心保留为邻居并标记 `from`、二级列表联动高亮。
+Supporting constraints: hover only highlights, click switches, right-click and the detail icon don't
+switch, the breadcrumb can go back, the old center is kept as a neighbor marked `from`, and the
+level-2 list highlights in sync.
 
-中间件视角刻意只用 `depth: 1`：一个鉴权中间件常守几百个端点（CRMEB 的 `AllowOriginMiddleware` 守 280 个），
-再往外扩一跳会把它守的端点所接触的所有表 / 配置一起拉进来 —— 那不是"这个中间件守了谁"，而是一张全图。
-要看某个端点后续动了什么资源，点那个端点切到路由视角。
+The middleware perspective deliberately uses only `depth: 1`: one auth middleware often guards
+hundreds of endpoints (CRMEB's `AllowOriginMiddleware` guards 280), and expanding one more hop
+would pull in every table / config touched by the endpoints it guards -- that's not "who this
+middleware guards", it's a whole graph. To see what resources a given endpoint later touches, click
+that endpoint to switch to the route perspective.
 
-### 4. URL 即现场
+### 4. The URL is the scene
 
-`?p=route&n=58548&d=2&m=radial&i=123` 就是完整现场：刷新、前进/后退、分享链接都能还原。
-URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` 修正并退回默认，绝不静默展示一张无关的图。
+`?p=route&n=58548&d=2&m=radial&i=123` is the complete scene: refresh, forward/back and shared links
+all restore it. When the URL goes stale (node id invalid, perspective gone), `reconcileViewState`
+corrects it and falls back to defaults -- never silently showing an unrelated graph.
 
-### 5. 跳转：图可信度的自证手段
+### 5. Jumping: how the graph proves its own trustworthiness
 
-* **Node → 定义位置**：合成节点（`Table:user`）必然来自多处共现（SQL 建表 + Model 的 `$table` + 各调用点），
-  因此给**多位置列表**而不是编造单一位置。`user` 表在本样本里就是 14 处。
-* **Edge → 证据链**：实线单点跳；虚线展开途经的每个 CallSite 位置，让用户亲自验证 —— 这才是"虚线是待验证假设"的落地。
-* **未解析** → 跳到断链点本身并标注原因。
+* **Node → definition locations**: a synthesized node (`Table:user`) necessarily comes from multiple
+  co-occurrences (SQL CREATE TABLE + the Model's `$table` + each call site), so it gets a
+  **multi-location list** rather than a fabricated single location. The `user` table has 14
+  locations in this sample.
+* **Edge → evidence chain**: a solid line is a single hop; a dashed line expands every CallSite
+  location passed through, letting the user verify personally -- that's what makes "a dashed line is
+  a hypothesis to verify" concrete.
+* **Unresolved** → jump to the broken-link point itself and label the reason.
 
-交互上和"单击切视角"严格分离：**单击 = 导航，跳转走右键 / 悬停图标 / Inspector 的 Open in IDE**。
+Interaction is strictly separated from "click to switch perspective": **click = navigation; jumping
+goes through right-click / the hover icon / Inspector's Open in IDE**.
 
-技术上用 `vscode://file:line`、`jetbrains://`、`cursor://`，并**必须配「复制 path:line」作为 fallback**
-（覆盖 CI / Web / 无 IDE / 远程容器）。定位用 **path + symbol + line 三元组**以防行号漂移。
-`SecretLocation` 只跳键名位置、绝不显示值 —— 分析工具不能成为泄露源。
+Technically it uses `vscode://file:line`, `jetbrains://`, `cursor://`, and **must ship "copy
+path:line" as a fallback** (covering CI / web / no IDE / remote containers). Location uses the
+**path + symbol + line triple** to guard against line-number drift. `SecretLocation` jumps only to
+the key-name location and never displays the value -- an analysis tool must not become a leak source.
 
-## 合规检查：在图上跑规则
+## Compliance check: running rules on the graph
 
-规则声明在 `rules/*.yaml`，由 `gt-adapter-rules` 装载，**内核不认识任何具体规则** —— 加一条规则只需加一份 YAML。
+Rules are declared in `rules/*.yaml` and loaded by `gt-adapter-rules`; **the core knows no concrete
+rule** -- adding a rule means adding one YAML.
 
 ```yaml
 - id: http-contract-without-handler
-  title: HTTP 契约没有处理者
+  title: HTTP contract has no handler
   severity: error
   category: contract
   applies_to: { kinds: [HttpContract] }
   when:
-    - no_outgoing: HandledBy     # 契约 --HandledBy--> handler，是**出边**
-  message: "契约 {name} 没有解析到 handler，请求它会在运行时失败"
+    - no_outgoing: HandledBy     # contract --HandledBy--> handler, an **out-edge**
+  message: "Contract {name} resolved to no handler; calling it will fail at runtime"
 ```
 
-**违规直接落成 `Diagnostic`**（code 前缀 `rule:`）。诊断已经是一等产物（有 `severity` / `location` / `payload`），所以规则引擎**不需要新的存储、也不引新的数据结构**。可用谓词：
+**Violations land directly as `Diagnostic`s** (code prefix `rule:`). Diagnostics are already a
+first-class product (with `severity` / `location` / `payload`), so the rule engine **needs no new
+storage and introduces no new data structures**. Available predicates:
 
-| 类别 | 谓词 |
+| Category | Predicates |
 | --- | --- |
-| 拓扑 | `no_incoming` / `has_incoming` / `no_outgoing` / `has_outgoing` / `fan_in_gte` / `fan_in_lte` / `fan_out_gte` |
-| 标注 | `has_annotation` / `no_annotation` / `no_capability`（`Authentication` / `RateLimiting`） |
-| 属性 | `property_is` / `property_missing` |
-| 名称 | `name_contains` / `name_starts_with` / `fqn_contains` / `identity_contains` / `text_contains` |
-| 组合 | `all_of` / `any_of` / `not` |
+| Topology | `no_incoming` / `has_incoming` / `no_outgoing` / `has_outgoing` / `fan_in_gte` / `fan_in_lte` / `fan_out_gte` |
+| Annotation | `has_annotation` / `no_annotation` / `no_capability` (`Authentication` / `RateLimiting`) |
+| Property | `property_is` / `property_missing` |
+| Name | `name_contains` / `name_starts_with` / `fqn_contains` / `identity_contains` / `text_contains` |
+| Combination | `all_of` / `any_of` / `not` |
 
-规则按**适用环境**分目录装载，内核不认识任何具体规则 —— 加一条规则只需加一份 YAML：
+Rules are loaded per **applicable environment** by directory; the core knows no concrete rule --
+adding one means adding one YAML:
 
-| 目录 | 适用 | 内容 |
+| Directory | Applies to | Content |
 | --- | --- | --- |
-| `rules/global/` | 跨语言通用 | 只依赖**图拓扑**（扇入扇出、语义边）的规则：契约桥（`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`）、热点表（`hot-table`）、配置读取热点（`config-read-hotspot`）、死表（`dead-table`）、只写不读 / 只读不写表（`write-only-table` / `read-only-table`）、高扇出方法（`hotspot-method`） |
-| `rules/php/` | 仅 PHP 工程 | 判据依赖 PHP FKB 才产出的边 / 标注：原始 SQL 执行点（`raw-sql-sink`）、PII 表（`pii-table-needs-review` / `pii-table-hot`）、从未触发的事件 / 队列（`orphan-event` / `orphan-queue`）、**循环内逐条读 / 写库**（`n1-query-in-loop` / `n1-write-in-loop`，见下）、**循环内外部调用**（`ext-call-in-loop`）、**多写无事务**（`multi-write-without-tx`）、**验签质量**（`sign-compare-loose` / `sign-weak-hash`，见下） |
-| `rules/js/` | 仅含前端子工程的工程 | 前端事件总线的死代码（`eventbus-emitted-without-listener` / `eventbus-listened-without-emitter` / `eventbus-orphan`）—— `EventBus` 与 `Emits` / `ListensTo` 是前端语义，纯后端工程上不存在 |
+| `rules/global/` | language-agnostic | rules depending only on **graph topology** (fan-in/out, semantic edges): the contract bridge (`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`), hot tables (`hot-table`), config-read hotspots (`config-read-hotspot`), dead tables (`dead-table`), write-only / read-only tables (`write-only-table` / `read-only-table`), high-fan-out methods (`hotspot-method`) |
+| `rules/php/` | PHP projects only | criteria depend on edges / annotations only PHP FKB produces: raw SQL execution points (`raw-sql-sink`), PII tables (`pii-table-needs-review` / `pii-table-hot`), never-triggered events / queues (`orphan-event` / `orphan-queue`), **per-row DB read / write inside a loop** (`n1-query-in-loop` / `n1-write-in-loop`, below), **external call inside a loop** (`ext-call-in-loop`), **multiple writes without a transaction** (`multi-write-without-tx`), **signature-verification quality** (`sign-compare-loose` / `sign-weak-hash`, below) |
+| `rules/js/` | projects with a frontend sub-project | dead code on the frontend event bus (`eventbus-emitted-without-listener` / `eventbus-listened-without-emitter` / `eventbus-orphan`) -- `EventBus` and `Emits` / `ListensTo` are frontend semantics and don't exist in a backend-only project |
 
-内置 30 条规则（其中 `write-endpoint-without-auth` 因能力通道尚未产出、判据恒真，默认 `enabled: false`）。以后支持更多语言，只需在 `rules/<lang>/` 加对应该栈的规则并声明 `languages`，内核与 `global` 层都不用改。
+30 rules ship built-in (of which `write-endpoint-without-auth` is `enabled: false` by default because
+the capability channel isn't produced yet, so its criterion is always true). Supporting more
+languages later only means adding rules for that stack under `rules/<lang>/` and declaring
+`languages`; neither the core nor the `global` layer changes.
 
-#### N+1（`循环内逐条读 / 写库`）用到的两个新图事实
+#### Two new graph facts used by N+1 (per-row DB read / write inside a loop)
 
-循环是此前图里**完全没有建模**的控制流概念：`CallSite` 只记"谁调了谁"，不记"调了几次"。所以这条规则依赖两个新增事实，都落在 **CallSite 节点**上：
+A loop is a control-flow concept the graph previously had **no model for at all**: `CallSite` records
+only "who called whom", not "how many times". So this rule depends on two new facts, both on
+**CallSite nodes**:
 
-| 事实 | 产出阶段 | 说明 |
+| Fact | Produced by | Notes |
 | --- | --- | --- |
-| `properties.in_loop` | P2 CfAst（值来自 PHP parser） | 调用点是否位于 `for` / `foreach` / `while` / `do-while` 的 **body** 内。循环**条件**里的调用只求值一次，不算 |
-| `db-query` / `db-write` 标注 | P7 Resolve | 该调用点被 FKB `db_verbs` 判成读 / 写并真正落成 `ReadsDb` / `WritesDb` 边时的**调用点级投影** |
+| `properties.in_loop` | P2 CfAst (value from the PHP parser) | whether the call site sits in the **body** of a `for` / `foreach` / `while` / `do-while`. A call in the loop **condition** is evaluated once and doesn't count |
+| `db-query` / `db-write` annotation | P7 Resolve | the **call-site-level projection** when FKB `db_verbs` judges this call site read / write and it really lands a `ReadsDb` / `WritesDb` edge |
 
-挂在调用点而不是方法上，是因为方法粒度的 `ReadsDb` 经 P8 沿调用链传播后会覆盖所有上游调用方 —— 那样只能得到"这个方法的调用链上读过库"，分不清"循环里查 N 次"与"循环外查一次"，噪声与被否决的"上帝方法"同源。
+Attaching to the call site rather than the method is because a method-level `ReadsDb`, once
+propagated along the call chain by P8, would cover every upstream caller -- that only yields "this
+method's call chain read the DB", unable to distinguish "queried N times inside a loop" from "queried
+once outside it"; the noise would share a root with the rejected "god method" rule.
 
-已知边界：`db-query` 依赖 FKB 的 `db_verbs`。`thinkphp6` 与 `laravel` 都已声明它，所以 N+1 在两类 PHP 工程上都能跑（Laravel 的 Eloquent / Query Builder 动词清单见 `fkb/php/laravel.yaml` 的 `db_verbs`）。Java 侧没做（`mapper.xxx()` 需 Java 的 `db_verbs` + java parser 的循环识别）。
+Known boundary: `db-query` depends on FKB's `db_verbs`. Both `thinkphp6` and `laravel` declare it, so
+N+1 runs on both kinds of PHP project (Laravel's Eloquent / Query Builder verb list is under
+`db_verbs` in `fkb/php/laravel.yaml`). The Java side isn't done (`mapper.xxx()` would need Java
+`db_verbs` + loop recognition in the Java parser).
 
-#### 验签规则（`sign-compare-loose` / `sign-weak-hash`）判什么、不判什么
+#### What the signature rules (`sign-compare-loose` / `sign-weak-hash`) do and don't judge
 
-**判**：签名算完之后怎么比 —— `$sign == $calc` / `$this->CreatedSign($params) != $params['sign']`。PHP 的 `==` / `!=` 是松散比较（`0e...` 摘要互判相等）且非恒定时间，正确写法是 `hash_equals()`。以及签名用了 `md5` / `sha1`（`info` 级：微信 V2 / 支付宝旧版 / 部分快递网关官方就要求 MD5，报成"漏洞"就是误报）。
+**They judge**: how the signature is compared after being computed -- `$sign == $calc` /
+`$this->CreatedSign($params) != $params['sign']`. PHP's `==` / `!=` are loose comparisons (`0e…`
+digests compare equal) and not constant-time; the correct form is `hash_equals()`. And whether the
+signature uses `md5` / `sha1` (`info` level: WeChat V2 / older Alipay / some shipping gateways
+officially require MD5, so reporting it as a "vulnerability" would be a false positive).
 
-**不判**：回调到底**有没有**验签。这条判据必须跨过程追到 SDK 内部，而 PHP 排除了 `vendor`、Java 不扫 Maven 依赖 —— EasyWeChat / yansongda-pay / 官方 SDK 的 `verify()` 根本不在图里，任何"链路上没有验签调用"的判据都会对每个回调成立（100% 误报）。
+**They don't judge**: whether the callback **verifies the signature at all**. That criterion must
+cross procedures into the SDK internals, and PHP excludes `vendor` while Java doesn't scan Maven
+dependencies -- EasyWeChat / yansongda-pay / official SDK `verify()` simply isn't in the graph, so
+any "no verification call on the path" criterion holds for every callback (100% false positives).
 
-需要的图事实同样是 parser 新增的：比较表达式不是调用点，图上原本看不到 `==`，因此加了 [`SignCompareFact`](../crates/gt-domain/src/model/syntax.rs)（只收 `==` / `!=` 且至少一侧像签名值），由 P11 `phase::sign` 判定后打 `weak_sign_compare` / `weak_sign_hash` 标注。
+The graph facts needed are likewise parser additions: a comparison expression isn't a call site, so
+`==` was invisible on the graph; hence
+[`SignCompareFact`](../crates/gt-domain/src/model/syntax.rs) was added (collecting only `==` / `!=`
+where at least one side looks like a signature value), and P11 `phase::sign` then applies the
+`weak_sign_compare` / `weak_sign_hash` annotations.
 
-噪声闸口在 parser 里：**电商代码的 `sign` 绝大多数是"签到"**（`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`）。实测 32 处"含 sign 的 == 比较"里 24 处是签到，因此要求比较两侧都不是字符串字面量、且排除 `sign_type` / `sign_mode` 等签到词。
+The noise gate lives in the parser: **in e-commerce code `sign` is overwhelmingly "check-in"**
+(`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`). Of 32 "== comparisons
+containing sign" measured, 24 were check-ins, so neither side of the comparison may be a string
+literal, and check-in words like `sign_type` / `sign_mode` are excluded.
 
-#### 运行时坏味：`ext-call-in-loop` / `multi-write-without-tx`
+#### Runtime smells: `ext-call-in-loop` / `multi-write-without-tx`
 
-这两条是「循环 / 批量」主题下 N+1 的自然延伸，都**只报确凿事实、不判漏洞**，改法留给人和上下文。
+These two are the natural extension of N+1 under the "loop / batch" theme; both **report only
+established facts, never judge vulnerabilities** -- the fix is left to people and context.
 
-- **`ext-call-in-loop`（循环内外部调用）**：一次网络往返比一次 DB 查询贵一个量级，放进循环（`curl_exec` / `Http::get` / `GuzzleHttp\Client::request` / `Mail::send` …）等于把接口耗时串行放大 N 倍。判据完全复用 N+1 的 `in_loop` 事实，只是动词名单换成 `external_calls`（在 `fkb/php/common.yaml`，跨框架通用）。由 P12 `phase::external` 打 `ext-call-in-loop` 标注。
-- **`multi-write-without-tx`（多写无事务）**：同一方法对 ≥2 张不同表直接写（`WritesDb` 边去重后的目标数，只数 P7 落下的**直接**边、不含 P8 传播来的间接边），且方法内无任何事务标记（`transaction` / `startTrans` / `commit` …）。中间任一步失败会留部分成功的脏数据。由 P13 `phase::tx` 打 `multi-write-without-tx` 标注（落在**方法节点**上，因为是方法级边界问题）。
+- **`ext-call-in-loop` (external call inside a loop)**: one network round-trip costs an order of
+  magnitude more than one DB query, so putting it in a loop (`curl_exec` / `Http::get` /
+  `GuzzleHttp\Client::request` / `Mail::send` …) multiplies interface latency serially by N. The
+  criterion fully reuses N+1's `in_loop` fact, only swapping the verb list for `external_calls` (in
+  `fkb/php/common.yaml`, framework-agnostic). P12 `phase::external` applies the `ext-call-in-loop`
+  annotation.
+- **`multi-write-without-tx` (multiple writes without a transaction)**: one method writes directly to
+  ≥2 distinct tables (deduped `WritesDb` edge targets, counting only **direct** edges landed by P7,
+  not indirect ones propagated by P8), and the method carries no transaction marker (`transaction` /
+  `startTrans` / `commit` …). Failure at any intermediate step leaves partially-applied dirty data.
+  P13 `phase::tx` applies the `multi-write-without-tx` annotation (on the **method node**, since it is
+  a method-level boundary problem).
 
-| 规则 | 为什么用「表数」而不是「写动词数」 | 为什么可能漏报 |
+| Rule | Why "table count" instead of "write-verb count" | Why it may under-report |
 | --- | --- | --- |
-| `multi-write-without-tx` | 用「调用点 ≥2 次写动词」会把同一张表的 `if/else` 两分支各写一次（`CartLogic::add` 的 `update`/`insert`）算成两次写 —— 那是互斥分支，不存在部分成功。换成「≥2 张表」后这类误报自然消失（likeshop 从 105 降到 20） | 事务可能开在更外层调用方（跨过程），图上判不到 → 文案写"未识别到事务边界"，不写"没有事务" |
+| `multi-write-without-tx` | "≥2 write verbs at call sites" would count two `if/else` branches writing the same table (`CartLogic::add`'s `update` / `insert`) as two writes -- those are mutually exclusive branches with no partial success. Switching to "≥2 tables" makes such false positives disappear (likeshop dropped from 105 to 20) | the transaction may open in an outer caller (cross-procedure), invisible on the graph → the text says "no transaction boundary identified", not "no transaction" |
 
-实测（12 样本）：`ext-call-in-loop` 大多工程 0 命中（循环里发远程调用在成熟电商代码里确实少见，bagisto 仅 1 处），`multi-write-without-tx` 在 likeshop / beikeshop / shopxo / bagisto / CRMEB 上有 14–65 处，且多落在退款 / 扣库存 / 提现这类真实需要事务的入口（`OrderGoodsLogic::decStock`、`WithdrawLogic::confirm`）。
+Measured (12 samples): `ext-call-in-loop` hits 0 in most projects (remote calls inside loops really
+are rare in mature e-commerce code; bagisto has just 1), while `multi-write-without-tx` has 14–65 hits
+on likeshop / beikeshop / shopxo / bagisto / CRMEB, mostly at entries that genuinely need a
+transaction such as refunds / stock deduction / withdrawals (`OrderGoodsLogic::decStock`,
+`WithdrawLogic::confirm`).
 
-### 新规则怎么才算"能发货"：先量后写
+### What makes a new rule "shippable": measure before writing
 
-写规则的成本很低，**验证它不产噪声的成本很高**。每条候选都先在样本库（8 个已建图工程：5 个 ThinkPHP + 3 个 Spring Boot）上量一遍再决定是否发货，标准只有两条：命中数**不能是 0**（静默失效），**也不能是刷屏**（噪声）。
+Writing a rule is cheap; **verifying it doesn't produce noise is expensive**. Every candidate is
+measured against the sample library (8 projects already built: 5 ThinkPHP + 3 Spring Boot) before
+deciding to ship. There are only two criteria: hits **must not be 0** (silent failure) and **must not
+flood** (noise).
 
-下面这批候选就是这么被**否决**的（留档，避免以后重新讨论一遍）：
+The following candidates were **rejected** exactly this way (kept on record so they aren't
+re-discussed later):
 
-| 候选 | 实测 | 结论 |
+| Candidate | Measurement | Conclusion |
 | --- | --- | --- |
-| 私有方法从未被调用 | 抽取 8 个样本核验：`$this->resultError()` 在源码里被调用 4 次却无 `Calls` 边 —— 方法级 `Calls` 解析覆盖率不足（约 44% 调用只解析到类级） | **否决**。所有"从未被调用"类规则在当前图覆盖下都是误报主导 |
-| 配置键没有任何读取方 | 后端侧 250 个配置键**全部**有读取方；唯一命中的 110 个是前端语言包键被误识别成 `ConfigKey` | **否决**（命中为 0 或纯噪声）。已改为正向的 `config-read-hotspot` |
-| 缓存键写了从不读 | 抽样 `comGoodsId` / `diyVersionNav`：源码里 `getStorageSync` 明明存在，图上却无 `ReadsCache` 边 | **否决**（读侧解析有缺口） |
-| 事件总线有发无听 / 有听无发 | 12 条命中抽样核验，约 7 成是真死代码 | **发货**，级别 `info` 且文案写明两种可能（沿用 `frontend-calls-missing-backend` 的诚实写法） |
-| 表被写但不被读 | 命中的是 `system_event` / `wechat_message` 这类日志 / 审计表 | **否决**（"只写不读"对日志表是正常设计） |
-| 表被写但无模型映射（`MapsTo`） | Java 工程 100% 命中（该边 Java 侧根本不产出），PHP 侧命中里混着 `goods g` 这种带别名的脏表名 | **否决**（是图的缺口，不是代码的问题） |
-| 一个方法读写 N 张以上表（"上帝方法"） | shopxo 上阈值 15 时命中 215 个方法，Top 是 `Index` / `Add`（同一方法连 48 张表更像过连接） | **否决**（噪声主导） |
-| 队列被投递但无消费者 | 命中名 `app` / `rule` / `module` 是动态队列名产物；`product_stock_job` 在源码里 grep 不到 | **否决**（无法验证） |
-| GET 契约但名字含 `create` / `edit` | 命中的是 `GET /agent/level/create` —— ThinkPHP 后台里这是**渲染表单页面**，GET 合理 | **否决**（命名启发式在后台框架上必然误报） |
-| 页面没有任何跳转入口 | 7 个工程全部 0 命中 | **否决**（静默失效） |
-| 外部回调未验签 | 判据需跨过程追到 SDK 内部，而 PHP 排除 `vendor`、Java 不扫 Maven 依赖 —— SDK 的 `verify()` 不在图里，判据对每个回调都成立 | **否决**（图缺口，100% 误报）。已改为只判**验签质量**：`sign-compare-loose` / `sign-weak-hash` |
-| 国际化缺语言 / 高重要性表 / 运行时可变配置 | 三条都只能按 `kind` 匹配、无法按 `subkind` 过滤，实测命中 = 全部节点（358 / 156 / 248） | **否决**（谓词缺 `subkind`，命中即刷屏） |
+| Private method never called | extracted 8 samples to verify: `$this->resultError()` is called 4 times in source yet has no `Calls` edge -- method-level `Calls` resolution coverage is insufficient (~44% of calls only resolve to class level) | **Rejected**. All "never called" rules are false-positive-dominated under current graph coverage |
+| Config key with no reader | all 250 backend config keys **do** have readers; the only 110 hits were frontend locale keys mis-recognized as `ConfigKey` | **Rejected** (0 hits or pure noise). Reworked into the positive `config-read-hotspot` |
+| Cache key written but never read | sampling `comGoodsId` / `diyVersionNav`: `getStorageSync` clearly exists in source, yet no `ReadsCache` edge on the graph | **Rejected** (gap in read-side resolution) |
+| Event bus emitted without listener / listened without emitter | 12 hits sampled and verified, ~70% are genuinely dead code | **Shipped**, level `info`, with text stating both possibilities (following the honest style of `frontend-calls-missing-backend`) |
+| Table written but never read | hits are log / audit tables like `system_event` / `wechat_message` | **Rejected** ("write-only" is normal design for log tables) |
+| Table written but no model mapping (`MapsTo`) | 100% hits on Java projects (that edge isn't produced on the Java side at all); PHP hits mix in dirty aliased table names like `goods g` | **Rejected** (a graph gap, not a code problem) |
+| A method reads/writes more than N tables ("god method") | at threshold 15 on shopxo, 215 methods hit, topped by `Index` / `Add` (one method touching 48 tables looks more like an over-join) | **Rejected** (noise-dominated) |
+| Queue delivered but no consumer | hit names `app` / `rule` / `module` are products of dynamic queue names; `product_stock_job` can't be grepped in source | **Rejected** (unverifiable) |
+| GET contract whose name contains `create` / `edit` | the hit is `GET /agent/level/create` -- in a ThinkPHP admin this **renders a form page**, so GET is legitimate | **Rejected** (naming heuristics inevitably misfire on admin frameworks) |
+| Page with no entry navigation | 0 hits on all 7 projects | **Rejected** (silent failure) |
+| External callback without signature verification | the criterion must cross procedures into SDK internals, and PHP excludes `vendor` while Java doesn't scan Maven deps -- the SDK's `verify()` isn't in the graph, so the criterion holds for every callback | **Rejected** (graph gap, 100% false positives). Reworked into judging only **verification quality**: `sign-compare-loose` / `sign-weak-hash` |
+| i18n missing locale / high-criticality table / runtime-mutable config | all three can only match by `kind`, with no `subkind` filter, so hits equalled every node (358 / 156 / 248) | **Rejected** (predicates lack `subkind`; a hit means flooding) |
 
-### 规则怎么知道"该在哪跑"：环境闸门 + 判据校验
+### How a rule knows "where to run": environment gate + criterion validation
 
-规则最常见的两种失效**都不表现为报错**，而是表现为"0 条违规"（比误报更危险）：
+The two most common rule failures **don't surface as errors** -- they surface as "0 violations"
+(more dangerous than false positives):
 
-1. **环境不匹配** —— PHP 专属事件语义（`Triggers` / `Emits`）在 Java 工程里压根不存在，把 `orphan-event` 放到纯 Java 工程会把每个事件节点都报成"没人触发"。
-   → 规则用 `applies_to.languages` / `applies_to.frameworks` **先验声明**适用范围（如 `languages: [php]`），环境不匹配直接跳过，计入报告的 `rules_not_applicable`。
-2. **判据恒真** —— 反向谓词在"证据不存在"时恒真：`no_annotation: pii` 在图上没有任何 `pii` 标注时对每个表都成立。
-   → 跑规则前从谓词**自动推导**依赖（边 / 标注 / 能力），确认图里真的存在过这些事实；否则停用，计入 `rules_unavailable`。无需手写 `requires`，推导结果永远和 `when` 一致。
+1. **Environment mismatch** -- PHP-only event semantics (`Triggers` / `Emits`) simply don't exist in
+   a Java project, so putting `orphan-event` on a pure Java project reports every event node as
+   "nobody triggers it".
+   → rules **declare their scope up front** via `applies_to.languages` / `applies_to.frameworks`
+   (e.g. `languages: [php]`); a mismatch skips the rule and counts it into the report's
+   `rules_not_applicable`.
+2. **Criterion always true** -- inverse predicates are always true when "the evidence doesn't exist":
+   `no_annotation: pii` holds for every table when the graph has no `pii` annotation at all.
+   → before running, the engine **derives** dependencies from the predicates (edges / annotations /
+   capabilities) and confirms those facts really exist in the graph; otherwise it disables the rule
+   and counts it into `rules_unavailable`. No hand-written `requires` is needed, and the derived
+   result always agrees with `when`.
 
-报告因此有三态（都表现为 0 命中，但性质完全不同）：
+The report therefore has four states (all show 0 hits, but with completely different natures):
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `rules_run` | 实际执行、正常出结论 |
-| `rules_not_applicable` | 环境不匹配跳过（**预期行为**，不是故障） |
-| `rules_unavailable` | 判据不成立，跑了会恒真误报，宁可不跑 |
-| `rules_silent` | 跑了但 0 命中，需确认是"代码真干净"还是"规则瞎了" |
+| `rules_run` | actually executed, produced a normal conclusion |
+| `rules_not_applicable` | skipped for environment mismatch (**expected behavior**, not a failure) |
+| `rules_unavailable` | criterion doesn't hold; running it would always-true false-positive, so better not to run |
+| `rules_silent` | ran but 0 hits; confirm whether "the code is genuinely clean" or "the rule is blind" |
 
-### 建图后自动跑，不需要手动
+### Runs automatically after a build, no manual step
 
-`create` 建图成功后，`PipelineService` 会**自动**跑一遍检查并把违规写进诊断表（`rule:` 前缀），用户建完图立刻能在 DiagnosticsPage 看到结论，无需手动 `check`。
+After `create` builds a graph successfully, `PipelineService` **automatically** runs a check and
+writes violations into the diagnostics table (prefix `rule:`), so users see conclusions on the
+DiagnosticsPage right after building -- no manual `check` needed.
 
-自动检查刻意**吞掉错误**：检查引擎出错只记一条 `warn`，不能让"结论"算不出来就判定"图"建失败（图是贵得多的资产）；改一条规则 YAML 也**不触发重新建图** —— 重跑检查约 1 秒，重跑解析要几十秒到几分钟。
+The automatic check deliberately **swallows errors**: a failure in the check engine only records a
+`warn`; it must not let "conclusions couldn't be computed" decide that the "graph build" failed (the
+graph is a far more valuable asset). Editing a rule YAML also **doesn't trigger a rebuild** --
+rerunning a check takes about 1 second, rerunning parsing takes tens of seconds to minutes.
 
-两条刻意的设计约定：
+Two deliberate design conventions:
 
-1. **不做污点可达性分析** —— MVP 只报"已确认的事实"（图上识别到了 sink、写端点没识别到鉴权），文案一律写成"未识别到 / 需确认"，而不是"存在漏洞"。路径可达计算的代价与误报率都太高，做一半不如不做。
-2. **部分规则同时也是图的验收装置** —— 比如"幽灵调用"跑出一大片，通常不是代码真错了，而是**前端 baseURL 前缀没参与 identity 归一**（当前已知限制）。因此这类规则的文案会写明两种可能，级别也相应下调。规则不只能挑代码的错，也在暴露图自身的缺口。
+1. **No taint reachability analysis** -- the MVP reports only "confirmed facts" (a sink was
+   recognized on the graph; no auth was recognized on a write endpoint), and the text is always
+   "not identified / needs confirmation" rather than "a vulnerability exists". The cost and false
+   positive rate of path-reachability computation are both too high; half-doing it is worse than not
+   doing it.
+2. **Some rules double as graph acceptance devices** -- e.g. when "ghost calls" produce a large
+   batch, it's usually not that the code is wrong, but that **the frontend baseURL prefix didn't
+   participate in identity normalization** (a currently known limitation). So such rules' text states
+   both possibilities and the severity is lowered accordingly. Rules don't only catch code's
+   mistakes; they also expose the graph's own gaps.
 
-### 重跑语义
+### Rerun semantics
 
-跑全量清空整个 `rule:` 前缀；只跑某几条则**只替换这几条**（含被判据停用的规则） —— 单独重跑 A 不会抹掉 B/C 的结论。
+Running the full set clears the whole `rule:` prefix; running only some rules **replaces just those**
+(including rules disabled by criteria) -- rerunning A alone won't erase B/C's conclusions.
 
-### 规则参数化：一条规则可以有可调项
+### Rule parameterization: a rule can have tunables
 
-规则不能只有"开 / 关"——"多少扇入算热点表"这种阈值，不同规模的代码库答案不同。因此规则可以声明 `params:`，在 `when` / `applies_to` 里用 `$key` 引用：
+A rule can't be only "on / off" -- "how much fan-in counts as a hot table" has different answers for
+codebases of different sizes. So a rule may declare `params:` and reference them as `$key` in `when` /
+`applies_to`:
 
 ```yaml
 - id: hot-table
   applies_to: { kinds: [Table], limit: "$max_nodes" }
   params:
     - key: min_fan_in
-      label: 扇入阈值
+      label: Fan-in threshold
       kind: number
       default: 50
       min: 1
       max: 100000
   when:
     - fan_in_gte: "$min_fan_in"
-  message: "表 {name} 是热点表（语义入边 ≥ {param:min_fan_in}）"
+  message: "Table {name} is a hot table (semantic in-edges ≥ {param:min_fan_in})"
 ```
 
-四条约定：
+Four conventions:
 
-1. **`$` 前缀必须显式写**。不靠"像不像数字"猜——字符串型参数里 `"50"` 既可能是字面量也可能是引用，猜错的代价是静默的错误结论。`$` 本身要当字面量时写作 `$$x`（孤立的 `$` 也算字面量），所以 `name_starts_with: "$"` 匹配的是**名字以 `$` 开头**，不会被引擎误认成空参数引用。
-2. **未声明的引用在装载阶段就报错**。引用了没声明的参数会退化成 `0` / `""`；用在 `limit` 上就是**候选集直接变空**（规则静默 0 命中），正是本项目最想避免的失效方式 —— 所以它必须是装载错误，而不是运行时惊喜。
-3. 文案里的 `{param:key}` 按**生效值**渲染。否则用户把阈值调成 200 之后，报告里仍然写着"≥ 50"，读起来像规则没生效。
-4. 内置规则已为"阈值类"判据补上参数：`hot-table` / `pii-table-hot` 的扇入阈值、`dead-table` 的扇入上限、契约三条的名称过滤、`raw-sql-sink` 的候选上限。
+1. **The `$` prefix must be written explicitly.** Nothing is guessed from "whether it looks like a
+   number" -- in a string-typed parameter `"50"` could be either a literal or a reference, and
+   guessing wrong costs silently wrong conclusions. To use `$` itself as a literal, write `$$x` (an
+   isolated `$` also counts as a literal), so `name_starts_with: "$"` matches **names starting with
+   `$`** and won't be mistaken by the engine for an empty parameter reference.
+2. **Undeclared references error at load time.** Referencing an undeclared parameter degrades to `0` /
+   `""`; used on `limit` that means **the candidate set becomes empty** (the rule silently 0-hits),
+   exactly the failure mode this project most wants to avoid -- so it must be a load error, not a
+   runtime surprise.
+3. `{param:key}` in the message renders with the **effective value**. Otherwise after a user raises
+   the threshold to 200 the report would still say "≥ 50", reading as if the rule didn't take effect.
+4. Built-in rules already got parameters for "threshold-style" criteria: the fan-in threshold of
+   `hot-table` / `pii-table-hot`, the fan-in upper bound of `dead-table`, the name filters of the
+   three contract rules, and the candidate cap of `raw-sql-sink`.
 
-### 按工程覆盖：同一套规则，不同工程不同口径
+### Per-project override: same rule set, different criteria per project
 
-`enabled` 在 YAML 里是**全局默认**，工程级覆盖落在 `project_rule_config` 表：
+`enabled` in YAML is the **global default**; project-level overrides live in the
+`project_rule_config` table:
 
-| 字段 | 语义 |
+| Field | Semantics |
 | --- | --- |
-| `enabled` | `NULL` = 继承全局默认；`0/1` = 工程级覆盖 |
-| `options` | 只存**被覆盖过的**参数键，未覆盖的取 `params` 的默认 |
+| `enabled` | `NULL` = inherit the global default; `0/1` = project-level override |
+| `options` | stores only the parameter keys **that were overridden**; un-overridden ones take the `params` default |
 
-只存差异这件事很关键：恢复默认 = 删掉这一行，规则随 YAML 继续演进，不会把某个工程的旧阈值冻死在库里。
+Storing only the diff is crucial: restoring defaults = deleting that row, so the rule keeps evolving
+with the YAML instead of freezing some project's old threshold in the DB.
 
-| 接口 | 用途 |
+| Interface | Purpose |
 | --- | --- |
-| `GET /api/projects/{id}/rules/config` | 读该工程全部覆盖 |
-| `PUT /api/projects/{id}/rules/config` | 写单条（**补丁语义**：省略的字段保持原值，不会"改启用态顺手清掉调好的阈值"） |
-| `POST /api/projects/{id}/rules/config/batch` | 批量写（整分类启用 / 停用） |
-| `DELETE /api/projects/{id}/rules/config/{rule_id}` | 恢复默认 |
+| `GET /api/projects/{id}/rules/config` | read all overrides for that project |
+| `PUT /api/projects/{id}/rules/config` | write a single one (**patch semantics**: omitted fields keep their value, so "changing enabled state" won't wipe a tuned threshold) |
+| `POST /api/projects/{id}/rules/config/batch` | batch write (enable / disable a whole category) |
+| `DELETE /api/projects/{id}/rules/config/{rule_id}` | restore defaults |
 
-改了口径就必须重跑 —— 库里的违规是"上次口径"的结论。UI 把"保存"和"重跑"合成一个动作，避免用户改完发现结果没变。
+Changing the criteria requires a rerun -- the violations in the DB are conclusions under the
+"previous criteria". The UI merges "save" and "rerun" into one action so users don't finish editing
+and find the results unchanged.
 
-## 提示词增强：按提示词查图
+## Prompt augmentation: querying the graph by prompt
 
-全文检索回答"哪个文件出现了这个字符串"；召回回答"这个主题涉及哪些代码"。后者必须靠图。
+Full-text search answers "which file contains this string"; recall answers "which code does this
+topic involve". The latter must rely on the graph.
 
 ```
-命中种子后，沿 Calls / HandledBy / WritesDb / ReadsDb … 链边向外扩展，
-因此召回结果里会出现**名字中没有关键词、但确实相关**的代码：
+After hitting a seed, it expands outward along Calls / HandledBy / WritesDb / ReadsDb … chain edges,
+so results include code whose **name has no keyword but is genuinely related**:
 
-  提示词 "store_order 订单表"
-    1. Table  store_order                    ← 直接命中（hop 0）
-    6. Method createOrder                    ← 图扩展带出（hop 1，它写了这张表）
-    7. Method userDaoSelect                  ← 图扩展带出（hop 1，它读了这张表）
+  prompt "store_order 订单表"
+    1. Table  store_order                    ← direct hit (hop 0)
+    6. Method createOrder                    ← brought in by graph expansion (hop 1, it writes this table)
+    7. Method userDaoSelect                  ← brought in by graph expansion (hop 1, it reads this table)
 ```
 
-每条结果都标明 `direct`（直接命中）与 `hop`（距种子的跳数）—— 用户必须能看出一条结果为什么在这里，否则召回和全文检索毫无区别。
+Every result states `direct` (direct hit) and `hop` (hops from the seed) -- the user must be able to
+see why a result is here, otherwise recall is no different from full-text search.
 
-打分 = 关键词匹配（精确 > 前缀 > 子串）× 多词加成 × 种类权重（语义节点优先）+ 扇入加成，扩展按 `0.5^hop` 衰减。
+Scoring = keyword match (exact > prefix > substring) × multi-word bonus × kind weight (semantic nodes
+first) + fan-in bonus, with expansion decaying by `0.5^hop`.
 
-中文支持的方式是**结构提示词**："表"/"接口"/"事件"/"配置"/"队列"/"定时任务"会被识别成 `Table`/`HttpContract`/`Event`/… 的种类加成，并把这一结论显式回显给用户。
+Chinese is supported through **structural hint words**: "表" / "接口" / "事件" / "配置" / "队列" /
+"定时任务" are recognized as kind boosts for `Table` / `HttpContract` / `Event` / …, and that
+conclusion is echoed back to the user explicitly.
 
-召回编码器分两档（由编译 feature 决定，运行时自动切换）：**默认**（`model-candle` 与 `model-ort` 均已设为默认 feature）会尝试加载本地 bge-m3 权重做跨语言语义向量，权重缺失时**自动退回**本地哈希编码器（离线、零依赖、不调 LLM）。因此"下单改优惠"这类纯中文提示词也能命中 `placeOrder` / `applyDiscount` 等英文节点；退回到哈希编码器时纯中文无标识符的召回会偏弱，但依旧不联网。权重目录由环境变量 `GT_BGE_MODEL` 指定（默认 `models/bge-m3-safetensors`），用 `tools/convert_bge_safetensors.py` 由 HuggingFace 的 `pytorch_model.bin` 转 safetensors 后即可启用。若不想编译 candle / ort，可 `cargo build -p gt-app --no-default-features` 直接走哈希编码器。
+The recall encoder has two tiers (decided by compile features, switched automatically at runtime):
+the **default** (`model-candle` and `model-ort` are both default features) tries to load local bge-m3
+weights for cross-lingual semantic vectors, and when weights are missing it **automatically falls
+back** to the local hash encoder (offline, zero dependencies, no LLM calls). That's why a pure-Chinese
+prompt like "下单改优惠" can hit English nodes such as `placeOrder` / `applyDiscount`; when it falls
+back to the hash encoder, pure-Chinese recall without an identifier is weaker, but still never goes
+online. The weights directory is set by the environment variable `GT_BGE_MODEL` (default
+`models/bge-m3-safetensors`); run `tools/convert_bge_safetensors.py` to convert HuggingFace's
+`pytorch_model.bin` into safetensors to enable it. If you don't want to compile candle / ort, use
+`cargo build -p gt-app --no-default-features` to go straight to the hash encoder.
 
-> 命令行用 `recall` 子命令触发本能力（`graphtell recall --project 1 --query "…"`），它是「提示词增强」在 CLI 侧的入口；Web / 桌面端的同名能力在「提示词增强」页。
+> On the command line this capability is triggered by the `recall` subcommand
+> (`graphtell recall --project 1 --query "…"`), which is the CLI-side entry of "prompt augmentation";
+> the web / desktop capability of the same name lives on the "prompt augmentation" page.
 
-输出 `markdown` 字段是一份可直接粘给 LLM 的上下文包（种子 + 相关代码 + `path:line` + 源码片段 + 图上关系）。
+The output `markdown` field is a context pack you can paste straight into an LLM (seeds + related
+code + `path:line` + source snippets + graph relations).
 
-## 在 CRMEB 样本上的实测
+## Measured on the CRMEB sample
 
-样本：`samples/php-projects/thinkphp/CRMEB`（**v6.0.0**，3 个子工程、2189 个源文件）。
-全量建图约 **25 秒**（耗时由 CfAst 主导，约 18s）：
+Sample: `samples/php-projects/thinkphp/CRMEB` (**v6.0.0**, 3 sub-projects, 2189 source files).
+A full build takes about **25 seconds** (time dominated by CfAst, ~18s):
 
-| 阶段 | 节点 | 边 | 标注 | 耗时 |
+| Phase | Nodes | Edges | Annotations | Time |
 | --- | --- | --- | --- | --- |
 | Ingest | 0 | 0 | 0 | 146ms |
 | CfAst | 93 608 | 91 351 | 0 | 18.1s |
@@ -457,107 +599,153 @@ URL 过期（节点 id 失效、视角不存在）时由 `reconcileViewState` �
 | Tx | 0 | 0 | 2 | 29ms |
 | Guard | 0 | 4 436 | 0 | 47ms |
 
-建图结果共 **96 241 个节点 / 125 368 条边**，主要节点产出：
-`Class` 1043、`Method` 6724、`CallSite` 80 263、**`HttpContract` 1603**、**`Table` 156**、
-`Function` 1907、`ConfigKey` 278、`Cache` 42、`Queue` 27、`Event` 20、**`Schedule` 17**。
+The built graph has **96 241 nodes / 125 368 edges** in total; main node output:
+`Class` 1043, `Method` 6724, `CallSite` 80 263, **`HttpContract` 1603**, **`Table` 156**,
+`Function` 1907, `ConfigKey` 278, `Cache` 42, `Queue` 27, `Event` 20, **`Schedule` 17**.
 
-其中 `Schedule` 由 CRMEB 的**项目级** FKB 把 `crontab/...` 路由合成而来（此前因项目级 FKB
-与框架级 FKB 的 `id` 重名被遮蔽而恒为 0，已修复）。标注覆盖 `pii.phone`（含通过 `user_phone`
-变体列名识别出的 `store_order`）、`data.criticality`、`config.storage:Database`、`entrypoint.login`
-等通道。
+Of these, `Schedule` comes from CRMEB's **project-level** FKB synthesizing `crontab/...` routes (it
+was previously always 0 because the project-level FKB's `id` collided with the framework-level FKB's
+and was shadowed -- fixed). Annotations cover channels such as `pii.phone` (including `store_order`
+identified via the `user_phone` variant column name), `data.criticality`, `config.storage:Database`
+and `entrypoint.login`.
 
-> **关于样本与发布包**：CRMEB / Bagisto 这类大型第三方工程**不随仓库分发**（授权 + 体积），请设 `GRAPHTELL_SAMPLE_DIR` 自行提供后再复现上述数字（上述数字对应 **v6.0.0**，换版本会有出入）。仓库内随附的轻量样本（见 `samples/`）则始终可用，并已被自动生成成**可直接在 GitHub 渲染的展示页**——见下。
+> **About samples and release packages**: large third-party projects like CRMEB / Bagisto are **not
+> distributed with the repo** (licensing + size); set `GRAPHTELL_SAMPLE_DIR` and supply them yourself
+> to reproduce the numbers above (they correspond to **v6.0.0**; other versions differ). The light
+> samples shipped in the repo (see `samples/`) are always available and have been auto-generated into
+> **a gallery page that renders directly on GitHub** -- see below.
 >
-> **样本的授权与分发**：仓库**只分发自造的合成夹具** `samples/frontend-backend-link`（`.gitignore` 用 `**/samples/*` 排除其余样本，仅对该夹具开了例外）；第三方样本默认只存在于本地、不随仓库分发，其来源与许可证见 [`docs/samples-licenses.md`](samples-licenses.md)。
+> **Sample licensing and distribution**: the repo **distributes only the self-made synthetic
+> fixture** `samples/frontend-backend-link` (`.gitignore` excludes the rest via `**/samples/*`, with
+> an exception for that fixture); third-party samples exist only locally by default and aren't
+> distributed with the repo -- see [`docs/samples-licenses.md`](samples-licenses.md) for sources and
+> licenses.
 
-## 示例 Demo（GitHub 展示）
+## Example demo (GitHub gallery)
 
-[`tools/gen_demo.sh`](../tools/gen_demo.sh) 对每个样本跑「建图 → 规则检测 → 召回示例 → 图导出」，生成两份可直接发布的静态产物，放在 **[`docs/demo/`](demo/README.md)**：
+[`tools/gen_demo.sh`](../tools/gen_demo.sh) runs "build graph → rule check → recall example → graph
+export" for each sample and generates two directly publishable static artifacts, placed in
+**[`docs/demo/`](demo/README.md)**:
 
-- **交互式站点** [`docs/demo/index.html`](demo/index.html)：多项目切换 + 三个页签 —— **图**（可缩放拖拽的节点-边图，按类型着色，点击看细节）、**规则检验**（违规表，可按严重度 / 规则筛选）、**提示词增强**（中文问句的召回上下文包）。大工程只渲染一个**连通子图**并如实标注完整规模。
-- **Markdown 画廊** `docs/demo/README.md`：GitHub 原生渲染，适合在仓库内直接浏览。
+- **Interactive site** [`docs/demo/index.html`](demo/index.html): multi-project switching + three
+  tabs -- **graph** (a zoomable, draggable node-edge graph colored by kind, click for details),
+  **rule check** (violation table, filterable by severity / rule), **prompt augmentation** (recall
+  context pack for Chinese queries). Large projects render only one **connected subgraph** and state
+  the full scale honestly.
+- **Markdown gallery** `docs/demo/README.md`: renders natively on GitHub, good for browsing inside
+  the repo.
 
-无需模型权重（召回走哈希兜底）。本地重生成：`./tools/gen_demo.sh --build`（样本树默认取仓库根 `samples/`，可用 `GRAPHTELL_SAMPLES_DIR` 覆盖）。
+No model weights needed (recall falls back to hashing). Regenerate locally:
+`./tools/gen_demo.sh --build` (the sample tree defaults to the repo-root `samples/`, overridable via
+`GRAPHTELL_SAMPLES_DIR`).
 
-发布：仓库 **Settings → Pages → Source 选 "GitHub Actions"**（一次性），之后推 `master`/`main` 由 [`.github/workflows/deploy-demo.yml`](../../.github/workflows/deploy-demo.yml) 自动发布到 `https://<用户名>.github.io/<仓库名>/` —— **免自购域名**。（Gitee 不执行 GitHub Actions，需在其 Gitee Pages 服务里手动部署。）
+Publishing: repo **Settings → Pages → Source "GitHub Actions"** (one-time); afterwards pushing
+`master` / `main` auto-publishes via
+[`.github/workflows/deploy-demo.yml`](../../.github/workflows/deploy-demo.yml) to
+`https://<username>.github.io/<repo>/` -- **no domain purchase needed**. (Gitee doesn't run GitHub
+Actions, so it must be deployed manually through its Gitee Pages service.)
 
-> 集成测试依赖的样本同样是「软依赖」：仓库内 `samples/` 缺席时（如发布包 / 部分检出），相关测试自动跳过而非失败——与 demo 脚本跳过缺失样本的行为一致。
+> Samples that integration tests depend on are likewise a "soft dependency": when `samples/` is absent
+> (e.g. a release package / partial checkout), the related tests skip instead of failing -- consistent
+> with the demo script's behavior of skipping missing samples.
 
 ---
 
-## MVP 状态与已知限制
+## MVP status and known limitations
 
-本仓库当前以 **MVP** 形态发布，以下功能与完整设想的差异请知悉：
+This repo is released in **MVP** form; please be aware of these differences from the full vision:
 
-- **命名统一为「提示词增强」**：Web / 桌面端菜单、本 README、MCP 工具描述、自包含合成页都叫「提示词增强」；它内部由「代码召回（检索）」与「提示词合成」两步组成，CLI 子命令仍叫 `recall`（`graphtell recall --project 1 --query "…"`）。
-- **部分入口在 MVP 中隐去，但功能仍在**：
-  - **节点浏览（Explorer）**：与「提示词增强」（语义检索）高度重叠，且列表有 `limit: 200` 硬顶、无排序，MVP 未放进侧栏菜单；直接访问 `/projects/:id/explorer` 仍可用。
-  - **设置页**：原本只服务于「跳转 IDE」（本地根模板 / WSL / 默认 IDE），而「跳转 IDE」入口已停用，故设置页一并移除。
-- **编码器的默认编译 feature**：`model-candle` 与 `model-ort` **均已设为默认 feature**。权重（`GT_BGE_MODEL`，默认 `models/bge-m3-safetensors`）缺失时自动退回本地哈希编码器（离线、零依赖、不调 LLM）。若不想编译 candle / ort，可 `cargo build -p gt-app --no-default-features`。
-- **视角（两级筛选器的一级选项）MVP 暂不实现**：`views/perspectives.yaml` 中的 `page` / `domain` / `deploy_unit` / `platform` 视角已在 YAML 中注释、不会生效；当前筛选器只按节点种类与名称工作。
+- **Naming unified as "prompt augmentation"**: the web / desktop menu, this README, MCP tool
+  descriptions and the self-contained composition page all call it "prompt augmentation"; internally
+  it consists of "code recall (retrieval)" + "prompt composition", and the CLI subcommand is still
+  `recall` (`graphtell recall --project 1 --query "…"`).
+- **Some entries are hidden in the MVP, but the functionality remains**:
+  - **Node browse (Explorer)**: overlaps heavily with "prompt augmentation" (semantic retrieval), and
+    the list has a hard `limit: 200` cap with no sorting, so the MVP leaves it out of the sidebar
+    menu; visiting `/projects/:id/explorer` directly still works.
+  - **Settings page**: it only served "jump to IDE" (local root template / WSL / default IDE), and
+    the "jump to IDE" entry is disabled, so the settings page was removed along with it.
+- **Encoder default compile features**: `model-candle` and `model-ort` are **both default features**.
+  When weights (`GT_BGE_MODEL`, default `models/bge-m3-safetensors`) are missing it automatically
+  falls back to the local hash encoder (offline, zero dependencies, no LLM calls). If you don't want
+  to compile candle / ort, use `cargo build -p gt-app --no-default-features`.
+- **Perspectives (the level-1 options of the two-level filter) are not implemented in the MVP**: the
+  `page` / `domain` / `deploy_unit` / `platform` perspectives in `views/perspectives.yaml` are
+  commented out and don't take effect; the filter currently works only by node kind and name.
 
 ---
 
-## 目录
+## Directory layout
 
 ```
 crates/
-├── gt-domain            领域内核（实体 + 端口）
-├── gt-application       用例编排
+├── gt-domain            domain core (entities + ports)
+├── gt-application       use-case orchestration
 ├── gt-pipeline          P0/P2/P3/P4/P5/P6/P7
-├── gt-adapter-fs        文件扫描（排除规则）
-├── gt-adapter-parser    tree-sitter（当前：PHP / Java / JavaScript·TypeScript / Python）
-├── gt-adapter-fkb       FKB YAML 装载
-├── gt-adapter-sqlite    SQLite 持久化
+├── gt-adapter-fs        file scanning (exclusion rules)
+├── gt-adapter-parser    tree-sitter (currently: PHP / Java / JavaScript·TypeScript / Python)
+├── gt-adapter-fkb       FKB YAML loading
+├── gt-adapter-sqlite    SQLite persistence
 ├── gt-adapter-http      axum REST API
-├── gt-adapter-rules     规则 YAML 装载（CheckRule）
-└── gt-app               组装根 + CLI
-src-tauri/               Tauri 桌面端（独立 workspace）
-ui/                      React + TS + antd（分层：pages → widgets → … → shared）
-fkb/                     预置框架知识（php/、java/… 框架级；projects/ 项目级）
-rules/                   检查规则（合规检查）
-views/                   视角声明（两级筛选器的一级选项）
+├── gt-adapter-rules     rule YAML loading (CheckRule)
+└── gt-app               composition root + CLI
+src-tauri/               Tauri desktop app (separate workspace)
+ui/                      React + TS + antd (layered: pages → widgets → … → shared)
+fkb/                     preset framework knowledge (framework-level under php/, java/…; project-level under projects/)
+rules/                   check rules (compliance check)
+views/                   perspective declarations (level-1 options of the two-level filter)
 docs/
-├── demo/                示例 demo：交互式站点 + Markdown 画廊（可发 GitHub Pages）
-└── samples-licenses.md  第三方样本的许可证与来源
-tools/                   分析与演示脚本（gen_demo.sh 等）
-scripts/                 发布脚本（package-release.sh）
+├── demo/                example demo: interactive site + Markdown gallery (publishable to GitHub Pages)
+└── samples-licenses.md  licenses and sources of third-party samples
+tools/                   analysis and demo scripts (gen_demo.sh etc.)
+scripts/                 release scripts (package-release.sh)
 ```
 
-> `samples/`（样本代码库）位于**仓库根**且**不随仓库分发**（`.gitignore` 的 `**/samples/*`
-> 排除，仅自造夹具 `samples/frontend-backend-link` 开了例外）—— 见「样本的授权与分发」。
+> `samples/` (sample codebases) sits at the **repo root** and is **not distributed with the repo**
+> (`.gitignore` excludes it via `**/samples/*`, with an exception only for the self-made fixture
+> `samples/frontend-backend-link`) -- see "Sample licensing and distribution".
 
-## 部署（Docker / 发布包）
+## Deployment (Docker / release package)
 
-后端 `graphtell serve` 在单一端口（默认 5177）上**同时托管 REST API 与构建好的 React SPA**（`--ui-dir` 指向 `ui/dist`，同源、免 CORS、无需反向代理）。
+The backend `graphtell serve` **serves both the REST API and the built React SPA** on a single port
+(default 5177) (`--ui-dir` points at `ui/dist`; same origin, no CORS, no reverse proxy needed).
 
-### Docker（推荐）
+### Docker (recommended)
 
 ```bash
-# 默认开启 model-candle / model-ort：召回走真实 bge-m3 语义向量（权重缺失自动退回词面）
+# model-candle / model-ort on by default: recall uses real bge-m3 semantic vectors (auto-falls back to lexical when weights are missing)
 docker build -t graphtell:latest .
 docker run -d -p 5177:5177 -v $(pwd)/data:/data graphtell:latest
-# 或一键：docker compose up -d --build
+# or one command: docker compose up -d --build
 ```
 
-浏览器打开 `http://localhost:5177/`。想构建更小的「仅词面」镜像：`docker build --build-arg GT_FEATURES="--no-default-features" -t graphtell:hash .`。
+Open `http://localhost:5177/` in a browser. For a smaller "lexical-only" image:
+`docker build --build-arg GT_FEATURES="--no-default-features" -t graphtell:hash .`
 
-### 发布包（不含 Docker）
+### Release package (no Docker)
 
-`scripts/package-release.sh` 会构建前端 + 后端 release 二进制，并打包成 `release/graphtell-<version>.tar.gz`（含 `graphtell` 二进制、`ui/`、`fkb/`、`rules/`、`views/` 与启动说明）：
+`scripts/package-release.sh` builds the frontend + backend release binary and packs them into
+`release/graphtell-<version>.tar.gz` (containing the `graphtell` binary, `ui/`, `fkb/`, `rules/`,
+`views/` and startup notes):
 
 ```bash
 ./scripts/package-release.sh
-# 解压后：
+# after extracting:
 ./graphtell --data-dir ./data serve --bind 0.0.0.0 --port 5177 --ui-dir ./ui
 ```
 
-> 前端在构建期用 `VITE_API_BASE=same-origin` 编译，因此 SPA 走相对路径、可部署到任意主机名而不必重写镜像。
+> The frontend is compiled with `VITE_API_BASE=same-origin` at build time, so the SPA uses relative
+> paths and can be deployed to any hostname without rebuilding the image.
 
-## 扩展新语言 / 新框架
+## Extending to a new language / framework
 
-* **新语言**：实现 `gt_domain::port::LanguageParser`（把语法树翻译成 `SyntaxFacts`），在 `DefaultParserRegistry` 注册；在 `scanner::language_of_extension` 补扩展名。
-* **新框架**：在 `fkb/` 加一份 YAML（detectors / root_rules / loaders / rules / resolvers）。
-* **新节点种类**：直接在 YAML 里写新的 `node:` 名称，无需改 Rust。
-* **新边种类**：在 YAML 里声明 `semantic_edge_kinds` / `bridge_edge_kinds` 即可（如 Python 侧的 `DependsOn`），无需改 `kinds.rs`。
-* **能力缺口不会静默**：某语言的文件被扫进来了却没有注册解析器时，P2 会产出 `NoParserForLanguage` 诊断并跳过 —— 不会出现「被识别成子工程、图却是空的」这种无声失败。
+* **New language**: implement `gt_domain::port::LanguageParser` (translate the syntax tree into
+  `SyntaxFacts`) and register it in `DefaultParserRegistry`; add extensions in
+  `scanner::language_of_extension`.
+* **New framework**: add a YAML under `fkb/` (detectors / root_rules / loaders / rules / resolvers).
+* **New node kind**: just write the new `node:` name in the YAML -- no Rust change.
+* **New edge kind**: declare `semantic_edge_kinds` / `bridge_edge_kinds` in the YAML (e.g. Python's
+  `DependsOn`) -- no `kinds.rs` change.
+* **Capability gaps are never silent**: when files of a language are scanned in but no parser is
+  registered, P2 produces a `NoParserForLanguage` diagnostic and skips -- you never get the silent
+  failure of "recognized as a sub-project, but the graph is empty".

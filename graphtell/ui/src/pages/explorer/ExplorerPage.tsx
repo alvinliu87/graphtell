@@ -8,7 +8,7 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { useLocale } from '@/shared/lib/i18n';
 import { truncate } from '@/shared/lib/format';
 
-/** 节点浏览页：按种类/名称检索并查看单个节点。 */
+/** Node browse page: search by kind / name and inspect a single node. */
 export function ExplorerPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
@@ -23,8 +23,8 @@ export function ExplorerPage() {
     <>
       <PageHeader title={t('Explorer')} subtitle={t('Search any node on the graph and view its annotations and adjacent edges')} />
 
-      {/* 检索失败后 data 落空 → 表格会显示「没有匹配的节点」，与"确实 0 个节点"无法区分；
-          这里把 error 显式报出来，避免把后端故障伪装成空结果。 */}
+      {/* After a failed search data is empty -> the table shows "no matching nodes", indistinguishable from "genuinely 0 nodes";
+               report the error explicitly here, so a backend failure isn't disguised as an empty result. */}
       {!loading && error ? (
         <Alert
           type="error"

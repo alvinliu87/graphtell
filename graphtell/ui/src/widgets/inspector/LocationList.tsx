@@ -15,10 +15,10 @@ import {
 import { useLocale } from '@/shared/lib/i18n';
 
 /**
- * 位置列表。
+ * Location list.
  *
- * 合成节点（`Table:user` 之类）**必然来自多处共现**：既有 `crmeb.sql` 的建表语句，
- * 也有 Model 的 `$table` 定义。这里一律给出**多位置列表**，绝不编造单一位置。
+ * A synthesized node (`Table:user` and the like) **necessarily comes from multiple co-occurrences**: both the `crmeb.sql` CREATE TABLE statement
+ * and the Model's `$table` definition. Always give a **multi-location list** here; never fabricate a single location.
  */
 export function LocationList({
   locations,
@@ -32,12 +32,12 @@ export function LocationList({
   locations: SourceLocation[];
   kind?: string;
   projectRoot?: string;
-  /** WSL 发行版名；非空时跳转 / 复制按 WSL 处理。 */
+  /** WSL distro name; when non-empty, jump / copy is handled as WSL. */
   wslDistro?: string;
   emptyHint?: string;
-  /** 相邻位置之间显示"从上往下"箭头，用于边证据链等有序场景。 */
+  /** Show a "top to bottom" arrow between adjacent locations, for ordered scenarios like an edge evidence chain. */
   ordered?: boolean;
-  /** 是否在底部提供"复制全部位置"；逐跳链路里每跳只放一个位置，不必重复这个按钮。 */
+  /** Whether to offer "copy all locations" at the bottom; in a per-hop chain each hop holds one location, so this button needn't repeat. */
   showCopyAll?: boolean;
 }) {
   const { t } = useLocale();
@@ -145,7 +145,7 @@ export function LocationList({
   );
 }
 
-/** 位置数量的角标。 */
+/** Badge with the location count. */
 export function LocationBadge({ count }: { count: number }) {
   const { t } = useLocale();
   if (count === 0) return <Tag>{t('No location')}</Tag>;

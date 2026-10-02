@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""用真实 bge-m3（本地 CPU 推理）演示「中文意图 -> 英文代码符号」语义向量召回。
+"""Demonstrate semantic-vector recall of "Chinese intent -> English code symbol" with real bge-m3 (local CPU inference).
 
-权重经 ModelScope 拉取（git-lfs，绕开 HF 的 Xet 墙）。依赖：torch(CPU) +
-sentence-transformers + modelscope。
+Weights are pulled via ModelScope (git-lfs, bypassing HF's Xet wall). Dependencies: torch(CPU) +
+sentence-transformers + modelscope.
 """
 import os
 import numpy as np
@@ -10,7 +10,7 @@ from modelscope import snapshot_download
 from sentence_transformers import SentenceTransformer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MS_DIR = os.path.join(ROOT, "models", "bge-m3-ms")  # 经 modelscope 拉取的本地权重
+MS_DIR = os.path.join(ROOT, "models", "bge-m3-ms")  # Local weights pulled via modelscope
 
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
@@ -36,7 +36,7 @@ def main():
     print(">> 加载 bge-m3 ...", flush=True)
     model = SentenceTransformer(path)
 
-    # 候选「业务节点」文本（CRMEB 风格代码，英文命名）
+    # Candidate "business node" texts (CRMEB-style code, English naming)
     nodes = {
         "placeOrder (Method)": "placeOrder",
         "applyDiscount (Method)": "applyDiscount",
@@ -49,13 +49,13 @@ def main():
         "configCacheScheme (noise)": "configCacheScheme",
         "redisSet (noise)": "redisSet",
     }
-    # 节点（文档侧）：不加查询前缀
+    # Nodes (document side): no query prefix
     node_vecs = {k: model.encode(v, normalize_embeddings=True, convert_to_numpy=True)
                  for k, v in nodes.items()}
 
     queries = ["下单改优惠", "用户登录", "订单列表", "清理无用日志"]
     for q in queries:
-        # 查询侧：加 bge 检索前缀
+        # Query side: add the bge retrieval prefix
         qv = model.encode(QUERY_PREFIX + q, normalize_embeddings=True, convert_to_numpy=True)
         ranked = sorted(
             ((name, cos(qv, v)) for name, v in node_vecs.items()),

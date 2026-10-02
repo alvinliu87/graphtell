@@ -10,45 +10,45 @@ const loc = (file: string, line: number, symbol: string | null): SourceLocation 
 });
 
 describe('ideUrl', () => {
-  it('vscode 绝对路径不应带双重斜杠', () => {
+  it('vscode absolute path should not carry a double slash', () => {
     expect(ideUrl('vscode', loc('/a/b.php', 10, null))).toBe('vscode://file/a/b.php:10');
   });
 
-  it('vscode 相对路径拼接工程根', () => {
+  it('vscode relative path joins the project root', () => {
     expect(ideUrl('vscode', loc('src/x.php', 3, null), '/root')).toBe(
       'vscode://file/root/src/x.php:3',
     );
   });
 
-  it('cursor 相对路径拼接工程根并去掉前导斜杠', () => {
+  it('cursor relative path joins the project root and strips the leading slash', () => {
     expect(ideUrl('cursor', loc('src/x.php', 5, null), '/root')).toBe(
       'cursor://file/root/src/x.php:5',
     );
   });
 
-  it('JetBrains 系追加符号并保留前导斜杠', () => {
+  it('JetBrains family appends the symbol and keeps the leading slash', () => {
     const u = ideUrl('phpstorm', loc('/a/b.php', 10, 'Order'), '/root');
     expect(u).toContain('phpstorm');
     expect(u).toContain('Order');
     expect(u).toContain('path=%2Fa%2Fb.php');
   });
 
-  it('WSL 模式下 VS Code 走远程 scheme', () => {
+  it('under WSL mode VS Code uses the remote scheme', () => {
     const u = ideUrl('vscode', loc('/home/x/a.php', 10, null), '/home/x', 'Ubuntu');
     expect(u).toBe('vscode://vscode-remote/wsl+Ubuntu/home/x/a.php:10');
   });
 
-  it('WSL 模式下 Cursor 同样走远程 scheme', () => {
+  it('under WSL mode Cursor also uses the remote scheme', () => {
     const u = ideUrl('cursor', loc('/home/x/a.php', 5, null), '/home/x', 'Debian');
     expect(u).toContain('vscode-remote/wsl+Debian');
   });
 
-  it('WSL 模式下 JetBrains 补 \\wsl$\\distro UNC 前缀', () => {
+  it('under WSL mode JetBrains adds \\wsl$\\distro UNC prefix', () => {
     const u = ideUrl('phpstorm', loc('/home/x/a.php', 10, 'Order'), '/home/x', 'Ubuntu');
     expect(u).toContain('path=%5C%5Cwsl%24%5CUbuntu%2Fhome%2Fx%2Fa.php');
   });
 
-  it('无 WSL 时仍是普通 file scheme', () => {
+  it('without WSL it stays a plain file scheme', () => {
     expect(ideUrl('vscode', loc('/home/x/a.php', 10, null), '/home/x')).toBe(
       'vscode://file/home/x/a.php:10',
     );
@@ -56,33 +56,33 @@ describe('ideUrl', () => {
 });
 
 describe('resolveProjectRoot', () => {
-  it('按工程覆盖优先级最高', () => {
+  it('per-project override has the highest priority', () => {
     expect(resolveProjectRoot('/be', '/override', '\\wsl$\\Ubuntu{root}')).toBe('/override');
   });
-  it('无覆盖时用模板对后端根做 {root} 替换', () => {
+  it('without an override, the template substitutes {root} against the backend root', () => {
     expect(resolveProjectRoot('/home/x/em', '', '\\wsl$\\Ubuntu{root}')).toBe(
       '\\wsl$\\Ubuntu/home/x/em',
     );
   });
-  it('无覆盖无模板时回退后端根', () => {
+  it('without an override or template it falls back to the backend root', () => {
     expect(resolveProjectRoot('/home/x/em')).toBe('/home/x/em');
   });
-  it('无后端根时模板原样返回', () => {
+  it('with no backend root the template returns as-is', () => {
     expect(resolveProjectRoot(undefined, '', '/host{root}')).toBe('/host{root}');
   });
 });
 
 describe('absolutePath', () => {
-  it('相对路径拼接工程根', () => {
+  it('relative path joins the project root', () => {
     expect(absolutePath('a/b.ts', '/root')).toBe('/root/a/b.ts');
   });
-  it('绝对路径不拼接', () => {
+  it('absolute path is not joined', () => {
     expect(absolutePath('/abs/b.ts', '/root')).toBe('/abs/b.ts');
   });
 });
 
 describe('isSensitive', () => {
-  it('识别 SecretLocation', () => expect(isSensitive('SecretLocation')).toBe(true));
-  it('普通节点非敏感', () => expect(isSensitive('Class')).toBe(false));
+  it('recognizes SecretLocation', () => expect(isSensitive('SecretLocation')).toBe(true));
+  it('an ordinary node is not sensitive', () => expect(isSensitive('Class')).toBe(false));
 });
 

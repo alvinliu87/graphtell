@@ -44,10 +44,10 @@ import {
 import { useLocale } from '@/shared/lib/i18n';
 
 /**
- * 规则筛选：按"与本工程的关系"筛。
+ * Rule filter: filter by "relationship to this project".
  *
- * `overridden` 是这一页最需要的维度 —— 工程级覆盖是散落在各分类里的，
- * 没有它就无从回答"我到底改过哪几条"，复核与回退都只能一条条翻。
+ * `overridden` is the dimension this page needs most -- project-level overrides are scattered across categories,
+ * and without it you can't answer "which ones did I actually change", so review and rollback mean flipping through them one by one.
  */
 type StateFilter = 'all' | 'enabled' | 'disabled' | 'overridden' | 'not_applicable';
 
@@ -60,11 +60,11 @@ const STATE_FILTERS: { value: StateFilter; label: string }[] = [
 ];
 
 /**
- * 规则是否适用于本工程（与后端 `CheckRule::applies_to_env` 同一口径）。
+ * Whether a rule applies to this project (same criterion as the backend's `CheckRule::applies_to_env`).
  *
- * 刻意**不做**"按语言筛选"：语言是规则作者声明的先验，用户要问的是
- * "这条规则在我这儿能不能跑"。直接按语言翻，会让人在 Java 工程里打开
- * PHP 规则的开关、然后发现它压根不跑 —— 以为开关坏了。
+ * Deliberately **no** "filter by language": language is the rule author's declared prior, while what the user asks is
+ * "can this rule run here". Browsing by language would make someone in a Java project switch on a PHP rule
+ * and then find it never runs -- thinking the switch is broken.
  */
 function appliesToEnv(
   rule: CheckRule,
@@ -82,7 +82,7 @@ function appliesToEnv(
   );
 }
 
-/** 分类展示顺序（其余未知分类追加在末尾）。 */
+/** Display order of categories (any unknown categories are appended at the end). */
 const CATEGORY_ORDER = [
   'architecture',
   'security',
@@ -93,18 +93,18 @@ const CATEGORY_ORDER = [
 ];
 
 /**
- * 本工程对一条规则的**草稿**：启用态覆盖 + 参数覆盖。
+ * This project's **draft** for a rule: enabled-state override + parameter overrides.
  *
- * 为什么是草稿而不是"点了就写库"：改配置必须重跑一次检查才见效，
- * 逐条写库会让"调三个阈值"变成三次重跑 —— 攒一批再保存才是人想要的。
+ * Why a draft rather than "write to the DB on click": changing config only takes effect after a re-run,
+ * so writing per-rule would turn "tuning three thresholds" into three reruns -- batching and saving once is what people want.
  */
 interface Draft {
-  /** `null` = 继承 YAML 全局默认；`true/false` = 工程级覆盖。 */
+  /** `null` = inherit the YAML global default; `true/false` = project-level override. */
   enabled: boolean | null;
   options: Record<string, unknown>;
 }
 
-/** 无覆盖态：启用态与参数都回归全局默认。 */
+/** No-override state: both enabled state and parameters return to the global defaults. */
 const INHERIT: Draft = { enabled: null, options: {} };
 
 function draftOf(cfg: Partial<ProjectRuleConfig> | undefined): Draft {
@@ -117,7 +117,7 @@ function draftsOf(cfgs: Record<string, ProjectRuleConfig>): Record<string, Draft
   return out;
 }
 
-/** 参数在草稿里的取值：没被覆盖过就取规则默认值。 */
+/** A parameter's value in the draft: falls back to the rule default if never overridden. */
 function paramValue(draft: Draft | undefined, p: RuleParam): unknown {
   const v = draft?.options?.[p.key];
   return v === undefined ? p.default : v;
@@ -130,11 +130,11 @@ function sameOptions(a: Record<string, unknown>, b: Record<string, unknown>): bo
 }
 
 /**
- * 规则集页：按分类展示「这个工程会被哪些规则检查」，并允许**按工程**覆盖
- * 启用态与可调参数。
+ * Rule set page: show by category "which rules this project is checked by", and allow **per-project** overrides of
+ * enabled state and tunable parameters.
  *
- * 与结果页分离 —— 规则是知识库驱动的声明，本页负责"要按什么口径检查"；
- * 想验证单条规则可点「只跑这条规则」，会跳到结果页。
+ * Separate from the results page -- rules are knowledge-base-driven declarations; this page owns "by what criteria to check";
+ * to verify a single rule, click "run only this rule", which jumps to the results page.
  */
 export function RulesPage() {
   const { projectId } = useParams();
@@ -145,22 +145,22 @@ export function RulesPage() {
 
   const [running, setRunning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  // `saved` = 服务端已存值（比对基准），`drafts` = 用户正在编辑的值。
+  // `saved` = the server-stored value (the comparison baseline), `drafts` = the value the user is editing.
   const [saved, setSaved] = useState<Record<string, ProjectRuleConfig>>({});
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
-  // ---- 筛选：规则会随语言扩展增长到几十条，"找规则 / 找我改过哪些"必须有入口。
+  // ---- Filtering: rules grow to dozens as languages expand, so "find a rule / find what I changed" must have an entry point.
   const [keyword, setKeyword] = useState('');
   const [severities, setSeverities] = useState<Severity[]>([]);
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
-  /** 正在编辑参数的规则（没有可调参数的规则不会出现入口，也就不会进这个状态）。 */
+  /** The rule whose parameters are being edited (rules with no tunable parameters show no entry, so never enter this state). */
   const [editing, setEditing] = useState<CheckRule | null>(null);
 
   const rules = useAsync(() => checkApi.rules(), []);
   const configs = useAsync(() => checkApi.ruleConfigs(id), [id]);
-  // 子工程的语言/框架 = 本工程的技术栈环境，用它判断规则适不适用。
+  // The sub-projects' languages / frameworks = this project's tech-stack environment; used to judge whether a rule applies.
   const subs = useAsync(() => projectApi.subProjects(id), [id]);
-  // 本工程当前落库违规：按 rule_id 计数，用于规则卡上显示「命中 N 条」。
-  // 与结果页同源（上限 5000，超限时此计数反映「已载入」而非全量）。
+  // This project's currently persisted violations: counted by rule_id, shown on rule cards as "N hits".
+  // Same source as the results page (cap 5000; when exceeded this count reflects "what was loaded" rather than the full set).
   const violations = useAsync(() => checkApi.violations(id, 5000), [id]);
   const ruleCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -168,7 +168,7 @@ export function RulesPage() {
     return m;
   }, [violations.data]);
 
-  // 配置到达后播种一次；之后草稿由用户掌控（刷新不会悄悄覆盖手上的编辑）。
+  // Seed once when config arrives; afterwards the draft is owned by the user (a refresh must not silently overwrite in-progress edits).
   useEffect(() => {
     if (!configs.data) return;
     setSaved(configs.data);
@@ -193,11 +193,11 @@ export function RulesPage() {
     };
   }, [subs.data]);
 
-  /** 环境闸门：不适用的规则跑不起来（后端会自动跳过），开关对它无效。 */
+  /** Environment gate: an inapplicable rule can't run (the backend skips it automatically), so the switch is meaningless for it. */
   const applicable = (r: CheckRule): boolean =>
     appliesToEnv(r, env.languages, env.frameworks);
 
-  /** 筛选后的规则：分类折叠与「整组启用」都只作用于**看得见的**这些。 */
+  /** The filtered rules: category collapsing and "enable whole group" act only on these **visible** ones. */
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     return sorted.filter((r) => {
@@ -228,7 +228,7 @@ export function RulesPage() {
     setStateFilter('all');
   };
 
-  // 按分类聚合（保持 CATEGORY_ORDER 顺序，未知分类追加其后）。
+  // Aggregate by category (keeping CATEGORY_ORDER, with unknown categories appended after).
   const { categories, byCat } = useMemo(() => {
     const map = new Map<string, CheckRule[]>();
     for (const r of filtered) {
@@ -243,7 +243,7 @@ export function RulesPage() {
     return { categories: cats, byCat: map };
   }, [sorted]);
 
-  /** 与服务端已存值相比，找出真正改过的规则。 */
+  /** Compare against the server-stored value to find the rules actually changed. */
   const dirtyIds = useMemo(() => {
     const out: string[] = [];
     for (const [ruleId, d] of Object.entries(drafts)) {
@@ -266,7 +266,7 @@ export function RulesPage() {
     setDraft(ruleId, { ...d, options: { ...d.options, [key]: value } });
   };
 
-  /** 分类级批量：只改草稿，保存时一次性落库。 */
+  /** Category-level batch: only changes the draft; saved to the DB in one shot. */
   const setCategoryEnabled = (cat: string, enabled: boolean) => {
     setDrafts((prev) => {
       const next = { ...prev };
@@ -280,7 +280,7 @@ export function RulesPage() {
     try {
       for (const ruleId of dirtyIds) {
         const d = draftFor(ruleId);
-        // 既没有启用覆盖、也没有参数覆盖 = 回归继承态，直接删行而不是留一条空配置。
+        // Neither an enabled override nor a parameter override = back to the inherited state; delete the row rather than leaving an empty config.
         if (d.enabled === null && Object.keys(d.options).length === 0) {
           await checkApi.resetRuleConfig(id, ruleId);
         } else {
@@ -291,7 +291,7 @@ export function RulesPage() {
           });
         }
       }
-      // 改了口径就必须重跑：库里的违规是"上次口径"的结论，不重跑等于没改。
+      // Changing the criteria requires a rerun: the violations in the DB are conclusions under the "previous criteria", so not rerunning means nothing changed.
       setRunning('__all__');
       const report = await checkApi.check(id);
       refreshCheckSummary();
@@ -591,11 +591,11 @@ export function RulesPage() {
               defaultActiveKey={categories}
               items={categories.map((cat) => {
                 const list = byCat.get(cat)!;
-                // 不适用的规则即便开着也不会跑，不能计进"启用 N"。
+                // An inapplicable rule won't run even when on, so it can't count toward "enabled N".
                 const on = list.filter(
                   (r) => applicable(r) && (draftFor(r.id).enabled ?? r.enabled),
                 ).length;
-                // 本分类下各规则当前命中的违规总数。
+                // Total violations currently hit by the rules in this category.
                 const hits = list.reduce((s, r) => s + (ruleCounts[r.id] ?? 0), 0);
                 return {
                   key: cat,
@@ -611,7 +611,7 @@ export function RulesPage() {
                       </Tag>
                     </Space>
                   ),
-                  // 阻止冒泡：否则点"整组启用"会顺手把分组折叠掉。
+                  // Stop propagation: otherwise clicking "enable whole group" would also collapse the group.
                   extra: (
                     <Tooltip title={t('Applies only to the currently filtered rules')}>
                       <Space size={4} onClick={(e) => e.stopPropagation()}>
@@ -659,7 +659,7 @@ export function RulesPage() {
         okText={t('Done')}
         cancelText={t('Cancel')}
         onOk={() => setEditing(null)}
-        // 「恢复默认」放在左侧：它是破坏性操作，不能和「完成/取消」混成一排随手点到。
+        // "Restore defaults" goes on the left: it's a destructive action and must not sit in a row with "done / cancel" where it's clicked by accident.
         footer={(_, { OkBtn, CancelBtn }) => (
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <Button

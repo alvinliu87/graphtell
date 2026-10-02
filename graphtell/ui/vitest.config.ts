@@ -9,8 +9,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    // 组件测试用 `.tsx`，并在文件头用 `// @vitest-environment jsdom` 单独切到 jsdom
-    // （默认仍是 node，纯逻辑测试不必付 jsdom 的启动开销）。
+    // Component tests use `.tsx`, and switch to jsdom per-file with `// @vitest-environment jsdom`
+    // (the default stays node; pure logic tests needn't pay jsdom's startup cost).
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 });

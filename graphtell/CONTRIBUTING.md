@@ -1,89 +1,136 @@
-# 贡献指南（CONTRIBUTING）
+# Contributing
 
-欢迎为 GraphTell 做贡献。本文聚焦「怎么改才不会被退回」：架构约束、FKB 工作流、规则纪律、测试与验证。
+Contributions to GraphTell are welcome. This document focuses on "how to change things so they
+don't get sent back": architecture constraints, the FKB workflow, rule discipline, tests and
+verification.
 
-架构与流水线背景见 [`README.md`](./README.md)；FKB 编写细则见 [`docs/fkb-authoring.md`](./docs/fkb-authoring.md)；当前支持清单见 [`SUPPORTED.md`](./SUPPORTED.md)。
+For architecture and pipeline background see [`README.md`](./README.md); for FKB authoring details
+see [`docs/fkb-authoring.md`](./docs/fkb-authoring.md); for the current support list see
+[`SUPPORTED.md`](./SUPPORTED.md).
 
 ---
 
-## 1. 开发环境
+## 1. Development environment
 
 ```bash
-cargo build                                    # 构建后端
-cargo test                                     # 跑全部 Rust 测试
-cargo run -p gt-app -- validate                 # 校验内置 FKB
-cargo run -p gt-app -- create --name X --path /repo   # 建图
+cargo build                                    # build the backend
+cargo test                                     # run all Rust tests
+cargo run -p gt-app -- validate                 # validate the built-in FKB
+cargo run -p gt-app -- create --name X --path /repo   # build a graph
 ```
 
-后端在进程内起 HTTP 服务，桌面端（Tauri）与 Web 端共用同一套 `/api` 契约；前端在 `ui/`（React + TS + antd，自上而下的分层）。
+The backend starts an in-process HTTP service; the desktop app (Tauri) and the web app share the
+same `/api` contract. The frontend lives in `ui/` (React + TS + antd, layered top-down).
 
 ---
 
-## 2. 架构约束（改代码前必读）
+## 2. Architecture constraints (read before changing code)
 
-仓库是**端口与适配器**分层，依赖方向永远指向内核 `gt-domain`：
+The repo is a **ports-and-adapters** layering, and dependencies always point inward to the core
+`gt-domain`:
 
-- **`gt-domain` 不能依赖任何具体技术**（不得 `use` 任何 adapter / 框架）。所有 IO 通过 `port` 里的 trait 反向注入。
-- **新语言 / 新框架 / 新节点种类优先用声明式方式完成，不要上来就改引擎**。约 90% 的 FKB 可以零引擎改动。
-- 确实要改引擎的少数情况（见 `docs/fkb-authoring.md` §9）：引入全新的边种类、需要的取值/匹配能力 `ValueSource` 还不支持、某节点需要专属渲染。
-- **向后兼容的 schema 改动**：给 `CallSiteFact` / `ValueSource` 等结构体加字段时，务必加 `#[serde(default)]` 并在所有构造点补 `None` / 默认值（搜索 `CallSiteFact {` / `CallRecord {` 确认无遗漏，否则编译不过）。
-
----
-
-## 3. 想支持一个新框架 / 语言
-
-### 新框架（最常见，纯 YAML）
-1. 读 [`docs/fkb-authoring.md`](./docs/fkb-authoring.md) 的 §1–§6。
-2. 在 `fkb/<子目录>/` 加一份 YAML：`detectors`（识别条件）+ `rules`（抽取规则）+ 必要的 `semantic_kinds` / `semantic_edge_kinds`。
-3. **关键纪律**：
-   - 复用已有节点 / 边种类，别发明新词（新种类也要在 YAML 声明，否则折叠视图会藏起来）。
-   - 进程外中介（Cache / ConfigKey / Event / Queue / Topic）必须写 `side`（`backend` / `frontend`），否则前后端同名节点会被错误合并。
-   - 用 `arg` + `require_literal` 防止把变量名当成身份造出垃圾节点；取不到时用 `value_fallback` 兜底。
-4. `graphtell validate` 跑通（注意 `⚠` 约定警告，比报错更有价值）。
-5. 用真实样本建图，**肉眼确认图画得对**。
-
-### 新语言
-1. 实现 `gt_domain::port::LanguageParser`，把 tree-sitter 语法树翻译成语言无关的 `SyntaxFacts`（范本：`src/java` 是"第二语言"，`src/python` 是"第三语言"——后者额外示范了装饰器建模、模块级函数的 `owner_class` 回填等动态语言问题）。
-2. 在 `DefaultParserRegistry` 注册，并在 `scanner::language_of_extension` 补扩展名。
-3. 在 `fkb/` 为该语言写框架 YAML（语义提取完全走 FKB，内核不认识任何框架）。
-
-> **先 dump 语法树，别靠记忆写解析器**。加一个临时测试打印 `root_node().to_sexp()`，确认节点类型与**字段名**再动手。
-> 两次真实 bug 都是这么抓到的：`typed_parameter` 在 tree-sitter-python 里**没有** `name` 字段（形参类型全丢）、
-> `from x import y` 把 `module_name` 节点本身也当成了导入项（凭空造出 `fastapi.fastapi`）。
-> 两者都不报错，只会静默产出错误事实 —— 靠读代码是想不出来的。
-
-> 参考范本：`fkb/java/spring-boot.yaml` + 端到端测试 `crates/gt-pipeline/tests/java_spring_features.rs`（合成样本，无需外部工程即可验证 cache/event/queue/topic/schedule 全部落成）；Python 侧见 `fkb/python/fastapi.yaml` + `tests/python_fastapi_features.rs`。
+- **`gt-domain` must not depend on any concrete technology** (it may not `use` any adapter or
+  framework). All IO is injected backwards through traits in `port`.
+- **Prefer declarative means for a new language / framework / node kind -- don't jump straight to
+  editing the engine.** Roughly 90% of FKB needs zero engine changes.
+- The few cases that genuinely need engine changes (see `docs/fkb-authoring.md` §9): needing a
+  value/matching capability `ValueSource` doesn't support yet, or a node / edge kind needing dedicated
+  rendering. (Introducing a new edge kind itself needs no code -- just declare
+  `semantic_edge_kinds` / `bridge_edge_kinds` in the FKB.)
+- **Backward-compatible schema changes**: when adding fields to structs like `CallSiteFact` /
+  `ValueSource`, always add `#[serde(default)]` and supply `None` / defaults at every construction
+  site (search `CallSiteFact {` / `CallRecord {` to confirm none are missed, otherwise it won't
+  compile).
 
 ---
 
-## 4. 合规规则：先量后写
+## 3. Adding support for a new framework / language
 
-写规则的成本很低，**验证它不产噪声的成本很高**。每条候选规则都先在样本库（5 个 ThinkPHP + 3 个 Spring Boot 已建图工程）量一遍再决定是否发货，标准只有两条：
+### New framework (most common, pure YAML)
+1. Read §1–§6 of [`docs/fkb-authoring.md`](./docs/fkb-authoring.md).
+2. Add a YAML under `fkb/<subdir>/`: `detectors` (recognition conditions) + `rules` (extraction
+   rules) + any needed `semantic_kinds` / `semantic_edge_kinds`.
+3. **Key discipline**:
+   - Reuse existing node / edge kinds; don't invent new vocabulary (a new kind must also be declared
+     in the YAML, otherwise the collapsed view hides it).
+   - Out-of-process mediators (Cache / ConfigKey / Event / Queue / Topic) must declare `side`
+     (`backend` / `frontend`), otherwise same-named frontend and backend nodes get wrongly merged.
+   - Use `arg` + `require_literal` to avoid turning variable names into identities and producing
+     junk nodes; fall back with `value_fallback` when a value can't be taken.
+4. Get `graphtell validate` passing (mind the `⚠` convention warnings -- more valuable than errors).
+5. Build a graph from a real sample and **visually confirm the graph is drawn correctly**.
 
-- 命中数**不能是 0**（静默失效——比误报更危险，因为不表现为报错）；
-- 命中数**不能刷屏**（噪声）。
+### New language
+1. Implement `gt_domain::port::LanguageParser`, translating the tree-sitter syntax tree into the
+   language-agnostic `SyntaxFacts` (reference: `src/java` is the "second language", `src/python` the
+   "third" -- the latter additionally demonstrates decorator modeling, `owner_class` backfill for
+   module-level functions, and other dynamic-language issues).
+2. Register it in `DefaultParserRegistry` and add extensions in `scanner::language_of_extension`.
+3. Write the framework YAML for that language under `fkb/` (semantic extraction goes entirely
+   through FKB; the core knows no framework).
 
-已被实测否决、留档避免重复讨论的候选（私有方法从未被调用、配置键无读取方、缓存写了从不读、表被写但不被读、上帝方法、队列投递无消费者、GET 契约名含 create/edit、外部回调未验签 …）见 README「新规则怎么才算能发货」。
+> **Dump the syntax tree first; don't write a parser from memory.** Add a temporary test printing
+> `root_node().to_sexp()`, and confirm the node types and **field names** before you start.
+> Two real bugs were caught this way: `typed_parameter` has **no** `name` field in
+> tree-sitter-python (all parameter types were lost), and `from x import y` treated the
+> `module_name` node itself as an import item (fabricating `fastapi.fastapi` out of nothing).
+> Neither errors -- they silently produce wrong facts, which you cannot figure out by reading code.
 
-规则用 `applies_to.languages` / `applies_to.frameworks` **先验声明**适用范围，避免「PHP 专属语义在 Java 工程上把每个节点都报成违规」。引擎还会从谓词自动推导依赖（边 / 标注 / 能力），图里没有这些事实就停用该规则（`rules_unavailable`），无需手写 `requires`。
+> Reference examples: `fkb/java/spring-boot.yaml` + the end-to-end test
+> `crates/gt-pipeline/tests/java_spring_features.rs` (synthetic sample -- verifies cache / event /
+> queue / topic / schedule all landing without an external project); for Python see
+> `fkb/python/fastapi.yaml` + `tests/python_fastapi_features.rs`.
 
 ---
 
-## 5. 测试与验证
+## 4. Compliance rules: measure before writing
 
-- **引擎 / 规则单测**：`cargo test -p gt-pipeline -p gt-domain -p gt-adapter-parser`。
-- **端到端建图测试**：`crates/gt-pipeline/tests/crmeb_pipeline.rs`（PHP 样本）、`crates/gt-pipeline/tests/java_spring_features.rs`（Java 合成样本）、`tests/python_fastapi_features.rs` / `tests/python_flask_features.rs`（Python 合成样本）、`tests/node_real_samples.rs`（NestJS / Express 合成 + 真实样本）、`tests/unsupported_language.rs`（无解析器语言的可见性）。
-- **新增 Java 语义特征时**：优先在 `java_spring_features.rs` 的合成样本里加对应注解 / 调用，并断言节点与边（这是验证「FKB 真的把框架语义落成图」最便宜的方式）。
-- **FKB 改动**：`graphtell validate` 必须全绿；改 FKB **不触发重新建图**，但要让某条测试覆盖到你改的规则。
-- **解析器 / 引擎改动**：需要重建图，跑对应的 e2e 测试。
+Writing a rule is cheap; **verifying it doesn't produce noise is expensive**. Measure every
+candidate rule against the sample library (5 ThinkPHP + 3 Spring Boot projects already built) before
+deciding to ship it. There are only two criteria:
+
+- hits **must not be 0** (silent failure -- more dangerous than false positives, because it doesn't
+  surface as an error);
+- hits **must not flood** (noise).
+
+Candidates already rejected by measurement and kept on record so they aren't re-discussed (private
+method never called, config key with no reader, cache written but never read, table written but not
+read, god method, queue delivery with no consumer, GET contract name containing create/edit,
+external callback without signature verification …) are listed in the README under "what makes a new
+rule shippable".
+
+Rules **declare their scope up front** via `applies_to.languages` / `applies_to.frameworks`, avoiding
+"PHP-only semantics reporting every node as a violation in a Java project". The engine also derives
+dependencies from predicates automatically (edges / annotations / capabilities) and disables a rule
+when those facts are absent from the graph (`rules_unavailable`) -- no hand-written `requires`
+needed.
 
 ---
 
-## 6. 提交与 PR
+## 5. Tests and verification
 
-- 描述清楚「改了什么、为什么、怎么验证的」。
-- 若动了 `gt-domain` 的数据结构，确认所有构造点都补了默认值（见 §2）。
-- 若加了框架支持，请在 `SUPPORTED.md` 同步更新矩阵；若改了 FKB 编写能力（如新增 `ValueSource`），请在 `docs/fkb-authoring.md` 同步。
-- 文档用中文（与现有 `README.md` / `docs/` 保持一致）。
+- **Engine / rule unit tests**: `cargo test -p gt-pipeline -p gt-domain -p gt-adapter-parser`.
+- **End-to-end build tests**: `crates/gt-pipeline/tests/crmeb_pipeline.rs` (PHP sample),
+  `crates/gt-pipeline/tests/java_spring_features.rs` (synthetic Java sample),
+  `tests/python_fastapi_features.rs` / `tests/python_flask_features.rs` (synthetic Python samples),
+  `tests/node_real_samples.rs` (synthetic NestJS / Express + real samples),
+  `tests/unsupported_language.rs` (visibility of languages with no parser).
+- **When adding a Java semantic feature**: prefer adding the corresponding annotation / call to the
+  synthetic sample in `java_spring_features.rs` and asserting nodes and edges (the cheapest way to
+  verify "FKB really lands the framework semantics in the graph").
+- **FKB changes**: `graphtell validate` must be fully green; changing FKB does **not** trigger a
+  rebuild, but some test must cover the rule you changed.
+- **Parser / engine changes**: require rebuilding the graph and running the corresponding e2e tests.
 
-不要求你熟悉 Rust 也能贡献 FKB / 规则 / 视角声明（都是 YAML）；涉及引擎的改动欢迎先开 issue 讨论方案。
+---
+
+## 6. Commits and PRs
+
+- Describe clearly "what changed, why, and how it was verified".
+- If you touched `gt-domain` data structures, confirm every construction site got its default (§2).
+- If you added framework support, update the matrix in `SUPPORTED.md`; if you changed FKB authoring
+  capabilities (e.g. a new `ValueSource`), update `docs/fkb-authoring.md` too.
+- Documentation is written in English, consistent with the existing `README.md` / `docs/`.
+
+You don't need to know Rust to contribute FKB / rules / perspective declarations (all YAML); for
+engine changes, feel free to open an issue to discuss the approach first.

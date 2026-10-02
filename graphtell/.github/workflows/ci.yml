@@ -52,15 +52,15 @@ jobs:
     name: Docker image build
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # 测试挂了就不浪费时间构建镜像；所需产物（前端/后端）已由上面两个 job 验证。
+    # If tests fail, don't waste time building the image; the needed artifacts (frontend/backend) were already verified by the two jobs above.
     needs: [test-backend, test-frontend]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      # 默认（PR / push 到 main）构建「仅词面」镜像（--no-default-features）：
-      # 快速验证 Dockerfile 全链路（前端构建 + 后端编译 + SPA 同源托管接线），
-      # 不必等 candle 重编译。打 v* tag 时改为默认 feature，构建完整语义镜像（含真实 bge-m3 向量）。
+      # By default (PR / push to main) build the "lexical-only" image (--no-default-features):
+      # quickly validate the whole Dockerfile chain (frontend build + backend compile + SPA same-origin wiring),
+      # without waiting for candle to recompile. On a v* tag it switches to the default features and builds the full semantic image (with real bge-m3 vectors).
       - name: Decide features
         id: feat
         run: |

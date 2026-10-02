@@ -4,8 +4,8 @@ import { concentricLayout, layeredLayout, radialLayout } from './types';
 import type { LayoutEdge, LayoutNode, PlacedEdge, PlacedNode } from './types';
 
 /**
- * 下面两个判定是**测试侧独立实现**的，刻意不去复用被测代码里的 `segHitsRect` / `countCrossings`：
- * 用同一份判断去断言自己，等于什么都没验。
+ * The two predicates below are **implemented independently on the test side**, deliberately not reusing `segHitsRect` / `countCrossings` from the code under test:
+ * asserting code against itself with the same predicate verifies nothing.
  */
 
 type Pt = [number, number];
@@ -20,7 +20,7 @@ function segments(edges: PlacedEdge[]): Array<{ s: Pt; e: Pt; from: number; to: 
   return out;
 }
 
-/** 线段是否穿过矩形（slab 法）。 */
+/** Whether a segment passes through a rectangle (slab method). */
 function hitsRect(a: Pt, b: Pt, cx: number, cy: number, w: number, h: number): boolean {
   let t0 = 0;
   let t1 = 1;
@@ -49,7 +49,7 @@ function hitsRect(a: Pt, b: Pt, cx: number, cy: number, w: number, h: number): b
   return true;
 }
 
-/** 穿过非端点节点的线段数（硬约束：必须为 0）。 */
+/** Number of segments passing through a non-endpoint node (hard constraint: must be 0). */
 function segmentsThroughNodes(edges: PlacedEdge[], nodes: PlacedNode[]): number {
   let n = 0;
   for (const seg of segments(edges)) {
@@ -61,7 +61,7 @@ function segmentsThroughNodes(edges: PlacedEdge[], nodes: PlacedNode[]): number 
   return n;
 }
 
-/** 交叉数（共享端点的边对不算）。 */
+/** Crossing count (edge pairs sharing an endpoint don't count). */
 function crossings(edges: PlacedEdge[]): number {
   const segs = segments(edges);
   const orient = (a: Pt, b: Pt, c: Pt) =>
@@ -84,11 +84,11 @@ function crossings(edges: PlacedEdge[]): number {
 }
 
 /**
- * 回归：分层布局的画布宽度必须受容器约束。
+ * Regression: a layered layout's canvas width must be constrained by the container.
  *
- * 旧实现把一层的所有药丸单行铺开，20 条出边就能把画布撑到 3000px+；
- * 画布随后用 `viewBox="0 0 layout.width …"` 渲染，浏览器按 `meet` 把整张图
- * 连文字一起等比压回容器宽 —— 表现就是"出边一多，字全糊"。
+ * The old implementation spread all pills of a layer into a single row, so 20 out-edges could push the canvas to 3000px+;
+ * the canvas was then rendered with `viewBox="0 0 layout.width …"`, and the browser's `meet` scaled the whole graph
+ * back down to the container width, text included -- showing up as "more out-edges, blurrier text".
  */
 
 const node = (id: number, name: string, ring: number): LayoutNode => ({
@@ -101,8 +101,8 @@ const node = (id: number, name: string, ring: number): LayoutNode => ({
 describe('layeredLayout', () => {
   const WIDTH = 1040;
 
-  it('多层时允许画布超出容器宽：超出部分改为横向滚动，不再是整图缩小', () => {
-    // 20 条出边，旧实现会产出约 3300px 宽的画布
+  it('with multiple layers the canvas may exceed the container width; overflow scrolls horizontally instead of shrinking the whole graph', () => {
+    // 20 out-edges; the old implementation produced a canvas about 3300px wide
     const fanout = Array.from({ length: 20 }, (_, i) => node(100 + i, `handler_number_${i}`, 2));
     const center = node(1, 'job_daily_settlement', 0);
     const ring1 = Array.from({ length: 3 }, (_, i) => node(10 + i, `service_stage_${i}`, 1));
@@ -118,16 +118,16 @@ describe('layeredLayout', () => {
       height: 720,
     });
 
-    // 画布可以比容器宽（一轮前不允许，因为当时 viewBox 会把整张图连字一起缩小；
-    // 现在 viewBox 与渲染 1:1，超出就是滚动），但**必须给出内容包围盒**供 zoom-to-fit 使用。
+    // The canvas may be wider than the container (not allowed a round ago, because viewBox then shrank the whole graph text included;
+    // now viewBox is 1:1 with the render, so overflow just scrolls), but a **content bounding box must be provided** for zoom-to-fit.
     expect(r.content).toBeDefined();
     expect(r.content!.w).toBeLessThan(r.width);
-    // 每层一行：节点的不同 y 值个数 == 层数
+    // One row per layer: the number of distinct node y values == number of layers
     const rowsByY = new Set(r.nodes.map((n) => n.y));
     expect(rowsByY.size).toBe(3);
   });
 
-  it('content 包围盒覆盖所有节点，且不超出画布', () => {
+  it('the content bounding box covers all nodes and stays within the canvas', () => {
     const fanout = Array.from({ length: 12 }, (_, i) => node(100 + i, `callee_${i}`, 1));
     const center = node(1, 'POST /orders', 0);
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
@@ -144,15 +144,15 @@ describe('layeredLayout', () => {
       expect(n.y - hh).toBeGreaterThanOrEqual(c.y);
       expect(n.y + hh).toBeLessThanOrEqual(c.y + c.h);
     });
-    // 供 zoom-to-fit 使用：必须比整块画布小，否则 fit 等于没做
+    // For zoom-to-fit: must be smaller than the whole canvas, otherwise fit does nothing
     expect(c.w).toBeLessThan(r.width);
     expect(c.h).toBeLessThan(r.height);
   });
 
-  it('同父的兄弟排在一起（减少跨行连线）', () => {
+  it('siblings with the same parent are placed together (fewer cross-row edges)', () => {
     const center = node(1, 'root', 0);
     const parents = [node(10, 'p0', 1), node(11, 'p1', 1)];
-    // 交错给出：不排序的话两个父的孩子会交替出现
+    // Given interleaved: without sorting, the two parents' children would alternate
     const children = [node(20, 'a0', 2), node(21, 'b0', 2), node(22, 'a1', 2), node(23, 'b1', 2)];
     const edges: LayoutEdge[] = [
       { id: 1, from: 1, to: 10 },
@@ -174,26 +174,26 @@ describe('layeredLayout', () => {
 });
 
 /**
- * 回归：可读性的两条硬约束。
+ * Regression: two hard constraints on readability.
  *
- * 「边交叉」只能尽量减小（NP-hard），但**在你这个数据里最常见的形状上它本来就该是 0**：
- * 折叠视图里语义节点是终点（`view_service.rs`），所以"一个契约读了 32 个配置键"
- * 就是 center + 单环 —— 所有边共用一个端点，从同一点出发的线段互不相交。
+ * "Edge crossings" can only be minimized (NP-hard), but **on the shape most common in your data it should already be 0**:
+ * in the collapsed view semantic nodes are terminals (`view_service.rs`), so "one contract reads 32 config keys"
+ * is center + single ring -- all edges share one endpoint, and segments leaving the same point don't cross each other.
  *
- * 「边穿过节点」是比交叉更严重的问题（药丸被线穿过后名字读不出来），
- * 它是**可判定**的，因此必须 100% 消除，任何布局都不许违反。
+ * "An edge passing through a node" is worse than a crossing (a pierced pill makes the name unreadable),
+ * and it is **decidable**, so it must be eliminated 100% -- no layout may violate it.
  */
-describe('可读性硬约束', () => {
+describe('readability hard constraints', () => {
   const WIDTH = 1040;
 
-  it('小扇出星形 → 分层两行（中心在上、单环在下），边交叉为 0 且边不穿过节点', () => {
+  it('small fan-out star -> two layered rows (center on top, single ring below), zero edge crossings and no edge through a node', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = Array.from({ length: 8 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
 
     const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
 
-    // 确实是两层：中心一行在上、单环一行在下（与中心辐射的单列区分开）
+    // Indeed two layers: the center row on top, the single-ring row below (distinct from a center-radial single column)
     const ys = [...new Set(r.nodes.map((n) => Math.round(n.y)))];
     expect(ys.length).toBe(2);
     const [topY, bottomY] = ys.sort((a, b) => a - b);
@@ -206,16 +206,16 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('宽扇出星形（> LAYERED_FAN_MAX）→ 改走中心辐射（非同心环），两条硬约束仍成立', () => {
+  it('wide fan-out star (> LAYERED_FAN_MAX) -> switches to center-radial (not concentric rings), both hard constraints still hold', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = Array.from({ length: 24 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
 
     const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
 
-    // 是中心辐射而非同心环：没有环引导线
+    // Center-radial rather than concentric rings: no ring guides
     expect(r.guides).toBeUndefined();
-    // 中心是唯一的最左节点，所有邻居都在中心右侧（无论单列还是等长扇形都如此）
+    // The center is the unique leftmost node, all neighbors are to its right (true for both a single column and an equal-radius fan)
     const centerX = r.nodes.find((n) => n.id === center.id)!.x;
     const minLeft = Math.min(
       ...r.nodes.filter((n) => n.id !== center.id).map((n) => n.x - (n.w ?? 0) / 2),
@@ -230,14 +230,14 @@ describe('可读性硬约束', () => {
   });
 
   /**
-   * 回归：宽扇出 + **一条叶子间边**（路由视角里两张表之间的 ForeignKey）。
+   * Regression: wide fan-out + **one leaf-to-leaf edge** (a ForeignKey between two tables in the route perspective).
    *
-   * 旧判定 `isStar` 要求每条边都碰中心 —— 一条 ForeignKey 就把判定判死，
-   * 19 片叶子落回每层一行的宽扇形（一行 6000px+、两端被裁的实测坏截图）。
-   * 现在近似星形（叶子间边 ≤ 3）仍走中心辐射；叶子间边自身若扫过同列邻居，
-   * 必须绕行（「边不穿过节点」不因放宽而破例）。
+   * The old `isStar` predicate required every edge to touch the center -- one ForeignKey killed the predicate,
+   * and 19 leaves fell back to the wide fan with one row per layer (a real bad screenshot: 6000px+ wide, both ends cut off).
+   * Now an approximate star (leaf-to-leaf edges ≤ 3) still goes center-radial; if a leaf-to-leaf edge itself sweeps over a same-column neighbor,
+   * it must detour ("no edge through a node" is not waived by the relaxation).
    */
-  it('宽扇出 + 个别叶子间边（ForeignKey）→ 仍走中心辐射，叶子间边绕行不穿节点', () => {
+  it('wide fan-out + a few leaf-to-leaf edges (ForeignKey) -> still center-radial, leaf-to-leaf edges detour without piercing nodes', () => {
     const center = node(1, 'GET /admin/order/detail', 0);
     const fanout = [
       ...Array.from({ length: 4 }, (_, i) => node(10 + i, `middleware_${i}`, 1)),
@@ -247,34 +247,34 @@ describe('可读性硬约束', () => {
     ];
     const edges: LayoutEdge[] = [
       ...fanout.map((n) => ({ id: n.id, from: center.id, to: n.id })),
-      // 表间外键：两端都不是中心 —— 旧判定下这一条就把整张图推回宽扇形
+      // A table-to-table foreign key: neither endpoint is the center -- under the old predicate this one edge pushed the whole graph back to the wide fan
       { id: 900, from: 200, to: 201 },
     ];
 
     const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
 
-    // 走了中心辐射而非分层扇形：没有环引导线，中心在最左
+    // Went center-radial rather than layered fan: no ring guides, center leftmost
     expect(r.guides).toBeUndefined();
     const centerX = r.nodes.find((n) => n.id === center.id)!.x;
     fanout.forEach((n) => {
       expect(r.nodes.find((x) => x.id === n.id)!.x).toBeGreaterThan(centerX);
     });
 
-    // 两条硬约束仍成立（ForeignKey 边要么直连不撞、要么绕行）
+    // Both hard constraints still hold (a ForeignKey edge either runs straight without collision or detours)
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
     expect(crossings(r.edges)).toBe(0);
   });
 
   /**
-   * 回归：路由视角的**左→右方向性**。
+   * Regression: the **left→right directionality** of the route perspective.
    *
-   * 路由视角的图是「前端调用方 --CallsHttp--> 契约 --ReadsConfig/ReadsCache--> 依赖」，
-   * 旧的中心辐射把调用方和依赖混排在中心右侧一列，请求流向在画布上没有方向感。
-   * 现在两侧都非空时分左右两列：调用方在中心左侧、依赖在右侧，所有箭头自左向右。
+   * The route perspective graph is "frontend caller --CallsHttp--> contract --ReadsConfig/ReadsCache--> dependency";
+   * the old center-radial mixed callers and dependencies into one column right of the center, so request flow had no sense of direction on the canvas.
+   * Now when both sides are non-empty they split into left and right columns: callers left of center, dependencies right, all arrows left to right.
    */
-  it('双侧星形（调用方 + 宽依赖扇出）→ 调用方在左、依赖在右，请求流向自左向右', () => {
+  it('two-sided star (callers + wide dependency fan-out) -> callers on the left, dependencies on the right, request flow left to right', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
-    const caller = node(2, 'orderInvoiceDetail', 1); // 前端 Function（入边）
+    const caller = node(2, 'orderInvoiceDetail', 1); // Frontend Function (in-edge)
     const deps = Array.from({ length: 12 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = [
       { id: 900, from: caller.id, to: center.id },
@@ -285,12 +285,12 @@ describe('可读性硬约束', () => {
 
     const cRect = r.nodes.find((n) => n.id === center.id)!;
     const callerRect = r.nodes.find((n) => n.id === caller.id)!;
-    // 调用方整体（右缘）在中心左缘的左边；依赖在中心右侧
+    // Callers as a whole (right edge) are left of the center's left edge; dependencies are right of the center
     expect(callerRect.x + (callerRect.w ?? 0) / 2).toBeLessThan(cRect.x - (cRect.w ?? 0) / 2);
     deps.forEach((n) => {
       expect(r.nodes.find((x) => x.id === n.id)!.x).toBeGreaterThan(cRect.x);
     });
-    // 调用边在左通道折行：折点 x 位于调用方与中心之间
+    // The call edge bends in the left channel: the bend x lies between the caller and the center
     const callEdge = r.edges.find((e) => e.from === caller.id)!;
     const viaX = callEdge.points[1][0];
     expect(viaX).toBeGreaterThan(callerRect.x);
@@ -300,7 +300,7 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('多层分层：边绝不穿过节点（斜边会自动绕行）', () => {
+  it('multi-layer: edges never pass through a node (oblique edges detour automatically)', () => {
     const center = node(1, 'handler', 0);
     const ring1 = Array.from({ length: 4 }, (_, i) => node(10 + i, `service_${i}`, 1));
     const ring2 = Array.from({ length: 10 }, (_, i) => node(50 + i, `table_${i}`, 2));
@@ -313,7 +313,7 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('截图中那种规模（契约读 32 个配置键）仍满足两条硬约束，且同类聚在弧的一端不被埋没', () => {
+  it('the scale from the screenshots (a contract reading 32 config keys) still satisfies both hard constraints, and same-kind nodes cluster at one arc end without being buried', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = [
       ...Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1)),
@@ -326,8 +326,8 @@ describe('可读性硬约束', () => {
 
     expect(crossings(r.edges)).toBe(0);
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
-    // 「同类聚在一起」在等长扇形下表现为：沿弧按角度排序后，Cache / Table 分居弧的两
-    // 端（头 / 尾），中间整段都是配置键，不被埋在中间
+    // Under an equal-radius fan, "same kinds cluster together" means: after sorting by angle along the arc, Cache / Table occupy the two ends
+    // (head / tail) of the arc, and the whole middle run is config keys, not buried in between
     const hub = r.nodes.find((n) => n.id === center.id)!;
     const ordered = r.nodes
       .filter((n) => n.id !== center.id)
@@ -339,11 +339,11 @@ describe('可读性硬约束', () => {
   });
 
   /**
-   * 回归：适中扇出（截图的 30 个规模）走**等长扇形**——邻居到中心的半径相等，且
-   * 弧上相邻药丸不重叠（限角 110° 的几何保证），两条硬约束仍成立。超大扇出（80）则
-   * 退回单列（圆弧面积会反超单列）。
+   * Regression: moderate fan-out (the 30-node scale in the screenshots) uses an **equal-radius fan** -- neighbors are equidistant from the center, and
+   * adjacent pills on the arc don't overlap (a geometric guarantee of the 110° angle limit), so both hard constraints still hold. Very large fan-out (80)
+   * falls back to a single column (the arc's area would exceed the single column's).
    */
-  it('适中扇出（30）→ 等长扇形：邻居到中心半径相等、相邻药丸不重叠', () => {
+  it('moderate fan-out (30) -> equal-radius fan: neighbors equidistant from the center, adjacent pills do not overlap', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
@@ -352,12 +352,12 @@ describe('可读性硬约束', () => {
 
     const hub = r.nodes.find((n) => n.id === center.id)!;
     const spokes = r.nodes.filter((n) => n.id !== center.id);
-    // 弧上每个邻居到中心**圆心**的距离应一致（结构上的"等边"）
+    // Every neighbor on the arc should be equidistant from the center's **center point** (structural "equal sides")
     const radii = spokes.map((n) => Math.hypot(n.x - hub.x, n.y - hub.y));
     const maxR = Math.max(...radii);
     const minR = Math.min(...radii);
     expect(maxR - minR).toBeLessThan(1);
-    // 相邻（按角度排序）药丸矩形不重叠：限角保证法向间距 ≥ 药丸高
+    // Adjacent (angle-sorted) pill rectangles don't overlap: the angle limit guarantees normal spacing ≥ pill height
     const byAng = spokes
       .map((n) => ({ n, ang: Math.atan2(n.y - hub.y, n.x - hub.x) }))
       .sort((a, b) => a.ang - b.ang)
@@ -381,7 +381,7 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('超大扇出（80）→ 退回单列（左边缘对齐），等长弧面积反而更大不应启用', () => {
+  it('very large fan-out (80) -> falls back to a single column (left edges aligned); the equal-radius arc would be larger and must not be used', () => {
     const center = node(1, 'cache_order_summary', 0);
     const fanout = Array.from({ length: 80 }, (_, i) => node(100 + i, `user_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: n.id, to: center.id }));
@@ -396,11 +396,11 @@ describe('可读性硬约束', () => {
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('同一对端点的多条路径必须错开，不能画成完全重叠的一条线', () => {
+  it('multiple paths between the same endpoint pair must be offset, never drawn as one fully overlapping line', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = Array.from({ length: 8 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
-    // 第二条通往同一个配置键的**不同路径**（后端现在会各出一条边，via 不同）
+    // A second **different path** to the same config key (the backend now emits one edge each, with different via)
     edges.push({ id: 999, from: center.id, to: fanout[0].id });
 
     const r = layeredLayout({ center, rings: [fanout], edges, width: WIDTH, height: 720 });
@@ -409,14 +409,14 @@ describe('可读性硬约束', () => {
       (e) => e.from === center.id && e.to === fanout[0].id,
     );
     expect(pair.length).toBe(2);
-    // 两条边的几何不能相同：否则用户只看到一条线，根本不知道有两条路径
+    // The two edges must not have identical geometry: otherwise the user sees only one line and never knows there are two paths
     expect(JSON.stringify(pair[0].points)).not.toBe(JSON.stringify(pair[1].points));
-    // 错开后仍满足两条硬约束
+    // After offsetting, both hard constraints still hold
     expect(crossings(r.edges)).toBe(0);
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
   });
 
-  it('多层且某层很宽（会换行）时，边仍不穿过节点', () => {
+  it('with multiple layers and one very wide layer (that wraps), edges still do not pass through nodes', () => {
     const center = node(1, 'handler', 0);
     const ring1 = Array.from({ length: 8 }, (_, i) => node(10 + i, `service_${i}`, 1));
     const ring2 = Array.from({ length: 22 }, (_, i) => node(50 + i, `table_${i}`, 2));
@@ -431,21 +431,21 @@ describe('可读性硬约束', () => {
 });
 
 /**
- * 回归：径向入口必须按**图形状**分派，而不是按"有几个环 / 环上有几个节点"。
+ * Regression: radial entry must be dispatched by **graph shape**, not by "how many rings / how many nodes per ring".
  *
- * 资源视角（Table / Cache / Event / Queue / Topic）在 `view_service.rs` 里走反向模式
- * （`reverse = kind != HttpContract`），沿入边回溯到每个使用者后，把使用者**直接合成一条到
- * 中心的边**（`MAX_USERS = 80`，其余计入 `hidden`）。此时 `ring` 只是挂在节点上的数字，
- * 并没有对应的"叶子到叶子"的边 —— 传进来的是一颗**星**，而 `layeredLayout` 那种
- * `nonEmpty.length === 1` 的判据在这里必然为假，必须用 `isStar` 来认。
+ * The resource perspective (Table / Cache / Event / Queue / Topic) runs in reverse mode in `view_service.rs`
+ * (`reverse = kind != HttpContract`): after tracing back along in-edges to each consumer, it **synthesizes one direct edge**
+ * from the consumer to the center (`MAX_USERS = 80`, the rest counted into `hidden`). Here `ring` is just a number hanging on the node,
+ * with no corresponding "leaf-to-leaf" edge -- what comes in is a **star**, and a predicate like `layeredLayout`'s
+ * `nonEmpty.length === 1` is necessarily false here, so `isStar` must be what recognizes it.
  *
- * 这类数据恰好是 `MAX_USERS` 截断后的量级：同心环会被撑到容器数倍宽，而内容只占环上
- * 一条 30px 宽的带子；改走中心辐射后同样满足两条可读性硬约束，画布小一个数量级。
+ * This kind of data is exactly the magnitude after `MAX_USERS` truncation: concentric rings would be stretched to several times the container width
+ * while the content occupies only a 30px-wide band on the ring; switching to center-radial satisfies both readability constraints and is an order of magnitude smaller.
  */
-describe('radialLayout：资源视角（星形）', () => {
+describe('radialLayout: resource perspective (star)', () => {
   const WIDTH = 1040;
 
-  /** 造一个资源视角形态的输入：`ringSizes` = 每环人数，所有边都是 `使用者 → 中心`。 */
+  /** Build a resource-perspective-shaped input: `ringSizes` = people per ring, all edges are `consumer → center`. */
   const resourceStar = (ringSizes: number[]) => {
     const center: LayoutNode = { id: 1, kind: 'Cache', name: 'cache_order_summary', ring: 0 };
     let seed = 100;
@@ -468,11 +468,11 @@ describe('radialLayout：资源视角（星形）', () => {
     return { center, rings, edges };
   };
 
-  it('80 个使用者：改走中心辐射，两条可读性硬约束都成立，且保留跳数相邻性', () => {
+  it('80 consumers: switches to center-radial, both readability hard constraints hold, and hop-count adjacency is preserved', () => {
     const { center, rings, edges } = resourceStar([55, 25]);
     const r = radialLayout({ center, rings, edges, width: WIDTH, height: 720 });
 
-    // 确实走了辐射：所有使用者的左边缘对齐成一列（同心环会沿不同角度散开）
+    // Indeed went radial: all consumers' left edges align into one column (concentric rings would spread them along different angles)
     const lefts = new Set(
       rings.flat().map((n) => {
         const p = r.nodes.find((x) => x.id === n.id)!;
@@ -484,46 +484,46 @@ describe('radialLayout：资源视角（星形）', () => {
     expect(crossings(r.edges)).toBe(0);
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
 
-    // 跳数不再由半径表达，必须由相邻性补回来：内环（直接使用者）整段排在外环（追溯得到）之前
+    // Hop count is no longer expressed by radius, so adjacency must compensate: the inner ring (direct consumers) is ordered entirely before the outer ring (traced back)
     const yOf = (n: LayoutNode) => r.nodes.find((x) => x.id === n.id)!.y;
     expect(Math.max(...rings[0].map(yOf))).toBeLessThan(Math.min(...rings[1].map(yOf)));
   });
 
-  it('同一份数据：同心环会被撑到容器 3 倍宽以上，辐射画布仍小一个数量级', () => {
+  it('same data: concentric rings stretch past 3x the container width, while the radial canvas stays an order of magnitude smaller', () => {
     const { center, rings, edges } = resourceStar([55, 25]);
     const input = { center, rings, edges, width: WIDTH, height: 720 };
     const star = radialLayout(input);
     const disc = concentricLayout(input);
 
-    // 同心环：半径 ∝ 人数 ⇒ 画布边长 ∝ 人数，直接横向炸出容器
+    // Concentric rings: radius ∝ people ⇒ canvas side ∝ people, blowing straight out of the container horizontally
     expect(disc.width).toBeGreaterThan(3 * WIDTH);
-    // 通道按纵向跨度取值（思维导图比例），画布**允许超出容器宽**（超出即横向滚动）：
-    // 80 人时 fit 缩放由高度卡住（80 行 × 44px 远超容器高），加宽通道不缩小字号。
-    // 不变量是"比同心环窄 + 面积小一个数量级"，而非"收在容器内"。
+    // The channel takes its value from the vertical span (mind-map proportions), and the canvas is **allowed to exceed the container width** (overflow = horizontal scroll):
+    // at 80 people fit scaling is capped by height (80 rows × 44px far exceeds container height), so widening the channel doesn't shrink the font.
+    // The invariant is "narrower than concentric rings + an order of magnitude less area", not "fits inside the container".
     expect(star.width).toBeLessThan(disc.width);
     expect(star.width * star.height * 3).toBeLessThan(disc.width * disc.height);
   });
 
-  it('同心环在这种密度下确实会把外环的边压在内环药丸上（记录分派理由）', () => {
+  it('at this density concentric rings do press outer-ring edges onto inner-ring pills (records the reason for dispatch)', () => {
     const { center, rings, edges } = resourceStar([55, 25]);
     const disc = concentricLayout({ center, rings, edges, width: WIDTH, height: 720 });
 
-    // 这是**已知缺陷的特征化测试**，不是期望行为：内环半径是按"刚好排满"算的，
-    // 所以从中心贯穿到外环的边大概率穿过某个内环药丸（名字直接读不出来）。
-    // 若日后同心环自己修好了这条硬约束，应改这条断言并要求同步放宽分派条件，
-    // 而不是直接删掉它。
+    // This is a **characterization test of a known defect**, not desired behavior: the inner ring's radius is computed to "just fill up",
+    // * so an edge running from the center through to the outer ring will very likely pierce some inner-ring pill (making the name unreadable).
+    // If concentric rings later fix this hard constraint themselves, change this assertion and relax the dispatch condition accordingly,
+    // * rather than just deleting it.
     expect(segmentsThroughNodes(disc.edges, disc.nodes)).toBeGreaterThan(0);
   });
 
-  it('小星形仍走同心环：圆最好看的场景不能被顺手换掉', () => {
+  it('a small star still uses concentric rings: the case where rings look best must not be casually replaced', () => {
     const { center, rings, edges } = resourceStar([2, 3]);
     const r = radialLayout({ center, rings, edges, width: WIDTH, height: 720 });
 
-    // 同心环的标志：有环引导线（= 跳数刻度）；辐射布局没有 guides
+    // Concentric rings' signature: ring guides present (= hop-count ticks); a radial layout has no guides
     expect(r.guides?.length).toBe(2);
   });
 
-  it('有叶子间边的多层图仍走同心环（把链路视角手动切成径向时不能悄悄变样）', () => {
+  it('a multi-layer graph with leaf-to-leaf edges still uses concentric rings (manually switching a chain perspective to radial must not silently change its look)', () => {
     const center = node(1, 'handler', 0);
     const ring1 = Array.from({ length: 4 }, (_, i) => node(10 + i, `service_${i}`, 1));
     const ring2 = Array.from({ length: 20 }, (_, i) => node(50 + i, `table_${i}`, 2));
@@ -538,19 +538,19 @@ describe('radialLayout：资源视角（星形）', () => {
 });
 
 /**
- * 回归：中心辐射的**源端（hub 侧）锚点必须分散**。
+ * Regression: center-radial **source-end (hub side) anchors must be spread out**.
  *
- * 旧实现把所有 hub 边的出发点都压在中心药丸竖边的 ±9px（共 18px）内 —— 30 条出边在
- * 近中心处糊成一束，要等线散开才看得出"哪条通向谁"。现在沿中心药丸面向邻居那一侧的
- * 「上边 → 侧边 → 下边」按目标次序铺开，一条边一个出入口。
+ * The old implementation pressed every hub edge's start point into ±9px (18px total) of the center pill's vertical edge -- 30 out-edges
+ * mushed into one bundle near the center, and you had to wait for the lines to fan out to tell "which goes to whom". Now they spread along the center pill's
+ * side facing the neighbor -- "top → side → bottom" -- in target order, one entry/exit per edge.
  *
- * 铺开的红线：出发点仍必须落在这条边**看得见**的那段边界上 —— 线段只能"贴"住中心药丸，
- * 不能钻进药丸底下再从另一侧穿出（药丸不透明时看不出来，悬浮聚焦压成半透明就露馅）。
+ * The red line for spreading: the start point must still land on the **visible** stretch of that edge's boundary -- a segment may only "hug" the center pill,
+ * never dive under it and emerge on the other side (invisible while the pill is opaque, but exposed when hover focus makes it translucent).
  */
-describe('中心辐射：源端锚点分散', () => {
+describe('center-radial: source-side anchors spread out', () => {
   const WIDTH = 1040;
 
-  /** 线段与矩形相交的参数区间 [t0, t1]（slab 法，测试侧独立实现）；不相交返回 null。 */
+  /** The parameter interval [t0, t1] where a segment intersects a rectangle (slab method, implemented independently on the test side); null when no intersection. */
   const range = (a: Pt, b: Pt, cx: number, cy: number, w: number, h: number) => {
     let t0 = 0;
     let t1 = 1;
@@ -579,18 +579,18 @@ describe('中心辐射：源端锚点分散', () => {
     return { t0, t1 };
   };
 
-  /** 星形图里每条边的 hub 侧端点（边由中心出发则取首点，指向中心则取末点）。 */
+  /** A hub-side endpoint of each edge in a star graph (first point if the edge leaves the center, last point if it points to the center). */
   const hubEnds = (edges: PlacedEdge[], centerId: number): Pt[] =>
     edges.map((e) => (e.from === centerId ? e.points[0] : e.points[e.points.length - 1]));
 
-  /** 锚点的铺开幅度：最远两个锚点的距离。 */
+  /** Anchor spread: the distance between the two farthest anchors. */
   const spread = (ends: Pt[]): number => {
     let m = 0;
     for (const p of ends) for (const q of ends) m = Math.max(m, Math.hypot(p[0] - q[0], p[1] - q[1]));
     return m;
   };
 
-  /** 每个锚点都必须落在中心药丸的**边界**上：贴着节点，不留缝也不悬空。 */
+  /** Every anchor must land on the **boundary** of the center pill: hugging the node, no gap and no floating. */
   const expectOnHubBorder = (ends: Pt[], hub: PlacedNode) => {
     const hw = (hub.w ?? 120) / 2;
     const hh = (hub.h ?? 26) / 2;
@@ -603,7 +603,7 @@ describe('中心辐射：源端锚点分散', () => {
     });
   };
 
-  it('等长扇形（30 条出边）：锚点贴在药丸边界上、一条边一个出入口、铺开远宽于旧的 18px', () => {
+  it('equal-radius fan (30 out-edges): anchors hug the pill boundary, one entry/exit per edge, spread far wider than the old 18px', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
@@ -617,7 +617,7 @@ describe('中心辐射：源端锚点分散', () => {
     expect(spread(ends)).toBeGreaterThan(80);
   });
 
-  it('分散后线段仍只"贴"住中心药丸，不钻进去再从另一侧穿出', () => {
+  it('after spreading, a segment still only "hugs" the center pill, never dives in and emerges from the other side', () => {
     const center = node(1, 'GET /v2/order/invoice_detail', 0);
     const fanout = Array.from({ length: 30 }, (_, i) => node(100 + i, `config_key_${i}`, 1));
     const edges: LayoutEdge[] = fanout.map((n) => ({ id: n.id, from: center.id, to: n.id }));
@@ -627,7 +627,7 @@ describe('中心辐射：源端锚点分散', () => {
 
     r.edges.forEach((e) => {
       const hit = range(e.points[0], e.points[1], hub.x, hub.y, hub.w ?? 120, hub.h ?? 26);
-      // 与中心药丸若有交，只能是端点擦边（长度≈0），不能是"穿进去再从另一侧出来"
+      // if it intersects the center pill at all, it can only graze the endpoint (length ≈ 0), never "go in and come out the other side"
       if (hit) expect(hit.t1 - hit.t0).toBeLessThan(0.02);
     });
 
@@ -635,7 +635,7 @@ describe('中心辐射：源端锚点分散', () => {
     expect(crossings(r.edges)).toBe(0);
   });
 
-  it('单列形态（80 个使用者，边指向中心）同样分散，两条硬约束仍成立', () => {
+  it('single-column shape (80 consumers, edges pointing to the center) spreads too, both hard constraints still hold', () => {
     const center = node(1, 'cache_order_summary', 0);
     const users = Array.from({ length: 80 }, (_, i) => node(100 + i, `user_${i}`, 1));
     const edges: LayoutEdge[] = users.map((n) => ({ id: n.id, from: n.id, to: center.id }));

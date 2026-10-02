@@ -1,6 +1,6 @@
 [package]
 name = "gt-application"
-description = "GraphTell 应用层：用例编排与事务边界"
+description = "GraphTell application layer: use-case orchestration and transaction boundaries"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

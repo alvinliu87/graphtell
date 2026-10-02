@@ -12,8 +12,8 @@ tree-sitter-language = { workspace = true }
 tree-sitter-php = { workspace = true }
 tree-sitter-java = { workspace = true }
 tree-sitter-python = { workspace = true }
-# TS 语法是 JS 的超集：LANGUAGE_TYPESCRIPT 解析 .js/.ts，LANGUAGE_TSX 解析 .jsx/.tsx。
-# 因此仅引这一个 crate 即可覆盖全部前端 JS/TS，无需再引 tree-sitter-javascript。
+# TS grammar is a superset of JS: LANGUAGE_TYPESCRIPT parses .js/.ts, LANGUAGE_TSX parses .jsx/.tsx.
+# So depending on this one crate covers all frontend JS/TS; tree-sitter-javascript is not needed.
 tree-sitter-typescript = "0.23"
 thiserror = { workspace = true }
 tracing = { workspace = true }

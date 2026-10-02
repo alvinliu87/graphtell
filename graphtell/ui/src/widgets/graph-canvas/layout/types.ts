@@ -186,10 +186,10 @@ function measureTextPx(text: string, px: number, weight: number): number | null 
  * measurement; when that is impossible it falls back to the factor estimate. The 300 cap stops an
  * extreme name from bursting the canvas.
  */
-const ICON_AREA = 20; // 图标 12 + 左内边距 6 + 间隔 3（文字起点 21）
-const ICON_LEFT = 8; // 无图标时仅左内边距（文字起点 8）
-const RIGHT_PAD = 18; // 右内边距（含 1–2px 渲染误差缓冲）
-const MIN_NAME_UNITS = 4; // 至少保留约 4 个拉丁字符宽的文本区（保证可点 / 可读；CJK 一字 ≈ 1.8 位，自然更宽）
+const ICON_AREA = 20; // icon 12 + left padding 6 + gap 3 (text starts at 21)
+const ICON_LEFT = 8; // with no icon, only left padding (text starts at 8)
+const RIGHT_PAD = 18; // right padding (includes a 1–2px render-error buffer)
+const MIN_NAME_UNITS = 4; // keep at least ~4 Latin characters of text width (keeps it clickable / readable; a CJK char ≈ 1.8 units, naturally wider)
 function pillWidth(kind: string, name: string, center = false, icon = true): number {
   const px = center ? 13 : 11;
   const weight = center ? 600 : 500;
@@ -404,7 +404,7 @@ function shrinkToRects(a: Pt, aw: number, ah: number, b: Pt, bw: number, bh: num
   const tA = exit(aw / 2, ah / 2, dx, dy);
   const tB = exit(bw / 2, bh / 2, dx, dy);
   if (!Number.isFinite(tA) && !Number.isFinite(tB)) return [a, b];
-  if (tA + tB >= 1) return [a, b]; // 收缩后两端相遇 / 交叉：节点重叠，保持原样
+  if (tA + tB >= 1) return [a, b]; // after shrinking, the two ends meet / cross: nodes overlap, leave as is
   return [
     [a[0] + dx * tA, a[1] + dy * tA],
     [b[0] - dx * tB, b[1] - dy * tB],
@@ -710,8 +710,8 @@ const HUB_MIN = 7;
 function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = false): LayoutResult {
   const { center, edges, width, height } = input;
   const PAD = 40;
-  const ROW_GAP = 30; // 行距：药丸高 30 ⇒ 行距/药丸高 = 2.0。大图靠加大行距换「边间隔大」，代价是画布更高（可接受）
-  const HUB_GAP_X = 140; // 通道（中心到列）的最小横向间距；实际取值随列高自适应（见 gapX）
+  const ROW_GAP = 30; // row gap: pill height 30 ⇒ row gap / pill height = 2.0. A large graph trades a bigger row gap for “wider edge spacing”, at the cost of a taller canvas (acceptable)
+  const HUB_GAP_X = 140; // minimum horizontal spacing of the channel (center to column); the actual value adapts to column height (see gapX)
 
   // ---- Split by side: divide neighbours by edge direction into "callers (left column)" and "dependees (right column)" ----
   //
@@ -766,7 +766,7 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
   // ROW_GAP+PILL_H, so arcR is uniquely determined by the chord length and the angle limit; all edges radiate from the centre with length ≈ arcR.
   // Enabled when arcR is shorter than the longest single-column edge (centre right edge → near edge of the top/bottom node) and the neighbour
   // count reaches ARC_MIN; otherwise the old single column is kept.
-  const SPAN_MAX = (110 * Math.PI) / 180; // 限角 110°：弧端法向间距 ≥ 药丸高，保证不重叠
+  const SPAN_MAX = (110 * Math.PI) / 180; // angle limit 110°: normal spacing at the arc end ≥ pill height, guaranteeing no overlap
   const ARC_MIN = 12;
   const rightN = rightCol.length;
   const arcDelta = rightN > 1 ? SPAN_MAX / (rightN - 1) : 0;
@@ -776,7 +776,7 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
 
   // With two columns the centre is centred and left→right is symmetric; with one side it degrades to the old form (centre at the far left).
   const hubCx = twoSided ? PAD + leftW + gapX + centerW / 2 : PAD + centerW / 2;
-  const leftColLeft = PAD; // 左列药丸左缘
+  const leftColLeft = PAD; // left edge of the left-column pill
   const rightColLeft = hubCx + centerW / 2 + gapX;
   const rightW = rightCol.length
     ? Math.max(...rightCol.map((n) => pillWidth(n.kind, n.name, false, input.showIcons ?? true)))
@@ -862,8 +862,8 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
    * at the target, so spreading never pushes a line into a neighbour pill (the "an edge must not pass
    * through a node" hard constraint is unaffected).
    */
-  const FAN_SLOT = 28; // 同一段边界上相邻锚点的目标间距
-  const FAN_REACH = Math.min(centerW, 160); // 上 / 下边各最多用掉的长度（不越过药丸另一头）
+  const FAN_SLOT = 28; // target spacing between adjacent anchors on the same boundary segment
+  const FAN_REACH = Math.min(centerW, 160); // max length usable on each of the top / bottom edges (not past the pill's other end)
 
   /** Target endpoint of each hub edge plus its parallel-edge offset (anchors are assigned sorted by the offset y). */
   const hubSides = new Map<number, { tgt: Pt; off: number; onLeft: boolean; hubIsFrom: boolean }>();
@@ -886,11 +886,11 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     const w = otherNode.w ?? 120;
     let tgt: Pt;
     if (onLeft) {
-      tgt = [otherNode.x + w / 2, other[1]]; // 左列（调用方）：取药丸右缘
+      tgt = [otherNode.x + w / 2, other[1]]; // left column (caller): take the pill's right edge
     } else if (useArc) {
       tgt = shrinkToRects(hubCenter, centerW, PILL_H, other, w, PILL_H)[1];
     } else {
-      tgt = [otherNode.x - w / 2, other[1]]; // 右列单列：取药丸左缘
+      tgt = [otherNode.x - w / 2, other[1]]; // right column / single column: take the pill's left edge
     }
     hubSides.set(ei, { tgt, off, onLeft, hubIsFrom });
   });
@@ -904,7 +904,7 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
       .sort((x, y) => x.ty - y.ty || x.ei - y.ei);
     if (items.length === 0) continue;
     const hh = PILL_H / 2;
-    const xSide = hubCx + (side * centerW) / 2; // 面向该侧的竖边
+    const xSide = hubCx + (side * centerW) / 2; // the vertical edge facing that side
     const above = items.filter((it) => it.ty < cy - hh);
     const mid = items.filter((it) => it.ty >= cy - hh && it.ty <= cy + hh);
     const below = items.filter((it) => it.ty > cy + hh);
@@ -954,24 +954,24 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
   });
 
   const flowNote = twoSided
-    ? `左列 ${leftCol.length} 个调用方 / 来源 → 中心 → 右列 ${rightCol.length} 个被依赖方，**箭头方向即请求 / 数据流向（自左向右）**；`
-    : `中心在左，${rightCol.length} 个邻居排在右侧；`;
+    ? `The left column holds ${leftCol.length} callers / sources → center → the right column holds ${rightCol.length} dependents; **arrow direction is the request / data flow (left to right)**;`
+    : `The center is on the left, with ${rightCol.length} neighbors arranged to its right;`;
   const arcNote = useArc
-    ? `邻居排成**限角等长扇形**（以中心为圆心的圆弧，相邻弦距固定、每条边长度≈${Math.round(arcR)}px），消除了单列形态下顶部 / 底部节点拖出的超长边；`
+    ? `Neighbors are arranged in an **angle-limited equal-length fan** (an arc centered on the center, with fixed adjacent chord spacing and each edge ≈${Math.round(arcR)}px long), eliminating the over-long edges that top / bottom nodes dragged out in the single-column form;`
     : '';
   const fanNote =
-    '每条边的出发点沿中心药丸**面向邻居那一侧**的「上边 → 侧边 → 下边」按目标次序铺开（一条边一个出入口，近中心处不再糊成一束），';
+    'Each edge\'s start point spreads along the center pill\'s **side facing the neighbor** -- “top → side → bottom” -- in target order (one entry/exit per edge, no longer mushing into a bundle near the center),';
   // The crossing count is reported honestly (same basis as stackedLayout): the single-column form has a structural guarantee of 0 crossings,
   // but the arc ends of the equal-length fan may need a detour as a fallback, and a failed detour must not be reported as "0".
   const polys = placed.map((e) => ({ from: e.from, to: e.to, pts: e.points }));
   const crossings = polys.length <= 600 ? countCrossings(polys) : null;
   const hardNote =
     crossings === 0
-      ? '边为从中心药丸缘直接连到目标药丸缘的单段直线（终点落在目标近侧边缘，故不穿过任何节点），间隔由行距与通道宽度保证，因此本图**边交叉 0 处、边不穿过任何节点**'
+      ? 'Edges are single straight segments from the center pill\'s edge directly to the target pill\'s edge (the endpoint lands on the target\'s near edge, so it passes through no node); spacing is guaranteed by row gap and channel width, so this graph has **0 edge crossings and no edge passes through any node**'
       : crossings === null
-        ? '边较多，交叉数未逐一统计'
-        : `当前仍有 **${crossings} 处边交叉**（平面上无法完全消除），逐条确认时请配合悬浮高亮`;
-  const tail = '内容较高时纵向滚动查看。';
+        ? 'Many edges; crossings were not counted one by one'
+        : `There are still **${crossings} edge crossings** (impossible to eliminate completely in the plane); use hover highlighting when verifying them one by one`;
+  const tail = 'Scroll vertically when the content is tall.';
   return {
     nodes,
     edges: placed,
@@ -980,8 +980,8 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     content: boundsOf(nodes),
     // Spreading the start points is also told to the user: it is the direct explanation of "where an edge appears to come from", otherwise it reads as a random offset.
     note: viaStar
-      ? `径向入口判定本图为**星形**（边几乎都只在「使用者 ↔ ${center.name}」之间，即资源视角沿入边回溯的形态；至多 ${NEAR_STAR_LEAF_EDGES} 条叶子间边，如表间 ForeignKey，会绕行）：同心环的画布随人数平方增长，且外环的边会从中心贯穿、压过内环药丸的名字，因此改走中心辐射。${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}${hardNote}。${tail}`
-      : `中心辐射布局：${flowNote}${arcNote}邻居均按「跳数 → 种类 → 名字」排序；${fanNote}${hardNote}。${tail}`,
+      ? `Radial entry judges this graph a **star** (edges run almost only between “consumers ↔ ${center.name}”, i.e. the resource perspective tracing back along in-edges; at most ${NEAR_STAR_LEAF_EDGES} leaf-to-leaf edges, such as a table-to-table ForeignKey, which detours): the concentric-ring canvas grows with the square of the people count, and outer-ring edges run straight through the center and cover inner-ring pill names, so it switches to center-radial.${flowNote}${arcNote}neighbors are all sorted by “hops → kind → name”; ${fanNote}${hardNote}。${tail}`
+      : `Center-radial layout: ${flowNote}${arcNote}neighbors are all sorted by “hops → kind → name”; ${fanNote}${hardNote}。${tail}`,
   };
 }
 
@@ -1116,10 +1116,10 @@ function stackedLayout(input: LayoutInput): LayoutResult {
     content,
     note:
       crossings === null
-        ? '分层布局：自上而下分层（层 = 跳数），层内按重心排序、超宽自动换行、边遇节点自动绕行。边较多，交叉数未逐一统计。'
+        ? 'Layered layout: layered top-down (layer = hops), within a layer sorted by barycenter, over-wide layers wrap automatically, and edges detour around nodes. Many edges; crossings were not counted one by one.'
         : crossings === 0
-          ? '分层布局：自上而下分层（层 = 跳数），层内按重心排序、超宽自动换行、边遇节点自动绕行。当前**边交叉 0 处**，可逐条直读。'
-          : `分层布局：自上而下分层（层 = 跳数），层内按重心排序、超宽自动换行、边遇节点自动绕行。当前仍有 **${crossings} 处边交叉**（平面上无法完全消除），逐条确认时请配合悬浮高亮。`,
+          ? 'Layered layout: layered top-down (layer = hops), within a layer sorted by barycenter, over-wide layers wrap automatically, and edges detour around nodes. Currently **0 edge crossings**, so each can be read directly.'
+          : `Layered layout: layered top-down (layer = hops), within a layer sorted by barycenter, over-wide layers wrap automatically, and edges detour around nodes. There are still **${crossings} edge crossings** (impossible to eliminate completely in the plane); use hover highlighting when verifying them one by one.`,
   };
 }
 
@@ -1238,7 +1238,7 @@ export function spineLayout(input: LayoutInput): LayoutResult {
     edges: placed,
     width: finalW,
     height,
-    note: 'Spine 布局：把最长的一条链排成主轴，便于污点 / 风险取证逐跳核对。',
+    note: 'Spine layout: arranges the longest chain as the main axis, for hop-by-hop verification of taint / risk forensics.',
   };
 }
 
@@ -1286,7 +1286,7 @@ export function compoundLayout(input: LayoutInput): LayoutResult {
     groups,
     width,
     height: Math.max(input.height, height),
-    note: '聚类布局：每个框是一个分组，框上只给计数与样例成员，不是单链路。',
+    note: 'Cluster layout: each box is a group; the box shows only a count and sample members, not a single chain.',
   };
 }
 
@@ -1323,7 +1323,7 @@ export function matrixLayout(input: LayoutInput): LayoutResult {
     colHeaders: m.cols.map((label, i) => ({ label, x: left + i * cellW, y: top - 26 })),
     width: input.width,
     height: Math.max(input.height, top + m.rows.length * cellH + 40),
-    note: '矩阵布局：行 × 列两维度，单元格颜色深浅表示数量，0 表示该组合确实没有产出。',
+    note: 'Matrix layout: two dimensions, rows × columns; cell color depth indicates the count, and 0 means that combination genuinely produced nothing.',
   };
 }
 
@@ -1360,7 +1360,7 @@ export function erLayout(input: LayoutInput): LayoutResult {
     edges: placed,
     width: input.width,
     height: Math.max(input.height, 50 + Math.ceil(all.length / cols) * (boxH + 60) + 40),
-    note: 'ER 布局：表与表之间用 90° 正交连线，用于看同事务共现关系。',
+    note: 'ER layout: tables are connected by 90° orthogonal lines, for seeing co-occurrence within the same transaction.',
   };
 }
 

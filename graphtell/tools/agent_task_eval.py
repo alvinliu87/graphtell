@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""端到端「定位」任务基准：A(图召回引导) vs B(grep 后读，无图)。
+"""End-to-end "localization" task benchmark: A (graph-recall guided) vs B (grep then read, no graph).
 
-这是"不输 AI IDE"最硬的一块证据，但先说清边界：本脚本跑的是**检索定位层**的
-端到端——agent 的任务就是"该在哪改"（这正是 recall 的全部职责；真正写代码是
-codegen，与召回正交）。agent 行为用**确定性策略**模拟，可在不依赖 LLM API 的前提
-下复现；要接真 LLM，只需把下面 `agent_recall` / `agent_grep` 两个策略函数换成
-"调用模型 + 工具"的驱动即可，评分口径不变。
+This is the hardest evidence for "no worse than an AI IDE", but the boundary first: this script runs the
+**retrieval/localization layer** end-to-end -- the agent's task is "what to change where" (exactly recall's
+whole responsibility; actually writing code is codegen, orthogonal to recall). Agent behavior is simulated
+with a **deterministic policy**, reproducible without any LLM API; to plug in a real LLM, just swap the two
+policy functions `agent_recall` / `agent_grep` below for a "call model + tools" driver; scoring stays the same.
 
-任务来源：复用 recall_cases.json 的 30 例，把查询当"改动指令"，gold = 含 target
-标识符的文件集合（即正确答案所在地）。
+Task source: reuse the 30 cases of recall_cases.json, treating the query as a "change instruction";
+gold = the set of files containing a target identifier (i.e. where the correct answer lives).
 
-两种策略（都用同一套 token 计量：字符数//4，与 token_savings_eval 一致）：
+Two strategies (both use the same token accounting: chars//4, consistent with token_savings_eval):
 
-  A  agent_recall  —— 图召回引导
-      1) graphtell recall --limit 10  → 上下文成本 C_A（召回包 token）
-      2) 读召回 top1 命中所在文件     → 读文件成本 R_top
-      成功 = top1 文件 ∈ gold；总成本 = C_A + R_top；读了 1 个文件。
+  A  agent_recall  -- graph-recall guided
+      1) graphtell recall --limit 10  -> context cost C_A (recall pack tokens)
+      2) read the file of the top1 hit -> read cost R_top
+      success = top1 file ∈ gold; total cost = C_A + R_top; 1 file read.
 
-  B  agent_grep    —— 无图，开发者式 grep 后读若干候选
-      1) 用召回同一套展开词 grep 源码 → 上下文成本 C_B（grep 输出 token）
-      2) 读 grep 排名前 K(默认8) 的文件 → 读文件成本 R_K
-      成功 = gold ∩ 前K文件 非空；总成本 = C_B + R_K；读了 K 个文件。
+  B  agent_grep    -- no graph, developer-style grep then read several candidates
+      1) grep the source with the same expanded terms recall uses -> context cost C_B (grep output tokens)
+      2) read grep's top K (default 8) files -> read cost R_K
+      success = gold ∩ top-K files non-empty; total cost = C_B + R_K; K files read.
 
-这样 A 与 B **检索词完全相同**，唯一区别是"有没有图"——公平隔离出图召回的增量价值。
-另报 B-raw（拿用户原话 grep）作朴素对照，体现跨语言鸿沟。
+This way A and B use **exactly the same search terms**; the only difference is "graph or not" -- fairly isolating the incremental value of graph recall.
+Also reports B-raw (grep with the user's original words) as a naive control, showing the cross-language gap.
 
-用法：
+Usage:
     python3 tools/agent_task_eval.py
     python3 tools/agent_task_eval.py --project 1 --k 8
 """
@@ -123,7 +123,7 @@ def file_tokens(path):
 
 
 def agent_recall(project, query, root, gold):
-    """图召回引导：agent 读召回短列表(top10)，从中挑出 gold 文件，再读该文件。"""
+    """Graph-recall guided: the agent reads the short recall list (top10), picks the gold file from it, then reads that file."""
     names, terms, raw = recall(project, query)
     if not names:
         return {"ok": False, "ctx": 0, "read": 0, "files": 0, "top": ""}
@@ -198,7 +198,7 @@ def main():
         ca = f"{mk(A['ok'])} {A['ctx']+A['read']:>5}t/1f"
         cb = f"{mk(B['ok'])} {B['ctx']+B['read']:>5}t/{B['files']}f"
         cbr = f"{mk(Br['ok'])}"
-        # 结论：A 成功且(更省 或 B 失败)
+        # Conclusion: A succeeded and (is cheaper or B failed)
         if A["ok"] and (not B["ok"] or (A['ctx']+A['read']) <= (B['ctx']+B['read'])):
             verdict = "A胜"
         elif A["ok"] and B["ok"]:

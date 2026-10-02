@@ -1,28 +1,30 @@
-# 项目级意图别名配置（`.graphtell/aliases.json`）
+# Project-level intent alias config (`.graphtell/aliases.json`)
 
-graphtell 的召回依赖「中文查询词 → 英文标识符」的桥接。内置的
-[`INTENT_ALIASES`](../../crates/gt-application/src/recall_service.rs) 只收
-**换个项目也大概率成立**的通用词（CRUD 动词、order/pay/user、sms/merge/spec…），
-刻意不放任何具体业务的专属黑话（如「秒杀」「拼团」「团购」）。
+graphtell's recall relies on a "Chinese query term → English identifier" bridge. The built-in
+[`INTENT_ALIASES`](../../crates/gt-application/src/recall_service.rs) only keeps **generic words
+that most likely hold in any project** (CRUD verbs, order/pay/user, sms/merge/spec …), and
+deliberately contains no business-specific jargon (e.g. "flash sale", "group buy", "team buy").
 
-业务黑话的正确归处是**每个代码库自己的** `.graphtell/aliases.json`：
-它随工程走、不污染通用工具源码，且换项目零改动。
+The right home for business jargon is **each codebase's own** `.graphtell/aliases.json`: it travels
+with the project, doesn't pollute the generic tool's source, and needs zero changes when you switch
+projects.
 
-## 位置
+## Location
 
-放在**工程根目录**（即 `graphtell list` 显示的 `root_path`）下：
+Put it under the **project root** (the `root_path` shown by `graphtell list`):
 
 ```
-<项目根>/.graphtell/aliases.json
+<project-root>/.graphtell/aliases.json
 ```
 
-召回时工具会按 `root_path` 读取该文件，与内置表**合并**后用于展开查询词。
-（注意：若多个工程共用同一 `root_path`，它们会共享同一份配置。）
+At recall time the tool reads this file by `root_path` and **merges** it with the built-in table
+before expanding query terms. (Note: if several projects share one `root_path`, they share this
+config.)
 
-## 格式
+## Format
 
-一个 JSON 对象，键是中文意图词，值是它对应的英文 token 数组
-（token 会做**子串匹配**节点名 / fqn）：
+A JSON object: keys are Chinese intent words, values are arrays of the English tokens they map to
+(tokens are matched as **substrings** against node names / fqn):
 
 ```json
 {
@@ -32,26 +34,27 @@ graphtell 的召回依赖「中文查询词 → 英文标识符」的桥接。�
 }
 ```
 
-## 合并语义
+## Merge semantics
 
-- 与内置 `INTENT_ALIASES` **合并**：项目配置里的词会追加进召回词典。
-- **同名键追加而非覆盖**：若项目写 `"订单": ["seckill_order"]`，则最终
-  `订单 → [order, seckill_order]`，内置的 `order` 不会被丢掉。
-- **文件不存在 / 解析失败**：静默回退到内置表（仅打一条 `warning` 日志），
-  绝不阻断召回。
+- **Merged** with the built-in `INTENT_ALIASES`: words from the project config are appended to the
+  recall dictionary.
+- **Same-name keys append rather than override**: if the project writes `"订单": ["seckill_order"]`,
+  the result is `订单 → [order, seckill_order]` -- the built-in `order` is not dropped.
+- **Missing / unparsable file**: silently falls back to the built-in table (logging one `warning`),
+  never blocking recall.
 
-## 如何找到该填的 token
+## How to find the tokens to fill in
 
-1. 在代码库里 grep 领域名词，看类名 / 方法名实际用了什么英文
-   （如 CRMEB 的 `StoreSeckillServices` → `seckill`；litemall 的
-   `LitemallGroupon` → `groupon`）。
-2. 跑一次 `graphtell recall --query "你的中文问题" --markdown`，
-   看质量评估里 **「未命中概念」** 列出的中文词与英文展开——那些就是该补的。
+1. Grep the codebase for domain nouns and see what English the class names / method names actually
+   use (e.g. CRMEB's `StoreSeckillServices` → `seckill`; litemall's `LitemallGroupon` → `groupon`).
+2. Run `graphtell recall --query "你的中文问题" --markdown` once and look at the Chinese words and
+   English expansions listed under **"missed concepts"** in the quality assessment -- those are what
+   you should add.
 
-## 示例
+## Examples
 
-仓库内已附带几份可参考的示例：
+A few reference examples ship in this repo:
 
-- CRMEB：`samples/php-projects/thinkphp/CRMEB/.graphtell/aliases.json`
-- Bagisto：`samples/php-projects/laravel/bagisto/.graphtell/aliases.json`
-- litemall：`samples/java-projects/litemall/.graphtell/aliases.json`
+- CRMEB: `samples/php-projects/thinkphp/CRMEB/.graphtell/aliases.json`
+- Bagisto: `samples/php-projects/laravel/bagisto/.graphtell/aliases.json`
+- litemall: `samples/java-projects/litemall/.graphtell/aliases.json`

@@ -1,6 +1,6 @@
 [package]
 name = "gt-adapter-rules"
-description = "合规规则适配器：装载 rules/*.yaml 声明的检查规则"
+description = "Compliance rules adapter: loads the check rules declared in rules/*.yaml"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,32 +1,32 @@
-# GraphTell —— 单容器部署（后端 + 构建好的 Web UI）。
+# GraphTell -- single-container deployment (backend + built web UI).
 #
-# 架构：后端 `graphtell serve` 在 5177 上同时托管 REST API 与 React SPA（--ui-dir），
-# 单端口、同源、无 CORS、无需额外反向代理。
+# Architecture: the backend `graphtell serve` serves both the REST API and the React SPA on 5177 (--ui-dir),
+# single port, same origin, no CORS, no extra reverse proxy needed.
 #
-# 构建（默认开启 model-candle / model-ort，召回走真实 bge-m3 语义向量；权重缺失时自动退回词面）：
+# Build (model-candle / model-ort on by default; recall uses real bge-m3 semantic vectors, falling back to lexical when weights are missing):
 #   docker build -t graphtell:latest .
 #
-# 若想构建更小的「仅词面」镜像（不编译 candle / ort），用 build arg 关掉默认 feature：
+# To build a smaller "lexical-only" image (no candle / ort compile), turn off the default features with a build arg:
 #   docker build -t graphtell:hash --build-arg GT_FEATURES="--no-default-features" .
 #
-# 运行：
+# Run:
 #   docker run -d -p 5177:5177 -v $(pwd)/data:/data graphtell:latest
-#   浏览器打开 http://localhost:5177/
+#   open http://localhost:5177/ in a browser
 
-############################ 阶段 1：构建前端 ############################
+############################ Stage 1: build frontend ############################
 FROM node:20-slim AS ui-builder
 WORKDIR /src/ui
-# 同一份 lockfile 驱动可复现安装
+# The same lockfile drives a reproducible install
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
 COPY ui/ ./
-# 同源部署：API 走相对路径，无需在构建期写死主机名
+# Same-origin deployment: the API uses relative paths, no hostname hardcoded at build time
 ENV VITE_API_BASE=same-origin
 RUN npm run build
 
-############################ 阶段 2：构建后端 ############################
+############################ Stage 2: build backend ############################
 FROM rust:1.83-slim AS rust-builder
-# model-candle / model-ort 的本地构建依赖
+# Local build deps for model-candle / model-ort
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config cmake \
         libssl-dev clang libclang-dev protobuf-compiler \
@@ -34,30 +34,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-# 用 build arg 控制 feature（默认空 = 使用 Cargo.toml 里的默认 feature：candle + ort）
+# Use a build arg to control features (empty by default = use the default features in Cargo.toml: candle + ort)
 ARG GT_FEATURES=""
 RUN cargo build --release ${GT_FEATURES} -p gt-app
 
-############################ 阶段 3：运行镜像 ############################
+############################ Stage 3: runtime image ############################
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3 libgcc-s1 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-# 后端二进制
+# Backend binary
 COPY --from=rust-builder /src/target/release/graphtell /app/graphtell
-# 内置资产（FKB / 规则 / 视角声明）：二进制按「可执行文件相邻目录」解析
+# Built-in assets (FKB / rules / perspective declarations): the binary resolves them relative to the executable's directory
 COPY fkb /app/fkb
 COPY rules /app/rules
 COPY views /app/views
-# 构建好的前端（由后端 --ui-dir 托管）
+# The built frontend (served by the backend via --ui-dir)
 COPY --from=ui-builder /src/ui/dist /app/ui/dist
 
-# 数据与日志挂载点（SQLite / 落盘向量都在这里）
+# Data and log mount points (SQLite / persisted vectors live here)
 VOLUME ["/data"]
 EXPOSE 5177
 
-# 顶层 --data-dir 在前、serve 子命令在后；--ui-dir 让后端顺带托管 SPA
+# Top-level --data-dir comes first, then the serve subcommand; --ui-dir makes the backend serve the SPA too
 ENTRYPOINT ["/app/graphtell", "--data-dir", "/data", "serve", \
             "--bind", "0.0.0.0", "--port", "5177", "--ui-dir", "/app/ui/dist"]

@@ -41,7 +41,7 @@ import {
 } from '@/entities/check';
 import { useLocale } from '@/shared/lib/i18n';
 
-/** 统计卡强调色（`SEVERITY_COLOR` 是 antd 语义色名，给表格 Tag 用，两者用途不同）。 */
+/** Accent color for the stat cards (`SEVERITY_COLOR` is an antd semantic color name used for table Tags; the two serve different purposes). */
 const SEVERITY_ACCENT: Record<Severity, string> = {
   critical: '#a8071a',
   error: '#ff4d4f',
@@ -55,30 +55,30 @@ const SUB_ROLE_LABEL: Record<string, string> = {
 };
 
 /**
- * 读取落库违规的条数上限（与后端 `DEFAULT_VIOLATION_LIMIT` 一致）。
+ * Upper bound for reading persisted violation rows (matches the backend's `DEFAULT_VIOLATION_LIMIT`).
  *
- * 不能写小：它是"分页前的全量拉取"，页面自己按 20 条一页翻。曾经写 500，
- * 而 likeshop 一次检查就有 996 条 —— 于是刚跑完看到的是完整结果，
- * 刷新页面后只剩截断后的 500 条（且按写入顺序截断，critical 全被砍掉），
- * 看起来就像"没持久化、回到了老数据"。
+ * Must not be set small: it is a "full fetch before paging", and the page pages 20 at a time itself. It was once 500,
+ * while a single likeshop check produced 996 rows -- so right after a run you saw the complete result,
+ * but after refreshing the page only the truncated 500 remained (truncated by write order, so all critical ones were cut),
+ * which looked like "it wasn't persisted and went back to old data".
  */
 const STORED_LIMIT = 5000;
 
 /**
- * 规则检验结果页：建图后自动跑出的结论（来自持久化诊断表）。
+ * Rule-check results page: conclusions produced automatically after a build (from the persisted diagnostics table).
  *
- * 设计要点：
- * * 进入页面即直接显示**上一次自动检查**的落库结果，无需手动触发；
- * * 顶栏「刷新」用于回填/重算：对从未跑过的工程（如本功能上线前建好的工程）
- *   一键重跑并写回，新工程建图已自动完成这步；
- * * 规则集拆到独立的「规则集」页，本页只谈结论。
+ * Design notes:
+ * * entering the page shows the **last automatic check**'s persisted result directly, without manual triggering;
+ * * the top-bar "refresh" is for backfill / recompute: for a project that has never run (e.g. built before this feature shipped)
+ *   it reruns and writes back in one click; new projects already do this automatically at build time;
+ * * the rule set lives on its own "rule set" page; this page only talks about conclusions.
  */
 export function CheckPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
   const navigate = useNavigate();
   const { t } = useLocale();
-  // 手动重跑/刷新后刷新侧边栏「规则检验」角标。
+  // Refresh the sidebar "rule check" badge after a manual rerun / refresh.
   const { refreshCheckSummary } = useOutletContext<{ refreshCheckSummary: () => void }>();
 
   const [report, setReport] = useState<CheckReport | null>(null);
@@ -89,29 +89,29 @@ export function CheckPage() {
   const [subFilter, setSubFilter] = useState<number[]>([]);
   const [limit] = useState(20);
   /**
-   * 下拉里每条规则的命中数，是否计入当前严重度筛选。
-   * 默认 false：计数只看子工程范围、不受严重度影响（选「警告」时仍能看到每条规则的总命中）。
-   * 打开后：计数与列表一致，随严重度筛选收窄。
+   * Whether each rule's hit count in the dropdown is affected by the current severity filter.
+   * Default false: the count only looks at the sub-project scope, unaffected by severity (so selecting "warning" still shows each rule's total hits).
+   * When on: the count matches the list and narrows with the severity filter.
    */
   const [countBySeverity, setCountBySeverity] = useState(false);
 
-  // 子工程列表（供子项目筛选器）。
+  // Sub-project list (for the sub-project filter).
   const { data: subsData } = useAsync(() => projectApi.subProjects(id), [id]);
   const subs: SubProject[] = subsData ?? [];
 
-  // 进入即加载上一次落库结果（自动检查已写入），不重跑；按子项目筛选时服务端已过滤。
+  // Load the last persisted result on entry (the automatic check already wrote it), don't rerun; the server already filters when filtering by sub-project.
   const stored = useAsync(
     () => checkApi.violations(id, STORED_LIMIT, subFilter.length ? subFilter : undefined),
     [id, subFilter],
   );
-  // 落库总数（按严重度分组）。用于判断列表是否被上限截断 —— 截断却不说，
-  // 用户会以为"检查只跑出这么多"。
+  // Persisted total (grouped by severity). Used to tell whether the list was truncated by the cap -- truncating without saying so makes
+  // users think "the check only produced this many".
   const summary = useAsync(() => checkApi.summary(id), [id]);
-  // 规则列表用于严重度筛选下拉与「已装载规则」计数。
+  // The rule list feeds the severity filter dropdown and the "loaded rules" count.
   const rules = useAsync(() => checkApi.rules(), []);
 
   const violations = report?.violations ?? stored.data ?? [];
-  // 子项目筛选：命中任一所选子工程，或归属为空（共享资源，如代码图「共享节点始终显示」）。
+  // Sub-project filter: hit any selected sub-project, or belong to none (shared resources, like the code graph's "shared nodes always shown").
   const scoped = useMemo(
     () =>
       subFilter.length === 0
@@ -131,8 +131,8 @@ export function CheckPage() {
       const r = await checkApi.check(id, []);
       setReport(r);
       refreshCheckSummary();
-      // 落库结果必须同步重拉：它是页面重新挂载（切换页面 / 刷新浏览器）后
-      // 唯一的数据源 —— 不重拉的话，用户下次进来看到的仍是上一轮的落库内容。
+      // The persisted result must be refetched: after the page remounts (switching pages / browser refresh) it is
+      // the only data source -- without refetching, the user would still see the previous round's persisted content next time.
       void stored.reload();
       void summary.reload();
       if (r.violations.length === 0 && r.rules_silent.length === 0) {
@@ -146,11 +146,11 @@ export function CheckPage() {
   };
 
   /**
-   * 严重度计数优先取自**落库汇总**（`check/summary` 是全量 `COUNT`，与侧边栏角标同源），
-   * 而不是从已加载的列表里数 —— 列表带读取上限，数出来的是"载入了多少条"，
-   * 不是"有多少条违规"，两者在超限工程上差一个量级。
+   * Severity counts come from the **persisted summary** first (`check/summary` is a full `COUNT`, same source as the sidebar badge),
+   * not from counting the loaded list -- the list has a read cap, so counting yields "how many were loaded",
+   * not "how many violations exist"; on an over-limit project the two differ by an order of magnitude.
    *
-   * 只有在**按子工程筛选**时才退回数列表：`summary` 是工程级的，筛选后它偏大。
+   * Only when **filtering by sub-project** do we fall back to counting the list: `summary` is project-level, so after filtering it is too large.
    */
   const counts = useMemo(() => {
     const empty = (): Record<Severity, number> => ({ critical: 0, error: 0, warning: 0, info: 0 });
@@ -163,7 +163,7 @@ export function CheckPage() {
           info: summary.data.info,
         };
       }
-      // 手动刷新后报告里也有一份全量分档（key 与 summary 一致），优先于数列表。
+      // After a manual refresh the report also carries a full breakdown (same keys as summary), which takes priority over counting the list.
       if (report) {
         const c = empty();
         for (const k of Object.keys(c) as Severity[]) c[k] = report.by_severity[k] ?? 0;
@@ -175,7 +175,7 @@ export function CheckPage() {
     return c;
   }, [summary.data, report, subFilter.length, scoped]);
 
-  // 落库总数 vs 实际列出条数：只在**没有子工程筛选**时比较（筛选后自然会更少）。
+  // Persisted total vs actually listed rows: compare only when **there is no sub-project filter** (filtering naturally yields fewer).
   const storedTotal = summary.data
     ? summary.data.critical + summary.data.error + summary.data.warning + summary.data.info
     : null;
@@ -183,19 +183,19 @@ export function CheckPage() {
     storedTotal != null && subFilter.length === 0 && scoped.length > 0 && scoped.length < storedTotal;
 
   /**
-   * 「汇总有数、列表为空」必须单独说清楚。
+   * "Summary has data but the list is empty" must be called out separately.
    *
-   * 曾经只要列表为空就显示「还没有检查结果」，而 `stored.error` 从没被渲染 ——
-   * 于是请求失败（工程 id 失效、后端 500、网络不通）与"确实 0 条违规"长得一模一样。
-   * 更糟的是此时侧栏角标（同源的 summary）仍显示历史总数，
-   * 于是出现"总数不为 0 但结果为空"却没有任何解释的界面。
+   * Once, any empty list showed "no check results yet", and `stored.error` was never rendered --
+   * so a failed request (invalid project id, backend 500, no network) looked exactly like "genuinely 0 violations".
+   * Worse, the sidebar badge (the same-source summary) still showed the historical total,
+   * producing an interface with "total non-zero but results empty" and no explanation.
    */
   const emptyButShouldHaveData =
     !stored.loading && !loadFailed && scoped.length === 0 && storedTotal != null && storedTotal > 0;
 
   /**
-   * 「计数基准」列表：默认与 `scoped` 一致（只看子工程范围）；
-   * 打开「计数随严重度」开关后，先按当前严重度收窄，使下拉命中数与列表同步。
+   * The "count basis" list: by default the same as `scoped` (sub-project scope only);
+   * after turning on "count follows severity", narrow by the current severity first so the dropdown hit counts sync with the list.
    */
   const countBase = useMemo(
     () =>
@@ -206,8 +206,8 @@ export function CheckPage() {
   );
 
   /**
-   * 每条规则的命中数：基于 `countBase`（子工程范围，可选项随严重度收窄）；
-   * 默认不随严重度筛选变化，否则数字跳变、难以解读。
+   * Each rule's hit count: based on `countBase` (sub-project scope, optionally narrowed by severity);
+   * does not change with the severity filter by default, otherwise the numbers jump around and are hard to read.
    */
   const ruleCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -216,8 +216,8 @@ export function CheckPage() {
   }, [countBase]);
 
   /**
-   * 规则下拉选项：按 `category` 分组（一级，不做多级树），组内按
-   * 「严重度 → 命中数降序 → 标题」排序，高频问题浮到上面；每条附命中数。
+   * Rule dropdown options: grouped by `category` (one level, no multi-level tree), within a group sorted by
+   * "severity → hit count descending → title" so frequent problems float up; each entry shows its hit count.
    */
   const ruleOptions = useMemo(() => {
     const byCat = new Map<string, CheckRule[]>();
@@ -276,8 +276,8 @@ export function CheckPage() {
         subtitle={t('Rule conclusions produced automatically after the build (persisted); which rules are enabled and their thresholds are tuned in "Rule Set".')}
         extra={
           <Space>
-            {/* 规则集的入口在这里（侧栏已不再挂这一项）：调规则的动机来自"看了结论之后"，
-                而不是"我想去逛规则" —— 所以它是结论页的一个动作，不是并列的目的地。 */}
+            {/* The rule-set entry lives here (the sidebar no longer carries it): the motivation to tune rules comes "after seeing the conclusions",
+                     not "I want to browse rules" -- so it is an action on the conclusions page, not a parallel destination. */}
             <Button icon={<ProfileOutlined />} onClick={() => navigate(`/projects/${id}/rules`)}>
               {t('Rule Set')}
             </Button>
@@ -416,8 +416,8 @@ export function CheckPage() {
                 accent="#7c5cff"
               />
             </Col>
-            {/* 四档由 `SEVERITY_ORDER` 生成，与下方严重度筛选**同源同序** ——
-                手写两份列表正是「统计卡有严重、筛选器没有」的成因。 */}
+            {/* The four tiers are generated from `SEVERITY_ORDER`, **same source and order** as the severity filter below --
+                     hand-writing two lists is exactly what caused "the stat card has critical but the filter doesn't". */}
             {SEVERITY_ORDER.map((s) => (
               <Col key={s} xs={12} md={4}>
                 <StatCard

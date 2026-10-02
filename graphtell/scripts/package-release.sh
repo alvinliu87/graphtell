@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# 打包 GraphTell 发布物（不含 Docker）：构建前端 + 后端 release 二进制，
-# 组装到一个目录并打成 tarball。产物在 ./release/。
+# Package the GraphTell release artifacts (no Docker): build the frontend + backend release binary,
+# assemble them into a directory and tar it up. Output goes to ./release/.
 #
-# 用法：
-#   ./scripts/package-release.sh            # 默认：开启 candle/ort 默认 feature
-#   GT_FEATURES="--no-default-features" ./scripts/package-release.sh   # 仅词面、更小
+# Usage:
+#   ./scripts/package-release.sh            # default: candle/ort default features on
+#   GT_FEATURES="--no-default-features" ./scripts/package-release.sh   # lexical only, smaller
 #
 set -euo pipefail
 
@@ -18,18 +18,18 @@ GT_FEATURES="${GT_FEATURES:---}"
 
 echo "==> 版本：$VERSION  输出目录：$OUT"
 
-# 1) 前端
+# 1) frontend
 echo "==> 构建前端 UI (VITE_API_BASE=same-origin)"
 cd "$ROOT/ui"
 npm ci
 VITE_API_BASE=same-origin npm run build
 cd "$ROOT"
 
-# 2) 后端
+# 2) backend
 echo "==> 构建后端 release 二进制 (cargo build --release $GT_FEATURES -p gt-app)"
 cargo build --release $GT_FEATURES -p gt-app
 
-# 3) 组装
+# 3) assemble
 echo "==> 组装发布目录"
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -52,7 +52,7 @@ GraphTell $VERSION —— 发布包
 - data/ 存放 SQLite 与落盘向量，建议挂载持久卷。
 EOF
 
-# 4) 打包
+# 4) package
 TARBALL="release/graphtell-$VERSION.tar.gz"
 tar -czf "$TARBALL" -C release "graphtell-$VERSION"
 echo "==> 完成：$TARBALL"

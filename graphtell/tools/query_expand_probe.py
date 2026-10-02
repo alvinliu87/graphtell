@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""查询侧扩展探针：验证「给中文查询补充英文代码 token」能否把真答案拉进余弦前 k。
+"""Query-side expansion probe: test whether "adding English code tokens to a Chinese query" pulls the true answer into the cosine top-k.
 
-只改查询编码文本，不动节点向量 —— 因此无需重预热，可在此快速验证方向是否成立。
-命中口径与 cosine_diag.py 一致（节点名包含任一 target 即真答案）。
+Only the query encoding text changes, not the node vectors -- so no re-warming is needed and the direction can be
+verified quickly here. The hit criterion matches cosine_diag.py (a node name containing any target = true answer).
 
-用法：
-    python3 tools/query_expand_probe.py            # 全部工程
+Usage:
+    python3 tools/query_expand_probe.py            # all projects
     python3 tools/query_expand_probe.py --project 1
 """
 import argparse
@@ -22,10 +22,10 @@ TOK = os.path.join(ROOT, "models", "bge-m3", "tokenizer.json")
 PREFIX = "Represent this sentence for searching relevant passages: "
 KS = (5, 10, 20)
 
-# 通用中文→英文「代码词」词典（与具体业务无关，跨任意代码库都成立）。
-# 只收高频通用技术/动作词；不收具体业务逻辑，保持工具通用性。
+# Generic Chinese→English "code word" dictionary (business-agnostic, valid across any codebase).
+# Only high-frequency generic technical / action words; no concrete business logic, keeping the tool generic.
 LEXICON = {
-    # 动作
+    # Actions
     "查询": "query find search", "列表": "list", "分页": "pagination page",
     "获取": "get fetch obtain", "加载": "load", "读取": "read", "拉取": "fetch pull",
     "保存": "save persist store", "新增": "add create insert", "创建": "create",
@@ -40,7 +40,7 @@ LEXICON = {
     "生成": "generate", "转换": "convert transform", "解析": "parse", "序列化": "serialize",
     "加密": "encrypt", "解密": "decrypt", "排序": "sort order", "统计": "count statistics",
     "汇总": "aggregate", "重置": "reset", "刷新": "refresh",
-    # 实体/概念
+    # Entities / concepts
     "用户": "user", "管理员": "admin", "角色": "role", "权限": "permission",
     "订单": "order", "商品": "product item goods", "库存": "stock inventory",
     "余额": "balance", "优惠": "coupon discount", "折扣": "discount", "支付": "pay payment",
@@ -144,7 +144,7 @@ def main():
             if ids[idx] in true_ids:
                 base_rank = r
                 break
-        # 扩展
+        # Expand
         ex = expand(q)
         qe = embed(f"{q} {ex}") if ex else qv
         sims2 = mat @ qe

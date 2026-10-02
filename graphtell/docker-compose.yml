@@ -1,9 +1,9 @@
-# 一键起 GraphTell（后端 + 前端同源托管，单端口 5177）。
+# One-command GraphTell (backend + frontend served same-origin, single port 5177).
 #
 #   docker compose up -d --build
-#   浏览器打开 http://localhost:5177/
+#   open http://localhost:5177/ in a browser
 #
-# 想用「仅词面」镜像（更小、不编译 candle/ort），把 build.args 的 GT_FEATURES 改成 "--no-default-features"。
+# To use the "lexical-only" image (smaller, no candle/ort compile), change build.args GT_FEATURES to "--no-default-features".
 services:
   graphtell:
     build:

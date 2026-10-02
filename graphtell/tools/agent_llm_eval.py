@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
-"""真·端到端 agent 基准（LLM 驱动）+ 安全校验。
+"""True end-to-end agent benchmark (LLM-driven) + safety validation.
 
-这是 agent_task_eval.py（确定性策略）的"真 LLM"版本：agent 不再是我们手写的策略，
-而是**真的调一个 LLM**，给它 recall / grep / read_file / propose_edit 四个工具，
-让它自己决定"在哪改、怎么改"。
+This is the "real LLM" version of agent_task_eval.py (deterministic policy): the agent is no longer our hand-written
+policy but **really calls an LLM**, given four tools -- recall / grep / read_file / propose_edit --
+and decides for itself "where and how to change".
 
-⚠️ 本环境没有可用的 LLM（无 API key、无本地模型），所以默认跑 `--mock` 模式：
-用一个确定性"oracle"agent 走完**完全相同的工具循环与校验管线**，证明接线正确。
-真实数字需要你提供模型（见下）。本脚本绝不伪造 LLM 结果。
+⚠️ This environment has no usable LLM (no API key, no local model), so it defaults to `--mock` mode:
+a deterministic "oracle" agent walks the **exact same tool loop and validation pipeline**, proving the wiring is correct.
+Real numbers need you to supply a model (see below). This script never fabricates LLM results.
 
-安全：所有 propose_edit 都落到 /tmp 下的临时副本，真实仓库零改动；校验完即丢弃。
+Safety: every propose_edit lands on a temp copy under /tmp; the real repo stays untouched and is discarded after validation.
 
-工具（LLM 可见）：
-  recall(query, limit)        → 调 graphtell recall，返回排名上下文包
-  grep(terms)                 → 在源码树里 grep（与 grep_baseline 同口径）
-  read_file(path)             → 读文件内容（截断到 8k 字符）
-  propose_edit(file, old, new)→ 记录一次编辑（仅写入临时副本）
+Tools (visible to the LLM):
+  recall(query, limit)        -> call graphtell recall, returns a ranked context pack
+  grep(terms)                 -> grep the source tree (same criteria as grep_baseline)
+  read_file(path)             -> read a file (truncated to 8k chars)
+  propose_edit(file, old, new)-> record one edit (written to the temp copy only)
 
-校验（判定 agent 是否成功）：
-  1) 定位成功：propose_edit 命中的文件 ∈ gold（含 target 标识符的文件集合）
-  2) 编辑可应用：old 串确实存在于临时副本、new 已替换、且（.py）能通过 py_compile
+Validation (judges whether the agent succeeded):
+  1) Localization success: the file hit by propose_edit ∈ gold (the set of files containing a target identifier)
+  2) Edit applicable: the old string really exists in the temp copy, new is substituted, and (.py) passes py_compile
 
-用法：
-  # 验证管线（无需 LLM）
+Usage:
+  #   # validate the pipeline (no LLM needed)
   python3 tools/agent_llm_eval.py --mock --project 13 --max 3
 
-  # 真实 LLM（需配置其一）
+  #   # real LLM (needs one of these configured)
   export GT_LLM_KEY=sk-... GT_LLM_BASE=https://api.openai.com/v1 GT_LLM_MODEL=gpt-4o-mini
   python3 tools/agent_llm_eval.py --project 1 --max 5
-  # 或 Anthropic 兼容
+  #   # or Anthropic-compatible
   export GT_LLM_KEY=... GT_LLM_BASE=https://api.anthropic.com/v1 GT_LLM_MODEL=claude-...
 """
 import argparse
@@ -110,7 +110,7 @@ def tool_read(path, cap=8000):
 
 
 class LLM:
-    """OpenAI 兼容的 chat/completions 驱动；无 key 时退化为 mock。"""
+    """OpenAI-compatible chat/completions driver; degrades to mock when no key."""
     def __init__(self):
         self.key = os.environ.get("GT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
         self.base = (os.environ.get("GT_LLM_BASE") or
@@ -136,7 +136,7 @@ class LLM:
             return {"error": str(e)}
 
     def _mock(self, messages, tools):
-        """确定性 oracle：按对话状态推进 recall→read→propose_edit（仅验证管线，不计量能力）。"""
+        """Deterministic oracle: advances recall→read→propose_edit by dialogue state (validates the pipeline only, not a capability measure)."""
         task_msg = next((m["content"] for m in messages
                          if isinstance(m.get("content"), str) and "PROJECT=" in m["content"]), "")
         m = re.search(r"PROJECT=(\d+) QUERY=(.*?) GOLD=(.*?)\s*$", task_msg)
@@ -200,7 +200,7 @@ TOOLS = [
 
 
 def verify(proj_root, gold, edit):
-    """把 edit 应用到 /tmp 临时副本，校验可应用 + 定位正确 + (.py)语法。"""
+    """Apply the edit to a /tmp temp copy; validate applicability + correct localization + (.py) syntax."""
     if not edit:
         return False, "no-edit"
     f = edit["file"]

@@ -6,7 +6,7 @@ import { useLocale } from '@/shared/lib/i18n';
 import { DeleteProjectButton } from '@/features/delete-project';
 import { formatTime } from '@/shared/lib/format';
 
-/** 工程列表。 */
+/** Project list. */
 export function ProjectTable({
   projects,
   loading,
@@ -46,9 +46,9 @@ export function ProjectTable({
             </a>
           ),
         },
-        // 根目录是**不定长**内容，让它吃掉剩余宽度（不设 width）；若把不设宽度的位置留给
-        // 「名称」，固定表格布局下它会独占所有剩余空间，把路径挤成一小截 —— 正是「名字很宽、
-        // 路径被截断」的成因。名称反而是短枚举，固定宽度 + ellipsis 更稳。
+        // The root directory is **variable-length** content, so let it take the remaining width (no width set); if the unsized slot were left to
+        // "name", under a fixed table layout it would claim all remaining space and squeeze the path into a stub -- exactly the cause of
+        // "very wide names, truncated paths". Name is instead a short enumeration, so a fixed width + ellipsis is steadier.
         { title: t('Root'), dataIndex: 'root_path', ellipsis: true },
         {
           title: t('Status'),
@@ -83,11 +83,11 @@ export function ProjectTable({
                 />
               </Tooltip>
               {/*
-                暂时注释：节点浏览（Explorer）入口已停用（与侧栏同步）。
-                它的独特价值是「按名精确查 / 按类盘点」，但当前形态没兑现：
-                `limit: 200` 硬顶且无排序 → 大盘点会漏；列里 fqn / 语言 / 阶段 / 置信度
-                是造图内部字段；与提示词增强（语义检索）大量重叠。
-                页面与路由都保留，恢复时把这一行（与侧栏那一行）解开即可。
+                Temporarily commented out: the node-browse (Explorer) entry is disabled (synced with the sidebar).
+                Its unique value is "exact lookup by name / inventory by kind", but the current form doesn't deliver:
+                `limit: 200` hard cap with no sorting -> a large inventory misses entries; the columns fqn / language / phase / confidence
+                are internal graph-building fields; and it overlaps heavily with prompt augmentation (semantic search).
+                The page and route are both kept; restoring just uncomments this line (and the sidebar one).
               */}
               {/* <Tooltip title={t('Explorer')}>
                 <Button

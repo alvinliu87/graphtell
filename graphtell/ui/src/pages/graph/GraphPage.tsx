@@ -51,8 +51,8 @@ import {
   sameViewState,
   type ViewState,
 } from '@/shared/lib/urlState';
-// 暂时注释：IDE 打开入口已移除，无需再处理「后端根 → 本地根」映射（根模板 / WSL / 按工程覆盖）。
-// 以后再考虑加回时恢复此 import。
+// Temporarily commented out: the IDE-open entry has been removed, so there's no need to handle the "backend root -> local root" mapping (root template / WSL / per-project override).
+// Restore this import if we ever bring it back.
 // import {
 //   effectiveTemplate,
 //   getWslDistro,
@@ -63,7 +63,7 @@ import { formatNumber } from '@/shared/lib/format';
 import { edgeKindLabel, useLocale } from '@/shared/lib/i18n';
 import { FullscreenOutlined, InfoCircleOutlined } from '@ant-design/icons';
 
-/** 代码图页：两级筛选 → 单对象链路子图 → 可跳转的结论面板。 */
+/** Code graph page: two-level filtering -> single-object link subgraph -> a jumpable conclusions panel. */
 export function GraphPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
@@ -75,88 +75,88 @@ export function GraphPage() {
 
   const { perspectives } = usePerspectives(id);
 
-  /** 现场（URL 是唯一真源）。 */
+  /** Scene (the URL is the single source of truth). */
   const [state, setState] = useState<ViewState>(() => decodeViewState(params.toString()));
-  /** 面包屑：记录导航过的视角，可回退。 */
+  /** Breadcrumb: records the perspectives navigated, allows going back. */
   const [trail, setTrail] = useState<BreadcrumbItem[]>([]);
-  /** 上一个中心，切视角后保留为邻居并标记 `from`。 */
+  /** The previous center, kept as a neighbor and marked `from` after switching perspective. */
   const [origin, setOrigin] = useState<{ id: number; name: string } | null>(null);
-  /** 候选列表连同它所属的视角一起存：切视角后必须立刻失效，
-   *  否则会拿上一视角的列表来填空默认值 / 判断"节点是否存在"。 */
+  /** Store the candidate list together with the perspective it belongs to: it must be invalidated immediately when switching perspective,
+   *  otherwise it would use the previous perspective's list to fill the default value / judge "does the node exist". */
   const [candidateBundle, setCandidateBundle] = useState<{ p: string; q: string; list: Candidate[] }>({
     p: '',
     q: '',
     list: [],
   });
-  /** 当前视角的候选是否已从后端返回：用于判断"未选节点"时是「还在加载」还是「确实没有任何候选」。 */
+  /** Whether the current perspective's candidates have come back from the backend: tells "no node selected" apart as "still loading" vs "truly no candidates". */
   const [candidatesLoaded, setCandidatesLoaded] = useState(false);
   /**
-   * 当前视角下「后端推荐的默认对象」id——独立于下拉的自动补全缓存。
+   * The id of the "backend-recommended default object" under the current perspective -- independent of the dropdown autocomplete cache.
    *
-   * 与 `candidateBundle` 解耦：默认对象来自后端对**全量候选**的"语义依赖价值"排序
-   * （无搜索词那次 `candidates` 请求），是视图层派生语义；而 `candidateBundle` 是
-   * 「自动补全查询」的客户端缓存。两者语义不同、不应混用——这里在排名列表到达时
-   * 单独快照一次，后续搜索 / 展开下拉都不会改写它，彻底断开
-   * "默认对象 = 自动补全缓存的第一项" 这种前后端语义混用。
+   * Decoupled from `candidateBundle`: the default object comes from the backend's "semantic dependency value" ranking over **all candidates**
+   * (that one `candidates` request without a search term) -- view-layer derived semantics; while `candidateBundle` is a client cache
+   * of "autocomplete queries". The two differ in meaning and must not be mixed -- here we snapshot once when the ranking
+   * list arrives; later searches / opening the dropdown never rewrite it,
+   * fully severing the "default object = first item of the autocomplete cache" conflation.
    */
   const [defaultNode, setDefaultNode] = useState<{ p: string; id: number } | null>(null);
-  /** 只有"属于当前视角"的候选才生效；切换视角的瞬间派生为空，等新视角候选到达后才有值。 */
+  /** Only candidates "belonging to the current perspective" apply; the moment you switch perspective it derives to empty until the new perspective's candidates arrive. */
   const candidates = candidateBundle.p === state.p ? candidateBundle.list : [];
   const [candidateSearch, setCandidateSearch] = useState('');
-  /** 二级对象下拉是否展开：候选只在展开时才去后端取（按需加载）。
-   *  后端 candidates 在无搜索词时会取全量候选做"语义依赖价值"排序，但已改为整图预加载后
-   *  在内存里跑 BFS（不再逐节点查库），很快；有搜索词时直接按名称返回、不打分。
-   *  这里仍按需加载：已选中节点且未展开下拉时绝不预取，避免每次切视角都无谓打一次。 */
+  /** Whether the level-2 object dropdown is open: candidates are only fetched from the backend when it is open (loaded on demand).
+   *  backend candidates without a search term used to take all candidates and rank by "semantic dependency value", but after moving
+   *  to whole-graph preloading it runs BFS in memory (no per-node DB lookups) and is fast; with a search term it matches by name, no scoring.
+   *  Still loaded on demand here: never prefetch when a node is selected and the dropdown is closed, so a perspective switch makes no pointless call. */
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  /** 折叠模式下，点击节点后按需展开显示的语法子图（按节点 id 归集）。 */
+  /** In collapsed mode, the syntactic subgraph shown on demand after clicking a node (grouped by node id). */
   const [expanded, setExpanded] = useState<Record<number, { nodes: CanvasNode[]; edges: EdgeView[] }>>({});
   const [expandingId, setExpandingId] = useState<number | null>(null);
   const [inspectNode, setInspectNode] = useState<number | null>(state.i);
   const [inspectEdge, setInspectEdge] = useState<number | null>(state.e);
-  /** 点击的那条边本身。合成边的折叠链（`via`）只存在于当次视图结果里，按 id 重查拿不到，
-   *  所以必须点击时随身带入 Inspector，否则"途经 N 跳"就会变成一句空话。 */
+  /** The edge that was clicked. A synthetic edge's collapsed chain (`via`) exists only in this view result and can't be re-queried by id,
+   *  so it must be carried into the Inspector on click, otherwise "passing through N hops" becomes an empty claim. */
   const [inspectEdgeView, setInspectEdgeView] = useState<EdgeView | null>(null);
-  /** 右侧"结论/导航"面板：默认收起为抽屉浮层，不占用图的横向空间。 */
+  /** The right-hand "conclusions / navigation" panel: collapsed by default into a floating drawer, so it doesn't eat the graph's horizontal space. */
   const [drawerOpen, setDrawerOpen] = useState(false);
-  /** 孤儿直连访问列表是否展开（默认收起，只露一行计数）。 */
+  /** Whether the orphan direct-access list is expanded (collapsed by default, showing only a one-line count). */
   const [orphansOpen, setOrphansOpen] = useState(false);
   const lastPushed = useRef<string>('');
   /**
-   * 下一次写 URL 是否要**跳过**：state 刚从 URL 同步过来时不许回写。
+   * Whether the **next** URL write should be **skipped**: state that was just synced from the URL must not be written back.
    *
-   * 两个 effect 的触发时机不同（`[params]` vs `[state]`），存在"URL 与 state 同帧各变一次"
-   * 的窗口：此时 state→URL 用的还是**同步前**的旧 state，写回去就把刚到达的新 URL 覆盖掉，
-   * 而覆盖后的 URL 又会被 URL→state 同步成旧 state —— 两者互踩、永远差一拍，
-   * 表现就是切视角后 URL 在两个值之间无限来回跳。
+   * The two effects fire at different times (`[params]` vs `[state]`), leaving a window where "the URL and state each change
+   * once in the same frame": then state->URL still uses the **pre-sync** old state, so writing back overwrites the new URL that just arrived,
+   * and that overwritten URL is in turn synced back into state as the old state -- the two step on each other, always one beat apart,
+   * which shows up as the URL bouncing endlessly between two values after a perspective switch.
    */
   const skipWrite = useRef(false);
   /**
-   * 下一次写 URL 是否用 `replace`（不占历史记录）。
+   * Whether the next URL write uses `replace` (consuming no history entry).
    *
-   * 只有**用户主动导航**（切视角 / 选对象 / 点面包屑 / 点图）才配占一条历史记录；
-   * 由状态自己"补出来"的更新（URL 缺 `p` 时的修正、未指定对象时自动选中默认对象）
-   * 一律 replace —— 否则切一次视角就压两条记录（先 `?p=X` 再 `?p=X&n=Y`），
-   * 返回键退到 `?p=X` 又会被重新推一次、再自动补 `n`，URL 看起来就在原地反复跳。
+   * Only **user-initiated navigation** (switch perspective / select object / click breadcrumb / click graph) earns a history entry;
+   * updates "filled in" by state itself (correcting a missing `p` in the URL, auto-selecting a default object when none is specified)
+   * always use replace -- otherwise one perspective switch pushes two entries (`?p=X` then `?p=X&n=Y`),
+   * and Back to `?p=X` gets pushed again and auto-fills `n`, so the URL looks like it bounces in place.
    */
   const derivedNav = useRef(false);
 
   const current = perspectives.find((p) => p.id === state.p) ?? null;
   const isAggregate = current?.mode === 'aggregate';
-  /** 未选节点、且候选尚未就绪 / 即将自动选中第一个时：图区应显示 spinner 而非空态，
-   *  否则首屏与切视角会先闪一下「该视角下暂无可展示的对象」。 */
+  /** When no node is selected and candidates aren't ready / the first one is about to be auto-selected: the graph area should show a spinner rather than an empty state,
+   *  otherwise the first screen and perspective switches flash "no object to show under this perspective". */
   const pendingAutoSelect =
     !isAggregate && state.n === null && (candidates.length > 0 || !candidatesLoaded);
 
-  // 图的语义内容标识：仅「切换视角 / 选中对象 / 切聚合视图」这类导航动作会改变它，
-  // 用于触发 GraphCanvas 重新 fit。单节点就地展开、悬浮、手动缩放平移不计入。
+  // Semantic-content identity of the graph: only navigation actions like "switch perspective / select object / switch aggregate view" change it,
+  // used to trigger a re-fit in GraphCanvas. In-place single-node expansion, hovering, and manual zoom/pan don't count.
   const fitKey = isAggregate ? `agg:${state.p}` : `obj:${state.p ?? ''}:${state.n ?? ''}`;
-  /** 手动「适应屏幕」信号：每次 +1 即让 GraphCanvas 重置为整图 fit。 */
+  /** Manual "fit to screen" signal: each +1 makes GraphCanvas reset to whole-graph fit. */
   const [fitSignal, setFitSignal] = useState(0);
-  /** 子工程过滤：按 `sub_project_id` 多选显示（空数组 = 全部）。多个前端 / 后端各自成一类。 */
+  /** Sub-project filter: multi-select display by `sub_project_id` (empty array = all). Multiple frontends / backends each form their own category. */
   const [subFilter, setSubFilter] = useState<number[]>([]);
   /**
-   * 图例即筛选：隐藏的节点 / 边 kind。空数组 = 不隐藏。
-   * URL 同步（见下方 effect），便于把"关掉了所有表节点"的视图分享给别人。
+   * The legend is the filter: hidden node / edge kinds. Empty array = hide nothing.
+   * Synced to the URL (see the effect below), so a view with "all table nodes turned off" can be shared.
    */
   const [hiddenNodeKinds, setHiddenNodeKinds] = useState<string[]>([]);
   const [hiddenEdgeKinds, setHiddenEdgeKinds] = useState<string[]>([]);
@@ -170,13 +170,13 @@ export function GraphPage() {
     setHiddenNodeKinds([]);
     setHiddenEdgeKinds([]);
   }, []);
-  /** 子工程列表（id / name / role），供过滤器与画布着色 / 图例使用。 */
+  /** Sub-project list (id / name / role), used by the filter and for canvas coloring / legend. */
   const { data: subProjectsData } = useAsync(() => projectApi.subProjects(id), [id]);
   const subProjects: SubProject[] = subProjectsData ?? [];
   /**
-   * 暂无解析器的语言（P2 写入的 `unsupported_languages` 符号表，经诊断汇总结构化返回）。
-   * 代码图顶部要靠它出横幅：这些子工程只有文件结构、没有语义抽取，
-   * 不说清楚，用户面对近乎空的图会以为是"工程本身没东西"，而不是"工具不支持"。
+   * Languages with no parser yet (the `unsupported_languages` symbol table written by P2, returned structured via the diagnostic summary).
+   * The top of the code graph needs a banner from this: these sub-projects have file structure only, no semantic extraction;
+   * without saying so, a user facing a near-empty graph will think "the project itself has nothing", not "the tool doesn't support it".
    */
   const { data: diagSummary } = useAsync<DiagnosticSummary | null>(
     () => (Number.isNaN(id) ? Promise.resolve(null) : graphApi.diagnosticsSummary(id)),
@@ -185,14 +185,14 @@ export function GraphPage() {
   const unsupportedLangs = diagSummary?.unsupported_languages ?? [];
 
   /**
-   * 「图覆盖」提示的数据：建图报告按类型归类的结果。
+   * Data for the "graph coverage" hint: the build report's results grouped by type.
    *
-   * 入口挂在标题旁的 ⓘ（Popover，点击打开）里：报告回答的是"这张图少建了什么"，
-   * 主体就是这张图，所以放在解释这张图的地方最贴；又不常看，因此**不占页面一行** ——
-   * 页面上一行常驻的"445 处"对 78% 是引擎局限的内容来说，是在假装那是待办。
+   * The entry sits in the ⓘ beside the title (Popover, opens on click): the report answers "what did this graph fail to build",
+   * and the subject is exactly this graph, so it belongs where the graph is explained; it's rarely needed, so **it must not take a page line** --
+   * a permanent "445 occurrences" line would be pretending that 78% engine-limitation content is a to-do.
    *
-   * 判定口径与建图报告页共用 `groupDiagnostics` / `actionableCount`，不再单独定义"什么算问题"。
-   * 全提示级的类型不计数：vendor 目标缺失这类属设计如此，不是待办。
+   * The criterion shares `groupDiagnostics` / `actionableCount` with the build-report page; no separate "what counts as a problem".
+   * Purely informational types aren't counted: a missing vendor target is by design, not a to-do.
    */
   const diagGroups = useMemo(() => groupDiagnostics(diagSummary?.by_code, []), [diagSummary]);
   const diagTypes = diagGroups.filter((g) => g.severity !== 'info').length;
@@ -223,8 +223,8 @@ export function GraphPage() {
     return TIER_LABEL[tier] ?? tier;
   };
 
-  // 子项目作为「上层维度」：仅当选中「单一」子工程时，自动跳到它最相关的默认视角与对象；
-  // 多选 / 空选只做画布过滤（不切视角），避免频繁切换打断浏览。
+  // Sub-projects act as an "upper dimension": only when a **single** sub-project is selected do we auto-jump to its most relevant default perspective and object;
+  // multi-select / empty only filters the canvas (no perspective switch), avoiding frequent switches that interrupt browsing.
   const singleSubId = subFilter.length === 1 ? subFilter[0] : undefined;
   const singleSub = singleSubId !== undefined ? subProjects.find((s) => s.id === singleSubId) : undefined;
   useEffect(() => {
@@ -232,17 +232,17 @@ export function GraphPage() {
     const pid = defaultPerspectiveForRole(singleSub.role);
     if (!pid) return;
     setState((s) => ({ ...s, p: pid, n: null, i: null, e: null }));
-    // 仅依赖 subFilter：切换视角（state.p 变化）不应再次触发，否则会循环。
+    // Depend only on subFilter: switching perspective (state.p change) must not re-trigger it, otherwise it loops.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subFilter]);
 
   /**
-   * 画布高度按**视口剩余空间**自适应。
+   * Canvas height adapts to the **remaining viewport space**.
    *
-   * 图区上方那块（页头 + 筛选行 + 可能插入的提示条）高度是动态的，写死 720 会让
-   * 首屏必须下滑才能看全图。这里量出图区在文档中的起始位置，把视口剩下的高度全给画布。
-   * 每次渲染后重算一次（提示条出现 / 消失都会改变起始位置），窗口缩放时再补一次；
-   * `setCanvasHeight` 值不变时 React 会自行跳过重渲染，不会自激。
+   * The block above the graph (page header + filter row + any inserted hint bar) has dynamic height; hardcoding 720 would
+   * force scrolling on the first screen to see the whole graph. Here we measure the graph area's start position in the document and give the canvas all the remaining viewport height.
+   * Recomputed after every render (a hint bar appearing / disappearing changes the start position), plus once on window resize;
+   * React skips the re-render by itself when `setCanvasHeight` gets an unchanged value, so it can't self-excite.
    */
   const graphHostRef = useRef<HTMLDivElement>(null);
   const [canvasHeight, setCanvasHeight] = useState(560);
@@ -258,44 +258,44 @@ export function GraphPage() {
     return () => window.removeEventListener('resize', recomputeCanvasHeight);
   }, [recomputeCanvasHeight]);
 
-  // 边面板关闭时同步丢弃随身边对象，避免下次打开残留上一条边的折叠链。
+  // When the edge panel closes, also drop the companion object so the next open doesn't carry the previous edge's collapsed chain.
   useEffect(() => {
     if (inspectEdge === null) setInspectEdgeView(null);
   }, [inspectEdge]);
 
-  // ---------------------------------------------------------- URL 同步
-  // URL → state（前进 / 后退 / 外部链接）
+  // ---------------------------------------------------------- URL sync
+  // URL -> state (forward / back / external link)
   useEffect(() => {
     const next = decodeViewState(params.toString());
-    // state 的来源变成 URL 了：本轮 state→URL 必须让路（见 `skipWrite` 的说明）。
+    // state now originates from the URL: this round's state->URL must yield (see `skipWrite`'s note).
     skipWrite.current = true;
     setState((prev) => (sameViewState(prev, next) ? prev : next));
   }, [params]);
 
-  // state → URL（只写差异，避免污染历史栈）
+  // state -> URL (write only the diff, to avoid polluting the history stack)
   useEffect(() => {
     const search = encodeViewState(state);
-    // 口径必须一致再比：`encodeViewState` 带前导 `?`，而 `params.toString()` 没有 ——
-    // 直接拿两者相等去判断"URL 已经是这个状态"永远为假，于是每次（包括前进 / 后退
-    // 刚同步过来的状态）都会再推一条历史记录，URL 就在原地反复变。
+    // Compare only after normalizing: `encodeViewState` carries a leading `?` while `params.toString()` doesn't --
+    // comparing the two directly for "the URL is already this state" is always false, so every time (including the state just
+    // synced over from forward / back) pushes another history entry and the URL keeps changing in place.
     const currentSearch = params.toString();
     const derived = derivedNav.current;
     derivedNav.current = false;
     if (search.replace(/^\?/, '') === currentSearch) return;
-    // 这一帧 state 是 URL 同步来的：URL 才是真源，写回去只会把新 URL 覆盖成旧 state。
+    // This frame's state came from the URL: the URL is the source of truth, writing back would only overwrite the new URL with the old state.
     if (skipWrite.current) return;
     if (search === lastPushed.current) return;
     lastPushed.current = search;
     setParams(new URLSearchParams(search), { replace: derived });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
-  // 标记只在「URL 刚变」的那一帧有效：帧末无条件清掉，绝不泄漏到下一次写入 ——
-  // 否则会误伤随后真正需要写入的更新（如自动选中默认对象）。
+  // The flag is valid only for the frame where "the URL just changed": it's cleared unconditionally at frame end and never leaks into the next write --
+  // otherwise it would break subsequent writes that are genuinely needed (e.g. auto-selecting the default object).
   useEffect(() => {
     skipWrite.current = false;
   });
 
-  // 图例筛选 → URL：把隐藏的节点 / 边 kind 写进 `hnk` / `hek`，刷新 / 分享链接仍能还原。
+  // Legend filter -> URL: write the hidden node / edge kinds into `hnk` / `hek`, so a refresh / shared link still restores them.
   useEffect(() => {
     const hnk = hiddenNodeKinds.join(',');
     const hek = hiddenEdgeKinds.join(',');
@@ -313,7 +313,7 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenNodeKinds, hiddenEdgeKinds]);
 
-  // URL → 图例筛选（外部链接 / 前进后退）：仅在挂载时读一次。
+  // URL -> legend filter (external link / forward-back): read once on mount only.
   useEffect(() => {
     const hnk = params.get('hnk');
     const hek = params.get('hek');
@@ -322,14 +322,14 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 视角未指定 / 非法 → 选第一个有数据的视角
+  // Perspective unspecified / invalid -> pick the first perspective that has data
   useEffect(() => {
     if (perspectives.length === 0) return;
     const fixed = reconcileViewState(
       state,
       perspectives.map((p) => ({ id: p.id, mode: p.mode, available: p.available })),
     );
-    // 这是"URL 缺 / 错了 `p`"的修正，不是用户导航 —— 用 replace，不占历史记录。
+    // This is a correction for "the URL is missing / has a wrong `p`", not user navigation -- use replace so it doesn't consume a history entry.
     if (!sameViewState(fixed, state)) {
       derivedNav.current = true;
       setState(fixed);
@@ -337,20 +337,20 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [perspectives]);
 
-  // 载入二级候选（服务端实时搜索，输入防抖 200ms）。这是**下拉建议的 UI 缓存**，
-  // 缓存键是「视角 + 搜索词」：同键直接复用，换词就重新请求——否则首次加载后输入永
-  // 远打不进后端（曾因此搜索失效）。它**只服务于下拉建议**，不决定默认对象（见 `defaultNode`）。
-  // 按需加载：已选中节点、下拉未展开且无搜索词时不预取，
-  // 把那次昂贵的全量打分推迟到用户真正要选对象时。
+  // Load level-2 candidates (server-side live search, 200ms debounce on input). This is a **UI cache for dropdown suggestions**;
+  // the cache key is "perspective + search term": the same key is reused, a new term re-requests -- otherwise after the first load, typing would
+  // never reach the backend (this once broke search). It **only serves dropdown suggestions** and doesn't decide the default object (see `defaultNode`).
+  // Loaded on demand: don't prefetch when a node is already selected, the dropdown is closed, and there's no search term --
+  // that expensive full scoring pass is deferred until the user actually picks an object.
   useEffect(() => {
     if (!state.p || isAggregate) {
       setCandidateBundle({ p: state.p ?? '', q: '', list: [] });
       setCandidatesLoaded(false);
-      // 视角失效时，旧视角的推荐默认对象也一并作废，避免切换瞬间误选上一个视角的节点。
+      // When the perspective is invalidated, the previous perspective's recommended default object is invalidated too, avoiding a wrong pick at the switch moment.
       setDefaultNode(null);
       return;
     }
-    // 切换视角时先清掉上一个视角的默认对象，等本次排名列表到达再重新快照。
+    // When switching perspective, first clear the previous perspective's default object, then re-snapshot once this ranking list arrives.
     if (candidateBundle.p !== state.p) setDefaultNode(null);
     if (candidateBundle.p === state.p && candidateBundle.q === candidateSearch) return;
     if (state.n !== null && !dropdownOpen && candidateSearch === '') return;
@@ -365,11 +365,11 @@ export function GraphPage() {
           if (alive) {
             setCandidateBundle({ p: perspective, q: query, list });
             setCandidatesLoaded(true);
-            // 仅当这是「无搜索词的排名列表」时，快照本次视角推荐的默认对象。
-            // 有搜索词的是自动补全结果，不能当成默认对象的来源。
-            // 连视角 id 一起存：切视角那一帧"清默认对象"和"自动选中"是同一次提交里
-            // 跑的两个 effect，只存 id 的话自动选中会读到**上一视角**的默认值，
-            // 把别的视角的节点当成新视角的中心（曾导致 `?p=table&n=<路由节点>`）。
+            // Snapshot the default object recommended by this perspective only when this is a "no-search-term ranking list".
+            // One with a search term is an autocomplete result and can't be the source of the default object.
+            // Store the perspective id along with it: in the frame of switching perspective, "clear default object" and "auto-select" are two effects
+            // running in the same commit; storing only the id makes auto-select read the **previous perspective's** default value,
+            // treating a node from another perspective as the new perspective's center (this once produced `?p=table&n=<route node>`).
             if (query === '') setDefaultNode(list[0] ? { p: perspective, id: list[0].id } : null);
           }
         })
@@ -377,8 +377,8 @@ export function GraphPage() {
           if (alive) setCandidatesLoaded(true);
         });
     };
-    // 无搜索词且尚未选中节点：候选要用来「自动选中第一个对象」——尽快拿到，不防抖；
-    // 其余情况（用户正在输入 / 展开下拉补拉）一律防抖，避免每个按键都打一次接口。
+    // No search term and no node selected yet: candidates are needed to "auto-select the first object" -- get them ASAP, no debounce;
+    // all other cases (the user is typing / opening the dropdown to fetch more) are debounced, so we don't hit the API on every keystroke.
     if (query === '' && state.n === null) {
       start();
       return () => {
@@ -393,23 +393,23 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.p, isAggregate, id, candidateSearch, dropdownOpen, state.n, candidateBundle.p, candidateBundle.q, singleSubId]);
 
-  // 对象视角：只在「完全没指定中心」时，用后端推荐的默认对象初始化中心。
-  // 默认对象来自 `defaultNode`（排名列表到达时独立快照，带所属视角），与下拉的自动补全缓存无关；
-  // 已经明确导航到某个节点时**绝不覆盖**——否则会把刚点进来的节点静默换成推荐项。
-  /** 只有"属于当前视角"的默认对象才生效：切视角那一帧它必须立刻失效。 */
+  // Object perspective: initialize the center with the backend-recommended default object only when "no center is specified at all".
+  // The default object comes from `defaultNode` (snapshotted independently when the ranking list arrives, with its owning perspective), unrelated to the dropdown's autocomplete cache;
+  // never override when the user has explicitly navigated to a node -- otherwise the node just clicked would be silently swapped for a recommendation.
+  /** Only the default object "belonging to the current perspective" applies: it must be invalidated the moment the perspective switches. */
   const suggestedNodeId = defaultNode && defaultNode.p === state.p ? defaultNode.id : null;
   useEffect(() => {
     if (isAggregate || state.n !== null || suggestedNodeId === null) return;
-    if (candidateSearch !== '') return; // 用户正在搜索时，不抢先替他选默认对象
-    // 自动选中是"补默认值"，不是用户导航 —— 用 replace，避免切一次视角压两条历史记录。
+    if (candidateSearch !== '') return; // While the user is searching, don't pre-emptively pick a default object for them
+    // Auto-select is "filling in a default", not user navigation -- use replace, to avoid pushing two history entries per perspective switch.
     derivedNav.current = true;
     setState((s) => ({ ...s, n: suggestedNodeId }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suggestedNodeId, isAggregate, candidateSearch, state.n]);
 
-  // 视图恒为**折叠模式**：折叠时后端会把语法节点收进边的 `via` 链并内联每一跳的调用处，
-  // 点边即可逐跳核对；而"展开全部语法节点"是**信息降级**——画了 Method/CallSite，
-  // 却丢掉了 via 与每跳调用处，还把图撑成多层单行、要横向滚好几屏。
+  // The view is always in **collapsed mode**: when collapsed, the backend folds syntactic nodes into the edge's `via` chain and inlines each hop's call site,
+  // so clicking an edge verifies hop by hop; whereas "expanding all syntactic nodes" is **information degradation** -- it draws Method / CallSite
+  // but loses `via` and each hop's call site, and blows the graph into multi-layer single rows needing several horizontal scrolls.
   const { view, loading, error: objectError } = useObjectView(
     id,
     state.p ?? undefined,
@@ -422,7 +422,7 @@ export function GraphPage() {
     12,
   );
 
-  // ---------------------------------------------------------- 导航
+  // ---------------------------------------------------------- navigation
   const pushTrail = useCallback(
     (p: string, node: number | null, nodeName: string) => {
       const label = perspectives.find((x) => x.id === p)?.label ?? p;
@@ -434,7 +434,7 @@ export function GraphPage() {
     [perspectives],
   );
 
-  /** 折叠模式下点击语义节点 → 拉取其局部语法调用子图并就地展开（再次点击收起）。 */
+  /** In collapsed mode, clicking a semantic node -> fetch its local syntactic call subgraph and expand it in place (click again to collapse). */
   const toggleExpand = useCallback(
     (nodeId: number) => {
       if (expanded[nodeId]) {
@@ -446,9 +446,9 @@ export function GraphPage() {
         return;
       }
       setExpandingId(nodeId);
-      // 同样取**折叠**子图：子图里每条边都带 `via` 与每跳调用处，点边即可展开链路。
-      // 跳数沿用当前视角的 `state.d`（与中心主图同深度）：不再单开一个"展开跳数"，
-      // 否则同一个页面里两套深度各说各话，用户也不知道该填几。
+      // Take the **collapsed** subgraph as well: every edge in it carries `via` and each hop's call site, so clicking an edge expands the chain.
+      // Hop count follows the current perspective's `state.d` (same depth as the center's main graph): no separate "expansion hop count",
+      // otherwise one page would have two depths disagreeing and the user wouldn't know which to set.
       void viewApi
         .object(id, state.p ?? 'route', nodeId, state.d)
         .then((ov) => {
@@ -467,15 +467,15 @@ export function GraphPage() {
   );
 
   /**
-   * 点击节点：
-   * * 该节点**有对应视角** → **一级视角切到它、二级对象设为该节点**（"点击即切"）；
-   * * 没有对应视角 → 折叠模式下就地展开调用链，并只打开 Inspector。
+   * Clicking a node:
+   * * if the node **has a matching perspective** -> **switch the level-1 perspective to it and set the level-2 object to that node** ("click to switch");
+   * * if it has no matching perspective -> in collapsed mode expand the call chain in place, and only open the Inspector.
    */
   const handleNodeClick = useCallback(
     (nodeId: number, _kind: string, ownView: string | null) => {
       if (!ownView) {
-        // `ConfigKey` 等语义资产没有"单链路"视角：不切顶部筛选器，只打开 Inspector；
-        // 顺带就地展开它的折叠子图（边带 via 链，点边可逐跳核对）
+        // Semantic assets like `ConfigKey` have no "single-chain" perspective: don't switch the top filter, just open the Inspector;
+        // and also expand its collapsed subgraph in place (edges carry the via chain, click an edge to verify hop by hop)
         toggleExpand(nodeId);
         setInspectNode(nodeId);
         setInspectEdge(null);
@@ -490,8 +490,8 @@ export function GraphPage() {
         view?.rings.flat().find((n) => n.id === nodeId)?.name ??
         (view?.center.id === nodeId ? view.center.name : `#${nodeId}`);
       pushTrail(ownView, nodeId, nodeName);
-      // 关键：**一级视角也要切**。只设 `n` 的话该节点不属于当前视角的候选，
-      // 会被 `reconcileViewState` 清空，导航实际失效。
+      // Key: **the level-1 perspective must switch too**. Setting only `n` leaves that node outside the current perspective's candidates,
+      // so `reconcileViewState` clears it and the navigation silently fails.
       setState((s) => ({ ...s, p: ownView, n: nodeId, i: null, e: null }));
       setInspectNode(null);
       setInspectEdge(null);
@@ -510,9 +510,9 @@ export function GraphPage() {
     (index: number) => {
       const item = trail[index];
       if (!item) return;
-      // 点**当前这一步**是空操作：既不关 Inspector、不清 `from` 标记，也不多压一条历史记录。
-      // 更要紧的是 `n` —— 切视角压进来的那一步 `node` 是 `null`，照原样 set 会把中心
-      // 重置成第一个候选，于是"点自己"看起来像跳到了别处。
+      // Clicking **the current step** is a no-op: don't close the Inspector, don't clear the `from` mark, don't push another history entry.
+      // More importantly `n`: the step pushed in when switching perspective has `node` = `null`; setting it as-is would reset the center
+      // to the first candidate, so "clicking itself" would look like jumping somewhere else.
       if (index === trail.length - 1 && item.perspective === state.p) return;
       setTrail((prev) => prev.slice(0, index + 1));
       setState((s) => ({ ...s, p: item.perspective, n: item.node, i: null, e: null }));
@@ -523,7 +523,7 @@ export function GraphPage() {
     [trail, state.p],
   );
 
-  // 折叠模式下，把"按需展开的语法子图"合并进当前语义图（按锚点环号偏移，避免重排）。
+  // In collapsed mode, merge the "on-demand expanded syntactic subgraph" into the current semantic graph (offset by the anchor ring number to avoid reordering).
   const merged = useMemo(() => {
     if (!view) return { center: null as CanvasNode | null, rings: [] as CanvasNode[][], edges: [] as EdgeView[] };
     const base: CanvasNode[] = [view.center, ...view.rings.flat()].map(toCanvas);
@@ -546,7 +546,7 @@ export function GraphPage() {
     return { center: toCanvas(view.center), rings, edges };
   }, [view, expanded]);
 
-  /** 端点 id → 名字：折叠链要把首尾两个语义节点也标出名字。 */
+  /** Endpoint id -> name: the collapsed chain must also name the first and last semantic nodes. */
   const nodeNameOf = useCallback(
     (nid: number) => {
       const c = merged.center;
@@ -561,31 +561,31 @@ export function GraphPage() {
   );
 
   /**
-   * 二级筛选器的显示名兜底。
+   * Fallback display name for the level-2 filter.
    *
-   * 「点击图中的节点切视角」是**直接给节点 id**（不经候选列表），而候选是**按需加载**的
-   * （已选中节点且未展开下拉时刻意不预取）—— 于是下拉里找不到匹配 `value` 的选项，
-   * antd 会把 value 原样渲染成裸 id（如 `57601`），看起来像筛选器坏了。
+   * "Clicking a node in the graph to switch perspective" **passes the node id directly** (not via the candidate list), while candidates are **loaded on demand**
+   * (deliberately not prefetched when a node is selected and the dropdown is closed) -- so the dropdown has no option matching `value`,
+   * and antd renders the raw value as a bare id (e.g. `57601`), looking like the filter is broken.
    *
-   * 名字只从**权威来源**取：① 面包屑历史（导航带来的节点名）② 当前视图中心
-   * （真正加载成功的对象，含名字）。**不再用 `candidates.some` 推断"节点是否存在/叫什么"**——
-   * 候选是带上限、按需加载的 UI 缓存，不是服务端权威；拿它当存在性判据正是之前"裸 id / 误判"的根源。
-   * 候选里命中时 PerspectivePicker 本就会忽略 `nodeName`、用候选的完整 label，故这里无需特判。
+   * The name comes only from **authoritative sources**: ① breadcrumb history (node names brought by navigation) ② the current view center
+   * (the object actually loaded successfully, name included). **No longer infer "does the node exist / what's it called" from `candidates.some`** --
+   * candidates are a capped, lazily loaded UI cache, not server authority; using them as an existence criterion is exactly the root of the earlier "bare id / misjudgment".
+   * When a candidate matches, PerspectivePicker already ignores `nodeName` and uses the candidate's full label, so no special case is needed here.
    */
   const selectedNodeName = useMemo(() => {
     if (state.n === null) return null;
-    // 点图导航后 `view` 仍是上一视角的数据（`useAsync` 保留旧值），所以先查面包屑再查中心。
+    // After graph navigation `view` is still the previous perspective's data (`useAsync` keeps the old value), so consult the breadcrumb before the center.
     for (let i = trail.length - 1; i >= 0; i -= 1) {
       if (trail[i].node === state.n && trail[i].nodeName) return trail[i].nodeName;
     }
     return view?.center.id === state.n ? view.center.name : null;
   }, [state.n, trail, view]);
 
-  // 首次进入时把当前位置压入面包屑
+  // Push the current position into the breadcrumb on first entry
   useEffect(() => {
     if (!state.p || trail.length > 0) return;
-    // 名字只从权威来源（当前视图中心）取，不回退到候选列表——候选是按需加载的 UI 缓存，
-    // 不是节点存在/命名的权威；视图未就绪时留空，待 `view` 到达后由选中态正常显示。
+    // Take the name only from the authoritative source (the current view's center), never fall back to the candidate list -- candidates are a lazily loaded UI cache,
+    // not an authority on a node's existence / naming; leave it empty until the view is ready, then the selected state displays it normally once `view` arrives.
     const name = view?.center?.name ?? '';
     pushTrail(state.p, state.n, name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -605,12 +605,12 @@ export function GraphPage() {
     ? { rows: aggView.matrix.rows, cols: aggView.matrix.cols, cells: aggView.matrix.cells }
     : undefined;
 
-  // 布局由 `views/perspectives.yaml` 按视角声明（路由=分层、资源=径向……），不再有手动覆盖。
+  // Layout is declared per perspective in `views/perspectives.yaml` (routes = layered, resources = radial …); no manual override anymore.
   const layoutMode: LayoutMode = current?.layout ?? 'radial';
-  // 暂时注释：本地根模板 / WSL 模式 / 按工程覆盖 三处设置只在「跳转 IDE」时才需要，
-  // 跳转入口已移除，复制绝对路径直接用后端 root_path 即可（以后再考虑加回）。
+  // Temporarily commented out: the local root template / WSL mode / per-project override settings are only needed for "jump to IDE",
+  // and that entry has been removed; copying an absolute path can just use the backend root_path (revisit later if we bring it back).
   //
-  // // 按工程覆盖：优先级高于全局根模板，用于模板表达不了的特例；只影响 IDE 跳转与复制，不改后端数据。
+  // // Per-project override: higher priority than the global root template, for cases a template can't express; affects only IDE jump and copy, not backend data.
   // const rootStorageKey = `em.projectRootOverride.${id}`;
   // const [localRoot, setLocalRoot] = useState<string>(() => {
   //   try {
@@ -629,12 +629,12 @@ export function GraphPage() {
   //     /* ignore */
   //   }
   // };
-  // // 本地工程根只影响 IDE 跳转与复制，不改后端数据。
-  // // 解析优先级：按工程覆盖（localRoot） > 全局根模板 / WSL 预设（设置页）> 后端 root_path。
+  // // A local project root affects only IDE jump and copy, not backend data.
+  // // Resolution priority: per-project override (localRoot) > global root template / WSL preset (settings page) > backend root_path.
   // const projectRoot = resolveProjectRoot(project?.root_path, localRoot, effectiveTemplate());
-  // // WSL 模式开启时把 distro 透传给跳转 / 复制逻辑，生成正确的远程 scheme 与 UNC 前缀。
+  // // When WSL mode is on, pass the distro through to the jump / copy logic to generate the right remote scheme and UNC prefix.
   // const wslDistro = getWslMode() ? getWslDistro() : undefined;
-  // // 仅用于界面核对：本工程实际生效根来自哪一层（覆盖 > 模板 / WSL > 后端）。
+  // // For UI verification only: which layer this project's effective root actually comes from (override > template / WSL > backend).
   // const rootSource = localRoot
   //   ? t('Per-project override')
   //   : getWslMode()
@@ -643,9 +643,9 @@ export function GraphPage() {
   //       ? t('Global root template')
   //       : t('backend root_path');
 
-  // 复制绝对路径用的本地根：暂不做模板 / WSL / 覆盖变换，直接用后端 root_path。
+  // Local root used for copying absolute paths: no template / WSL / override transform for now, just use the backend root_path directly.
   const projectRoot = project?.root_path;
-  // WSL 映射停用（见上）；Inspector 仍接收该 prop，留空即可，恢复时改回 getWslMode() 计算。
+  // WSL mapping disabled (see above); Inspector still accepts the prop, just leave it empty, and switch back to getWslMode() when re-enabling.
   const wslDistro: string | undefined = undefined;
 
   if (projectId === undefined || Number.isNaN(id)) {
@@ -660,16 +660,16 @@ export function GraphPage() {
           <>
             {project ? `${t('Code Graph')} · ${project.name}` : t('Code Graph')}
             {/*
-              使用说明 + 图覆盖 + 建图报告入口，都收进这个 ⓘ（点击打开的 Popover）。
+              Usage instructions + graph coverage + build-report entry, all gathered into this ⓘ (Popover, opens on click).
 
-              为什么是 Popover 而不是 Tooltip：里面要放一个**可点的链接**，
-              Tooltip 是 hover 触发，鼠标从 ⓘ 横移进浮层这一路很容易把它关掉；
-              而"点击打开"的浮层会定住，链接点得到、也不必悬空操作。
+              Why a Popover and not a Tooltip: it needs to hold a **clickable link**,
+              a Tooltip is hover-triggered, and moving the mouse from ⓘ sideways into the overlay easily closes it;
+              whereas a "click to open" overlay stays put, so the link is reachable and no hovering in mid-air is needed.
 
-              为什么藏进浮层而不是常驻一行：这一页的内容 78% 是引擎局限与预期内
-              （同一条诊断在几百个文件上各触发一次），常驻一行等于宣布"这里有东西欠你处理"。
-              又不该完全藏起来 —— 所以只在真有"值得看一眼"时，给 ⓘ 点一个金色小圆点：
-              圆点只说"这里有点东西"，不占版面，也不谎报严重度。
+              Why hide it in an overlay instead of a permanent line: 78% of this page's content is engine limitations and expected
+              behavior (the same diagnostic fires once per hundreds of files); a permanent line announces "something here needs your attention".
+              But it shouldn't be fully hidden either -- so only when there's genuinely "something worth a look" do we dot the ⓘ with a small gold dot:
+              the dot only says "there's something in here", takes no layout space, and doesn't lie about severity.
             */}
             <Popover
               trigger="click"
@@ -711,8 +711,8 @@ export function GraphPage() {
                 </div>
               }
             >
-              {/* 有"值得看一眼"时才点亮：圆点比文字省地方，也比"红色角标"诚实 ——
-                  它只表示"这里面有点东西"，不表示"严重" */}
+              {/* Light up only when there's "something worth a look": a dot is cheaper than text and more honest than a "red badge" --
+                       it only means "there's something inside", not "it's severe" */}
               <Badge dot={diagActionable > 0} color="#faad14" offset={[-2, 4]}>
                 <InfoCircleOutlined
                   style={{ fontSize: 13, color: 'rgba(0,0,0,0.35)', marginLeft: 6, cursor: 'pointer' }}
@@ -724,8 +724,8 @@ export function GraphPage() {
         extra={<RunPipelineButton projectId={id} onStarted={() => void reloadProject()} />}
       />
 
-      {/* 未支持语言的降级说明：这些子工程只有文件结构、没有语义抽取。
-          不说清楚，用户面对近乎空的图会以为是"工程本身没东西"，而不是"工具不支持"。 */}
+      {/* Degradation note for unsupported languages: these sub-projects have file structure only, no semantic extraction.
+              Without saying so, a user facing a near-empty graph will think "the project itself has nothing", not "the tool doesn't support it". */}
       {unsupportedLangs.length > 0 && (
         <Alert
           type="warning"
@@ -736,8 +736,8 @@ export function GraphPage() {
         />
       )}
 
-      {/* 图覆盖那一行**不放在页面上**：它已收进标题旁 ⓘ 的 Popover（见上方 `PageHeader`）。
-          这里只留"暂无解析器的语言"这一条 —— 那条是真的会让人误判图是空的，必须直说。 */}
+      {/* The graph-coverage row is **not put on the page**: it now lives in the ⓘ Popover beside the title (see `PageHeader` above).
+              Only the "languages with no parser" line stays here -- that one genuinely makes people misread the graph as empty, so it must be stated outright. */}
 
       <Card
         variant="borderless"
@@ -770,7 +770,7 @@ export function GraphPage() {
           loading={loading && candidates.length === 0}
           extra={
             <>
-              {/* 图标化 + tooltip：省下来的宽度留给面包屑，避免这一行换行把画布往下推 */}
+              {/* Iconified + tooltip: the saved width goes to the breadcrumb, so this row doesn't wrap and push the canvas down */}
               <Tooltip title={t('Reset zoom and pan so the whole graph fits the current viewport')}>
                 <Button size="small" icon={<FullscreenOutlined />} onClick={() => setFitSignal((s) => s + 1)} />
               </Tooltip>
@@ -800,15 +800,15 @@ export function GraphPage() {
         />
 
         {/*
-          「只画一条链路」这句从标题旁 ⓘ 的浮层里**再往前挪一步**。
+          The "only draws one chain" sentence moves **one step further out** from the ⓘ overlay beside the title.
 
-          为什么：新手第一次进来最大的疑问不是"图覆盖缺了什么"，而是
-          "我的工程那么大，怎么图就这么几个节点？" —— 这一问必须在该问的地方被回答，
-          也就是**决定这张图画什么的控件正下方**，而不是藏在 hover/点击才出现的浮层里。
-          ⓘ 里仍保留完整说明（含"一级选视角、二级选对象"的操作步骤与图覆盖入口），
-          这里只留结论那一句，避免两处重复同一整段。
+          Why: a newcomer's biggest first question isn't "what did graph coverage miss", but
+          "my project is huge, why does the graph have only these few nodes?" -- that question must be answered where it's asked,
+          i.e. **right under the control that decides what this graph draws**, not hidden in a hover/click overlay.
+          The ⓘ still keeps the full explanation (including the "level 1 = perspective, level 2 = object" steps and the coverage entry);
+          only the one-line conclusion stays here, to avoid repeating the same whole paragraph in two places.
 
-          聚合视角不显示：它画的是聚类 / 矩阵，不是"一条链路"，说了反而误导。
+          Aggregate perspectives don't show it: they draw clusters / matrices, not "one chain", so saying it would mislead.
         */}
         {!isAggregate ? (
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
@@ -816,7 +816,7 @@ export function GraphPage() {
           </Typography.Text>
         ) : null}
 
-        {/* 暂时注释：IDE 打开入口已移除，按工程覆盖本地根与「当前生效根」展示一并停用（以后再考虑加回）。
+        {/* Temporarily commented out: the IDE-open entry has been removed; the per-project local root override and the "currently effective root" display are disabled along with it (revisit later).
         <Collapse
           ghost
           bordered={false}
@@ -873,8 +873,8 @@ export function GraphPage() {
         <Alert type="info" showIcon style={{ marginBottom: 16 }} message={aggView.notice} />
       ) : null}
 
-      {/* 诚实性守门：这个对象在当前视角下取不到时，如实告知并给一条出路，
-          而不是悄悄把中心换成第一个候选（那等于展示一张无关的图）。 */}
+      {/* Honesty gate: when this object can't be fetched under the current perspective, say so and offer a way out,
+               rather than silently swapping the center to the first candidate (that would be showing an unrelated graph). */}
       {!isAggregate && state.n !== null && !loading && objectError ? (
         <Alert
           type="warning"
@@ -894,7 +894,7 @@ export function GraphPage() {
 
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={24}>
-          {/* 量高锚点：见上方 `recomputeCanvasHeight` */}
+          {/* Measure the high anchor: see `recomputeCanvasHeight` above */}
           <div ref={graphHostRef} />
           <GraphCanvas
             height={canvasHeight}
@@ -926,7 +926,7 @@ export function GraphPage() {
             onResetLegendFilters={resetLegendFilters}
             />
 
-          {/* 入口类视角（路由 / 定时任务）无链路时给出说明，避免"画面空了 = 坏了"的错觉 */}
+          {/* Entry-type perspectives (routes / scheduled tasks) explain when there's no chain, avoiding the "blank screen = broken" impression */}
           {view && view.conclusions['hint'] ? (
             <Alert
               type="info"
@@ -936,9 +936,9 @@ export function GraphPage() {
             />
           ) : null}
 
-          {/* 诚实性守门：省略了什么、为什么省略。
-              机制必须保留（绝不静默省略），但呈现压成一行 —— 整句模板每次一字不差，
-              只有数字在变，看第三遍起就是噪声；数字直接取结构化字段，不再渲染后端模板句。 */}
+          {/* Honesty gate: what was omitted, and why.
+                   The mechanism must stay (never omit silently), but the presentation is compressed to one line -- the full template sentence
+                   is identical every time and only the number changes, so from the third read on it's noise; the number comes straight from the structured field. */}
           {view ? (
             <div
               style={{
@@ -963,10 +963,10 @@ export function GraphPage() {
             </div>
           ) : null}
 
-          {/* 孤儿直连访问记账：访问方是语法节点、上溯又找不到任何语义入口（CLI / 定时 /
-              事件处理器是常态）。它**不占画布**——语法节点名字不可寻址、不回答"谁触发"、
-              还会吃掉本该留给语义节点的画布额度；但**绝不静默省略**：单列计数 + 逐条位置，
-              点名字开 Inspector 可继续核对。 */}
+          {/* Orphan direct-access accounting: the accessor is a syntactic node and tracing up finds no semantic entry (CLI / scheduled /
+                   event handlers are the norm). It **doesn't occupy the canvas** -- syntactic node names aren't addressable, don't answer "who triggered it",
+                   and would eat the canvas budget meant for semantic nodes; but it is **never silently omitted**: a separate count + per-item locations,
+                   click a name to open Inspector and keep verifying. */}
           {view && (view.orphans?.length ?? 0) > 0 ? (
             <div style={{ marginTop: 6, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
               <Button
@@ -985,12 +985,12 @@ export function GraphPage() {
                       <Typography.Text
                         style={{ fontSize: 12, cursor: 'pointer' }}
                         onClick={() => {
-                          // 先取出局部变量：在 `setState` 的回调里访问 `o.edge`，
-                          // TS 的收窄不进闭包（属性收窄在回调内失效），会报可能为 null。
+                          // Pull out a local variable first: accessing `o.edge` inside a `setState` callback,
+                          // TS narrowing doesn't cross into the closure (property narrowing is lost inside the callback), so it reports a possible null.
                           const oe = o.edge;
                           if (oe) {
-                            // 这条直连访问本身是可点击展开的语义边（如事件触发点）：
-                            // 打开边证据链抽屉，逐跳核对调用过程，而非只开节点详情。
+                            // This direct access is itself a clickable, expandable semantic edge (e.g. an event trigger point):
+                            // open the edge evidence-chain drawer and verify the call process hop by hop, rather than only opening node details.
                             setInspectNode(null);
                             setInspectEdge(oe.id);
                             setInspectEdgeView(oe);
@@ -1049,9 +1049,9 @@ export function GraphPage() {
         onClose={() => setDrawerOpen(false)}
         styles={{ body: { padding: 16 } }}
       >
-        {/* 「结论」不再单独立卡：入边/出边两个大数字在图上一眼可数（环上节点标题也写了），
-             大数字卡占 ~150px 只为说两句话。压成环上节点卡的 extra + 底部一行，
-             有增量信息的（标注 / schema 列数 / 路由表登记）才有资格出现。 */}
+        {/* "Conclusions" no longer gets its own card: the two big numbers (in-edges / out-edges) are countable at a glance on the graph
+                  (the ring node titles state them too); a big-number card costs ~150px just to say two sentences. Compressed into the ring
+                  node card's extra + one bottom line; only things with incremental information (annotations / schema column count / route-table registration) qualify. */}
         <Card
           variant="borderless"
           size="small"
@@ -1064,7 +1064,7 @@ export function GraphPage() {
                   ' · ' +
                   t('Out-edges ') +
                   fmt(view.conclusions['out_edges']) +
-                  // 孤儿直连访问：不占画布，但要在"结论"里留一个可查的数字。
+                  // Orphan direct accesses: they don't occupy the canvas, but keep a checkable number in the "conclusions" section.
                   (view.conclusions['other_direct_access']
                     ? ' · ' + t('orphan access: ') + fmt(view.conclusions['other_direct_access'])
                     : '')}
@@ -1166,11 +1166,11 @@ function toCanvas(n: {
   ring: number;
   category?: string | null;
   own_view?: string | null;
-  /** 节点所属「端」：`frontend` / `backend`（由 FKB 标注）。用于图上区分前后端子工程。 */
+  /** The "side" the node belongs to: `frontend` / `backend` (annotated by FKB). Used to tell frontend / backend sub-projects apart on the graph. */
   side?: string | null;
-  /** 节点所属子工程 id（后端 `NodeView.sub_project_id`）。图着色 / 过滤以子工程为单位。 */
+  /** The sub-project id the node belongs to (backend `NodeView.sub_project_id`). Graph coloring / filtering is per sub-project. */
   sub_project_id?: number | null;
-  /** 悬浮卡片要显示的信息；缺失时用空值兜底。 */
+  /** Info to show in the hover card; fall back to empty values when missing. */
   fqn?: string | null;
   locations?: SourceLocation[];
   annotations?: string[];
@@ -1192,9 +1192,9 @@ function toCanvas(n: {
   };
 }
 
-/// 子工程角色 → 默认视角：选了某子工程后自动跳过去。
-/// 后端：worker → 计划任务视角，其余（api / bff / admin …）→ 路由视角；
-/// 前端：暂用路由视角兜底（registry 暂无前端专属视角，见 perspectives.yaml 的 Page 视角为 MVP 暂挂）。
+/// /// Sub-project role -> default perspective: after picking a sub-project, jump there automatically.
+/// /// Backend: worker -> scheduled-task perspective, everything else (api / bff / admin …) -> route perspective;
+/// /// Frontend: fall back to the route perspective for now (the registry has no frontend-specific perspective yet; see the Page perspective in perspectives.yaml, parked for the MVP).
 function defaultPerspectiveForRole(role?: string | null): string | undefined {
   if (!role) return undefined;
   if (role.startsWith('backend:worker')) return 'schedule';

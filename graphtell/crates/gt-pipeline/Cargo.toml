@@ -1,6 +1,6 @@
 [package]
 name = "gt-pipeline"
-description = "GraphTell 流水线：P0 Ingest / P2 CfAst / P3 Prepare / P4 AnnotatePre / P5 Synthesize / P6 AnnotatePost / P7 Resolve"
+description = "GraphTell pipeline: P0 Ingest / P2 CfAst / P3 Prepare / P4 AnnotatePre / P5 Synthesize / P6 AnnotatePost / P7 Resolve"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

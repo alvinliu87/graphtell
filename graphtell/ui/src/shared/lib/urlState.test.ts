@@ -9,15 +9,15 @@ import {
 } from './urlState';
 
 describe('encode/decode', () => {
-  it('空状态编码为空串', () => expect(encodeViewState(EMPTY_STATE)).toBe(''));
+  it('empty state encodes to an empty string', () => expect(encodeViewState(EMPTY_STATE)).toBe(''));
 
-  it('往返一致', () => {
+  it('round-trip is consistent', () => {
     const s: ViewState = { p: 'route', n: 7, d: 3, i: 2, e: 4 };
     const dec = decodeViewState(encodeViewState(s));
     expect(dec).toEqual(s);
   });
 
-  it('默认深度 2 被省略', () => {
+  it('the default depth 2 is omitted', () => {
     const s: ViewState = { p: 'route', n: 7, d: 2, i: null, e: null };
     const dec = decodeViewState(encodeViewState(s));
     expect(dec.d).toBe(2);
@@ -27,8 +27,8 @@ describe('encode/decode', () => {
 });
 
 describe('sameViewState', () => {
-  it('相同为 true', () => expect(sameViewState(EMPTY_STATE, EMPTY_STATE)).toBe(true));
-  it('不同为 false', () =>
+  it('identical is true', () => expect(sameViewState(EMPTY_STATE, EMPTY_STATE)).toBe(true));
+  it('different is false', () =>
     expect(sameViewState(EMPTY_STATE, { ...EMPTY_STATE, p: 'x' })).toBe(false));
 });
 
@@ -38,20 +38,20 @@ describe('reconcileViewState', () => {
     { id: 'table', mode: 'object' as const, available: 5, depth: 2 },
     { id: 'platform', mode: 'aggregate' as const, available: 3, depth: 2 },
   ];
-  it('视角无效时退回第一个有数据的视角', () => {
+  it('when the perspective is invalid it falls back to the first perspective with data', () => {
     const r = reconcileViewState({ ...EMPTY_STATE, p: null }, perspectives);
     expect(r.p).toBe('table');
   });
 
-  it('聚合视角清掉中心对象', () => {
+  it('an aggregate perspective clears the center object', () => {
     const r = reconcileViewState({ ...EMPTY_STATE, p: 'platform', n: 5 }, perspectives);
     expect(r.p).toBe('platform');
     expect(r.n).toBeNull();
   });
 
-  // 候选列表带 limit 上限、还可能被后端过滤，它不是"节点是否存在"的判据：
-  // 用它会把刚导航进来的、排在前 N 之外的节点误判为不存在，再被静默换成第一个候选。
-  it('节点不在候选列表里也保留 n（候选不是存在性判据）', () => {
+  // The candidate list has a limit cap and may also be filtered by the backend, so it is not a criterion for "does the node exist":
+  // using it misjudges a node you just navigated to but that ranks beyond the top N as nonexistent, then silently swaps it for the first candidate.
+  it('keeps n even when the node isn’t in the candidate list (candidates aren’t an existence criterion)', () => {
     const r = reconcileViewState({ ...EMPTY_STATE, p: 'table', n: 123 }, perspectives);
     expect(r.p).toBe('table');
     expect(r.n).toBe(123);

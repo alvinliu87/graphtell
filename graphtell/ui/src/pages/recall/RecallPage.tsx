@@ -24,14 +24,14 @@ import type { ComposePromptResult, RecallResult } from '@/entities/recall';
 import { useLocale } from '@/shared/lib/i18n';
 
 /**
- * 召回质量条：把服务端判定的质量档位显式呈现出来。
+ * Recall quality bar: surfaces the quality tier the server decided.
  *
- * 为什么必须有：召回质量**方差极大** —— 有的查询正解在前二，有的两个意图都落空、
- * 前排全是泛词噪声，但两者返回的列表长得一模一样。不标出来的话用户会同等信任，
- * 于是「静默失败」成了最坏的失败模式。
+ * Why it must exist: recall quality **varies enormously** -- some queries have the right answer in the top two, others miss both intents and
+ * the front is all generic-word noise, yet both return an identical-looking list. Without marking it, users trust them equally,
+ * so "silent failure" becomes the worst failure mode.
  *
- * 非「高」时把未命中的特征词渲染成可点击 chip：点一下即用该词重新召回，
- * 给用户一条明确的退路，而不是只告诉他"这次不准"。
+ * When not "high", render the missed feature words as clickable chips: clicking reruns recall with that word,
+ * giving the user a clear way out instead of only telling them "this one is inaccurate".
  */
 function RecallQualityBanner({
   result,
@@ -89,15 +89,15 @@ function RecallQualityBanner({
 }
 
 /**
- * 提示词增强页：给一段提示词，返回"该看哪些代码"，并合成成可直接粘给 IDE 的提示词。
+ * Prompt-augmentation page: given a prompt, return "which code to look at", and compose a prompt you can paste straight into an IDE.
  *
- * 设计要点（与后端 `RecallHit.direct` / `hop` 对应）：
- * * **明确区分直接命中与扩展命中** —— 用户必须能看出一条结果为什么在这里，
- *   否则召回与全文检索毫无区别，也无法判断可信度；
- * * **上下文包可一键复制** —— 召回的终点是把结果交给 LLM 或同事，
- *   而不是让人在页面上抄路径；
- * * 纯中文提示词目前只在含标识符或结构提示词（"表"/"接口"/"事件"…）时有效，
- *   页面把解析出的查询词显式展示出来，让用户立刻知道"系统到底搜了什么"。
+ * Design notes (matching the backend's `RecallHit.direct` / `hop`):
+ * * **clearly separate direct hits from expanded hits** -- the user must be able to see why a result is here,
+ *   otherwise recall is no different from full-text search and trust can't be judged;
+ * * **the context pack is one-click copyable** -- recall's endpoint is handing the result to an LLM or a colleague,
+ *   not making people copy paths off the page;
+ * * a pure-Chinese prompt currently only works when it contains an identifier or a structural hint word ("table" / "interface" / "event" …);
+ *   the page shows the parsed query terms explicitly so the user immediately knows "what the system actually searched for".
  */
 export function RecallPage() {
   const { projectId } = useParams();
@@ -110,11 +110,11 @@ export function RecallPage() {
   const [result, setResult] = useState<ComposePromptResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** 合成后的提示词全文默认展开：它就是这一页的产物，藏起来等于白做。 */
+  /** The composed prompt is expanded by default: it is this page's deliverable, so hiding it defeats the purpose. */
   const [showPrompt, setShowPrompt] = useState(true);
 
-  // `override`：供质量条上的特征词 chip 直接以该词重新召回 ——
-  // 不能只 setQuery 再 run()，因为 setState 是异步的，run 会读到旧值。
+  // `override`: lets the feature-word chips on the quality bar rerun recall with that word directly --
+  // can't just setQuery then run(), because setState is async and run would read the old value.
   const run = async (override?: string) => {
     const q = (override ?? query).trim();
     if (!q) {
@@ -124,11 +124,11 @@ export function RecallPage() {
     setLoading(true);
     setError(null);
     try {
-      // 走合成接口而不是纯召回：这一页要交付的是"增强后的提示词"，
-      // 命中列表只是让用户核对召回质量的伴随结果（后端一次返回，召回不会跑两遍）。
+      // Use the compose endpoint rather than pure recall: what this page delivers is "the augmented prompt";
+      // the hit list is only an accompanying result for checking recall quality (the backend returns it in one go, so recall doesn't run twice).
       setResult(
         await recallApi.compose(id, {
-          // 同一份：这段话既是召回用的检索词，也是写进【本次任务】的任务描述。
+          // Same text: this paragraph is both the search terms for recall and the task description written into [this task].
           query: q,
           intent: q,
           limit,
@@ -167,19 +167,19 @@ export function RecallPage() {
       />
 
       {/*
-        提问区：**一个**输入框，不是"检索词 + 任务"两个。
+        Question area: **one** input box, not two ("search terms + task").
 
-        为什么合成一个：这页交付的是"把你写的提示词增强一下"，用户写的那段话
-        既是检索词（拿去召回）也是任务（原样写进提示词的【本次任务】）。
-        拆成两栏会让它读起来像填表单，也与页面名不符。
+        Why compose into one: this page delivers "augment the prompt you wrote"; the paragraph the user writes
+        is both the search terms (sent to recall) and the task (written verbatim into the prompt's [this task]).
+        Splitting it into two columns would read like filling out a form, and wouldn't match the page name.
 
-        后端仍保留 `query` / `intent` 两个字段：真出现"用 A 检索、让 LLM 做 B"的场景时，
-        加一个折叠项即可，不必动后端。现阶段 `intent` 与 `query` 同一份。
+        The backend still keeps both `query` / `intent` fields: if a real "search with A, have the LLM do B" case appears,
+        add a collapsible item -- no backend change needed. For now `intent` and `query` are the same text.
 
-        多行是必要的（提示词本来就是一段话），因此提交改为 ⌘/Ctrl+Enter ——
-        回车要留给换行，否则写两行就跑了。
+        Multi-line is necessary (a prompt is a paragraph by nature), so submit is ⌘/Ctrl+Enter --
+        Enter must stay for newlines, otherwise two lines and it fires.
 
-        跳数 / 条数收进折叠：它们是"调一次就不动"的参数，与输入框平排会把整行读成筛选栏。
+        Hop count / result count go into the collapse: they are "set once and forget" params, and sitting in a row with the input makes the whole line read as a filter bar.
       */}
       <Card variant="borderless" style={{ borderRadius: 14, marginBottom: 16 }}>
         <Input.TextArea
@@ -229,14 +229,14 @@ export function RecallPage() {
             </Space>
           }
         >
-          {/* 折叠但**不隐藏**：当前值始终以一行小字显示，用户知道这里有旋钮 */}
+          {/* Collapsed but **not hidden**: the current value always shows as a line of small text, so the user knows the knob is here */}
           <Button type="text" size="small" style={{ paddingInline: 0, marginTop: 4, fontSize: 12 }}>
             {t('Options')}：{t('Hops')} {hops} · {t('Count')} {limit} ▸
           </Button>
         </Popover>
 
-        {/* loading 时隐藏上一次的结果摘要与质量条：否则会残留旧内容，
-            与下方转圈的 loading 区同时出现，看起来像"新结果已经出来了"。 */}
+        {/* While loading, hide the previous result summary and quality bar: otherwise stale content lingers and
+                 appears together with the spinning loading area below, looking like "the new results are already out". */}
         {result && !loading ? (
           <div style={{ marginTop: 12 }}>
             <RecallQualityBanner
@@ -279,9 +279,9 @@ export function RecallPage() {
         </div>
       ) : !result ? (
         /*
-          空态只留两句说明，不放示例：示例要么写死某个工程的表名（换个工程就文不对题），
-          要么空泛到没信息。而输入框的 placeholder 与页头副标题已经说明了"写什么"。
-          旧版这里是一句灰字"输入提示词开始召回"，什么都不教 —— 现在至少有这两句。
+          The empty state keeps only two sentences, no examples: an example either hardcodes some project's table names (wrong for another project)
+          or is vague enough to carry no information. The input placeholder and the page subtitle already say "what to write".
+          The old version had one gray line "enter a prompt to start recall", teaching nothing -- now there are at least these two sentences.
         */
         <Card variant="borderless" style={{ borderRadius: 14 }}>
           <Empty
@@ -298,9 +298,9 @@ export function RecallPage() {
       ) : (
         <>
           {/*
-            合成后的提示词 —— 这一页的产物，所以放在结果最上面。
-            两个复制按钮并存是有意的：提示词（任务 + 上下文，直接用）与
-            上下文包（只有后半段，自己剪/自己拼）是两种用法，不是重复功能。
+            The composed prompt -- this page's deliverable, so it goes at the top of the results.
+            Two copy buttons coexist on purpose: the prompt (task + context, use directly) and
+            the context pack (only the latter half, trim/splice yourself) are two usages, not a duplicated feature.
           */}
           <Card
             variant="borderless"
