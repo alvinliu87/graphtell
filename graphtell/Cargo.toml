@@ -1,12 +1,12 @@
-# GraphTell — 代码库图化分析平台
+# GraphTell - code-graph analysis platform
 #
-# 分层（六边形架构）：
-#   crates/gt-domain            领域内核：实体 / 值对象 / 端口 trait（零外部 IO 依赖）
-#   crates/gt-application       用例编排：只依赖 domain 端口
-#   crates/gt-pipeline          阶段实现（P0..P7 领域服务），只依赖 domain 端口
-#   crates/gt-adapter-*         适配器：文件扫描 / tree-sitter / FKB / SQLite / HTTP / 规则
-#   crates/gt-app               组装根（Composition Root）+ CLI
-#   src-tauri                   Tauri 常驻界面（inbound 适配器）
+# Layering (hexagonal architecture):
+#   crates/gt-domain            domain core: entities / value objects / port traits (zero external IO deps)
+#   crates/gt-application       use-case orchestration: depends only on domain ports
+#   crates/gt-pipeline         phase implementations (P0..P7 domain services), depends only on domain ports
+#   crates/gt-adapter-*        adapters: file scan / tree-sitter / FKB / SQLite / HTTP / rules
+# Tauri depends on system libs like webkit2gtk(Linux) / WebView2(Windows),
+# so it is declared as a separate workspace here, excluded from the main workspace's daily build and CI.
 [workspace]
 resolver = "2"
 members = [
@@ -30,7 +30,7 @@ license = "MIT"
 repository = "https://github.com/graphtell/graphtell"
 
 [workspace.dependencies]
-# --- 基础 ---
+# --- base ---
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rmp-serde = "1"
@@ -41,12 +41,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 once_cell = "1"
 
-# --- 运行时 ---
+# --- runtime ---
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 async-trait = "0.1"
 futures = "0.3"
 
-# --- IO / 解析 ---
+# --- IO / parsing ---
 walkdir = "2"
 ignore = "0.4"
 tree-sitter = "0.27"
@@ -64,7 +64,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 http-body-util = "0.1"
 
-# --- 内部 crate ---
+# --- internal crates ---
 gt-domain = { path = "crates/gt-domain" }
 gt-application = { path = "crates/gt-application" }
 gt-pipeline = { path = "crates/gt-pipeline" }
@@ -79,6 +79,6 @@ gt-adapter-http = { path = "crates/gt-adapter-http" }
 [profile.release]
 opt-level = 2
 
-# 让 Tauri 二进制体积更小
+# Keep the Tauri binary smaller
 [profile.release.package]
 tree-sitter = { opt-level = 3 }

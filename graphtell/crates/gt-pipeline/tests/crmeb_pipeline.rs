@@ -570,7 +570,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
         };
         let is_semantic = is_semantic_node(&node);
         if id != center.id && is_semantic {
-            continue; // 语义节点不再向外穿透
+            continue; // Semantic nodes no longer penetrate outward
         }
         if node.kind.as_str() == NodeKind::METHOD {
             for e in b

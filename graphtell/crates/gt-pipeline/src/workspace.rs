@@ -694,7 +694,7 @@ impl GraphWorkspace {
             };
             match found {
                 Some(prev) if prev == fqn => {}
-                Some(_) => return None, // 多个不同 FQN → 歧义，拒绝
+                Some(_) => return None, // Multiple distinct FQNs -> ambiguity, reject
                 None => found = Some(fqn),
             }
         }

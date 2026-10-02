@@ -1066,7 +1066,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
             a < b,
             "NotifyListener（notify，稀有）应排在 OrderRefundCreateAfterListener（仅 order）之前，实际：{names1:?}"
         ),
-        _ => {} // 任一未进前排则不强制（主要取决于词面种子竞争），核心不变量已由上面两条守住
+        _ => {} // If any fails to reach the front we don't force it (mainly depends on lexical-seed competition); the core invariant is already held by the two checks above.
     }
 }
 
@@ -1461,7 +1461,7 @@ fn rule_is_disabled_when_its_edge_never_occurs() {
     );
 }
 
-/// 规则库按语言分目录装载（`rules/global/` + `rules/php/`），且 PHP 规则带环境声明。
+/// Rule libraries are loaded per-language directory (`rules/global/` + `rules/php/`), and PHP rules carry environment declarations.
 #[test]
 fn builtin_rules_are_organised_per_language() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
@@ -1475,7 +1475,7 @@ fn builtin_rules_are_organised_per_language() {
         .collect();
     assert!(!php_tagged.is_empty(), "应存在声明 php 的规则");
 
-    // 跨语言规则必须只依赖拓扑，不能偷偷带上语言声明
+    // Cross-language rules must depend only on topology, never sneak in a language declaration.
     for r in rules.iter().filter(|r| r.applies_to.languages.is_empty()) {
         let req = r.requirements();
         assert!(
@@ -1487,11 +1487,11 @@ fn builtin_rules_are_organised_per_language() {
     }
 }
 
-/// 中文长句必须被切成二字组 —— 否则整句永远匹配不到任何节点，召回直接为空。
+/// A long Chinese sentence must be split into bigrams -- otherwise the whole sentence never matches any node and recall returns empty.
 ///
-/// 回归背景：中文没有词边界，早期实现把整段中文当成一个 token，
-/// “订单创建涉及哪些表和接口” 作为整体匹配不到任何节点名 → **0 命中**。
-/// 而提示词经常就是这种整句，等于召回功能对中文提问不可用。
+/// Regression background: Chinese has no word boundaries; an early implementation treated a whole Chinese phrase as a single token,
+/// the query "订单创建涉及哪些表和接口" as a whole matched no node name -> **0 hits**.
+/// and prompts are often exactly such whole sentences, meaning recall was unusable for Chinese questions.
 #[test]
 fn recall_splits_chinese_sentence_into_bigrams() {
     let Some(f) = fixture() else {
@@ -1526,7 +1526,7 @@ fn recall_splits_chinese_sentence_into_bigrams() {
         );
     }
 
-    // “表”/“接口”只作种类加成，不应再残留成文本匹配词（会把召回带偏）
+    // "表"/"接口" only act as kind boosts and must not linger as text-match words (would steer recall wrong).
     assert!(
         !result.terms.iter().any(|t| t.contains('表') || t.contains('接')),
         "结构提示词不应残留为匹配词，实际：{:?}",
@@ -1540,7 +1540,7 @@ fn recall_splits_chinese_sentence_into_bigrams() {
     );
 }
 
-/// 完整标识符（snake_case 不被拆散）必须能精确命中。
+/// A full identifier (snake_case not broken apart) must match exactly.
 #[test]
 fn recall_keeps_snake_case_identifiers_intact() {
     let Some(f) = fixture() else {
@@ -1577,7 +1577,7 @@ fn recall_keeps_snake_case_identifiers_intact() {
     );
 }
 
-/// 召回必须给出可直接粘给 LLM 的上下文包。
+/// Recall must produce a context pack that can be pasted straight into an LLM.
 #[test]
 fn recall_produces_markdown_context_pack() {
     let Some(f) = fixture() else {
@@ -1609,7 +1609,7 @@ fn recall_produces_markdown_context_pack() {
     assert!(md.contains("Related code"), "the context pack should list the related code");
 }
 
-/// 谓词枚举可直接构造（保证新增谓词不必改内核的调用点）。
+/// Predicate enums can be constructed directly (so adding a new predicate need not touch the kernel's call sites).
 #[test]
 fn check_predicate_is_constructible() {
     let p = CheckPredicate::Not(Box::new(CheckPredicate::HasIncoming("HandledBy".into())));
@@ -1617,8 +1617,8 @@ fn check_predicate_is_constructible() {
 }
 
 
-/// 给图补一个带 `properties` 的节点（`seed_graph` 里的节点 properties 全是 Null，
-/// 所以 `property_is` 在既有图上永远不成立 —— 不补节点就没法测它）。
+/// Add a node with `properties` to the graph (nodes in `seed_graph` all have Null properties,
+/// so `property_is` can never hold on the existing graph -- without adding the node it can't be tested).
 fn seed_node_with_property(f: &Fixture, id: i64, kind: &str, name: &str, props: serde_json::Value) {
     f.container
         .store
@@ -1649,11 +1649,11 @@ fn seed_node_with_property(f: &Fixture, id: i64, kind: &str, name: &str, props: 
         .expect("节点应可写入");
 }
 
-/// `enabled: false` 的规则必须**一条违规都不产出**。
+/// A rule with `enabled: false` must produce **zero violations**.
 ///
-/// 这不是形式主义：`write-endpoint-without-auth` 目前正是靠 `enabled: false`
-/// 停用的（它的判据在当前图上恒真，跑起来只会制造虚假安全感）。
-/// 若哪天 `enabled` 字段失效，这条会立刻炸。
+/// This is not formalism: `write-endpoint-without-auth` is currently disabled precisely via `enabled: false`
+/// (its criterion is always true on the current graph, so running it only manufactures false confidence).
+/// If the `enabled` field ever stops working, this case will blow up immediately.
 #[test]
 fn disabled_rule_never_produces_violations() {
     const YAML: &str = r#"
@@ -1698,7 +1698,7 @@ rules:
     );
 }
 
-/// 已发货规则在用的三个谓词：`property_is` / `has_outgoing` / `fan_in_gte`。
+/// The three predicates used by the shipped rule: `property_is` / `has_outgoing` / `fan_in_gte`.
 #[test]
 fn predicates_used_by_shipped_rules_are_covered() {
     const YAML: &str = r#"
@@ -1749,17 +1749,17 @@ rules:
     let report = svc.check(f.project, None, false).expect("检查不应失败");
     let hit = |id: &str| report.violations.iter().filter(|v| v.rule_id == id).count();
 
-    // 只有刚补的 GET /api/from-frontend 带 side=frontend
+    // Only the just-added GET /api/from-frontend carries side=frontend
     assert_eq!(hit("t-property-is"), 1, "`property_is` 应只命中 side=frontend 的契约");
-    // 只有 POST /api/order/create 有 HandledBy 出边（ghost 没有）
+    // Only POST /api/order/create has a HandledBy out-edge (ghost doesn't)
     assert_eq!(hit("t-has-outgoing"), 1, "`has_outgoing` 应只命中带 handler 的契约");
-    // user 被读写两条边引用；unused_log 没有
+    // user is referenced by both read and write edges; unused_log is not
     assert_eq!(hit("t-fan-in-gte"), 1, "`fan_in_gte: 1` 应只命中 user 表");
 }
 
-/// 框架闸门：声明了 `frameworks` 的规则，在没有该框架时同样要跳过。
+/// Framework gate: a rule that declares `frameworks` must also be skipped when that framework is absent.
 ///
-/// 环境闸门有两级，之前只测了 `languages`，`frameworks` 那条分支没人守。
+/// The environment gate has two levels; previously only `languages` was tested, the `frameworks` branch was unguarded.
 #[test]
 fn framework_gate_skips_rules_for_other_frameworks() {
     const YAML: &str = r#"
@@ -1804,11 +1804,11 @@ rules:
     );
 }
 
-/// Java N+1 规则**真的能命中**：循环体内的 DAO 读调用点（CallSite）。
+/// The Java N+1 rule **really hits**: the DAO read call site (CallSite) inside the loop body.
 ///
-/// 这条把「语言闸门 + `property_is(in_loop)` + `has_annotation(db-query)`」三段拼起来，
-/// 任何一段断了都会让规则静默 0 命中（曾经 `in_loop` 写成 JSON 布尔、而 `PropertyIs`
-/// 只认字符串，导致 `property_is` 永远不成立）。现有用例只验证规则能装载、没验证能命中。
+/// This case combines three segments -- language gate + `property_is(in_loop)` + `has_annotation(db-query)` --
+/// any broken segment makes the rule silently 0-hit (once `in_loop` was written as a JSON boolean while `PropertyIs`
+/// only accepts strings, so `property_is` never held). Existing cases only verified the rule loads, not that it hits.
 #[test]
 fn java_n1_query_rule_fires_on_loop_db_read() {
     let Some(f) = fixture() else {
@@ -1890,7 +1890,7 @@ fn java_n1_query_rule_fires_on_loop_db_read() {
             .map(|v| &v.rule_id)
             .collect::<Vec<_>>()
     );
-    // 没打 `db-write` 标注，写库那条不应误命中。
+    // No `db-write` annotation, so the write-DB edge must not false-hit.
     assert!(
         !report
             .violations
@@ -1900,7 +1900,7 @@ fn java_n1_query_rule_fires_on_loop_db_read() {
     );
 }
 
-/// 文案模板的 `{file}` / `{line}` 必须渲染出来（`raw-sql-sink` 在用）。
+/// The template's `{file}` / `{line}` placeholders must be rendered (`raw-sql-sink` uses them).
 #[test]
 fn message_renders_file_and_line() {
     const YAML: &str = r#"
@@ -1943,14 +1943,14 @@ rules:
     );
 }
 
-/// `kinds` 的语义是**约束种子种类**，不是过滤结果 —— 该参数在所有旧用例里
-/// 都是空数组，从未被赋过值，所以这里把它锁住。
+/// `kinds` means **constrain the seed kinds**, not filter the results -- this param in all old cases
+/// was an empty array and never assigned, so we lock it here.
 ///
-/// 关键（曾经写错过断言）：限定 `kinds: [Table]` 后结果里**仍然会出现 Method**。
-/// 这不是 bug —— 扩展用的邻接是工程级的，且代码刻意把被排除种类的概要补回来
-/// （见 `recall_service` 里"扩展可能走到被排除的种类"那段）。
-/// 若把结果也按 kinds 过滤掉，"从表出发找相关代码"就成了"只列表名"，
-/// 召回会退化成关键词过滤，恰恰丢掉它沿图扩展的价值。
+/// Key (a wrong assertion was written before): after restricting `kinds: [Table]` the results **still contain Method**.
+/// This is not a bug -- the adjacency used for expansion is project-wide, and the code deliberately backfills the summary of excluded kinds
+/// (see the "expansion may reach excluded kinds" passage in `recall_service`).
+/// If results were also filtered by kinds, "find related code from a table" would degrade to "list only table names",
+/// and recall would regress to keyword filtering, exactly losing the value of its graph expansion.
 #[test]
 fn recall_kinds_filters_seeds_not_results() {
     let Some(f) = fixture() else {
@@ -1982,19 +1982,19 @@ fn recall_kinds_filters_seeds_not_results() {
     let only_tables = run(vec!["Table".into()]);
     assert!(!only_tables.hits.is_empty(), "限定 Table 时应有结果");
 
-    // 种子（hop == 0）必须全部来自指定种类
+    // Seeds (hop == 0) must all come from the specified kind
     assert!(
         only_tables.hits.iter().filter(|h| h.hop == 0).all(|h| h.kind == "Table"),
         "种子应全部是 Table，实际：{:?}",
         only_tables.hits.iter().filter(|h| h.hop == 0).map(|h| &h.kind).collect::<Vec<_>>()
     );
-    // 扩展带出来的邻居允许是别的种类（这正是召回的价值所在）
+    // Neighbors pulled in by expansion may be other kinds (this is exactly recall's value)
     assert!(
         only_tables.hits.iter().any(|h| h.hop > 0 && h.kind != "Table"),
         "扩展应能带出其它种类的相关代码，否则召回退化成关键词匹配"
     );
 
-    // 换个种类，种子也应随之改变 —— 证明 kinds 真的在生效
+    // Switch the kind and the seeds should change too -- proving kinds really take effect
     let only_contracts = run(vec!["HttpContract".into()]);
     assert!(
         !only_contracts.seeds.iter().any(|s| s.kind == "Table"),
@@ -2003,7 +2003,7 @@ fn recall_kinds_filters_seeds_not_results() {
     );
 }
 
-/// `limit` 必须真的截断结果（旧用例里的 limit 都大于实际命中数，等于没测）。
+/// `limit` must really truncate results (old cases used limits larger than actual hits, effectively untested).
 #[test]
 fn recall_limit_truncates_results() {
     let Some(f) = fixture() else {
@@ -2036,7 +2036,7 @@ fn recall_limit_truncates_results() {
     assert_eq!(capped.hits.len(), 1, "limit=1 应只返回 1 条");
 }
 
-/// 空查询 / 纯噪声查询不能炸，且应给出空结果而不是随便返回点什么。
+/// Empty / pure-noise queries must not panic, and should yield empty results rather than returning something arbitrary.
 #[test]
 fn recall_handles_empty_query() {
     let Some(f) = fixture() else {
@@ -2067,8 +2067,8 @@ fn recall_handles_empty_query() {
     }
 }
 
-/// 补一个带 `fqn` / `identity` 的节点（`seed_graph` 里的节点这两项都是空的，
-/// 不补就没法测 `fqn_contains` / `identity_contains` / `text_contains`）。
+/// Add a node with `fqn` / `identity` (`seed_graph` nodes have both empty,
+/// so without adding it `fqn_contains` / `identity_contains` / `text_contains` can't be tested).
 fn seed_rich_node(f: &Fixture, id: i64, kind: &str, name: &str, fqn: &str, identity: &str) {
     f.container
         .store
@@ -2099,12 +2099,12 @@ fn seed_rich_node(f: &Fixture, id: i64, kind: &str, name: &str, fqn: &str, ident
         .expect("节点应可写入");
 }
 
-/// 剩余谓词的覆盖：`kind_in` / `name_starts_with` / `fqn_contains` /
+/// Coverage for the remaining predicates: `kind_in` / `name_starts_with` / `fqn_contains` /
 /// `identity_contains` / `text_contains` / `no_annotation` / `property_missing` /
 /// `fan_out_gte` / `all_of`。
 ///
-/// 这批谓词目前**没有已发货规则在用**，优先级低于上一组；但它们是规则语言的
-/// 表达能力，坏了会让"以后加规则"这件事受限，所以仍然锁住。
+/// These predicates currently have **no shipped rule using them**, lower priority than the previous group; but they are the rule language's
+/// expressive power, and breaking them would limit "adding rules later", so they are still locked.
 #[test]
 fn remaining_predicates_are_covered() {
     const YAML: &str = r#"
@@ -2226,12 +2226,12 @@ rules:
     assert_eq!(hit("t-all-of"), 1, "只有 unused_log 同时满足两条");
 }
 
-/// `no_capability` 与判据校验的**交互**：
-/// `Capability` 通道一个标注都没有时，规则必须被停用（否则 `no_capability` 恒真）；
-/// 一旦通道里有标注，规则恢复执行并对**不具备该能力**的节点命中。
+/// The **interaction** between `no_capability` and criterion validation:
+/// When the `Capability` channel has zero annotations, the rule must be disabled (otherwise `no_capability` is always true);
+/// once the channel has annotations, the rule resumes and hits nodes that **lack that capability**.
 ///
-/// 这条用例将来会直接决定 `write-endpoint-without-auth` 能不能复活 ——
-/// 那条规则目前正是因为这个通道为空而被停用的。
+/// This case will directly decide whether `write-endpoint-without-auth` can be revived --
+/// that rule is currently disabled precisely because this channel is empty.
 #[test]
 fn no_capability_depends_on_capability_channel() {
     const YAML: &str = r#"
@@ -2254,7 +2254,7 @@ rules:
     let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
 
-    // 阶段一：Capability 通道为空 → 规则应被判据校验拦下
+    // Phase 1: Capability channel empty -> rule should be caught by criterion validation
     let before = svc.check(f.project, None, false).expect("检查不应失败");
     assert!(
         before.rules_unavailable.iter().any(|s| s.starts_with("t-no-auth")),
@@ -2267,7 +2267,7 @@ rules:
         "被停用的规则不应产出违规"
     );
 
-    // 阶段二：补上一条**别的**能力（RateLimiting），通道不再为空
+    // Phase 2: add a **different** capability (RateLimiting), channel no longer empty
     f.container
         .store
         .apply(&GraphDelta {
@@ -2299,10 +2299,10 @@ rules:
     );
 }
 
-/// `applies_to.kinds` 为空 = **不限种类**（RuleScope 的文档承诺）。
+/// `applies_to.kinds` empty = **no kind restriction** (per `RuleScope`'s docs).
 ///
-/// 这条曾与实现不符：空 kinds 会被拼成 `kind = ''` 的 SQL，匹配不到任何节点，
-/// 规则静默 0 命中 —— 与"不限种类"正好相反。
+/// This once disagreed with the implementation: empty kinds were concatenated into `kind = ''` SQL, matching no node,
+/// the rule silently 0-hit -- the exact opposite of "no kind restriction".
 #[test]
 fn empty_kinds_means_all_kinds() {
     const YAML: &str = r#"
@@ -2331,17 +2331,17 @@ rules:
     );
 }
 
-/// `read_snippet` 的快乐路径：文件真实存在时**必须读出片段**。
+/// The happy path of `read_snippet`: when the file really exists it **must read out the snippet**.
 ///
-/// 之前的用例只覆盖了"文件不存在返回 None"这一条分支，真正的读文件
-/// （含 2MB 保护、行号窗口）没人守 —— 而片段是上下文包里给 LLM 看的内容主体。
+/// Previous cases only covered the "file missing returns None" branch; the real file read
+/// (including the 2MB guard and line-number window) was unguarded -- yet the snippet is the main content shown to the LLM in the context pack.
 #[test]
 fn recall_reads_snippet_from_real_file() {
     let Some(f) = fixture() else {
         eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
         return;
     };
-    // 注册一个磁盘上真实存在的文件（合成样本里的后端控制器）
+    // Register a file that really exists on disk (a backend controller in the synthetic sample)
     let files = f
         .container
         .store
@@ -2423,10 +2423,10 @@ fn recall_reads_snippet_from_real_file() {
 }
 
 
-/// 批量写入 `n` 张表，并让它们都被同一个方法读一次（扇入 1）。
+/// Write `n` tables in batch, each read once by the same method (fan-in 1).
 ///
-/// 用"每个候选都真的有边"而不是空图，是为了让 `fan_in` 计算、
-/// 入边预装载、违规构造（含文件定位）都真正被走到 —— 空图测不出退化。
+/// Using "every candidate really has an edge" instead of an empty graph is to make `fan_in` computation,
+/// in-edge preloading, and violation construction (with file location) all truly exercised -- an empty graph can't surface regressions.
 fn seed_many_tables(f: &Fixture, n: usize) {
     let pid = f.project;
     let mut nodes: Vec<NewNode> = Vec::with_capacity(n + 1);
@@ -2488,10 +2488,10 @@ fn seed_many_tables(f: &Fixture, n: usize) {
         .expect("批量图应可写入");
 }
 
-/// 一次检查的耗时（毫秒）；规则命中全部表，确保真的对每个候选做了求值。
+/// Time of one check (ms); the rule hits all tables, ensuring every candidate is really evaluated.
 ///
-/// 先跑一次**预热**再计时：首次运行要编译 SQL 语句、填充页缓存，
-/// 把冷启动算进去会让测量值被固定开销主导，缩放比就失去意义了。
+/// Warm up once before timing: the first run compiles SQL statements and fills the page cache,
+/// including cold start would let fixed overhead dominate the measurement, making the scaling ratio meaningless.
 fn time_check_on_tables(f: &Fixture) -> (u128, usize) {
     const YAML: &str = r#"
 rules:
@@ -2515,23 +2515,23 @@ rules:
     (t.elapsed().as_millis(), report.violations.len())
 }
 
-/// 规模 ×8 时耗时不得爆炸 —— 挡住 O(N²) 回归。
+/// At 8x scale, time must not explode -- block O(N²) regressions.
 ///
-/// # 阈值是实测校准的，不是随手写的倍数
+/// # Thresholds are calibrated from measurement, not arbitrary multiples
 ///
-/// 用探针量过真实曲线（n = 1k/2k/4k/8k/16k）：
-///   优化前 `8 → 18 → 47 → 112 → 344 ms`，约 **N^1.35**（超线性）
-///   优化后 `…  → 16000 节点 135 ms`，×8 规模耗时 ×6.1 —— **线性**（理论 8.0）
-/// 根因是批量取边的 SQL 让 SQLite 选了 `idx_edges_project`（扫描工程全部边），
-/// 代价 O(N²)；补 `(project_id, to_id/from_id)` 复合索引后回到线性
-/// （见 `gt-adapter-sqlite/src/schema.rs` 的注释）。
+/// Measured the real curve with a probe (n = 1k/2k/4k/8k/16k):
+///    before optimization `8 → 18 → 47 → 112 → 344 ms`, about **N^1.35** (superlinear)
+///    after optimization `… → 16000 nodes 135 ms`, 8x scale takes ×6.1 -- **linear** (theoretical 8.0)
+/// Root cause: the batch-edge SQL made SQLite pick `idx_edges_project` (scanning all project edges),
+/// costing O(N²); after adding the `(project_id, to_id/from_id)` composite index it returned to linear
+/// (see the comment in `gt-adapter-sqlite/src/schema.rs`).
 ///
-/// 于是 ×8 规模下：现在约 ×6，纯二次约 ×64。
-/// 预算取 `t_small × 16 + 100ms`：对当前实现留约 3 倍余量（不 flaky），
-/// 同时能挡住 ≥N^1.4 的增长。
+/// So at 8x scale: now about ×6, pure quadratic about ×64.
+/// Budget set to `t_small × 16 + 100ms`: leaves ~3x headroom for the current implementation (not flaky),
+/// while still blocking growth ≥ N^1.4.
 ///
-/// 也就是说：这条用例守的是**量级退化**，不是"比昨天快 10%"。
-/// 真要做精细性能回归，应该上 criterion 基准，而不是单测。
+/// In other words: this case guards **order-of-magnitude regression**, not "10% faster than yesterday".
+/// For real fine-grained perf regression, use a criterion benchmark, not a unit test.
 #[test]
 fn check_does_not_degenerate_quadratically() {
     const SMALL: usize = 2_000;
@@ -2560,11 +2560,11 @@ fn check_does_not_degenerate_quadratically() {
     );
 }
 
-/// 绝对上限兜底：抓 N+1 这类"线性但常数极大"的退化
-/// —— 它仍是线性的，缩放比看不出来，只能靠绝对耗时。
+/// Absolute upper-bound safety net: catch "linear but huge constant" regressions like N+1
+/// -- it is still linear, the scaling ratio is invisible, only absolute time reveals it.
 ///
-/// 真机实测远低于此（约 26ms），取 2s 留约 75 倍余量：
-/// 既不可能在正常机器上 flaky，又能挡住"每个节点多一次 DB 往返"这种量级。
+/// Real-device measurement is far below this (~26ms); 2s leaves ~75x headroom:
+/// it can't be flaky on a normal machine, yet still catches "one extra DB round-trip per node" scale.
 #[test]
 fn check_completes_within_budget() {
     const N: usize = 2_000;
@@ -2586,10 +2586,10 @@ fn check_completes_within_budget() {
     );
 }
 
-/// 开启 `with_snippets` 时必须走读文件的路径**且不因文件缺失而崩**。
+/// With `with_snippets` on, it must take the file-read path **and not crash on missing files**.
 ///
-/// 旧用例里 `with_snippets` 全是 false，这段代码（含 2MB 超大文件保护、
-/// 行号越界保护）此前零覆盖。
+/// In old cases `with_snippets` was always false; this code (including the 2MB oversized-file guard,
+/// and line-number out-of-bounds guard) had zero coverage before.
 #[test]
 fn recall_with_snippets_is_safe_when_file_missing() {
     let Some(f) = fixture() else {
@@ -2616,7 +2616,7 @@ fn recall_with_snippets_is_safe_when_file_missing() {
         )
         .expect("开启片段不应导致失败");
     assert!(!r.hits.is_empty(), "开启片段后仍应有召回结果");
-    // 夹具里的源文件在磁盘上并不存在，片段应为 None 而不是 panic
+    // The fixture's source file does not exist on disk; the snippet should be None, not panic
     assert!(
         r.hits.iter().all(|h| h.snippet.is_none()),
         "文件不存在时片段应为 None，实际：{:?}",
@@ -2624,10 +2624,10 @@ fn recall_with_snippets_is_safe_when_file_missing() {
     );
 }
 
-/// HTTP 层端到端：GET `/api/projects/{id}/recall` 必须能从图上召回相关代码。
+/// HTTP-layer end-to-end: GET `/api/projects/{id}/recall` must recall related code from the graph.
 ///
-/// 这是之前唯一没覆盖到的召回面——服务本身有集成用例，但 HTTP 入站适配器
-/// （`gt-adapter-http`）从不经过测试，路由拼错 / 参数解错都不会被发现。
+/// This is the only recall surface not covered before -- the service has integration cases, but the HTTP inbound adapter
+/// (`gt-adapter-http`) was never tested, so a wrong route or param parsing went unnoticed.
 #[tokio::test]
 async fn recall_http_get_endpoint_returns_hits() {
     let Some(f) = fixture() else {
@@ -2662,7 +2662,7 @@ async fn recall_http_get_endpoint_returns_hits() {
     );
 }
 
-/// HTTP 层端到端：POST `/api/projects/{id}/recall` 走 `RecallQuery` 主体解析。
+/// HTTP-layer end-to-end: POST `/api/projects/{id}/recall` goes through `RecallQuery` body parsing.
 #[tokio::test]
 async fn recall_http_post_endpoint_returns_hits() {
     let Some(f) = fixture() else {
@@ -2698,10 +2698,10 @@ async fn recall_http_post_endpoint_returns_hits() {
     assert!(!hits.is_empty(), "POST /recall 应召回结果");
 }
 
-/// HTTP 层：`include_body` 必须透传到召回，并在上下文包末尾附上命中文件的完整源码。
+/// HTTP layer: `include_body` must pass through to recall and append the full source of hit files at the end of the context pack.
 ///
-/// 这是 MCP / IDE 省去二次 `read` 的关键路径。夹具源文件不在磁盘上，因此这里断言的是
-/// "段落被拼进去"（读取失败也必须给出提示，而不是静默丢掉整段）。
+/// This is the key path for MCP / IDE to skip the second `read`. The fixture source file is not on disk, so here we assert
+/// "the passage is concatenated in" (a read failure must still give a hint, not silently drop the whole passage).
 #[tokio::test]
 async fn recall_http_include_body_appends_full_file_section() {
     let Some(f) = fixture() else {
@@ -2739,7 +2739,7 @@ async fn recall_http_include_body_appends_full_file_section() {
     );
 }
 
-/// 对照：不传 `include_body` 时不应出现该段落（默认 false，避免默认输出体积膨胀）。
+/// Contrast: when `include_body` is not passed, the passage must not appear (default false, to avoid default output bloat).
 #[tokio::test]
 async fn recall_http_without_include_body_has_no_full_file_section() {
     let Some(f) = fixture() else {
@@ -2770,7 +2770,7 @@ async fn recall_http_without_include_body_has_no_full_file_section() {
     );
 }
 
-/// HTTP 层：预热进度端点应返回 warmed / warming 等字段（供 MCP 判断召回是否走冷路径）。
+/// HTTP layer: the warmup-progress endpoint should return fields like warmed / warming (for MCP to judge whether recall is on the cold path).
 #[tokio::test]
 async fn warmup_http_endpoint_returns_status_fields() {
     let Some(f) = fixture() else {

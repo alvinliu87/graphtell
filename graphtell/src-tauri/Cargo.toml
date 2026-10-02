@@ -5,8 +5,8 @@ description = "GraphTell 桌面常驻界面（Tauri）"
 edition = "2021"
 rust-version = "1.77"
 
-# Tauri 依赖 webkit2gtk(Linux) / WebView2(Windows) 等系统库，
-# 因此这里声明为独立 workspace，不参与主 workspace 的日常构建与 CI。
+# Tauri depends on system libs like webkit2gtk(Linux) / WebView2(Windows),
+# so it is declared as a separate workspace here, excluded from the main workspace's daily build and CI.
 [workspace]
 
 [lib]

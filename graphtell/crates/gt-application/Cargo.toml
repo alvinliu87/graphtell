@@ -15,13 +15,13 @@ rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-# 文件变更监听（轮询遍历源码根，遵循 .gitignore、跳过隐藏）。
+# File-change watching (poll-walks the source root, follows .gitignore, skips hidden).
 ignore = { workspace = true }
 
-# 真实模型嵌入（特征门控，默认不编译；离线构建不受影响）。
-# 启用 `model-ort` 后，把经 ModelScope 拉取并转出的 bge-m3 ONNX 权重指给
-# `OrtBgeEmbedder` 即可获得真正的跨语言语义向量（见 embed_ort.rs）。
-# 选用 tract（纯 Rust ONNX 推理引擎，零系统依赖；避开 onnxruntime 对 openssl 的要求）。
+# Real model embedding (feature-gated, off by default; offline builds unaffected).
+# After enabling `model-ort`, point `OrtBgeEmbedder` at the bge-m3 ONNX weights pulled and exported via ModelScope
+# to get true cross-lingual semantic vectors (see embed_ort.rs).
+# Uses tract (pure-Rust ONNX inference engine, zero system deps; avoids onnxruntime's openssl requirement).
 tract-onnx = { version = "0.23", optional = true }
 tract-core = { version = "0.23", optional = true }
 tokenizers = { version = "0.20", optional = true }
@@ -31,10 +31,10 @@ candle-transformers = { version = "0.9", optional = true }
 safetensors = { version = "0.6", optional = true }
 
 [features]
-# 真实 bge-m3（ONNX + tract）接入。
+# Real bge-m3 (ONNX + tract) integration.
 model-ort = ["dep:tract-onnx", "dep:tract-core", "dep:tokenizers"]
-# 真实 bge-m3（candle 直接加载 safetensors）接入，纯 Rust、离线可用。
-# 权重：tools/convert_bge_safetensors.py 由 models/bge-m3-ms/pytorch_model.bin 转出。
+# Real bge-m3 (candle loading safetensors directly) integration, pure Rust, offline-capable.
+# Weights: tools/convert_bge_safetensors.py exports from models/bge-m3-ms/pytorch_model.bin.
 model-candle = [
     "dep:candle-core",
     "dep:candle-nn",

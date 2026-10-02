@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
-"""召回 vs 朴素 grep 基线对照（证明"图召回不输、且常优于盲搜"）。
+"""Recall vs naive grep baseline comparison (proves "graph recall is no worse, and usually beats blind search").
 
-复用 tools/recall_cases.json 的 30 个带标注用例，对每一例跑两套检索：
+Reuses the 30 labeled cases in tools/recall_cases.json; for each case it runs two retrieval setups:
 
-  1) recall      —— `graphtell recall` 真实流水线（图扩展 + 中文桥）。
-  2) grep(terms) —— 用**召回同一套**展开出的英文关键词去 grep 源码树。
-                    这是"公平"基线：同样的词，只是没有图。
-  3) grep(raw)   —— 用**开发者会直接敲**的词去 grep：
-                      * 英文查询 → 查询里的英文词（去掉纯停用词）；
-                      * 中文查询 → 查询原文（中文串，源码里几乎只命中 i18n）。
-                    这是"朴素"基线：模拟 agent 拿用户原话去盲搜。
+  1) recall      -- the real `graphtell recall` pipeline (graph expansion + Chinese bridge).
+  2) grep(terms) -- grep the source tree with the **same** English keywords the recall expanded.
+                    This is the "fair" baseline: same words, just no graph.
+  3) grep(raw)   -- grep with the words a **developer would actually type**:
+                      * English query -> the English words in the query (minus pure stopwords);
+                      * Chinese query -> the query verbatim (a Chinese string, which in source only
+                        hits i18n almost everywhere).
+                    This is the "naive" baseline: simulating an agent blind-searching with the user's
+                    original words.
 
-判定口径与 recall_cli_eval.py 一致：命中 = 结果包含任一 target 子串（大小写不敏感）。
-对召回是"节点名含 target"；对 grep 是"文件内容含 target"（即文件在答案文件集合里）。
-答案文件集合 = 用 grep -rIl 找出所有含 target 标识符的文件。这样召回(节点) 与
-grep(文件) 对称可比：两边都看"答案符号是否进前 k 结果"。
+The hit criterion matches recall_cli_eval.py: hit = result contains any target substring (case-insensitive).
+For recall it is "node name contains target"; for grep it is "file content contains target" (i.e. the file is
+in the answer-file set).
+Answer-file set = every file containing a target identifier, found via `grep -rIl`. This makes recall(node)
+and grep(file) symmetrically comparable: both look at "does the answer symbol enter the top-k results".
 
-额外给出 grep(terms) 里"首个答案文件的排名"，用来展示：即使 grep 也能捞到答案文件，
-它常被埋在一堆同名文件里，而图召回把**具体方法**顶到前 1~3。
+It also reports "rank of the first answer file" within grep(terms), to show that even when grep can fish out
+the answer file, it is usually buried among a pile of same-named files, while graph recall pushes the
+**specific method** to the top 1~3.
 
-用法：
+Usage:
     python3 tools/grep_baseline_eval.py
     python3 tools/grep_baseline_eval.py --project 1
 """
@@ -33,6 +37,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "target", "release", "graphtell")
 KS = (5, 10, 20)
+# NOTE: these regexes intentionally match the Chinese labels in `graphtell recall`'s current
+# stdout ("跳数" = hops, "查询词：" / "结构提示" = query-term / structural-hint). Do NOT translate
+# them unless the recall command's output is localized first, or parsing will break.
 HIT_RE = re.compile(r"^\s*\d+\.\s+\S+\s+(.+?)\s+[\d.]+\s+跳数")
 TERM_RE = re.compile(r"查询词：\s*(.+?)\s*(?:结构提示|$)")
 STOP = {"the", "a", "an", "to", "for", "of", "on", "and", "is", "by",
@@ -74,12 +81,13 @@ def recall(project, query, limit=20):
         tm = TERM_RE.match(line)
         if tm:
             t = tm.group(1).strip()
+            # "（无）" (Chinese for "none") is the recall command's sentinel when no terms expand.
             terms = [] if t == "（无）" else [x.strip() for x in t.split(",")]
     return names, terms
 
 
 def grep_ranked_files(root, terms):
-    """返回按"命中行数"降序排列的文件列表（仅源码，排除噪声目录）。"""
+    """Return the file list sorted by descending "hit-line count" (source only, noise dirs excluded)."""
     if not terms:
         return []
     pat = "|".join(re.escape(t) for t in terms)
@@ -95,7 +103,7 @@ def grep_ranked_files(root, terms):
 
 
 def answer_files(root, targets):
-    """所有"内容含 target 标识符"的文件 = 答案所在地集合。"""
+    """Every file whose content contains a target identifier = the answer-location set."""
     if not targets:
         return set()
     pat = "|".join(re.escape(t) for t in targets)
@@ -107,7 +115,7 @@ def raw_terms(query, lang):
     if lang == "en":
         toks = re.findall(r"[a-zA-Z]+", query.lower())
         return [t for t in toks if t not in STOP]
-    return [query.strip()]  # 中文：开发者直接拿中文去搜
+    return [query.strip()]  # Chinese: a developer greps with the Chinese query verbatim
 
 
 def hit_at_names(names, targets, k):
@@ -151,7 +159,7 @@ def main():
         root = roots.get(p)
         names, terms = recall(p, q)
         if names is None or root is None:
-            print(f"#{p} {q}: recall 超时或无 root", file=sys.stderr)
+            print(f"#{p} {q}: recall timeout or no root", file=sys.stderr)
             continue
         ans = answer_files(root, tg)
         g_terms = grep_ranked_files(root, terms)
@@ -167,7 +175,7 @@ def main():
 
     def mk(b):
         return "✓" if b else "·"
-    print(f"{'工程':<6}{'语':<4}{'查询':<26}{'recall':<14}{'grep(同词)':<16}{'grep(原始)':<14} 图top / grep#")
+    print(f"{'proj':<6}{'lang':<4}{'query':<26}{'recall':<14}{'grep(same)':<16}{'grep(raw)':<14} topgraph / grep#")
     print("-" * 120)
     for r in rows:
         rec = "/".join(mk(r["recall"][k]) for k in KS)
@@ -177,23 +185,26 @@ def main():
         print(f"#{r['p']:<5}{r['lang']:<4}{r['q'][:24]:<26}"
               f"{rec:<14}{gt:<16}{gr:<14} {r['rrank'] or '—'} / {grank}")
     print()
-    print("=== 汇总 ===")
+    print("=== summary ===")
     n = len(rows)
-    for label, key in (("recall 图召回", "recall"),
-                       ("grep(同词)", "gterms"),
-                       ("grep(原始)", "graw")):
+    for label, key in (("recall graph", "recall"),
+                       ("grep(same)", "gterms"),
+                       ("grep(raw)", "graw")):
         line = "   " + " ".join(
             f"@{k}={sum(1 for r in rows if r[key][k])}/{n}" for k in KS)
         print(f"  {label:<14}{line}")
-    # 增量：图把答案顶进前3，而 grep(同词) 把答案文件埋到 >10（或捞不到）
+    # Increment: graph pushes the answer into the top 3, while grep(same) buries the answer file
+    # beyond >10 (or can't find it at all).
     better = [r for r in rows if r["rrank"] and r["rrank"] <= 3
               and (r["grank"] == 0 or r["grank"] > 10)]
-    print(f"\n  图召回把答案顶进前3、而 grep(同词) 把答案文件埋到 >10 或捞不到：{len(better)}/{n}")
+    print(f"\n  graph recall pushes the answer into top 3, while grep(same) buries the answer "
+          f"file beyond >10 or can't find it: {len(better)}/{n}")
     for r in better:
-        print(f"    #{r['p']} {r['q']} → 图top{r['rrank']} / grep#{r['grank'] or '—'}")
+        print(f"    #{r['p']} {r['q']} -> topgraph{r['rrank']} / grep#{r['grank'] or '—'}")
     zh = [r for r in rows if r["lang"] == "zh"]
     zh_fail = [r for r in zh if not r["graw"][20]]
-    print(f"  中文查询下，拿原始中文去 grep 捞不到任何答案文件：{len(zh_fail)}/{len(zh)}")
+    print(f"  under Chinese queries, grepping with the raw Chinese finds no answer file at all: "
+          f"{len(zh_fail)}/{len(zh)}")
 
 
 if __name__ == "__main__":

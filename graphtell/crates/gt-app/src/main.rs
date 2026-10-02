@@ -131,7 +131,7 @@ enum Command {
     /// Diagnostics: output the cosine between the query and node vectors, to tell whether "Chinese query can't find the target" is a model-capability issue
     /// or a threshold / ranking issue.
     ///
-    /// Example: `graphtell cosine --project 1 --query "商品库存扣减失败回滚" --names stock`
+    /// Example: `graphtell cosine --project 1 --query "商品库存扣减失败回滚" --names stock
     /// if the target symbol's cosine is already below threshold -> model / node-text issue; if the cosine is high enough but the target isn't recalled -> threshold / ranking issue.
     Cosine {
         #[arg(long)]

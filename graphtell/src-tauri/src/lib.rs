@@ -1,17 +1,17 @@
-//! GraphTell 桌面端（Tauri 入站适配器）。
+//! GraphTell desktop app (Tauri inbound adapter).
 //!
-//! 设计要点：
-//! * **后端常驻在进程内** —— 直接启动 axum 服务，不额外拉起子进程，
-//!   因此桌面端与 Web 端共用**同一套 HTTP 契约**（`/api/...`）。
-//! * 端口由内核分配后通过 `api_port` 命令告知前端，避免端口冲突。
-//! * 所有业务能力复用 `gt-app` 组装好的容器，不在 Tauri 层重复实现。
+//! Design notes:
+//! **the backend lives in-process** -- it starts the axum service directly, without spawning a separate subprocess,
+//! so the desktop and web fronts share **the same HTTP contract** (`/api/...`).
+//! The port is assigned by the kernel and told to the frontend via the `api_port` command, avoiding port conflicts.
+//! All business capabilities reuse the container assembled by `gt-app`; nothing is reimplemented in the Tauri layer.
 
 use std::sync::OnceLock;
 
 use gt_app::{AppConfig, Container};
 use serde::Serialize;
 
-/// 后端实际监听的端口（进程内全局，只写一次）。
+/// The port the backend actually listens on (process-wide global, written once).
 static API_PORT: OnceLock<u16> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,7 +22,7 @@ pub struct BackendInfo {
     pub frameworks: usize,
 }
 
-/// 供前端查询的后端信息。
+/// Backend info exposed for the frontend to query.
 #[tauri::command]
 fn api_port() -> BackendInfo {
     let port = API_PORT.get().copied().unwrap_or(5177);
@@ -34,7 +34,7 @@ fn api_port() -> BackendInfo {
     }
 }
 
-/// 组装容器并启动进程内 API 服务；返回端口供前端使用。
+/// Assemble the container and start the in-process API service; returns the port for the frontend.
 pub fn bootstrap(config: AppConfig) -> Result<u16, String> {
     let container = Container::new(config).map_err(|e| e.to_string())?;
     let info = BackendInfo {
@@ -53,7 +53,7 @@ pub fn bootstrap(config: AppConfig) -> Result<u16, String> {
     Ok(port)
 }
 
-/// Tauri 入口（由 `main.rs` 调用）。
+/// Tauri entry point (called from `main.rs`).
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![api_port])

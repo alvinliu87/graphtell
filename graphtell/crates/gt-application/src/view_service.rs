@@ -152,8 +152,8 @@ impl ViewService {
             nodes.retain(|n| n.sub_project_id == Some(sid));
         }
 
-        // 按「端」过滤：把种类相同但端不同的节点（如前后端缓存）拆到各自视角。
-        // 不满足 `side` 的节点（缺属性或与视角不符）直接剔除；`side` 为 `None` 的视角不过滤。
+        // Filter by "side": split nodes that share a kind but differ in side (e.g. frontend/backend cache) into their own perspectives.
+        // Nodes not satisfying `side` (missing attribute or not matching the perspective) are dropped; a perspective whose `side` is `None` applies no filtering.
         if let Some(side) = &spec.side {
             nodes.retain(|n| {
                 n.properties
@@ -164,7 +164,7 @@ impl ViewService {
             });
         }
 
-        // 有搜索词：直接按名称命中，不做全量打分（下拉按需搜索，求快）。
+        // With a search term: match by name directly, skip full scoring (dropdown searches on demand, optimize for speed).
         if name_contains.is_some() {
             return Ok(nodes
                 .into_iter()
@@ -183,11 +183,11 @@ impl ViewService {
         Ok(self.rank_candidates(nodes, &summary, &out, &inc, &sem_inc, limit as usize))
     }
 
-    /// 候选对象打分核心：把 `query_nodes` 取回的节点按"语义价值"排序并截断。
+    /// Core scoring for candidate objects: rank the nodes returned by `query_nodes` by "semantic value" and truncate.
     ///
-    /// `summary` / `out` / `inc` / `sem_inc` 来自 `nodes_summary` + `chain_adjacency`，
-    /// **由调用方负责加载一次后复用**——`object_view` 与 `candidates` 共享同一份，
-    /// 避免每次请求重复加载整图概要 + 链边邻接（工程越大越贵）。
+    /// `summary` / `out` / `inc` / `sem_inc` come from `nodes_summary` + `chain_adjacency`,
+    /// **the caller loads them once and reuses** -- `object_view` and `candidates` share the same copy,
+    /// avoiding reloading the whole-graph summary + chain adjacency on every request (cost grows with project size).
     fn rank_candidates(
         &self,
         nodes: Vec<gt_domain::model::Node>,
@@ -221,9 +221,9 @@ impl ViewService {
         scored.into_iter().map(|(_, c)| c).collect()
     }
 
-    /// 候选对象的"价值"：其调用链（chain 边）可达的语义节点数（表 / 配置 / 缓存 / 事件…）。
-    /// 值越高，承载的业务依赖越丰富，越适合作为默认打开的对象。
-    /// 全部在内存里完成：`summary` 提供节点语义性、`out`/`inc` 为链边整数邻接，不再回查数据库。
+    /// A candidate object's "value": the number of semantic nodes (table / config / cache / event …) reachable via its call chain (chain edges).
+    /// Higher value means richer business dependencies, making it a better default object to open.
+    /// All done in memory: `summary` provides node semantics, `out`/`inc` are integer chain-edge adjacency, no DB lookups.
     fn semantic_value(
         &self,
         center: NodeId,
@@ -238,8 +238,8 @@ impl ViewService {
         let mut semantic: HashSet<i64> = HashSet::new();
         let mut queue: VecDeque<(i64, u32)> = VecDeque::new();
         queue.push_back((center.get(), 0));
-        // 与视图一致：把"中心的入向链邻居"也作为第 1 环（表 / 外部系统视角需要）。
-        // `inc` 已只含链边，无需再判 `is_chain_edge`。
+        // Consistent with the view: also treat the center's inbound chain neighbors as ring 1 (needed for table / external-system perspectives).
+        // `inc` already holds only chain edges, no need to re-check `is_chain_edge`.
         if let Some(incoming) = inc.get(&center.get()) {
             for &from in incoming {
                 if seen.insert(from) {
@@ -254,7 +254,7 @@ impl ViewService {
             let Some(edges) = out.get(&id) else {
                 continue;
             };
-            // `out` 已只含链边，直接遍历目标即可。
+            // `out` already holds only chain edges, just iterate the targets.
             for &to in edges {
                 if let Some(s) = summary.get(&to) {
                     if NodeKind(s.kind.clone()).is_semantic() {
@@ -269,14 +269,14 @@ impl ViewService {
         semantic.len()
     }
 
-    /// 对象类视角：以**一个**对象为中心的链路子图（环 = 跳数）。
+    /// Object perspective: a link subgraph centered on **one** object (ring = hop count).
     ///
-    /// 恒为**折叠**视图：只画语义节点（Table / HttpContract / ConfigKey / I18nKey / Event /
-    /// Queue / Cache / Topic）与它们之间的语义边；语法节点（Method / CallSite / Class…）
-    /// 被收进边的 `via` 链，并内联每一跳的调用处 —— 单击边即可逐跳核对。
+    /// Always a **collapsed** view: only semantic nodes (Table / HttpContract / ConfigKey / I18nKey / Event /
+    /// Queue / Cache / Topic) and the semantic edges between them; syntactic nodes (Method / CallSite / Class …)
+    /// are folded into the edge's `via` chain, with each hop's call site inlined -- click an edge to verify hop by hop.
     ///
-    /// 曾有过 `expand` 参数可展开全部语法节点，已移除：那条分支不做提拉、不生成 `via`、
-    /// 不内联调用处 —— **画了更多节点却少了证据**，还会把图撑成多层单行、要横向滚好几屏。
+    /// There used to be an `expand` param to unfold all syntactic nodes; removed: that branch did no lifting, generated no `via`,
+    /// and inlined no call sites -- **more nodes drawn but less evidence**, and it blew the graph into multi-layer single rows needing several horizontal scrolls.
     pub fn object_view(
         &self,
         project_id: ProjectId,
@@ -293,7 +293,7 @@ impl ViewService {
             .get_node(center_id)?
             .ok_or_else(|| DomainError::NotFound(format!("node {center_id}")))?;
         let depth = depth.unwrap_or(spec.depth).clamp(1, 6);
-        // 第三方 / 库子工程（role == "library"）节点作为终点，不向外展开。
+        // Third-party / library sub-project nodes (role == "library") are terminals, not expanded outward.
         let library_subs: HashSet<i64> = self
             .store
             .list_sub_projects(project_id)
@@ -310,10 +310,10 @@ impl ViewService {
         let chain_depth = depth;
 
         let summary = self.store.nodes_summary(project_id)?;
-        // `inc` / `sem_inc` 只服务于候选打分（已移出对象视图，见 `ObjectView` 注释），这里不再需要。
+        // `inc` / `sem_inc` only served candidate scoring (removed from object view, see `ObjectView` note), no longer needed here.
         let (out, _inc, _sem_inc) = self.store.chain_adjacency(project_id)?;
 
-        // 语义性按需由 kind 计算，避免为「是否语义节点」反复查库。
+        // Semantic-ness is computed on demand from kind, avoiding repeated DB lookups for "is this a semantic node".
         let sem_of = |id: i64| -> bool {
             summary
                 .get(&id)
@@ -336,8 +336,8 @@ impl ViewService {
         let hidden_by_kind = fold.hidden_by_kind;
         let orphans = fold.orphans;
         self.inline_chain_locations(&mut shown_edges, &d, &summary);
-        // 可见节点：环内"语义节点 / 强制可见节点"。提拉阶段可能把环外的语义目标登记进环，
-        // 所以放在提拉之后计算。
+        // Visible nodes: "semantic nodes / force-visible nodes" within the ring. The lifting phase may register out-of-ring semantic targets into the ring,
+        // so compute this after lifting.
         let visible_nodes: Vec<i64> = d
             .ring_of
             .keys()
@@ -346,7 +346,7 @@ impl ViewService {
                 d.semantic_of.get(&id).copied().unwrap_or(false) || d.force_visible.contains(&id)
             })
             .collect();
-        // ---- 只保留与中心真正连通的可见节点（丢弃孤立叶子，守住"单链路"诚实性）----
+        // ---- keep only visible nodes truly connected to the center (drop orphan leaves, preserve "single-chain" honesty) ----
         let mut touched: HashSet<i64> = HashSet::new();
         touched.insert(center_id.get());
         for e in &shown_edges {
@@ -354,7 +354,7 @@ impl ViewService {
             touched.insert(e.to.get());
         }
 
-        // ---- 组装可见节点的环与节点视图 ----
+        // ---- assemble the ring and node view of visible nodes ----
         let max_ring = d.ring_of.values().copied().max().unwrap_or(0);
         let mut visible_rings: Vec<Vec<NodeId>> = vec![vec![]; max_ring as usize + 1];
         for &id in &visible_nodes {
@@ -399,7 +399,7 @@ impl ViewService {
                             .map(|mut nv| {
                                 let idv = nv.id.get();
                                 if consumer_classes.contains(&idv) {
-                                    // 同族着色 + `category` 同步（前端按 category 决定端 / 点击切视角）。
+                                    // Same-family coloring + `category` sync (frontend decides side / click-to-switch perspective by `category`).
                                     nv.kind = NodeKind::EVENT_HANDLER.to_string();
                                     nv.category = Some(NodeKind::EVENT_HANDLER.to_string());
                                 }
@@ -418,8 +418,8 @@ impl ViewService {
             })
             .collect();
 
-        // 孤儿访问并入"被折叠的条目"记账：它们同样是从画布上省掉的访问方，
-        // 只是额外带接触点位置、可在前端逐条核对（见 `ObjectView.orphans`）。
+        // Orphan accesses are booked into the "folded entries" account: they are also accessors saved off the canvas,
+        // just carrying contact-point locations too, verifiable one by one on the frontend (see `ObjectView.orphans`).
         let hidden = HiddenInfo {
             total: hidden_total + orphans.len() + shown_edges.len(),
             shown: shown_edges.len(),
@@ -460,9 +460,9 @@ impl ViewService {
         })
     }
 
-    /// 发现阶段：以中心为起点沿**调用链**做分层 BFS，产出折叠视图所需的全部状态。
+    /// Discovery phase: layered BFS along the **call chain** from the center, producing all state needed for the collapsed view.
     ///
-    /// 见 `Discovery` 的文档：这一阶段结束后状态即冻结，后续只读。
+    /// See `Discovery`'s docs: state freezes after this phase, later phases are read-only.
     #[allow(clippy::too_many_arguments)]
     fn discover(
         &self,
@@ -481,25 +481,25 @@ impl ViewService {
         let mut kind_of: HashMap<i64, String> = HashMap::new();
         let mut name_of: HashMap<i64, String> = HashMap::new();
         let mut semantic_of: HashMap<i64, bool> = HashMap::new();
-        // 边缓存：BFS 与后续「提拉 / 原样保留边」共享，避免对同一节点反复 `edges_of` 往返。
+        // Edge cache: shared by BFS and later "lift / keep-edge-as-is" to avoid repeated `edges_of` round-trips on the same node.
         let mut out_edges: HashMap<i64, Vec<gt_domain::model::Edge>> = HashMap::new();
         let mut in_edges: HashMap<i64, Vec<gt_domain::model::Edge>> = HashMap::new();
 
         let force_visible: HashSet<i64> = HashSet::new();
-        // 反向模式：从中心走到该节点途中遇到的**语义边种类**（即"资源被怎样访问"）。
+        // Reverse mode: the **semantic edge kind** encountered traveling from center to this node (i.e. "how the resource is accessed").
         let mut path_kind: HashMap<i64, String> = HashMap::new();
-        // 与 `path_kind` 平行：走到该节点途中遇到的语义边**是否为传播得来的间接边**。
-        // 资源视角（"谁在读这个配置"）同样要能区分直接读者与"上游读过"的间接入口。
+        // Parallel to `path_kind`: whether the semantic edge encountered on the way is an indirectly-propagated edge.
+        // The resource perspective ("who is reading this config") must also distinguish direct readers from "upstream-read" indirect entries.
         let mut path_indirect: HashMap<i64, bool> = HashMap::new();
         let mut path_from_center: HashSet<i64> = HashSet::new();
-        // 每个节点在本层择优时胜出的**边 id**：用于「边 id 小者优先」的确定性兜底比较。
+        // The **edge id** a node won with when competing in its layer: used for the deterministic tie-break "smaller edge id wins".
         let mut best_edge_id_of: HashMap<i64, i64> = HashMap::new();
         kind_of.insert(center_id.get(), center_node.kind.to_string());
         name_of.insert(center_id.get(), center_node.name.clone());
         semantic_of.insert(center_id.get(), node_is_semantic(&center_node));
         ring_of.insert(center_id.get(), 0);
 
-        // 按层批量取边（分块 `IN` 查询），写入边缓存。
+        // Fetch edges per layer in batches (chunked `IN` queries), write into the edge cache.
         let fetch_edges = |ids: &[i64],
                            out: &mut HashMap<i64, Vec<gt_domain::model::Edge>>,
                            inc: &mut HashMap<i64, Vec<gt_domain::model::Edge>>|
@@ -519,7 +519,7 @@ impl ViewService {
             Ok(())
         };
 
-        // 预取中心节点的双向边（Event 播种 / 正向播种 / 第 0 层展开都要用）。
+        // Prefetch the center node's bidirectional edges (used by Event seeding / forward seeding / layer-0 expansion).
         fetch_edges(&[center_id.get()], &mut out_edges, &mut in_edges)?;
 
         if matches!(center_node.kind.as_str(), "Event" | "Queue" | "Topic") {
@@ -555,7 +555,7 @@ impl ViewService {
                     }
                 }
                 path_kind.entry(node).or_insert(e.kind.to_string());
-                // 中心的**出边**（如 `事件 --HandledBy--> 监听器`）：画边时不能反过来。
+                // The center's **out-edges** (e.g. `event --HandledBy--> listener`): must not be reversed when drawing.
                 if center_side {
                     path_from_center.insert(node);
                 }
@@ -563,8 +563,8 @@ impl ViewService {
                     ring_of.insert(node, 1);
                     parent_of.insert(node, center_id.get());
                     semantic_of.insert(node, is_consumer);
-                    // 关键：同时补齐 kind / name。否则 BFS 收尾的「补齐」步骤会因
-                    // kind_of 缺失而按 kind 重算 semantic_of，把这里的提升覆盖回 false。
+                    // Key: also backfill kind / name. Otherwise the BFS-final "backfill" step would, due to
+                    // missing `kind_of`, recompute `semantic_of` from kind, overwriting our promotion back to false.
                     if let Some(m) = summary.get(&node) {
                         kind_of.insert(node, m.kind.clone());
                         name_of.insert(node, m.name.clone());
@@ -573,8 +573,8 @@ impl ViewService {
             }
         }
 
-        // 正向模式：把"中心的入向链邻居"也作为第 1 环（表 / 外部系统视角需要）。
-        // 这些第 1 环节点要在第 1 层与中心的孩子一起展开。
+        // Forward mode: also treat the center's inbound chain neighbors as ring 1 (needed for table / external-system perspectives).
+        // These ring-1 nodes expand together with the center's children in layer 1.
         let mut seed_ring1: Vec<i64> = Vec::new();
         if !reverse {
             if let Some(inc) = in_edges.get(&center_id.get()) {
@@ -593,8 +593,8 @@ impl ViewService {
             }
         }
 
-        // 分层 BFS：每层一次性批量取边，把原来「每节点一次 edges_of 往返」压成几次分块查询；
-        // 语义节点是终点（折叠模式不再向外穿透），第三方库子工程节点也不展开。
+        // Layered BFS: fetch edges per layer in one batch, compressing the original "one `edges_of` round-trip per node" into a few chunked queries;
+        // semantic nodes are terminals (collapsed mode no longer penetrates outward), third-party library sub-project nodes are not expanded either.
         let library_check = !library_subs.is_empty();
         let mut current: Vec<i64> = vec![center_id.get()];
         let mut ring: u32 = 0;
@@ -613,12 +613,12 @@ impl ViewService {
                     }
                 }
                 let k = kind_of.get(&id).cloned().unwrap_or_default();
-                // 语义节点是终点，不再向外穿透
+                // Semantic nodes are terminals, no further outward penetration
                 if id != center_id.get() && sem_of(id) {
                     continue;
                 }
-                // 折叠模式：把方法的"声明类"也纳入链路，让**类级语义边**（Dao→Model、Model→Table）浮现。
-                // 安全：`Declares` 不在链边集合里，所以从类节点出发不会再展开出它的一堆方法。
+                // Collapsed mode: also bring a method's "declaring class" into the chain, surfacing **class-level semantic edges** (Dao→Model, Model→Table).
+                // Safety: `Declares` is not in the chain-edge set, so starting from the class node won't re-expand its pile of methods.
                 if k == "Method" {
                     if let Some(inc) = in_edges.get(&id) {
                         for e in inc {
@@ -627,7 +627,7 @@ impl ViewService {
                             {
                                 continue;
                             }
-                            // 沿用路径上的语义边种类，避免后续被 `HandledBy` 之类的边覆盖
+                            // Keep the semantic edge kind along the path, avoid later being overwritten by edges like `HandledBy`
                             let inherited = path_kind.get(&id).cloned().unwrap_or_default();
                             path_kind.entry(e.from_id.get()).or_insert(inherited);
                             ring_of.insert(e.from_id.get(), ring + 1);
@@ -642,7 +642,7 @@ impl ViewService {
                 if library_check && library_subs.contains(&sub_of(id)) {
                     continue;
                 }
-                // 折叠视图沿调用链单向发现：正向（路由）沿出边下钻，反向（资源）沿入边回溯。
+                // The collapsed view discovers unidirectionally along the call chain: forward (route) drills down via out-edges, reverse (resource) backtracks via in-edges.
                 let dir_edges: Vec<&gt_domain::model::Edge> = if reverse {
                     in_edges.get(&id).into_iter().flatten().collect()
                 } else {
@@ -660,10 +660,10 @@ impl ViewService {
                     let already = ring_of.get(&other).copied();
                     if let Some(r) = already {
                         if r != ring + 1 {
-                            // 已在更近的层确定路径（或异常更远），不再处理。
+                            // Path already fixed at a nearer layer (or anomaly is farther), skip.
                             continue;
                         }
-                        // r == ring + 1：本层重见，按比较器决定是否升级。
+                        // r == ring + 1: re-seen at this layer, decide promotion by comparator.
                     }
                     let indirect = is_indirect_edge(e);
                     let rank = access_rank(e.kind.as_str());
@@ -705,7 +705,7 @@ impl ViewService {
                     }
                 }
             }
-            // 把"正向播种的第 1 环"并入第 1 层一起展开。
+            // Merge the "forward-seeded ring 1" into layer 1 for expansion.
             if ring == 0 {
                 for s in &seed_ring1 {
                     if !next.contains(s) {
@@ -717,8 +717,8 @@ impl ViewService {
             ring += 1;
         }
 
-        // 补齐所有可达节点的 kind / 语义性（边展示阶段要用）—— 直接读预加载的节点概要，
-        // 不再逐个 `get_node` 往返。
+        // Backfill kind / semantics for all reachable nodes (needed by the edge-display phase) -- read directly from the preloaded node summary,
+        // no per-node `get_node` round-trips.
         for &id in ring_of.keys() {
             if !kind_of.contains_key(&id) {
                 if let Some(m) = summary.get(&id) {
@@ -729,8 +729,8 @@ impl ViewService {
             }
         }
 
-        // 补齐环内节点的边缓存（原逻辑在提拉 / 原样保留边时会对每个环内节点再 `edges_of` 一次；
-        // 这里一次性批量补齐，等价于原行为但把 N 次往返压成几次分块查询）。
+        // Backfill the in-ring nodes' edge cache (the original logic did one more `edges_of` per in-ring node during lift / keep-edge-as-is;
+        // here we backfill in one batch -- equivalent behavior but compressing N round-trips into a few chunked queries).
         let miss_out: Vec<i64> = ring_of
             .keys()
             .copied()
@@ -761,12 +761,12 @@ impl ViewService {
         })
     }
 
-    /// 内联链路节点的位置。
+    /// Inline the link nodes' locations.
     ///
-    /// 折叠视图的"链路"是**临时提拉**的结果，中间跳只存在于当次响应里，按边 id 重查
-    /// 拿不到 —— 这里一次性查好、按链路顺序（起点 → 各跳 → 终点）内联进 `EdgeView`，
-    /// 省掉前端对每个节点单独请求 `/nodes/{id}/locations` 的 N+1 次往返，
-    /// 且这些位置与"这条边"同源。
+    /// The collapsed view's "chain" is a **temporary lift** result; middle hops exist only in this response, and re-querying by edge id
+    /// can't fetch them -- here we query once and inline into `EdgeView` in chain order (start → each hop → end),
+    /// saving the frontend N+1 round-trips of requesting `/nodes/{id}/locations` per node,
+    /// and these locations share the same source as "this edge".
     fn inline_chain_locations(
         &self,
         shown_edges: &mut Vec<EdgeView>,
@@ -804,7 +804,7 @@ impl ViewService {
                 continue;
             }
             let mut seed = *seeds.iter().min().unwrap();
-            // 优先：能从出边缓存里找到「带 evidence 的同 kind 直接边」的 seed（环路内基本都命中）。
+            // Prefer: seeds that can find a "same-kind direct edge with evidence" from the out-edge cache (almost all within the ring hit).
             for s in &seeds {
                 let Some(outs) = d.out_edges.get(s) else {
                     continue;
@@ -821,7 +821,7 @@ impl ViewService {
             if seed == e.to.get() || seed == contact || e.via.iter().any(|v| v.id.get() == seed) {
                 continue;
             }
-            // kind / 短名取自本视图已经预加载的 `summary`，别再为它俩各 `get_node` 一次。
+            // kind / short name come from this view's already-preloaded `summary`; don't `get_node` for each again.
             let (kind, name) = summary
                 .get(&seed)
                 .map(|m| {
@@ -848,7 +848,7 @@ impl ViewService {
         }
 
         {
-            // 同一终点会被多条 shown 边反复问到（平行路径），入边缓存住，别每次都查库。
+            // The same target is asked repeatedly by multiple shown edges (parallel paths); cache in-edges, don't query DB each time.
             let ins_cache =
                 std::cell::RefCell::new(HashMap::<i64, Vec<gt_domain::model::Edge>>::new());
             let mut need: Vec<i64> = Vec::new();
@@ -890,13 +890,13 @@ impl ViewService {
                     .collect();
 
                 let contact_id = e.via.last().map(|v| v.id.get()).unwrap_or(e.from.get());
-                // 优先命中 BFS 阶段已批量预取的入边缓存；缓存未覆盖（极少数漏预取的节点）
-                // 时再回退到单点查询。避免对每条 shown 边各发一次 DB 往返（N+1）。
+                // Prefer the BFS-stage pre-fetched in-edge cache; for cache misses (the few un-pre-fetched nodes)
+                // fall back to a point query. Avoid one DB round-trip per shown edge (N+1).
                 let cached_ins = d.in_edges.get(&e.to.get()).cloned();
                 let store_ins = if cached_ins.is_some() {
                     None
                 } else {
-                    // 同一终点会被多条 shown 边反复问到（平行路径），缓存住，别每次都查库。
+                    // The same target is asked repeatedly by multiple shown edges (parallel paths); cache it, don't query DB each time.
                     Some(
                         ins_cache
                             .borrow_mut()
@@ -910,7 +910,7 @@ impl ViewService {
                     )
                 };
                 let ins = cached_ins.as_ref().or(store_ins.as_ref());
-                // ---- 「读+写」：把被 `action_strength` 压掉的另一种访问方式记回边上 ----
+                // ---- "read+write": record the other access mode suppressed by `action_strength` back onto the edge ----
                 if let Some(ins) = ins {
                     let mut others: Vec<String> = ins
                         .iter()
@@ -982,11 +982,11 @@ impl ViewService {
         }
     }
 
-    /// 折叠提拉 + 语义边收集：把挂在语法节点（Method / CallSite）上的语义边提拉到
-    /// "发起它的语义节点"上，并把被折叠掉的中间跳记进 `via`。
+    /// Collapsed lift + semantic-edge collection: lift the semantic edges hanging on syntactic nodes (Method / CallSite) up to
+    /// the "semantic node that initiated them", and record the folded-away middle hops into `via`.
     ///
-    /// 见 `Discovery` 的文档：本方法接受 `&mut Discovery`（提拉阶段会把环外的语义
-    /// 目标补登记进环），闭包则整体不可变借用，靠 NLL 在最后一次使用后让出借用。
+    /// See `Discovery`'s docs: this method takes `&mut Discovery` (the lift phase registers out-of-ring semantic
+    /// targets into the ring), while the closure borrows immutably overall, relying on NLL to release the borrow after its last use.
     #[allow(clippy::too_many_arguments)]
     fn fold_and_collect(
         &self,
@@ -996,7 +996,7 @@ impl ViewService {
         summary: &HashMap<i64, NodeSummary>,
         out: &HashMap<i64, Vec<i64>>,
     ) -> Result<FoldResult> {
-        // `sem_of` 只依赖 `summary`，在本方法内重建即可（无需穿过函数边界传递闭包）。
+        // `sem_of` depends only on `summary`; rebuild it inside this method (no need to pass the closure across function boundaries).
         let sem_of = |id: i64| -> bool {
             summary
                 .get(&id)
@@ -1011,16 +1011,16 @@ impl ViewService {
             d.semantic_of.get(&id).copied().unwrap_or(false) || d.force_visible.contains(&id)
         };
 
-        // 语义边优先级（用于折叠路径上的边提拉）：见 `Self::agg_rank`。
+        // Semantic-edge priority (for edge lifting on the collapsed path): see `Self::agg_rank`.
         let mut shown_edges: Vec<EdgeView> = Vec::new();
         let mut shown_keys: HashSet<(String, i64, i64, Vec<i64>)> = HashSet::new();
         let mut hidden_by_kind: BTreeMap<String, usize> = BTreeMap::new();
         let mut hidden_total = 0usize;
-        // 无语义入口的直接访问（孤儿）：不进画布，只记账（见下方反向分支的收集处）。
+        // Direct access with no semantic entry (orphan): not on canvas, only accounted (see the reverse branch's collection below).
         let mut orphans: Vec<OrphanAccess> = Vec::new();
 
-        // 沿 BFS 父链收集"被折叠掉的中间节点"，顺序为**从祖先到目标**（便于前端直接串成链）。
-        // `child` 是真正持有语义边的节点，`ancestor` 是提拉后的语义节点；两者相邻时返回空。
+        // Collect "folded-away middle nodes" along the BFS parent chain, in order **ancestor → target** (so the frontend can string them into a chain directly).
+        // `child` is the node actually holding the semantic edge, `ancestor` is the lifted semantic node; return empty when they are adjacent.
         let chain_to = |child: i64, ancestor: i64| -> Vec<ViaNode> {
             let mut path: Vec<ViaNode> = Vec::new();
             let mut cur = child;
@@ -1098,7 +1098,7 @@ impl ViewService {
                 })
                 .collect()
         };
-        // `indirect`：该语义边是否由 P8 沿调用链传播得来（起点自身并未执行该动作）。
+        // `indirect`: whether this semantic edge was propagated along the call chain by P8 (the start node itself did not perform the action).
         let push_edge = |from: i64,
                          to: i64,
                          kind: &str,
@@ -1133,7 +1133,7 @@ impl ViewService {
             if !seen.insert(key) {
                 return;
             }
-            // 给每一跳补上"调用处"：prev(起点/上一跳) → 本跳 的 CallSite 位置。
+            // Add the "call site" to each hop: `prev` (start / previous hop) → this hop's CallSite location.
             let mut prev = f;
             for v in via.iter_mut() {
                 v.call_site = call_site(prev, v.id.get());
@@ -1161,7 +1161,7 @@ impl ViewService {
                 to_call_site,
                 indirect,
                 also_kinds: Vec::new(),
-                // 由"内联链路位置"步骤统一填充（见 object_view 末尾）。
+                // Filled uniformly by the "inline link locations" step (see end of `object_view`).
                 node_locations: Vec::new(),
             });
         };
@@ -1233,8 +1233,8 @@ impl ViewService {
                                 if !miss.is_empty() {
                                     let ids: Vec<NodeId> = miss.into_iter().map(NodeId).collect();
                                     if let Ok(m) = self.store.edges_incoming(&ids) {
-                                        // 查不到（确无入边）也要记一个空占位，避免同一节点
-                                        // 在后续层里被反复查询。
+                                        // Even if not found (truly no in-edges), record an empty placeholder to avoid the same node
+                                        // being queried repeatedly in later layers.
                                         let mut c = ins_cache.borrow_mut();
                                         for id in ids {
                                             let v = m.get(&id.get()).cloned().unwrap_or_default();
@@ -2104,7 +2104,7 @@ impl ViewService {
                 .map(|m| NodeKind(m.kind.clone()).is_semantic())
                 .unwrap_or(false)
         };
-        let mut callers: Vec<i64> = Vec::new(); // 由近及远：[直接调用方, …, 最远]
+        let mut callers: Vec<i64> = Vec::new(); // Nearest first: [direct caller, …, farthest]
         let mut seen_up: HashSet<i64> = HashSet::new();
         seen_up.insert(producer);
         let mut cur = producer;
@@ -2127,7 +2127,7 @@ impl ViewService {
                 Some(p) => {
                     callers.push(p);
                     if sem(p) {
-                        break; // 到达语义入口（路由等），链路到此封顶
+                        break; // Reached a semantic entry (route, etc.); the chain caps here
                     }
                     cur = p;
                 }
@@ -2141,7 +2141,7 @@ impl ViewService {
         } else {
             let top = *callers.last().unwrap();
             let mut v: Vec<i64> = callers[..callers.len() - 1].iter().rev().copied().collect();
-            v.push(producer); // 接触点作为 via 末跳
+            v.push(producer); // Contact point as the last `via` hop
             (top, v)
         };
         let via: Vec<ViaNode> = via_ids
@@ -2837,7 +2837,7 @@ fn better_path(
     old_eid: i64,
 ) -> bool {
     if new_indirect != old_indirect {
-        return !new_indirect; // 新的更直接 → 更优
+        return !new_indirect; // Newer and more direct → better
     }
     let new_rank = access_rank(new_kind);
     let old_rank = access_rank(old_kind);
@@ -2947,7 +2947,7 @@ mod tests {
         // Auto-route (method-unrestricted): infer by controller method name last segment
         assert!(is_write_http_method("ANY /api/recharge/submit"));
         assert!(is_write_http_method("RULE /api/recharge/delete"));
-        assert!(is_write_http_method("ANY /user/rechargeSave")); // 驼峰带前后缀
+        assert!(is_write_http_method("ANY /user/rechargeSave")); // CamelCase with prefix/suffix
         assert!(!is_write_http_method("ANY /api/order/detail"));
         assert!(!is_write_http_method("ANY /goods/getQRCodePath"));
     }

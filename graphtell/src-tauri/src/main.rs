@@ -1,4 +1,4 @@
-// 隐藏 release 构建下的控制台窗口（Windows）
+// GraphTell desktop app (Tauri inbound adapter).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {

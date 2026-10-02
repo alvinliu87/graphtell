@@ -1779,8 +1779,8 @@ fn extract_decorator_guards(
 /// * separator: PHP is `=>`, other languages may be `:` / `=`.
 ///
 /// So FKB gives `paths` / `markers` (**multiple, tried one by one**) / `end` / `separator` / `extensions`,
-/// the kernel only does "scan fixed写法 by declaration" — same as `load_nginx`:
-/// **better only recognize fixed写法 than introduce a whole parser**.
+/// the kernel only does "scan fixed syntax by declaration" -- same as `load_nginx`:
+/// **better only recognize fixed syntax than introduce a whole parser**.
 fn load_middleware_aliases(ctx: &mut PipelineContext, project_root: &Path, params: &Value) {
     let strs = |k: &str| -> Vec<String> {
         params
@@ -2041,7 +2041,7 @@ fn load_nginx(
 }
 
 /// Declarative middleware list: file name / key / scope **all declared by FKB `params`** — same idea as `middleware_aliases`,
-/// `nginx_config`, the kernel only does "scan fixed写法 by declaration", knows no framework / language.
+/// `nginx_config`, the kernel only does "scan fixed syntax by declaration", knows no framework / la
 ///
 /// Middleware is often registered in a **file**, not via a route call `->middleware()`:
 /// * ThinkPHP global: `app/middleware.php` returns a bare class array `return [A::class, B::class];`;
@@ -2728,7 +2728,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             path_arg: 0,
-            handler_arg: None, // 最后一个实参当作 handler 丢弃
+            handler_arg: None, // Treat the last argument as a handler and drop it
             group_method: None,
             receiver_ends_with: false,
             accept_identifier: true,
@@ -2803,7 +2803,7 @@ mod tests {
             span: Span { start_line: line, end_line: line, start_byte: line * 10, end_byte: line * 10 + 5 },
             file: f.into(),
             sub: None,
-            language: Language::new(Language::PHP), // 仅占位，不影响装饰器匹配
+            language: Language::new(Language::PHP), // Placeholder only; does not affect decorator matching
         };
         let calls = vec![
             mk("Get", "UserController.profile", FactValue::String("/profile".into()), 10),
@@ -3079,9 +3079,9 @@ mod tests {
         };
         let calls = vec![
             mk("@Get", "C.f", None, 10),
-            mk("@UseGuards", "C.f", None, 9),   // 真守卫（带 @）
-            mk("@ApiBearerAuth", "C.f", None, 8), // 文档装饰器 → 排除
-            mk("generateJWT", "C.f", Some("this.userService"), 11), // 成员调用 → 排除
+            mk("@UseGuards", "C.f", None, 9),   // Real guard (with @)
+            mk("@ApiBearerAuth", "C.f", None, 8), // Doc decorator -> exclude
+            mk("generateJWT", "C.f", Some("this.userService"), 11), // Member call -> exclude
         ];
         let scopes = collect_route_guards(&spec, &calls);
         assert_eq!(scopes.len(), 1);
