@@ -1,9 +1,9 @@
-//! `gt-adapter-fkb` —— 框架知识库（FKB）适配器。
+//! `gt-adapter-fkb` — the framework knowledge base (FKB) adapter.
 //!
-//! 把 YAML 描述的框架知识装载为领域模型 [`FrameworkKnowledge`]，
-//! 并实现 [`KnowledgeProvider`] 出站端口。
+//! Loads framework knowledge described in YAML into the domain model [`FrameworkKnowledge`]
+//! and implements the [`KnowledgeProvider`] outbound port.
 //!
-//! 内核不认识任何框架；新增框架支持 = 增加一份 YAML。
+//! The kernel knows no framework; adding framework support = adding one YAML file.
 
 pub mod loader;
 

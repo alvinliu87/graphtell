@@ -1,4 +1,4 @@
-//! 目录扫描：排除依赖目录、静态资源与编译产物。
+//! Directory scanning: exclude dependency directories, static assets and build artifacts.
 
 use std::path::{Path, PathBuf};
 
@@ -7,7 +7,7 @@ use gt_domain::model::Language;
 use gt_domain::port::{FileScanner, ScanRequest, ScannedFile};
 use tracing::debug;
 
-/// 任何技术栈都应该排除的目录（依赖 / 缓存 / 构建产物 / 版本控制）。
+/// Directories any tech stack should exclude (dependencies / caches / build artifacts / version control).
 pub const COMMON_EXCLUDE_DIRS: &[&str] = &[
     ".git",
     ".svn",
@@ -28,27 +28,27 @@ pub const COMMON_EXCLUDE_DIRS: &[&str] = &[
     "unpackage",
 ];
 
-/// 静态资源与非源码目录。
+/// Static assets and non-source directories.
 pub const ASSET_DIRS: &[&str] = &["static", "assets", "public", "images", "img", "fonts", "medias"];
 
-/// 二进制 / 静态资源扩展名。
+/// Binary / static asset extensions.
 pub const ASSET_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "svg", "ico", "webp", "bmp", "mp4", "mp3", "avi", "mov", "wav",
     "zip", "gz", "tar", "rar", "7z", "pdf", "doc", "docx", "xls", "xlsx", "ttf", "woff", "woff2",
     "eot", "map", "lock",
 ];
 
-/// 按调用方给出的「语言 → 扩展名」映射判定语言（与解析器注册表同源）。
+/// Determine the language from the caller-supplied "language -> extensions" map (same source as the parser registry).
 fn language_for_ext(map: &[(String, Vec<String>)], ext: &str) -> Option<Language> {
     map.iter()
         .find(|(_, exts)| exts.iter().any(|e| e.eq_ignore_ascii_case(ext)))
         .map(|(lang, _)| Language::new(lang))
 }
 
-/// 按扩展名推断语言（**兜底**：调用方未提供映射时使用）。
+/// Infer the language from the extension (**fallback**: used when the caller supplies no map).
 ///
-/// 这张表只用于保证「扫描到的文件一定归属某个已知语言」，避免与解析器注册表脱节；
-/// 真正的权威来源是 [`ParserRegistry::language_for_extension`]。
+/// This table only guarantees that "every scanned file belongs to some known language", so scanning never drifts
+/// away from the parser registry; the real authority is [`ParserRegistry::language_for_extension`].
 pub fn language_of_extension(ext: &str) -> Option<Language> {
     let ext = ext.to_ascii_lowercase();
     match ext.as_str() {
@@ -57,8 +57,8 @@ pub fn language_of_extension(ext: &str) -> Option<Language> {
         "ts" | "tsx" => Some(Language::new(Language::TYPESCRIPT)),
         "java" => Some(Language::new(Language::JAVA)),
         "rs" => Some(Language::new(Language::RUST)),
-        // 以下是子工程标记表里已有（`go.mod` / `pyproject.toml` / …）但此前
-        // 扩展名表遗漏的语言 —— 遗漏会导致这些子工程被识别却零个源文件。
+        // The languages below already appear in the sub-project marker table (`go.mod` / `pyproject.toml` / …) but were
+        // missing from the extension table — the omission made those sub-projects detected yet left with zero source files.
         "go" => Some(Language::new("go")),
         "py" | "pyi" => Some(Language::new("python")),
         "kt" | "kts" => Some(Language::new("kotlin")),
@@ -72,7 +72,7 @@ pub fn language_of_extension(ext: &str) -> Option<Language> {
 }
 
 pub struct WalkDirScanner {
-    /// 额外的排除目录（叠加在通用规则之上）。
+    /// Extra excluded directories (layered on top of the common rules).
     extra_excludes: Vec<String>,
 }
 
@@ -119,15 +119,16 @@ impl FileScanner for WalkDirScanner {
         let root = &request.root;
         if !root.is_dir() {
             return Err(DomainError::InvalidArgument(format!(
-                "工程根目录不存在或不是目录: {}",
+                "project root does not exist or is not a directory: {}",
                 root.display()
             )));
         }
 
-        // **必须按文件名排序**：`readdir` 的顺序取决于文件系统，逐次运行可能不同。
-        // 摄入顺序又决定了 P2 的一批"先到先得"结果（`by_fqn` 同名类谁先注册、
-        // 全局 `imports` 符号表记谁的 FQN），顺序一变，整张图就会小幅漂移
-        // （实测同一份 CRMEB 两次建图差 57 条边），视图输出也随之抖动。
+        // **Must be sorted by file name**: `readdir` order depends on the filesystem and can differ between runs.
+        // Ingestion order in turn decides a batch of P2 "first come, first served" results (which same-named class
+        // registers first in `by_fqn`, whose FQN the global `imports` symbol table records); a change of order makes
+        // the whole graph drift slightly (measured: two builds of the same CRMEB differed by 57 edges), and view
+        // output jitters with it.
         let mut walker = walkdir::WalkDir::new(root)
             .follow_links(false)
             .sort_by_file_name()
@@ -136,7 +137,7 @@ impl FileScanner for WalkDirScanner {
             let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
-                    debug!("跳过无法访问的条目: {e}");
+                    debug!("skipping an inaccessible entry: {e}");
                     continue;
                 }
             };
@@ -153,8 +154,8 @@ impl FileScanner for WalkDirScanner {
                 continue;
             }
             let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            // 优先用解析器注册表给出的「语言 → 扩展名」映射，它与子工程标记文件
-            // 表同源，不会出现「识别出 Go 子工程却扫不到 .go 文件」的不一致。
+            // Prefer the "language -> extensions" map from the parser registry: it shares a source with the sub-project
+            // marker table, so "a Go sub-project is detected but no .go file is scanned" cannot happen.
             let language = match language_for_ext(&request.language_extensions, &ext)
                 .or_else(|| language_of_extension(&ext))
             {
@@ -177,7 +178,7 @@ impl FileScanner for WalkDirScanner {
                 .replace('\\', "/");
             let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
             if size_bytes > 4 * 1024 * 1024 {
-                // 跳过超大文件（通常是生成物）
+                // Skip very large files (usually generated artifacts)
                 continue;
             }
             out.push(ScannedFile {

@@ -1,4 +1,4 @@
-//! 工程 / 子工程 / 源文件。
+//! Projects / sub-projects / source files.
 
 use std::path::PathBuf;
 
@@ -7,22 +7,22 @@ use serde::{Deserialize, Serialize};
 use super::ids::{FileId, ProjectId, SubProjectId};
 use super::kinds::Language;
 
-/// 被分析的顶层工程。
+/// A top-level project under analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: ProjectId,
     pub name: String,
-    /// 工程根目录的绝对路径。
+    /// The absolute path of the project root.
     pub root_path: PathBuf,
     pub description: Option<String>,
-    /// 附加配置（排除模式、需要的 locale 列表等），避免硬编码。
+    /// Extra configuration (exclude patterns, the list of required locales, etc.) so nothing has to be hard-coded.
     pub config: ProjectConfig,
     pub status: ProjectStatus,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-/// 新建工程的入参（不含服务端生成的字段）。
+/// Input for creating a project (excluding server-generated fields).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewProject {
     pub name: String,
@@ -31,7 +31,7 @@ pub struct NewProject {
     pub config: Option<ProjectConfig>,
 }
 
-/// 更新工程的入参；`None` 表示"不修改该字段"。
+/// Input for updating a project; `None` means "do not change this field".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectPatch {
     pub name: Option<String>,
@@ -40,21 +40,21 @@ pub struct ProjectPatch {
     pub config: Option<ProjectConfig>,
 }
 
-/// 工程级配置。全部可覆盖，杜绝硬编码。
+/// Project-level configuration. Everything is overridable; nothing is hard-coded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
-    /// 额外的目录排除 glob（在语言默认排除规则之上叠加）。
+    /// Extra directory-exclude globs (layered on top of the language defaults).
     pub exclude_globs: Vec<String>,
-    /// i18n 覆盖检查要求的 locale 列表。
+    /// The list of locales required by the i18n coverage check.
     pub required_locales: Vec<String>,
-    /// 数据库表前缀（用于 identity 归一化，如 `eb_`）。
+    /// Database table prefix (used for identity normalisation, e.g. `eb_`).
     ///
-    /// 默认空：前缀应在工程配置里显式给出，或在 P3 由 FKB 从框架配置
-    /// （如 ThinkPHP 的 `config/database.php`）自动探测。绝不内置任何
-    /// 项目特定的默认值（CRMEB 的 `eb_` 不应泄漏到通用层）。
+    /// Empty by default: the prefix should be given explicitly in the project config, or detected automatically by
+    /// P3 from framework config (such as ThinkPHP's `config/database.php`). Never bake in any project-specific
+    /// default (CRMEB's `eb_` must not leak into the generic layer).
     pub table_prefixes: Vec<String>,
-    /// 是否启用全阶段流水线（关闭则只跑 Ingest + CfAst）。
+    /// Whether to run the full pipeline (when off, only Ingest + CfAst run).
     pub full_pipeline: bool,
 }
 
@@ -69,17 +69,17 @@ impl Default for ProjectConfig {
     }
 }
 
-/// 工程状态。
+/// Project status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectStatus {
-    /// 已创建，尚未建图。
+    /// Created, not graphed yet.
     Created,
-    /// 建图中。
+    /// Graphing in progress.
     Indexing,
-    /// 建图完成。
+    /// Graphing finished.
     Ready,
-    /// 建图失败。
+    /// Graphing failed.
     Failed,
 }
 
@@ -95,11 +95,11 @@ impl std::fmt::Display for ProjectStatus {
     }
 }
 
-/// 子工程：一个工程内的独立可分析单元。
+/// A sub-project: an independently analysable unit inside a project.
 ///
-/// 例如 `CRMEB-master` 下既有 ThinkPHP 后端，也有 Uni-app 前端，
-/// 二者语言不同、FKB 不同，必须作为两个子工程分别分析，
-/// 再在 `HttpContract` 这类契约节点上跨工程汇聚。
+/// For example, `CRMEB-master` contains both a ThinkPHP backend and a Uni-app frontend; they differ in language and
+/// in FKB, so they must be analysed as two sub-projects and only converge across projects on contract nodes such as
+/// `HttpContract`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubProject {
     pub id: SubProjectId,
@@ -107,19 +107,19 @@ pub struct SubProject {
     pub name: String,
     pub root_path: PathBuf,
     pub language: Language,
-    /// 子工程角色，形如 `tier` 或 `tier:kind`（如 `backend` / `frontend:admin` / `backend:worker`）。
-    /// `tier` 为 `frontend` / `backend` / `library` / `unknown`；`kind` 进一步区分类型
-    /// （小程序 / 管理后台 / 移动端 / API / Worker …），由 Ingest 按目录名识别。
+    /// Sub-project role, of the form `tier` or `tier:kind` (e.g. `backend` / `frontend:admin` / `backend:worker`).
+    /// `tier` is one of `frontend` / `backend` / `library` / `unknown`; `kind` further distinguishes the type
+    /// (mini program / admin console / mobile / API / Worker …), recognised by Ingest from the directory name.
     pub role: String,
-    /// 识别依据，例如 "composer.json"。
+    /// The recognition evidence, e.g. "composer.json".
     pub detected_by: String,
-    /// 框架标识列表（由 FKB 匹配得出，如 `["thinkphp6", "uni-app"]`）。
+    /// Identifier list of the frameworks (matched by FKB, e.g. `["thinkphp6", "uni-app"]`).
     pub frameworks: Vec<String>,
-    /// 框架根信息（AppRoot 等），由 Prepare 阶段按 FKB 解析后回填。
+    /// Framework root information (AppRoot, etc.), back-filled by the Prepare phase after resolution via FKB.
     pub facts: serde_json::Value,
 }
 
-/// 新建子工程。
+/// A new sub-project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewSubProject {
     pub project_id: ProjectId,
@@ -132,20 +132,20 @@ pub struct NewSubProject {
     pub facts: serde_json::Value,
 }
 
-/// 待分析的源文件。
+/// A source file to analyse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFile {
     pub id: FileId,
     pub project_id: ProjectId,
     pub sub_project_id: Option<SubProjectId>,
-    /// 相对工程根的路径（统一用 `/` 分隔）。
+    /// Path relative to the project root (always `/`-separated).
     pub path: String,
     pub language: Language,
     pub size_bytes: u64,
     pub content_hash: String,
 }
 
-/// 新建源文件（批量插入用）。
+/// A new source file (for batch insertion).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewSourceFile {
     pub project_id: ProjectId,

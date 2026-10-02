@@ -1,15 +1,15 @@
-# PHP 专属的架构类规则（判据依赖 PHP FKB 产出的标注）。
+# PHP-only architecture rules (criteria depend on annotations produced by the PHP FKB).
 
 rules:
   - id: pii-table-hot
-    title: 含 PII 的热点表
-    description: "既是热点表又含个人信息 —— 影响面与安全敏感度同时拉满，优先治理。"
+    title: Hot table containing PII
+    description: "Both a hotspot table and one holding personal information — blast radius and security sensitivity are both maxed out, so fix it first."
     severity: warning
     category: architecture
     params:
       - key: min_fan_in
-        label: 扇入阈值
-        description: 含 PII 的表被 ≥ 该值处引用才报；调低更早发现敏感资产扩散。
+        label: Fan-in threshold
+        description: A PII table must be referenced by >= this many places to be reported; lower it to catch sensitive-asset spread earlier.
         kind: number
         default: 20
         min: 1
@@ -20,5 +20,5 @@ rules:
     when:
       - has_annotation: pii
       - fan_in_gte: "$min_fan_in"
-    message: "表 {name} 含 PII 且被 {param:min_fan_in} 处以上引用，属于高影响面敏感资产"
-    remediation: "优先收敛访问入口并统一脱敏出口"
+    message: "Table {name} contains PII and is referenced by {param:min_fan_in} or more places; a sensitive asset with a large blast radius"
+    remediation: "Converge the access entries first and unify the masking egress"

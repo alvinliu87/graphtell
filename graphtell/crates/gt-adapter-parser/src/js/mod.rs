@@ -1,27 +1,30 @@
-//! JS/TS 前端解析器（tree-sitter 全量调用图）。
+//! JS/TS front-end parser (a full tree-sitter call graph).
 //!
-//! 与 PHP / Java 走同一套 **tree-sitter → [`SyntaxFacts`]** 管线：把函数 / 方法 / 类
-//! 声明翻成 `Declaration`，把每个调用点翻成 `CallSiteFact`，从而让上层流水线
-//! （P2 CfAst / P7 调用链解析）像对待后端一样，为前端建立起**第一类语义节点**
-//! （函数 / 方法）+ 调用链（`Calls` 边 + `CallSite` 节点）。
+//! Same **tree-sitter -> [`SyntaxFacts`]** pipeline as PHP / Java: turn function / method / class
+//! declarations into `Declaration`s and every call site into a `CallSiteFact`, so the upper pipeline
+//! (P2 CfAst / P7 call-chain resolution) builds **first-class semantic nodes** (functions / methods)
+//! plus the call chain (`Calls` edges + `CallSite` nodes) for the front end exactly as it does for the back end.
 //!
-//! 这样前端在图里就与后端同构：
-//! * `Component`(方法) →`Calls`→ `api/agent.js:agentGet`(函数) →`CallsHttp`→ `HttpContract`
-//! * 折叠视图默认只显示语义节点（`HttpContract`），`agentGet` 等语法跳被收进边的 `via`
-//!   链，点击边在 drawer 里逐跳看到调用处 —— 与后端 `Method → CallSite → HttpContract` 一致。
+//! The front end is then isomorphic to the back end on the graph:
+//! * `Component` (method) ->`Calls`-> `api/agent.js:agentGet` (function) ->`CallsHttp`-> `HttpContract`
+//! * the folded view shows semantic nodes (`HttpContract`) by default; syntactic hops such as `agentGet` are
+//!   folded into the edge's `via` chain, and clicking the edge shows each call site hop by hop in the drawer —
+//!   consistent with the back end's `Method -> CallSite -> HttpContract`.
 //!
-//! 之所以选 `tree-sitter-typescript` 一个 crate：TS 语法是 JS 的超集，
-//! `LANGUAGE_TYPESCRIPT` 直接解析 `.js/.ts`，`LANGUAGE_TSX` 解析 `.jsx/.tsx`；
-//! `.vue` 则抽取 `<script>` 块后按 TS 解析（行号对齐）。
+//! Why the single `tree-sitter-typescript` crate: TS grammar is a superset of JS, so `LANGUAGE_TYPESCRIPT`
+//! parses `.js/.ts` directly and `LANGUAGE_TSX` parses `.jsx/.tsx`; `.vue` is handled by extracting the
+//! `<script>` block and parsing it as TS (with line numbers aligned).
 //!
-//! HTTP 调用（`uni.request` / `request` / `http.request` / `axios*` / `fetch`）仍被识别，
-//! 其 `args[0]` 规整为 `{ url, method }` 对象，喂给 FKB 的 `frontend-http-contract` 规则
-//! 合成 `HttpContract` 并挂 `CallsHttp`（与后端 `HandledBy` 在同一 `ContractId` 节点汇聚）。
+//! HTTP calls (`uni.request` / `request` / `http.request` / `axios*` / `fetch`) are still recognised, and their
+//! `args[0]` is normalised into a `{ url, method }` object, fed to FKB's `frontend-http-contract` rule to
+//! synthesize an `HttpContract` and attach `CallsHttp` (converging on the same `ContractId` node as the back
+//! end's `HandledBy`).
 //!
-//! 形态不止"对象式"一种：**成员式**（`request.get('/v2/index', data, opts)`，成员名即
-//! method、URL 是首个实参）同样会被规整成 `{ url, method }` —— CRMEB 的 uni-app 子工程
-//! 就把 HTTP 客户端包了一层，真正的 `uni.request` 只有一处且 URL 是动态拼串，
-//! 能被静态确定的位置在这一层详见 [`HttpStyle::Member`] 与 [`is_http_client_recv`]。
+//! The object form is not the only shape: the **member form** (`request.get('/v2/index', data, opts)`, where the
+//! member name is the method and the URL is the first argument) is also normalised into `{ url, method }` —
+//! CRMEB's uni-app sub-project wraps its HTTP client, so the real `uni.request` exists in exactly one place with
+//! a dynamically concatenated URL; the layer where the location can be determined statically is this outer
+//! member-form call. See [`HttpStyle::Member`] and [`is_http_client_recv`].
 
 use std::cell::RefCell;
 
@@ -35,7 +38,7 @@ use serde_json::json;
 use tree_sitter::{Language as TsLanguage, Node, Parser};
 use tree_sitter_typescript::{LANGUAGE_TSX, LANGUAGE_TYPESCRIPT};
 
-/// JS/TS 前端解析适配器（同一实现服务 javascript / typescript / vue / jsx / tsx）。
+/// The JS/TS front-end parser adapter (one implementation serves javascript / typescript / vue / jsx / tsx).
 pub struct JsFrontendParser;
 
 impl JsFrontendParser {
@@ -86,7 +89,7 @@ impl LanguageParser for JsFrontendParser {
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {
         let lower = path.to_ascii_lowercase();
         let owned_vue: String;
-        // `.vue`：抽取 `<script>` 块并把行号对齐到原文件，再按 TS 解析。
+        // `.vue`: extract the `<script>` block and align line numbers to the original file, then parse as TS.
         let (ts_lang, src): (TsLanguage, &str) = if lower.ends_with(".vue") {
             match extract_vue_script(source) {
                 Some(s) => {
@@ -112,7 +115,7 @@ impl LanguageParser for JsFrontendParser {
         });
         let tree = tree.ok_or_else(|| DomainError::Parse {
             file: path.into(),
-            reason: "tree-sitter 返回 None".into(),
+            reason: "tree-sitter returned None".into(),
         })?;
 
         let mut facts = SyntaxFacts::default();
@@ -123,36 +126,34 @@ impl LanguageParser for JsFrontendParser {
         };
         let root = tree.root_node();
         let file_owner = ctx.path;
-        // 把 program 节点交给 walk，由它遍历顶层声明（class/function/import…）作为子节点匹配，
-        // 与 PHP 的 walk_scope 同构；若直接遍历 root.named_children 再 walk(child)，
-        // 则 class_declaration 自身成了 node、其分支永远匹配不到。
         walk(root, &mut ctx, file_owner, None);
         Ok(facts)
     }
 }
 
-/// 解析上下文。
+/// Parsing context.
 struct Ctx<'a> {
     src: &'a str,
     facts: &'a mut SyntaxFacts,
     path: &'a str,
 }
 
-/// HTTP 调用的形态（决定 url / method 如何从句柄里解出）。
+/// The shape of an HTTP call (decides how url / method are read out of the handle).
 enum HttpStyle {
     /// `uni.request({ url, method })` / `request({...})` / `http.request({...})`。
     Obj,
-    /// `axios.get(...)`（method 来自成员名）/ `axios({ url, method })`（对象式）。
+    /// `axios.get(...)` (method from the member name) / `axios({ url, method })` (object form).
     Axios(Option<String>),
-    /// `request.get('/v2/index', data, options)`：**成员名即 HTTP method，URL 是首个实参**。
+    /// `request.get('/v2/index', data, options)`: **the member name is the HTTP method and the URL is the first argument**.
     ///
-    /// uni-app / Vue 项目普遍把 HTTP 客户端再包一层（`request.get` → 内部唯一一次
-    /// `uni.request({ url: MASTER + '/api/' + path })`），真正的 `uni.request` URL 是
-    /// 动态拼串、抓不到；能静态确定 location 的是外层这层成员式调用。
+    /// uni-app / Vue projects commonly wrap the HTTP client once more (`request.get` -> a single internal
+    /// `uni.request({ url: MASTER + '/api/' + path })`), where the real `uni.request` URL is a dynamic
+    /// concatenation and cannot be captured; the layer whose location is statically determinable is this outer
+    /// member-form call.
     Member(String),
     /// `fetch(url, { method })`。
     Fetch,
-    /// 非 HTTP 调用（普通函数 / 组件方法调用）。
+    /// A non-HTTP call (an ordinary function / component method call).
     Other,
 }
 
@@ -162,26 +163,22 @@ impl HttpStyle {
     }
 }
 
-/// 递归游走语法树，按节点种类产出声明 / 导入 / 调用点。
+/// Walk the syntax tree recursively, producing declarations / imports / call sites by node kind.
 ///
-/// * `owner`：当前所处"调用归属"节点的 FQN。顶层语句归属文件（`ctx.path`），
-///   进入函数 / 方法后改为该函数 / 方法的 FQN —— 这正是 `CallSiteFact.owner_fqn`，
-///   让 P2 把 `CallSite` 节点挂到**函数**（而非 `File`）之下，从而 `CallsHttp` 也从
-///   前端函数发出。
-/// * `class`：当前所处类的 FQN（方法归属用）。
+/// * `owner`: the FQN of the node that currently "owns" calls. Top-level statements belong to the file
+///   (`ctx.path`), and after entering a function / method it becomes that function's / method's FQN — this is
+///   exactly `CallSiteFact.owner_fqn`, and it lets P2 hang the `CallSite` node under the **function** (rather
+///   than the `File`), so `CallsHttp` also originates from a front-end function.
+/// * `class`: the FQN of the class currently being entered (used for method ownership).
 fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
     let mut c = node.walk();
-    // 装饰器修饰的是**紧随其后**的声明（`@Controller('cats') export class ...`），
-    // 而它得挂到那个声明的 FQN 上 —— 故先攒着，等声明登记完再统一挂上去。
     let mut pending: Vec<Node> = Vec::new();
     for child in node.named_children(&mut c) {
         match child.kind() {
             "decorator" => pending.push(child),
             "import_statement" => collect_imports(child, ctx),
-            // `export default { ... }` / `module.exports = { ... }`：按配置条目采集，
-            // 与 PHP 的 `return [...]` 同构（使 `kind: config_entry` 选择器对前端可用）。
             "export_statement" => {
-                // `export default { ... }`：只有**对象字面量**才算配置（函数 / 标识符不算）。
+                // `export default { ... }`: only an **object literal** counts as config (a function / identifier does not).
                 collect_export_default_object(child, ctx);
                 walk(child, ctx, owner, class);
             }
@@ -220,7 +217,7 @@ fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
             }
             "call_expression" => {
                 collect_invocation(child, ctx, owner, false);
-                // 继续下钻，捕获实参里的嵌套调用（如 `axios.post(buildUrl())`）。
+                // Keep drilling down to capture nested calls inside arguments (e.g. `axios.post(buildUrl())`).
                 walk(child, ctx, owner, class);
             }
             "new_expression" => {
@@ -232,12 +229,12 @@ fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
     }
 }
 
-/// `export default { ... }` / `module.exports = { ... }`：按"配置条目"采集。
+/// `export default { ... }` / `module.exports = { ... }`: collected as "config entries".
 ///
-/// 前端的配置型文件（路由表、站点配置、uni-app 的声明式配置）都是这种形态；
-/// 采成 `ConfigEntryFact` 后 `kind: config_entry` 选择器就对前端生效 —— 与 PHP
-/// 的 `return [...]` 完全同构。只收**标量叶子**，函数与嵌套对象不展开成叶子
-/// （否则每个 Vue 组件的 `methods` 都变成配置，纯噪声）。
+/// Front-end config-shaped files (route tables, site config, uni-app's declarative config) all look like this;
+/// once collected as `ConfigEntryFact` the `kind: config_entry` selector also works for the front end — fully
+/// isomorphic to PHP's `return [...]`. Only **scalar leaves** are collected; functions and nested objects are
+/// not expanded into leaves (otherwise every Vue component's `methods` would become config — pure noise).
 fn collect_export_default_object(node: Node, ctx: &mut Ctx) {
     let mut obj: Option<Node> = None;
     if node.kind() == "assignment_expression" {
@@ -258,7 +255,7 @@ fn collect_export_default_object(node: Node, ctx: &mut Ctx) {
     collect_object_entries(obj, ctx, String::new());
 }
 
-/// 递归展开对象字面量：只把标量叶子写成配置条目，键路径按 `.` 连接。
+/// Expand an object literal recursively: only scalar leaves become config entries, with key paths joined by `.`.
 fn collect_object_entries(node: Node, ctx: &mut Ctx, prefix: String) {
     let mut c = node.walk();
     for child in node.named_children(&mut c) {
@@ -301,7 +298,7 @@ fn collect_object_entries(node: Node, ctx: &mut Ctx, prefix: String) {
     }
 }
 
-/// 取 `class X extends Y` 的基类名（TS 语法把 `extends` 放在 `class_heritage` 里）。
+/// Take the base class name of `class X extends Y` (the TS grammar puts `extends` inside `class_heritage`).
 fn superclass_of(class_node: Node, src: &str) -> Option<String> {
     let mut c = class_node.walk();
     for child in class_node.named_children(&mut c) {
@@ -325,7 +322,7 @@ fn superclass_of(class_node: Node, src: &str) -> Option<String> {
     None
 }
 
-/// 取字段/参数的类型注解文本（`svc: UserService` → `UserService`）。
+/// Take the text of a field / parameter type annotation (`svc: UserService` -> `UserService`).
 fn type_annotation_of(node: Node, src: &str) -> Option<String> {
     let mut c = node.walk();
     for child in node.named_children(&mut c) {
@@ -344,14 +341,14 @@ fn type_annotation_of(node: Node, src: &str) -> Option<String> {
     None
 }
 
-/// 取字段类型注解，**数组取元素类型**（`Comment[]` → `Comment`）。
+/// Take a field's type annotation, **unwrapping arrays to the element type** (`Comment[]` -> `Comment`).
 ///
-/// 只服务于关系装饰器（`@OneToMany(…) comments: Comment[]`）：关系的一侧是实体，
-/// 数组只是"很多条"的载体。
+/// Only serves relation decorators (`@OneToMany(…) comments: Comment[]`): one side of the relation is an entity,
+/// and the array is merely the carrier for "many rows".
 ///
-/// **刻意不并入 [`type_annotation_of`]**：那份类型会写进 `FieldTypeFact`，供 P7 解析
-/// `field.method()` 实例调用；数组字段的真实类型是 `Array`，若记成元素类型，
-/// `comments.push(x)` 会被误解析成 `Comment.push(x)`，凭空造出一条错调用边。
+/// **Deliberately not merged into [`type_annotation_of`]**: that type is written into `FieldTypeFact` for P7 to
+/// resolve `field.method()` instance calls; the real type of an array field is `Array`, and recording the element
+/// type would make `comments.push(x)` resolve as `Comment.push(x)`, fabricating a wrong call edge.
 fn relation_type_of(node: Node, src: &str) -> Option<String> {
     let mut c = node.walk();
     for child in node.named_children(&mut c) {
@@ -364,7 +361,7 @@ fn relation_type_of(node: Node, src: &str) -> Option<String> {
                 "type_identifier" | "predefined_type" | "nested_type_identifier" | "generic_type" => {
                     return Some(text(inner, src).to_string());
                 }
-                // `Comment[]` → 取元素类型
+                // `Comment[]` -> take the element type
                 "array_type" => {
                     let mut a = inner.walk();
                     for e in inner.named_children(&mut a) {
@@ -383,8 +380,8 @@ fn relation_type_of(node: Node, src: &str) -> Option<String> {
     None
 }
 
-/// 构造器参数属性：`constructor(private readonly svc: UserService)` →
-/// `(svc, UserService)`，供 P7 解析 `this.svc.method()`。
+/// Constructor parameter properties: `constructor(private readonly svc: UserService)` ->
+/// `(svc, UserService)`, so P7 can resolve `this.svc.method()`.
 fn collect_param_types(ctor: Node, ctx: &mut Ctx, class_fqn: &str) {
     let Some(params) = ctor.child_by_field_name("parameters") else {
         return;
@@ -394,7 +391,7 @@ fn collect_param_types(ctor: Node, ctx: &mut Ctx, class_fqn: &str) {
         if p.kind() != "required_parameter" && p.kind() != "optional_parameter" {
             continue;
         }
-        // 只有带访问修饰符的才是"注入进 this 的属性"（普通参数不算）。
+        // Only parameters with an access modifier are "properties injected into this" (ordinary parameters are not).
         let mut pc = p.walk();
         let has_modifier = p
             .named_children(&mut pc)
@@ -416,14 +413,6 @@ fn collect_param_types(ctor: Node, ctx: &mut Ctx, class_fqn: &str) {
                 type_name: t.clone(),
                 span: span_of(p, ctx.src),
             });
-            // 依赖注入点：`constructor(private readonly svc: UserService)` —— provider 即形参类型。
-            // 语言层只负责把"这是个注入点 + 被注入者类型"记成**调用点**（callee `@Inject`、
-            // `entity` = 类型短名），至于"依赖注入"的语义交给 FKB（见 `fkb/js/nestjs.yaml`）。
-            //
-            // 为什么用 `@Inject` 这个 callee：NestJS 没有「参数装饰器」被收集（见 `collect_decorator`
-            // 注释——`@Param('id')` 这类嵌在 `parameters` 里的装饰器不收），所以 `@Inject` 这个
-            // callee 不会与任何真实装饰器冲突；若将来有人写类级 `@Inject()`，其 `entity` 是 token
-            // 字符串而非类，FKB 的 Link 解析不到目标节点会静默跳过，安全。
             ctx.facts.call_sites.push(CallSiteFact {
                 owner_fqn: class_fqn.to_string(),
                 owner_class: Some(class_fqn.to_string()),
@@ -441,20 +430,13 @@ fn collect_param_types(ctor: Node, ctx: &mut Ctx, class_fqn: &str) {
     }
 }
 
-/// 装饰器 → **调用点**（与 Java 注解 / Python 装饰器同机制）。
+/// Decorators -> **call sites** (same mechanism as Java annotations / Python decorators).
 ///
-/// `@Get(':id')` 的装饰器内含一个 `call_expression`，直接复用普通调用的收集逻辑；
-/// 裸装饰器（`@UseGuards`）则只有标识符。参数装饰器（`@Param('id')`）嵌在
-/// `parameters` 里，不是这里的直接子节点，**不会**被误收。
+/// A decorator like `@Get(':id')` contains a `call_expression`, so the ordinary call-collection logic is reused;
+/// a bare decorator (`@UseGuards`) is just an identifier. Parameter decorators (`@Param('id')`) sit inside
+/// `parameters` and are not direct children here, so they are **not** collected by mistake.
 fn collect_decorator(node: Node, ctx: &mut Ctx, owner: &str) {
     let Some(inner) = node.named_child(0) else { return };
-    // 装饰器的 callee 带 `@` 前缀。
-    //
-    // 为什么必须区分：TS 里 `@Get()` 与普通成员调用 `.get()` **同名**，而
-    // `callee_matches` 对方法名的比较是大小写不敏感的 —— 裸写 `Get` 会把
-    // e2e 测试里的 `request(app).get('/')` 之类 HTTP 调用全认成路由装饰器
-    // （实测在 typescript-starter 上就造出了指向测试文件的悬空 HandledBy）。
-    // 加 `@` 后 FKB 写 `@Get|@Post|…` 即可精确命中装饰器。
     if inner.kind() == "call_expression" {
         collect_invocation(inner, ctx, owner, false);
         if let Some(last) = ctx.facts.call_sites.last_mut() {
@@ -481,7 +463,7 @@ fn collect_decorator(node: Node, ctx: &mut Ctx, owner: &str) {
     });
 }
 
-/// 把节点**直接子节点**里的装饰器都挂到 `owner` 上。
+/// Attach every decorator among a node's **direct children** to `owner`.
 fn collect_decorators_of(node: Node, ctx: &mut Ctx, owner: &str) {
     let mut c = node.walk();
     for child in node.named_children(&mut c) {
@@ -491,14 +473,14 @@ fn collect_decorators_of(node: Node, ctx: &mut Ctx, owner: &str) {
     }
 }
 
-/// 顶层/类内具名函数声明：`function foo() {}` / `export function foo() {}`。
+/// Top-level / in-class named function declarations: `function foo() {}` / `export function foo() {}`.
 fn collect_named_function(node: Node, ctx: &mut Ctx) -> Option<String> {
     let name = node
         .child_by_field_name("name")
         .map(|n| text(n, ctx.src).to_string())
         .unwrap_or_default();
     if name.is_empty() {
-        return None; // 匿名（如 `export default () => {}`）：不建节点，其体内调用归属外层。
+        return None; // Anonymous (e.g. `export default () => {}`): build no node; calls in its body belong to the outer scope.
     }
     let fqn = name.clone();
     ctx.facts.declarations.push(Declaration {
@@ -515,7 +497,7 @@ fn collect_named_function(node: Node, ctx: &mut Ctx) -> Option<String> {
     Some(fqn)
 }
 
-/// `const foo = () => {}` / `const foo = function() {}` 这类赋值式函数。
+/// Assigned functions such as `const foo = () => {}` / `const foo = function() {}`.
 fn collect_declarator(dec: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
     let name = dec
         .child_by_field_name("name")
@@ -545,7 +527,7 @@ fn collect_declarator(dec: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>
     }
 }
 
-/// 类声明：建 `Class` 节点，并逐个处理成员方法 / 字段方法。返回类 FQN。
+/// Class declaration: build a `Class` node and handle each member method / field method. Returns the class FQN.
 fn collect_class(node: Node, ctx: &mut Ctx) -> String {
     let name = node
         .child_by_field_name("name")
@@ -561,8 +543,6 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
         extra: json!({}),
     });
 
-    // 继承：`class X extends Y [implements I]` —— 与 PHP / Java 同构，
-    // 使 `kind: inheritance` 选择器对前端同样可用（Vue 组件基类 / TS 类层次）。
     if let Some(base) = superclass_of(node, ctx.src) {
         ctx.facts.inheritances.push(InheritanceFact {
             child_fqn: cfqn.clone(),
@@ -572,17 +552,12 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
         });
     }
 
-    // 类级装饰器（未 export 的写法：`@Controller('cats') class X`）。
-    // 带 export 时装饰器挂在 `export_statement` 上，由 `walk` 的 pending 机制挂过来。
     collect_decorators_of(node, ctx, &cfqn);
 
     let Some(body) = node.child_by_field_name("body") else {
         return cfqn;
     };
     let mut c = body.walk();
-    // 方法装饰器是 **class_body 的直接子节点**，且紧贴它所修饰的方法之前
-    // （`@Get(':id')` 排在 `findOne` 前面 —— 不是 method_definition 的子节点）。
-    // 与 export_statement 上类装饰器的形态一致，故同样先攒后挂。
     let mut pending: Vec<Node> = Vec::new();
     for member in body.named_children(&mut c) {
         match member.kind() {
@@ -592,11 +567,6 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
                     .child_by_field_name("name")
                     .map(|n| text(n, ctx.src).to_string())
                     .unwrap_or_else(|| member.kind().to_string());
-                // 构造器参数属性注入：`constructor(private svc: UserService)`。
-                // 与 PHP 的 `private X $p` / Java 的 `@Autowired` 同义 —— 记下类型，
-                // 供 P7 解析 `$this->svc.method()` 这类实例调用，以及 FKB 建 `DependsOn` 边。
-                // 注意：tree-sitter-typescript 把构造器解析成 `method_definition`
-                // （name = `constructor`），并非独立的 `constructor` 节点，故按名字识别。
                 if mname == "constructor" {
                     collect_param_types(member, ctx, &cfqn);
                 }
@@ -609,8 +579,6 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
                     span: span_of(member, ctx.src),
                     extra: json!({}),
                 });
-                // 挂上该方法前面的装饰器（`@Get(':id')`）：owner 精确到方法，
-                // 于是 NestJS 的 `HandledBy` 能连到**处理方法**本身。
                 for d in pending.drain(..) {
                     collect_decorator(d, ctx, &mfqn);
                 }
@@ -623,28 +591,14 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
                     .child_by_field_name("name")
                     .map(|n| text(n, ctx.src).to_string())
                     .unwrap_or_default();
-                // 字段装饰器（`@Column() body: string`）—— 与 Java 字段注解同机制，
-                // owner 精确到**字段 FQN**（`Class.field`），于是列身份能取到
-                // `owner_class.owner_member`（`UserEntity.body`），TypeORM 的
-                // `HasColumn` 也连到字段本身，让字段级影响面可下钻。
-                //
-                // 两条挂载路径都走一遍：tree-sitter-typescript 里装饰器既可能是
-                // class_body 的直接子节点（与方法的形态一致，先进 `pending`），也可能
-                // 挂在字段节点内部。另一条恒为空，故不会重复收集。
                 if !fname.is_empty() {
                     let ffqn = format!("{cfqn}.{fname}");
-                    // 关系装饰器的目标实体：`@ManyToOne(type => ArticleEntity, …) article: ArticleEntity`。
-                    // 箭头函数实参**取不到字面量**（`js_value` 判为 `Unknown`），但**字段类型注解**
-                    // 就是目标实体 —— 把它填进该字段装饰器调用点的 `entity`，FKB 即可像 NestJS
-                    // 依赖注入一样用 `{ entity: true }` 连到目标实体类（见 `fkb/js/typeorm.yaml`）。
                     let rel_ty = relation_type_of(member, ctx.src);
                     let start = ctx.facts.call_sites.len();
                     for d in pending.drain(..) {
                         collect_decorator(d, ctx, &ffqn);
                     }
                     collect_decorators_of(member, ctx, &ffqn);
-                    // 只回填**本字段装饰器**产生的调用点：后面 `walk` 字段初值里的调用
-                    // 与关系无关，不能蹭到目标实体。
                     if let Some(ty) = rel_ty {
                         for c in ctx.facts.call_sites[start..].iter_mut() {
                             if c.entity.is_none() {
@@ -655,7 +609,7 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
                 } else {
                     pending.clear();
                 }
-                // 字段类型注解：`private svc: UserService;`（TS / Vue class 组件）
+                // Field type annotation: `private svc: UserService;` (TS / Vue class components)
                 if !fname.is_empty() {
                     if let Some(t) = type_annotation_of(member, ctx.src) {
                         ctx.facts.field_types.push(FieldTypeFact {
@@ -695,7 +649,7 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
     cfqn
 }
 
-/// 导入语句：`import axios from 'axios'` / `import { agentGet } from './api'`。
+/// Import statements: `import axios from 'axios'` / `import { agentGet } from './api'`.
 fn collect_imports(node: Node, ctx: &mut Ctx) {
     let Some(clause) = node.child_by_field_name("clause") else {
         return;
@@ -703,7 +657,7 @@ fn collect_imports(node: Node, ctx: &mut Ctx) {
     let mut c = clause.walk();
     for imp in clause.named_children(&mut c) {
         match imp.kind() {
-            // 默认导入：`import axios from 'axios'`
+            // Default import: `import axios from 'axios'`
             "identifier" => {
                 ctx.facts.imports.push(ImportFact {
                     alias: None,
@@ -711,7 +665,7 @@ fn collect_imports(node: Node, ctx: &mut Ctx) {
                     span: span_of(imp, ctx.src),
                 });
             }
-            // 具名导入：`import { a, b as c } from '...'`
+            // Named imports: `import { a, b as c } from '...'`
             "named_imports" => {
                 let mut g = imp.walk();
                 for spec in imp.named_children(&mut g) {
@@ -731,7 +685,7 @@ fn collect_imports(node: Node, ctx: &mut Ctx) {
                     }
                 }
             }
-            // 命名空间导入：`import * as ns from '...'`
+            // Namespace import: `import * as ns from '...'`
             "namespace_import" => {
                 if let Some(n) = imp.named_child(0) {
                     ctx.facts.imports.push(ImportFact {
@@ -746,7 +700,7 @@ fn collect_imports(node: Node, ctx: &mut Ctx) {
     }
 }
 
-/// 收集一次调用（或 `new`）调用点。
+/// Collect one call (or `new`) call site.
 fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
     let func = call.child_by_field_name("function");
     let ctor = if is_new {
@@ -788,10 +742,6 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
                         HttpStyle::Obj,
                     )
                 }
-                // 成员式 HTTP 动词：`request.get('v2/index')` / `$http.post(...)`。
-                // receiver / callee / method 一仍其旧（`request` / `request.get` / `get`），
-                // 由 FKB 的 `frontend-http-contract` 规则按 `X::{get,post,...}` 选中；
-                // 这里只负责把实参规整成 `{ url, method }` 喂给它。
                 Some(o) if is_http_verb(&prop) && is_http_client_recv(o) => (
                     format!("{o}.{prop}"),
                     Some(o.to_string()),
@@ -813,7 +763,7 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
             } else if t == "request" {
                 ("request".to_string(), None, Some("request".to_string()), HttpStyle::Obj)
             } else if t == "axios" {
-                // `axios({ url, method })` 对象式：method 来自实参，无成员名。
+                // `axios({ url, method })` object form: the method comes from an argument, there is no member name.
                 ("axios".to_string(), Some("axios".to_string()), None, HttpStyle::Axios(None))
             } else if is_new {
                 (format!("new {t}"), None, Some(t), HttpStyle::Other)
@@ -830,8 +780,6 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
         let (url, method) = extract_http_args(&style, args_text);
         let url_fv = match url {
             Some(u) => FactValue::String(u),
-            // url 未知（变量 / 含插值模板串）给 `Unknown`，FKB 取不到 path 自然不合成，
-            // 避免 `GET /<dynamic-url>` 这类垃圾契约污染路由视角。
             None => FactValue::Unknown(Some("<dynamic-url>".to_string())),
         };
         vec![FactValue::Array(vec![
@@ -839,10 +787,6 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
             ("method".to_string(), FactValue::String(method)),
         ])]
     } else {
-        // 非 HTTP 调用：实参同样要采 —— **前端语义节点靠 `{ arg: 0 }` 取身份**
-        // （`uni.setStorageSync('token', v)` → `Cache:token`），与后端
-        // `Cache::set('key', v)` 完全同构。只收静态可确定的字面量，其余给 Unknown
-        // —— 于是"取不到就是取不到"，FKB 的 `require_literal` 自会拒收。
         args_node
             .map(|a| literal_args(text(a, ctx.src)))
             .unwrap_or_default()
@@ -858,20 +802,20 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
         args,
         span: span_of(call, ctx.src),
         db_table: None,
-        // JS 侧暂不识别循环语句 —— 缺事实好过给错事实（规则按语言闸门只在 PHP 上跑）。
+        // Loop statements are not recognised on the JS side yet — a missing fact beats a wrong one (the rule is gated by language and only runs on PHP).
         in_loop: false,
         entity: None,
     });
 }
 
-/// 按 HTTP 形态从实参子串解出 (url, method)。
+/// Derive (url, method) from the argument substring according to the HTTP shape.
 ///
-/// URL 不限于纯字面量：**拼接式**（`'v2/invoice/detail/' + id`）与
-/// **模板串**（`` `v2/order/invoice_detail/${id}` ``）同样可静态确定形状 ——
-/// 非字面量段折成 `:param` 占位符，配合 FKB 的 `param_wildcard` 归一化，
-/// 与后端路由的 `/:id` 在同一个 `ContractId` 上汇聚。
-/// 只有**首段**是变量（`BASE + '/api' + url`）才整体放弃（返回 `None`）：
-/// 连前缀都锚不住的 URL，任何形状都是猜的。
+/// The URL is not limited to a pure literal: the **concatenated** form (`'v2/invoice/detail/' + id`) and the
+/// **template string** form (`` `v2/order/invoice_detail/${id}` ``) also have a statically determinable shape —
+/// non-literal segments fold into `:param` placeholders, and together with FKB's `param_wildcard` normalisation
+/// they converge on the same `ContractId` as a backend route's `/:id`.
+/// Only when the **first segment** is a variable (`BASE + '/api' + url`) is the whole thing abandoned (returns
+/// `None`): a URL whose prefix cannot be anchored has a shape that would be pure guesswork.
 fn extract_http_args(style: &HttpStyle, args: &str) -> (Option<String>, String) {
     match style {
         HttpStyle::Obj => {
@@ -913,14 +857,14 @@ fn is_http_verb(s: &str) -> bool {
     matches!(s, "get" | "post" | "put" | "delete" | "patch" | "head" | "options")
 }
 
-// ---------------------------------------------------------------- URL 表达式规整
+// ---------------------------------------------------------------- URL expression normalisation
 
-/// 把 URL **表达式**规整成带 `:param` 占位符的字面串。
+/// Normalise a URL **expression** into a literal string with `:param` placeholders.
 ///
-/// * `'v2/invoice/detail/' + id`           → `v2/invoice/detail/:param`
-/// * `` `v2/order/invoice_detail/${id}` `` → `v2/order/invoice_detail/:param`
-/// * `'v2/index'`                          → `v2/index`（纯字面量，原样）
-/// * `BASE + '/api' + url`                 → `None`（首段是变量，无法锚定）
+/// * `'v2/invoice/detail/' + id`           -> `v2/invoice/detail/:param`
+/// * `` `v2/order/invoice_detail/${id}` `` -> `v2/order/invoice_detail/:param`
+/// * `'v2/index'`                          -> `v2/index` (a pure literal, unchanged)
+/// * `BASE + '/api' + url`                 -> `None` (the first segment is a variable, cannot be anchored)
 fn literal_url_expr(expr: &str) -> Option<String> {
     let mut out = String::new();
     let mut first = true;
@@ -935,7 +879,7 @@ fn literal_url_expr(expr: &str) -> Option<String> {
                 out.push_str(&s);
             }
         } else if bytes[0] == b'`' {
-            // 模板串：`${expr}` 一律折成 `:param`（参数名不重要，形状才重要）。
+            // Template string: every `${expr}` folds into `:param` (the parameter name does not matter, the shape does).
             let inner = strip_ends(t, '`', '`');
             let mut s = String::with_capacity(inner.len());
             let mut rest: &str = inner;
@@ -953,14 +897,13 @@ fn literal_url_expr(expr: &str) -> Option<String> {
             s.push_str(rest);
             out.push_str(&s);
         } else if first {
-            // 首段不是字面量：连 URL 前缀都锚不住，整条放弃。
+            // The first segment is not a literal: even the URL prefix cannot be anchored, so abandon the whole thing.
             return None;
         } else {
             out.push_str(":param");
         }
         first = false;
     }
-    // 只去**尾部**斜杠：首斜杠参与 FKB 的 strip_prefix / leading_slash 语义，不能动。
     let out = out.trim_end_matches('/').to_string();
     if out.is_empty() || out.starts_with(":param") {
         return None;
@@ -968,11 +911,13 @@ fn literal_url_expr(expr: &str) -> Option<String> {
     Some(out)
 }
 
-/// 收集普通调用的实参：`(a, b, c)` → `[值, 值, 值]`，只保留静态可确定的部分。
+/// Collect the arguments of an ordinary call: `(a, b, c)` -> `[value, value, value]`, keeping only what is
+/// statically determinable.
 ///
-/// 为什么值得做：前端 FKB 要像后端一样按 `{ arg: 0 }` 取身份，就得有实参。
-/// 但绝不能把 `$var` / `fn()` 当身份 —— 那些一律落到 [`js_value`] 的 `Unknown`，
-/// 由 FKB 的 `require_literal` 拦掉（与后端 `Cache::get($name)` 同一套处理）。
+/// Why it is worth doing: the front-end FKB wants to derive identity from `{ arg: 0 }` just like the back end,
+/// which requires arguments. But `$var` / `fn()` must never be treated as identity — those all fall through to
+/// [`js_value`]'s `Unknown` and are rejected by FKB's `require_literal` (same handling as the back end's
+/// `Cache::get($name)`).
 fn literal_args(raw: &str) -> Vec<FactValue> {
     let inner = raw.trim();
     let inner = inner
@@ -989,8 +934,8 @@ fn literal_args(raw: &str) -> Vec<FactValue> {
         .collect()
 }
 
-/// 把一个实参表达式文本折成 [`FactValue`]：字符串 / 字符串数组 / 对象字面量 /
-/// 数字 / 布尔，其余一律 `Unknown(原文)`。
+/// Fold an argument expression's text into a [`FactValue`]: string / string array / object literal / number /
+/// boolean; anything else becomes `Unknown(raw text)`.
 fn js_value(raw: &str) -> FactValue {
     let b = raw.as_bytes();
     let Some(&first) = b.first() else {
@@ -1000,8 +945,6 @@ fn js_value(raw: &str) -> FactValue {
         b'"' | b'\'' | b'`' => decode_string(raw).map(FactValue::String).unwrap_or_else(|| {
             FactValue::Unknown(Some(raw.to_string()))
         }),
-        // 用 `strip_*` 而不是 `&raw[1..len-1]`：实参有可能不带右括号，或末尾落在多字节字符上，
-        // 裸切会切在 char 边界中间直接 panic（DSShop / likeshop 前端的中文实参踩到过）。
         b'[' => {
             let inner = strip_ends(raw, '[', ']');
             let items = split_top_commas(inner)
@@ -1031,16 +974,17 @@ fn js_value(raw: &str) -> FactValue {
     }
 }
 
-/// 剥掉一对包裹字符（如 `[...]` / `{...}` / `` `...` ``）。
+/// Strip one wrapping pair of characters (e.g. `[...]` / `{...}` / `` `...` ``).
 ///
-/// 等价于 `&raw[1..raw.len()-1]`，但**不会切在多字节字符中间**：实参文本有可能不带右
-/// 半符号、或以中文结尾，裸切会 panic。缺右半符号时退化为「只剥左半」，由调用方继续尽力解析。
+/// Equivalent to `&raw[1..raw.len()-1]`, but it never **cuts in the middle of a multi-byte character**: argument
+/// text may lack the closing symbol or end with a Chinese character, and a raw slice would panic. When the closing
+/// symbol is missing it degrades to "strip only the left half" and the caller keeps parsing as best it can.
 fn strip_ends(raw: &str, open: char, close: char) -> &str {
     let s = raw.strip_prefix(open).unwrap_or(raw);
     s.strip_suffix(close).unwrap_or(s)
 }
 
-/// 按顶层 `,` 切分（跳过字符串字面量与括号内部），返回去空白后的片段。
+/// Split on top-level `,` (skipping string literals and bracket interiors), returning whitespace-trimmed fragments.
 fn split_top_commas(s: &str) -> Vec<&str> {
     let b = s.as_bytes();
     let mut parts = Vec::new();
@@ -1064,7 +1008,7 @@ fn split_top_commas(s: &str) -> Vec<&str> {
     parts
 }
 
-/// 按顶层 `+` 切分表达式（跳过字符串字面量与括号/花括号内部）。
+/// Split an expression on top-level `+` (skipping string literals and bracket / brace interiors).
 fn split_top_plus(expr: &str) -> Vec<String> {
     let b = expr.as_bytes();
     let mut parts = Vec::new();
@@ -1088,15 +1032,16 @@ fn split_top_plus(expr: &str) -> Vec<String> {
     parts
 }
 
-/// 从 `args` 里取出**第一个顶层实参**的表达式文本（`'a/' + id, data, {...}` → `'a/' + id`）。
+/// Take the expression text of the **first top-level argument** from `args` (`'a/' + id, data, {...}` -> `'a/' + id`).
 fn first_arg_expr(args: &str) -> Option<String> {
     let open = args.find('(')?;
     top_level_segment(&args[open + 1..])
 }
 
-/// 取对象字面量里 `key:` 后的**值表达式**文本（到顶层 `,` 或串尾）。
+/// Take the **value expression** text after `key:` in an object literal (up to a top-level `,` or end of string).
 ///
-/// 与 [`field_string`] 同一套前缀规则：`url: url`（变量）不越键、`base_url:` 不误认。
+/// Same prefix rule as [`field_string`]: `url: url` (a variable) must not overrun its key, and `base_url:` must
+/// not be mistaken for it.
 fn field_expr(args: &str, key: &str) -> Option<String> {
     let needle = format!("{key}:");
     let bytes = args.as_bytes();
@@ -1113,7 +1058,7 @@ fn field_expr(args: &str, key: &str) -> Option<String> {
     top_level_segment(&args[idx + needle.len()..])
 }
 
-/// 取一段文本里第一个**顶层**片段（到深度 0 的 `,` 或串尾），跳过字符串与括号。
+/// Take the first **top-level** fragment of a text (up to a depth-0 `,` or end of string), skipping strings and brackets.
 fn top_level_segment(s: &str) -> Option<String> {
     let b = s.as_bytes();
     let mut depth = 0usize;
@@ -1141,7 +1086,7 @@ fn top_level_segment(s: &str) -> Option<String> {
     }
 }
 
-/// 返回配对引号之后的下标（处理 `\"` 转义；模板串内的 `${}` 不含引号场景从简）。
+/// Return the index just past the matching quote (handling `\"` escapes; `${}` inside template strings has no quote scenario and is kept simple).
 fn skip_string(b: &[u8], open: usize) -> usize {
     let quote = b[open];
     let mut i = open + 1;
@@ -1156,14 +1101,15 @@ fn skip_string(b: &[u8], open: usize) -> usize {
     b.len()
 }
 
-/// 成员式 HTTP 调用的**接收者白名单**：`request.get(...)` 里 `request` 这一段。
+/// The **receiver allowlist** for member-form HTTP calls: the `request` part of `request.get(...)`.
 ///
-/// 只有 HTTP 动词作为方法名还不够 —— `$store.get()` / `cache.get()` / `storage.get()`
-/// 等同形异物遍地都是，一律当契约会污染路由视角（假契约 + 假幽灵调用）。故以白名单收窄：
-/// 命中面小但**不误判**，漏掉的项目级封装名可以在此处补一行。
+/// An HTTP verb as the method name is not enough — same-shaped different things such as `$store.get()` /
+/// `cache.get()` / `storage.get()` are everywhere, and treating them all as contracts would pollute the route
+/// perspective (fake contracts + fake phantom calls). So an allowlist narrows it: a small hit surface but **no
+/// misjudgement**, and a project's own wrapper name can be added here with one line.
 ///
-/// `this.request.get(...)` / `store.api.get(...)`：取最后一段判定（`recv_matches`
-/// 的尾部名匹配同理，FKB 侧仍写 `request::{get,post,...}`）。
+/// `this.request.get(...)` / `store.api.get(...)`: judge on the last segment (same tail-name matching as
+/// `recv_matches`; FKB still writes `request::{get,post,...}`).
 fn is_http_client_recv(recv: &str) -> bool {
     let last = recv.rsplit('.').next().unwrap_or(recv);
     matches!(
@@ -1172,13 +1118,12 @@ fn is_http_client_recv(recv: &str) -> bool {
     )
 }
 
-// ---------------------------------------------------------------- 通用小工具
 
 fn text<'a>(node: Node<'a>, src: &'a str) -> &'a str {
     node.utf8_text(src.as_bytes()).unwrap_or("")
 }
 
-/// 字节下标 → (行号, 列号)。
+/// Byte offset -> (line, column).
 fn line_col(src: &str, byte: usize) -> (u32, u32) {
     let mut line = 1u32;
     let mut col = 1u32;
@@ -1207,13 +1152,13 @@ fn span_of(node: Node, src: &str) -> Span {
     }
 }
 
-/// 取调用点所在整行源码，供 UI 在链路的"调用处"直接显示。
+/// Take the whole source line a call site sits on, so the UI can show it directly as the "call site" in a link.
 fn line_snippet(src: &str, start: usize) -> Option<String> {
     let line_start = src[..start.min(src.len())].rfind('\n').map(|i| i + 1).unwrap_or(0);
     src[line_start..].lines().next().map(|l| l.trim().to_string())
 }
 
-/// 抽取 Vue 单文件组件的 `<script>` 块内容，并在前面补齐换行使行号与原文件对齐。
+/// Extract the `<script>` block of a Vue single-file component, padding it with leading newlines so line numbers align with the original file.
 fn extract_vue_script(src: &str) -> Option<String> {
     let open = src.find("<script")?;
     let gt_rel = src[open..].find('>')?;
@@ -1231,7 +1176,7 @@ fn extract_vue_script(src: &str) -> Option<String> {
     Some(s)
 }
 
-/// 字符串字面量（含模板串）匹配。
+/// Match a string literal (including template strings).
 fn str_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`"#).unwrap())
@@ -1241,16 +1186,13 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
-/// 去掉引号并做最小转义还原；模板串含插值则返回 `None`（无法静态求值）。
+/// Strip the quotes and apply minimal unescaping; a template string with interpolation returns `None` (cannot be evaluated statically).
 fn decode_string(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     if bytes.is_empty() {
         return None;
     }
     let quote = bytes[0] as char;
-    // **整段必须是同一个引号包裹的字面量**才解：实参里的片段可能是 `'a' + b`
-    // 这类表达式（`literal_args` 收上来的就长这样），裸切 `1..len-1` 会切在多字节
-    // 字符中间直接 panic（CRMEB 前端的中文实参踩到过）。
     if bytes.len() < 2 || bytes[bytes.len() - 1] != quote as u8 {
         return None;
     }
@@ -1270,17 +1212,18 @@ fn decode_string(raw: &str) -> Option<String> {
     Some(decoded)
 }
 
-/// 在子串里找首个字符串字面量；模板串含插值 `${` 时视为无法静态求值。
+/// Find the first string literal in a substring; a template string containing `${` counts as not statically evaluable.
 fn first_string(args: &str) -> Option<String> {
     let m = str_re().find(args)?;
     decode_string(m.as_str())
 }
 
-/// 在子串里找 `key: <字符串字面量>`。
+/// Find `key: <string literal>` inside a substring.
 ///
-/// 两条硬约束（真实前端代码踩过的坑）：
-/// * 值必须紧跟在 `key:` 之后 —— `url: url`（变量）时绝不越本键抓后续 `method: 'get'`；
-/// * `key` 前不能是标识符字符 —— `base_url:` 不被当成 `url:`。
+/// Two hard constraints (traps hit by real front-end code):
+/// * the value must follow `key:` immediately — with `url: url` (a variable) it must never overrun the key and grab
+///   a later `method: 'get'`;
+/// * no identifier character may precede `key` — `base_url:` must not be read as `url:`.
 fn field_string(args: &str, key: &str) -> Option<String> {
     let needle = format!("{key}:");
     let bytes = args.as_bytes();
@@ -1306,22 +1249,22 @@ fn field_string(args: &str, key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// 解析一段源码，返回全部语法事实。
+    /// Parse a piece of source and return every syntax fact.
     fn parse_src(src: &str) -> SyntaxFacts {
         JsFrontendParser::new()
             .unwrap()
             .parse("sample.js", src)
-            .expect("解析应成功")
+            .expect("parsing should succeed")
     }
 
-    /// 取首个 HTTP 调用点的 (callee_text, url, method)，便于断言。
+    /// Take the first HTTP call site's (callee_text, url, method) for easy assertions.
     fn first_http(src: &str) -> (String, Option<String>, String) {
         let facts = parse_src(src);
         let c = facts
             .call_sites
             .iter()
             .find(|c| c.args.iter().any(|a| matches!(a, FactValue::Array(_))))
-            .expect("应提取到一个 HTTP 调用");
+            .expect("expected one HTTP call to be extracted");
         let url = c
             .args
             .first()
@@ -1346,44 +1289,40 @@ mod tests {
         (c.callee_text.clone(), url, method)
     }
 
-    /// 装饰器 → 调用点（NestJS 路由的基础）：与 Java 注解 / Python 装饰器同机制。
+    /// Decorators -> call sites (the basis of NestJS routes): same mechanism as Java annotations / Python decorators.
     #[test]
     fn nestjs_decorators_become_call_sites() {
         let facts = parse_src(
             "@Controller('cats')\nexport class CatsController {\n  @Get(':id')\n  findOne(@Param('id') id: string) { return 1; }\n}\n",
         );
-        // 类装饰器：owner 是类
         let ctrl = facts
             .call_sites
             .iter()
             .find(|c| c.method.as_deref() == Some("Controller"))
-            .expect("应收集 @Controller");
+            .expect("expected @Controller to be collected");
         assert_eq!(ctrl.owner_fqn, "CatsController");
         assert_eq!(ctrl.args.first().and_then(|a| a.as_str()), Some("cats"));
-        // 方法装饰器：owner 精确到方法（NestJS 的 HandledBy 才能连到处理方法本身）
         let get = facts
             .call_sites
             .iter()
             .find(|c| c.method.as_deref() == Some("Get"))
-            .expect("应收集 @Get");
+            .expect("expected @Get to be collected");
         assert_eq!(get.owner_fqn, "CatsController.findOne");
         assert_eq!(get.args.first().and_then(|a| a.as_str()), Some(":id"));
-        // callee 带 `@` 前缀：与普通的 `.get()` 区分开（否则 FKB 会误命中）
         assert_eq!(ctrl.callee_text, "@Controller");
         assert_eq!(get.callee_text, "@Get");
-        // 参数装饰器（`@Param('id')`）嵌在 parameters 里，不应被收成调用点
         assert!(
             facts.call_sites.iter().all(|c| c.method.as_deref() != Some("Param")),
-            "参数装饰器不应被收作调用点，实际：{:?}",
+            "parameter decorators must not be collected as call sites, got: {:?}",
             facts.call_sites.iter().map(|c| &c.callee_text).collect::<Vec<_>>()
         );
     }
 
-    /// 构造器形参注入 → `@Inject` 调用点（NestJS 依赖注入的基础）。
+    /// Constructor parameter injection -> an `@Inject` call site (the basis of NestJS dependency injection).
     ///
-    /// `constructor(private readonly userService: UserService)` 应产出一条
-    /// `callee_text = "@Inject"`、`entity = "UserService"`（被注入者类型）的调用点，
-    /// owner 是类本身 —— 供 FKB 建 `DependsOn` 边。
+    /// `constructor(private readonly userService: UserService)` should produce a call site with
+    /// `callee_text = "@Inject"` and `entity = "UserService"` (the injected type), owned by the class itself —
+    /// so FKB can build a `DependsOn` edge.
     #[test]
     fn constructor_param_injection_becomes_inject_call_site() {
         let facts = parse_src(
@@ -1393,11 +1332,10 @@ mod tests {
             .call_sites
             .iter()
             .find(|c| c.callee_text == "@Inject")
-            .expect("应收集构造器注入点");
+            .expect("expected the constructor injection points to be collected");
         assert_eq!(inject.owner_fqn, "UserController");
         assert_eq!(inject.owner_class.as_deref(), Some("UserController"));
         assert_eq!(inject.entity.as_deref(), Some("UserService"));
-        // 只有带访问修饰符的形参才算注入（普通参数不算）
         let facts2 = parse_src(
             "export class X {\n  constructor(plain: Foo, private svc: Bar) {}\n}\n",
         );
@@ -1407,12 +1345,12 @@ mod tests {
             .filter(|c| c.callee_text == "@Inject")
             .map(|c| c.entity.as_deref().unwrap_or(""))
             .collect();
-        assert_eq!(injects, vec!["Bar"], "只有带修饰符的 svc: Bar 算注入，plain: Foo 不算");
+        assert_eq!(injects, vec!["Bar"], "only the decorated svc: Bar counts as an injection; plain: Foo does not");
     }
 
-    /// 字段装饰器 → 调用点（TypeORM `@Column` 的基础）：owner 精确到**字段 FQN**
-    /// （`Class.field`），于是 FKB 能取 `owner_class.owner_member` 作列身份
-    /// （`UserEntity.username`）—— 同名列在不同实体里才不会并成一个。
+    /// Field decorators -> call sites (the basis of TypeORM's `@Column`): the owner is precise to the **field FQN**
+    /// (`Class.field`), so FKB can take `owner_class.owner_member` as the column identity
+    /// (`UserEntity.username`) — otherwise same-named columns in different entities would merge into one.
     #[test]
     fn field_decorators_become_call_sites_on_field_fqn() {
         let facts = parse_src(
@@ -1427,14 +1365,11 @@ mod tests {
         assert_eq!(
             cols,
             vec!["UserEntity.id", "UserEntity.username"],
-            "字段装饰器应挂到字段 FQN（Class.field），实际：{cols:?}"
+            "a field decorator should attach to the field FQN (Class.field), got: {cols:?}"
         );
     }
 
-    /// 关系装饰器 → 目标实体写在调用点的 `entity`（TypeORM 关联的基础）。
-    ///
-    /// 箭头函数实参（`type => ArticleEntity`）取不到字面量，故取**字段类型注解**；
-    /// 数组字段（`comments: Comment[]`）取**元素类型**。
+    /// Relation decorators -> the target entity is written into the call site's `entity` (the basis of TypeORM relations).
     #[test]
     fn relation_decorators_carry_target_entity() {
         let facts = parse_src(
@@ -1452,7 +1387,7 @@ mod tests {
                 ("ArticleEntity.author", "UserEntity"),
                 ("ArticleEntity.comments", "Comment"),
             ],
-            "关系装饰器应带上目标实体（数组取元素类型），实际：{rel:?}"
+            "a relation decorator should carry the target entity (element type for arrays), got: {rel:?}"
         );
     }
 
@@ -1499,52 +1434,46 @@ mod tests {
 
     #[test]
     fn non_http_calls_ignored() {
-        // 普通函数调用不应被当成 HTTP 调用 —— 判据不是"args 为空"（现在普通调用也
-        // 采实参，供前端语义节点取身份），而是**不带 `{ url, method }` 归一化实参**。
         let facts = parse_src("doWork('a', b);\nif (x) { foo() }");
-        assert!(!facts.call_sites.is_empty(), "应仍收集到普通调用点");
+        assert!(!facts.call_sites.is_empty(), "ordinary call sites should still be collected");
         assert!(
             facts.call_sites.iter().all(|c| !c.args.iter().any(|a| {
                 matches!(a, FactValue::Array(items)
                     if items.iter().any(|(k, _)| k == "url" || k == "method"))
             })),
-            "非 HTTP 调用不应携带 url/method 归一化实参"
+            "a non-HTTP call must not carry normalised url/method arguments"
         );
-        // 但**字面量实参要采上来**：`doWork('a')` 的首参应为 String。
         let work = facts
             .call_sites
             .iter()
             .find(|c| c.callee_text == "doWork")
-            .expect("应收集到 doWork 调用");
+            .expect("expected the doWork call to be collected");
         assert!(
             matches!(work.args.first(), Some(FactValue::String(s)) if s == "a"),
-            "普通调用的字面量实参要可用（前端语义节点靠 arg:0 取身份），实际：{:?}",
+            "literal arguments of an ordinary call must be usable (frontend semantic nodes take their identity from arg:0), got: {:?}",
             work.args
         );
     }
 
     #[test]
     fn variable_url_is_unknown() {
-        // 首段是变量的 URL 无法锚定，url 必须是 Unknown（不合成幽灵契约）。
         let facts = parse_src("const BASE='https://x';\naxios.get(BASE + '/api/' + path)");
         let c = facts
             .call_sites
             .iter()
             .find(|c| c.callee_text == "axios")
-            .expect("应收集到 axios 调用");
+            .expect("expected the axios call to be collected");
         let url_unknown = matches!(
             c.args.first(),
             Some(FactValue::Array(items)) if items
                 .iter()
                 .any(|(k, v)| k == "url" && matches!(v, FactValue::Unknown(_)))
         );
-        assert!(url_unknown, "首段为变量的 url 必须是 Unknown");
+        assert!(url_unknown, "a url whose first segment is a variable must be Unknown");
     }
 
     #[test]
     fn templated_url_keeps_param_shape() {
-        // 模板串 / 拼接串的**形状**可静态确定：插值段折成 `:param` 占位符，
-        // 与后端 `/:id` 在 `param_wildcard` 归一化后汇聚（不是 Unknown）。
         let (_, url, method) = first_http("axios.get(`/api/order/${id}/detail`)");
         assert_eq!(url.as_deref(), Some("/api/order/:param/detail"));
         assert_eq!(method, "GET");
@@ -1557,7 +1486,7 @@ mod tests {
         let (_, url, method) = first_http(
             "const IndexUrl = '/home/index';\nrequest({ url: IndexUrl, method: 'get' })",
         );
-        assert!(url.is_none(), "常量引用 url 不能被解析成字面量");
+        assert!(url.is_none(), "a url that references a constant must not resolve to a literal");
         assert_eq!(method, "GET");
     }
 
@@ -1578,30 +1507,26 @@ mod tests {
 
     #[test]
     fn function_declaration_is_semantic_node() {
-        // `export function agentGet() { request({ url }) }` 应建出 FUNCTION 节点，
-        // 且 HTTP 调用点的 owner_fqn 指向该函数（而非文件）。
         let src = "export function agentGet() {\n  return request({ url: '/api/get', method: 'get' });\n}";
         let facts = parse_src(src);
         let fn_decl = facts
             .declarations
             .iter()
             .find(|d| d.kind.as_str() == NodeKind::FUNCTION && d.name == "agentGet");
-        assert!(fn_decl.is_some(), "应建出 agentGet 函数节点");
+        assert!(fn_decl.is_some(), "expected an agentGet function node to be built");
         let http = facts
             .call_sites
             .iter()
             .find(|c| c.callee_text == "request")
-            .expect("应收集到 request 调用");
+            .expect("expected the request call to be collected");
         assert_eq!(
             http.owner_fqn, "agentGet",
-            "HTTP 调用的 owner 应是函数 agentGet，而非文件"
+            "the owner of an HTTP call should be the function agentGet, not the file"
         );
     }
 
     #[test]
     fn component_calls_api_function() {
-        // 组件方法调用 api 函数：应收集到 `loadList` 函数节点 + 一次 `agentGet` 调用，
-        // 其 owner 是 `loadList`（跨文件调用链的"发起方"语义节点）。
         let src = "export function loadList() {\n  return agentGet();\n}";
         let facts = parse_src(src);
         assert!(
@@ -1609,13 +1534,13 @@ mod tests {
                 .declarations
                 .iter()
                 .any(|d| d.kind.as_str() == NodeKind::FUNCTION && d.name == "loadList"),
-            "应建出 loadList 函数节点"
+            "expected a loadList function node to be built"
         );
         let call = facts
             .call_sites
             .iter()
             .find(|c| c.callee_text == "agentGet")
-            .expect("应收集到对 agentGet 的调用");
+            .expect("expected the call to agentGet to be collected");
         assert_eq!(call.owner_fqn, "loadList");
     }
 
@@ -1628,34 +1553,33 @@ mod tests {
                 .declarations
                 .iter()
                 .any(|d| d.kind.as_str() == NodeKind::CLASS && d.name == "Api"),
-            "应建出 Api 类节点"
+            "expected an Api class node to be built"
         );
         let m = facts
             .declarations
             .iter()
             .find(|d| d.kind.as_str() == NodeKind::METHOD && d.name == "getX");
-        assert!(m.is_some(), "应建出 getX 方法节点");
+        assert!(m.is_some(), "expected a getX method node to be built");
         let call = facts
             .call_sites
             .iter()
             .find(|c| c.callee_text == "request")
-            .expect("应收集到 request 调用");
-        assert_eq!(call.owner_fqn, "Api.getX", "方法内调用的 owner 应是 Api.getX");
+            .expect("expected the request call to be collected");
+        assert_eq!(call.owner_fqn, "Api.getX", "the owner of a call inside a method should be Api.getX");
     }
 
     #[test]
     fn vue_script_is_parsed_with_aligned_lines() {
-        // `.vue`：抽取 <script> 块，函数声明落在原文件行号（第 4 行），而非脚本内第 1 行。
         let src = "<template>\n  <div></div>\n</template>\n<script>\nfunction foo() {}\n</script>\n";
         let facts = JsFrontendParser::new()
             .unwrap()
             .parse("Comp.vue", src)
-            .expect("解析应成功");
+            .expect("parsing should succeed");
         let foo = facts
             .declarations
             .iter()
             .find(|d| d.kind.as_str() == NodeKind::FUNCTION && d.name == "foo")
-            .expect("应解析到 vue 内的 foo 函数");
-        assert_eq!(foo.span.start_line, 5, "vue 内函数行号应对齐到原文件（<script> 在第 4 行，函数在其后第 5 行）");
+            .expect("expected the foo function inside the vue file to be parsed");
+        assert_eq!(foo.span.start_line, 5, "line numbers of functions inside a vue file should align with the original file (<script> is on line 4, the function on line 5)");
     }
 }

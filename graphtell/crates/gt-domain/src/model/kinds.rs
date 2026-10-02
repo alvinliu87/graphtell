@@ -1,13 +1,13 @@
-//! 可扩展的"种类"值对象：`NodeKind` / `EdgeKind` / `Phase` / `AnnotationChannel`。
+//! Extensible "kind" value objects: `NodeKind` / `EdgeKind` / `Phase` / `AnnotationChannel`.
 //!
-//! # 为什么用 `String` newtype 而不是 `enum`
+//! # Why a `String` newtype instead of an `enum`
 //!
-//! GraphTell 的目标是兼容所有主流技术栈。语言、框架与阶段都会随 FKB
-//! （Framework Knowledge Base，YAML）不断扩展，若写死成 Rust `enum`，
-//! 每增加一种节点类型都要重新编译内核 —— 这违反了 **开闭原则（OCP）**。
+//! GraphTell aims to cover every mainstream tech stack. Languages, frameworks and phases keep growing through
+//! FKB (Framework Knowledge Base, YAML); hard-coding them as a Rust `enum` would mean recompiling the kernel for
+//! every new node type — a violation of the **open-closed principle (OCP)**.
 //!
-//! 因此这里采用「开放字符串 + 常量速记」：常量只是**已知种类的文档**，
-//! 不是限制；FKB 可以自由引入新种类。
+//! So this uses "open strings + constant shorthands": the constants are only **documentation of the known
+//! kinds**, not a restriction; FKB may freely introduce new ones.
 
 macro_rules! declare_open_kind {
     ($name:ident => $doc:literal; $($const:ident = $lit:literal => $cdoc:literal),* $(,)?) => {
@@ -26,10 +26,10 @@ macro_rules! declare_open_kind {
 
             pub fn as_str(&self) -> &str { &self.0 }
 
-            /// 是否为某个已知种类。
+            /// Whether it is one of the known kinds.
             pub fn is(&self, other: &str) -> bool { self.0 == other }
 
-            /// 大小写不敏感比较（FKB 里常写小写）。
+            /// Case-insensitive comparison (FKB usually writes lower case).
             pub fn eq_ignore_ascii_case(&self, other: &str) -> bool {
                 self.0.eq_ignore_ascii_case(other)
             }
@@ -52,75 +52,60 @@ macro_rules! declare_open_kind {
     };
 }
 
-declare_open_kind! { NodeKind => "图节点种类（语法节点 + 合成节点，开放可扩展）";
-    FILE       = "File"       => "源文件",
-    DIRECTORY  = "Directory"  => "目录",
-    NAMESPACE  = "Namespace"  => "命名空间 / 模块",
-    CLASS      = "Class"      => "类",
-    INTERFACE  = "Interface"  => "接口",
+declare_open_kind! { NodeKind => "Graph node kinds (syntax nodes + synthetic nodes, open and extensible)";
+    FILE       = "File"       => "source file",
+    DIRECTORY  = "Directory"  => "directory",
+    NAMESPACE  = "Namespace"  => "namespace / module",
+    CLASS      = "Class"      => "class",
+    INTERFACE  = "Interface"  => "interface",
     TRAIT      = "Trait"      => "PHP trait / Rust trait / mixin",
-    ENUM       = "Enum"       => "枚举",
-    ENUM_CASE  = "EnumCase"   => "枚举成员",
-    METHOD     = "Method"     => "类方法",
-    FUNCTION   = "Function"   => "自由函数",
-    PROPERTY   = "Property"   => "类属性 / 字段",
-    CONST      = "Const"      => "常量",
-    CALL_SITE  = "CallSite"   => "方法体内的一次调用点（P2 细化）",
-    // ---- 合成节点（Synthesize 阶段按 FKB 规则物化）----
-    TABLE      = "Table"         => "数据库表（Mediator，汇聚 200 处引用）",
-    // 表列：两个来源共用同一种类 —— ① FKB 从 ORM 字段声明合成（TypeORM `@Column`）；
-    // ② 内核把权威 schema（SQL DDL）的列沉淀成图节点（见 `phase::columns`）。
-    // 既然内核自己也物化它，就与 `Table` 一样进内核清单，免得只在声明了
-    // `semantic_kinds: [Column]` 的那一个 FKB 生效的工程里可见。
-    COLUMN     = "Column"        => "表列（字段级影响面的落点）",
-    HTTP_CONTRACT = "HttpContract" => "HTTP 契约桥（前后端汇聚点）",
-    CONFIG_KEY = "ConfigKey"   => "配置键",
-    I18N_KEY   = "I18nKey"     => "国际化键",
-    // 进程外中介：原本挂在 `ExternalSystem` 类别伞下，现各自是独立种类（kind），
-    // 命名粒度与 Table / ConfigKey 一致，视角也直接按种类切换。
-    EVENT      = "Event"       => "事件总线节点（进程外中介）",
-    QUEUE      = "Queue"       => "消息队列节点（进程外中介）",
-    // 事件 / 队列视角的**消费方**语义角色：监听器 / 消费者类在画布上重标为此 kind，
-    // 与 Event / Queue 同族（仅视图层重标，DB 中仍存 `Class`，免重建）。
-    EVENT_HANDLER = "EventHandler" => "事件 / 队列处理器（监听器 / 消费者类）",
-    CACHE      = "Cache"       => "缓存节点（进程外中介）",
-    TOPIC      = "Topic"       => "消息主题节点（进程外中介）",
-    SCHEDULE   = "Schedule"    => "定时任务节点（计划任务 / 调度）",
-    // 前端路由节点：uni-app `pages.json` 声明的页面路由，与后端 `Route` 同构
-    // （路由视角里前后端「页面 ↔ 接口」直接对看）。
-    PAGE       = "Page"        => "页面 / 路由节点（前端 pages.json 声明的路由）",
-    // 前端事件总线节点：`uni.$emit('evt')` / `bus.$emit('evt')` 等组件解耦通信，
-    // 与后端 `Event` 同构——同一事件名即同一节点，发射方与监听方都连到它。
-    EVENT_BUS  = "EventBus"    => "事件总线节点（前端 uni.$emit / bus.$emit 组件通信）",
-    // 中间件：**唯一一种由语法节点晋升而来的语义节点**。
-    // 它不像 Table / Event / HttpContract 那样"靠多处引用汇聚才存在"，而是 P2 先建出一个
-    // `Class`、P14 确认它挂在路由上之后把 kind 改过来（见 `GraphDelta::kind_patches`：
-    // **改身份而不新增节点** —— 否则同一份代码在图里出现两次，扇入分裂、跳转给两份位置）。
-    // 列进 `SYNTHESIZED` 的唯一后果是它在折叠视图里**默认可见**，与 Table / HttpContract
-    // 同一待遇 —— 这也是用户看路由图时最先想确认的东西（这个接口过了哪些守卫）。
-    MIDDLEWARE   = "Middleware"   => "中间件（挂在路由上的守卫类，由 Class 晋升）",
-    UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新种类",
+    ENUM       = "Enum"       => "enum",
+    ENUM_CASE  = "EnumCase"   => "enum case",
+    METHOD     = "Method"     => "class method",
+    FUNCTION   = "Function"   => "free function",
+    PROPERTY   = "Property"   => "class property / field",
+    CONST      = "Const"      => "constant",
+    CALL_SITE  = "CallSite"   => "one call site inside a method body (refined in P2)",
+    // ---- synthetic nodes (materialised by the Synthesize phase per FKB rules) ----
+    TABLE      = "Table"         => "database table (Mediator; converges 200-odd references)",
+    COLUMN     = "Column"        => "table column (the landing point of field-level impact)",
+    HTTP_CONTRACT = "HttpContract" => "HTTP contract bridge (where frontend and backend converge)",
+    CONFIG_KEY = "ConfigKey"   => "config key",
+    I18N_KEY   = "I18nKey"     => "i18n key",
+    // Out-of-process mediators: they used to hang under the `ExternalSystem` category umbrella, now each is its
+    // own kind — the naming granularity matches Table / ConfigKey, and perspectives switch directly by kind.
+    EVENT      = "Event"       => "event-bus node (an out-of-process mediator)",
+    QUEUE      = "Queue"       => "message-queue node (an out-of-process mediator)",
+    // The **consumer-side** semantic role in the event / queue perspectives: listener / consumer classes are
+    // relabelled to this kind on the canvas, same family as Event / Queue (view-layer relabelling only; the DB
+    // still stores `Class`, so nothing needs rebuilding).
+    EVENT_HANDLER = "EventHandler" => "event / queue handler (a listener / consumer class)",
+    CACHE      = "Cache"       => "cache node (an out-of-process mediator)",
+    TOPIC      = "Topic"       => "message-topic node (an out-of-process mediator)",
+    SCHEDULE   = "Schedule"    => "scheduled-job node (cron / scheduler)",
+    // Front-end route node: the page routes declared by uni-app's `pages.json`, isomorphic to the backend
+    // `Route` (in the route perspective front-end "page <-> endpoint" can be compared directly).
+    PAGE       = "Page"        => "page / route node (a route declared in the frontend pages.json)",
+    // Front-end event-bus node: decoupled inter-component communication via `uni.$emit('evt')` /
+    // `bus.$emit('evt')` etc., isomorphic to the backend `Event` — same event name means same node, and both
+    // emitters and listeners connect to it.
+    EVENT_BUS  = "EventBus"    => "event-bus node (frontend uni.$emit / bus.$emit component communication)",
+    MIDDLEWARE   = "Middleware"   => "middleware (a guard class attached to a route, promoted from Class)",
+    UNKNOWN       = "Unknown"       => "unclassified, or a new kind introduced dynamically by FKB",
 }
 
 impl NodeKind {
-    /// **第一类**合成（语义）节点：自身即语义、各带独立 identity 与视角的领域资产。
+    /// **First-class** synthetic (semantic) nodes: domain assets that are semantics in themselves, each with its
+    /// own identity and perspective.
     ///
-    /// 折叠视图默认**只**展示语义节点；其余（File / Class / Method / Function / CallSite…）
-    /// 都只是实现细节，属于"点击展开才看的语法链路"。
+    /// The folded view shows **only** semantic nodes by default; everything else (File / Class / Method /
+    /// Function / CallSite…) is an implementation detail belonging to the "syntax chain you expand by clicking".
     ///
-    /// `Event` / `Queue` / `Cache` / `Topic` 这类进程外中介与 Table / ConfigKey 同级，
-    /// 不再笼统地挂在 `ExternalSystem` 类别伞下——每个语义节点都以具体种类作为 kind。
+    /// Out-of-process mediators like `Event` / `Queue` / `Cache` / `Topic` sit at the same level as Table /
+    /// ConfigKey and are no longer lumped under the `ExternalSystem` category umbrella — every semantic node
+    /// takes its concrete kind as `kind`.
     pub const SYNTHESIZED: &'static [&'static str] = &[
         Self::TABLE,
-        // ★ `Column` **刻意不在此列**：列是"表 × 列数"的量级（几十张表 × 十几列 =
-        // 几百个节点），一旦算语义节点就会撑爆折叠视图，还会吃掉可达语义节点统计的
-        // 400 节点预算。列节点照建、`HasColumn` 边照连，影响面照样能下到字段级，
-        // 只是**默认不画**。将来要做"列视角"再单独开。
-        //
-        // 注意：**不能靠 FKB 的 `semantic_kinds` 按语言开这个开关** ——
-        // `register_semantic_kinds` 在 `load_dir` 里对所有 FKB 无条件登记，语言过滤
-        // 只发生在"选规则"时。故任何一份 FKB 声明 `semantic_kinds: [Column]`，
-        // 会让**所有工程**（含 PHP）的列都变语义 —— 想按语言区分必须改装载逻辑。
         Self::HTTP_CONTRACT,
         Self::CONFIG_KEY,
         Self::I18N_KEY,
@@ -134,11 +119,11 @@ impl NodeKind {
         Self::MIDDLEWARE,
     ];
 
-    /// 是否为"第一类"语义节点（kind 自身即语义）。
+    /// Whether this is a "first-class" semantic node (the kind itself is the semantics).
     ///
-    /// 除内置清单外，还包括 **FKB 声明**的种类（见
-    /// [`crate::model::FrameworkKnowledge::semantic_kinds`] + [`register_semantic_kinds`]）
-    /// —— 新增一种语义节点不该以改内核为代价。
+    /// Besides the built-in list this also covers the kinds **declared by FKB** (see
+    /// [`crate::model::FrameworkKnowledge::semantic_kinds`] + [`register_semantic_kinds`]) — adding a semantic
+    /// node should not cost a kernel change.
     pub fn is_semantic(&self) -> bool {
         if Self::SYNTHESIZED.iter().any(|k| self.0 == *k) {
             return true;
@@ -151,20 +136,20 @@ impl NodeKind {
     }
 }
 
-/// FKB 追加登记的语义节点种类（进程内单例，随 FKB 装载填充）。
+/// Semantic node kinds additionally registered by FKB (an in-process singleton, filled as FKB loads).
 static EXTRA_SEMANTIC: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 
-/// 登记 FKB 声明的语义节点种类（可重复调用，幂等合并）。
+/// Register the semantic node kinds declared by FKB (may be called repeatedly; merges idempotently).
 pub fn register_semantic_kinds(kinds: impl IntoIterator<Item = String>) {
     let mut set = EXTRA_SEMANTIC
         .get_or_init(Default::default)
         .write()
-        .expect("语义种类注册表未被破坏");
+        .expect("the semantic-kind registry is not corrupted");
     set.extend(kinds);
 }
 
-/// 当前已登记的 FKB 语义节点种类（供诊断 / 测试观察）。
+/// The FKB semantic node kinds currently registered (for diagnostics / test observation).
 pub fn extra_semantic_kinds() -> Vec<String> {
     let mut out: Vec<String> = EXTRA_SEMANTIC
         .get_or_init(Default::default)
@@ -175,63 +160,50 @@ pub fn extra_semantic_kinds() -> Vec<String> {
     out
 }
 
-declare_open_kind! { EdgeKind => "图边种类（开放可扩展）";
-    CONTAINS      = "Contains"      => "包包含系",
-    DECLARES      = "Declares"      => "声明",
-    EXTENDS       = "Extends"       => "继承",
-    IMPLEMENTS    = "Implements"    => "实现接口",
-    USES_TRAIT    = "UsesTrait"     => "使用 trait",
-    CALLS         = "Calls"         => "调用",
-    HAS_CALL_SITE = "HasCallSite"   => "方法体内含调用点",
-    IMPORTS       = "Imports"       => "文件导入",
-    // ---- 语义边（Synthesize / Resolve 建立）----
-    HANDLED_BY    = "HandledBy"     => "由…处理（契约桥 → handler）",
-    CALLS_HTTP    = "CallsHttp"     => "前端调用某个 HTTP 契约",
-    TRIGGERS      = "Triggers"      => "触发事件",
-    PUBLISHES_TO  = "PublishesTo"   => "投递到队列 topic",
-    READS_DB      = "ReadsDb"       => "读库",
-    WRITES_DB     = "WritesDb"      => "写库",
-    WRITES_CACHE  = "WritesCache"   => "写缓存",
-    MAPS_TO       = "MapsTo"        => "模型映射到表",
-    // 拥有列：`表/模型 --HasColumn--> 列`。两端都是语义节点（Table / Column，
-    // 或模型类 → Column），与 `MapsTo` 同族的"结构映射"边。
-    // 内核沉淀 schema 列时也会建它（见 `phase::columns`），故进内核清单。
-    HAS_COLUMN    = "HasColumn"     => "拥有列（表 / 模型 → 列）",
-    READS_CONFIG  = "ReadsConfig"   => "读配置",
-    MUTATES       = "Mutates"       => "改变状态容器（前端 Store / Vuex、Pinia…）",
-    // 前端页面跳转：`uni.navigateTo` / `redirectTo` / `reLaunch` / `switchTab` 等，
-    // 从发起方（函数 / 组件方法）指向目标 `Page` 节点。
-    NAVIGATES_TO  = "NavigatesTo"   => "前端页面跳转（uni.navigateTo 等）",
-    // 前端事件总线：发射方 `--Emits-->` 事件节点 `<--ListensTo--` 监听方，
-    // 与后端 `Event` 的 `Triggers` 同构——事件节点在折叠视图里充当「via」桥。
-    EMITS       = "Emits"       => "前端发射事件总线事件（uni.$emit / bus.$emit）",
-    LISTENS_TO  = "ListensTo"   => "前端监听事件总线事件（uni.$on / bus.$on）",
-    // 中间件：`HttpContract --PassesThrough--> Middleware`。
-    //
-    // 边名刻意取中性：**请求经过它**，而不是"被它守卫"。中间件里有的是守卫
-    // （`AuthToken` / `Blocker` / `throttle` —— 会拒绝请求），有的只是旁路
-    // （`AllowOrigin` 加响应头、`AdminLog` 记审计日志、`StationOpen` 是业务开关）。
-    // 统一叫 "GuardedBy" 会替后一类**过度声明** —— 与 `MapsTo` 不写成 `ReadsDb`
-    // 是同一条纪律：静态归属 ≠ 动作，路过 ≠ 守卫。
-    // "这个端点要不要鉴权"由 `Capability` 标注回答，不由边名承担。
-    //
-    // 起初归 `BRIDGE`（当时终点还是语法节点 Class），中间件晋升为语义节点后
-    // **两端都是语义节点**，满足了语义边的不变式，故移入 `SEMANTIC`（计入
-    // 「语义出边 N」并画在画布上）。由 P14 `phase::guard` 产出。
-    PASSES_THROUGH = "PassesThrough" => "经过（契约 → 中间件）",
-    RESOLVES_TO   = "ResolvesTo"    => "动态解析结果",
-    UNKNOWN       = "Unknown"       => "未能归类 / 由 FKB 动态引入的新边种类",
+declare_open_kind! { EdgeKind => "Graph edge kinds (open and extensible)";
+    CONTAINS      = "Contains"      => "containment",
+    DECLARES      = "Declares"      => "declares",
+    EXTENDS       = "Extends"       => "inherits",
+    IMPLEMENTS    = "Implements"    => "implements an interface",
+    USES_TRAIT    = "UsesTrait"     => "uses a trait",
+    CALLS         = "Calls"         => "calls",
+    HAS_CALL_SITE = "HasCallSite"   => "the method body contains a call site",
+    IMPORTS       = "Imports"       => "file import",
+    // ---- semantic edges (built by Synthesize / Resolve) ----
+    HANDLED_BY    = "HandledBy"     => "handled by (contract bridge -> handler)",
+    CALLS_HTTP    = "CallsHttp"     => "the frontend calls an HTTP contract",
+    TRIGGERS      = "Triggers"      => "triggers an event",
+    PUBLISHES_TO  = "PublishesTo"   => "publishes to a queue topic",
+    READS_DB      = "ReadsDb"       => "reads the database",
+    WRITES_DB     = "WritesDb"      => "writes the database",
+    WRITES_CACHE  = "WritesCache"   => "writes the cache",
+    MAPS_TO       = "MapsTo"        => "a model maps to a table",
+    HAS_COLUMN    = "HasColumn"     => "owns a column (table / model -> column)",
+    READS_CONFIG  = "ReadsConfig"   => "reads config",
+    MUTATES       = "Mutates"       => "mutates a state container (frontend Store / Vuex, Pinia…)",
+    // Front-end page navigation: `uni.navigateTo` / `redirectTo` / `reLaunch` / `switchTab`, etc., from the
+    // initiator (a function / component method) to the target `Page` node.
+    NAVIGATES_TO  = "NavigatesTo"   => "frontend page navigation (uni.navigateTo etc.)",
+    // Front-end event bus: emitter `--Emits-->` event node `<--ListensTo--` listener, isomorphic to the backend
+    // `Event`'s `Triggers` — the event node acts as a "via" bridge in the folded view.
+    EMITS       = "Emits"       => "the frontend emits an event-bus event (uni.$emit / bus.$emit)",
+    LISTENS_TO  = "ListensTo"   => "the frontend listens for an event-bus event (uni.$on / bus.$on)",
+    PASSES_THROUGH = "PassesThrough" => "passes through (contract -> middleware)",
+    RESOLVES_TO   = "ResolvesTo"    => "dynamic resolution result",
+    UNKNOWN       = "Unknown"       => "unclassified, or a new edge kind introduced dynamically by FKB",
 }
 
 impl EdgeKind {
-    /// 语义边（业务资源依赖）：Synthesize / Resolve 建立的业务依赖（读库 / 读配置 /
-    /// 缓存 / 事件 / 跨服务…）。折叠视图默认只展示这些；它们**两端都应是语义节点**，
-    /// 因此既可在画布上绘制，也计入候选徽标「语义入边 N」。
+    /// Semantic edges (business-resource dependencies): business dependencies built by Synthesize / Resolve
+    /// (reading the DB / reading config / cache / events / cross-service…). The folded view shows only these by
+    /// default; **both of their ends should be semantic nodes**, so they are both drawable on the canvas and
+    /// counted in the candidate badge's "semantic in-edges N".
     ///
-    /// 注意：`HandledBy` / `CallsHttp` **不在此列**——它们是「桥边」（见 [`Self::BRIDGE`]），
-    /// 一端是语义节点、另一端是语法节点（handler / 前端函数），不是资源依赖，不计入
-    /// 「入边 N」，也绝不画成画布边；其语法端点降级进 `orphans` 记账（前端抽屉 / Inspector
-    /// 可展开查看）。其余（Contains / Declares / Calls / HasCallSite …）是实现结构，属语法链路。
+    /// Note: `HandledBy` / `CallsHttp` are **not in this list** — they are "bridge edges" (see [`Self::BRIDGE`]):
+    /// one end is a semantic node and the other a syntax node (a handler / front-end function), so they are not a
+    /// resource dependency, do not count towards "in-edges N", and are never drawn as canvas edges; their syntax
+    /// endpoint degrades into the `orphans` tally (expandable in the front-end drawer / Inspector). The rest
+    /// (Contains / Declares / Calls / HasCallSite …) is implementation structure, i.e. the syntax chain.
     pub const SEMANTIC: &'static [&'static str] = &[
         Self::TRIGGERS,
         Self::PUBLISHES_TO,
@@ -249,23 +221,26 @@ impl EdgeKind {
         "ReadsCache",
     ];
 
-    /// 桥边（语义 ↔ 语法之间的发现连接器）：`HandledBy`（契约 → handler）、
-    /// `CallsHttp`（前端函数 → 契约）。它们不是业务资源依赖——不计入「入边 N」、
-    /// 不当画布边——但必须留在 `is_chain_edge` 里供发现遍历把语法实现连通到语义资源；
-    /// 其语法端点（handler / 调用方）降级进 `orphans` 记账，画布恒为语义节点。
-    /// `HasColumn`（表 / 模型 → 列）也归在此列，图的是它**不计入「语义入边 / 出边 N」，
-    /// 但仍留在 `is_chain_edge` 里可遍历**这一组合：
-    /// 它是**组成关系**而非资源依赖，若算语义边，一张 15 列的表出边数直接 +15，
-    /// 与旁边"读 / 写了几张表"的口径混在一起、数字失真。
-    /// 归入桥边后：fan 不计 ✓、影响面仍能从表下到字段级 ✓。
+    /// Bridge edges (discovered connectors between semantic and syntax): `HandledBy` (contract -> handler),
+    /// `CallsHttp` (front-end function -> contract). They are not business-resource dependencies — they do not
+    /// count towards "in-edges N" and are not canvas edges — but they must stay in `is_chain_edge` so discovery
+    /// traversal can connect the syntax implementation to the semantic resource; their syntax endpoint (handler /
+    /// caller) degrades into the `orphans` tally, and the canvas is always semantic nodes.
+    /// `HasColumn` (table / model -> column) is in this list too, and what that buys is precisely the combination
+    /// "it does not count towards semantic in/out-edges N, but it stays in `is_chain_edge` and is traversable":
+    /// it is a **composition relation**, not a resource dependency, so counting it as a semantic edge would add
+    /// +15 to the out-edge count of a 15-column table and blur it together with "how many tables are read /
+    /// written" right next to it, making the number meaningless.
+    /// Classified as a bridge edge: fan does not count ✓, impact can still be drilled down from table to field ✓.
     pub const BRIDGE: &'static [&'static str] =
         &[Self::HANDLED_BY, Self::CALLS_HTTP, Self::HAS_COLUMN];
 
-    /// 是否为"对人类有意义的语义边"（业务资源依赖，见 [`Self::SEMANTIC`]）。
+    /// Whether this is a "semantic edge meaningful to a human" (a business-resource dependency, see
+    /// [`Self::SEMANTIC`]).
     ///
-    /// 除内置清单外，还包括 **FKB 声明**的边种类（见 [`register_edge_kinds`]）——
-    /// 新增一种语义边不该以改内核为代价（与节点种类的
-    /// [`crate::model::kinds::EXTRA_SEMANTIC`] 同构）。
+    /// Besides the built-in list this also covers the edge kinds **declared by FKB** (see [`register_edge_kinds`])
+    /// — adding a semantic edge should not cost a kernel change (isomorphic to
+    /// [`crate::model::kinds::EXTRA_SEMANTIC`] for node kinds).
     pub fn is_semantic(&self) -> bool {
         if Self::SEMANTIC.iter().any(|k| self.0 == *k) {
             return true;
@@ -277,9 +252,10 @@ impl EdgeKind {
             .unwrap_or(false)
     }
 
-    /// 是否为"桥边"（语义 ↔ 语法之间的发现连接器，见 [`Self::BRIDGE`]）。
+    /// Whether this is a "bridge edge" (a discovered connector between semantic and syntax, see [`Self::BRIDGE`]).
     ///
-    /// 除内置清单外，还包括 **FKB 声明**的桥边种类（见 [`register_edge_kinds`]）。
+    /// Besides the built-in list this also covers the bridge edge kinds **declared by FKB** (see
+    /// [`register_edge_kinds`]).
     pub fn is_bridge(&self) -> bool {
         if Self::BRIDGE.iter().any(|k| self.0 == *k) {
             return true;
@@ -292,39 +268,41 @@ impl EdgeKind {
     }
 }
 
-/// 语义边判定（权威来源：[`EdgeKind::SEMANTIC`]）。
+/// Semantic-edge test (authority: [`EdgeKind::SEMANTIC`]).
 ///
-/// 与 `is_chain_edge` 的区别：链边是"沿调用链能否走通"（含 `Calls` / `HasCallSite`
-/// 这类语法调用边），语义边才是"这条边本身对人类有意义"（读写表 / 触发事件…）。
-/// 计数口径要按语义边 —— 否则 `Calls` 会混进"入边 N"，数字既不与画布对得上，
-/// 也读不出任何业务含义。
+/// How it differs from `is_chain_edge`: a chain edge is "can we walk along the call chain" (including syntactic
+/// call edges like `Calls` / `HasCallSite`), while a semantic edge is "this edge is meaningful to a human in
+/// itself" (reading / writing a table, triggering an event…). Counting must use semantic edges — otherwise
+/// `Calls` leaks into "in-edges N" and the number agrees neither with the canvas nor with any business meaning.
 pub fn is_semantic_edge(kind: &str) -> bool {
     EdgeKind(kind.to_string()).is_semantic()
 }
 
-/// 桥边判定（权威来源：[`EdgeKind::BRIDGE`]）。
+/// Bridge-edge test (authority: [`EdgeKind::BRIDGE`]).
 ///
-/// 桥边连接"语义节点 ↔ 语法节点"，不是业务资源依赖：不计入「入边 N」、不当画布边，
-/// 但保留在发现遍历里。折叠逻辑用它与 `is_semantic_edge` 共同决定"是否可被绘制闸门放行、
-/// 但仍降级进 `orphans` 记账"——详见 `gt_application::view_service`。
+/// A bridge edge connects "semantic node <-> syntax node" and is not a business-resource dependency: it does not
+/// count towards "in-edges N" and is not a canvas edge, but it is kept in discovery traversal. Together with
+/// `is_semantic_edge`, the folding logic uses it to decide "passes the drawability gate but still degrades into
+/// the `orphans` tally" — see `gt_application::view_service`.
 pub fn is_bridge_edge(kind: &str) -> bool {
     EdgeKind(kind.to_string()).is_bridge()
 }
 
-/// FKB 追加登记的语义 / 桥边种类（进程内单例，随 FKB 装载填充）。
+/// Semantic / bridge edge kinds additionally registered by FKB (an in-process singleton, filled as FKB loads).
 ///
-/// 与节点的 [`EXTRA_SEMANTIC`] 同构：让"新增一种边种类"也只需写 FKB、不改内核——
-/// 这是「只写 FKB、零代码」承诺在**边**这一维的落地（节点的同款机制早已就位）。
+/// Isomorphic to [`EXTRA_SEMANTIC`] for nodes: "adding an edge kind" also only means writing FKB, not changing the
+/// kernel — this is how the "FKB only, zero code" promise lands on the **edge** dimension (the same mechanism for
+/// nodes has been in place for a while).
 static EXTRA_SEMANTIC_EDGE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 static EXTRA_BRIDGE_EDGE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 
-/// 登记 FKB 声明的语义 / 桥边种类（可重复调用，幂等合并）。
+/// Register the semantic / bridge edge kinds declared by FKB (may be called repeatedly; merges idempotently).
 ///
-/// 调用方：`gt_adapter_fkb::loader` 在装载 FKB 时，把 `semantic_edge_kinds` /
-/// `bridge_edge_kinds` 喂进来。之后 `is_semantic` / `is_bridge` / `is_chain_edge`
-/// 会自动把它们当一等公民，无需再碰 `kinds.rs` 的 `SEMANTIC` / `BRIDGE` 清单。
+/// Caller: `gt_adapter_fkb::loader` feeds `semantic_edge_kinds` / `bridge_edge_kinds` in as it loads FKB.
+/// After that `is_semantic` / `is_bridge` / `is_chain_edge` treat them as first-class automatically, with no need
+/// to touch the `SEMANTIC` / `BRIDGE` lists in `kinds.rs` again.
 pub fn register_edge_kinds(
     semantic: impl IntoIterator<Item = String>,
     bridge: impl IntoIterator<Item = String>,
@@ -333,19 +311,19 @@ pub fn register_edge_kinds(
         let mut set = EXTRA_SEMANTIC_EDGE
             .get_or_init(Default::default)
             .write()
-            .expect("语义边注册表未被破坏");
+            .expect("the semantic-edge registry is not corrupted");
         set.extend(semantic);
     }
     {
         let mut set = EXTRA_BRIDGE_EDGE
             .get_or_init(Default::default)
             .write()
-            .expect("桥边注册表未被破坏");
+            .expect("the bridge-edge registry is not corrupted");
         set.extend(bridge);
     }
 }
 
-/// 当前已登记的 FKB 边种类（供诊断 / 测试 / `validate` 观察）。
+/// The FKB edge kinds currently registered (for diagnostics / tests / `validate` observation).
 pub fn extra_edge_kinds() -> (Vec<String>, Vec<String>) {
     let sem: Vec<String> = EXTRA_SEMANTIC_EDGE
         .get_or_init(Default::default)
@@ -360,82 +338,73 @@ pub fn extra_edge_kinds() -> (Vec<String>, Vec<String>) {
     (sem, bri)
 }
 
-/// 调用链边：折叠视图沿这些边做"正向发现"，把语法节点当透传。
+/// Call-chain edges: the folded view does "forward discovery" along these, treating syntax nodes as pass-through.
 ///
-/// 权威来源是 [`EdgeKind::is_semantic`] + [`EdgeKind::is_bridge`]（含 FKB 声明的种类）
-/// 加上少量纯语法链边（`Calls` / `HasCallSite`）。集中在此作为唯一权威来源——
-/// 新增边种类只要登记进 `SEMANTIC` / `BRIDGE` 即自动可遍历，无需在此再列举。
+/// The authority is [`EdgeKind::is_semantic`] + [`EdgeKind::is_bridge`] (including FKB-declared kinds) plus a few
+/// purely syntactic chain edges (`Calls` / `HasCallSite`). Centralised here as the single source of truth — a new
+/// edge kind only needs registering into `SEMANTIC` / `BRIDGE` to become traversable automatically, no listing
+/// here.
 pub fn is_chain_edge(kind: &str) -> bool {
     matches!(kind, "Calls" | "HasCallSite")
         || EdgeKind(kind.to_string()).is_semantic()
         || EdgeKind(kind.to_string()).is_bridge()
 }
 
-declare_open_kind! { Phase => "流水线阶段";
-    INGEST        = "Ingest"        => "P0 摄取：识别子工程与待分析文件",
-    CF_AST        = "CfAst"         => "P2 语法级建图",
-    PREPARE       = "Prepare"       => "P3 装载 FKB 与权威符号表",
-    ANNOTATE_PRE  = "AnnotatePre"   => "P4 按源码选择器打标",
-    SYNTHESIZE    = "Synthesize"    => "P5 合成非代码语义节点",
-    ANNOTATE_POST = "AnnotatePost"  => "P6 在汇聚结果上打标 / 注册别名",
-    RESOLVE       = "Resolve"       => "P7 动态解析（漏斗 + 不动点）",
-    PROPAGATE     = "Propagate"     => "P8 语义沿调用链向上传播（通用，不绑定框架）",
-    CHECK         = "Check"         => "合规检查（图建完后只读跑规则，产出违规，诊断 code 前缀 rule:）",
+declare_open_kind! { Phase => "Pipeline phases";
+    INGEST        = "Ingest"        => "P0 ingest: detect sub-projects and the files to analyse",
+    CF_AST        = "CfAst"         => "P2 syntax-level graph building",
+    PREPARE       = "Prepare"       => "P3 load FKB and the authoritative symbol tables",
+    ANNOTATE_PRE  = "AnnotatePre"   => "P4 tag by source-code selectors",
+    SYNTHESIZE    = "Synthesize"    => "P5 synthesise non-code semantic nodes",
+    ANNOTATE_POST = "AnnotatePost"  => "P6 tag the aggregated result / register aliases",
+    RESOLVE       = "Resolve"       => "P7 dynamic resolution (funnel + fixed point)",
+    PROPAGATE     = "Propagate"     => "P8 propagate semantics upward along the call chain (generic, framework-agnostic)",
+    CHECK         = "Check"         => "compliance check (runs rules read-only after the graph is built, producing violations; diagnostic code prefix rule:)",
 }
 
-declare_open_kind! { AnnotationChannel => "标注通道（不同通道互不干扰，可共存）";
-    FKB_MARK    = "FkbMark"    => "框架语义标签：listener / pii / auth.public / data.criticality",
-    TAINT       = "Taint"      => "污点语义：source / sanitizer / sink",
-    CAPABILITY  = "Capability" => "作用域声明的能力：RateLimiting / Authentication",
-    ALIAS       = "Alias"      => "别名注册：event_name / facade / accessor",
+declare_open_kind! { AnnotationChannel => "Annotation channels (channels do not interfere with each other and can coexist)";
+    FKB_MARK    = "FkbMark"    => "framework semantic tag: listener / pii / auth.public / data.criticality",
+    TAINT       = "Taint"      => "taint semantics: source / sanitizer / sink",
+    CAPABILITY  = "Capability" => "capability declared by a scope: RateLimiting / Authentication",
+    ALIAS       = "Alias"      => "alias registration: event_name / facade / accessor",
 }
 
-declare_open_kind! { SynthesizedKind => "合成节点的 identity 类型";
-    FQN     = "Fqn"     => "完全限定名（如 `Table:store_order`）",
-    NAMED   = "Named"   => "具名（如事件名 `order.pay_success`）",
-    CONTRACT_ID = "ContractId" => "HTTP 契约 `METHOD /path`",
+declare_open_kind! { SynthesizedKind => "Identity type of a synthesised node";
+    FQN     = "Fqn"     => "fully qualified name (e.g. `Table:store_order`)",
+    NAMED   = "Named"   => "named (e.g. the event name `order.pay_success`)",
+    CONTRACT_ID = "ContractId" => "HTTP contract `METHOD /path`",
 }
 
-// 标注种类（FKB 打在节点上的语义标签，开放可扩展）。
-//
-// 与 `NodeKind` / `EdgeKind` 同构：内核只列**跨栈通用的标准语义**（隐私 / 合规 /
-// 数据重要度 / 配置元数据 / 鉴权 / i18n …），它们由内核标准识别器
-// （见 `gt_adapter_fkb::loader` 的 `annotation_templates`）产出；**业务特有**的标注
-// 种类（如某项目的 `entrypoint.login`）经 `register_annotation_kinds` 追加，
-// 不写死内核 —— 这是「只写 FKB、零代码」承诺在**标注**这一维的落地。
-//
-// 设计意图（用户原则）：「哪些注解种类存在、怎么识别」是**内核标准 / 接口**，
-// 每种技术栈按自己的数据去**实现**这些接口（声明列名 / 源表 / 阈值），不该自己造
-// 识别器、也不该自己发明注解种类。
-declare_open_kind! { AnnotationKind => "标注种类（FKB 打在节点上的语义标签，开放可扩展）";
-    PII                = "pii"                  => "个人敏感信息（隐私 / 合规）",
-    DATA_CRITICALITY   = "data.criticality"     => "数据重要度（fan_in 汇聚后判定 high / medium / low）",
-    CONFIG_STORAGE     = "config.storage"       => "配置存储介质（决定抽象解释遇到它只能给 ⊤）",
-    CONFIG_MUTABILITY  = "config.mutability"    => "配置可变性（运行时可变 vs 只读）",
-    AUTH_PUBLIC        = "auth.public"          => "公开端点（未挂任何鉴权类中间件）",
-    I18N_MISSING_LOCALE = "i18n.missing_locale" => "i18n 缺失 locale 覆盖",
-    // 业务特有的标注种类由 FKB 经 `register_annotation_kinds` 追加，内核不认识具体名字。
+declare_open_kind! { AnnotationKind => "Annotation kinds (semantic tags FKB puts on nodes; open and extensible)";
+    PII                = "pii"                  => "personally identifiable information (privacy / compliance)",
+    DATA_CRITICALITY   = "data.criticality"     => "data criticality (high / medium / low judged after fan_in aggregation)",
+    CONFIG_STORAGE     = "config.storage"       => "config storage medium (abstract interpretation can only yield ⊤ for it)",
+    CONFIG_MUTABILITY  = "config.mutability"    => "config mutability (mutable at runtime vs read-only)",
+    AUTH_PUBLIC        = "auth.public"          => "public endpoint (no authentication middleware attached)",
+    I18N_MISSING_LOCALE = "i18n.missing_locale" => "i18n locale coverage missing",
+    // Business-specific annotation kinds are appended by FKB via `register_annotation_kinds`; the kernel knows no concrete names.
 }
 
-/// FKB 追加登记的标注种类（进程内单例，随 FKB 装载填充）。
+/// Annotation kinds additionally registered by FKB (an in-process singleton, filled as FKB loads).
 ///
-/// 与节点的 [`EXTRA_SEMANTIC`] / 边的 [`EXTRA_SEMANTIC_EDGE`] 同构：让"新增一种标注
-/// 语义"也只需写 FKB、不改内核。内核标准种类见 [`AnnotationKind`] 常量清单。
+/// Isomorphic to [`EXTRA_SEMANTIC`] for nodes / [`EXTRA_SEMANTIC_EDGE`] for edges: "adding an annotation
+/// semantic" also only means writing FKB, not changing the kernel. The kernel-standard kinds live in the
+/// [`AnnotationKind`] constant list.
 static EXTRA_ANNOTATION: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 
-/// 登记 FKB 声明的标注种类（可重复调用，幂等合并）。
+/// Register the annotation kinds declared by FKB (may be called repeatedly; merges idempotently).
 ///
-/// 调用方：`gt_adapter_fkb::loader` 在装载 FKB 时，把 `annotation_kinds` 喂进来。
+/// Caller: `gt_adapter_fkb::loader` feeds `annotation_kinds` in as it loads FKB.
 pub fn register_annotation_kinds(kinds: impl IntoIterator<Item = String>) {
     let mut set = EXTRA_ANNOTATION
         .get_or_init(Default::default)
         .write()
-        .expect("标注种类注册表未被破坏");
+        .expect("the annotation-kind registry is not corrupted");
     set.extend(kinds);
 }
 
-/// 当前已登记的 FKB 标注种类（供诊断 / 测试观察）。
+/// The FKB annotation kinds currently registered (for diagnostics / test observation).
 pub fn extra_annotation_kinds() -> Vec<String> {
     let mut out: Vec<String> = EXTRA_ANNOTATION
         .get_or_init(Default::default)
@@ -446,7 +415,7 @@ pub fn extra_annotation_kinds() -> Vec<String> {
     out
 }
 
-/// 技术栈语言（开放可扩展）。
+/// Tech-stack language (open and extensible).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default)]
 #[serde(transparent)]
 pub struct Language(pub String);
@@ -489,37 +458,38 @@ mod tests {
 
     #[test]
     fn edge_kind_registry_extends_classification() {
-        // 内置语义边：注册前即识别。
+        // A built-in semantic edge: recognised before registration.
         assert!(EdgeKind("ReadsDb".to_string()).is_semantic());
         assert!(is_chain_edge("ReadsDb"));
 
-        // 全新语义边：注册前不识别，注册后识别（且自动可沿调用链遍历）。
+        // A brand-new semantic edge: not recognised before registration, recognised after (and automatically traversable along the call chain).
         assert!(!EdgeKind("SendsWebhook".to_string()).is_semantic());
         assert!(!is_chain_edge("SendsWebhook"));
         register_edge_kinds(vec!["SendsWebhook".to_string()], vec![]);
         assert!(EdgeKind("SendsWebhook".to_string()).is_semantic());
         assert!(is_chain_edge("SendsWebhook"));
 
-        // 全新桥边：注册前不识别，注册后识别为桥边且可遍历。
+        // A brand-new bridge edge: not recognised before registration, recognised as a bridge edge after and traversable.
         assert!(!EdgeKind("MyBridge".to_string()).is_bridge());
         register_edge_kinds(vec![], vec!["MyBridge".to_string()]);
         assert!(EdgeKind("MyBridge".to_string()).is_bridge());
         assert!(is_chain_edge("MyBridge"));
 
-        // 旧硬编码路径不受影响：内置桥边仍识别。
+        // The old hard-coded path is unaffected: built-in bridge edges are still recognised.
         assert!(EdgeKind("HandledBy".to_string()).is_bridge());
         assert!(is_chain_edge("HandledBy"));
-        // 纯语法链边仍走内置分支。
+        // Purely syntactic chain edges still go through the built-in branch.
         assert!(is_chain_edge("Calls"));
         assert!(is_chain_edge("HasCallSite"));
     }
 
     #[test]
     fn annotation_kind_registry_extends_classification() {
-        // 内核标准种类（常量，即 `&'static str`）：与字面量直接比较。
+        // Kernel-standard kinds (constants, i.e. `&'static str`): compared directly against literals.
         assert_eq!(AnnotationKind::PII, "pii");
         assert_eq!(AnnotationKind::AUTH_PUBLIC, "auth.public");
-        // 业务特有种类：经注册后成为一等公民（OCP 逃生舱，与边种类同构）。
+        // Business-specific kinds: first-class once registered (the OCP escape hatch, isomorphic to edge kinds).
+
         register_annotation_kinds(vec!["entrypoint.login".to_string()]);
         assert!(extra_annotation_kinds().contains(&"entrypoint.login".to_string()));
     }

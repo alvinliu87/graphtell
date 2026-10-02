@@ -1,17 +1,17 @@
-//! 可观测性端口（流水线进度上报）。
+//! Observability port (pipeline progress reporting).
 
 use crate::model::{Phase, PhaseReport, ProjectId};
 
-/// 流水线观察者。
+/// Pipeline observer.
 ///
-/// 默认全空实现 —— 调用方可选择不关心进度，无需传 `Option`。
+/// All-default no-op implementation — a caller may simply not care about progress, so no `Option` is needed.
 pub trait PipelineObserver: Send + Sync {
     fn on_phase_start(&self, _project_id: ProjectId, _phase: &Phase) {}
     fn on_phase_end(&self, _project_id: ProjectId, _report: &PhaseReport) {}
     fn on_message(&self, _project_id: ProjectId, _message: &str) {}
 }
 
-/// 什么都不做的观察者（单元测试与 CLI 静默模式使用）。
+/// An observer that does nothing (used by unit tests and the CLI quiet mode).
 pub struct NoopObserver;
 
 impl PipelineObserver for NoopObserver {}
@@ -28,12 +28,12 @@ impl<T: PipelineObserver + ?Sized> PipelineObserver for &T {
     }
 }
 
-/// 时间端口，便于测试与可重现的审计时间。
+/// The time port, for testable and reproducible audit timestamps.
 pub trait Clock: Send + Sync {
     fn now_millis(&self) -> i64;
 }
 
-/// 系统时钟。
+/// The system clock.
 pub struct SystemClock;
 
 impl Clock for SystemClock {

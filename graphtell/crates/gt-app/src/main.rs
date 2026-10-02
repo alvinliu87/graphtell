@@ -1,17 +1,17 @@
-//! GraphTell —— Codebase graph analysis platform。
+//! GraphTell — Codebase graph analysis platform.
 //!
 //! ```text
-//! graphtell serve                      启动 HTTP 服务（Tauri / Web UI 共用）
-//! graphtell create --name X --path /p   创建工程并自动建图
-//! graphtell run    --project 1          对已有工程重新建图
-//! graphtell stats  --project 1          查看图规模
+//! graphtell serve                       start the HTTP service (shared by Tauri / Web UI)
+//! graphtell create --name X --path /p   create a project and build its graph automatically
+//! graphtell run    --project 1          rebuild the graph for an existing project
+//! graphtell stats  --project 1          show graph size
 //! ```
 
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
-/// MCP(stdio) 桥：IDE 经由它连接常驻服务。
+/// MCP(stdio) bridge: IDEs connect to the resident service through it.
 mod mcp;
 use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_app::{AppConfig, Container};
@@ -23,10 +23,10 @@ use gt_domain::port::{DiagnosticSink, GraphQuery, NodeFilter, ProjectReader};
 #[derive(Debug, Parser)]
 #[command(name = "graphtell", version, about = "Codebase graph analysis platform")]
 struct Cli {
-    /// 数据目录。
+    /// Data directory.
     #[arg(long, default_value = "./data")]
     data_dir: PathBuf,
-    /// FKB 目录（默认取内置知识库）。
+    /// FKB directory (defaults to the built-in knowledge base).
     #[arg(long)]
     fkb_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -35,18 +35,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// 启动 HTTP API 服务。
+    /// Start the HTTP API service.
     Serve {
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
         #[arg(long, default_value_t = 5177)]
         port: u16,
-        /// 构建好的 Web UI（React SPA）目录；指定后后端会顺带托管前端，
-        /// 根路径 `/` 即 SPA 入口（未指定则 `/` 回退到内嵌独立页 `/compose`）。
+        /// Built Web UI (React SPA) directory; when given, the server also hosts the frontend,
+        /// and the root `/` becomes the SPA entry (otherwise `/` falls back to the embedded standalone page `/compose`).
         #[arg(long)]
         ui_dir: Option<PathBuf>,
     },
-    /// 创建工程（创建后自动开始建图）。
+    /// Create a project (graph build starts automatically after creation).
     Create {
         #[arg(long)]
         name: String,
@@ -55,104 +55,104 @@ enum Command {
         #[arg(long)]
         description: Option<String>,
     },
-    /// 列出全部工程。
+    /// List all projects.
     List,
-    /// 删除工程。
+    /// Delete a project.
     Delete {
         #[arg(long)]
         project: i64,
     },
-    /// 对工程执行建图。
+    /// Build the graph for a project.
     Run {
         #[arg(long)]
         project: i64,
     },
-    /// 导出工程图的全部节点与边（JSON），供静态 demo / 外部分析使用。
+    /// Export all nodes and edges of a project's graph (JSON), for static demos / external analysis.
     ///
-    /// 输出 `{project_id, nodes, edges, files}`：`files` 是 `file_id -> 路径` 的映射，
-    /// 便于消费方把节点定位回源码文件，而不必再查库。
+    /// Outputs `{project_id, nodes, edges, files}`: `files` maps `file_id -> path`,
+    /// so consumers can locate a node back to its source file without another DB query.
     Export {
         #[arg(long)]
         project: i64,
     },
-    /// 查看图规模与诊断。
+    /// Show graph size and diagnostics.
     Stats {
         #[arg(long)]
         project: i64,
     },
-    /// 列出已装载的检查规则。
+    /// List loaded check rules.
     Rules,
-    /// 按规则检查工程是否违规。
+    /// Check a project for rule violations.
     Check {
         #[arg(long)]
         project: i64,
-        /// 只跑指定规则（可重复）。
+        /// Run only the specified rules (repeatable).
         #[arg(long)]
         rule: Vec<String>,
-        /// 只预览不写库。
+        /// Preview only, do not write to the database.
         #[arg(long)]
         dry_run: bool,
-        /// 以 JSON 输出完整报告。
+        /// Output the full report as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// 按提示词在图上召回相关代码。
+    /// Recall relevant code on the graph by prompt.
     ///
-    /// 召回编码器：默认编译开启 `model-candle` 时走真实的 bge-m3 语义向量
-    /// （需本地权重，目录由环境变量 `GT_BGE_MODEL` 指定，默认 `models/bge-m3-safetensors`）；
-    /// 未配置权重或 `--no-default-features` 构建时自动退回本地哈希编码器（离线、零依赖）。
+    /// Recall encoder: with the `model-candle` feature enabled, the real bge-m3 semantic vectors are used
+    /// (needs local weights; directory set by env var `GT_BGE_MODEL`, default `models/bge-m3-safetensors`);
+    /// without weights configured, or when built with `--no-default-features`, it falls back to the local hash encoder (offline, zero-dependency).
     Recall {
         #[arg(long)]
         project: i64,
-        /// 提示词（自然语言 + 标识符混写）。
+        /// Prompt (natural language mixed with identifiers).
         #[arg(long)]
         query: String,
         #[arg(long, default_value_t = 10)]
         limit: usize,
         #[arg(long, default_value_t = 2)]
         hops: u32,
-        /// 只输出可直接粘给 LLM 的 Markdown 上下文包。
+        /// Output only the Markdown context bundle that can be pasted straight to an LLM.
         #[arg(long)]
         markdown: bool,
-        /// 把命中涉及的完整文件源码也附上（配合 `--markdown` 使用，省去自行读取全文）。
+        /// Also attach the full source of files involved in the hits (with `--markdown`, spares you reading the whole file).
         #[arg(long)]
         include_body: bool,
     },
-    /// 校验 FKB 目录（语法 + 约定），不连库、不建图。
+    /// Validate an FKB directory (syntax + conventions), no DB, no graph build.
     Validate,
-    /// 预计算并持久化某工程的节点向量（不影响建图；可后台运行，如 `graphtell embed --project 1 &`）。
+    /// Precompute and persist a project's node vectors (does not affect graph build; can run in the background, e.g. `graphtell embed --project 1 &`).
     ///
-    /// 之后所有召回与重启都瞬时命中缓存，无需再对全图重算 bge 向量。权重目录同召回：
-    /// 默认 `models/bge-m3-safetensors`，可用 `GT_BGE_MODEL` 覆盖。
+    /// After that, all recalls and restarts hit the cache instantly, without recomputing bge vectors over the whole graph. Weight directory is the same as recall:
+    /// default `models/bge-m3-safetensors`, overridable via `GT_BGE_MODEL`.
     Embed {
         #[arg(long)]
         project: i64,
     },
-    /// 诊断：输出查询与节点向量的余弦，用于判定"中文查不到目标"是模型能力问题
-    /// 还是阈值 / 排序问题。
+    /// Diagnostics: output the cosine between the query and node vectors, to tell whether "Chinese query can't find the target" is a model-capability issue
+    /// or a threshold / ranking issue.
     ///
-    /// 例：`graphtell cosine --project 1 --query "商品库存扣减失败回滚" --names stock`
-    /// 若目标符号余弦本就below threshold → 模型 / 节点文本问题；若余弦够高却没召回 → 阈值 / 排序问题。
+    /// Example: `graphtell cosine --project 1 --query "商品库存扣减失败回滚" --names stock`
+    /// if the target symbol's cosine is already below threshold -> model / node-text issue; if the cosine is high enough but the target isn't recalled -> threshold / ranking issue.
     Cosine {
         #[arg(long)]
         project: i64,
         #[arg(long)]
         query: String,
-        /// 只看名字含这些子串的节点（逗号分隔）；不给则全量编码（大工程会很慢）
+        /// Only nodes whose name contains these substrings (comma-separated); if omitted, encode everything (slow on large projects)
         #[arg(long)]
         names: Option<String>,
         #[arg(long, default_value = "20")]
         top: usize,
     },
-    /// 以 MCP(stdio) 方式暴露给 IDE：经 HTTP 连接常驻服务，提供 `recall_code`（可带
-    /// `include_body` 直接返回命中文件全文）/ `compose_prompt` / `check_compliance` /
-    /// `list_violations` / `warmup_status`（查后台预热进度）工具。
-    /// stdout 是 JSON-RPC 通道，日志走 stderr。
+    /// Expose to the IDE as MCP(stdio): connect to the resident service over HTTP, providing `recall_code` (can carry
+    /// `include_body` to return hit files' full text) / `compose_prompt` / `check_compliance` /
+    /// `list_violations` / `warmup_status` (query background warmup progress) tools.
+    /// stdout is the JSON-RPC channel; logs go to stderr.
     Mcp {
-        /// 常驻服务地址，默认 http://127.0.0.1:5177
+        /// Resident service address, default http://127.0.0.1:5177
         #[arg(long, default_value = "http://127.0.0.1:5177")]
         base_url: String,
-        /// 目标工程 id（缺省时回退到环境变量 GRAPHTELL_PROJECT_ID）
+        /// Target project id (falls back to env var GRAPHTELL_PROJECT_ID when absent)
         #[arg(long)]
         project: Option<i64>,
     },
@@ -164,8 +164,8 @@ fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        // MCP 模式把 stdout 当作 JSON-RPC 通道，任何 stdout 日志都会破坏协议；
-        // 统一写 stderr，对 serve 也无害。
+        // MCP mode uses stdout as the JSON-RPC channel; any stdout log would corrupt the protocol;
+        // so we write to stderr uniformly, which is harmless for serve as well.
         .with_writer(std::io::stderr)
         .init();
 
@@ -232,9 +232,6 @@ fn main() -> anyhow::Result<()> {
                 }
                 Command::Export { project } => {
                     let pid = ProjectId(project);
-                    // `query_nodes` 在 `limit: None` 时**默认只返回 100 条**（store 里
-                    // `limit.unwrap_or(100)`）。大工程（CRMEB 约 9 万节点）若直接取一次
-                    // 会被静默截断 —— 图导出必须是全量，故分页取到不足一页为止。
                     const PAGE: u32 = 5000;
                     let mut nodes = Vec::new();
                     let mut offset = 0u32;
@@ -253,8 +250,8 @@ fn main() -> anyhow::Result<()> {
                         }
                         offset += got;
                     }
-                    // 每个节点的出边已覆盖全图（无向视角下入边即别人的出边），
-                    // 一次批量取回，避免逐节点往返。
+                    // Each node's out-edges already cover the whole graph (in the undirected view, in-edges are others' out-edges),
+                    // so fetch in one batch to avoid per-node round trips.
                     let ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
                     let outgoing = container.store.edges_outgoing(&ids)?;
                     let mut edges = Vec::new();
@@ -484,13 +481,14 @@ fn print_outcome(out: &gt_pipeline::runner::PipelineOutcome, container: &Contain
     let _ = container;
 }
 
-/// 校验 FKB 目录：逐文件解析 + 约定检查，不连库、不建图。
+
+/// Validate an FKB directory: parse file by file plus convention checks, no DB, no graph build.
 ///
-/// 比单纯 `load_dir` 更有用的是**约定层**检查：
-/// * 某规则造出的节点种类既不在内核 `SYNTHESIZED` 清单、也不在 FKB 的 `semantic_kinds`
-///   里 —— 折叠视图会把它当语法节点藏起来（"写了没反应"的经典原因）；
-/// * 某条边种类不在内核 `SEMANTIC` / `BRIDGE` 清单、也不在**任何** FKB 的
-///   `semantic_edge_kinds` / `bridge_edge_kinds` 声明里 —— 不会被当语义/桥边渲染。
+/// More useful than a bare `load_dir` is the **convention** layer of checks:
+/// * a node kind produced by some rule is in neither the kernel `SYNTHESIZED` list nor any FKB's `semantic_kinds`
+///   — the folded view would hide it as a syntax node ("wrote it but nothing happened", a classic cause);
+/// * an edge kind is in neither the kernel `SEMANTIC` / `BRIDGE` list nor declared in **any** FKB's
+///   `semantic_edge_kinds` / `bridge_edge_kinds` — it won't be rendered as a semantic / bridge edge.
 fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
     if !dir.exists() {
         anyhow::bail!("FKB directory does not exist: {}", dir.display());
@@ -502,7 +500,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 内核已知种类（开放字符串 newtype，常量即文档而非限制）。
+    // Kinds known to the kernel (open-string newtype; the constant is documentation, not a restriction).
     let builtin_node: std::collections::HashSet<String> =
         NodeKind::SYNTHESIZED.iter().map(|s| s.to_string()).collect();
     let builtin_edge: std::collections::HashSet<String> = EdgeKind::SEMANTIC
@@ -511,8 +509,8 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
         .map(|s| s.to_string())
         .collect();
 
-    // 第一遍：加载所有文件，跨文件汇总「被某份 FKB 显式声明的边种类」。
-    // 边种类可在文件 A 声明、在文件 B 使用，所以必须汇总后才算「已知」。
+    // First pass: load every file, aggregating across files the "edge kinds explicitly declared by some FKB".
+    // An edge kind may be declared in file A and used in file B, so it must be aggregated before it counts as "known".
     let mut declared_edge: std::collections::HashSet<String> = std::collections::HashSet::new();
     for path in &files {
         if let Ok(fk) = YamlKnowledgeBase::load_file(path) {
@@ -531,7 +529,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
                 let mut warns = Vec::new();
                 for r in &fk.rules {
                     for a in &r.binding {
-                        // 合成节点的有效种类 = subtype（若有）否则 node。
+                        // A synthesized node's effective kind = subtype (if any), otherwise node.
                         if let Action::Synthesize(s) = a {
                             let kind = s
                                 .subtype
@@ -548,7 +546,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
                                 ));
                             }
                         }
-                        // 边种类是否在内核语义/桥清单。
+                        // Whether the edge kind is in the kernel's semantic / bridge list.
                         let edge_kind = match a {
                             Action::Synthesize(s) => {
                                 s.link.as_ref().map(|l| l.kind.0.clone())
@@ -616,7 +614,7 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 递归收集目录下的 *.yaml / *.yml。
+/// Recursively collect *.yaml / *.yml under a directory.
 fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,

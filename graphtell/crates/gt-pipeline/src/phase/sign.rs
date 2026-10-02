@@ -1,32 +1,35 @@
-//! P11 Sign：外部系统回调的**验签质量**。
+//! P11 Sign: the **quality of signature verification** in callbacks from external systems.
 //!
-//! # 为什么要单独一个阶段
+//! # Why it needs its own phase
 //!
-//! 「验签」有两个层次：
+//! "Signature verification" has two levels:
 //!
-//! 1. **有没有验签** —— 这个图上判不了：PHP 解析器 `exclude_dirs` 排除了 `vendor`，
-//!    Java 连 Maven 依赖都不扫描，于是 EasyWeChat / yansongda-pay / 官方 SDK 的
-//!    `verify()` **根本不在图里**。任何"调用链上没有验签调用"的判据都会对每个回调
-//!    成立 —— 100% 误报。这与 README 里已否决的"表被写但无模型映射"同因：
-//!    **是图的缺口，不是代码的问题**。
-//! 2. **验签做得对不对** —— 这是**局部事实**，能判：签名算出来之后用什么方式比较。
+//! 1. **Is there verification at all** — this cannot be judged on the graph: the PHP parser's `exclude_dirs` drops
+//!    `vendor`, and Java does not even scan Maven dependencies, so `verify()` from EasyWeChat / yansongda-pay /
+//!    official SDKs **is not in the graph at all**. Any predicate of the form "no verify call on the call chain"
+//!    then holds for every callback — a 100% false-positive rate. This shares a cause with the already-rejected
+//!    "a table is written but no model maps to it" in the README: **it is a gap in the graph, not a problem in the
+//!    code**.
+//! 2. **Is the verification done correctly** — this is a **local fact** and can be judged: how the signature is
+//!    compared once it has been computed.
 //!
-//! 本阶段只做第 2 层，判两类：
+//! This phase does only level 2 and judges two things:
 //!
-//! * **松散比较**：`$sign == $calc` / `$this->CreatedSign($params) != $params['sign']`。
-//!   PHP 的 `==` / `!=` 是松散比较，`0e...` 形式的 md5 摘要会互判相等
-//!   （`md5('240610708') == md5('QNKCDZO')`），且非恒定时间 —— 可计时侧信道。
-//!   正确写法是 `hash_equals()`。
-//! * **弱算法**：签名用 `md5` / `sha1`。注意微信支付 V2、支付宝旧版、部分快递网关
-//!   **官方就要求 MD5**，所以这条只发 `info`，文案必须写成"需确认"而不是"有漏洞"。
+//! * **Loose comparison**: `$sign == $calc` / `$this->CreatedSign($params) != $params['sign']`. PHP's `==` / `!=`
+//!   are loose comparisons, so md5 digests of the `0e...` form judge each other equal
+//!   (`md5('240610708') == md5('QNKCDZO')`), and they are not constant time — a timing side channel.
+//!   The correct form is `hash_equals()`.
+//! * **Weak algorithm**: the signature uses `md5` / `sha1`. Note that WeChat Pay V2, older Alipay and some shipping
+//!   gateways **officially require MD5**, so this only raises `info`, and the copy must read "needs confirmation"
+//!   rather than "has a vulnerability".
 //!
-//! # 噪声闸口
+//! # Noise gate
 //!
-//! 电商代码里 `sign` 绝大多数是**签到**（`$sign_mode` / `$sign_last_date` /
-//! `$sign_total_days` / `$points_sign_enabled`）。实测 32 处"含 sign 的 == 比较"
-//! 里 24 处是签到。因此判定要求**同函数体内确实存在签名计算调用**
-//! （md5 / sha1 / hash_hmac / hash_equals / openssl_verify / `*Sign()`），
-//! 纯变量名匹配会被签到淹没。
+//! In e-commerce code, `sign` is overwhelmingly about **check-ins** (`$sign_mode` / `$sign_last_date` /
+//! `$sign_total_days` / `$points_sign_enabled`). Measured: of 32 "`==` comparisons containing sign", 24 were
+//! check-ins. So the judgement requires that **a signature-computation call really exists inside the same function
+//! body** (md5 / sha1 / hash_hmac / hash_equals / openssl_verify / `*Sign()`); matching on variable names alone
+//! gets drowned in check-ins.
 
 use gt_domain::model::{
     AnnotationChannel, FactValue, Language, MergeStrategy, NewAnnotation, NodeId, Phase,
@@ -35,9 +38,9 @@ use serde_json::json;
 
 use crate::context::PipelineContext;
 
-/// 松散比较标注（规则用 `has_annotation: weak_sign_compare` 命中）。
+/// The loose-comparison annotation (rules match it via `has_annotation: weak_sign_compare`).
 const LOOSE_COMPARE: &str = "weak_sign_compare";
-/// 弱哈希签名标注（规则用 `has_annotation: weak_sign_hash` 命中）。
+/// The weak-hash signature annotation (rules match it via `has_annotation: weak_sign_hash`).
 const WEAK_HASH: &str = "weak_sign_hash";
 
 pub fn run(ctx: &mut PipelineContext) {
@@ -45,13 +48,9 @@ pub fn run(ctx: &mut PipelineContext) {
     let mut loose = 0usize;
     let mut weak = 0usize;
 
-    // 先收集再标注：避免 `ctx.ws` 的不可变借用与 `annotate` 的可变借用冲突。
+    // Collect first, annotate after: avoids a conflict between the immutable borrow of `ctx.ws` and the mutable borrow in `annotate`.
     let mut targets: Vec<(NodeId, &'static str, serde_json::Value)> = Vec::new();
 
-    // ---- 形态一：签名值被 == / != 比较
-    //
-    // 标注落在**同函数内的签名计算调用点**上：那正是要改的地方
-    // （算完之后别用 == 比），而不是落在无法建节点的比较表达式上。
     for cmp in ctx.ws.sign_compares.iter() {
         let Some(calc) = find_sign_calc(&ctx.ws, cmp) else {
             continue;
@@ -68,10 +67,6 @@ pub fn run(ctx: &mut PipelineContext) {
         ));
     }
 
-    // ---- 形态二：签名用 md5 / sha1
-    //
-    // 上下文限定：参数文本含 sign（如 `md5($sign.'key='.$key)`），
-    // 或同一个函数里存在签名比较 —— 否则 `md5($fileContent)` 这类无关哈希会被误报。
     for call in ctx.ws.calls.iter() {
         if call.language.0 != Language::PHP {
             continue;
@@ -123,7 +118,7 @@ pub fn run(ctx: &mut PipelineContext) {
         });
     }
 
-    tracing::info!("P11 验签完成：松散比较 {} 处，弱哈希签名 {} 处", loose, weak);
+    tracing::info!("P11 signature check done: {} loose comparisons, {} weak-hash signatures", loose, weak);
 }
 
 fn subkind_of(kind: &str) -> &'static str {
@@ -133,14 +128,14 @@ fn subkind_of(kind: &str) -> &'static str {
     }
 }
 
-/// 定位这次比较所比较的**签名计算调用点**（标注落点）。
+/// Locate the **signature-computation call site** this comparison compares (the annotation landing point).
 ///
-/// 两级：
-/// 1. 比较的某一侧就是一次调用（`$this->hashEncrypt($str) == $signVerify`、
-///    `md5($body.$secret) != $_SERVER['HTTP_KWAISIGN']`）—— 直接取那个调用点。
-///    这一步不能省：自研验签函数名里未必有 `sign`（beikeshop 的 `hashEncrypt` 就是），
-///    只按名字认会漏掉整个工程。
-/// 2. 两侧都是变量（`$sign == $ipay_signature`）—— 退回同函数内的哈希 / `*Sign()` 调用。
+/// Two levels:
+/// 1. One side of the comparison is itself a call (`$this->hashEncrypt($str) == $signVerify`,
+///    `md5($body.$secret) != $_SERVER['HTTP_KWAISIGN']`) — take that call site directly.
+///    This step cannot be skipped: a home-grown verification function need not have `sign` in its name
+///    (beikeshop's `hashEncrypt` does not), and recognising by name alone misses the whole project.
+/// 2. Both sides are variables (`$sign == $ipay_signature`) — fall back to a hash / `*Sign()` call in the same function.
 fn find_sign_calc(
     ws: &crate::workspace::GraphWorkspace,
     cmp: &gt_domain::model::syntax::SignCompareFact,
@@ -162,7 +157,7 @@ fn find_sign_calc(
     })
 }
 
-/// 调用点是否是「签名计算」：哈希函数，或名字带 Sign 的方法（`CreatedSign` / `GetSign`）。
+/// Whether a call site is "signature computation": a hash function, or a method whose name contains Sign (`CreatedSign` / `GetSign`).
 fn is_sign_calc(c: &crate::workspace::CallRecord) -> bool {
     if c.language.0 != Language::PHP {
         return false;
@@ -176,7 +171,7 @@ fn is_sign_calc(c: &crate::workspace::CallRecord) -> bool {
     ) {
         return true;
     }
-    // 方法名含 sign 但不落在"签到"词上：`CreatedSign` / `GetSign` / `makeSign` / `verifySign`。
+    // A method name containing sign but not landing on a "check-in" word: `CreatedSign` / `GetSign` / `makeSign` / `verifySign`.
     let lower = method.to_ascii_lowercase();
     if !lower.contains("sign") {
         return false;

@@ -1,8 +1,9 @@
-//! HTTP 入站适配器的契约冒烟测试：用内存库 + 空资产目录组装出真实的 `AppState`，
-//! 验证路由能建起来、健康/状态端点能 200。
+//! Contract smoke test of the HTTP inbound adapter: assemble a real `AppState` from an in-memory database plus an
+//! empty asset directory, and verify that the router can be built and the health / status endpoints return 200.
 //!
-//! 这是此前**完全零测试**的高风险 crate（整个 REST 契约面都在 `router.rs`）。这里不追求
-//! 覆盖每个处理器，只钉住"路由存在且基础端点可响应"，避免路由被误删 / 处理器签名漂移。
+//! This crate previously had **zero tests at all**, which was high risk (the whole REST contract surface lives in
+//! `router.rs`). This does not try to cover every handler; it only pins "the route exists and the basic endpoints
+//! respond", so a route cannot be deleted by accident or a handler signature drift unnoticed.
 
 use std::sync::Arc;
 
@@ -14,27 +15,29 @@ use gt_application::pipeline_runner::PipelineDeps;
 use gt_domain::port::Persistence;
 use tower::ServiceExt;
 
-/// 用内存库 + 空资产目录组装出一个真实可用的 HTTP 状态（不依赖磁盘上的 fkb/rules/views）。
+/// Assemble a real usable HTTP state from an in-memory database plus an empty asset directory (no dependency on the
+/// fkb/rules/views on disk).
 ///
-/// `load_dir` 在目录不存在时返回空集合（仅告警），所以传不存在的路径即可拿到空 KB/规则/视角。
+/// `load_dir` returns an empty collection when the directory does not exist (with a warning only), so passing a
+/// non-existent path yields an empty KB / rules / views.
 fn test_state() -> gt_adapter_http::router::Shared {
-    let store: Arc<dyn Persistence> = Arc::new(SqliteStore::in_memory().expect("内存库应可打开"));
+    let store: Arc<dyn Persistence> = Arc::new(SqliteStore::in_memory().expect("the in-memory database should open"));
     let deps = Arc::new(PipelineDeps {
         fs: Arc::new(gt_adapter_fs::StdFileSystem::new()),
         scanner: Arc::new(gt_adapter_fs::WalkDirScanner::new(Vec::new())),
         parsers: Arc::new(gt_adapter_parser::DefaultParserRegistry::new()),
         kb: Arc::new(
             gt_adapter_fkb::YamlKnowledgeBase::load_dir(std::path::Path::new("/__nonexistent_fkb__"))
-                .expect("空 KB 应可装载"),
+                .expect("an empty KB should load"),
         ),
     });
     let views = Arc::new(
         gt_adapter_views::YamlViewRegistry::load_dir(std::path::Path::new("/__nonexistent_views__"))
-            .expect("空视角应可装载"),
+            .expect("empty views should load"),
     );
     let rules = Arc::new(
         gt_adapter_rules::YamlRuleSet::load_dir(std::path::Path::new("/__nonexistent_rules__"))
-            .expect("空规则应可装载"),
+            .expect("empty rules should load"),
     );
     state(store, deps, 0, views, rules)
 }
@@ -44,7 +47,7 @@ async fn get(uri: &str) -> StatusCode {
     let resp = app
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
         .await
-        .expect("请求应成功");
+        .expect("the request should succeed");
     resp.status()
 }
 
@@ -63,8 +66,9 @@ async fn unknown_api_path_returns_404() {
     assert_eq!(get("/api/does-not-exist").await, StatusCode::NOT_FOUND);
 }
 
-/// 生产部署：当 `ui_dir` 指向含 `index.html` 的目录时，根路径与未命中路径都应回退到 SPA
-/// 入口（index.html），而非 404；且 `/compose` 独立页仍可用。
+/// Production deployment: when `ui_dir` points at a directory containing `index.html`, both the root path and
+/// unmatched paths should fall back to the SPA entry (index.html) rather than 404; and the standalone `/compose`
+/// page remains available.
 #[tokio::test]
 async fn spa_fallback_serves_index_html() {
     let dir = std::env::temp_dir().join(format!(
@@ -79,7 +83,7 @@ async fn spa_fallback_serves_index_html() {
         .unwrap();
 
     let app = build_router(test_state(), Some(dir.clone()));
-    // 根路径 → SPA 入口
+    // Root path -> SPA entry
     let resp = app
         .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -90,9 +94,9 @@ async fn spa_fallback_serves_index_html() {
         axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec(),
     )
     .unwrap();
-    assert!(body.contains("graphtell-spa"), "根路径应返回 SPA 入口");
+    assert!(body.contains("graphtell-spa"), "the root path should return the SPA entry");
 
-    // 前端路由路径（不存在的文件）→ 同样回退到 index.html
+    // A frontend route path (a file that does not exist) -> also falls back to index.html
     let resp2 = app
         .clone()
         .oneshot(
@@ -105,7 +109,7 @@ async fn spa_fallback_serves_index_html() {
         .unwrap();
     assert_eq!(resp2.status(), StatusCode::OK);
 
-    // /compose 独立页仍可用
+    // The standalone /compose page is still available
     let resp3 = app
         .clone()
         .oneshot(

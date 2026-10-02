@@ -37,7 +37,10 @@ def classify(line: str, ext: str, in_block: bool):
             return True, False
         if s.startswith('/*') or s.startswith('{/*'):
             return True, ('*/' not in s)
-        if s.startswith('*') or s.startswith('*/}'):
+        # A bare `*` only continues a block comment; `*ptr` / `*out =` is code.
+        if s.startswith('*/}'):
+            return True, False
+        if s.startswith('* ') or s == '*':
             return True, False
         return False, False
     if ext in HASH_EXT:
@@ -74,8 +77,51 @@ def blocks_of(path: str):
     return res
 
 
+def is_doc_block(text: str) -> bool:
+    """A doc block starts with `///` or `//!` (Rust) — those are kept by `prune`."""
+    for line in text.split('\n'):
+        s = line.strip()
+        if s:
+            return s.startswith('///') or s.startswith('//!')
+    return False
+
+
+def prune(paths, inline_min_lines, keep_doc):
+    """Delete verbose comment blocks in place.
+
+    Removes inline (`//` / `#` / `/* */`) comment blocks of `inline_min_lines` or more,
+    which are narration ("why we used to do X") rather than load-bearing information.
+    Doc comments (`///` / `//!`) are kept unless `keep_doc` is False.
+    """
+    removed = kept = 0
+    for path in paths:
+        lines = open(path, encoding='utf-8').read().split('\n')
+        # recompute blocks against the original file, then filter
+        blocks = blocks_of(path)
+        drop = set()
+        for a, b in blocks:
+            text = '\n'.join(lines[a:b + 1])
+            n = b - a + 1
+            if keep_doc and is_doc_block(text):
+                kept += 1
+                continue
+            if n >= inline_min_lines:
+                drop.update(range(a, b + 1))
+                removed += 1
+            else:
+                kept += 1
+        out = [l for idx, l in enumerate(lines) if idx not in drop]
+        open(path, 'w', encoding='utf-8').write('\n'.join(out))
+    print('prune: removed %d block(s), kept %d' % (removed, kept))
+
+
 def main() -> None:
     cmd = sys.argv[1]
+    if cmd == 'prune':
+        # usage: prune <inline_min_lines> <files...>
+        n = int(sys.argv[2])
+        prune(list(sys.argv[3:]), n, True)
+        return
     if cmd == 'extract':
         out = sys.argv[2]
         data = {}

@@ -1,51 +1,52 @@
-# CRMEB 项目知识
+# CRMEB project knowledge
 #
-# 作用域：项目级（scope: project）。仅当工程被识别为 CRMEB（detectors 命中）时才加载，
-# 不污染其它 ThinkPHP 工程。这里只描述 CRMEB 的**项目专有约定**；框架通用部分仍在
-# fkb/php/thinkphp6.yaml。
+# Scope: project level (scope: project). Loaded only when the project is detected as CRMEB (detectors hit), so it
+# does not pollute other ThinkPHP projects. This describes only CRMEB's **project-specific conventions**; the
+# framework-common parts remain in fkb/php/thinkphp6.yaml.
 #
-# 调度约定：CRMEB 没有用框架级调度器（ThinkPHP 核心无内置 Schedule，CRMEB 也没用
-# topthink/think-schedule 之类扩展），而是自己实现了一套「HTTP 路由 + 外部调度器
-# 心跳触发」的定时任务：
+# Scheduling convention: CRMEB does not use a framework-level scheduler (ThinkPHP's core has no built-in Schedule,
+# and CRMEB does not use an extension like topthink/think-schedule); instead it implements its own scheduled tasks
+# as "HTTP route + external scheduler heartbeat trigger":
 #   Route::get('crontab/order_cancel', 'v1.CrontabController/orderUnpaidCancel')
-#     ->name('orderUnpaidCancel')->option(['real_name' => '未支付自动取消订单']);
-# 这些路由既是普通 HttpContract（由 tp6-route-http-contract 合成），又被本规则额外
-# 合成为 Schedule 语义节点并 HandledBy 到对应 CrontabController 方法。
+#     ->name('orderUnpaidCancel')->option(['real_name' => 'cancel unpaid orders automatically']);
+# These routes are both ordinary HttpContracts (synthesized by tp6-route-http-contract) and, by this rule, additionally
+# synthesized into Schedule semantic nodes with HandledBy to the corresponding CrontabController method.
 
-# id 必须**唯一**：内核取项目级规则走 `kb.by_id(id)`，而 `by_id` 只返回第一个同 id
-# 的条目。此前这里与 fkb/php/crmeb.yaml（框架作用域）都叫 `crmeb`，框架那份排在前面
-# （目录序），于是本文件的规则（含下面的 crontab → Schedule）被整个遮蔽、从未生效。
-# 改名后两份各归各位：框架级管机制，项目级管业务约定。
+# The `id` must be **unique**: the kernel takes project-level rules via `kb.by_id(id)`, and `by_id` returns only the
+# first entry with a given id. Previously this file and fkb/php/crmeb.yaml (framework scope) were both named `crmeb`,
+# and the framework one came first (directory order), so this file's rules (including crontab -> Schedule below) were
+# entirely shadowed and never took effect. After the rename each has its place: framework level owns mechanics,
+# project level owns business conventions.
 id: crmeb-project
 display_name: CRMEB
 language: php
 scope: project
-version_hint: "CRMEB 商城"
+version_hint: "CRMEB store"
 
 detectors:
-  # CRMEB 专有标记文件：后台定时任务服务（核心模块，稳定存在）。
+  # CRMEB-specific marker file: the backend scheduled-task service (a core module, stably present).
   - kind: file_exists
     path: app/services/system/crontab/SystemCrontabServices.php
     confidence: 0.9
 
-# 魔法方法转发：`BaseServices` 用 `@method` 声明了 20 多个 `get` / `getOne` /
-# `getList` / `count` / `delete` …，实际由 `__call` 转发给 `$this->dao`
-# （dao 的类型由各子类构造器注入，如 `AgentLevelServices(AgentLevelDao $dao)`）。
-# 没有这条约定，`$this->services->getList()` 只能退回"类级命中"，
-# 「路由 → 控制器 → Services → Dao → 表」的链路就在 Services 这一跳断掉。
+# Magic-method forwarding: `BaseServices` declares 20+ `get` / `getOne` / `getList` / `count` / `delete` … via
+# `@method`, and they are actually forwarded by `__call` to `$this->dao` (the dao's type is injected by each subclass's
+# constructor, e.g. `AgentLevelServices(AgentLevelDao $dao)`).
+# Without this convention `$this->services->getList()` can only fall back to a "class-level hit", and the chain
+# "route -> controller -> Services -> Dao -> table" breaks at the Services hop.
 magic_delegation:
   property: dao
   confidence: 0.7
 
 rules:
-  # ===== P5 Synthesize：计划任务（Schedule）=====
+  # ===== P5 Synthesize: scheduled tasks (Schedule) =====
   - id: crmeb-schedule-task
     phase: Synthesize
     selector:
       kind: call
       callee: "think\\facade\\Route::{get,post,any,rule,put,delete,patch}|Route::{get,post,any,rule,put,delete,patch}"
       where:
-        # 只收 crontab 前缀的路由（外部调度器触发），避免把所有业务路由当成定时任务。
+        # Only crontab-prefixed routes are collected (triggered by the external scheduler), so business routes are not all treated as scheduled tasks.
         - arg_starts_with: { arg: 0, prefix: "crontab/" }
     binding:
       - Synthesize:

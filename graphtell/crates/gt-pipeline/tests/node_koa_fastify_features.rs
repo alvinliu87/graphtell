@@ -1,8 +1,8 @@
-//! Node 后端 **Koa / Fastify 路由契约**的端到端自检。
+//! End-to-end self-check of Node backend **Koa / Fastify route contracts**.
 //!
-//! 两者都是「零解析器改动」：路由注册在 `JsFrontendParser` 眼里就是普通成员调用
-//! （`receiver.method(path, handler)`），与 Express 同形，故只需加 FKB 规则。
-//! 这里验证 `HttpContract` 的**方法 + 路径**是否正确。
+//! Both are "zero parser change": to `JsFrontendParser` a route registration is just an ordinary member call
+//! (`receiver.method(path, handler)`), the same shape as Express, so only an FKB rule is needed.
+//! This verifies that an `HttpContract`'s **method + path** are correct.
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};
 use gt_domain::port::{GraphQuery, NodeFilter};
@@ -68,7 +68,7 @@ module.exports = { router, admin };
 "#,
     );
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("the graph build should succeed");
     };
     let names = contract_names(&b);
     assert_eq!(
@@ -80,7 +80,7 @@ module.exports = { router, admin };
             "GET /:id",
             "POST /",
         ],
-        "Koa 契约不符：{names:?}"
+        "Koa contracts do not match: {names:?}"
     );
 }
 
@@ -100,12 +100,12 @@ module.exports = fastify;
 "#,
     );
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("the graph build should succeed");
     };
     let names = contract_names(&b);
     assert_eq!(
         names,
         vec!["GET /users", "POST /users", "PUT /users/:id"],
-        "Fastify 契约不符：{names:?}"
+        "Fastify contracts do not match: {names:?}"
     );
 }

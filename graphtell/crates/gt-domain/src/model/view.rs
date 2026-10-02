@@ -1,10 +1,11 @@
-//! 视图模型：视角（Perspective）注册表与各类视图的响应结构。
+//! View models: the perspective registry and the response structures of each view kind.
 //!
-//! # 为什么视角要由配置声明
+//! # Why perspectives are declared by configuration
 //!
-//! 「路由视角 / 表视角 / 领域聚合」这些是**分析范式**而不是后端固有概念。
-//! 写死成 Rust enum 会让新增视角必须改代码；这里用一份 YAML 声明，
-//! 后端只负责按声明去切片，新增视角 = 加一段配置（开闭原则）。
+//! "route perspective / table perspective / domain aggregate" are **analysis paradigms**, not concepts inherent to
+//! the backend. Hard-coding them as a Rust enum would make every new perspective a code change; here one YAML file
+//! declares them and the backend only slices according to the declaration, so a new perspective = one more block of
+//! config (open-closed principle).
 
 use std::collections::BTreeMap;
 
@@ -13,17 +14,17 @@ use serde_json::Value;
 
 use super::{NodeId, ProjectId, SubProjectId};
 
-/// 视角注册表。
+/// The perspective registry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewRegistry {
-    /// 顶部一级筛选器的可选项。
+    /// Options of the top-level (level one) filter.
     pub perspectives: Vec<PerspectiveSpec>,
-    /// 节点种类 → 视角 id。点击某节点时据此切换一级筛选器。
+    /// Node kind -> perspective id. Clicking a node switches the level-one filter accordingly.
     ///
-    /// **未列入的种类不会切换顶部筛选器**，只打开右侧 Inspector ——
-    /// 例如 `ConfigKey` / `KeyPattern` / `Component` / `SecretLocation`
-    /// 这类资产/结构节点没有"单链路"语义。
+    /// **Kinds not listed here do not switch the top filter**, they only open the Inspector on the right —
+    /// for example asset / structural nodes like `ConfigKey` / `KeyPattern` / `Component` / `SecretLocation`
+    /// carry no "single link" semantics.
     pub node_views: BTreeMap<String, String>,
 }
 
@@ -32,16 +33,17 @@ impl ViewRegistry {
         self.perspectives.iter().find(|p| p.id == id)
     }
 
-    /// 某节点种类对应的视角（用于"点击即切"）。
+    /// The perspective for a node kind (used for "click to switch").
     pub fn view_for_kind(&self, kind: &str) -> Option<&PerspectiveSpec> {
         self.node_views.get(kind).and_then(|id| self.by_id(id))
     }
 
-    /// 带「端」的视角解析：优先匹配 `node_kind == kind` 且 `side` 命中的专用视角
-    /// （如后端 `Cache → cache`、前端 `Cache → local_storage`），否则退回 `view_for_kind`。
+    /// Perspective resolution with a "side": prefer a dedicated perspective where `node_kind == kind` and `side`
+    /// matches (e.g. backend `Cache -> cache`, frontend `Cache -> local_storage`), otherwise fall back to
+    /// `view_for_kind`.
     ///
-    /// 同一 `kind`（如 `Cache`）被拆成前后端两个视角时，点击节点应按其 `side`
-    /// 切到正确的那个，而不是被 `node_views` 的单一映射锁死。
+    /// When one `kind` (e.g. `Cache`) is split into a frontend and a backend perspective, clicking a node must
+    /// switch to the correct one by its `side` rather than being locked into the single `node_views` mapping.
     pub fn view_for_kind_and_side(
         &self,
         kind: &str,
@@ -60,33 +62,34 @@ impl ViewRegistry {
     }
 }
 
-/// 视角声明。
+/// A perspective declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerspectiveSpec {
     pub id: String,
     pub label: String,
-    /// 对象类（单链路）还是聚合类（概览）。
+    /// Object-style (single link) or aggregate-style (overview).
     pub mode: ViewMode,
-    /// 对象类视角对应的节点种类。
+    /// The node kind an object-style perspective covers.
     pub node_kind: Option<String>,
-    /// 仅纳入某「端」的节点：`frontend` / `backend`（按节点属性 `side` 过滤）。
-    /// 用于把"种类相同但端不同"的节点拆到不同视角，例如后端 `Cache` 与前端
-    /// `uni.setStorageSync` 都合成 `Cache` 节点，靠 `side` 拆成「缓存视角 / 本地存储视角」。
+    /// Only include nodes of a given "side": `frontend` / `backend` (filtered on the node property `side`).
+    /// Used to split nodes that "share a kind but differ in side" into different perspectives — e.g. both the
+    /// backend `Cache` and the frontend `uni.setStorageSync` synthesise a `Cache` node, and `side` splits them
+    /// into "cache perspective / local-storage perspective".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<String>,
-    /// 默认布局算法。
+    /// Default layout algorithm.
     pub layout: LayoutMode,
-    /// 聚合视角的分组维度。
+    /// Grouping dimension of an aggregate perspective.
     pub group_by: Option<GroupBy>,
-    /// 矩阵视角的行维度。
+    /// Row dimension of a matrix perspective.
     pub row_from: Option<GroupBy>,
-    /// 矩阵视角的列维度。
+    /// Column dimension of a matrix perspective.
     pub col_from: Option<GroupBy>,
-    /// 链路展开的跳数。
+    /// Hop count when expanding a link.
     pub depth: u32,
     pub description: Option<String>,
-    /// 对象视角默认折叠（透传）的语法节点种类；折叠后只展示语义节点与它们之间的依赖边。
+    /// Syntax node kinds that an object perspective folds (passes through) by default; after folding only semantic nodes and the dependency edges between them are shown.
     #[serde(default)]
     pub collapsed_kinds: Vec<String>,
 }
@@ -113,193 +116,199 @@ impl Default for PerspectiveSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ViewMode {
-    /// 对象类：**只渲染当前这一个对象**的链路子图。
+    /// Object-style: render the link subgraph of **only this one object**.
     Object,
-    /// 聚合类：不是单链路，而是聚合概览（聚类框 / 矩阵）。
+    /// Aggregate-style: not a single link but an aggregate overview (cluster boxes / matrix).
     Aggregate,
 }
 
-/// 布局算法。**任何节点都不允许力导向自由漂移**：位置由算法确定，与交互无关。
+/// Layout algorithm. **No node may drift freely under a force-directed layout**: positions come from the algorithm and are independent of interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutMode {
-    /// 径向：资源视角（Table / Cache / Event / Queue / Topic）默认。
-    /// 前端按**图形状**二次分派：这些视角走反向模式、每个使用者都被合成一条到中心的边
-    /// （见 `view_service.rs` 的 `MAX_USERS`），实为一颗星 —— 人多时改走中心辐射布局
-    /// （画布随人数平方增长、外环的边会压过内环药丸）；人少或存在叶子到叶子的边时才是同心环（环 = 跳数）。
+    /// Radial: default for resource perspectives (Table / Cache / Event / Queue / Topic).
+    /// The frontend dispatches a second time by **graph shape**: these perspectives run in reverse mode where every
+    /// user is synthesised into an edge to the centre (see `MAX_USERS` in `view_service.rs`), which is really a star
+    /// — with many users it switches to a hub-and-spoke layout (the canvas grows with the square of the user count
+    /// and outer-ring edges would cover the inner-ring pills); with few users, or when leaf-to-leaf edges exist, it
+    /// is concentric rings instead (a ring = a hop).
     Radial,
-    /// 分层（Sugiyama）：自上而下，正交折线。下钻调用链。
+    /// Layered (Sugiyama): top-down, orthogonal polylines. For drilling into a call chain.
     Layered,
-    /// 线性 Spine：一条链横排/竖排。污点取证。
+    /// Linear Spine: one chain laid out horizontally / vertically. For taint forensics.
     Spine,
-    /// 聚类 Compound：大框套小节点。
+    /// Compound clustering: big boxes containing small nodes.
     Compound,
-    /// 矩阵：行列两维度，单元格为关系强度。
+    /// Matrix: two dimensions as rows and columns, cells hold relation strength.
     Matrix,
-    /// ER 正交：表关系。
+    /// ER orthogonal: table relationships.
     Er,
 }
 
-/// 分组维度。
+/// Grouping dimension.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupBy {
     NodeKind,
     SubProject,
-    /// 按节点属性分组（`property:domain`）。
+    /// Group by node property (`property:domain`).
     Property(String),
 }
 
-// ---------------------------------------------------------------- 响应
+// ---------------------------------------------------------------- responses
 
-/// 源码位置三元组（path + symbol + line），用于跳转与防止行号漂移。
+/// A source-location triple (path + symbol + line), for jumping and for guarding against line-number drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceLocation {
     pub file: String,
     pub line: u32,
-    /// 符号（类名 / 方法名 / 表名），行号漂移时用于重新定位。
+    /// Symbol (class name / method name / table name); used to re-locate when the line number has drifted.
     pub symbol: Option<String>,
-    /// 说明，如 "Model 的 $table 定义"、"Db::name('store_order') 调用处"。
+    /// Description, e.g. "the `$table` definition of Model", "the call site of `Db::name('store_order')`".
     pub note: Option<String>,
-    /// 该位置对应的**源码语句**（如调用点那一行的文本）。
+    /// The **source statement** this location corresponds to (e.g. the text of the call-site line).
     ///
-    /// 只给 `file:line` 时，用户必须自己打开文件才能判断"这条边对不对"；
-    /// 带上语句才能一眼核验 —— 尤其对**间接传播**来的边，需要立刻看出
-    /// "上游是不是真的读了这个配置"。
+    /// With only `file:line`, the user has to open the file before they can judge "is this edge right"; carrying the
+    /// statement lets them verify at a glance — especially for edges arrived at **indirectly**, where they need to
+    /// see immediately "did the upstream really read this config".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
 }
 
-/// 视图中的节点。
+/// A node in a view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeView {
     pub id: NodeId,
     pub kind: String,
-    /// 语义节点的**类别**（目前与 `kind` 一致）；第一类语义节点等同于 `kind`，语法节点为 `None`。
+    /// The **category** of a semantic node (currently the same as `kind`); first-class semantic nodes equal their `kind`, syntax nodes are `None`.
     #[serde(default)]
     pub category: Option<String>,
     pub name: String,
     pub fqn: Option<String>,
-    /// 距中心的跳数（0 = 中心）。
+    /// Hop distance from the centre (0 = the centre).
     pub ring: u32,
     pub sub_project_id: Option<SubProjectId>,
-    /// 该节点是否有对应视角（决定"点击即切"是否可用）。
+    /// Whether this node has a corresponding perspective (decides whether "click to switch" is available).
     pub has_own_view: bool,
-    /// 该节点对应的**视角 id**（`node_views` 映射结果）。
-    /// 点击时一级视角切到它、二级对象设为该节点；无对应视角时为 `null`。
+    /// The **perspective id** for this node (the result of the `node_views` mapping).
+    /// On click, level one switches to it and level two selects this node; `null` when there is no matching perspective.
     #[serde(default)]
     pub own_view: Option<String>,
-    /// 节点所属「端」：`frontend` / `backend`（由 FKB 在语义节点上标注 `side`）。
-    /// 用于 UI 区分前后端子工程：图上一眼看出哪些节点属于前端、哪些属于后端。
+    /// The "side" this node belongs to: `frontend` / `backend` (tagged on semantic nodes by FKB as `side`).
+    /// Used by the UI to tell frontend and backend sub-projects apart: the graph shows at a glance which nodes are frontend and which are backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<String>,
-    /// 跳转用的定义位置；合成节点会有**多个**。
+    /// Definition locations for jumping; a synthetic node has **several**.
     pub locations: Vec<SourceLocation>,
-    /// 标注摘要（pii / auth.public / data.criticality …）。
+    /// Annotation summary (pii / auth.public / data.criticality …).
     pub annotations: Vec<String>,
-    /// 该节点的**列**（表 / 模型的字段，裸列名，不带表前缀）。
+    /// This node's **columns** (fields of a table / model; bare column names, no table prefix).
     ///
-    /// 列刻意**不作为独立节点画在折叠视图里**（`Column` 不是语义节点 —— 否则几十张表
-    /// × 十几列会把画布撑爆、还吃掉可达语义节点统计的 400 预算）。
-    /// 但"展开一张表看看它有哪些字段"是刚需，故把列作为**节点的属性**带出来：
-    /// 折叠视图里列不占位，点开表才看到。
+    /// Columns are deliberately **not drawn as independent nodes in the folded view** (`Column` is not a semantic
+    /// node — otherwise dozens of tables × a dozen columns each would burst the canvas and eat into the 400-node
+    /// budget of the reachable-semantic-node statistic).
+    /// But "expand a table and see which fields it has" is a hard requirement, so columns are carried out as a
+    /// **property of the node**: they occupy no space in the folded view and only appear once the table is opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<String>>,
-    /// 视角相关的度量（如入边数）。
+    /// Perspective-specific metrics (e.g. the in-edge count).
     pub metrics: Value,
 }
 
-/// 链路中某个节点（起点 / 中间跳 / 终点）的位置，随边一并返回。
+/// The location of a node somewhere in a link (start / intermediate hop / end), returned together with the edge.
 ///
-/// 折叠视图的"链路"是**临时提拉**的结果：中间跳只存在于当次视图响应里，
-/// 按边 id 重查拿不到（提拉没有持久化）。以往前端只能对每个节点单独请求
-/// `/nodes/{id}/locations`（N+1 次调用），且拿到的位置与"这条边"不同源。
-/// 改由构建视图时一并内联，前端无需额外请求。
+/// A "link" in the folded view is the result of a **temporary lifting**: intermediate hops exist only in the current
+/// view response and cannot be retrieved by re-querying on edge id (lifting is not persisted). Previously the
+/// frontend could only request `/nodes/{id}/locations` per node (N+1 calls), and the locations it got were not from
+/// the same source as "this edge". They are now inlined when the view is built, so the frontend needs no extra
+/// request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeLocationEntry {
     pub id: NodeId,
-    /// 是否为合成节点：共享资源（ConfigKey / Table …）的"全部出处"
-    /// 并不都属于当前链路，前台需据此换一种标注。
+    /// Whether this is a synthetic node: for a shared resource (ConfigKey / Table …), "all of its sources" do not
+    /// all belong to the current link, so the frontend has to annotate it differently.
     pub synthetic: bool,
     pub locations: Vec<SourceLocation>,
 }
 
-/// 视图中的边。
+/// An edge in a view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeView {
     pub id: i64,
     pub kind: String,
     pub from: NodeId,
     pub to: NodeId,
-    /// 是否为已解析的实边（有可追溯的证据，而非无证据的推断）。
-    /// 注意：画布虚线仅表示「间接（经调用链传播）」，不再等价于"待验证"。
+    /// Whether this is a resolved solid edge (there is traceable evidence, not an unsupported inference).
+    /// Note: a dashed line on the canvas only means "indirect (propagated through the call chain)"; it no longer implies "pending verification".
     pub resolved: bool,
     pub confidence: f32,
-    /// 虚线边经过的跳数（`via: 3 hops`）。
+    /// How many hops the dashed edge passes through (`via: 3 hops`).
     pub hops: Option<u32>,
-    /// 这条边**折叠掉的中间节点**（按"从起点到终点"排序）。
+    /// The **intermediate nodes this edge folded away** (ordered "from start to end").
     ///
-    /// 折叠视图里语义节点之间是"提拉"出来的直接边，中间其实经过了若干语法节点；
-    /// 这里如实记录它们，前端才能在边上标 `via N 跳`、点击展开完整调用链 ——
-    /// 不能让"看起来直连"骗人。为空表示图上确实是直接边。
+    /// In the folded view the direct edge between two semantic nodes is a "lifted" one that actually passes through
+    /// several syntax nodes; recording them faithfully is what lets the frontend label `via N hops` on the edge and
+    /// expand the full call chain on click — "looks directly connected" must not be allowed to deceive. Empty means
+    /// the graph really does have a direct edge.
     #[serde(default)]
     pub via: Vec<ViaNode>,
-    /// 终点被"调用处"的位置（即 `via 最后一跳 → to` 这一跳的 CallSite）。
-    /// 与每个 `ViaNode.call_site` 一起，让折叠链既显示"定义处"也显示"调用处"。
+    /// Where the endpoint is "called" (i.e. the CallSite of the hop `last via hop -> to`).
+    /// Together with each `ViaNode.call_site`, a folded link shows both "where it is defined" and "where it is called".
     #[serde(default)]
     pub to_call_site: Option<SourceLocation>,
-    /// 是否为**传播得来**的间接边：起点自身并未执行该动作，
-    /// 而是其调用链下游某处发生过，由 P8 沿 `Calls` 复刻而来。
+    /// Whether this is an indirect edge obtained by **propagation**: the start itself did not perform the action, it
+    /// happened somewhere downstream on its call chain and P8 replicated it along `Calls`.
     ///
-    /// 例：路由 A 的 handler 调了共享服务，该服务读了配置 K，
-    /// 则 A 会被标上 `A --ReadsConfig--> K` —— 事实成立但**强度弱**。
-    /// UI 据此画虚线 / 降权，避免"看起来像 A 直接依赖 K"。
+    /// Example: route A's handler calls a shared service, that service reads config K, so A gets tagged
+    /// `A --ReadsConfig--> K` — true, but a **weak** claim.
+    /// The UI draws it dashed / down-weighted so it does not "look like A depends on K directly".
     #[serde(default)]
     pub indirect: bool,
-    /// 同一位置（**接触点 → 终点**）上**同时成立**的其它访问方式。
+    /// Other access kinds that hold **at the same time** on one location (**contact point -> end**).
     ///
-    /// 折叠视图里一个使用者对同一资源只画**一条**边（按 `action_strength` 择优，
-    /// 写 > 读），被压掉的那条事实不能就这么消失：
-    /// `Db::name('Goods')->find()` 与 `->update($data)` 同在一个方法里时，
-    /// 只读/只写都失真，正确标签是「读+写」。
+    /// In the folded view one user draws only **one** edge to a resource (chosen by `action_strength`, write > read),
+    /// and the fact that got suppressed must not simply vanish: when `Db::name('Goods')->find()` and
+    /// `->update($data)` sit in the same method, labelling it read-only or write-only is wrong, the correct label is
+    /// "read+write".
     ///
-    /// 例：`kind = "WritesDb"`、`also_kinds = ["ReadsDb"]` ⇒ 前端显示「读写库」。
+    /// Example: `kind = "WritesDb"`, `also_kinds = ["ReadsDb"]` => the frontend shows "reads+writes DB".
     #[serde(default)]
     pub also_kinds: Vec<String>,
-    /// 这条链路（起点 → 各中间跳 → 终点）**每个节点**的位置，由构建视图时内联。
+    /// Locations of **every node** on this link (start -> each intermediate hop -> end), inlined when the view is built.
     ///
-    /// 顺序与链路一致（起点在最前、终点在最后），便于前端直接逐跳渲染。
-    /// 为空表示未内联（如非折叠视图），前端可回退到 `/nodes/{id}/locations`。
+    /// The order follows the link (start first, end last) so the frontend can render hop by hop directly.
+    /// Empty means not inlined (e.g. a non-folded view); the frontend can fall back to `/nodes/{id}/locations`.
     #[serde(default)]
     pub node_locations: Vec<NodeLocationEntry>,
 }
 
-/// 边上被折叠掉的中间节点（调用链的一环）。
+/// An intermediate node folded away on an edge (one hop of the call chain).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViaNode {
     pub id: NodeId,
     pub kind: String,
     pub name: String,
-    /// 本跳被"调用处"的位置（即上一跳调用本节点的 CallSite）。
-    /// 起点（`from`）不携带此项；其余每一跳都有"谁调了我"的位置。
+    /// Where this hop is "called" (i.e. the CallSite at which the previous hop calls this node).
+    /// The start (`from`) does not carry this; every other hop has a "who called me" location.
     #[serde(default)]
     pub call_site: Option<SourceLocation>,
 }
 
-/// 被刻意隐藏的部分 —— 诚实性守门。
+/// Deliberately hidden parts — the honesty gate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiddenInfo {
-    /// 中心节点实际的邻居总数。
+    /// How many neighbours the centre node actually has.
     pub total: usize,
-    /// 本次视图画出来的邻居数。
+    /// How many neighbours this view drew.
+
     pub shown: usize,
-    /// 未画出的邻居按节点种类统计。
+    /// Neighbours not drawn, tallied by node kind.
     pub by_kind: BTreeMap<String, usize>,
-    /// 人类可读说明。
+    /// Human-readable explanation.
     pub note: String,
 }
 
-/// 未解析记账。
+/// Unresolved tally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnresolvedInfo {
     pub code: String,
@@ -307,89 +316,88 @@ pub struct UnresolvedInfo {
     pub location: Option<String>,
 }
 
-/// 无法归因到任何语义入口的**直接**访问（孤儿访问）。
+/// **Direct** accesses that cannot be attributed to any semantic entry point (orphan accesses).
 ///
-/// 资源视角只画语义节点：当访问方是语法节点（Method / Function …）且沿调用链上溯
-/// 找不到任何语义发起者（路由 / 契约 / 定时任务）时，它既画不成语义用户，也不会出现在
-/// 任何提拉边的 `via` 链里 —— 曾是"点亮成语法节点"的理由，但那把资源视角退化成了调用图。
+/// A resource perspective draws semantic nodes only: when the accessor is a syntax node (Method / Function …) and
+/// walking up the call chain finds no semantic initiator (route / contract / scheduled job), it can neither be drawn
+/// as a semantic user nor appear in the `via` chain of any lifted edge — that used to be the reason for "lighting it
+/// up as a syntax node", which degraded the resource perspective into a call graph.
 ///
-/// 现在的处理是**降级而非省略**：不占画布（语法节点信息量低、会挤掉语义节点的额度），
-/// 但如实记账并给出接触点位置 —— 静默省略会让「语义入边 N」与空白画布自相矛盾。
+/// The current treatment is **degradation, not omission**: it takes no canvas space (syntax nodes carry little
+/// information and would crowd out the semantic-node budget), but it is tallied honestly and the contact-point
+/// location is given — omitting it silently would make "semantic in-edges N" contradict an empty canvas.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrphanAccess {
     pub id: NodeId,
-    /// 访问方的节点种类（通常是 `Method` / `Function`）。
+    /// Node kind of the accessor (usually `Method` / `Function`).
     pub kind: String,
     pub name: String,
-    /// 它对中心资源做的事（`ReadsDb` / `WritesCache` …）。
+    /// What it does to the centre resource (`ReadsDb` / `WritesCache` …).
     pub edge_kind: String,
-    /// 接触点位置（`文件:行`），可跳转核对。
+    /// Contact-point location (`file:line`), jumpable for verification.
     #[serde(default)]
     pub location: Option<SourceLocation>,
-    /// 可选：当这次"直连访问"本身是**一条可点击展开的语义边**时（如事件视角的
-    /// `Triggers` 触发点），带上折叠后的边视图（含 `via` 调用链），前端据此打开
-    /// 边证据链抽屉，而不是只打开节点详情。语义节点（消费者）不走这里——它们
-    /// 已升为可见节点、直接画在画布上。
+    /// Optional: when this "direct access" is itself **a semantic edge that can be clicked open** (e.g. the
+    /// `Triggers` trigger point in the event perspective), carry the folded edge view (with its `via` call chain) so
+    /// the frontend opens the edge-evidence drawer instead of just the node detail. Semantic nodes (consumers) do not
+    /// go through here — they are already promoted to visible nodes and drawn on the canvas directly.
     #[serde(default)]
     pub edge: Option<EdgeView>,
 }
 
-/// 对象类视角：以**一个**对象为中心的链路子图。
+/// Object-style perspective: a link subgraph centred on **one** object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectView {
     pub project_id: ProjectId,
     pub perspective: String,
     pub layout: LayoutMode,
     pub center: NodeView,
-    /// `rings[i]` = 距离中心 i+1 跳的节点。
+    /// `rings[i]` = the nodes at i+1 hops from the centre.
     pub rings: Vec<Vec<NodeView>>,
     pub edges: Vec<EdgeView>,
     pub hidden: HiddenInfo,
-    /// 无语义入口的直接访问（孤儿）—— 不画在画布上，但必须记账、可逐条核对。
+    /// Direct accesses with no semantic entry point (orphans) — not drawn on the canvas, but they must be tallied and verifiable one by one.
     #[serde(default)]
     pub orphans: Vec<OrphanAccess>,
     pub unresolved: Vec<UnresolvedInfo>,
-    /// 视角专属结论（表视角=引用数/PII/关键度；路由视角=鉴权/死端点…）。
+    /// Perspective-specific conclusions (table = reference count / PII / criticality; route = auth / dead endpoint…).
     pub conclusions: Value,
-    // 曾在此回带二级筛选器候选（`candidates`）：前端下拉是**按需**单独请求
-    // `/view/{p}/candidates` 的，从不读这个字段，等于每次对象视图都白算一遍
-    // 「取 5000 个候选 + 逐个 BFS 打分」（实测约 110ms，且让响应体多 300 项）。
 }
 
-/// 二级筛选器候选。
+/// A candidate for the level-two filter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub id: NodeId,
     pub name: String,
-    /// 供列表展示的次要信息（如引用数）。
+    /// Secondary information for the list (e.g. reference count).
     pub badge: Option<String>,
-    /// 该候选对象所属子工程（前端按子工程收敛候选时回带，便于联动与显示）。
+    /// The sub-project this candidate belongs to (returned when the frontend narrows candidates by sub-project, for linkage and display).
     pub sub_project_id: Option<SubProjectId>,
 }
 
-/// 聚合视角的聚类框。
+/// A cluster box of an aggregate perspective.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cluster {
     pub key: String,
     pub label: String,
-    /// 框内节点数（可能很大，只给计数而不全画）。
+    /// Number of nodes in the box (can be large; only the count is given rather than drawing all of them).
     pub count: usize,
-    /// 实际画出的样例节点（上限由请求决定）。
+    /// Sample nodes actually drawn (the cap is decided by the request).
     pub members: Vec<NodeView>,
 }
 
-/// 矩阵视角。
+/// A matrix perspective.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixView {
     pub rows: Vec<String>,
     pub cols: Vec<String>,
-    /// `cells[row][col]` = 关联数量。
+    /// `cells[row][col]` = number of associations.
     pub cells: Vec<Vec<u32>>,
     pub row_totals: Vec<u32>,
     pub col_totals: Vec<u32>,
 }
 
-/// 聚合类视角。
+/// An aggregate-style perspective.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregateView {
     pub project_id: ProjectId,
@@ -400,31 +408,32 @@ pub struct AggregateView {
     pub hidden: HiddenInfo,
     pub unresolved: Vec<UnresolvedInfo>,
     pub conclusions: Value,
-    /// 数据不足时的诚实说明（例如图里还没有 Domain 节点）。
+    /// Honest explanation when data is insufficient (e.g. the graph has no Domain node yet).
     pub notice: Option<String>,
 }
 
-/// 边的证据链（"虚线是待验证假设"的落地方式）。
+/// A edge's evidence chain (how "a dashed line is an assumption to verify" is implemented).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeEvidence {
     pub edge: EdgeView,
-    /// `resolved=false` 时说明为什么没解析出来。
+    /// Explains why it was not resolved when `resolved=false`.
     pub reason: Option<String>,
-    /// 证据位置：实边为单点，虚线边为途经的每个 CallSite。
+    /// Evidence locations: a single point for a solid edge, every CallSite passed through for a dashed one.
+
     pub locations: Vec<SourceLocation>,
-    /// 中间跳（若有）。
+    /// Intermediate hops (if any).
     pub via: Vec<String>,
 }
 
-/// 节点的定义位置列表（合成节点会有多个，绝不编造单一位置）。
+/// A node's list of definition locations (a synthetic node has several; a single location is never fabricated).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeLocations {
     pub id: NodeId,
     pub kind: String,
     pub name: String,
-    /// 是否合成节点（决定 UI 是否提示"多处共现"）。
+    /// Whether it is a synthetic node (decides whether the UI warns about "co-occurring in several places").
     pub synthetic: bool,
     pub locations: Vec<SourceLocation>,
-    /// 引用该节点的其它位置数量（用于"另有 N 处引用"）。
+    /// How many other places reference this node (for "N other references").
     pub reference_count: usize,
 }

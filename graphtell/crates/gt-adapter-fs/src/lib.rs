@@ -1,8 +1,8 @@
-//! `gt-adapter-fs` —— 文件系统适配器。
+//! `gt-adapter-fs` — the filesystem adapter.
 //!
-//! 实现 `FileSystem` 与 `FileScanner` 两个出站端口，负责
-//! * 目录遍历与**依赖目录 / 静态资源 / 编译产物**排除
-//! * 标记文件查找（子工程识别）
+//! Implements the two outbound ports `FileSystem` and `FileScanner`, responsible for
+//! * directory traversal and excluding **dependency directories / static assets / build artifacts**
+//! * marker-file lookup (sub-project detection)
 
 pub mod scanner;
 pub mod system;

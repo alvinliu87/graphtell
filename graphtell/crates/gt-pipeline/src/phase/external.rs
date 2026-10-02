@@ -1,25 +1,28 @@
-//! P12 External：循环内的**外部系统调用**（HTTP / 短信 / 邮件 / RPC）。
+//! P12 External: **external system calls** (HTTP / SMS / email / RPC) inside a loop.
 //!
-//! # 动机
+//! # Motivation
 //!
-//! 一次网络往返比一次数据库查询贵一个量级。把它放进循环，等于把接口的耗时
-//! 从"一次远程调用"放大成"N 次"，而且是**串行**放大 —— 比 N+1 更容易拖垮接口。
-//! 典型现场：循环给用户发短信、循环查物流轨迹、循环拉取远程图片。
+//! One network round trip costs an order of magnitude more than one database query. Putting it inside a loop
+//! multiplies an endpoint's latency from "one remote call" into "N", and does so **serially** — it drags an
+//! endpoint down even more reliably than N+1. Typical scenes: sending SMS to users in a loop, querying shipping
+//! tracking in a loop, fetching remote images in a loop.
 //!
-//! 判据与 N+1 完全同构：调用点带 `in_loop` + callee 命中 FKB 的 `external_calls`。
-//! 差别只在名单来源 —— 动词清单放 FKB，内核不认识任何一个名字。
+//! The predicate is exactly isomorphic to N+1: a call site with `in_loop` whose callee hits FKB's
+//! `external_calls`. The only difference is where the list comes from — the verb list lives in FKB, and the kernel
+//! knows none of the names.
 //!
-//! # 为什么不做「有没有重试 / 超时」
+//! # Why "is there a retry / timeout" is not attempted
 //!
-//! 那需要知道调用参数与 SDK 配置，图上没有；这里只报"循环里发生了远程调用"这个
-//! 确凿事实，改法由人判断（批量接口 / 合并请求 / 丢进队列）。
+//! That would need the call arguments and SDK configuration, which the graph does not have; this only reports the
+//! confirmed fact "a remote call happens inside a loop", and the fix is left to a human (batch API / merged
+//! request / push it onto a queue).
 
 use gt_domain::model::{AnnotationChannel, Language, MergeStrategy, NewAnnotation, NodeId, Phase};
 use serde_json::json;
 
 use crate::context::PipelineContext;
 
-/// 循环内外部调用标注（规则用 `has_annotation: ext-call-in-loop` 命中）。
+/// The "external call inside a loop" annotation (rules match it via `has_annotation: ext-call-in-loop`).
 const EXT_IN_LOOP: &str = "ext-call-in-loop";
 
 pub fn run(ctx: &mut PipelineContext) {
@@ -51,11 +54,11 @@ pub fn run(ctx: &mut PipelineContext) {
         count += 1;
     }
 
-    tracing::info!("P12 外部调用完成：循环内远程调用 {} 处", count);
+    tracing::info!("P12 external calls done: {} remote calls inside loops", count);
 }
 
-/// callee 是否是外部系统调用：完整 callee（`Http::get`）或方法名（`curl_exec`）命中
-/// FKB 声明的 `external_calls` 之一。
+/// Whether a callee is an external system call: the full callee (`Http::get`) or the method name (`curl_exec`)
+/// matches one of the `external_calls` declared by FKB.
 fn is_external_call(ctx: &PipelineContext, callee: &str, method: Option<&str>) -> bool {
     if ctx.external_calls.is_empty() {
         return false;

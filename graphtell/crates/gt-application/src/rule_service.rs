@@ -1,16 +1,16 @@
-//! 合规检查用例：在图上运行 [`CheckRule`]，产出 [`Violation`]。
+//! The compliance-check use case: run [`CheckRule`] on the graph to produce [`Violation`].
 //!
-//! # 定位
+//! # Position
 //!
-//! 这是**建图之后**的只读用例：不改节点、不改边，只往诊断表写 `rule:*` 违规。
-//! 之所以直接落成诊断，是因为诊断已经是一等产物（有 severity / location / payload，
-//! 前端 DiagnosticsPage 直接渲染）—— 规则引擎因此不需要新的存储与新的页面。
+//! This is a **read-only** use case after graph building: it changes no nodes, no edges, only writes `rule:*` violations to the diagnostics table.
+//! The reason it lands directly as a diagnostic is that diagnostics are already a first-class product (with severity / location / payload,
+//! the frontend DiagnosticsPage renders them directly) — so the rules engine needs no new storage and no new page.
 //!
-//! # 为什么预装载而不是逐节点查库
+//! # Why preload rather than query the DB node by node
 //!
-//! 一条规则要对成千上万个节点判断「有没有某标注 / 有没有某条边」。
-//! 逐节点 `annotations_of` / `edges_of` 是 N+1 往返（万级节点即秒级抖动），
-//! 这里先一次性把标注、入边、出边、文件路径装进内存，求值全程零往返。
+//! One rule must judge "does this node have a certain annotation / a certain edge" for thousands of nodes.
+//! Per-node `annotations_of` / `edges_of` is N+1 round-trips (tens of thousands of nodes => second-level jitter), so here we load annotations,
+//! in-edges, out-edges and file paths into memory once, and evaluation makes zero round-trips throughout.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,9 +29,9 @@ use serde_json::Value;
 use gt_domain::model::kinds::{is_semantic_edge, AnnotationChannel};
 use gt_domain::port::{NodeFilter, Persistence, RuleProvider};
 
-// ---------------------------------------------------------------- 规则引擎
+// ---------------------------------------------------------------- Rules engine
 
-/// 检查服务。
+/// The check service.
 pub struct RuleService {
     store: Arc<dyn Persistence>,
     rules: Arc<dyn RuleProvider>,
@@ -42,15 +42,15 @@ impl RuleService {
         Self { store, rules }
     }
 
-    /// 全部已装载规则。
+    /// All loaded rules.
     pub fn rules(&self) -> Vec<CheckRule> {
         self.rules.rules().to_vec()
     }
 
-    /// 对工程执行检查。
+    /// Run the check on a project.
     ///
-    /// * `only` —— 只跑给定 id 的规则；为空表示跑全部启用规则。
-    /// * `persist` —— 是否把违规写回诊断表（CLI 预览时可关闭）。
+    /// * `only` — run only rules with the given ids; empty means run all enabled rules.
+    /// * `persist` — whether to write violations back to the diagnostics table (can be turned off for a CLI preview).
     pub fn check(
         &self,
         project_id: ProjectId,
@@ -59,41 +59,31 @@ impl RuleService {
     ) -> Result<CheckReport> {
         let started = Instant::now();
         let all = self.rules.rules();
-        // 工程级规则配置：覆盖全局 enabled、以及规则参数（options）。
+        // Project-level rule config: overrides the global enabled flag and the rule parameters (options).
         let configs = self.store.get_rule_configs(project_id)?;
-        // 生效的启用态：配置覆盖 ?? YAML 全局默认。
+        // Effective enabled state: config override ?? YAML global default.
         let is_enabled = |r: &CheckRule| -> bool {
             configs.get(&r.id).and_then(|c| c.enabled).unwrap_or(r.enabled)
         };
         let selected: Vec<&CheckRule> = all
             .iter()
             .filter(|r| match only {
-                // 显式指定只跑某些规则（如"只跑这条规则"）时忽略启用开关，
-                // 因为那是用户的临时预览意图。
+                // When only certain rules are explicitly named (e.g. "run only this rule"), ignore the enabled switch,
+                // because that is the user's temporary preview intent.
                 Some(ids) => ids.iter().any(|id| id == &r.id),
                 None => is_enabled(r),
             })
             .collect();
 
-        // ---- 0) 环境闸门 + 判据校验：把规则分成「能跑 / 不适用 / 不可用」三类
-        //
-        // 两层缺一不可，它们挡的是不同的失效：
-        //   * 环境闸门（languages / frameworks）—— 规则作者**先验**声明的适用范围。
-        //     PHP 的事件语义（Triggers / Emits）在 Java 工程里压根不存在，
-        //     把 orphan-event 放到纯 Java 工程上跑，会把每个事件节点都报成"没人触发"。
-        //   * 判据校验（RuleRequirements）—— 从谓词**自动推导**的图事实依赖。
-        //     就算语言对得上，某个 FKB 也可能没产出对应标注（如 pii、
-        //     Capability:Authentication），此时 `no_annotation` / `no_capability` 恒真，
-        //     跑出来的全是恒真误报。
         let env = ProjectEnv::load(&*self.store, project_id)?;
         let mut runnable: Vec<(&CheckRule, ParamValues)> = Vec::new();
         let mut not_applicable: Vec<String> = Vec::new();
         let mut unavailable: Vec<String> = Vec::new();
-        // 环境对得上、但判据不成立的规则：显式重跑时要一并清掉它们的旧违规，
-        // 否则"这次跑不了"会被读成"上次的结果是当前的"。
+        // Rules whose environment matches but whose predicate does not hold: on an explicit re-run, clear their old violations too,
+        // otherwise "could not run this time" would be read as "the last result is the current one".
         let mut unavailable_rules: Vec<&CheckRule> = Vec::new();
         for rule in selected {
-            // 合并全局默认与工程覆盖，得到本条规则的最终参数。
+            // Merge the global default and the project override to get this rule's final parameters.
             let opts = configs
                 .get(&rule.id)
                 .map(|c| c.options.clone())
@@ -101,7 +91,7 @@ impl RuleService {
             let params = resolve_param_values(rule, &opts);
             if !rule.applies_to_env(&env.languages, &env.frameworks) {
                 not_applicable.push(format!(
-                    "{}（需要 {}，本工程为 {}）",
+                    "{} (needs {}, this project is {})",
                     rule.id,
                     rule.applies_to.languages.join("/"),
                     env.describe()
@@ -129,7 +119,7 @@ impl RuleService {
             return Ok(report);
         }
 
-        // ---- 1) 候选集：按 (kind, name_contains) 缓存，规则共享同一次查询
+        // ---- 1) Candidate set: cached by (kind, name_contains), rules share the same query ----
         let root = self
             .store
             .get_project(project_id)?
@@ -144,10 +134,6 @@ impl RuleService {
                 if cache.contains_key(&key) {
                     continue;
                 }
-                // `applies_to.kinds` 为空表示**不限种类**（见 RuleScope 的文档）。
-                // 此时必须传 `None`：若传 `Some(NodeKind(""))`，SQL 会变成
-                // `kind = ''`，匹配不到任何节点 —— 规则静默 0 命中，
-                // 与"不限种类"的承诺正好相反。
                 let nodes = self.store.query_nodes(&NodeFilter {
                     project_id,
                     kind: if kind.is_empty() {
@@ -163,7 +149,7 @@ impl RuleService {
             }
         }
 
-        // ---- 2) 预装载：标注 / 入边 / 出边 / 文件路径
+        // ---- 2) Preload: annotations / in-edges / out-edges / file paths ----
         let mut ids: Vec<NodeId> = Vec::new();
         for nodes in cache.values() {
             for n in nodes {
@@ -175,10 +161,6 @@ impl RuleService {
         facts.incoming = self.store.edges_incoming(&ids)?;
         facts.outgoing = self.store.edges_outgoing(&ids)?;
 
-        // ---- 3) 逐规则求值
-        //
-        // 同时记录"跑了但 0 命中"的规则：候选集为空或一条都没匹配上，
-        // 都要显式暴露（见 CheckReport::rules_silent 的说明）。
         let mut violations: Vec<Violation> = Vec::new();
         let mut silent: Vec<String> = Vec::new();
         for (rule, params) in &runnable {
@@ -199,26 +181,21 @@ impl RuleService {
             }
             if hit == 0 {
                 silent.push(if candidates == 0 {
-                    format!("{}（候选集为空：图上没有这类节点）", rule.id)
+                    format!("{} (candidate set empty: no such nodes on the graph)", rule.id)
                 } else {
-                    format!("{}（{} 个候选均未命中）", rule.id, candidates)
+                    format!("{} (none of {} candidates hit)", rule.id, candidates)
                 });
             }
         }
 
-        // ---- 4) 落库：先清旧再写新，保证用户看到的是"当前代码的结论"
-        //
-        // 清理范围**只覆盖本次真正跑过的规则**：跑全量时清空整个 `rule:` 前缀，
-        // 只跑某几条时只清这几条 —— 否则"单独重跑 A 规则"会顺手抹掉 B/C 的结果，
-        // 用户看到的报告会莫名缺一块。
         if persist {
             match only {
                 None => {
                     self.store.clear_diagnostics(project_id, RULE_CODE_PREFIX)?;
                 }
                 Some(_) => {
-                    // `runnable` 现在是 (规则, 参数) 二元组，与 `unavailable_rules`
-                    // 的 `&CheckRule` 类型不同，先统一成规则引用再串联遍历。
+                    // `runnable` is now a (rule, params) pair, a different type from `unavailable_rules`'s `&CheckRule`;
+                    // unify them into rule references first, then chain the iteration.
                     let runnable_rules: Vec<&CheckRule> =
                         runnable.iter().map(|(r, _)| *r).collect();
                     for rule in runnable_rules.iter().chain(unavailable_rules.iter()) {
@@ -228,7 +205,7 @@ impl RuleService {
             }
             let diags: Vec<Diagnostic> = violations.iter().map(|v| v.to_diagnostic()).collect();
             if !diags.is_empty() {
-                // 分批写入：SQLite 单条语句的变量数有上限。
+                // Batch write: a single SQLite statement has a limit on the number of bound variables.
                 for chunk in diags.chunks(500) {
                     self.store.push_diagnostics(chunk)?;
                 }
@@ -252,7 +229,7 @@ impl RuleService {
         Ok(report)
     }
 
-    /// 读取已落库的违规（不重跑规则）。
+    /// Read the already-persisted violations (without re-running rules).
     pub fn violations(
         &self,
         project_id: ProjectId,
@@ -265,10 +242,10 @@ impl RuleService {
         Ok(diags.iter().filter_map(Violation::from_diagnostic).collect())
     }
 
-    /// 已落库违规的轻量汇总（按严重度计数），供菜单角标这类场景使用。
+    /// A lightweight rollup of persisted violations (counted by severity), for things like menu badges.
     ///
-    /// 不重跑规则、不拉全量违规，只取分组计数；建图后会自动跑检查并落库，
-    /// 因此这里看到的是上一次自动（或手动）检查的结论。
+    /// Does not re-run rules or pull all violations, only takes grouped counts; the build auto-runs the check and persists,
+    /// so what is seen here is the conclusion of the last automatic (or manual) check.
     pub fn summary(
         &self,
         project_id: ProjectId,
@@ -290,7 +267,7 @@ impl RuleService {
         Ok(s)
     }
 
-    /// 取某工程全部规则配置覆盖。
+    /// Take all of a project's rule-config overrides.
     pub fn rule_configs(
         &self,
         project_id: ProjectId,
@@ -298,15 +275,15 @@ impl RuleService {
         self.store.get_rule_configs(project_id)
     }
 
-    /// 写入单条规则配置（整行覆盖）。
+    /// Write a single rule's config (whole-row override).
     pub fn set_rule_config(&self, cfg: ProjectRuleConfig) -> Result<()> {
         self.store.set_rule_config(&cfg)
     }
 
-    /// 应用一条**补丁**：省略的字段继承已有覆盖。
+    /// Apply a **patch**: omitted fields inherit the existing override.
     ///
-    /// 直接整行覆盖会踩一个真实的坑：UI 上「启用/停用」和「调参数」是两个独立操作，
-    /// 若每次都写整行，先调好阈值再点开关，参数就被悄悄清空了。
+    /// A whole-row override would hit a real pitfall: on the UI, "enable/disable" and "tune parameters" are two independent operations,
+    /// and if every write is whole-row, tuning the threshold first then clicking the switch silently clears the params.
     pub fn apply_rule_config(&self, project_id: ProjectId, patch: RuleConfigPatch) -> Result<()> {
         let existing = self
             .store
@@ -319,7 +296,7 @@ impl RuleService {
             if enabled.is_none() {
                 enabled = old.enabled;
             }
-            // 补丁里没带 options 时保留旧值；带了的按 key 合并（只覆盖出现的键）。
+            // When the patch carries no options, keep the old value; when it does, merge by key (only overwrite the keys present).
             if let (Some(old_obj), Some(new_obj)) = (old.options.as_object(), options.as_object()) {
                 if new_obj.is_empty() {
                     options = old.options;
@@ -340,12 +317,12 @@ impl RuleService {
         })
     }
 
-    /// 重置某条规则的工程覆盖（回归 YAML 全局默认 + 默认参数）。
+    /// Reset a rule's project override (back to the YAML global default + default params).
     pub fn reset_rule_config(&self, project_id: ProjectId, rule_id: &str) -> Result<()> {
         self.store.delete_rule_config(project_id, rule_id)
     }
 
-    /// 批量应用配置补丁（启用/停用整组、整分类时用）。
+    /// Apply config patches in bulk (when enabling/disabling a whole group or category).
     pub fn batch_rule_config(
         &self,
         project_id: ProjectId,
@@ -358,7 +335,7 @@ impl RuleService {
     }
 }
 
-/// 合规检查的严重度汇总（菜单角标用）。
+/// A severity rollup of compliance-check violations (for menu badges).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CheckSummary {
@@ -368,11 +345,11 @@ pub struct CheckSummary {
     pub info: u64,
 }
 
-/// 工程的技术栈环境 + 图上真实存在的图事实种类。
+/// A project's tech-stack environment + the kinds of graph facts actually present on the graph.
 ///
-/// 两者都是规则的**适用性判据**，但来源不同：
-/// * `languages` / `frameworks` 来自子工程识别（这个工程"是"什么栈）；
-/// * `edge_kinds` / `annotation_kinds` 来自已建成的图（这个工程"产出了"什么事实）。
+/// Both are **applicability criteria** for a rule, but come from different sources:
+/// * `languages` / `frameworks` come from sub-project recognition (what stack this project "is");
+/// * `edge_kinds` / `annotation_kinds` come from the already-built graph (what facts this project "produced").
 struct ProjectEnv {
     languages: Vec<String>,
     frameworks: Vec<String>,
@@ -406,7 +383,7 @@ impl ProjectEnv {
 
     fn describe(&self) -> String {
         let l = if self.languages.is_empty() {
-            "未知".to_string()
+            "unknown".to_string()
         } else {
             self.languages.join("/")
         };
@@ -425,20 +402,20 @@ impl ProjectEnv {
         self.annotation_kinds.iter().any(|(_, k)| k.eq_ignore_ascii_case(kind))
     }
 
-    /// 判据是否成立；返回 `Some(原因)` 表示这条规则在本工程上**不能跑**。
+    /// Whether the criterion holds; returning `Some(reason)` means this rule **cannot run** on this project.
     ///
-    /// 只拦"图上一个都没有"的情况：只要有哪怕一条同名的事实存在，
-    /// 说明产出链路是通的，剩下的（比如只产出了 3 条）属于覆盖率问题，
-    /// 应该由"静默归零"告警去提示，而不是直接停掉规则。
+    /// Only blocks the case "not a single one exists on the graph": as long as even one same-named fact exists,
+    /// the production chain is confirmed working, and the rest (e.g. only 3 were produced) is a coverage issue,
+    /// which should be surfaced by a "silent zero" warning rather than stopping the rule outright.
     fn missing_requirement(&self, req: &RuleRequirements) -> Option<String> {
         for e in &req.edges {
             if !self.has_edge(e) {
-                return Some(format!("图上没有任何 {e} 边，`no/has_{e}` 判据不成立"));
+                return Some(format!("no {e} edges on the graph, the `no/has_{e}` criterion does not hold"));
             }
         }
         for a in &req.annotations {
             if !self.has_annotation(a) {
-                return Some(format!("图上没有任何 {a} 标注，`no/has_annotation` 判据不成立"));
+                return Some(format!("no {a} annotations on the graph, the `no/has_annotation` criterion does not hold"));
             }
         }
         if !req.capabilities.is_empty() {
@@ -448,7 +425,7 @@ impl ProjectEnv {
                 .any(|(ch, _)| ch == AnnotationChannel::CAPABILITY);
             if !any_cap {
                 return Some(format!(
-                    "图上一个 {} 通道标注都没有，能力判据（{}）不成立",
+                    "no annotation on the {} channel exists on the graph, the capability criterion ({}) does not hold",
                     AnnotationChannel::CAPABILITY,
                     req.capabilities.join("/")
                 ));
@@ -467,7 +444,7 @@ fn severity_key(s: Severity) -> &'static str {
     }
 }
 
-/// 规则作用的节点种类；为空时退化为"不限种类"（用空串作缓存键）。
+/// The node kind a rule acts on; empty falls back to "any kind" (uses the empty string as the cache key).
 fn scope_kinds(rule: &CheckRule) -> Vec<String> {
     if rule.applies_to.kinds.is_empty() {
         vec![String::new()]
@@ -511,18 +488,18 @@ fn build_violation(
     }
 }
 
-// ---------------------------------------------------------------- 求值上下文
+// ---------------------------------------------------------------- Evaluation context
 
-/// 一次检查预装载的图事实。
+/// Graph facts preloaded for one check.
 ///
-/// 只读、不可变 —— 所有规则的求值都在这份快照上进行，保证同一份输入得到同一份输出。
+/// Read-only, immutable — every rule's evaluation runs on this snapshot, guaranteeing the same input yields the same output.
 #[derive(Default)]
 struct Facts {
     annotations: HashMap<i64, Vec<Annotation>>,
     incoming: HashMap<i64, Vec<Edge>>,
     outgoing: HashMap<i64, Vec<Edge>>,
     files: HashMap<i64, String>,
-    /// 工程根路径（合成节点的 `locations` 是相对路径，需要它拼成绝对路径）。
+    /// The project root path (synthesised nodes' `locations` are relative paths, needing it to assemble an absolute path).
     root: Option<std::path::PathBuf>,
 }
 
@@ -531,7 +508,7 @@ impl Facts {
         Self { root, ..Default::default() }
     }
 
-    /// 节点是否有给定种类的标注（大小写不敏感）。
+    /// Whether the node has an annotation of a given kind (case-insensitive).
     fn has_annotation(&self, node: NodeId, kind: &str) -> bool {
         self.annotations
             .get(&node.get())
@@ -539,9 +516,9 @@ impl Facts {
             .unwrap_or(false)
     }
 
-    /// 节点（及其作用域链上）是否具备给定能力。
+    /// Whether the node (and its scope chain) has a given capability.
     ///
-    /// 能力标注在 `Capability` 通道上（`Authentication` / `RateLimiting`）。
+    /// Capabilities are annotated on the `Capability` channel (`Authentication` / `RateLimiting`).
     fn has_capability(&self, node: NodeId, cap: &str) -> bool {
         self.annotations
             .get(&node.get())
@@ -553,7 +530,7 @@ impl Facts {
             .unwrap_or(false)
     }
 
-    /// 扇入：语义入边条数（口径与视图层一致，避免"入边 N"对不上画布）。
+    /// Fan-in: the number of semantic in-edges (same definition as the view layer, so "N in-edges" matches the canvas).
     fn fan_in(&self, node: NodeId) -> u64 {
         self.incoming
             .get(&node.get())
@@ -583,7 +560,7 @@ impl Facts {
     }
 }
 
-/// 节点的"可检索文本"：name / fqn / identity。
+/// A node's "retrievable text": name / fqn / identity.
 fn node_text(node: &Node) -> String {
     let mut s = node.name.clone();
     if let Some(fqn) = &node.fqn {
@@ -605,7 +582,7 @@ fn property_value(node: &Node, name: &str) -> Option<String> {
     }
 }
 
-/// 全部谓词满足才算命中（`when` 为空 = 范围内全部命中）。
+/// All predicates must hold to be a hit (`when` empty = all in scope are hits).
 fn matches_all(when: &[CheckPredicate], node: &Node, facts: &Facts, params: &ParamValues) -> bool {
     when.iter().all(|p| eval(p, node, facts, params))
 }

@@ -1,21 +1,22 @@
-# 前端（JS / TS）生态的死代码规则。
+# Dead-code rules for the front-end (JS / TS) ecosystem.
 #
-# 为什么必须单开 `rules/js/` 并声明 `languages: [javascript]`：
-# `EventBus` 节点与 `Emits` / `ListensTo` 边是**前端事件总线**的语义，
-# 由 js/uni-app 的 FKB 产出。放到 global 层会在纯后端工程上跑，
-# 那时图上根本没有这些节点 —— 规则会以"0 命中"收场，被读成"没问题"。
+# Why `rules/js/` needs its own directory with `languages: [javascript]`:
+# `EventBus` nodes and the `Emits` / `ListensTo` edges are the semantics of a **front-end event bus**,
+# produced by the js / uni-app FKB. Placing them in the global layer would run them on pure backend
+# projects, where the graph has none of these nodes at all — the rule would end with "0 hits" and be
+# read as "no problem".
 #
-# `orphan-*` 那三条是 PHP 的**事件 / 队列**语义（Triggers / PublishesTo），
-# 与本文件的事件总线不是一回事，两者分目录放置。
+# The three `orphan-*` rules are PHP's **event / queue** semantics (Triggers / PublishesTo), a
+# different thing from the event bus in this file, so the two live in separate directories.
 
 rules:
-  # 方向一：有人发、没人听 —— 广播发出后被丢弃。
+  # Direction one: someone publishes, nobody listens — the broadcast is dropped.
   - id: eventbus-emitted-without-listener
-    title: 事件被发布但没人监听
+    title: Event published but nobody listens
     description: >-
-      EventBus 节点有 Emits 入边（发布方）但没有任何 ListensTo 入边（监听方）。
-      典型成因是重构时把监听方删了、emit 那行忘了删 —— 这类代码不会报错，
-      只是**静默失效**，往往几个月后才发现。
+      An EventBus node has Emits in-edges (publisher) but no ListensTo in-edge (listener).
+      The typical cause is a refactor that removed the listener but left the emit line — this kind of
+      code raises no error, it just **silently stops working**, often discovered months later.
     severity: info
     category: deadcode
     applies_to:
@@ -24,17 +25,17 @@ rules:
     when:
       - has_incoming: Emits
       - no_incoming: ListensTo
-    message: "事件 {name} 有发布方但图上没有监听者 —— 广播发出后无人处理（也可能是监听方用动态名注册、图没解析到）"
-    remediation: "确认监听方是否仍存在；若已废弃则删除 emit，别留一个永远没人接的广播"
+    message: "Event {name} has a publisher but no listener on the graph — the broadcast is handled by nobody (or the listener registered under a dynamic name the graph could not resolve)"
+    remediation: "Confirm whether the listener still exists; if abandoned, delete the emit rather than keeping a broadcast nobody receives"
 
-  # 方向二：有人听、没人发 —— 监听方成了死代码。
-  # 与方向一**不能合并**成一条：两者修法相反（删 emit vs 删 listener），
-  # 合并后文案只能写成含糊的"不匹配"，等于把判断推回给用户。
+  # Direction two: someone listens, nobody publishes — the listener becomes dead code.
+  # It **must not be merged** with direction one: the fixes are opposite (delete the emit vs delete the
+  # listener), and merging would force vague wording like "mismatch", pushing the judgement back to the user.
   - id: eventbus-listened-without-emitter
-    title: 事件被监听但从未发布
+    title: Event listened to but never published
     description: >-
-      EventBus 节点有 ListensTo 入边（监听方）但没有任何 Emits 入边（发布方）。
-      监听方因此永远不会触发 —— 它是**死代码**，删掉它不会有任何行为变化。
+      An EventBus node has ListensTo in-edges (listener) but no Emits in-edge (publisher).
+      The listener therefore never fires — it is **dead code**, and deleting it changes no behaviour.
     severity: info
     category: deadcode
     applies_to:
@@ -43,19 +44,21 @@ rules:
     when:
       - has_incoming: ListensTo
       - no_incoming: Emits
-    message: "事件 {name} 有监听方但图上没有任何发布者 —— 该监听永远不会触发（也可能是发布方用动态名、图没解析到）"
-    remediation: "确认发布方是否已被删除；若是，删掉这段监听（它不可能被执行）"
+    message: "Event {name} has a listener but no publisher on the graph — the listener can never fire (or the publisher uses a dynamic name the graph could not resolve)"
+    remediation: "Confirm whether the publisher was deleted; if so, remove this listener (it can never execute)"
 
-  # 方向三：两端都没有 —— 彻底孤儿。前两条要求"至少一端存在"才能判断修法
-  # （删 emit vs 删 listener），这条则两端皆空，整条总线在图上孤立。
-  # 与 `orphan-event`（PHP 的 Triggers 事件）/ `orphan-queue`（PHP 的 PublishesTo 队列）
-  # 不是一回事：这里是前端事件总线（Emits / ListensTo）。
+  # Direction three: neither end — a total orphan. The first two require "at least one end exists"
+  # before a fix can be judged (delete emit vs delete listener); this one has both ends empty, so the
+  # whole bus is isolated on the graph.
+  # This is not the same as `orphan-event` (PHP Triggers events) / `orphan-queue` (PHP PublishesTo
+  # queues): here it is the front-end event bus (Emits / ListensTo).
   - id: eventbus-orphan
-    title: 既没人发也没人听的事件总线
+    title: Event bus with neither publisher nor listener
     description: >-
-      EventBus 节点既没有 Emits 入边（发布方）也没有 ListensTo 入边（监听方）。
-      与另外两条"方向不对称"的规则不同，这条是**彻底孤儿**：两端都没有，
-      整条总线在图上孤立 —— 多半是重构遗留，或发布 / 监听都用了动态名导致图没解析到。
+      An EventBus node has neither Emits in-edges (publisher) nor ListensTo in-edges (listener).
+      Unlike the other two "asymmetric" rules, this one is a **total orphan**: both ends are missing and
+      the whole bus is isolated on the graph — usually leftover from a refactor, or both publishing and
+      listening use dynamic names the graph could not resolve.
     severity: info
     category: deadcode
     applies_to:
@@ -64,5 +67,5 @@ rules:
     when:
       - no_incoming: Emits
       - no_incoming: ListensTo
-    message: "事件总线 {name} 既没有任何发布方也没有任何监听者 —— 图上的彻底孤儿（也可能是动态名导致未解析）"
-    remediation: "确认该事件总线是否还在用；若已废弃则整体删除，别留一条两端都空的总线"
+    message: "Event bus {name} has neither a publisher nor a listener — a total orphan on the graph (or dynamic names prevented resolution)"
+    remediation: "Confirm whether this event bus is still used; if abandoned, delete it entirely rather than keeping a bus with both ends empty"

@@ -1,12 +1,13 @@
-//! 视图层「表 → 列」的端到端自检（合成工程，CI 可跑）。
+//! End-to-end self-check of the view layer's "table -> columns" (synthetic project, runs in CI).
 //!
-//! 列**刻意不作为独立节点画进折叠视图**（`Column` 不是语义节点 —— 几十张表 × 十几列
-//! 会把画布撑爆）。但"点开一张表看看有哪些字段"是刚需，故由 `NodeView.columns`
-//! 把列作为**节点属性**带出来：折叠视图里不占位，点开表才看到。
+//! Columns are **deliberately not drawn as independent nodes in the folded view** (`Column` is not a semantic node
+//! — dozens of tables x a dozen columns each would burst the canvas). But "open a table and see which fields it
+//! has" is a hard requirement, so `NodeView.columns` carries columns out as a **node property**: they occupy no
+//! space in the folded view and only appear once the table is opened.
 //!
-//! 两条来源路径都要覆盖：
-//! * PHP：`Table --HasColumn--> Column`（列挂在表下，来自权威 schema / migration）；
-//! * Node / TypeORM：`Table <--MapsTo-- 实体类 --HasColumn--> Column`（列挂在实体类上）。
+//! Both source paths are covered:
+//! * PHP: `Table --HasColumn--> Column` (columns hang off the table, from the authoritative schema / migration);
+//! * Node / TypeORM: `Table <--MapsTo-- entity class --HasColumn--> Column` (columns hang off the entity class).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,7 +26,7 @@ struct Built {
     project_id: ProjectId,
 }
 
-/// 用合成工程跑一次完整建图（PHP：SQL 安装脚本；Node：TypeORM 实体）。
+/// Run one complete graph build on a synthetic project (PHP: an SQL install script; Node: a TypeORM entity).
 fn build(root: PathBuf) -> Built {
     let data_dir = std::env::temp_dir().join(format!(
         "graphtell-viewcols-{}-{}",
@@ -46,7 +47,7 @@ fn build(root: PathBuf) -> Built {
         port: 0,
         ui_dir: None,
     };
-    let container = Container::new(config).expect("容器装配不应失败");
+    let container = Container::new(config).expect("container assembly should not fail");
     let projects = ProjectService::new(
         container.store.clone() as Arc<dyn Persistence>,
         Arc::new(SystemClock),
@@ -63,14 +64,15 @@ fn build(root: PathBuf) -> Built {
             description: None,
             config: None,
         })
-        .expect("创建工程不应失败");
+        .expect("creating the project should not fail");
     pipeline
         .run(project.id, &NoopObserver)
-        .expect("建图不应失败");
+        .expect("the graph build should not fail");
     Built { container, project_id: project.id }
 }
 
-/// 名为 `table` 的 Table 节点的 `columns`（按名取节点 → 取它的视图）。
+/// The `columns` of the Table node named `table` (find the node by name -> take its view).
+
 fn columns_of_table(b: &Built, table: &str) -> Option<Vec<String>> {
     let store = b.container.store.clone();
     let nodes = store
@@ -84,7 +86,7 @@ fn columns_of_table(b: &Built, table: &str) -> Option<Vec<String>> {
         .expect("query");
     let node = nodes.into_iter().find(|n| n.name == table)?;
     let views = ViewService::new(store.clone(), b.container.views());
-    // 以该表为中心取对象视角（折叠视图）：`center` 就是它的 NodeView
+    // Take the object perspective centred on that table (folded view): `center` is its NodeView
     let view = views
         .object_view(b.project_id, "table", node.id, Some(1))
         .ok()?;
@@ -105,7 +107,7 @@ fn temp_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// PHP：列挂在表下（`Table --HasColumn--> Column`）。
+/// PHP: columns hang off the table (`Table --HasColumn--> Column`).
 #[test]
 fn php_table_view_carries_columns() {
     let d = temp_dir("php");
@@ -138,12 +140,12 @@ class User extends Model
     let cols = columns_of_table(&b, "user").unwrap_or_default();
     assert!(
         cols.iter().any(|c| c == "email") && cols.iter().any(|c| c == "phone"),
-        "user 表的视图应带上列 email / phone（且是裸列名），实际：{cols:?}"
+        "the view of the user table should carry the columns email / phone (as bare column names), got: {cols:?}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// Node / TypeORM：列挂在实体类上，表要经 `MapsTo` 反向绕一跳。
+/// Node / TypeORM: columns hang off the entity class, so the table has to detour one hop back through `MapsTo`.
 #[test]
 fn node_table_view_carries_columns_via_entity() {
     let d = temp_dir("node");
@@ -176,7 +178,7 @@ export class UserEntity {
     let cols = columns_of_table(&b, "user").unwrap_or_default();
     assert!(
         cols.iter().any(|c| c == "username") && cols.iter().any(|c| c == "email"),
-        "user 表的视图应经 MapsTo 取到实体类的列 username / email，实际：{cols:?}"
+        "the view of the user table should get the entity class columns username / email via MapsTo, got: {cols:?}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -1,4 +1,4 @@
-//! 图模型：节点、边、标注、别名、符号表。
+//! Graph model: nodes, edges, annotations, aliases, symbol table.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -7,7 +7,7 @@ use super::ids::{EdgeId, FileId, NodeId, ProjectId, SubProjectId};
 use super::kinds::{AnnotationChannel, EdgeKind, NodeKind, Phase, SynthesizedKind};
 use crate::model::kinds::Language;
 
-/// 源码位置。
+/// A source location.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Span {
     pub start_line: u32,
@@ -16,35 +16,36 @@ pub struct Span {
     pub end_byte: u32,
 }
 
-/// 图节点。
+/// A graph node.
 ///
-/// *语法节点* 由 CfAst 阶段从语言语法直接创建；
-/// *合成节点* 由 Synthesize 阶段按 FKB 规则从语义汇聚而成（如 `Table`、`HttpContract`）。
+/// A *syntax node* is created directly from language syntax by the CfAst phase;
+/// a *synthetic node* is aggregated from semantics by the Synthesize phase according to FKB rules (e.g. `Table`,
+/// `HttpContract`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub project_id: ProjectId,
     pub sub_project_id: Option<SubProjectId>,
     pub kind: NodeKind,
-    /// 短名，如 `StoreOrderServices`。
+    /// Short name, e.g. `StoreOrderServices`.
     pub name: String,
-    /// 完全限定名，如 `app\services\order\StoreOrderServices`。
-    /// 合成节点没有 FQN，使用 [`Node::identity`]。
+    /// Fully qualified name, e.g. `app\services\order\StoreOrderServices`.
+    /// A synthetic node has no FQN and uses [`Node::identity`].
     pub fqn: Option<String>,
-    /// 合成节点的幂等身份键；语法节点为 `None`。
+    /// The idempotent identity key of a synthetic node; `None` for a syntax node.
     pub identity: Option<IdentityKey>,
     pub file_id: Option<FileId>,
     pub span: Span,
     pub language: Language,
-    /// 产生该节点的阶段。
+    /// The phase that produced this node.
     pub phase: Phase,
     pub confidence: f32,
-    /// 语言/框架相关的扩展字段（如 `I18nKey.texts`、`Table.columns`）。
+    /// Language / framework-specific extension fields (e.g. `I18nKey.texts`, `Table.columns`).
     pub properties: Value,
 }
 
 impl Node {
-    /// 用于展示的限定名：优先 FQN，其次 identity，最后短名。
+    /// The qualified name for display: FQN first, then identity, then the short name.
     pub fn display_name(&self) -> String {
         if let Some(fqn) = &self.fqn {
             return fqn.clone();
@@ -56,10 +57,10 @@ impl Node {
     }
 }
 
-/// 新建节点入参。
+/// Input for creating a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewNode {
-    /// 由流水线分配的主键；`None` 表示交由数据库生成。
+    /// Primary key assigned by the pipeline; `None` means the database generates it.
     pub id: Option<NodeId>,
     pub project_id: ProjectId,
     pub sub_project_id: Option<SubProjectId>,
@@ -95,22 +96,23 @@ impl NewNode {
     }
 }
 
-/// 合成节点的**幂等身份键**。
+/// The **idempotent identity key** of a synthetic node.
 ///
-/// 这是整个 Synthesize 阶段的核心：
-/// 三条不同规则（`Db::name('store_order')`、Model 的 `$table` 属性、类名约定）
-/// 只要算出相同的 `IdentityKey`，就必须合并成同一个节点。
+/// This is the core of the whole Synthesize phase:
+/// three different rules (`Db::name('store_order')`, a Model's `$table` property, and a class-name convention)
+/// must merge into one node whenever they compute the same `IdentityKey`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IdentityKey {
-    /// 身份类型：`Fqn` / `Named` / `ContractId`，可扩展。
+    /// Identity type: `Fqn` / `Named` / `ContractId`, extensible.
     pub kind: SynthesizedKind,
-    /// 归一化后的值，如 `store_order`、`order.pay_success`、`POST /apple_login`。
+    /// The normalised value, e.g. `store_order`, `order.pay_success`, `POST /apple_login`.
     pub value: String,
-    /// 可选的作用域前缀（如缓存的 `side`：`frontend` / `backend`）。
+    /// An optional scope prefix (e.g. a cache's `side`: `frontend` / `backend`).
     ///
-    /// 仅用于**幂等合并区分**与持久化索引（`key()`），**不影响展示名 `value`**。
-    /// 例如前端 `uni.setStorageSync('token')` 与后端 `Cache::get('token')` 同名，
-    /// 必须合成两个独立节点；把 `side` 收进 `scope` 即可，而节点的展示名仍干净为 `token`。
+    /// Used only for **idempotent-merge distinction** and the persistence index (`key()`); it does **not affect the
+    /// display name `value`**. For example, the front end's `uni.setStorageSync('token')` and the back end's
+    /// `Cache::get('token')` share a name and must become two independent nodes; folding `side` into `scope` achieves
+    /// that while the node's display name stays cleanly `token`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
 }
@@ -122,7 +124,7 @@ impl IdentityKey {
     pub fn named(value: impl Into<String>) -> Self {
         Self { kind: SynthesizedKind(SynthesizedKind::NAMED.to_string()), value: value.into(), scope: None }
     }
-    /// 带作用域的身份（展示名不变，仅合并键区分）。
+    /// An identity with a scope (the display name is unchanged, only the merge key differs).
     pub fn named_scoped(value: impl Into<String>, scope: impl Into<String>) -> Self {
         Self {
             kind: SynthesizedKind(SynthesizedKind::NAMED.to_string()),
@@ -137,14 +139,14 @@ impl IdentityKey {
             scope: None,
         }
     }
-    /// 给现有身份附加作用域（链式调用）。
+    /// Attach a scope to an existing identity (chainable).
     pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
         self.scope = Some(scope.into());
         self
     }
-    /// 用于数据库唯一索引与跨规则比对的字符串形式。
+    /// The string form used for the database unique index and for cross-rule comparison.
     ///
-    /// `scope` 一旦存在即拼进键，确保同 `value` 不同端的节点不会合并。
+    /// Once `scope` exists it is folded into the key, so nodes with the same `value` on different ends never merge.
     pub fn key(&self) -> String {
         match &self.scope {
             Some(s) => format!("{}:{}:{}", self.kind, s, self.value),
@@ -152,10 +154,10 @@ impl IdentityKey {
         }
     }
 
-    /// 仅对 `ContractId` 有效：拆出 `(METHOD, /path)`。
+    /// Valid only for `ContractId`: split out `(METHOD, /path)`.
     ///
-    /// 身份值为 `"{METHOD} {path}"`（见 [`IdentityKey::contract`]），
-    /// method 已是大写；path 不含空格。
+    /// The identity value is `"{METHOD} {path}"` (see [`IdentityKey::contract`]); the method is already upper-case and
+    /// the path contains no spaces.
     pub fn contract_parts(&self) -> Option<(String, String)> {
         if self.kind.as_str() != SynthesizedKind::CONTRACT_ID {
             return None;
@@ -167,12 +169,12 @@ impl IdentityKey {
     }
 }
 
-/// 通配 HTTP 方法：代表「不限方法」。
+/// The wildcard HTTP method: means "no method restriction".
 ///
-/// ThinkPHP 自动路由（PATH_INFO 约定）与 `Route::rule` 在源码里没有绑定具体
-/// 方法，等价于"接受任意 HTTP 方法"。这类契约桥应被视为可匹配任意前端调用方法，
-/// 而非一个具体动词 —— 建图时与前端 `POST`/`GET` 调用汇聚到同一个节点，读写
-/// 启发式也据此跳过"未知→读"的误判。
+/// ThinkPHP auto-routing (the PATH_INFO convention) and `Route::rule` bind no concrete method in the source, so they
+/// are equivalent to "accept any HTTP method". This kind of contract bridge should be treated as matching any
+/// front-end call method rather than as a concrete verb — during graph building it converges with front-end `POST` /
+/// `GET` calls onto one node, and the read/write heuristics use that to skip the "unknown -> read" misjudgement.
 pub fn is_wildcard_http_method(method: &str) -> bool {
     matches!(method.to_ascii_uppercase().as_str(), "ANY" | "RULE")
 }
@@ -183,7 +185,7 @@ impl std::fmt::Display for IdentityKey {
     }
 }
 
-/// 图边。
+/// A graph edge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub id: EdgeId,
@@ -196,7 +198,7 @@ pub struct Edge {
     pub properties: Value,
 }
 
-/// 节点概要（供视图层一次性预加载，取代逐个 `get_node` 往返）。
+/// A node summary (so the view layer can preload in one shot instead of round-tripping `get_node` one by one).
 #[derive(Debug, Clone)]
 pub struct NodeSummary {
     pub id: i64,
@@ -206,7 +208,7 @@ pub struct NodeSummary {
     pub sub_project_id: Option<i64>,
 }
 
-/// 新建边入参。
+/// Input for creating an edge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewEdge {
     pub project_id: ProjectId,
@@ -232,17 +234,17 @@ impl NewEdge {
     }
 }
 
-/// 标注合并策略。
+/// Annotation merge strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum MergeStrategy {
-    /// 同 kind 只保留 confidence 最大的一条。
+    /// Keep only the highest-confidence entry per kind.
     MaxByKind,
-    /// 同 kind 可共存（例如一个类既被 `where` 净化、又被 `whereRaw` 污染）。
+    /// Several entries of the same kind may coexist (e.g. a class both sanitised by `where` and tainted by `whereRaw`).
     Coexist,
-    /// 累积到数组（capability 投影 / texts 合并）。
+    /// Accumulate into an array (capability projection / merging `texts`).
     Accumulate,
-    /// 直接覆盖。
+    /// Overwrite directly.
     Replace,
 }
 
@@ -252,9 +254,9 @@ impl Default for MergeStrategy {
     }
 }
 
-/// 标注：挂在节点上的语义标签。
+/// An annotation: a semantic tag attached to a node.
 ///
-/// 分通道（[`AnnotationChannel`]）存放，互不干扰 —— 一个节点可以同时有
+/// Stored per channel ([`AnnotationChannel`]) so they do not interfere — one node can have
 /// `FkbMark(pii.phone)`、`Taint(sink:RawSql)`、`Alias(event_name)`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Annotation {
@@ -264,12 +266,12 @@ pub struct Annotation {
     pub kind: String,
     pub subkind: Option<String>,
     pub confidence: f32,
-    /// 证据：`{ hook, location, source }`。
+    /// Evidence: `{ hook, location, source }`.
     pub evidence: Value,
     pub phase: Phase,
 }
 
-/// 新建标注入参。
+/// Input for creating an annotation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewAnnotation {
     pub node_id: NodeId,
@@ -282,11 +284,11 @@ pub struct NewAnnotation {
     pub merge: MergeStrategy,
 }
 
-/// 别名索引条目（P3/P6 注册，P7 解析时查询）。
+/// An alias index entry (registered by P3/P6, queried during P7 resolution).
 ///
-/// 支持复合键：`(namespace, key, qualifier)`。
-/// 例如获取器必须是 `("accessor", "status_text", Some("app\\model\\order\\StoreOrder"))`，
-/// 否则 `StoreOrder::status_text` 与 `User::status_text` 会撞名。
+/// Supports a composite key: `(namespace, key, qualifier)`.
+/// For example an accessor must be `("accessor", "status_text", Some("app\\model\\order\\StoreOrder"))`, otherwise
+/// `StoreOrder::status_text` and `User::status_text` collide.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AliasEntry {
     pub project_id: ProjectId,
@@ -298,24 +300,24 @@ pub struct AliasEntry {
     pub evidence: Value,
 }
 
-/// 权威符号表条目（P3 装载，供 P5/P6/P7 查询）。
+/// An authoritative symbol-table entry (loaded by P3, queried by P5/P6/P7).
 ///
-/// 例如 `schema`（203 张表及其列）、`config_keys`、`i18n`、`facade_map`、`route_list`。
+/// For example `schema` (203 tables with their columns), `config_keys`, `i18n`, `facade_map`, `route_list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolEntry {
     pub project_id: ProjectId,
-    /// 表名，如 `schema` / `config_keys` / `i18n`。
+    /// Table name, e.g. `schema` / `config_keys` / `i18n`.
     pub table: String,
-    /// 表内主键。
+    /// Primary key within the table.
     pub key: String,
-    /// 任意 JSON 载荷。
+    /// Arbitrary JSON payload.
     pub value: Value,
 }
 
-/// 流水线诊断信息（冲突、缺失、未知解析等）。
+/// Pipeline diagnostic information (conflicts, missing pieces, unresolved references, etc.).
 ///
-/// 设计为**一等产物**：`AnnotateTargetMissing`、`UnresolvedLink` 等
-/// 本身就是有价值的发现（例如"路由指向不存在的 handler"= 点击即 500）。
+/// Designed as a **first-class product**: `AnnotateTargetMissing`, `UnresolvedLink` and others are themselves
+/// valuable findings (for example "a route points at a handler that does not exist" = a click returns 500).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub project_id: ProjectId,
@@ -337,7 +339,7 @@ pub enum Severity {
     Critical,
 }
 
-/// 单次流水线运行的统计。
+/// Statistics for one pipeline run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PhaseReport {
     pub phase: String,

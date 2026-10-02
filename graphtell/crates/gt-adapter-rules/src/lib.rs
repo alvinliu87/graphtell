@@ -1,9 +1,9 @@
-//! `gt-adapter-rules` —— 合规规则（Check）适配器。
+//! `gt-adapter-rules` — the compliance-rule (Check) adapter.
 //!
-//! 把 YAML 声明的检查规则装载为领域模型 [`CheckRule`]，并实现 [`RuleProvider`]
-//! 出站端口。
+//! Loads check rules declared in YAML into the domain model [`CheckRule`] and implements the
+//! [`RuleProvider`] outbound port.
 //!
-//! 内核不认识任何具体规则；新增一条规则 = 在 `rules/` 加一份 YAML。
+//! The kernel knows no concrete rule; adding a rule = adding one YAML file under `rules/`.
 
 pub mod loader;
 

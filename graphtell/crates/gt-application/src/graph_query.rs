@@ -1,4 +1,4 @@
-//! 图查询用例（供 UI 浏览与检索）。
+//! Graph query use cases (for the UI to browse and search).
 
 use std::sync::Arc;
 
@@ -10,12 +10,12 @@ use gt_domain::model::{
 use gt_domain::port::{EdgeDirection, GraphStats, NodeFilter, Persistence};
 use serde::{Deserialize, Serialize};
 
-/// 图查询服务。
+/// The graph query service.
 pub struct GraphQueryService {
     store: Arc<dyn Persistence>,
 }
 
-/// 非规则诊断的严重度汇总（菜单角标用）。
+/// Severity rollup of non-rule diagnostics (for menu badges).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DiagnosticSummary {
@@ -23,26 +23,29 @@ pub struct DiagnosticSummary {
     pub error: u64,
     pub warning: u64,
     pub info: u64,
-    /// **暂无解析器的语言**（`go` / `rust` …），来自 P2 写入的 `unsupported_languages` 符号表。
+    /// **Languages with no parser yet** (`go` / `rust` …), from the `unsupported_languages` symbol table written by
+    /// P2.
     ///
-    /// 建图诊断里也有一条 `NoParserForLanguage`，但语言名只写在文案里，
-    /// 界面要拿它出横幅就得反解字符串。这里给一份结构化的，供 UI 直接读。
+    /// There is also a `NoParserForLanguage` build diagnostic, but the language name there only appears inside the
+    /// copy, so a banner in the UI would have to parse the string back out. This gives a structured version the UI
+    /// can read directly.
     #[serde(default)]
     pub unsupported_languages: Vec<String>,
-    /// 按**问题类型**（诊断 code）分开的条目数，同一 code 的不同严重度各占一行。
+    /// Entry counts split by **issue type** (diagnostic code); different severities of one code each get their own
+    /// row.
     ///
-    /// 供 UI 把「445 条诊断」讲成「6 类问题」：一条引擎诊断会在几百处重复触发，
-    /// 只给总数会让用户把"同一件事发生 349 次"读成"349 个问题"。
-    /// `#[serde(default)]` 保证老前端 / 老快照缺该字段时不炸。
+    /// So the UI can say "6 kinds of problems" instead of "445 diagnostics": one engine diagnostic repeats at
+    /// hundreds of places, and giving only the total makes users read "the same thing happened 349 times" as "349
+    /// problems". `#[serde(default)]` keeps old frontends / old snapshots from blowing up when the field is absent.
     #[serde(default)]
     pub by_code: Vec<DiagnosticCodeCount>,
 }
 
-/// 一类诊断（同一个 `code` + 同一严重度）的条目数。
+/// The entry count of one diagnostic kind (the same `code` + the same severity).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticCodeCount {
     pub code: String,
-    /// `critical` / `error` / `warning` / `info`（与落库口径一致）。
+    /// `critical` / `error` / `warning` / `info` (the same convention as what is persisted).
     pub severity: String,
     pub count: u64,
 }
@@ -89,21 +92,24 @@ impl GraphQueryService {
         self.store.list_symbols(project_id, table)
     }
 
-    /// **建图期**诊断（根缺失、断链、identity 冲突等），排除合规违规。
+    /// **Build-time** diagnostics (missing root, broken links, identity conflicts, etc.), excluding compliance
+    /// violations.
     ///
-    /// 必须排除 `rule:` 前缀，且与 [`Self::diagnostics_summary`] 同口径：
-    /// 建图诊断与合规违规混在同一张表、只靠 `LIMIT` 截断的话，
-    /// 谁露出来取决于**写入顺序**（合规违规后写、id 更大，会把建图诊断整段挤走），
-    /// 于是页面出现"角标 0 error、表格里也是一堆不相关的东西"。
+    /// The `rule:` prefix must be excluded, and the convention must match [`Self::diagnostics_summary`]:
+    /// build diagnostics and compliance violations live in the same table, so with only a `LIMIT` to cut them off,
+    /// which ones surface depends on the **write order** (violations are written later with larger ids, so they push
+    /// the whole build-diagnostic block out), and the page ends up showing "badge 0 errors, and a pile of unrelated
+    /// things in the table".
     pub fn diagnostics(&self, project_id: ProjectId, limit: u32) -> Result<Vec<Diagnostic>> {
         self.store
             .list_diagnostics_excluding(project_id, RULE_CODE_PREFIX, limit)
     }
 
-    /// 非规则诊断的严重度汇总（菜单角标用）。
+    /// A severity rollup of non-rule diagnostics (for menu badges).
     ///
-    /// 诊断页展示的是"非规则"诊断（根缺失、断链、identity 冲突等），
-    /// 规则违规已单独归到合规检查，这里排除 `rule:` 前缀避免重复计数。
+    /// The diagnostics page shows "non-rule" diagnostics (missing root, broken links, identity conflicts, etc.);
+    /// rule violations already have their own compliance-check section, so the `rule:` prefix is excluded here to
+    /// avoid double counting.
     pub fn diagnostics_summary(&self, project_id: ProjectId) -> Result<DiagnosticSummary> {
         let counts = self.store.count_diagnostics_excluding(project_id, RULE_CODE_PREFIX)?;
         let mut s = DiagnosticSummary::default();
@@ -133,7 +139,7 @@ impl GraphQueryService {
         Ok(s)
     }
 
-    /// 子图（BFS，限制规模，供图形化展示）。
+    /// A subgraph (BFS, size-limited, for graphical display).
     pub fn subgraph(&self, root: NodeId, depth: u32, max_nodes: usize) -> Result<Subgraph> {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
@@ -167,7 +173,7 @@ impl GraphQueryService {
     }
 }
 
-/// 子图快照。
+/// A subgraph snapshot.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Subgraph {
     pub nodes: Vec<Node>,

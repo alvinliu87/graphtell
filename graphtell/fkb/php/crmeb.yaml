@@ -1,26 +1,28 @@
-# CRMEB 电商系统（ThinkPHP 6 生态）的**项目特有**知识
+# **Project-specific** knowledge for the CRMEB e-commerce system (ThinkPHP 6 ecosystem)
 #
-# 与 thinkphp6.yaml 的分工：
-#   thinkphp6.yaml —— 框架机制（路由、容器、事件、ORM）+ 跨版本通用的 P6 标注
-#                    （PII / 表重要度 / 配置可变性 / 公开端点 / i18n，参数已通用化）
-#   crmeb.yaml     —— 仅 CRMEB 特有的数据增补与业务语义：
-#                    `contact_phone` 列名增补、以及业务入口 `entrypoint.login`
+# Division of labour with thinkphp6.yaml:
+#   thinkphp6.yaml — framework mechanics (routes, container, events, ORM) + cross-version common P6 annotations
+#                    (PII / table criticality / config mutability / public endpoints / i18n, parameters generalised)
+#   crmeb.yaml     — only CRMEB-specific data additions and business semantics:
+#                    the `contact_phone` column-name addition, and the business entry `entrypoint.login`
 #
-# 这里的规则选择器几乎都是 `kind: node`（作用在图上已建好的节点），
-# 因为像"这张表含手机号"必须等 P5 把表节点汇聚完、P3 把 schema 装载完才知道。
+# The rule selectors here are almost all `kind: node` (acting on nodes already built on the graph),
+#
+# because something like "this table contains phone numbers" is only known after P5 has aggregated the table node and P3 has loaded the schema.
 
 id: crmeb
 display_name: CRMEB
 language: php
 version_hint: "standard / multi-merchant"
 
-# 「哪个中间件提供哪种能力」—— 这是**本项目自己的命名约定**（`AuthTokenMiddleware`
-# 这种叫法内核不该认识），所以声明在 FKB 里，由 P5.5 落到契约的 `Capability` 通道上。
+# "Which middleware provides which capability" — this is **this project's own naming convention** (the kernel
+# should not know a name like `AuthTokenMiddleware`), so it is declared in FKB and landed by P5.5 on the contract's
+# `Capability` channel.
 #
-# 只列**看名字就能确凿认定的**：多个 app 目录下的同名语义（`AuthTokenMiddleware` /
-# `KefuAuthTokenMiddleware`）靠片段 `AuthToken` 一并匹配。
-# 挂载实参显式写着可选时（`AuthTokenMiddleware::class, false` == 未登录也能进）
-# 不产能力 —— 把"可选"说成"强制"是编造。
+# Only entries **certain from the name alone** are listed: same-meaning names under several app directories
+# (`AuthTokenMiddleware` / `KefuAuthTokenMiddleware`) are both matched by the `AuthToken` fragment.
+# When the attached argument explicitly says optional (`AuthTokenMiddleware::class, false` == reachable without
+# login) no capability is produced — calling "optional" "mandatory" would be fabrication.
 middleware_capabilities:
   - matches: AuthToken
     capability: Authentication
@@ -38,19 +40,21 @@ detectors:
     confidence: 0.5
 
 annotation_kinds:
-  # 业务特有标注种类（内核标准之外）：`entrypoint.login` 是 CRMEB 的登录入口语义，
-  # 由下方 `crmeb-login-entrypoint` 原始规则产出。标准种类（pii / data.criticality /
-  # auth.public / i18n.missing_locale …）由内核 `annotation_templates` 识别器产出，
-  # 不在此列 —— 栈不发明注解种类。
+  # Business-specific annotation kinds (beyond the kernel standard): `entrypoint.login` is CRMEB's login-entry
+  # semantics, produced by the `crmeb-login-entrypoint` raw rule below. Standard kinds (pii / data.criticality /
+  # auth.public / i18n.missing_locale …) are produced by the kernel's `annotation_templates` recognizer and are not
+  # listed here — a stack does not invent annotation kinds.
   - entrypoint.login
 
-# ===== P6 标注：引用内核标准识别器，按本栈数据实现（列名 / 源表 / 阈值）=====
-# 「哪些注解种类存在、怎么识别」是**内核标准**（见 `DEFAULT_ANNOTATIONS_YAML`），
-# 这里只声明 CRMEB 的数据。通用 PII 列名（phone / email / idcard…）已是跨应用约定，
-# 业务域列名（contact_phone）仍是栈特有 —— 留作参数，不写死在识别器里。
-# PII / 重要度 / 配置 / 公开端点 / i18n 的通用识别器与通用参数已上移到 `thinkphp6.yaml`
-# （内核标准 `annotation_templates` 的栈实现）。此处只保留 CRMEB 特有的参数增补：
-# `contact_phone` 列名。两条规则各自匹配、`MaxByKind` 合并，互不冲突。
+# ===== P6 annotation: reference the kernel-standard recognizers, implemented with this stack's data (column names / source tables / thresholds) =====
+# "Which annotation kinds exist and how they are recognised" is a **kernel standard** (see `DEFAULT_ANNOTATIONS_YAML`);
+# this only declares CRMEB's data. Generic PII column names (phone / email / idcard…) are already a cross-application
+# convention, while business-domain column names (contact_phone) remain stack-specific — kept as parameters rather
+# than hard-coded into the recognizer.
+# The generic recognizers and generic parameters for PII / criticality / config / public endpoints / i18n were moved
+# up into `thinkphp6.yaml` (the stack implementation of the kernel-standard `annotation_templates`). Only CRMEB's own
+# parameter addition stays here: the `contact_phone` column name. The two rules match independently and `MaxByKind`
+# merges them, with no conflict.
 annotation_interfaces:
   - annotation: pii
     params:
@@ -59,7 +63,7 @@ annotation_interfaces:
       subkind: phone
 
 rules:
-  # ===== P6：给 HttpContract 打"入口点"语义（CRMEB 业务特有，留在栈里实现）=====
+  # ===== P6: mark "entry point" semantics on HttpContracts (CRMEB business-specific, kept in the stack) =====
   - id: crmeb-login-entrypoint
     phase: AnnotatePost
     selector:

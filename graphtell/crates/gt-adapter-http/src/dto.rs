@@ -1,12 +1,12 @@
-//! HTTP 层的数据传输对象。
+//! Data transfer objects for the HTTP layer.
 //!
-//! DTO 与领域模型分离：领域模型可以自由演进，API 契约保持稳定。
+//! DTOs are separate from the domain model: the domain model can evolve freely while the API contract stays stable.
 
 use serde::{Deserialize, Serialize};
 
 use gt_domain::model::{Project, ProjectConfig, ProjectStatus, SubProject};
 
-/// 工程视图。
+/// Project view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectDto {
     pub id: i64,
@@ -34,7 +34,7 @@ impl From<Project> for ProjectDto {
     }
 }
 
-/// 创建工程请求。
+/// Create-project request.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
@@ -43,7 +43,7 @@ pub struct CreateProjectRequest {
     pub config: Option<ProjectConfig>,
 }
 
-/// 更新工程请求。
+/// Update-project request.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
@@ -63,7 +63,7 @@ impl UpdateProjectRequest {
     }
 }
 
-/// 子工程视图。
+/// Sub-project view.
 #[derive(Debug, Clone, Serialize)]
 pub struct SubProjectDto {
     pub id: i64,
@@ -91,7 +91,7 @@ impl From<SubProject> for SubProjectDto {
     }
 }
 
-/// 统一响应包装。
+/// Unified response envelope.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiResponse<T: Serialize> {
     pub ok: bool,
@@ -108,7 +108,7 @@ impl<T: Serialize> ApiResponse<T> {
     }
 }
 
-/// 建图状态。
+/// Graph-build status.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct RunStatusDto {
     pub project_id: i64,
@@ -128,27 +128,27 @@ pub struct PhaseReportDto {
     pub diagnostics: usize,
 }
 
-/// 健康检查。
+/// Health check.
 #[derive(Debug, Clone, Serialize)]
 pub struct HealthDto {
     pub status: String,
     pub version: String,
     pub languages: Vec<String>,
     pub frameworks: usize,
-    /// 后端进程是否运行在 WSL 中（前端据此自动套用 WSL 路径映射）。
+    /// Whether the backend process runs inside WSL (the front end applies WSL path mapping automatically from this).
     pub is_wsl: bool,
-    /// WSL 发行版名（仅 `is_wsl` 为 true 时有意义，默认 Ubuntu）。
+    /// WSL distro name (meaningful only when `is_wsl` is true; defaults to Ubuntu).
     pub wsl_distro: String,
 }
 
-/// 建图触发响应。
+/// Graph-build trigger response.
 #[derive(Debug, Clone, Serialize)]
 pub struct RunAcceptedDto {
     pub project_id: i64,
     pub accepted: bool,
 }
 
-/// 目录浏览条目（供前端目录选择器使用）。
+/// Directory browsing entry (for the front-end directory picker).
 #[derive(Debug, Clone, Serialize)]
 pub struct DirEntryDto {
     pub name: String,
@@ -156,7 +156,7 @@ pub struct DirEntryDto {
     pub is_dir: bool,
 }
 
-/// 状态字面量。
+/// Status literal.
 pub fn status_of(s: &ProjectStatus) -> &'static str {
     match s {
         ProjectStatus::Created => "created",

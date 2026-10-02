@@ -1,7 +1,7 @@
-//! P0 Ingest：确定子工程与待分析文件。
+//! P0 Ingest: determine sub-projects and the files to analyse.
 //!
-//! 排除 `vendor/` / `node_modules/` 等依赖目录、静态资源、编译产物
-//! （含 Rust 的 `target/` 与 JS 的 `dist/`、`node_modules/`）。
+//! Excludes dependency directories like `vendor/` / `node_modules/`, static assets and build artifacts
+//! (including Rust's `target/` and JS's `dist/` / `node_modules/`).
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +12,7 @@ use gt_domain::model::{
 use gt_domain::port::{FileScanner, ParserRegistry, ScanRequest};
 use tracing::info;
 
-/// 子工程标记文件 → (语言, 角色)。
+/// Sub-project marker file -> (language, role).
 pub const MARKERS: &[(&str, &str, &str)] = &[
     ("composer.json", "php", "backend"),
     ("package.json", "javascript", "frontend"),
@@ -23,24 +23,24 @@ pub const MARKERS: &[(&str, &str, &str)] = &[
     ("pyproject.toml", "python", "backend"),
 ];
 
-/// Ingest 阶段的产物。
+/// The product of the Ingest phase.
 pub struct IngestResult {
     pub sub_projects: Vec<NewSubProject>,
     pub files: Vec<NewSourceFile>,
 }
 
-/// 计算文件指纹。
+/// Compute the file fingerprint.
 ///
-/// # 为什么必须是**内容**哈希
+/// # Why it must be a **content** hash
 ///
-/// 早期这里是 `hash("路径:文件大小")` —— 完全没读文件内容。
-/// 于是"改了一行但字节数不变"（`a = 1` → `b = 1`、调换语句顺序、
-/// 改的字符串长度刚好相同）**检测不到变化**。
-/// 这会让任何基于该指纹的增量更新静默漏掉改动 —— 比不做增量更危险，
-/// 因为用户会以为图是最新的。
+/// Early on this was `hash("path:file-size")` — it never read the file content.
+/// So "changed one line but the byte count is unchanged" (`a = 1` -> `b = 1`, swapping statement order,
+/// changing a string whose length happens to match) **went undetected**.
+/// That makes any incremental update based on this fingerprint silently miss changes — more dangerous than no
+/// incrementality, because the user would believe the graph is up to date.
 ///
-/// 读不到的文件（已被删除 / 无权限 / 二进制）退化为 `路径:大小` 指纹，
-/// 保证 Ingest 不会因为个别文件失败而中断。
+/// Files that cannot be read (deleted / no permission / binary) degrade to a `path:size` fingerprint,
+/// so Ingest never aborts because of a few individual files.
 pub fn fingerprint(
     fs: &dyn gt_domain::port::FileSystem,
     path: &Path,
@@ -52,7 +52,7 @@ pub fn fingerprint(
     }
 }
 
-/// 执行 Ingest。
+/// Run Ingest.
 pub fn run(
     project: &Project,
     scanner: &dyn FileScanner,
@@ -69,8 +69,8 @@ pub fn run(
         if subs.iter().any(|s| s.root_path == dir) {
             continue;
         }
-        // 在「前端 / 后端」之上，再按目录名细化出子工程**类型**
-        // （小程序 / 管理后台 / 移动端 / API / Worker …），角色串形如 `frontend:admin`。
+        // On top of "frontend / backend", refine the sub-project **type** from the directory name
+        // (mini-program / admin console / mobile / API / Worker …), so the role string looks like `frontend:admin`.
         let role = refine_role(tier, dir);
         subs.push(NewSubProject {
             project_id: project.id,
@@ -84,7 +84,7 @@ pub fn run(
         });
     }
 
-    // 没有任何标记时，把工程根当作单一子工程
+    // With no marker at all, treat the project root as a single sub-project
     if subs.is_empty() {
         subs.push(NewSubProject {
             project_id: project.id,
@@ -98,9 +98,6 @@ pub fn run(
         });
     }
 
-    // 扫描全部源文件，再按路径前缀归属到最具体的子工程
-    // 「语言 → 扩展名」取自解析器注册表，保证它与子工程标记文件表同源：
-    // 不会出现 `go.mod` 能识别子工程、`.go` 文件却被扫不进来的错位。
     let language_extensions: Vec<(String, Vec<String>)> = parsers
         .supported_languages()
         .into_iter()
@@ -121,7 +118,7 @@ pub fn run(
     };
     let scanned = scanner.scan(&request)?;
     info!(
-        "Ingest: {} 个子工程，{} 个源文件",
+        "Ingest: {} sub-projects, {} source files",
         subs.len(),
         scanned.len()
     );
@@ -136,7 +133,7 @@ pub fn run(
             path: f.relative.clone(),
             language: f.language,
             size_bytes: f.size_bytes,
-            // 真·内容哈希：只有这样才能检出"改了但大小不变"的情况
+            // A genuine content hash: only this detects "changed but same size"
             content_hash: fingerprint(fs, &abs, &fallback),
         });
     }
@@ -144,7 +141,7 @@ pub fn run(
     Ok(IngestResult { sub_projects: subs, files })
 }
 
-/// 把文件分配到最具体的子工程。
+/// Assign a file to the most specific sub-project.
 pub fn assign_files(files: &mut [SourceFile], subs: &[SubProject], root: &Path) {
     let roots: Vec<(usize, String)> = subs
         .iter()
@@ -194,16 +191,17 @@ fn marker_of(path: &Path) -> (&'static str, &'static str, String) {
     ("unknown", "unknown", name.to_string())
 }
 
-/// 在 `frontend` / `backend` 这两层之外，进一步识别子工程**类型**，让图例与过滤能区分
-/// 「小程序 / 管理后台 / 移动端 / API / Worker」等，而不是把所有前端压成一个蓝点。
+/// Beyond the `frontend` / `backend` tiers, further recognise the sub-project **type**, so the legend and filters
+/// can tell apart "mini-program / admin console / mobile / API / Worker" instead of compressing every frontend into one blue dot.
 ///
-/// 识别顺序：先看**目录名**（快、零 IO），命中即用；目录命名不规范时再读
-/// `package.json` / `manifest.json` 等配置兜底（例如 uni-app 只有在 `manifest.json`
-/// 里声明了 `mp-weixin` 等小程序目标才算「小程序」，否则只是普通 web）。
+/// Recognition order: look at the **directory name** first (fast, zero IO) and use it on a hit; when the directory
+/// naming is irregular, fall back to reading `package.json` / `manifest.json` and other config (e.g. uni-app only
+/// counts as a "mini-program" if `manifest.json` declares a mini-program target like `mp-weixin`, otherwise it is
+/// just ordinary web).
 ///
-/// 返回形如 `tier:kind` 的角色串（`frontend:admin`、`backend:worker` …）；
-/// 无法识别具体类型时回落为裸 `frontend` / `backend`，与旧数据兼容。
-/// 其它 tier（`library` / `unknown`）原样返回。
+/// Returns a role string of the form `tier:kind` (`frontend:admin`, `backend:worker` …); when a concrete type cannot
+/// be recognised it falls back to bare `frontend` / `backend`, keeping backward compatibility with old data.
+/// Other tiers (`library` / `unknown`) are returned as-is.
 fn refine_role(tier: &str, dir: &Path) -> String {
     let kind: Option<&str> = match tier {
         "frontend" => refine_frontend_kind(dir),
@@ -216,7 +214,7 @@ fn refine_role(tier: &str, dir: &Path) -> String {
     }
 }
 
-/// 前端子工程类型：目录名优先，配置兜底。
+/// Frontend sub-project type: directory name first, config as fallback.
 fn refine_frontend_kind(dir: &Path) -> Option<&'static str> {
     let rel = dir
         .file_name()
@@ -226,7 +224,7 @@ fn refine_frontend_kind(dir: &Path) -> Option<&'static str> {
     let full = dir.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
     let has = |kw: &str| rel.contains(kw) || full.contains(kw);
 
-    // 1) 目录名命中优先
+    // 1) Directory-name hit wins first
     if has("miniprogram")
         || has("mini-program")
         || has("miniapp")
@@ -251,11 +249,11 @@ fn refine_frontend_kind(dir: &Path) -> Option<&'static str> {
     {
         return Some("mobile");
     }
-    // 2) 配置兜底：uni-app / React Native 等
+    // 2) Config fallback: uni-app / React Native etc.
     detect_frontend_kind_via_config(dir)
 }
 
-/// 后端子工程类型：目录名命中即可（后端类型差异主要靠目录区分，暂不读配置）。
+/// Backend sub-project type: a directory-name hit suffices (backend type differences are mostly directory-based, config not read for now).
 fn refine_backend_kind(dir: &Path) -> Option<&'static str> {
     let rel = dir
         .file_name()
@@ -285,27 +283,28 @@ fn refine_backend_kind(dir: &Path) -> Option<&'static str> {
     None
 }
 
-/// 读 `package.json` 等配置识别前端框架，弥补「目录命名不规范」导致的漏判。主要覆盖：
-/// - React Native → `mobile`
-/// - uni-app：若直接依赖 `uni-mp-*` 编译包，或 `manifest.json` 声明了 mp-* 小程序目标，则 `mini-program`；
-///   否则只是普通 web，回落为默认 `frontend`（不强行打小程序标签）。
+/// Read `package.json` and similar config to recognise the frontend framework, covering misses caused by
+/// "irregular directory naming". Mainly covers:
+/// - React Native -> `mobile`
+/// - uni-app: if it directly depends on a `uni-mp-*` compiler package, or `manifest.json` declares an mp-* mini-program target, then `mini-program`;
+///   otherwise it is just ordinary web and falls back to the default `frontend` (no forced mini-program tag).
 fn detect_frontend_kind_via_config(dir: &Path) -> Option<&'static str> {
     let pkg = read_json(&dir.join("package.json"))?;
     let deps = collect_deps(&pkg);
 
-    // React Native → 移动端
+    // React Native -> mobile
     if deps.iter().any(|d| d == "react-native" || d.contains("react-native")) {
         return Some("mobile");
     }
 
-    // uni-app 系
+    // uni-app family
     let is_uni = deps.iter().any(|d| d.contains("uni-app") || d.contains("@dcloudio/uni"));
     if is_uni {
-        // 直接依赖了具体小程序平台编译包
+        // Directly depends on a concrete mini-program-platform compiler package
         if deps.iter().any(|d| d.contains("uni-mp-")) {
             return Some("mini-program");
         }
-        // 否则看 manifest.json 是否声明了 mp-* 目标
+        // Otherwise check whether manifest.json declares an mp-* target
         for m in [dir.join("manifest.json"), dir.join("src").join("manifest.json")] {
             if let Some(mani) = read_json(&m) {
                 if manifest_has_mp_target(&mani) {
@@ -317,7 +316,7 @@ fn detect_frontend_kind_via_config(dir: &Path) -> Option<&'static str> {
     None
 }
 
-/// 合并 dependencies / devDependencies / peerDependencies 的 key 列表。
+/// Merge the key lists of dependencies / devDependencies / peerDependencies.
 fn collect_deps(pkg: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
     for field in ["dependencies", "devDependencies", "peerDependencies"] {
@@ -330,7 +329,7 @@ fn collect_deps(pkg: &serde_json::Value) -> Vec<String> {
     out
 }
 
-/// manifest.json（uni-app）里是否声明了任意小程序编译目标（mp-weixin / mp-alipay …）。
+/// Whether `manifest.json` (uni-app) declares any mini-program compiler target (mp-weixin / mp-alipay …).
 fn manifest_has_mp_target(mani: &serde_json::Value) -> bool {
     let lower = mani.to_string().to_ascii_lowercase();
     [
@@ -341,7 +340,7 @@ fn manifest_has_mp_target(mani: &serde_json::Value) -> bool {
     .any(|k| lower.contains(k))
 }
 
-/// 安全地读取并解析 JSON 文件；不存在 / 解析失败返回 None。
+/// Safely read and parse a JSON file; return None when missing / parse fails.
 fn read_json(path: &Path) -> Option<serde_json::Value> {
     let s = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&s).ok()
@@ -364,17 +363,17 @@ fn hash(s: &str) -> String {
     format!("{:x}", h.finish())
 }
 
-/// 校验工程根路径合法。
+/// Validate that the project root path is legal.
 pub fn validate_root(path: &Path) -> Result<PathBuf> {
     if !path.exists() {
         return Err(DomainError::InvalidArgument(format!(
-            "路径不存在: {}",
+            "path does not exist: {}",
             path.display()
         )));
     }
     if !path.is_dir() {
         return Err(DomainError::InvalidArgument(format!(
-            "不是目录: {}",
+            "not a directory: {}",
             path.display()
         )));
     }
@@ -441,7 +440,7 @@ mod tests {
             r#"{"dependencies":{"@dcloudio/uni-app":"^3.0.0","@dcloudio/uni-h5":"^3.0.0"}}"#,
         )
         .unwrap();
-        // 未声明 mp-* 目标 → 普通 web，回落为裸 frontend
+        // No mp-* target declared -> ordinary web, fall back to bare frontend
         assert_eq!(refine_role("frontend", &dir), "frontend");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,14 +1,14 @@
-//! Symfony 路由（PHP 8 属性 `#[Route]` / `#[Get]` …）端到端自检。
+//! End-to-end self-check of Symfony routes (PHP 8 attributes `#[Route]` / `#[Get]` …).
 //!
-//! 覆盖「控制器方法上的路由属性 → `HttpContract`（method + path）+ `HandledBy` 连到
-//! 控制器方法」。用合成工程（无需外部样本）。
+//! Covers "a route attribute on a controller method -> an `HttpContract` (method + path) + a `HandledBy` edge to
+//! the controller method". Uses a synthetic project (no external sample needed).
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter};
 
 mod common;
 
-/// 合成 Symfony 工程：`composer.json`（含 symfony 依赖）+ 一个带路由属性的控制器。
+/// A synthetic Symfony project: a `composer.json` (with the symfony dependency) plus one controller carrying route attributes.
 fn synthetic_symfony_root() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "graphtell-symfony-routes-{}-{}",
@@ -88,19 +88,14 @@ fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<Node> {
 fn symfony_route_attributes_become_http_contracts() {
     let dir = synthetic_symfony_root();
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("the graph build should succeed");
     };
 
 
 
-    // 期望契约：每个 (方法, 路径) 一条
-    //   GET /api/users
-    //   GET /api/users/{id}   POST /api/users/{id}   （Route 带 methods 数组 → 拆两条）
-    //   GET /api/ping         （#[Get] 快捷属性）
-    //   POST /api/echo        （#[Post] 快捷属性）
     let contracts: Vec<Node> = nodes_of_kind(&b, "HttpContract");
     let names: Vec<&str> = contracts.iter().map(|n| n.name.as_str()).collect();
-    assert_eq!(contracts.len(), 5, "应恰好 5 条契约，实际：{names:?}");
+    assert_eq!(contracts.len(), 5, "expected exactly 5 contracts, got: {names:?}");
     for want in [
         "GET /api/users",
         "GET /api/users/{id}",
@@ -110,13 +105,13 @@ fn symfony_route_attributes_become_http_contracts() {
     ] {
         assert!(
             names.iter().any(|n| *n == want),
-            "缺少契约 {want:?}，实际：{names:?}"
+            "missing contract {want:?}, got: {names:?}"
         );
     }
 
-    // HandledBy：每条契约连到对应控制器方法
+    // HandledBy: every contract connects to the corresponding controller method
     let handler_of = |name: &str| -> String {
-        let c = contracts.iter().find(|n| n.name == name).expect("契约");
+        let c = contracts.iter().find(|n| n.name == name).expect("contract");
         let hs: Vec<Node> = b
             .store
             .edges_of(c.id, EdgeDirection::Outgoing)
@@ -125,7 +120,7 @@ fn symfony_route_attributes_become_http_contracts() {
             .filter(|e| e.kind.as_str() == "HandledBy")
             .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
             .collect();
-        assert!(!hs.is_empty(), "{name} 应有 HandledBy 目标");
+        assert!(!hs.is_empty(), "{name} should have a HandledBy target");
         hs[0].name.clone()
     };
 

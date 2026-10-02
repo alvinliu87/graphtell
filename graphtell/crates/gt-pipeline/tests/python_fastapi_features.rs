@@ -1,12 +1,12 @@
-//! FastAPI（Python）路由 / 配置 / 缓存语义特征的端到端自检。
+//! End-to-end self-check of FastAPI (Python) route / config / cache semantic features.
 //!
-//! 刻意用合成样本（无需外部 Python 工程样本）：在临时目录放一个最小 FastAPI
-//! 工程（`pyproject.toml` 含 fastapi + 若干带装饰器的 .py），跑完整建图，
-//! 断言 FKB 真的把 `@router.get` / `os.environ.get` / `redis.set` 落成
-//! 对应的语义节点与边。
+//! Deliberately uses a synthetic sample (no external Python project sample needed): place a minimal FastAPI project
+//! in a temp directory (a `pyproject.toml` containing fastapi + a few decorated .py files), run a full graph build,
+//! and assert that FKB really turns `@router.get` / `os.environ.get` / `redis.set` into the corresponding
+//! semantic nodes and edges.
 //!
-//! 这同时证明「只写 FKB + 实现一个 `LanguageParser` 即可为零散语言补齐框架语义」
-//! —— 第三语言（Python）同样没有改动任何内核。
+//! This also proves "a scattered language's framework semantics can be completed by only writing FKB + implementing a
+//! `LanguageParser`" — Python, the third language, likewise did not change any kernel code.
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter};
@@ -26,8 +26,8 @@ fn synthetic_fastapi_root() -> std::path::PathBuf {
     std::fs::create_dir_all(dir.join("app/api")).expect("mkdir");
     std::fs::create_dir_all(dir.join("app/models")).expect("mkdir");
 
-    // pyproject.toml 既是子工程标记（→ language=python），
-    // 也是 FKB detector 的 manifest（文本包含 fastapi）。
+    // pyproject.toml is both a sub-project marker (-> language=python)
+    // and the manifest FKB's detector reads (text contains fastapi).
     std::fs::write(
         dir.join("pyproject.toml"),
         r#"[project]
@@ -41,7 +41,7 @@ dependencies = [
     )
     .expect("write pyproject");
 
-    // 依赖注入的被注入方（独立模块，用于验证按 import 解析成 FQN）
+    // The injection target of dependency injection (a separate module, to verify resolution into an FQN by import).
     std::fs::write(dir.join("app/dependencies.py"), "def get_db():\n    return None\n")
         .expect("write dependencies.py");
 
@@ -79,8 +79,8 @@ def create_order(order_id: int):
     )
     .expect("write users.py");
 
-    // Celery 任务模块：`celery_app.task` / `shared_task` 两种注册方式，
-    // 外加一个**同模块**投递（用于验证生产 / 消费两端能否归并到同一节点）。
+    // Celery task module: `celery_app.task` / `shared_task` two registration styles,
+    // plus one **same-module** delivery (to verify producer / consumer ends merge onto one node).
     std::fs::write(
         dir.join("app/tasks.py"),
         r#"from celery import shared_task
@@ -135,8 +135,8 @@ class AdminView:
     )
     .expect("write main.py");
 
-    // SQLAlchemy 声明式模型：表映射写在**类属性**里（没有调用点可依），
-    // 走 P6 的图节点选择器识别。`Base` 放在同文件，样本自足不外引。
+    // SQLAlchemy declarative model: the table mapping is written in **class attributes** (no call site to rely on),
+    // recognised via the P6 graph-node selector. `Base` is in the same file, the sample is self-contained.
     std::fs::write(
         dir.join("app/models/user.py"),
         r#"class Base:
@@ -165,7 +165,7 @@ fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<Node> {
         .expect("query")
 }
 
-/// 找出名字里含给定路径片段的 HttpContract 节点。
+/// Find the HttpContract node whose name contains the given path fragment.
 fn contract_for(b: &common::Built, path_fragment: &str) -> Node {
     nodes_of_kind(b, "HttpContract")
         .into_iter()
@@ -178,7 +178,7 @@ fn contract_for(b: &common::Built, path_fragment: &str) -> Node {
         })
 }
 
-/// 该契约经 `HandledBy` 指向的节点名（应精确到**处理函数**本身）。
+/// The node name the contract points to via `HandledBy` (should be pinned to the **handler function** itself).
 fn handled_by_targets(b: &common::Built, contract: &Node) -> Vec<String> {
     b.store
         .edges_of(contract.id, EdgeDirection::Outgoing)
@@ -207,16 +207,13 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
         panic!("合成 FastAPI 工程建图应成功");
     };
 
-    // 三条路由（含类内的装饰器）都应落成 HttpContract。
+    // The three routes (including in-class decorators) should each become an HttpContract.
     assert!(
         nodes_of_kind(&b, "HttpContract").len() >= 3,
         "应产出 ≥3 个 HttpContract，实际：{:?}",
         nodes_of_kind(&b, "HttpContract").iter().map(|n| &n.name).collect::<Vec<_>>()
     );
 
-    // 核心：Python 的处理函数常常直接写在模块里（不在类里）。解析器的 `owner_class`
-    // 在模块级回填为**模块点分名**，使 `HandledBy` 能先定位 Namespace 节点、
-    // 再按成员名落到函数本身 —— 而不是退化成「只连到模块」。
     let users = contract_for(&b, "/users");
     assert_eq!(
         handled_by_targets(&b, &users),
@@ -231,7 +228,7 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
         "路由 /health 的 HandledBy 应连到 health"
     );
 
-    // 类内装饰器：owner_class 是类，故应连到**方法**节点而非类节点。
+    // In-class decorator: owner_class is the class, so it should connect to the **method** node, not the class node.
     let admin = contract_for(&b, "/admin");
     assert_eq!(
         handled_by_targets(&b, &admin),
@@ -239,7 +236,7 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
         "类内装饰器的 HandledBy 应连到方法 dashboard"
     );
 
-    // 配置：`os.environ.get("SECRET_KEY")` → ConfigKey + ReadsConfig。
+    // Config: `os.environ.get("SECRET_KEY")` -> ConfigKey + ReadsConfig.
     let cfg: Vec<String> = nodes_of_kind(&b, "ConfigKey").iter().map(|n| n.name.clone()).collect();
     assert!(cfg.iter().any(|n| n == "SECRET_KEY"), "应产出 SECRET_KEY 配置节点，实际：{cfg:?}");
     assert!(
@@ -247,12 +244,12 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
         "ConfigKey 应有 ReadsConfig 入边"
     );
 
-    // 缓存：读（cache.get）与写（redis_client.set）分离。
+    // Cache: reads (cache.get) and writes (redis_client.set) are separated.
     assert!(has_incoming_edge(&b, "Cache", "ReadsCache"), "Cache 应有 ReadsCache 入边");
     assert!(has_incoming_edge(&b, "Cache", "WritesCache"), "Cache 应有 WritesCache 入边");
 
-    // 表映射：`__tablename__ = "users"` 经「类属性 → Property 事实 → 图节点选择器」
-    // 落成 Table，且 MapsTo 必须**从模型类指出**（而不是悬空或连到别处）。
+    // Table mapping: `__tablename__ = "users"` becomes a Table via "class attribute -> Property fact -> graph-node selector",
+    // and MapsTo must **originate from the model class** (not dangle or point elsewhere).
     let model = nodes_of_kind(&b, "Class")
         .into_iter()
         .find(|n| n.name == "UserModel")
@@ -273,8 +270,8 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
     );
 }
 
-/// 依赖注入：`def get_user(..., db=Depends(get_db))` —— 依赖写在**形参默认值**里，
-/// 应建出 `处理函数 --DependsOn--> 依赖函数` 的边。
+/// Dependency injection: `def get_user(..., db=Depends(get_db))` — the dependency is written in a **parameter default**,
+/// which should build a `handler function --DependsOn--> dependency function` edge.
 #[test]
 fn fastapi_depends_injection_links_handler_to_dependency() {
     let root = synthetic_fastapi_root();
@@ -307,11 +304,11 @@ fn fastapi_depends_injection_links_handler_to_dependency() {
     );
 }
 
-/// Celery 进阶能力：**显式声明优先于约定推断**。
+/// Celery advanced capabilities: **explicit declaration takes precedence over convention inference**.
 ///
-/// * 显式队列名 `apply_async(..., queue="payments")` → 投递到 payments，而非任务名
-/// * 显式任务名 `@celery_app.task(name="tasks.notify_slack")` → 节点按该名落成
-/// * beat 定时 `add_periodic_task(30.0, ...)` → Schedule 节点 + Triggers 出边
+/// * Explicit queue name `apply_async(..., queue="payments")` -> delivered to payments, not the task name
+/// * Explicit task name `@celery_app.task(name="tasks.notify_slack")` -> the node is built under that name
+/// * beat schedule `add_periodic_task(30.0, ...)` -> Schedule node + Triggers out-edge
 #[test]
 fn celery_explicit_queue_and_beat_schedule() {
     let root = synthetic_fastapi_root();
@@ -321,7 +318,7 @@ fn celery_explicit_queue_and_beat_schedule() {
     let queues = nodes_of_kind(&b, "Queue");
     let names: Vec<&str> = queues.iter().map(|n| n.name.as_str()).collect();
 
-    // 显式队列名优于任务名推断
+    // Explicit queue name beats task-name inference
     let payments = queues
         .iter()
         .find(|n| n.name == "payments")
@@ -338,13 +335,13 @@ fn celery_explicit_queue_and_beat_schedule() {
         "payments 应有 PublishesTo，实际入边 {incoming:?}"
     );
 
-    // 显式任务名（`@celery_app.task(name="tasks.notify_slack")`）按该名落成
+    // Explicit task name (`@celery_app.task(name="tasks.notify_slack")`) built under that name
     assert!(
         names.contains(&"notify_slack"),
         "应按显式 name= 落成 notify_slack 队列，实际：{names:?}"
     );
 
-    // beat 定时
+    // beat schedule
     let schedules = nodes_of_kind(&b, "Schedule");
     let detail: Vec<&str> = schedules.iter().map(|n| n.name.as_str()).collect();
     let schedule = schedules
@@ -364,8 +361,8 @@ fn celery_explicit_queue_and_beat_schedule() {
     );
 }
 
-/// Celery 任务的生产 / 消费闭环：两端按**任务名**归并到同一个 Queue 节点，
-/// 而不是「注册一个节点、投递又一个节点」的割裂视图。
+/// The producer / consumer loop of a Celery task: both ends merge onto the same Queue node by **task name**,
+/// rather than a split view of "register one node, deliver another".
 #[test]
 fn celery_tasks_form_publish_subscribe_loop() {
     let root = synthetic_fastapi_root();
@@ -384,7 +381,7 @@ fn celery_tasks_form_publish_subscribe_loop() {
         "Queue 应有 PublishesTo 入边（任务投递），实际：{names:?}"
     );
 
-    // 类型级归并的核心断言：同一个任务名上应**同时**挂着两条入边。
+    // The core assertion of type-level merge: the same task name should **simultaneously** carry two in-edges.
     for task in ["rebuild_index", "send_email"] {
         let node = queues
             .iter()

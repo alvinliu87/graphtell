@@ -1,10 +1,11 @@
-# TypeORM 框架知识（Node / TypeScript）
+# TypeORM framework knowledge (Node / TypeScript)
 #
-# 前置：JS/TS 解析器把装饰器（`@Entity('user')`）翻成调用点，callee 带 `@` 前缀、
-# owner 精确到被修饰的实体类。本文件据此把 ORM 实体落成 `Table` 节点。
+# Precondition: the JS/TS parser turns a decorator (`@Entity('user')`) into a call site whose callee carries the
+# `@` prefix and whose owner is precise to the decorated entity class. This file materialises ORM entities as `Table`
+# nodes on that basis.
 #
-# 与 NestJS FKB 的关系：本文件只认 `typeorm` 依赖；NestJS 工程若用 TypeORM 即同时命中
-# 两者（路由契约 + 实体映射），互不冲突。
+# Relationship to the NestJS FKB: this file only recognises the `typeorm` dependency; a NestJS project using TypeORM
+# hits both (route contracts + entity mapping) with no conflict.
 
 id: typeorm
 display_name: TypeORM
@@ -22,33 +23,38 @@ exclude_globs:
   - "**/node_modules/**"
   - "**/dist/**"
 
-# ★ 这里**刻意不声明** `semantic_kinds: [Column]` / `semantic_edge_kinds: [HasColumn]`。
+# ★ `semantic_kinds: [Column]` / `semantic_edge_kinds: [HasColumn]` are **deliberately not declared** here.
 #
-# 列是「表数 × 列数」的量级（几十张表 × 十几列 = 几百个节点）：一旦算语义节点，
-# 折叠视图会被撑爆、还会吃掉可达语义节点统计的 400 节点预算；而 `HasColumn` 是
-# **组成关系**不是资源依赖，算语义边会让表的「语义出边 N」虚高。
-# 故两者都保持非语义：列节点照建、边照连、影响面照样能下到字段级，只是**默认不画**。
+# Columns are on the order of "tables x columns" (a few dozen tables x a dozen columns = several hundred nodes):
+# once they count as semantic nodes the folded view bursts and they eat the 400-node budget of the reachable
+# semantic-node statistic; and `HasColumn` is a **composition relation**, not a resource dependency, so counting it
+# as a semantic edge would inflate a table's "N semantic out-edges".
+# So both stay non-semantic: column nodes are still built, edges still connected, and impact can still be drilled down
+# to field level — they are just **not drawn by default**.
 #
-# 更关键的是**这里声明了也做不到"只对本框架生效"**：`register_semantic_kinds`
-# 在 `load_dir` 里对所有 FKB 无条件登记（语言过滤只发生在选规则时），
-# 因此任何一份 FKB 声明 `Column` 为语义，会让**所有工程**（含 PHP）的列都变语义。
-# 想按语言区分，必须先改装载逻辑按语言登记。
+# More importantly, **declaring it here could not be scoped to this framework anyway**: `register_semantic_kinds`
+# registers unconditionally for every FKB inside `load_dir` (language filtering only happens when selecting rules),
+# so if any FKB declares `Column` semantic, columns become semantic in **every project** (including PHP ones).
+# Distinguishing by language would first require changing the loading logic to register per language.
 #
-# `ForeignKey`（表 → 表）两端都是 `Table`（语义节点），是真正的业务资源依赖 → 声明为语义边。
+# `ForeignKey` (table -> table) has `Table` (semantic nodes) at both ends and is a real business-resource dependency,
+# so it is declared as a semantic edge.
 #
-# 附注：`gt-app validate` 会对 `Column` 报「节点种类不在内核清单、折叠视图会隐藏它」——
-# **这条警告是预期内的**，正是上面要的效果（列默认不画）。不要为消除它而把 Column 声明为语义。
+# Side note: `gt-app validate` warns for `Column` that "the node kind is not in the kernel list and the folded view
+# will hide it" — **that warning is expected** and is exactly the effect intended above (columns are not drawn by
+# default). Do not declare Column semantic just to silence it.
 semantic_edge_kinds: [ForeignKey]
-# `References`（实体 → 实体）两端都是**代码节点**（`Class`），不是"两端语义"的业务资源依赖，
-# 故按**桥边**声明 —— 与 FastAPI 的 `DependsOn` 同构：能沿链遍历做影响面，但不计入
-# 「语义入边 N」、不当画布边，免得把实体类混进语义节点的折叠口径。
+# `References` (entity -> entity) has **code nodes** (`Class`) at both ends, not a "both-ends-semantic" business
+# resource dependency, so it is declared as a **bridge edge** — isomorphic to FastAPI's `DependsOn`: it can be walked
+# along the chain for impact analysis, but is not counted in "N semantic in-edges" and is not a canvas edge, so entity
+# classes do not leak into the folding semantics.
 bridge_edge_kinds: [References]
 
 rules:
-  # ===== P5 Synthesize：实体 → 表 =====
-  # `@Entity('user')` —— 表名取自第 1 个实参（字符串字面量）；无实参的 `@Entity()` / 对象式
-  # `@Entity({ name: 'user' })` 取不到字面量路径，按「宁可缺不可猜」跳过。
-  # 模型类 ——> 表（`MapsTo`，与 Spring `@TableName` / SQLAlchemy 声明式映射同构）。
+  # ===== P5 Synthesize: entity -> table =====
+  # `@Entity('user')` — the table name comes from the first argument (a string literal); `@Entity()` with no argument
+  # and the object form `@Entity({ name: 'user' })` have no literal path, so they are skipped ("better missing than guessed").
+  # Model class -> table (`MapsTo`, isomorphic to Spring's `@TableName` and SQLAlchemy's declarative mapping).
   - id: typeorm-entity
     phase: Synthesize
     selector:
@@ -68,19 +74,21 @@ rules:
           link:
             kind: MapsTo
             direction: incoming
-            # 被修饰的实体类（JS 类 FQN = 类名）
+            # The decorated entity class (a JS class FQN = the class name)
             to: { owner_class: true, resolve: class_const }
           confidence: 0.85
 
-  # ===== P5 Synthesize：实体字段 → 表列 =====
-  # `@Column() body: string` / `@PrimaryGeneratedColumn() id` —— 字段即列。
-  # 落成 `Column` 节点，并由实体类经 `HasColumn` 指向它（实体类已 `MapsTo` → `Table`，
-  # 故「表 → 列」是 表 ←MapsTo— 实体 —HasColumn→ 列 两跳，字段级影响面可顺藤摸瓜）。
+  # ===== P5 Synthesize: entity field -> table column =====
+  # `@Column() body: string` / `@PrimaryGeneratedColumn() id` — a field is a column.
+  # It materialises as a `Column` node, and the entity class points at it via `HasColumn` (the entity class already
+  # `MapsTo` -> `Table`, so "table -> column" is two hops: table <-MapsTo- entity -HasColumn-> column, and field-level
+  # impact can be followed step by step).
   #
-  # identity 取 `实体类.字段`（`owner_class.owner_member`）：同名列（`id` / `created`）在
-  # 不同实体里必须各算各的，否则会幂等合并成错节点 —— 故带实体作用域，不做裸字段名。
-  # 只收**列**装饰器；`@ManyToOne` / `@OneToMany` / `@JoinColumn` 是**关联**（外键），
-  # 由下面 `typeorm-relation` 单独建模（避免把关系误当列）。
+  # Identity is `entity class.field` (`owner_class.owner_member`): same-named columns (`id` / `created`) in different
+  # entities must count separately, otherwise they would be merged idempotently into a wrong node — hence the entity
+  # scope rather than a bare field name.
+  # Only **column** decorators are collected; `@ManyToOne` / `@OneToMany` / `@JoinColumn` are **relations** (foreign
+  # keys) and are modelled separately by `typeorm-relation` below (so a relation is not mistaken for a column).
   - id: typeorm-column
     phase: Synthesize
     selector:
@@ -100,18 +108,19 @@ rules:
             to: { owner_class: true, resolve: class_const }
           confidence: 0.8
 
-  # ===== P5 Synthesize：实体关联（外键持有方）=====
-  # `@ManyToOne(type => ArticleEntity, …) article: ArticleEntity` —— Comment 引用 Article。
+  # ===== P5 Synthesize: entity relations (foreign-key holder) =====
+  # `@ManyToOne(type => ArticleEntity, …) article: ArticleEntity` — Comment references Article.
   #
-  # 目标实体**不取自装饰器实参**：`type => ArticleEntity` 是箭头函数，解析器判为
-  # `Unknown`（取不到字面量）。取的是**字段类型注解**（`article: ArticleEntity`）——
-  # 解析器已把它填进该字段装饰器调用点的 `entity`，故这里与 NestJS 依赖注入同机制：
-  # `{ entity: true }` 直接连到目标实体类，不造新节点。
+  # The target entity is **not** taken from the decorator argument: `type => ArticleEntity` is an arrow function that
+  # the parser judges `Unknown` (no literal can be extracted). What is used is the **field type annotation**
+  # (`article: ArticleEntity`) — the parser already filled it into `entity` on that field's decorator call site, so
+  # this uses the same mechanism as NestJS dependency injection: `{ entity: true }` links straight to the target
+  # entity class, creating no new node.
   #
-  # **只建持有方**（`ManyToOne` / `ManyToMany` / `OneToOne`）：`@OneToMany` 是反向声明，
-  # 与配对的那条 `@ManyToOne` 描述同一个关系，再建一条就是反向冗余边
-  # （真实样本里 `Article.comments` 与 `Comment.article` 正是如此配对）。
-  # 诚缺：单向 `@OneToMany`（没有配对的 ManyToOne）因此不建边。
+  # **Only the holder side is built** (`ManyToOne` / `ManyToMany` / `OneToOne`): `@OneToMany` is the reverse
+  # declaration and describes the same relation as its paired `@ManyToOne`, so building another edge would be a
+  # redundant reverse edge (in the real sample `Article.comments` and `Comment.article` are exactly such a pair).
+  # Honest gap: a one-directional `@OneToMany` (with no paired ManyToOne) therefore produces no edge.
   - id: typeorm-relation
     phase: Synthesize
     selector:
@@ -120,24 +129,24 @@ rules:
     binding:
       - Link:
           kind: References
-          # 引用方：声明该关系的实体类
+          # Referencing side: the entity class declaring the relation
           from: { owner_class: true, resolve: class_const }
-          # 被引用方：字段类型（目标实体类）
+          # Referenced side: the field type (the target entity class)
           to: { entity: true, resolve: class_const }
           confidence: 0.75
 
-  # ===== P6 AnnotatePost：把实体关联投影成**表级外键** =====
-  # 上一条建的是「实体类 → 实体类」；表的视角里要能直接看到「表 → 表」的外键，
-  # 死表 / 影响面分析才不必每次绕道实体类。
+  # ===== P6 AnnotatePost: project entity relations into **table-level foreign keys** =====
+  # The rule above builds "entity class -> entity class"; from the table perspective you want to see "table -> table"
+  # foreign keys directly, so dead-table / impact analysis need not detour through entity classes every time.
   #
-  # `Project` = 遍历匹配节点的每条 `along` 出边，两端各沿自己的边种类链走到落点，
-  # 在两落点之间建边。这里两端都沿 `MapsTo`（实体 → 表）走一跳，于是
-  # `References`（Comment → ArticleEntity）被投影成 `ForeignKey`（comment → article）。
+  # `Project` = walk every `along` out-edge of the matched node, follow each end along its own edge-kind chain to a
+  # landing point, and build an edge between the two landing points. Here both ends walk one `MapsTo` hop
+  # (entity -> table), so `References` (Comment -> ArticleEntity) is projected into `ForeignKey` (comment -> article).
   #
-  # **一对多**：一个实体有几条 `@ManyToOne` 就产出几条外键边 —— 这正是 `Link` 做不到的
-  # （它两端只能各取一个名字，多关系时会静默只建一条）。
-  # 落点走不到就跳过：无参 `@Entity()` 的实体没有 `Table`（真实样本里的 `Comment`），
-  # 它的外键因此不入图 —— 宁可缺不可猜。
+  # **One-to-many**: an entity with N `@ManyToOne` produces N foreign-key edges — exactly what `Link` cannot do
+  # (it can only take one name per end, and with several relations it would silently build just one).
+  # If a landing point cannot be reached it is skipped: an entity with a no-argument `@Entity()` has no `Table`
+  # (`Comment` in the real sample), so its foreign key is not added — better missing than guessed.
   - id: typeorm-foreign-key
     phase: AnnotatePost
     selector:

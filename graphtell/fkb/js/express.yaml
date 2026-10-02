@@ -1,17 +1,17 @@
-# Express 框架知识（Node.js）
+# Express framework knowledge (Node.js)
 #
-# **解析器零改动**：`app.get('/login', handler)` 在 `JsFrontendParser` 眼里是普通的
-# 成员调用（receiver = `app`、method = `get`、arg0 = `/login`），与 Python FastAPI 的
-# 动词快捷方式 `@app.get` 形态一致 —— 只差一个 `@` 前缀（Express 没有）。
+# **Zero parser changes**: to `JsFrontendParser`, `app.get('/login', handler)` is an ordinary member call
+# (receiver = `app`, method = `get`, arg0 = `/login`), the same shape as Python FastAPI's verb shortcut `@app.get`
+# — the only difference is the `@` prefix (which Express does not have).
 #
-# 与 NestJS 的关键差异（已如实标注）：
-#   * 方法名本身即 HTTP 动词（`app.get` / `router.post`），故用 `method_name` 取；
-#     但 `get` / `post` 太通用，必须按**接收者变量名**收窄（`app` / `router` 等）。
-#   * 路由与处理器**解耦**：`handler` 是后续实参（常为 `userController.getLogin`，
-#     在另一个文件）。模块级路由（CommonJS 的 `app.js` 顶层）的 owner 是文件路径、
-#     没有对应节点，于是这里**不强行连 HandledBy** —— 否则会造出悬空或错误的边。
-#     若日后需要，可改为连 `to: { arg: 1 }` 指向 handler 实参（需 handler 在本工程
-#     内有可解析的 FQN 节点），目前先只落成契约节点。
+# Key differences from NestJS (recorded honestly):
+#   * the method name is itself the HTTP verb (`app.get` / `router.post`), so it is read via `method_name`;
+#     but `get` / `post` are too generic, so it must be narrowed by **receiver variable name** (`app` / `router`, etc.).
+#   * route and handler are **decoupled**: `handler` is a later argument (often `userController.getLogin`,
+#     in another file). A module-level route (top level of a CommonJS `app.js`) has a file path as owner and
+#     no corresponding node, so `HandledBy` is **not** forced here — otherwise dangling or wrong edges would result.
+#     If needed later this can link `to: { arg: 1 }` to the handler argument (requires the handler to have a
+#     resolvable FQN node inside this project); for now only the contract node is materialised.
 
 id: express
 display_name: Express
@@ -30,10 +30,10 @@ exclude_globs:
   - "dist/**"
   - "build/**"
 
-# ---------------------------------------------------------------- P3 装载
+# ---------------------------------------------------------------- P3 loading
 loaders:
-  # 路由表 + 守卫：识别逻辑由下方 `route_guards` 声明（位置参数写法
-  # `app.post('/login', loginLimiter, handler)`），内核不再写死。
+  # Route table + guards: the recognition logic is declared by `route_guards` below (the positional-argument style
+  # `app.post('/login', loginLimiter, handler)`); the kernel no longer hard-codes it.
   - id: express-route-list
     table: route_list
     from:
@@ -41,13 +41,13 @@ loaders:
       name: routes
       params: {}
 
-# ---------------------------------------------------------------- 路由守卫识别
-# Express 是**位置参数**写法：第一个实参是路径，最后一个实参是 handler，
-# 中间的所有实参都是中间件（`app.post('/login', loginLimiter, handler)`）。
+# ---------------------------------------------------------------- route-guard recognition
+# Express uses **positional arguments**: the first argument is the path, the last is the handler, and every argument
+# in between is middleware (`app.post('/login', loginLimiter, handler)`).
 route_guards:
   route_calls:
-    # `accept_identifier: true` —— JS 的中间件是**函数引用**（`loginLimiter` /
-    # `isAuthenticated`），不是 `X::class` 字面量，必须显式声明才收。
+    # `accept_identifier: true` — a JS middleware is a **function reference** (`loginLimiter` /
+    # `isAuthenticated`), not an `X::class` literal, so it must be declared explicitly to be collected.
     - receiver: "app"
       verb_methods: { get: GET, post: POST, put: PUT, delete: DELETE, patch: PATCH, head: HEAD, options: OPTIONS, all: ANY }
       path_arg: 0
@@ -65,14 +65,15 @@ route_guards:
       accept_identifier: true
   guard_attach:
     kind: positional
-  # JS 的中间件是函数值常量（`const loginLimiter = rateLimit({...})`），解析器不为它建
-  # 语法节点；但"这条路由挂了 loginLimiter"是源码事实，故授权按名建成 Middleware 节点。
+  # A JS middleware is a function value constant (`const loginLimiter = rateLimit({...})`) and the parser builds no
+  # syntax node for it; but "this route has loginLimiter attached" is a source-level fact, so authorization is
+  # materialised as a Middleware node by name.
   synthesize_unresolved: true
 
 rules:
-  # ===== P5 Synthesize：HTTP 契约（路由）=====
-  # `app.get('/login', handler)` / `router.post('/x', ...)`。
-  # 路径取自第 1 个实参；方法由接收者属性名（get/post/...）推导。
+  # ===== P5 Synthesize: HTTP contract (route) =====
+  # `app.get('/login', handler)` / `router.post('/x', ...)`.
+  # The path comes from the first argument; the method is derived from the receiver's property name (get/post/...).
   - id: express-route-contract
     phase: Synthesize
     selector:

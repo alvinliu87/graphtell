@@ -1,4 +1,4 @@
-//! 规则装载：从 YAML 目录读取检查规则。
+//! Rule loading: read check rules from a YAML directory.
 
 use std::path::{Path, PathBuf};
 
@@ -8,14 +8,14 @@ use gt_domain::port::RuleProvider;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-/// 一份规则文件的顶层结构。
+/// The top-level structure of a rule file.
 ///
-/// 两种写法都支持：
+/// Both spellings are supported:
 /// ```yaml
 /// rules:
 ///   - id: xxx
 /// ```
-/// 或直接给一个数组（`- id: xxx`），便于一个文件只放一条规则。
+/// or a bare array (`- id: xxx`), handy when a file holds exactly one rule.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum RuleFile {
@@ -32,9 +32,9 @@ impl RuleFile {
     }
 }
 
-/// 基于文件目录的规则集实现。
+/// A file-directory-based rule set.
 ///
-/// 目录结构：`rules/<任意子目录>/*.yaml`，每份 YAML 描述若干条规则。
+/// Directory layout: `rules/<any subdirectory>/*.yaml`, each YAML describing several rules.
 #[derive(Debug)]
 pub struct YamlRuleSet {
     rules: Vec<CheckRule>,
@@ -42,10 +42,10 @@ pub struct YamlRuleSet {
 }
 
 impl YamlRuleSet {
-    /// 递归装载目录下的所有 `*.yaml` / `*.yml`。
+    /// Recursively load every `*.yaml` / `*.yml` under the directory.
     pub fn load_dir(root: &Path) -> Result<Self> {
         if !root.exists() {
-            warn!("规则目录不存在: {}", root.display());
+            warn!("rules directory does not exist: {}", root.display());
             return Ok(Self { rules: Vec::new(), sources: Vec::new() });
         }
         let mut rules: Vec<CheckRule> = Vec::new();
@@ -69,21 +69,21 @@ impl YamlRuleSet {
                 }
                 match Self::load_file(&path) {
                     Ok(mut batch) => {
-                        info!("装载规则: {} ({} 条)", path.display(), batch.len());
+                        info!("loading rules: {} ({} of them)", path.display(), batch.len());
                         sources.push(path);
                         rules.append(&mut batch);
                     }
-                    Err(e) => warn!("跳过损坏的规则文件 {}: {e}", path.display()),
+                    Err(e) => warn!("skipping a corrupt rules file {}: {e}", path.display()),
                 }
             }
         }
         Ok(Self::dedup(rules, sources))
     }
 
-    /// 从 YAML 文本装载（供测试使用）。
+    /// Load from YAML text (for tests).
     pub fn from_str(text: &str) -> Result<Self> {
         let file: RuleFile = serde_yaml::from_str(text)
-            .map_err(|e| DomainError::InvalidKnowledge(format!("规则 YAML 解析失败: {e}")))?;
+            .map_err(|e| DomainError::InvalidKnowledge(format!("failed to parse the rules YAML: {e}")))?;
         let rules = file.into_vec();
         Self::validate(&rules)?;
         Ok(Self::dedup(rules, Vec::new()))
@@ -92,31 +92,31 @@ impl YamlRuleSet {
     pub fn load_file(path: &Path) -> Result<Vec<CheckRule>> {
         let text = std::fs::read_to_string(path).map_err(DomainError::infra)?;
         let file: RuleFile = serde_yaml::from_str(&text).map_err(|e| {
-            DomainError::InvalidKnowledge(format!("{}: 规则 YAML 解析失败: {e}", path.display()))
+            DomainError::InvalidKnowledge(format!("{}: failed to parse the rules YAML: {e}", path.display()))
         })?;
         let rules = file.into_vec();
         Self::validate(&rules)?;
         Ok(rules)
     }
 
-    /// 规则 id 必须唯一且非空；文案不能为空（否则 UI 上是一条没有价值的违规）。
+    /// Rule ids must be unique and non-empty; the copy must not be empty (otherwise the UI shows a worthless violation).
     fn validate(rules: &[CheckRule]) -> Result<()> {
         for r in rules {
             if r.id.trim().is_empty() {
-                return Err(DomainError::InvalidKnowledge("规则缺少 id 字段".into()));
+                return Err(DomainError::InvalidKnowledge("a rule is missing the id field".into()));
             }
             if r.message.trim().is_empty() {
                 return Err(DomainError::InvalidKnowledge(format!(
-                    "规则 {} 缺少 message 字段",
+                    "rule {} is missing the message field",
                     r.id
                 )));
             }
-            // `$key` 引用了没声明的参数：求值时静默退化成 0 / ""，
-            // 用在 `limit` 上就是候选集直接变空 —— 必须装载时就拦下。
+            // A `$key` referencing an undeclared parameter silently degrades to 0 / "" at evaluation time, which on
+            // `limit` means the candidate set becomes empty outright — it must be rejected at load time.
             let missing = r.undeclared_params();
             if !missing.is_empty() {
                 return Err(DomainError::InvalidKnowledge(format!(
-                    "规则 {} 引用了未声明的参数: {}（请在 params: 下声明，或改写字面量）",
+                    "rule {} references an undeclared parameter: {} (declare it under params:, or write a literal instead)",
                     r.id,
                     missing.join(", ")
                 )));
@@ -125,7 +125,7 @@ impl YamlRuleSet {
         Ok(())
     }
 
-    /// 同 id 后者覆盖前者（与 FKB 的装载语义一致）。
+    /// Same id: the later one overrides the earlier (consistent with FKB loading semantics).
     fn dedup(rules: Vec<CheckRule>, sources: Vec<PathBuf>) -> Self {
         let mut merged: Vec<CheckRule> = Vec::new();
         for r in rules {
@@ -156,52 +156,53 @@ mod tests {
     const OK: &str = r#"
 rules:
   - id: hot-table
-    title: 热点表
+    title: Hot table
     severity: info
     params:
       - key: min_fan_in
-        label: 扇入阈值
+        label: Fan-in threshold
         kind: number
         default: 50
     applies_to: { kinds: [Table] }
     when: [{ fan_in_gte: "$min_fan_in" }]
-    message: "表 {name} 热"
+    message: "table {name} is hot"
 "#;
 
     const MISSING: &str = r#"
 rules:
   - id: hot-table
-    title: 热点表
+    title: Hot table
     severity: info
     applies_to: { kinds: [Table], limit: "$max_nodes" }
     when: [{ fan_in_gte: 50 }]
-    message: "表 {name} 热"
+    message: "table {name} is hot"
 "#;
 
     #[test]
-    fn 声明过的参数引用可以通过校验() {
-        let set = YamlRuleSet::from_str(OK).expect("参数已声明，应能装载");
+    fn a_declared_parameter_reference_passes_validation() {
+        let set = YamlRuleSet::from_str(OK).expect("the parameter is declared, so it should load");
         assert_eq!(set.rules().len(), 1);
         assert!(set.rules()[0].undeclared_params().is_empty());
     }
 
     #[test]
-    fn 未声明的参数引用会被拒绝() {
-        // `limit: "$max_nodes"` 求值时退化成 0 → 候选集直接变空（规则静默 0 命中）。
-        // 这类错误必须在装载阶段就报错，而不是等用户把"0 违规"读成"代码干净"。
-        let err = YamlRuleSet::from_str(MISSING).expect_err("引用未声明参数应被拒绝");
-        assert!(err.to_string().contains("max_nodes"), "实际错误: {err}");
+    fn an_undeclared_parameter_reference_is_rejected() {
+        // `limit: "$max_nodes"` degrades to 0 at evaluation -> the candidate set becomes empty (the rule silently
+        // reports 0 hits). This class of error must fail at load time, not wait for the user to read "0 violations"
+        // as "the code is clean".
+        let err = YamlRuleSet::from_str(MISSING).expect_err("referencing an undeclared parameter should be rejected");
+        assert!(err.to_string().contains("max_nodes"), "actual error: {err}");
     }
 
     #[test]
-    fn 内置规则集全部合法() {
+    fn the_built_in_rule_set_is_entirely_valid() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules");
-        let set = YamlRuleSet::load_dir(&root).expect("内置规则目录应能装载");
-        assert!(!set.rules().is_empty(), "内置规则不应为空");
+        let set = YamlRuleSet::load_dir(&root).expect("the built-in rules directory should load");
+        assert!(!set.rules().is_empty(), "the built-in rules must not be empty");
         for r in set.rules() {
             assert!(
                 r.undeclared_params().is_empty(),
-                "规则 {} 引用了未声明的参数: {:?}",
+                "rule {} references undeclared parameters: {:?}",
                 r.id,
                 r.undeclared_params()
             );

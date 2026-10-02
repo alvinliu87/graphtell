@@ -1,13 +1,13 @@
-//! 规则检测与提示词增强（代码召回）的端到端自检。
+//! End-to-end self-check for rule detection and prompt-augmented (code recall) recall.
 //!
-//! **刻意不依赖外部样本**：这里直接往库里写一小组手工构造的节点与边，
-//! 因此任何时候、任何机器上都必定运行（CRMEB 那类样本测试在样本缺失时会跳过，
-//! 无法守住这两个新能力的回归）。
+//! **Deliberately independent of external samples**: here we write a small hand-built set of nodes and edges straight into the DB,
+//! so it always runs on any machine at any time (the CRMEB-style sample tests skip when the sample is missing,
+//! and can't guard the regression of these two new capabilities).
 //!
-//! 覆盖三件事：
-//!   1. 规则引擎**真的能用 YAML 定义**（不是硬编码）；
-//!   2. 违规落成 `rule:*` 诊断，可回读、可随重跑**清空重建**（不留历史脏数据）；
-//!   3. 召回**不只是关键词匹配** —— 种子命中后要能沿图把没出现关键词的相关代码带出来。
+//! Covers three things:
+//!   1. the rule engine **really can be driven by YAML** (not hard-coded);
+//!   2. violations land as `rule:*` diagnostics, are readable back, and are **cleared and rebuilt** on re-run (no stale historical data);
+//!   3. recall **is more than keyword matching** — after a seed hits, it must pull related code that doesn't contain the keyword along the graph.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,11 +33,11 @@ struct Fixture {
     project: ProjectId,
 }
 
-/// 定位样本根目录：优先 `GRAPHTELL_SAMPLES_DIR`，否则从 `CARGO_MANIFEST_DIR` 向上
-/// 逐级找含 `frontend-backend-link` 的 `samples/`。
+/// Locate the sample root: prefer `GRAPHTELL_SAMPLES_DIR`, otherwise walk up from `CARGO_MANIFEST_DIR` level by level
+/// looking for a `samples/` containing `frontend-backend-link`.
 ///
-/// 样本树的位置不固定（可能在工作区根、也可能在上层仓库根），写死某一处会在换机器或
-/// 合并样本目录后**静默找不到样本** —— 测试随之被跳过、变成“CI 全绿但零覆盖”。
+/// The sample tree's location isn't fixed (may be at the workspace root, or the upper repo root); hard-coding one place would
+/// **silently fail to find the sample** after switching machines or merging sample dirs — the test then gets skipped, becoming "CI all green but zero coverage".
 fn samples_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLES_DIR") {
         let p = PathBuf::from(dir);
@@ -57,19 +57,18 @@ fn samples_dir() -> Option<PathBuf> {
     None
 }
 
-/// 建一个临时容器 + 工程。
+/// Build a temporary container + project.
 ///
-/// 用例并行执行，目录名必须**进程内唯一**（时间戳在同一毫秒内会撞车，
-/// 导致两个用例共用同一个 SQLite 文件、互相污染）。
+/// Cases run in parallel, so the dir name must be **unique within the process** (timestamps within the same millisecond collide,
+/// making two cases share one SQLite file and pollute each other).
 ///
-/// 返回 `None` 表示样本缺失（例如发布包 / 部分检出没有 `samples/`），调用方应跳过，
-/// 与 `gt-pipeline/tests/common/mod.rs` 的 `sample_root()` 软依赖惯例保持一致：
-/// 样本不在场时测试不应硬失败。
+/// Returning `None` means the sample is missing (e.g. a release package / partial checkout without `samples/`); the caller should skip,
+/// consistent with `gt-pipeline/tests/common/mod.rs`'s `sample_root()` soft-dependency convention: a missing sample must not hard-fail the test.
 fn fixture() -> Option<Fixture> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
-    // 样本缺失（发布包 / 部分检出）时软跳过；可用 `GRAPHTELL_SAMPLES_DIR` 指向替身。
+    // Soft-skip when the sample is missing (release package / partial checkout); point `GRAPHTELL_SAMPLES_DIR` at a stand-in.
     let samples = samples_dir()?;
     let data_dir = std::env::temp_dir().join(format!(
         "graphtell-rules-{}-{}-{}",
@@ -106,11 +105,11 @@ fn fixture() -> Option<Fixture> {
     Some(Fixture { container, project: project.id })
 }
 
-/// 仅给「不需要真实样本」的测试用（如性能回归）：建一个临时容器 + 工程。
+/// For tests "that don't need a real sample" (e.g. performance regression): build a temporary container + project.
 ///
-/// 与 `fixture()` 不同，这里**不依赖 `samples/`**——`root_path` 用仓库内必定存在的
-/// `fkb` 目录占位即可，因为这类测试只往图里写合成节点，从不读取样本源码。
-/// 这样即便发布包 / 部分检出里没有 `samples/`，性能回归也不会被拖垮或误跳过。
+/// Unlike `fixture()`, this **doesn't depend on `samples/`** — `root_path` can be a placeholder using the in-repo `fkb` dir that always exists,
+/// because such tests only write synthesized nodes into the graph and never read sample source. So even without `samples/` in a release package / partial checkout,
+/// performance regression isn't dragged down or wrongly skipped.
 fn temp_fixture() -> Fixture {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -150,13 +149,13 @@ fn temp_fixture() -> Fixture {
     Fixture { container, project: project.id }
 }
 
-/// 写入一小组手工构造的图：
+/// Write a small hand-built graph:
 ///
-/// * `Table:user` —— 热点表，被 Service 与 Dao 读写（扇入 2）
-/// * `Table:unused_log` —— 没人用
-/// * `HttpContract:POST /api/order/create` —— 有 handler
-/// * `HttpContract:DELETE /api/ghost` —— 没有 handler（应被规则命中）
-/// * `Method:createOrder` —— 既写表又不直接出现"table"这个词（考验召回的图扩展）
+/// * `Table:user` — a hot table, read/written by Service and Dao (fan-in 2)
+/// * `Table:unused_log` — unused by anyone
+/// * `HttpContract:POST /api/order/create` — has a handler
+/// * `HttpContract:DELETE /api/ghost` — no handler (should be hit by a rule)
+/// * `Method:createOrder` — both writes a table and doesn't literally contain the word "table" (tests recall's graph expansion)
 #[allow(clippy::too_many_lines)]
 fn seed_graph(f: &Fixture) {
     let store = &f.container.store;
@@ -223,9 +222,9 @@ fn seed_graph(f: &Fixture) {
                 dao.clone(),
             ],
             edges: vec![
-                // 契约 → handler（HandledBy 是**出边**，方向必须与规则一致）
+                // contract → handler (HandledBy is an **out-edge**, direction must match the rule)
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::HANDLED_BY), NodeId(103), NodeId(105)),
-                // handler / dao 写读 user 表
+                // handler / dao write-read the user table
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::WRITES_DB), NodeId(105), NodeId(101)),
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::READS_DB), NodeId(106), NodeId(101)),
             ],
@@ -245,9 +244,9 @@ fn seed_graph(f: &Fixture) {
 
 }
 
-// ---------------------------------------------------------------- 规则：YAML 定义
+// ---------------------------------------------------------------- rules: YAML-defined
 
-/// 规则必须能用 YAML 定义出来 —— 这是"内核不认识任何规则"的证明。
+/// Rules must be definable in YAML — this is the proof that "the kernel knows no rules".
 const RULES_YAML: &str = r#"
 rules:
   - id: demo-contract-no-handler
@@ -318,13 +317,13 @@ fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
     assert_eq!(ghost.node_name, "DELETE /api/ghost");
     assert!(ghost.message.contains("DELETE /api/ghost"), "文案应渲染出节点名");
 
-    // 违规排序：error 在前
+    // Violation order: errors first
     let first = report.violations.first().expect("至少有 1 条违规");
     assert_eq!(first.severity, Severity::Error);
 }
 
-/// 只跑一部分规则时，**不该**清掉其它规则的历史结果
-///（否则"单独重跑 A"会顺手抹掉 B/C，报告会莫名缺一块）。
+/// When running only part of the rules, **don't** clear the other rules' historical results
+/// (otherwise "re-run A alone" would wipe B/C on the side, and the report would mysteriously miss a chunk).
 #[test]
 fn partial_rerun_only_replaces_its_own_violations() {
     let Some(f) = fixture() else {
@@ -341,7 +340,7 @@ fn partial_rerun_only_replaces_its_own_violations() {
     svc.check(f.project, None, true).expect("全量检查应成功");
     assert_eq!(svc.violations(f.project, 500, None).expect("回读").len(), 3);
 
-    // 只重跑 pii 规则：其余两条必须还在
+    // Re-run only the pii rule: the other two must still be there
     svc.check(f.project, Some(&["demo-pii-table".to_string()]), true)
         .expect("部分检查应成功");
     let left = svc.violations(f.project, 500, None).expect("回读");
@@ -354,7 +353,7 @@ fn partial_rerun_only_replaces_its_own_violations() {
     );
 }
 
-/// 违规落成 `rule:*` 诊断；重跑时**先清旧再写新**，不留历史脏数据。
+/// Violations land as `rule:*` diagnostics; on re-run **clear old then write new**, leaving no stale historical data.
 #[test]
 fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
     let Some(f) = fixture() else {
@@ -376,13 +375,13 @@ fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
         "回读的应是规则违规，而非建图期诊断"
     );
 
-    // 再跑一次：结果必须**还是 3 条**，而不是累加成 6 条
+    // Run again: result must **still be 3**, not accumulate to 6
     svc.check(f.project, None, true).expect("重复检查应成功");
     let second = svc.violations(f.project, 500, None).expect("应能回读违规");
     assert_eq!(second.len(), 3, "重跑必须清空旧违规，而不是累加");
 }
 
-/// 只跑指定规则（`only` 过滤）。
+/// Run only specified rules (`only` filter).
 #[test]
 fn check_can_run_a_subset_of_rules() {
     let Some(f) = fixture() else {
@@ -403,7 +402,7 @@ fn check_can_run_a_subset_of_rules() {
     assert_eq!(report.violations[0].rule_id, "demo-pii-table");
 }
 
-/// 谓词组合：`Not` / `AnyOf` 必须可用（否则规则语言表达力不够）。
+/// Predicate combinators: `Not` / `AnyOf` must be usable (otherwise the rule language lacks expressiveness).
 #[test]
 fn predicate_composition_works() {
     let yaml = r#"
@@ -436,7 +435,7 @@ rules:
     assert_eq!(names, vec!["user"], "any_of 命中 user，not 排除掉 unused_log");
 }
 
-/// 内置规则库必须能装载（防止 `rules/*.yaml` 写坏而无人发现）。
+/// The built-in rule library must load (guards against `rules/*.yaml` being broken unnoticed).
 #[test]
 fn builtin_rules_yaml_loads() {
     let Some(f) = fixture() else {
@@ -460,9 +459,9 @@ fn builtin_rules_yaml_loads() {
     );
 }
 
-// ---------------------------------------------------------------- 召回
+// ---------------------------------------------------------------- recall
 
-/// 召回的核心价值：不只是关键词匹配，而是**沿图把相关代码带出来**。
+/// Recall's core value: not just keyword matching, but **pulling related code out along the graph**.
 #[test]
 fn recall_expands_from_seed_along_graph() {
     let Some(f) = fixture() else {
@@ -492,15 +491,15 @@ fn recall_expands_from_seed_along_graph() {
 
     assert!(!result.hits.is_empty(), "至少要召回一条");
 
-    // 1) 种子应当命中 `Table:user`
+    // 1) the seed should hit `Table:user`
     assert!(
         result.seeds.iter().any(|s| s.name == "user"),
         "种子应命中 user 表，实际：{:?}",
         result.seeds.iter().map(|s| &s.name).collect::<Vec<_>>()
     );
 
-    // 2) 扩展：`createOrder` 这个名字里没有 "user"，但它写了 user 表 ——
-    //    必须被图扩展带出来，这正是"召回"区别于"全文检索"的地方。
+    // 2) expansion: `createOrder` has no "user" in its name, but it writes the user table —
+    //    it must be pulled out by graph expansion; this is exactly where "recall" differs from "full-text search".
     let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
     assert!(
         names.contains(&"createOrder"),
@@ -511,7 +510,7 @@ fn recall_expands_from_seed_along_graph() {
         "读 user 表的方法也应被带出，实际命中：{names:?}"
     );
 
-    // 3) 跳数与直接命中的区分必须正确
+    // 3) hop count vs direct-hit distinction must be correct
     let seed_hit = result
         .hits
         .iter()
@@ -528,13 +527,12 @@ fn recall_expands_from_seed_along_graph() {
     assert!(expanded.hop >= 1);
 }
 
-/// 候选集快照跨请求复用（延迟优化）**不能**以"答旧图"为代价。
+/// The candidate-set snapshot's cross-request reuse (a latency optimization) must **not** come at the cost of "answering a stale graph".
 ///
-/// 常驻服务只在 watch 触发重建时收到 `clear_node_cache`；图若在**另一个进程**
-/// （如手工 `graphtell run`）被改写，服务不会收到通知。因此每次复用快照前都要用
-/// 一次轻量的 `stats` 校验规模，规模对不上就重建 —— 本用例锁住这条不变量：
-/// 同一个 `RecallService`、中途改图、**不调用** `clear_node_cache`，
-/// 第二次召回必须看得到新写入的节点。
+/// A resident service only gets `clear_node_cache` when watch triggers a rebuild; if the graph is rewritten in **another process**
+/// (e.g. a manual `graphtell run`), the service isn't notified. So before each snapshot reuse, validate the size with a lightweight `stats`;
+/// if the size mismatches, rebuild — this case locks that invariant: the same `RecallService`, with a mid-way graph change, **without** calling
+/// `clear_node_cache`, the second recall must see the newly written node.
 #[test]
 fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
     let Some(f) = fixture() else {
@@ -565,7 +563,7 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
         .expect("召回不应失败")
     };
 
-    // 第一次召回：图上还没有这个节点（顺便把该工程的快照装进缓存）。
+    // First recall: the node isn't on the graph yet (also loads this project's snapshot into the cache).
     let before = query("zzqLateAddedWidget");
     assert!(
         !before.hits.iter().any(|h| h.name == "zzqLateAddedWidget"),
@@ -573,7 +571,7 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
         before.hits.iter().map(|h| &h.name).collect::<Vec<_>>()
     );
 
-    // 另一个进程改图：新增一个节点，且不通知 RecallService。
+    // Another process changes the graph: adds a node, without notifying RecallService.
     store
         .apply(&GraphDelta {
             project_id: Some(pid),
@@ -602,7 +600,7 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
         })
         .expect("改图应成功");
 
-    // 第二次召回：必须看到新节点 —— 否则说明快照被永久复用，答的一直是旧图。
+    // Second recall: must see the new node — otherwise the snapshot is permanently reused, always answering the stale graph.
     let after = query("zzqLateAddedWidget");
     assert!(
         after.hits.iter().any(|h| h.name == "zzqLateAddedWidget"),
@@ -611,12 +609,11 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
     );
 }
 
-/// 中文意图查询（"下单改优惠"）必须能越过词面，seed 到英文命名的业务节点。
+/// A Chinese-intent query ("下单改优惠") must cross the lexicon and seed to English-named business nodes.
 ///
-/// 之前（纯词面子串）：只有名字恰好含「优惠」的 `优惠券` i18n 文案被命中，
-/// 真正的下单 / 改折扣代码（英文命名）全部漏掉。现在通过「中文意图词 → 英文
-/// 符号」的离线桥 + 向量软匹配，应能召回 `placeOrder` / `applyDiscount` /
-/// `OrderService`，并把图上的相关代码一并带出。
+/// Before (pure lexical substring): only the i18n text `优惠券` whose name happened to contain "优惠" was hit,
+/// all the real order/ discount-change code (English-named) was missed. Now via the offline "Chinese-intent word → English symbol" bridge
+/// + vector soft matching, it should recall `placeOrder` / `applyDiscount` / `OrderService`, and pull the related code on the graph along too.
 #[test]
 fn recall_chinese_intent_bridges_to_english_nodes() {
     let Some(f) = fixture() else {
@@ -677,7 +674,7 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
     let place_order = node("Method", "placeOrder", 202, Some(svc_file));
     let apply_discount = node("Method", "applyDiscount", 203, Some(svc_file));
     let coupon_i18n = node("I18nKey", "优惠券", 204, Some(i18n_file));
-    // 通用动词桥的落点：「查询/列表」→ list / find / all …
+    // Landing of the generic-verb bridge: "query/list" → list / find / all …
     let list_orders = node("Method", "listOrders", 206, Some(svc_file));
 
     store
@@ -691,10 +688,10 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
                 list_orders.clone(),
             ],
             edges: vec![
-                // placeOrder 调用 applyDiscount，并写 OrderService
+                // placeOrder calls applyDiscount, and writes OrderService
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(202), NodeId(203)),
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::WRITES_DB), NodeId(202), NodeId(201)),
-                // listOrders 也写 OrderService，便于验证图扩展
+                // listOrders also writes OrderService, for verifying graph expansion
                 NewEdge::new(pid, EdgeKind::new(EdgeKind::WRITES_DB), NodeId(206), NodeId(201)),
             ],
             ..Default::default()
@@ -710,8 +707,8 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
         .recall(
             f.project,
             &RecallQuery {
-                // 用**跨领域通用动词**表达意图（查询 / 列表），不再依赖任何领域词表：
-                // 领域名词（下单 / 优惠）已统一交给工程自身的 i18n 桥。
+                // Express intent with **cross-domain generic verbs** (query / list), no longer depending on any domain lexicon:
+                // domain nouns (下单 / 优惠) are uniformly handed to the project's own i18n bridge.
                 query: "查询订单列表".into(),
                 limit: 20,
                 hops: 2,
@@ -724,33 +721,32 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
 
     let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
 
-    // 1) 中文通用动词必须 bridge 到英文方法（而不只是命中中文 i18n 文案）
+    // 1) Chinese generic verbs must bridge to English methods (not just hit Chinese i18n text)
     assert!(
         names.contains(&"listOrders"),
         "「查询/列表」应 bridge 到 listOrders，实际命中：{names:?}"
     );
-    // 2) 图扩展：listOrders 写 OrderService，应被带出
+    // 2) graph expansion: listOrders writes OrderService, should be pulled out
     assert!(
         names.contains(&"OrderService"),
         "OrderService 应被图扩展带出，实际命中：{names:?}"
     );
-    // 3) 命中里必须有「代码节点」，而不是只有文案类节点
+    // 3) the hits must include "code nodes", not only text-class nodes
     assert!(
         names.iter().any(|n| *n == "listOrders" || *n == "OrderService"),
         "结果应包含代码节点，实际命中：{names:?}"
     );
 }
 
-/// 端到端锁定「如何修改下单优惠」的排名成果（对应 eval 集同款查询 + grep 基线用例）。
+/// End-to-end lock on the ranking result of "如何修改下单优惠" (corresponds to the eval set's same query + grep-baseline case).
 ///
-/// 核心不变量：动作意图（修改）下，**只有命中内容词（coupon / order…）的纯动词 CRUD 方法**
-/// 才享受 1.5× 动作加权；无关域的发货 `DeliveryService.update` 即便名字命中 `update`，
-/// 也必须排在业务方法 `StoreCouponIssue.edit` 之后。回归前发货 CRUD 曾顶进 Top 5，
-/// 盖住了真正的优惠券服务节点。
+/// Core invariant: under the action intent (modify), **only pure-verb CRUD methods that hit content words (coupon / order…)**
+/// get the 1.5× action boost; an unrelated-domain shipping `DeliveryService.update`, even if its name hits `update`,
+/// must rank after the business method `StoreCouponIssue.edit`. Before the fix, shipping CRUD once climbed into Top 5,
+/// covering the real coupon-service node.
 ///
-/// 这条走的是完整词面召回链路（parse_query → action_intent → score_node → 排序），
-/// 单测 [`gt_application::recall_service`] 里那两条只钉住了 `score_node` 本身，
-/// 这条补上"整条管道串起来仍成立"的兜底。
+/// This goes through the full lexical-recall pipeline (parse_query → action_intent → score_node → ranking); the two unit tests
+/// in [`gt_application::recall_service`] only pinned `score_node` itself; this one adds the "whole pipeline still holds" backstop.
 #[test]
 fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
     let Some(f) = fixture() else {
@@ -802,7 +798,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
         properties: serde_json::Value::Null,
     };
 
-    // 业务方法：类标识符含 coupon → 命中内容词 → 保留 1.5× 动作加权
+    // Business method: class identifier contains coupon → hits content word → keeps 1.5× action boost
     let coupon_edit = node(
         "Method",
         "edit",
@@ -810,8 +806,8 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
         coupon_file,
         "app\\adminapi\\controller\\v1\\marketing\\StoreCouponIssue::edit",
     );
-    // 无关域 CRUD：名字命中 update，但类标识符（DeliveryService）无内容词、
-    // 仅有路径里的 order → 必须被惩罚，不享受动作加权
+    // Unrelated-domain CRUD: name hits update, but class identifier (DeliveryService) has no content word,
+    // only `order` in the path → must be penalized, no action boost
     let ship_update = node(
         "Method",
         "update",
@@ -856,7 +852,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
         s.map_or(true, |si| b < si),
         "业务 edit 应排在发货 update 之前（修改意图下内容词才加权），实际：{names:?}"
     );
-    // 关键词不该是字符级 bigram：证明中文已走词级切分
+    // Keywords shouldn't be character-level bigrams: proves Chinese already goes word-level segmentation
     assert!(
         !result.terms.iter().any(|t| t == "何修" || t == "改下" || t == "单优"),
         "查询词不应含跨词边界噪音 bigram，实际：{:?}",
@@ -871,17 +867,17 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
     );
 }
 
-/// 端到端锁定「事件驱动查询」的两个核心不变量（对应 eval 集同款查询 + 6 场景复盘）：
+/// End-to-end lock on two core invariants of "event-driven queries" (corresponds to the eval set's same queries + 6-scenario review):
 ///
-/// 1. **监听器浮出**：查询「X 之后怎么 Y」时，被命名约定淹没的事件监听器
-///    （`*Listener`，方法名统一叫 `handle`、词面分≈0）必须被补成种子并进前排 ——
-///    具体地，「下单后怎么发通知」要能召回 `OrderCreateAfterListener`、「退款成功后怎么回退优惠券」
-///    要能召回 `OrderRefundCreateAfterListener`。
-/// 2. **质量不崩**：事件种子只做「兄弟监听器间的 idf 微调」，不整体压过词面强命中，
-///    因此质量档不得掉到 `Low`（否则整段上下文作废、等于没召回）。
+/// 1. **Listener floats up**: when querying "how to Y after X", the event listeners drowned by the naming convention
+///    (`*Listener`, methods uniformly named `handle`, lexical score ≈0) must be supplemented as seeds and pushed to the front —
+///    concretely, "下单后怎么发通知" should recall `OrderCreateAfterListener`, "退款成功后怎么回退优惠券"
+///    should recall `OrderRefundCreateAfterListener`.
+/// 2. **Quality doesn't collapse**: event seeds only do "idf fine-tuning among sibling listeners", not globally overpower the lexical strong hits,
+///    so the quality tier must not drop to `Low` (otherwise the whole context is voided, equal to no recall).
 ///
-/// 这条不走样本（CRMEB），直接手造一组「订单/退款/通知 监听器 + 业务 Service」的小图，
-/// 任何机器上必跑，守住上面两条回归。
+/// This doesn't use the sample (CRMEB); it directly hand-builds a small graph of "order/refund/notification listeners + business Services",
+/// must run on any machine, guarding the two regressions above.
 #[test]
 fn recall_event_driven_listener_surfaces_without_quality_collapse() {
     let Some(f) = fixture() else {
@@ -922,7 +918,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
         properties: serde_json::Value::Null,
     };
 
-    // 业务 Service（含 order / user / coupon 内容词 → 词面强命中）
+    // Business Service (contains order / user / coupon content words → strong lexical hit)
     let order_svc = node("Class", "OrderService", 801, listener_file, "app\\services\\OrderService");
     let user_svc = node("Class", "UserService", 802, listener_file, "app\\services\\UserService");
     let coupon_svc = node("Class", "CouponService", 803, listener_file, "app\\services\\CouponService");
@@ -933,9 +929,6 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
         listener_file,
         "app\\services\\CouponService::recoverCoupon",
     );
-    // 内聚业务方法：同一方法同时覆盖两个概念，给质量评估器提供「概念内聚」信号，
-    // 否则「下单 + 通知 + 用户」三类概念各撞一个无关节点会被判 Low（假信心护栏）。
-    // 这也正是真实代码库里存在的入口（下单后发通知 / 退款回退优惠卷）。
     let send_notify = node(
         "Method",
         "sendOrderCreateNotify",
@@ -950,7 +943,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
         listener_file,
         "app\\services\\CouponService::refundCouponBack",
     );
-    // 事件监听器（名字带 Listener → 被 `is_event_handler` 识别；方法名 `handle` 词面分≈0）
+    // Event listener (name has Listener → recognized by `is_event_handler`; method name `handle` lexical score ≈0)
     let order_create_listener = node(
         "Class",
         "OrderCreateAfterListener",
@@ -996,7 +989,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
                 order_create_event.clone(),
             ],
             edges: vec![
-                // 事件 → 监听器（语义边，未来若接"事件边连通性"加权也能用到）
+                // event → listener (semantic edge; useful later if "event-edge connectivity" weighting is added)
                 NewEdge::new(
                     pid,
                     EdgeKind::new(EdgeKind::HANDLED_BY),
@@ -1014,7 +1007,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
         f.container.scanner(),
     );
 
-    // ---- 场景 1：下单后怎么发通知给用户 → OrderCreateAfterListener 必须浮出，质量不崩 ----
+    // ---- scenario 1: how to notify the user after placing an order → OrderCreateAfterListener must surface, quality must not collapse ----
     let r1 = svc
         .recall(
             f.project,
@@ -1040,7 +1033,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
         r1.quality_reason
     );
 
-    // ---- 场景 2：退款成功后怎么回退优惠券 → OrderRefundCreateAfterListener + 回退券逻辑浮出 ----
+    // ---- scenario 2: how to roll back coupons after a successful refund → OrderRefundCreateAfterListener + coupon-rollback logic surfaces ----
     let r2 = svc
         .recall(
             f.project,
@@ -1066,7 +1059,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
         r2.quality_reason
     );
 
-    // ---- idf 微调不变量：命中稀有概念（notify）的监听器应压过只命中泛词（order）的兄弟 ----
+    // idf fine-tuning invariant: the listener hitting a rare concept (notify) should overpower the sibling hitting only generic words (order)
     let rank = |n: &str| names1.iter().position(|x| *x == n);
     match (rank("NotifyListener"), rank("OrderRefundCreateAfterListener")) {
         (Some(a), Some(b)) => assert!(
@@ -1077,11 +1070,11 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
     }
 }
 
-/// 端到端：把真实 `bge-m3`（candle，纯 Rust）注入 `RecallService`，中文意图
-/// `下单改优惠` 经由「语义向量」直接 seed 到英文业务节点 `placeOrder` / `applyDiscount`，
-/// 且它们的得分明显高于无关噪声节点 `unused_log`。
+/// End-to-end: inject the real `bge-m3` (candle, pure Rust) into `RecallService`; the Chinese intent
+/// `下单改优惠` seeds via "semantic vector" straight to the English business nodes `placeOrder` / `applyDiscount`,
+/// and their scores clearly beat the unrelated noise node `unused_log`.
 ///
-/// 仅在 `--features model-candle` 下编译 / 运行；无模型权重时自动跳过。
+/// Only compiled / run under `--features model-candle`; auto-skips when no model weights.
 #[cfg(feature = "model-candle")]
 #[test]
 fn recall_real_bge_model_chinese_to_english() {
@@ -1161,7 +1154,7 @@ fn recall_real_bge_model_chinese_to_english() {
     let order_svc = node("Class", "OrderService", 201, Some(svc_file));
     let place_order = node("Method", "placeOrder", 202, Some(svc_file));
     let apply_discount = node("Method", "applyDiscount", 203, Some(svc_file));
-    // 无关噪声节点：与「下单改优惠」无任何语义关系
+    // Unrelated noise node: no semantic relation to "下单改优惠" whatsoever
     let noise = node("Method", "unused_log", 205, Some(svc_file));
 
     store
@@ -1182,9 +1175,6 @@ fn recall_real_bge_model_chinese_to_english() {
         f.container.scanner(),
         Arc::new(CandleBgeEmbedder::load(&model_dir).expect("加载 bge-m3 失败")),
     );
-    // 语义路要求工程已预热（生产入口由后台异步预热 / `graphtell embed` 完成）。
-    // 直接注入编码器时 `warmed_projects` 为空，召回会静默落到快速哈希路、bge 根本不参与，
-    // 本测试也就测不到它想测的「中文意图 → 英文符号」语义召回。
     let warmed = svc.warm_up(f.project).expect("bge 预热应成功");
     assert!(warmed > 0, "应至少编码一个主题级节点，实际 {warmed}");
 
@@ -1212,9 +1202,6 @@ fn recall_real_bge_model_chinese_to_english() {
     };
     let p = score_of("placeOrder");
     let a = score_of("applyDiscount");
-    // 噪声 `unused_log` 现在同样进入向量空间（Method/Function 已纳入语义编码），会被低分
-    // 召回 —— 这正是期望：噪声与业务节点可比，且得分应显著更低。未召回时按 0 分处理以
-    // 保持对模型权重变化的稳健性。
     let n = result
         .seeds
         .iter()
@@ -1227,7 +1214,7 @@ fn recall_real_bge_model_chinese_to_english() {
     assert!(a > n, "applyDiscount 得分应高于噪声 unused_log：{a} vs {n}");
 }
 
-/// 中文结构提示（"表"）应把结果收敛到对应节点种类。
+/// Chinese structural hints ("表") should converge results to the corresponding node kind.
 #[test]
 fn recall_understands_chinese_kind_hints() {
     let Some(f) = fixture() else {
@@ -1262,11 +1249,11 @@ fn recall_understands_chinese_kind_hints() {
     );
 }
 
-/// 建图完成后必须**自动**跑一遍合规检查 —— 不能要求用户手动触发。
+/// After graph build, a compliance check must run **automatically** — the user must not be required to trigger it manually.
 ///
-/// 断言方式刻意选"陈旧违规被清掉"而不是"有违规产生"：
-/// 检查的第一步就是清空 `rule:` 前缀的旧诊断，所以人工塞一条陈旧诊断、
-/// 建图后它必须消失 —— 这样哪怕本样本一条违规都没命中，也能确证检查真的跑过。
+/// The assertion deliberately picks "stale violations get cleared" rather than "violations are produced":
+/// the check's first step clears the old `rule:`-prefixed diagnostics, so manually planting one stale diagnostic,
+/// it must disappear after build — thus even if this sample hits zero violations, we can confirm the check really ran.
 #[test]
 fn build_runs_check_automatically() {
     let Some(f) = fixture() else {
@@ -1309,10 +1296,10 @@ fn build_runs_check_automatically() {
     );
 }
 
-/// 声明技术栈的环境：给工程挂上指定语言/框架的子工程。
+/// An environment declaring a tech stack: attach sub-projects with the given language/framework to a project.
 ///
-/// 环境闸门读的就是 `sub_projects.language` / `.frameworks`，
-/// 所以测试要能控制它 —— 否则默认无子工程，任何带语言声明的规则都会"不适用"。
+/// The environment gate reads exactly `sub_projects.language` / `.frameworks`,
+/// so the test must be able to control it — otherwise with no sub-projects by default, any rule with a language declaration would be "not applicable".
 fn set_stack(f: &Fixture, language: &str, frameworks: &[&str]) {
     f.container
         .store
@@ -1332,11 +1319,11 @@ fn set_stack(f: &Fixture, language: &str, frameworks: &[&str]) {
         .expect("子工程应可写入");
 }
 
-/// 环境闸门：语言专属规则**不能**在不适配的工程上跑。
+/// Environment gate: language-specific rules **must not** run on a project that doesn't match.
 ///
-/// 这不是洁癖 —— PHP FKB 才产出的边（Triggers / PublishesTo）在 Java 工程里一条都没有，
-/// `no_incoming: Triggers` 会把每个事件节点都报成"没人触发"；同理 JS 才产出的边
-/// （Emits / ListensTo，前端事件总线）在纯 Java 工程上也不存在。
+/// This isn't pedantry — edges only produced by the PHP FKB (Triggers / PublishesTo) don't exist at all in a Java project,
+/// so `no_incoming: Triggers` would report every event node as "nobody triggers it"; likewise edges only produced by JS
+/// (Emits / ListensTo, the frontend event bus) don't exist in a pure Java project.
 #[test]
 fn php_only_rules_are_skipped_on_java_project() {
     let Some(f) = fixture() else {
@@ -1363,7 +1350,7 @@ fn php_only_rules_are_skipped_on_java_project() {
             "{id} 不应在 Java 工程上产出任何违规"
         );
     }
-    // 反向确认：跨语言的契约规则不受影响，照常执行
+    // Reverse confirmation: cross-language contract rules are unaffected, run as usual
     assert!(
         report
             .by_rule
@@ -1375,7 +1362,7 @@ fn php_only_rules_are_skipped_on_java_project() {
     );
 }
 
-/// 同一条 PHP 规则在 PHP 工程上必须恢复执行（闸门不能一刀切）。
+/// The same PHP rule must resume running on a PHP project (the gate must not be a blanket cut).
 #[test]
 fn php_only_rules_run_on_php_project() {
     let Some(f) = fixture() else {
@@ -1401,11 +1388,11 @@ fn php_only_rules_run_on_php_project() {
     );
 }
 
-/// 环境闸门：前端（JS）专属规则**不能**在纯后端工程上跑。
+/// Environment gate: frontend (JS)-specific rules **must not** run on a pure backend project.
 ///
-/// `EventBus` 节点与 `Emits` / `ListensTo` 边是前端事件总线的语义。
-/// 纯后端工程上它们一个都没有，规则会以"0 命中"收场 —— 而 0 命中会被读成
-/// "没有死代码"，正是本项目最想避免的失效方式。
+/// `EventBus` nodes and `Emits` / `ListensTo` edges are the semantic of the frontend event bus.
+/// A pure backend project has none of them, and the rule would end with "0 hits" — and 0 hits would be read as
+/// "no dead code", exactly the failure mode this project most wants to avoid.
 #[test]
 fn js_only_rules_are_skipped_on_backend_only_project() {
     let Some(f) = fixture() else {
@@ -1437,17 +1424,17 @@ fn js_only_rules_are_skipped_on_backend_only_project() {
     }
 }
 
-/// 判据校验：判据里的边在图上一个都没有时，规则必须**停用**而不是硬跑。
+/// Criterion validation: when not a single edge of the criterion's kind exists on the graph, the rule must **deactivate**, not run hard.
 ///
-/// 这是"恒真误报"的防线：图上没有 `CallsHttp` 边时，
-/// `no_incoming: CallsHttp` 对每个端点都成立，会把全部端点报成死端点。
+/// This is the guard against "always-true false positives": when the graph has no `CallsHttp` edge,
+/// `no_incoming: CallsHttp` holds for every endpoint, reporting all endpoints as dead endpoints.
 #[test]
 fn rule_is_disabled_when_its_edge_never_occurs() {
     let Some(f) = fixture() else {
         eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
         return;
     };
-    // 只放一个没有 CallsHttp 边的图：seed_graph 里本就没有 CallsHttp
+    // The criterion's edge kind truly doesn't exist on the graph → the rule must deactivate
     seed_graph(&f);
     set_stack(&f, "php", &[]);
 
@@ -1629,15 +1616,6 @@ fn check_predicate_is_constructible() {
     assert!(matches!(p, CheckPredicate::Not(_)));
 }
 
-// ---------------------------------------------------------------- 补覆盖
-//
-// 下面这批用例对应的是**已发货规则在用、但原先零覆盖**的谓词与开关：
-//   * `property_is`   —— `frontend-calls-missing-backend` / `backend-endpoint-never-called`
-//   * `has_outgoing`  —— `backend-endpoint-never-called`
-//   * `fan_in_gte`    —— `hot-table` / `pii-table-hot`
-//   * `enabled: false`—— `write-endpoint-without-auth` 正是靠它停用的
-// 它们一旦回归，坏的是**真实规则的输出**，而现有用例只覆盖 `no_outgoing` /
-// `has_annotation` / `fan_in_lte`，发现不了。
 
 /// 给图补一个带 `properties` 的节点（`seed_graph` 里的节点 properties 全是 Null，
 /// 所以 `property_is` 在既有图上永远不成立 —— 不补节点就没法测它）。
@@ -1856,9 +1834,6 @@ fn java_n1_query_rule_fires_on_loop_db_read() {
         .expect("文件应可写入");
     let file_id = files[0].id;
 
-    // 一个循环体内的数据库**读**调用点：
-    //   * `in_loop` 属性（解析器写成 JSON 布尔 `true`）；
-    //   * `db-query` 标注（P7 落成 `ReadsDb` 边时打的投影）。
     f.container
         .store
         .apply(&GraphDelta {
@@ -2447,18 +2422,6 @@ fn recall_reads_snippet_from_real_file() {
     );
 }
 
-// ---------------------------------------------------------------- 性能 smoke
-//
-// 为什么阈值用例值得加，以及为什么不能只写一个绝对数字：
-//   * 规则引擎的性能退化**没有任何用例守着** —— 若哪天有人把 Facts 的
-//     内存查表换成逐节点查库（N+1），或从 1.4s 退化到 60s，测试照样全绿。
-//   * 但绝对阈值容易在不同机器上 flaky（CI 机器慢、负载高）。
-//   所以这里两层：
-//     1. **缩放比**（主力）：节点数 ×4，耗时不得超过某个倍数。
-//        线性实现是 ×4，O(N²) 是 ×16 —— 用一个宽松的倍数（×10）就能把
-//        二次退化挡住，而且这个比值**几乎与机器性能无关**。
-//     2. **绝对上限**（兜底）：抓 N+1 这类"每节点一次往返"的退化 ——
-//        它仍是线性的，缩放比看不出来，但绝对耗时会爆炸。
 
 /// 批量写入 `n` 张表，并让它们都被同一个方法读一次（扇入 1）。
 ///

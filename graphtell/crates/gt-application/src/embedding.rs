@@ -1,40 +1,40 @@
-//! 离线文本编码器（向量召回的「编码」一侧）。
+//! Offline text encoder (the "encoding" side of vector recall).
 //!
-//! 当前默认实现 [`LocalHashingEmbedder`] 是**零依赖、纯离线**的：用特征哈希
-//! （hashing trick）把文本投到固定维度再 L2 归一化。它**不是**神经网络语义向量，
-//! 但能在本仓库离线跑起来，提供「软匹配」（跨字段、部分重叠即得余弦分），足以
-//! 演示「向量种子 + 图扩展」的完整管线。
+//! The current default [`LocalHashingEmbedder`] is **zero-dependency, fully offline**: it uses feature hashing
+//! (hashing trick) to project text into a fixed dimension then L2-normalizes. It is **not** a neural-network semantic vector,
+//! but it runs offline in this repo and provides "soft matching" (cross-field, partial overlap still yields a cosine score), enough to
+//! demonstrate the full pipeline of "vector seeds + graph expansion".
 //!
-//! 真正的语义模型（`bge-m3` / `unixcoder`，本地 `candle` / `ort` 推理）只要实现
-//! [`Embedder`] trait 即可无缝替换，召回流程无需改动。
+//! A real semantic model (`bge-m3` / `unixcoder`, local `candle` / `ort` inference) only needs to implement
+//! the [`Embedder`] trait to drop in seamlessly; the recall flow needs no changes.
 
 use std::sync::{Arc, OnceLock};
 
-/// 文本 → 稠密向量的编码器。可替换、可离线。
+/// Text → dense-vector encoder. Replaceable, offline-capable.
 pub trait Embedder: Send + Sync {
-    /// 编码一段文本为向量（已 L2 归一化）。
+    /// Encode a piece of text into a vector (already L2-normalized).
     fn embed(&self, text: &str) -> Vec<f32>;
-    /// 向量维度。
+    /// Vector dimension.
     fn dim(&self) -> usize;
-    /// 编码「查询」文本（召回时用户查询侧使用）。
+    /// Encode "query" text (used on the user-query side during recall).
     ///
-    /// 默认与 [`Embedder::embed`] 相同；但部分模型（如 bge 系列）要求**查询侧**
-    /// 加检索前缀、文档侧不加，此时应覆写本方法，使查询与文档落入同一向量空间。
+    /// Defaults to the same as [`Embedder::embed`]; but some models (e.g. the bge family) require a retrieval prefix on the **query side**
+    /// and none on the document side, in which case override this method so query and document land in the same vector space.
     fn embed_query(&self, text: &str) -> Vec<f32> {
         self.embed(text)
     }
 
-    /// 批量编码（文档侧，不加前缀）。
+    /// Batch encode (document side, no prefix).
     ///
-    /// 默认逐条调用 [`Embedder::embed`]；真实模型（bge-m3 / candle）应覆写为「单次前向」
-    /// 把冷启动从「逐节点 N 次前向」降为「少量大批次前向」——对大图召回是数量级提速
-    /// （bge-m3 在 CPU 上单条前向 ~百毫秒，批量前向可 amortize 到几毫秒 / 条）。
+    /// Defaults to calling [`Embedder::embed`] item by item; a real model (bge-m3 / candle) should override as a "single forward pass"
+    /// to cut cold-start from "N forwards per node" to "a few large-batch forwards" — an order-of-magnitude speedup for large-graph recall
+    /// (bge-m3 on CPU is ~hundreds of ms per single forward, batch forward amortizes to a few ms/item).
     fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
         texts.iter().map(|t| self.embed(t)).collect()
     }
 }
 
-/// 两段向量的余弦相似度（重算各自 L2 范数，避免预归一化的浮点漂移）。
+/// Cosine similarity of two vectors (recomputes each L2 norm to avoid pre-normalization float drift).
 pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     let n = a.len().min(b.len());
     if n == 0 {
@@ -64,7 +64,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     }
 }
 
-/// 零依赖的本地编码器：特征哈希（signed hash → ±1 投到固定维度）。
+/// Zero-dependency local encoder: feature hashing (signed hash → ±1 projected to a fixed dimension).
 pub struct LocalHashingEmbedder {
     dim: usize,
 }
@@ -92,14 +92,14 @@ impl Embedder for LocalHashingEmbedder {
     }
 }
 
-/// 默认离线编码器（256 维，零外部依赖）。
+/// Default offline encoder (256-dim, zero external dependencies).
 pub fn default_embedder() -> Arc<dyn Embedder> {
     Arc::new(LocalHashingEmbedder::new(256))
 }
 
-/// 当前生效的 embedding 后端描述（供 status 端点 / UI 展示）。
+/// Human-readable description of the currently active embedding backend (for the status endpoint / UI).
 static BACKEND_INFO: OnceLock<String> = OnceLock::new();
-/// 当前生效的 embedding 向量维度。
+/// The currently active embedding vector dimension.
 static BACKEND_DIM: OnceLock<usize> = OnceLock::new();
 
 fn set_backend_info(name: &str, dim: usize) {
@@ -107,25 +107,25 @@ fn set_backend_info(name: &str, dim: usize) {
     let _ = BACKEND_DIM.set(dim);
 }
 
-/// 当前 embedding 后端的人类可读描述（如 `bge-m3-local`、`remote-openai (http://...)`）。
+/// Human-readable description of the current embedding backend (e.g. `bge-m3-local`, `remote-openai (http://...)`).
 pub fn embedding_backend_info() -> String {
     BACKEND_INFO.get().cloned().unwrap_or_else(|| "unknown".to_string())
 }
 
-/// 当前 embedding 向量维度；未知时为 0。
+/// The current embedding vector dimension; 0 when unknown.
 pub fn embedding_dim() -> usize {
     BACKEND_DIM.get().copied().unwrap_or(0)
 }
 
-/// 解析召回用的编码器：依据 `GT_EMBEDDING_BACKEND` 选择后端。
+/// Resolve the encoder used for recall: choose the backend per `GT_EMBEDDING_BACKEND`.
 ///
-/// - `auto`（默认）：本地 bge-m3 优先，缺权重则安全退回离线词面哈希；
-/// - `local`：强制本地 bge-m3，缺失也不退回（明确报错，提示先 `graphtell model fetch`）；
-/// - `url` / `remote`：指向用户自带的 embedding 服务（OpenAI 兼容 / TEI 原生）；
-/// - `hash` / `off` / `none`：纯离线词面哈希（零依赖，质量弱但保底可用）。
+/// - `auto` (default): local bge-m3 preferred, safely falls back to offline lexical hashing when weights are missing;
+/// - `local`: force local bge-m3, no fallback when missing (errors explicitly, hinting to run `graphtell model fetch` first);
+/// - `url` / `remote`: point at the user's own embedding service (OpenAI-compatible / TEI native);
+/// - `hash` / `off` / `none`: pure offline lexical hashing (zero-dependency, weaker quality but a usable floor).
 ///
-/// 返回值可直接注入 [`crate::RecallService`]。生产入口（CLI / HTTP router）都走它，
-/// 因此「有权重就走真实语义、没有就退回离线」是统一行为，无需调用方关心。
+/// The return value injects directly into [`crate::RecallService`]. Production entry points (CLI / HTTP router) all go through it,
+/// so "real semantics if weights exist, fall back to offline otherwise" is uniform behavior, callers need not care.
 pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
     let backend = std::env::var("GT_EMBEDDING_BACKEND").unwrap_or_else(|_| "auto".to_string());
     match backend.as_str() {
@@ -153,7 +153,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
             };
         }
         "local" => {
-            // 强制本地 bge-m3：缺失也不退回词面，让用户明确感知权重缺失。
+            // Force local bge-m3: no fall back to lexical hashing when missing, so the user explicitly notices the missing weights.
             if let Some(e) = try_real_recall_embedder() {
                 let dim = e.dim();
                 set_backend_info("bge-m3-local", dim);
@@ -168,7 +168,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
         "auto" | _ => {}
     }
 
-    // ---- auto：本地 bge-m3 优先，否则退回离线词面（默认行为） ----
+    // ---- auto: local bge-m3 preferred, otherwise fall back to offline lexical (default behavior) ----
     #[cfg(all(feature = "model-candle", feature = "model-ort"))]
     {
         let dir = std::env::var("GT_BGE_MODEL")
@@ -206,13 +206,13 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
     default_embedder()
 }
 
-/// 仅当编译了 `model-candle` 且 `GT_BGE_MODEL` 权重可用时返回真实 bge-m3 编码器，
-/// 否则返回 `None`（调用方应退回词面 / 快速向量路，且关闭后台预热）。
+/// Return the real bge-m3 encoder only when `model-candle` is compiled and `GT_BGE_MODEL` weights are available,
+/// otherwise return `None` (the caller should fall back to lexical / fast-vector path and disable background warmup).
 ///
-/// 与 [`resolve_recall_embedder`] 的区别：后者在无权重时**安全退回**默认哈希编码器；
-/// 本函数把「是否具备真实语义」这一事实显式交回调用方，便于决定是否触发后台预热。
+/// Differs from [`resolve_recall_embedder`]: the latter **safely falls back** to the default hash encoder when weights are missing;
+/// this function explicitly hands the fact "do we have real semantics" back to the caller, so they can decide whether to trigger background warmup.
 pub fn try_real_recall_embedder() -> Option<Arc<dyn Embedder>> {
-    // 同 [`resolve_recall_embedder`]：优先混合编码器（查询 tract / 批量 candle）。
+    // Same as [`resolve_recall_embedder`]: prefer the hybrid encoder (query tract / batch candle).
     #[cfg(all(feature = "model-candle", feature = "model-ort"))]
     {
         let dir = std::env::var("GT_BGE_MODEL")
@@ -252,12 +252,12 @@ pub fn try_real_recall_embedder() -> Option<Arc<dyn Embedder>> {
     }
 }
 
-/// 抽取用于编码的特征：ASCII token（保留大小写拆 camelCase/snake 后再转小写）
-/// + CJK 字符 + CJK 二元组。
+/// Extract features for encoding: ASCII tokens (preserve case, split camelCase/snake then lowercase) +
+/// CJK chars + CJK bigrams.
 fn text_features(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    // ASCII / 数字 token：先用原始大小写拆 camelCase（OrderService → Order+Service），
-    // 再转小写，避免提前 lowercase 抹掉大小写边界。
+    // ASCII / numeric tokens: first split camelCase with original case (OrderService → Order+Service),
+    // then lowercase, to avoid losing the case boundary by lowercasing too early.
     for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
         let raw = raw.trim_matches('_');
         if raw.chars().count() < 2 {
@@ -272,7 +272,7 @@ fn text_features(text: &str) -> Vec<String> {
             }
         }
     }
-    // CJK 字符 + 二元组
+    // CJK chars + bigrams
     let chars: Vec<char> = text.chars().filter(|c| is_cjk(*c)).collect();
     for c in &chars {
         out.push(c.to_string());
@@ -283,7 +283,7 @@ fn text_features(text: &str) -> Vec<String> {
     out
 }
 
-/// 把 `placeOrder` / `applyDiscount` / `unused_log` 拆成子词。
+/// Split `placeOrder` / `applyDiscount` / `unused_log` into subwords.
 fn split_identifier(tok: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -312,7 +312,7 @@ fn is_cjk(ch: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&ch)
 }
 
-/// FNV-1a 64 位，取最高位定符号，返回有符号哈希。
+/// FNV-1a 64-bit, take the top bit for sign, return a signed hash.
 fn signed_hash(s: &str) -> i64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.bytes() {
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn shared_token_beats_disjoint() {
         let e = LocalHashingEmbedder::new(1024);
-        // 查询带 order / discount / coupon；related 共享这三个，unrelated 完全不沾。
+        // query has order / discount / coupon; related shares all three, unrelated touches none of them.
         let q = e.embed("order discount coupon place 下单改优惠");
         let related = e.embed("class OrderService applyDiscount vipCoupon");
         let unrelated = e.embed("unused_log config cache session");

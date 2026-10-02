@@ -1,40 +1,41 @@
-# ThinkPHP 框架知识（**形态级**，非单版本）
+# ThinkPHP framework knowledge (**shape-level**, not per-version)
 #
-# 这里只描述"如何识别 / 如何解析 / 如何建图"，不含任何 Rust 代码。
-# 新增框架 = 新增一份这样的 YAML。
+# This only describes "how to recognise / how to resolve / how to build the graph"; it contains no Rust code.
+# Adding a framework = adding one more YAML file like this.
 #
-# 覆盖范围：**5.1 / 6.x / 8.x —— 同一 API 形态家族**。
-# 三者共用 `think\facade\*` 门面、`Db::name` / `Model`、`Route::{get,post,...}`、
-# `config/database.php` 这套核心形态，差异只在个别文件名与入口名：
-#   * 事件注册表：5.x 叫 `app/tags.php`（行为扩展），6.x+ 叫 `app/event.php`
-#   * 事件触发：5.x 用 `Hook::listen`，6.x+ 用 `event()` / `Event::trigger`
-#   * 框架源码目录：5.x 在 `thinkphp/`（**未被 Ingest 排除，见文末 TODO**），
-#     6.x+ 在 `vendor/topthink/framework/`（已由通用规则排除）
-#   * 应用根：5.x 常见 `application/`，6.x+ 为 `app/`（已由 root_rules.fallbacks 覆盖）
-# 这些差异**用文件内的数据吸收**（并列选择器 / 双 loader / fallback），
-# 不按大版本号拆文件 —— 详见 `fkb/README` 的形态切分约定。
+# Coverage: **5.1 / 6.x / 8.x — one API-shape family**.
+# All three share the `think\facade\*` facades, `Db::name` / `Model`, `Route::{get,post,...}` and
+# `config/database.php` core shape; the differences are only in a few file names and entry names:
+#   * event registry: 5.x calls it `app/tags.php` (behaviour extension), 6.x+ calls it `app/event.php`
+#   * event trigger: 5.x uses `Hook::listen`, 6.x+ uses `event()` / `Event::trigger`
+#   * framework source dir: 5.x is `thinkphp/` (**not excluded by Ingest, see the TODO at the end**),
+#     6.x+ is `vendor/topthink/framework/` (already excluded by the generic rule)
+#   * app root: 5.x commonly `application/`, 6.x+ is `app/` (already covered by root_rules.fallbacks)
+# These differences are **absorbed by data inside this file** (parallel selectors / dual loaders / fallbacks)
+# rather than splitting files by major version — see the shape-splitting convention in `fkb/README`.
 
 id: thinkphp6
 display_name: ThinkPHP 6
 language: php
 version_hint: "5.1 / 6.x / 8.x"
-# NOTE: 本字段当前**不生效** —— Ingest（P0）早于框架识别（P3）执行，
-# 无法按 FKB 过滤文件；实际生效的是 `ProjectConfig.exclude_globs`（工程级）。
-# 保留在此仅作意图记录，待 Ingest 前置探测支持后再接上。
+# NOTE: this field currently has **no effect** — Ingest (P0) runs before framework detection (P3),
+# so files cannot be filtered per FKB; what actually applies is `ProjectConfig.exclude_globs` (project level).
+# Kept here only to record the intent; it will be wired up once Ingest supports pre-detection.
 exclude_globs:
   - "runtime/**"
   - "public/static/**"
   - "extend/**"
   - "thinkphp/**"
 
-# 与 `laravel.yaml` 同：模型关联是「代码节点 → 代码节点」按桥边，表外键是
-# 「表 → 表」（两端语义）按语义边。两个 PHP 框架的关系 API 同名同形，
-# 但关系方法属于 **ORM 强假设**，故按 `db_verbs` 的先例各框架各写一份，
-# 不抽到 `php-common`（那份对所有 PHP 工程无条件生效）。
+# Same as `laravel.yaml`: model relations are "code node -> code node" (bridge edges), table foreign keys
+# are "table -> table" (both ends semantic) (semantic edges). The relation APIs of the two PHP frameworks
+# have the same names and shapes, but relation methods are an **ORM-specific assumption**, so following the
+# `db_verbs` precedent each framework declares its own copy instead of factoring it into `php-common`
+# (that one applies unconditionally to every PHP project).
 semantic_edge_kinds: [ForeignKey]
 bridge_edge_kinds: [References]
 
-# ---------------------------------------------------------------- 识别
+# ---------------------------------------------------------------- detection
 detectors:
   - kind: manifest_dependency
     manifest: composer.json
@@ -44,10 +45,10 @@ detectors:
     path: think
     confidence: 0.5
 
-# ---------------------------------------------------------------- 框架根
-# 从 composer.json 的 autoload.psr-4 解析 AppRoot：
+# ---------------------------------------------------------------- framework root
+# Resolve AppRoot from composer.json's autoload.psr-4:
 #   { "autoload": { "psr-4": { "app\\": "app/", "crmeb\\": "crmeb/" } } }
-#   → AppRoot = "app"，confidence 1.0，source 记录解析依据
+#   -> AppRoot = "app", confidence 1.0, and `source` records the basis of the resolution
 root_rules:
   - id: tp6-app-root
     key: app_root
@@ -62,9 +63,9 @@ root_rules:
       - application
       - src
 
-  # 自动探测数据库表前缀：ThinkPHP 把前缀写在 `config/database.php` 的
-  # `connections.<驱动>.prefix`。探测结果写入 `db_prefix` 事实，P3 据此为
-  # 整个工程配置 table_prefixes，避免把 CRMEB 的 `eb_` 之类写死在通用层。
+  # Auto-detect the database table prefix: ThinkPHP writes the prefix into `config/database.php`'s
+  # `connections.<driver>.prefix`. The result is written to the `db_prefix` fact, and P3 configures
+  # table_prefixes for the whole project from it, avoiding hard-coding CRMEB's `eb_` in the generic layer.
   - id: tp6-db-prefix
     key: db_prefix
     source:
@@ -73,48 +74,49 @@ root_rules:
       pointer: connections.mysql.prefix
     confidence: 1.0
 
-# ---------------------------------------------------------------- 路由 handler
-# ThinkPHP 的 handler 形如 `'admin.Login/login'`、`'v1.CrontabController/orderUnpaidCancel'`：
-#   * 点号表示控制器所在子目录（`v1.agent.AgentManage` → `v1\agent\AgentManage`）
-#   * 斜杠分隔方法名
-# 控制器统一落在 `app/<应用段>/controller/` 下，应用段由路由文件路径推断
-# （`app/api/route/pc.php` → `api`），推断不出时按下面的候选逐个试。
+# ---------------------------------------------------------------- route handler
+# A ThinkPHP handler looks like `'admin.Login/login'`, `'v1.CrontabController/orderUnpaidCancel'`:
+#   * a dot means the controller's sub-directory (`v1.agent.AgentManage` -> `v1\agent\AgentManage`)
+#   * a slash separates the method name
+# Controllers all live under `app/<app-section>/controller/`; the app section is inferred from the route
+# file path (`app/api/route/pc.php` -> `api`), and when it cannot be inferred the candidates below are tried one by one.
 #
-# 这段**曾经硬编码在内核**（`resolve.rs` 里的 `app\{app}\controller\{C}` 模板与
-# `["api","adminapi","outapi","kefuapi","index"]` 白名单），现迁到 FKB。
+# This block **used to be hard-coded in the kernel** (the `app\{app}\controller\{C}` template in `resolve.rs`
+# and the `["api","adminapi","outapi","kefuapi","index"]` allowlist); it now lives in FKB.
 handler:
   method_separators: ["/"]
   hierarchy_separators: ["."]
   class_templates:
     - "app\\{app}\\controller\\{controller}"
     - "app\\{app}\\controller\\v1\\{controller}"
-    # 单应用形态（TP6 官方 skeleton / 未开启多应用的项目）：控制器直接躺在
-    # `app/controller/` 下，FQN 里**没有 `{app}` 段**，候选必须单独列一条。
-    # 只有该类真的在图上才会命中，故多列模板不会带来误边。
+    # Single-app shape (the official TP6 skeleton / projects without multi-app): controllers sit directly
+    # under `app/controller/` and their FQN has **no `{app}` segment**, so the candidate must be listed separately.
+    # A template only matches when that class really is on the graph, so extra templates create no false edges.
     - "app\\controller\\{controller}"
   app_segments: ["api", "adminapi", "outapi", "kefuapi", "index"]
   app_anchor_dir: "route"
   app_fallback: "api"
 
-# 消费入口方法名：连向一个类时优先连到它的哪个方法。
-#   `handle` 事件监听器、`doJob`/`fire` 队列 Job（CRMEB `QueueTrait` 约定）、
-#   `run` TP5 行为类（Behavior）。声明后内核的默认集不再生效。
+# Consumer entry method names: when linking to a class, which method to prefer.
+#   `handle` for event listeners, `doJob`/`fire` for queue Jobs (CRMEB `QueueTrait` convention),
+#   `run` for TP5 behaviour classes (Behavior). Once declared, the kernel's default set no longer applies.
 entry_methods: ["handle", "doJob", "fire", "run", "__invoke"]
 
-# 数据模型 CRUD 动词 → 读 / 写分类（与 MapsTo 配合，见 P7 的动词分类）。
+# Data-model CRUD verbs -> read / write classification (pairs with MapsTo; see P7 verb classification).
 #
-# ThinkPHP 的 Model / Query API：`$model->save()` 是写、`$model->find()` 是读。
-# 没有这份清单，`入口 → 模型 → 表` 只能一路传播含糊的「映射到」——
-# 用户在视图上看到「映射到 goods」时无从判断这条入口到底是读还是写（实测反馈）。
-# 方法名大小写不敏感；名单是框架 API 约定，内核不认识任何一个名字。
+# ThinkPHP's Model / Query API: `$model->save()` is a write, `$model->find()` is a read.
+# Without this list, `entry -> model -> table` can only propagate the vague "maps to" everywhere —
+# seeing "maps to goods" in the view gives the user no way to tell whether that entry reads or writes
+# (observed feedback). Method names are case-insensitive; the list is a framework-API convention and
+# the kernel knows none of these names itself.
 db_verbs:
   write: ["save", "saveAll", "insert", "insertAll", "insertGetId", "update", "updateAll",
           "delete", "deleteAll", "replace", "setInc", "setDec"]
   read:  ["find", "select", "value", "column", "count", "sum", "max", "min", "avg", "paginate", "cursor", "findOrEmpty", "selectOrFail", "findOrFail", "detail", "getInfo", "getList", "getAll", "getTree", "getData", "getDetail", "getTreeData"]
 
-# ---------------------------------------------------------------- P3 装载
+# ---------------------------------------------------------------- P3 loading
 loaders:
-  # FacadeMap：由框架知识给出（权威），不靠猜
+  # FacadeMap: given by framework knowledge (authoritative), never guessed
   - id: tp6-facade-map
     table: facade_map
     from:
@@ -130,14 +132,14 @@ loaders:
         - { facade: "think\\facade\\Route", target: "think\\Route" }
         - { facade: "think\\facade\\Session", target: "think\\Session" }
         - { facade: "think\\facade\\View", target: "think\\View" }
-  # 容器绑定：app/provider.php
+  # Container bindings: app/provider.php
   - id: tp6-container-bindings
     table: container_bindings
     from:
       kind: file
       path: "{app_root}/provider.php"
       format: php
-  # 事件监听注册表：app/event.php（6.x+ 形态）
+  # Event listener registry: app/event.php (6.x+ shape)
   - id: tp6-event-listeners
     table: event_listeners
     from:
@@ -145,39 +147,40 @@ loaders:
       path: "{app_root}/event.php"
       key_path: listen
       format: php
-  # 行为扩展注册表：app/tags.php（**5.x 形态**）。
-  # TP5 把事件叫「行为（Behavior）」，注册表是 `tags.php` 且**扁平结构**
-  # （`'sms_send' => [Listener::class]`），没有 6.x 的 `listen` 外层键。
-  # 文件不存在时装载器静默跳过，故对 6.x+ 工程无副作用。
+  # Behaviour extension registry: app/tags.php (**5.x shape**).
+  # TP5 calls events "behaviours (Behavior)"; the registry is `tags.php` and is **flat**
+  # (`'sms_send' => [Listener::class]`), with no 6.x-style outer `listen` key.
+  # The loader skips the file silently when it is absent, so there is no side effect on 6.x+ projects.
   - id: tp6-behavior-listeners
     table: event_listeners
     from:
       kind: file
       path: "{app_root}/tags.php"
       format: php
-  # 数据库 schema（从 SQL 安装脚本 / 源码中的表名收集）
+  # Database schema (collected from SQL install scripts / table names in the source)
   - id: tp6-db-schema
     table: schema
     from:
       kind: builtin
       name: php_db_schema
-      # 表名识别：ThinkPHP 用 `Db::name` / `Model` / `Query`，与 Laravel 共用同一套形态。
-      # 匹配串由 FKB `params` 声明（不写死在内核）—— 注意 `apply_without_detection` 的
-      # `php/common.yaml` 只贡献规则、不跑装载器，故此处仍需本框架声明。
+      # Table-name recognition: ThinkPHP uses `Db::name` / `Model` / `Query`, the same shape as Laravel.
+      # The match strings are declared by FKB `params` (not hard-coded in the kernel) — note that
+      # `php/common.yaml` with `apply_without_detection` only contributes rules and runs no loader,
+      # so this framework still has to declare them here.
       params:
         table_receivers: ["Db", "\\Db", "Query", "Model"]
         table_methods: ["name", "table"]
-  # 配置键权威源
+  # Config-key authoritative source
   - id: tp6-config-keys
     table: config_keys
     from:
       kind: builtin
       name: php_config_keys
-      # 配置访问器：ThinkPHP 用 `sys_config` / `config`，Laravel 用 `config` / `env`。
+      # Config accessors: ThinkPHP uses `sys_config` / `config`, Laravel uses `config` / `env`.
       params:
         accessors: ["sys_config", "sys_config_all", "config", "env", "Env::get"]
         suffixes: ["::get"]
-  # 多语言（lang/<locale>/*.php）
+  # I18n (lang/<locale>/*.php)
   - id: tp6-i18n
     table: i18n
     from:
@@ -185,18 +188,18 @@ loaders:
       pattern: "lang/*/*.php"
       locale_regex: "lang/([^/]+)/"
       format: php
-  # 路由表（Route:: 调用收集）—— 识别逻辑由下方 `route_guards` 声明，内核不再写死。
+  # Route table (collected from Route:: calls) — the recognition logic is declared by `route_guards` below; the kernel no longer hard-codes it.
   - id: tp6-route-list
     table: route_list
     from:
       kind: builtin
       name: routes
       params: {}
-  # 声明式中间件（文件登记，非 `->middleware()` 调用链）：
-  # ThinkPHP 全局中间件 `app/middleware.php`（裸类数组）作用于全部路由；
-  # 多应用 `app/<app>/config/route.php` 的 `'middleware' => [...]` 只作用于该应用路由。
-  # 两者都挂到 `route_list`，由 P14 晋升为 Middleware 节点 + PassesThrough 边。
-  # 路径 / 键 / 作用域全在此声明，内核 `declared_middleware` 装载器不认任何框架。
+  # Declarative middleware (registered by file, not a `->middleware()` call chain):
+  # ThinkPHP global middleware `app/middleware.php` (a bare class array) applies to every route;
+  # in multi-app mode `'middleware' => [...]` in `app/<app>/config/route.php` applies only to that app's routes.
+  # Both are attached to `route_list`, and P14 promotes them to Middleware nodes + PassesThrough edges.
+  # Paths / keys / scopes are all declared here; the kernel's `declared_middleware` loader knows no framework.
   - id: tp6-middleware-global
     table: route_list
     from:
@@ -214,7 +217,7 @@ loaders:
         paths: ["app/*/config/route.php"]
         key: middleware
         scope: per_app
-  # Nginx 配置
+  # Nginx config
   - id: nginx-config
     table: nginx
     from:
@@ -222,9 +225,10 @@ loaders:
       name: nginx_config
       params: {}
 
-# ---------------------------------------------------------------- 路由守卫识别
-# 完全声明式：中间件怎么挂、动词怎么映射、组前缀方法叫什么，都由这里给出，
-# 通用提取器（`routes` 装载器）据此从调用图收守卫，写入 `route_list`。
+# ---------------------------------------------------------------- route-guard recognition
+# Fully declarative: how middleware is attached, how verbs are mapped and what the group-prefix method is
+# called are all given here; the generic extractor (the `routes` loader) collects guards from the call graph
+# accordingly and writes them into `route_list`.
 route_guards:
   route_calls:
     - receiver: "Route"
@@ -245,7 +249,7 @@ route_guards:
     arg_index: 0
     arg2_index: 1
 
-# ---------------------------------------------------------------- P7 解析
+# ---------------------------------------------------------------- P7 resolution
 resolvers:
   - id: tp6-container-make
     call: "app()->make|app|make|invoke"
@@ -253,18 +257,20 @@ resolvers:
   - id: tp6-event-trigger
     call: "event|Event::trigger"
     strategy: event
-  # 5.x 形态：`Hook::listen('sms_send', $params)` / `hook('sms_send')`。
-  # 与 6.x 的 `event('x')` 同义 —— arg0 是事件名，走 L3 别名索引解析到
-  # 由 `tags.php` / `event.php` 合成的事件节点。
-  # 注意用 `event` 而非 `event_listen`：后者的 arg1 是**监听器类**
-  # （`Event::listen('x', Listener::class)`），而 `Hook::listen` 的 arg1 是**载荷参数**。
+  # 5.x shape: `Hook::listen('sms_send', $params)` / `hook('sms_send')`.
+  # Synonymous with 6.x's `event('x')` — arg0 is the event name and is resolved through the L3 alias index
+  # to the event node synthesized from `tags.php` / `event.php`.
+  # Note it uses `event` and not `event_listen`: the latter's arg1 is a **listener class**
+  # (`Event::listen('x', Listener::class)`), while `Hook::listen`'s arg1 is a **payload parameter**.
   - id: tp6-hook-trigger
     call: "Hook::listen|hook"
     strategy: event
-  # 运行时事件监听注册：`Event::listen('x', Listener::class)`。
-  # arg0 解析为事件节点（event_name 别名），`apply_resolution` 再把 `HandledBy` 边从事件节点指向 arg1 监听器。
-  # 注：`Event::subscribe(Sub::class)` 的 arg0 是「订阅者类」而非事件名（事件名在其 subscribe() 体内），
-  # 无法精确回链到具体事件，故只由 `tp6-event-listener-registration` 规则标成 `listener`，不在此建边。
+  # Runtime event listener registration: `Event::listen('x', Listener::class)`.
+  # arg0 resolves to the event node (event_name alias), and `apply_resolution` then points the `HandledBy` edge
+  # from the event node to the arg1 listener.
+  # Note: in `Event::subscribe(Sub::class)` arg0 is a "subscriber class", not an event name (the event name lives
+  # inside its subscribe() body), so it cannot be linked back to a concrete event and is only marked `listener`
+  # by the `tp6-event-listener-registration` rule — no edge is created here.
   - id: tp6-event-listen
     call: "Event::listen"
     strategy: event_listen
@@ -274,24 +280,25 @@ resolvers:
   - id: tp6-accessor
     call: "*->get*Attr"
     strategy: accessor
-  # 静态上下文里的「当前类」调用：`self::detail()` / `static::deleteAll()`。
-  # 语法上是 `::`（不是 `->`），原 `*->*` resolver 匹配不到，导致这类读 / 写动词
-  # 永远落不出 `ReadsDb` / `WritesDb`。`receiver_type_fqn` 已把 `self` / `static` 当成
-  # 定义该方法的类，这里只负责让它们也走 VariableType 解析路径。
+  # "Current class" calls in a static context: `self::detail()` / `static::deleteAll()`.
+  # Syntactically these use `::` (not `->`), so the original `*->*` resolver never matched them, which meant
+  # these read / write verbs could never produce a `ReadsDb` / `WritesDb`. `receiver_type_fqn` already treats
+  # `self` / `static` as the class defining the method; this only routes them through VariableType resolution too.
   - id: tp6-static-self-call
     call: "self::*|static::*|Self::*|Static::*"
     strategy: variable_type
-  # 实例方法调用：`$services->appAuth()`。类型来自方法参数类型提示与构造器属性注入
-  # （`__construct(T $x){ $this->p = $x; }`），是 ThinkPHP 的 DI 约定。
-  # 未知类型不建边 —— 宁可缺边，不可错边。
+  # Instance method calls: `$services->appAuth()`. Types come from method parameter type hints and constructor
+  # property injection (`__construct(T $x){ $this->p = $x; }`), ThinkPHP's DI convention.
+  # No edge is created for an unknown type — better a missing edge than a wrong one.
   - id: tp6-typed-instance-call
     call: "*->*"
     strategy: variable_type
 
-# ---------------------------------------------------------------- P6 标注：内核标准识别器 + 本栈数据实现
-# 「哪些注解种类存在、怎么识别」是内核标准（见 `DEFAULT_ANNOTATIONS_YAML`），这里只声明
-# ThinkPHP 跨版本通用的数据。项目特有参数（如 CRMEB 的 `contact_phone` 列名）由各项目 FKB
-# 追加声明，与本条取并集生效（两条规则各自匹配、MaxByKind 合并，互不冲突）。
+# ---------------------------------------------------------------- P6 annotation: kernel-standard recognizers + this stack's data
+# "Which annotation kinds exist and how they are recognised" is a kernel standard (see `DEFAULT_ANNOTATIONS_YAML`);
+# this only declares the data common across ThinkPHP versions. Project-specific parameters (e.g. CRMEB's
+# `contact_phone` column name) are appended by each project's FKB and take effect as a union (both rules match
+# independently and MaxByKind merges them, with no conflict).
 annotation_interfaces:
   - annotation: pii
     params:
@@ -310,9 +317,9 @@ annotation_interfaces:
   - annotation: i18n_coverage
     params: {}
 
-# ---------------------------------------------------------------- 规则
+# ---------------------------------------------------------------- rules
 rules:
-  # ===== P4 Annotate-Pre：污点语义 =====
+  # ===== P4 Annotate-Pre: taint semantics =====
   - id: tp6-sanitizer-param
     phase: AnnotatePre
     selector:
@@ -348,12 +355,12 @@ rules:
     phase: AnnotatePre
     selector:
       kind: call
-      # `input()` 是 TP/CRMEB 最常见的取 HTTP 入参的框架全局助手函数（裸函数形式）。
-      # `param` 仅 Request 拥有，保留 `*` 通配以覆盖 `$this->request->param()` 这类别名写法；
-      # `get`/`post` 同时存在于 Cache/Session/Cookie/Model 等对象上，故收紧为 request 助手
-      # 与 `think\facade\Request` 门面两种形态，避免 `cache()->get()` 等被误标为 HttpRequest 源。
-      # 裸 `request()` 助手函数本身不在此标注：它返回的是 Request 对象，真正的污点源是其
-      # `param/get/post` 访问，已由下方模式覆盖。
+      # `input()` is the most common framework global helper for reading HTTP input in TP/CRMEB (bare function form).
+      # `param` exists only on Request, so the `*` wildcard is kept to cover aliases like `$this->request->param()`;
+      # `get`/`post` also exist on Cache/Session/Cookie/Model objects, so they are narrowed to the request helper
+      # and the `think\facade\Request` facade, avoiding `cache()->get()` and similar being marked as HttpRequest sources.
+      # The bare `request()` helper is not annotated here: it returns a Request object, and the real taint source is
+      # its `param/get/post` access, already covered by the patterns below.
       callee: "*:param|request->get|request->post|Request::get|Request::post|input"
     binding:
       - Annotate:
@@ -365,14 +372,14 @@ rules:
               confidence: 0.9
           merge: Coexist
 
-  # ===== P5 Synthesize：Table（三条 hook 汇聚到同一个 identity）=====
+  # ===== P5 Synthesize: Table (three hooks converge on the same identity) =====
   - id: tp6-db-name-table
     phase: Synthesize
     selector:
       kind: call
       callee: "think\\facade\\Db::name|Db::name|*:name|*:table"
       where:
-        # 与 P3 装载的 schema 求交：避免把 `Route::name('xxx')` 当成表
+        # Intersect with the schema loaded by P3: avoids treating `Route::name('xxx')` as a table
         - in_symbol_table: { table: schema, key_of: { arg: 0 } }
     binding:
       - Synthesize:
@@ -389,18 +396,18 @@ rules:
           fields:
             - name: side
               value: { literal: "backend" }
-          # 只能落**中性**的 `MapsTo`：P5 手里的信息只有"该方法接触了这张表"，
-          # 末端动词（`->find()` 还是 `->update()`）要到 P7 才知道
-          # （见 `resolve.rs::classify_facade_db_calls` 与 FKB 的 `db_verbs`）。
+          # Only a **neutral** `MapsTo` can be produced: all P5 knows is "this method touched that table";
+          # the terminal verb (`->find()` vs `->update()`) is only known at P7
+          # (see `resolve.rs::classify_facade_db_calls` and FKB's `db_verbs`).
           #
-          # 这里曾落 `ReadsDb`，于是 `Db::name('Goods')->insertGetId($data)` 也被
-          # 断言成"该方法读了 goods"：同一对「方法 → 表」同时挂着假的读边与 P7 落下的
-          # 真写边，而视图 tie-break 恒选先建的（P5 早于 P7）那条，写操作于是被**全部**
-          # 显示成「读库」—— 实测 shopxo 1825 / 1825 无一处例外。
+          # This used to produce `ReadsDb`, so `Db::name('Goods')->insertGetId($data)` was also asserted as
+          # "this method read goods": the same "method -> table" pair carried both a fake read edge and the real
+          # write edge produced by P7, and the view tie-break always picks the earlier one (P5 before P7), so
+          # writes were **all** displayed as "reads DB" — measured on shopxo: 1825 / 1825, no exception.
           #
-          # `MapsTo` 的语义是"模型 / 表之间的结构映射"，会被 P7 的 `ReadsDb` / `WritesDb`
-          # 压过（见 `view_service::access_rank` 与 P8 的 MapsTo 抑制），故只在 P7 也没
-          # 认出动词时兜底显示「映射到」—— 如实，而不是编一个读。
+          # `MapsTo` means "a structural mapping between model / table" and is overridden by P7's `ReadsDb` /
+          # `WritesDb` (see `view_service::access_rank` and P8's MapsTo suppression), so it only shows as a
+          # fallback "maps to" when P7 did not recognise the verb either — honest, rather than inventing a read.
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.95
 
@@ -444,22 +451,22 @@ rules:
                 - strip_prefix: []
                 - singularize
                 - trim
-          # 必须带 `side`：identity 的**合并键含 scope**（由 side 推导）。
-          # 少了它，本规则建出的表（`app\model\user\User` → `user`）与
-          # `tp6-db-name-table` 建出的同名表（`Db::name('user')` → `user`）scope
-          # 不一致 → 被判定为两个不同 identity，同一张表在图里出现**两个节点**，
-          # 幂等合并失效（CRMEB 实测：user 表 2 个节点，且各自只有一半来源）。
+          # `side` is mandatory: the identity **merge key includes scope** (derived from side).
+          # Without it, the table built by this rule (`app\model\user\User` -> `user`) and the same-named table
+          # built by `tp6-db-name-table` (`Db::name('user')` -> `user`) get inconsistent scopes and are judged as
+          # two different identities, so one table appears as **two nodes** on the graph and idempotent merging
+          # breaks (measured on CRMEB: the user table had 2 nodes, each with only half of its sources).
           fields:
             - name: side
               value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
 
-  # ===== P5 Synthesize：模型关联 =====
+  # ===== P5 Synthesize: model relations =====
   # `public function profile() { return $this->hasOne(Profile::class); }`
-  # ThinkPHP 的关系 API 与 Eloquent **同名同形**（`hasOne` / `hasMany` / `belongsTo` /
-  # `belongsToMany` / `morphXxx`），故规则与 `laravel-model-relation` 一致；
-  # 两侧都建（Laravel / ThinkPHP 常只声明一侧，只建一侧会大面积漏边）。
+  # ThinkPHP's relation API is **identical in name and shape** to Eloquent's (`hasOne` / `hasMany` / `belongsTo` /
+  # `belongsToMany` / `morphXxx`), so the rule matches `laravel-model-relation`;
+  # both sides are built (Laravel / ThinkPHP projects often declare only one side, so building one side would lose a lot of edges).
   - id: tp6-model-relation
     phase: Synthesize
     selector:
@@ -472,9 +479,9 @@ rules:
           to: { arg: 0, resolve: class_const, require_class: true }
           confidence: 0.75
 
-  # ===== P6 AnnotatePost：模型关联 → 表级外键 =====
-  # 两端各沿 `MapsTo` 走一跳落到自己的表（`tp6-model-table-property` /
-  # `tp6-model-table-convention` 建的边）。一对多；某端无表就跳过这条。
+  # ===== P6 AnnotatePost: model relation -> table-level foreign key =====
+  # Each end walks one `MapsTo` hop down to its own table (edges built by `tp6-model-table-property` /
+  # `tp6-model-table-convention`). One-to-many; when one end has no table this entry is skipped.
   - id: tp6-table-foreign-key
     phase: AnnotatePost
     selector:
@@ -493,8 +500,8 @@ rules:
     phase: Synthesize
     selector:
       kind: call
-      # `config()` / `Cache::get()` 这类跨框架相同的写法已抽到 `fkb/php/common.yaml`
-      # （`php-common-config`）。此处只保留 CRMEB 特有的 `sys_config`。
+      # Cross-framework spellings such as `config()` / `Cache::get()` were factored into `fkb/php/common.yaml`
+      # (`php-common-config`). Only CRMEB's own `sys_config` stays here.
       callee: "sys_config|sys_config_all"
     binding:
       - Synthesize:
@@ -514,20 +521,21 @@ rules:
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.9
 
-  # ===== P5 Synthesize：Cache =====
-  # 已抽到语言通用层 `fkb/php/common.yaml`（`php-common-cache-*` 规则），对所有 PHP
-  # 框架生效，避免每个框架 FKB 重复一份相同的缓存识别逻辑。
+  # ===== P5 Synthesize: Cache =====
+  # Factored into the language-common layer `fkb/php/common.yaml` (`php-common-cache-*` rules), effective for
+  # every PHP framework, so each framework FKB does not repeat the same cache-recognition logic.
 
-  # ===== P5 Synthesize：队列 topic =====
+  # ===== P5 Synthesize: queue topic =====
   #
-  # 身份提取策略（框架无关、通用）：
-  # * 优先 `arg:0`（`Queue::push($jobClass)` 里显式给出的 Job 类），且 `require_class`
-  #   保证只有真实存在的类才被采纳；
-  # * 取不到时退回 `owner_class` —— 即「发起调用的类」。这正好覆盖 self-enqueue 模式
-  #   （如 CRMEB 的 `QueueTrait::dispatch` 经 `->job(__CLASS__)` 把消费方设成调用类自身）：
-  #   此时 `arg:0` 是动作字符串 `$action` 而非类，`require_class` 判否后退回产生调用的
-  #   服务类，topic 即该服务。于是「支持 think\facade\Queue 这一个框架」自动惠及所有
-  #   经门面 / 包装 / trait 使用队列的项目，无需任何项目级 FKB。
+  # Identity extraction strategy (framework-agnostic, generic):
+  # * prefer `arg:0` (the Job class given explicitly in `Queue::push($jobClass)`), with `require_class`
+  #   guaranteeing only classes that really exist are accepted;
+  # * fall back to `owner_class` when unavailable — i.e. "the class that issued the call". This covers exactly
+  #   the self-enqueue pattern (e.g. CRMEB's `QueueTrait::dispatch` setting the consumer to the calling class via
+  #   `->job(__CLASS__)`): here `arg:0` is the action string `$action`, not a class, so after `require_class`
+  #   rejects it we fall back to the service class that made the call and the topic becomes that service.
+  #   So "supporting the single framework think\facade\Queue" automatically benefits every project that uses
+  #   queues through facades / wrappers / traits, without any project-level FKB.
   - id: tp6-queue-topic
     phase: Synthesize
     selector:
@@ -552,11 +560,12 @@ rules:
               value: { literal: "backend" }
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.85
-      # 消费方：队列消息由 Job 类消费（其 `fire()` / `handle()` 处理投递来的任务）。
-      # 与 `Event::listen` → `HandledBy` 对称：把 Job 类用 `HandledBy` 边连回 Queue，
-      # 使「队列视角」既看得到「谁投递」(PublishesTo)，也看得到「谁消费」(HandledBy)。
-      # 同一 identity 会按队列名合并成同一个节点；若 Job 类未在代码库内定义，则降级为
-      # PendingLink 待 P7 解析（同路由 handler 机制）。
+      # Consumer side: queue messages are consumed by the Job class (its `fire()` / `handle()` processes the
+      # delivered task). Symmetrical to `Event::listen` -> `HandledBy`: the Job class is linked back to the Queue
+      # with a `HandledBy` edge, so the "queue perspective" shows both "who publishes" (PublishesTo) and
+      # "who consumes" (HandledBy).
+      # The same identity merges into one node by queue name; if the Job class is not defined inside the codebase,
+      # it degrades to a PendingLink for P7 to resolve (same mechanism as route handlers).
       - Synthesize:
           node: ExternalSystem
           subtype: Queue
@@ -576,14 +585,14 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            # 优先用 `arg:0` 解析消费方（如 `JobClass::dispatch('action')` → `JobClass::action`）；
-            # 取不到时退回 `receiver_class`（被投递的 Job 类本身，如 `ProductLogJob`，
-            # 其 `doJob` 方法即为消费入口），避免 `arg:0` 是数组/动作名时消费方整条缺失。
+            # Prefer resolving the consumer from `arg:0` (e.g. `JobClass::dispatch('action')` -> `JobClass::action`);
+            # fall back to `receiver_class` (the enqueued Job class itself, e.g. `ProductLogJob`, whose `doJob`
+            # method is the consumer entry) so the consumer is not lost entirely when `arg:0` is an array / action name.
             to: { arg: 0, resolve: class_const }
             to_fallback: { receiver_class: true }
           confidence: 0.85
 
-  # ===== P5 Synthesize：HTTP 契约桥（后端侧）=====
+  # ===== P5 Synthesize: HTTP contract bridge (backend side) =====
   - id: tp6-route-http-contract
     phase: Synthesize
     selector:
@@ -594,15 +603,16 @@ rules:
           node: HttpContract
           identity:
             kind: ContractId
-            # `Route::rule` 在 ThinkPHP 语义是"不限 HTTP 方法"，与 `Route::any` 同义；
-            # 方法名 `rule` 大写成 `RULE` 后归一为 `ANY`，避免 UI 出现无意义的 `RULE` 动词。
+            # `Route::rule` means "any HTTP method" in ThinkPHP semantics, synonymous with `Route::any`;
+            # the method name `rule` is upper-cased to `RULE` and then normalised to `ANY`, avoiding a meaningless
+            # `RULE` verb in the UI.
             method: { method_name: true, normalize: [upper, { replace: { from: "RULE", to: "ANY" } }] }
             path:
               arg: 0
               normalize:
                 - strip_prefix: ["api/"]
                 - leading_slash
-                # `/:id` 折成 `/:*`：与前端拼接式 URL 的 `/:param` 按形状汇聚
+                # `/:id` collapses to `/:*`: converge by shape with the front-end's concatenated `/:param` URLs
                 - param_wildcard
           fields:
             - name: raw_path
@@ -617,12 +627,12 @@ rules:
             to: { arg: 1, resolve: handler_pattern }
           confidence: 0.95
 
-  # ===== P5 Synthesize：HTTP 契约桥（后端侧 · REST 资源）=====
-  # `Route::resource('cms', 'v1.cms.Article')` 一条语句其实是 **7 条契约**：
+  # ===== P5 Synthesize: HTTP contract bridge (backend side · REST resource) =====
+  # One `Route::resource('cms', 'v1.cms.Article')` statement is really **7 contracts**:
   #   index / create / save / read / edit / update / delete
-  # 展开表写在 FKB 里（内核只认识"一条调用展开成 N 个节点"这回事），
-  # `->only([...])` / `->except([...])` 的动作过滤由内核从**同一语句行**的
-  # 链式调用实参读出 —— 于是"哪些动作真的存在"是代码说了算，不是我们猜的。
+  # The expansion table lives in FKB (the kernel only knows "one call expands into N nodes"), and the action
+  # filtering of `->only([...])` / `->except([...])` is read by the kernel from the chained call arguments on
+  # **the same statement line** — so "which actions really exist" is decided by the code, not guessed by us.
   - id: tp6-route-resource
     phase: Synthesize
     selector:
@@ -665,7 +675,7 @@ rules:
             to_method: { expand_entry: true }
           confidence: 0.9
 
-  # ===== P4+P5+P6：事件注册表 =====
+  # ===== P4+P5+P6: event registry =====
   - id: tp6-event-registry
     phase: AnnotatePre
     selector:
@@ -673,11 +683,11 @@ rules:
       file: "*/event.php"
       key_path: "listen.*"
       where:
-        # 只要数组条目：排除 `listen.<evt>.0` 这类被展开出的标量叶子（否则同一事件
-        # 会额外合成一个 `<evt>.0` 噪声节点），也排除值为空的条目。
+        # Array entries only: exclude expanded scalar leaves such as `listen.<evt>.0` (otherwise the same event
+        # would also synthesize a `<evt>.0` noise node), and exclude entries with an empty value.
         - entry_arity_gte: 1
     binding:
-      # ① P4：标注【已存在】的监听器类
+      # (1) P4: annotate listener classes that **already exist**
       - Annotate:
           phase: Pre
           target:
@@ -689,7 +699,7 @@ rules:
             - kind: listener
               confidence: 0.95
           merge: MaxByKind
-      # ② P5：建事件中介节点（多点汇聚 + 一对多）
+      # (2) P5: build the event mediator node (multi-source convergence + one-to-many)
       - Synthesize:
           node: ExternalSystem
           subtype: Event
@@ -709,7 +719,7 @@ rules:
           alias:
             namespace: event_name
             key: { path_segment: 1 }
-      # ③ P6：给事件节点注册别名（供 P7 解析 event('x')）
+      # (3) P6: register an alias on the event node (so P7 can resolve event('x'))
       - Annotate:
           phase: Post
           target: { synthesized_ref: "@self" }
@@ -719,14 +729,13 @@ rules:
               confidence: 1.0
           merge: MaxByKind
 
-  # ===== P4+P5+P6：行为扩展注册表（**5.x 形态** `app/tags.php`）=====
-  # 与上方 `tp6-event-registry` 同构，差异只有两点：
-  #   * 文件名：5.x 是 `tags.php`，6.x+ 是 `event.php`。选择器 `file` 只支持 `*`
-  #     通配、不支持 `|` 分隔，故写成两条规则而不是一条带 `|` 的规则；
-  #   * 结构：5.x 的 `tags.php` 是**扁平**的（`'sms_send' => [Listener::class]`），
-  #     没有 6.x 的 `listen` 外层键 —— 所以 `key_path: "*"`，且 identity 用
-  #     `path_segment: 0`（扁平键只有一段，取 `1` 会因 `n < segs.len()` 不成立而返回 None）。
-  # 同一概念在两个版本算出相同 identity 时幂等合并，不会造出重复事件节点。
+  # ===== P4+P5+P6: behaviour extension registry (**5.x shape** `app/tags.php`) =====
+  # Isomorphic to `tp6-event-registry` above, with only two differences:
+  #   * file name: 5.x is `tags.php`, 6.x+ is `event.php`. The `file` selector supports only `*` wildcards,
+  #     not `|` alternation, so this is written as two rules rather than one rule with `|`;
+  #   * structure: 5.x's `tags.php` is **flat** (`'sms_send' => [Listener::class]`), with no 6.x outer
+  #     `listen` key — hence `key_path: "*"`, and identity uses `path_segment: 0` (a flat key has a single
+  #     segment; taking `1` returns None because `n < segs.len()` does not hold).
   - id: tp6-behavior-registry
     phase: AnnotatePre
     selector:
@@ -734,12 +743,12 @@ rules:
       file: "*/tags.php"
       key_path: "*"
       where:
-        # 同上：只取数组条目。这一步对 5.x 尤其必要 —— `tags.php` 里
-        # `app_init` / `app_begin` 等框架级标签是**空数组**，没有监听器，
-        # 放行会让「事件视角」混进一批没有任何 HandledBy 边的空壳节点。
+        # Same as above: array entries only. This matters especially for 5.x — in `tags.php`, framework-level
+        # tags such as `app_init` / `app_begin` are **empty arrays** with no listener, and letting them through
+        # would mix a batch of empty shell nodes with no HandledBy edge into the "event perspective".
         - entry_arity_gte: 1
     binding:
-      # ① P4：标注【已存在】的行为类
+      # (1) P4: annotate behaviour classes that **already exist**
       - Annotate:
           phase: Pre
           target:
@@ -751,7 +760,7 @@ rules:
             - kind: listener
               confidence: 0.95
           merge: MaxByKind
-      # ② P5：建事件中介节点（多点汇聚 + 一对多）
+      # (2) P5: build the event mediator node (multi-source convergence + one-to-many)
       - Synthesize:
           node: ExternalSystem
           subtype: Event
@@ -771,7 +780,7 @@ rules:
           alias:
             namespace: event_name
             key: { path_segment: 0 }
-      # ③ P6：注册别名（供 P7 解析 `Hook::listen('x')` / `hook('x')`）
+      # (3) P6: register an alias (so P7 can resolve `Hook::listen('x')` / `hook('x')`)
       - Annotate:
           phase: Post
           target: { synthesized_ref: "@self" }
@@ -781,15 +790,16 @@ rules:
               confidence: 1.0
           merge: MaxByKind
 
-  # ===== P4+P6：运行时事件监听注册（`Event::listen` / `Event::subscribe`）=====
-  # 静态 `event.php` 只能覆盖声明式监听；很多代码库在运行时用
-  # `Event::listen('OrderCreate', Listener::class)` 或 `Event::subscribe(Sub::class)`
-  # 动态注册消费者。这里把被注册的监听器类标成 `listener`，使其与静态注册一样
-  # 进入「事件视角」的消费方。订阅者类（其 `subscribe()` 内部调 `Event::listen`）
-  # 也走 arg1，一并标成 `listener`。
-  # 注：本规则只补「标注」，事件→监听器的 `HandledBy` 边仍由上方 `event.php`
-  # 注册表生成；若某事件完全靠运行时注册、不在 `event.php` 里，则该监听器被标注
-  # 为 `listener` 但暂无精确的 `HandledBy` 边（视图仍按 `listener` 标注呈现消费方）。
+  # ===== P4+P6: runtime event listener registration (`Event::listen` / `Event::subscribe`) =====
+  # The static `event.php` only covers declarative listening; many codebases register consumers dynamically
+  # at runtime via `Event::listen('OrderCreate', Listener::class)` or `Event::subscribe(Sub::class)`.
+  # Here the registered listener class is marked `listener` so that, like statically registered ones, it enters
+  # the consumer side of the "event perspective". Subscriber classes (whose `subscribe()` calls `Event::listen`
+  # internally) also go through arg1 and are marked `listener` as well.
+  # Note: this rule only adds the "annotation"; the event -> listener `HandledBy` edge is still produced by the
+  # `event.php` registry above. If an event is registered purely at runtime and is absent from `event.php`,
+  # its listener is annotated `listener` but has no precise `HandledBy` edge yet (the view still shows the
+  # consumer via the `listener` annotation).
   - id: tp6-event-listener-registration
     phase: AnnotatePost
     selector:
@@ -808,41 +818,44 @@ rules:
               confidence: 0.9
           merge: MaxByKind
 
-  # ===== P6 Synthesize：ThinkPHP 自动路由（PATH_INFO 约定）=====
+  # ===== P6 Synthesize: ThinkPHP auto-routing (PATH_INFO convention) =====
   #
-  # 大量 ThinkPHP 工程**不写** `Route::get(...)`：请求 `/api/goods/detail` 由框架
-  # 直接落到 `app\api\controller\Goods::detail`。这类工程在旧模型下"路由视角"会空掉 ——
-  # 实测 yoshop 只剩脚手架 demo、shopxo **一个契约都没有**，但它们的真实端点有数百个。
+  # Many ThinkPHP projects **never write** `Route::get(...)`: a request to `/api/goods/detail` falls straight
+  # through the framework to `app\api\controller\Goods::detail`. Under the old model the "route perspective" of
+  # such projects was empty — measured: yoshop kept only its scaffold demo and shopxo had **not a single
+  # contract**, while their real endpoints number in the hundreds.
   #
-  # 之所以放在 P6：这条规则的选择器作用在**图节点**（控制器方法）上，而"\controller\
-  # 下的 public 方法"要在 P2 建完语法节点、P6 才能稳定地按 FQN 筛。
+  # Why P6: this rule's selector acts on **graph nodes** (controller methods), and "public methods under
+  # \controller\" can only be filtered stably by FQN at P6, after P2 has built the syntax nodes.
   #
-  # URL 推导完全走 FKB 定义的 three-step 归一化（内核不认识 ThinkPHP 的 URL 规则）：
+  # URL derivation follows the three-step normalisation defined entirely by FKB (the kernel knows nothing about
+  # ThinkPHP's URL rules):
   #   app\adminapi\controller\v1\agent\AgentLevel::delete
-  #     → snake:  app\adminapi\controller\v1\agent\agent_level::delete
-  #     → 去前缀/去 controller 层/`\`→`/`/`::`→`/`
-  #     → /adminapi/v1/agent/agent_level/delete
-  # 与 TP6 的 URL 转换（`Url` 把 `goods_category` 折成 `GoodsCategory`）一致。
+  #     -> snake:  app\adminapi\controller\v1\agent\agent_level::delete
+  #     -> drop prefix / drop the controller layer / `\`->`/` / `::`->`/`
+  #     -> /adminapi/v1/agent/agent_level/delete
+  # consistent with TP6's URL conversion (`Url` folds `goods_category` into `GoodsCategory`).
   #
-  # method 取 `ANY`（通配）：自动路由与 `Route::rule` 一样"不限 HTTP 方法"，
-  # 内核把 `ANY` / `RULE` 都识别为通配方法 —— 与前端具体方法（POST / GET…）
-  # 的契约桥汇聚到同一个节点，避免编造 GET/POST。
-  # 置信度刻意压到 0.5 —— 这是**约定推断**而非源码明文（语义可能因工程配置
-  # `url_route_must`、中间件、继承的 `__call` 而失效），节点上带 `auto_route: true`
-  # 供上层区分。
+  # `method` takes `ANY` (wildcard): like `Route::rule`, auto-routing is "not restricted to one HTTP method",
+  # and the kernel recognises both `ANY` / `RULE` as wildcard methods — contracts for concrete front-end methods
+  # (POST / GET…) converge onto the same node instead of fabricating a GET/POST.
+  # Confidence is deliberately pushed down to 0.5 — this is **convention inference**, not explicit source text
+  # (the semantics may break due to project config `url_route_must`, middleware or an inherited `__call`), and
+  # the node carries `auto_route: true` so upper layers can tell it apart.
   - id: tp6-auto-route-contract
     phase: AnnotatePost
     selector:
       kind: node
       node_kind: Method
       where:
-        # 只有落在 controller 命名空间下的方法才可能是 HTTP 入口
+        # Only methods under the controller namespace can be HTTP entries
         - fqn_matches: "\\controller\\"
         - property_is: { name: visibility, value: public }
-        # 语言构造器与框架钩子不是端点（`initialize` 是 TP 的前置钩子）
+        # Language constructors and framework hooks are not endpoints (`initialize` is TP's pre-hook)
         - name_not_in: ["__construct", "__destruct", "__call", "__callStatic", "initialize"]
-        # **显式注册优先**：已经被 `Route::get/post/resource` 的契约认领过的方法不再兜；
-        # 否则 CRMEB 这类全量注册路由的工程，每个方法都会多出一份同义契约。
+        # **Explicit registration wins**: methods already claimed by a `Route::get/post/resource` contract are
+        # not covered again; otherwise a fully route-registered project like CRMEB would grow a duplicate
+        # synonymous contract for every method.
         - not_claimed_by: "HandledBy"
     binding:
       - Synthesize:
@@ -875,7 +888,7 @@ rules:
             to: { self: true, resolve: as_is }
           confidence: 0.5
 
-  # ===== P5 Synthesize：I18nKey（多 locale 合并成一个节点）=====
+  # ===== P5 Synthesize: I18nKey (several locales merge into one node) =====
   - id: tp6-i18n-key
     phase: Synthesize
     selector:

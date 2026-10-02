@@ -1,7 +1,7 @@
-//! 流水线内存工作区。
+//! Pipeline in-memory workspace.
 //!
-//! 各阶段在内存中建图、查询、打标；阶段结束后由应用层把累积的
-//! [`GraphDelta`] 一次性落库（保证阶段级原子性，又让领域逻辑不依赖事务 API）。
+//! Each phase builds, queries, and annotates the graph in memory; after all phases the application layer persists the accumulated
+//! [`GraphDelta`] in one shot (guaranteeing phase-level atomicity while keeping domain logic free of transaction APIs).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -13,30 +13,30 @@ use gt_domain::model::{
 use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
 use serde_json::Value;
 
-/// 一次调用点在工作区中的记录。
+/// One call site's record in the workspace.
 #[derive(Debug, Clone)]
 pub struct CallRecord {
-    /// 该调用点自身的 `CallSite` 节点（Taint 标注的精确落点）。
+    /// The `CallSite` node of this call site itself (Taint's precise landing point).
     pub node: NodeId,
-    /// 所在方法的节点（用于建语义边，如 `Method --ReadsDb--> Table`）。
+    /// The node of the owning method (for building semantic edges, e.g. `Method --ReadsDb--> Table`).
     pub owner: NodeId,
     pub owner_fqn: String,
-    /// 该调用点所在的**类** FQN（由 parser 从 `CallSiteFact.owner_class` 透传）。
-    /// 供 `owner_class` 绑定直接取用；PHP 侧为 `None`（退回字符串切分）。
+    /// The **class** FQN this call site belongs to (propagated by parser from `CallSiteFact.owner_class`).
+    /// Used directly by the `owner_class` binding; PHP side is `None` (falls back to string splitting).
     pub owner_class: Option<String>,
     pub callee: String,
     pub receiver: Option<String>,
     pub method: Option<String>,
     pub args: Vec<FactValue>,
-    /// 链式门面调用里透传下来的目标表名（`Db::name('goods')->insert()`），
-    /// 供 P7 把末端动词落成 `WritesDb` / `ReadsDb`。
+    /// The target table name propagated through a chained facade call (`Db::name('goods')->insert()`),
+    /// so P7 can lay the terminal verb as `WritesDb` / `ReadsDb`.
     pub db_table: Option<String>,
-    /// 该调用点是否位于循环体内（parser 事实，与 CallSite 节点的 `in_loop` 属性同源）。
-    /// 供 P12/P13 这类"循环 / 批量"判定使用 —— 规则侧读节点属性，阶段侧读这里。
+    /// Whether this call site is inside a loop body (parser fact, same source as the CallSite node's `in_loop` property).
+    /// Used by "loop / batch" criteria like P12/P13 — the rule side reads the node property, the phase side reads here.
     pub in_loop: bool,
-    /// 该调用点关切的「主领域类型」（`CallSiteFact.entity` 透传），如事件类型
-    /// `OrderPlacedEvent`。供 `value: { entity: true }` 把同类发布 / 订阅归并到
-    /// 同一语义节点。
+    /// The "primary domain type" this call site concerns (propagated from `CallSiteFact.entity`), e.g. event type
+    /// `OrderPlacedEvent`. Used by `value: { entity: true }` to merge same-kind publish / subscribe into
+    /// the same semantic node.
     pub entity: Option<String>,
     pub span: Span,
     pub file: String,
@@ -44,7 +44,7 @@ pub struct CallRecord {
     pub language: Language,
 }
 
-/// 配置条目记录（来自 `return [...]` 型 PHP 文件）。
+/// Config-entry record (from `return [...]`-style PHP files).
 #[derive(Debug, Clone)]
 pub struct ConfigRecord {
     pub file: String,
@@ -56,7 +56,7 @@ pub struct ConfigRecord {
     pub file_stem: Option<String>,
 }
 
-/// 继承 / 实现 / trait 记录。
+/// Inheritance / implementation / trait record.
 #[derive(Debug, Clone)]
 pub struct InheritRecord {
     pub child: NodeId,
@@ -68,13 +68,13 @@ pub struct InheritRecord {
     pub span: Span,
 }
 
-/// 路由组区间：`Route::group('v2', function () { ... })`。
+/// Route-group range: `Route::group('v2', function () { ... })`.
 ///
-/// ThinkPHP 会把组前缀拼到组内**所有**路由的路径上：
-/// `Route::group('v2', fn(){ Route::get('order/x') })` 的真实路径是 `/v2/order/x`。
-/// 若只取 `arg:0` 建契约 ID，就会丢掉 `v2`，导致：
-/// * 后端契约与真实请求路径不符，无法与前端 `CallsHttp` 汇聚；
-/// * 不同版本 / 分组下的同名子路径会被幂等合并成同一个节点。
+/// ThinkPHP appends the group prefix to the paths of **all** routes inside the group:
+/// `Route::group('v2', fn(){ Route::get('order/x') })`'s real path is `/v2/order/x`.
+/// If we build the contract ID only from `arg:0`, we'd drop `v2`, causing:
+/// * the backend contract mismatches the real request path and can't converge with the frontend `CallsHttp`;
+/// * same-named sub-paths under different versions / groups would be merged idempotently into one node.
 #[derive(Debug, Clone)]
 pub struct RouteGroup {
     pub file: String,
@@ -83,23 +83,22 @@ pub struct RouteGroup {
     pub prefix: String,
 }
 
-/// 挂在路由 / 路由组上的**一个**中间件（`->middleware(X::class, true)` 的一项）。
+/// **One** middleware hung on a route / route group (one item of `->middleware(X::class, true)`).
 #[derive(Debug, Clone)]
 pub struct RouteGuard {
-    /// 中间件类的完全限定名（`app\api\middleware\AuthTokenMiddleware`）。
+    /// The middleware class's fully-qualified name (`app\api\middleware\AuthTokenMiddleware`).
     pub class: String,
-    /// 挂载时的**第二个实参**：CRMEB 用它区分"必须登录 / 可选登录"
-    /// （`AuthTokenMiddleware::class, false` == 未授权也能进），是 `auth.public`
-    /// 判定最有信息量的一处信号。 Laravel 的 `->middleware('auth:api')` 这类
-    /// 别名也会先落在这里，别名 → 类的还原留到后续阶段。
+    /// The **second arg** at mount time: CRMEB uses it to distinguish "must login / optional login"
+    /// (`AuthTokenMiddleware::class, false` == reachable without auth), the most informative signal for `auth.public`.
+    /// Laravel's `->middleware('auth:api')`-style aliases also land here first; alias → class restoration is left to later phases.
     pub arg: Option<String>,
 }
 
-/// 一段「带中间件的路由区间」：可能是 `Route::group(fn){...}->middleware(...)`，
-/// 也可能是单独注册、自带 `->middleware(...)` 的一条路由。
+/// A "route range with middleware": could be `Route::group(fn){...}->middleware(...)`,
+/// or a single route registered on its own with `->middleware(...)`.
 ///
-/// 与 [`RouteGroup`] **刻意分成两套结构**：后者只服务"组前缀补齐"、早已稳定；
-/// 这里收录的范围更宽（**含无前缀组**与单条路由），任何回归都不会动到前缀主干。
+/// Deliberately **two separate structures** from [`RouteGroup`]: the latter only serves "group-prefix fill-in" and is long stable;
+/// this one covers a wider range (**incl. prefix-less groups** and single routes), so any regression won't touch the prefix backbone.
 #[derive(Debug, Clone)]
 pub struct RouteGuardScope {
     pub file: String,
@@ -108,12 +107,11 @@ pub struct RouteGuardScope {
     pub guards: Vec<RouteGuard>,
 }
 
-/// 是否参与「短名 → FQN」索引的**类型节点**。
+/// Whether it's a **type node** participating in the "short name → FQN" index.
 ///
-/// 只有类 / 接口 / trait / 枚举参与：短名索引的语义本就是
-/// 「`StoreOrderServices` → `app\services\order\StoreOrderServices`」。
-/// 方法与函数若也进索引，高频全局函数名（`config` / `get` / `app` …）
-/// 会撞上同名方法，制造大量错误 Calls 边（详见 `add_node` 注释）。
+/// Only classes / interfaces / traits / enums participate: the short-name index's semantics is exactly
+/// "`StoreOrderServices` → `app\services\order\StoreOrderServices`".
+/// If methods and functions also entered the index, high-frequency global function names (`config`
 fn is_type_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -121,21 +119,21 @@ fn is_type_kind(kind: &str) -> bool {
     )
 }
 
-/// 尚未解析的动态链接（P5 产出，P7 解析）。
+/// Unresolved dynamic link (produced by P5, resolved by P7).
 #[derive(Debug, Clone)]
 pub struct PendingLink {
     pub from: NodeId,
     pub kind: EdgeKind,
     pub raw: String,
-    /// **目标成员名**（可选）：FKB 在 `link.to_method` 里显式给出的入口方法，
-    /// 典型如资源路由 `{ expand_entry: true }` 展开出的 `index` / `delete`。
+    /// **Target member name** (optional): the entry method explicitly given by FKB in `link.to_method`,
+    /// typically the `index` / `delete` expanded from a resource route (`{ expand_entry: true }`).
     ///
-    /// 为什么必须带到 P7：`handler` 常常只写到类（`Route::resource('level','v1.agent.AgentLevel')`），
-    /// 真实入口方法来自**展开变体**（框架知识），P5 链接阶段还不知道该类的 FQN
-    /// （要按 FKB 的 `class_templates` 拼出来），于是把 `to_method` 直接传给
-    /// `find_target_node` 是查不中的，只能降级成 PendingLink。若不把方法名带上，
-    /// P7 拿到的 `raw` 就只剩类名 —— 无论该类有没有对应方法，边都会退化到类级
-    /// （实测 CRMEB 有 164 条资源路由因此落到 `Class`，但 `AgentLevel::delete` 明明在图内）。
+    /// Why it must reach P7: the `handler` often only writes the class (`Route::resource('level','v1.agent.AgentLevel')`),
+    /// the real entry method comes from the **expansion variant** (framework knowledge); at the P5 link stage we don't yet know the class's FQN
+    /// (it's built from FKB's `class_templates`), so passing `to_method` straight to
+    /// `find_target_node` would miss; it can only degrade to a PendingLink. If we didn't carry the method name,
+    /// the `raw` P7 gets would be only the class name — whether or not the class has a matching method, the edge degrades to class-level
+    /// (measured: CRMEB had 164 resource routes falling to `Class`, but `AgentLevel::delete` was clearly in the graph).
     pub method: Option<String>,
     pub resolve: gt_domain::model::ResolveAs,
     pub confidence: f32,
@@ -144,25 +142,25 @@ pub struct PendingLink {
     pub line: u32,
 }
 
-/// 每个工程独占的节点 id 段大小。
+/// Per-project exclusive node-id segment size.
 ///
-/// 节点的 `id` 是跨工程共享的主键，落库用 `INSERT OR REPLACE`（`SqliteStore::apply`）。
-/// 原先靠「流水线启动时读一次全局 `MAX(id)`」来避免撞车：单条流水线没问题，
-/// 但并发建图时多条流水线会在同一起点读到同一个 MAX —— 此时谁都还没 flush 过，
-/// 于是分配出完全重叠的 id 区间，后提交的工程把先提交的节点行逐个 REPLACE 掉。
-/// （实测：连续创建 10 个工程后，`nodes` 只剩最后提交的那个工程有数据，
-///  而 `edges` 因为唯一键含 `project_id` 且无外键，看起来一切正常。）
+/// A node's `id` is a cross-project shared primary key, persisted with `INSERT OR REPLACE` (`SqliteStore::apply`).
+/// Originally we avoided collisions by "reading global `MAX(id)` once at pipeline start": fine for a single pipeline,
+/// but under concurrent build several pipelines read the same MAX at the same start — none has flushed yet,
+/// so they allocate completely overlapping id ranges, and the later-committed project REPLACEs the earlier's node rows one by one.
+/// (Measured: after creating 10 projects in a row, `nodes` only had the last-committed project's data,
+/// while `edges` looked fine because its unique key includes `project_id` and has no FK.)
 ///
-/// 改成按工程分段后，id 区间只由 `project_id` 决定，与运行时序和并发度无关，
-/// 因此既不会冲突，也不需要把建图串行化。单工程上限 10 亿个节点。
+/// After switching to per-project segmentation, the id range depends only on `project_id`, independent of runtime order and concurrency,
+/// so it neither conflicts nor needs to serialize builds. Single-project cap is 1 billion nodes.
 const NODE_ID_STRIDE: i64 = 1_000_000_000;
 
-/// 该工程节点 id 段的起点（段内 local id 从 1 起算）。
+/// The start of this project's node-id segment (in-segment local id starts at 1).
 fn node_id_base(project_id: ProjectId) -> i64 {
     project_id.get().saturating_mul(NODE_ID_STRIDE) + 1
 }
 
-/// 图工作区。
+/// Graph workspace.
 pub struct GraphWorkspace {
     project_id: ProjectId,
     next_node: i64,
@@ -174,103 +172,102 @@ pub struct GraphWorkspace {
     annotations: Vec<Annotation>,
     by_fqn: HashMap<String, i64>,
     by_identity: HashMap<String, i64>,
-    /// 契约桥（HttpContract）按 `path` 索引到节点 id，并标记该节点是否为通配方法
-    /// （`ANY` / `RULE`）。用于把"不限方法"的自动路由端点与前端具体方法
-    /// （`POST` / `GET`…）汇聚到同一个节点，否则路由视角里前后端对不齐。
+    /// Contract bridge (HttpContract) indexed by `path` to node id, and tags whether the node is a wildcard method
+    /// (`ANY` / `RULE`). Used to converge "method-agnostic" auto-route endpoints with the frontend's concrete method
+    /// (`POST` / `GET`...) onto the same node, otherwise the route view can't align frontend and backend.
     contract_path_index: HashMap<String, (i64, bool)>,
     by_alias: BTreeMap<(String, String, String), i64>,
     fan_in: HashMap<i64, u32>,
     fan_out: HashMap<i64, u32>,
     pub calls: Vec<CallRecord>,
-    /// **同行调用索引**：`(文件, 起始行) → [(方法名, 首个实参里的字符串)]`。
+    /// **Same-line call index**: `(file, start line) → [(method name, string in first arg)]`.
 
-    /// 链式修饰（`Route::resource('x', C::class)->except(['read'])`）被解析成
-    /// **同一行**上的另一个调用点，展开表要按行取到它的实参才能知道哪些动作生效。
-    /// 之所以另建索引而不是遍历 `calls`：P4/P5 执行时 `calls` 被
-    /// `std::mem::take` 临时移出工作区（避免借用冲突），此刻遍历会拿到空表。
-    /// 故在 P2 建调用点时顺手登记（只有带实参的调用才占空间）。
+    /// Chained modifiers (`Route::resource('x', C::class)->except(['read'])`) are parsed into
+    /// **another call site on the same line**; the expansion table must fetch its args by line to know which actions take effect.
+    /// Why a separate index instead of iterating `calls`: at P4/P5 execution `calls` is
+    /// `std::mem::take`n out of the workspace (to avoid borrow conflicts), so iterating now yields an empty table.
+    /// Hence register alongside it when P2 builds call sites (only calls with args take space).
     chained: HashMap<(String, u32), Vec<(String, Vec<String>)>>,
     pub configs: Vec<ConfigRecord>,
-    /// CORS 头赋值（由 `cf_ast` 从解析事实灌入），供 `phase::cors` 判定反射源站。
+    /// CORS header assignments (fed by `cf_ast` from parse facts), for `phase::cors` to judge the reflected origin.
     pub header_assignments: Vec<HeaderAssignFact>,
-    /// 签名值的相等性比较（由 `cf_ast` 从解析事实灌入），供 `phase::sign` 判定验签质量。
+    /// Signature-value equality comparison (fed by `cf_ast` from parse facts), for `phase::sign` to judge signature quality.
     pub sign_compares: Vec<SignCompareFact>,
     pub inherits: Vec<InheritRecord>,
     pub pending_links: Vec<PendingLink>,
-    /// 路由组区间（`Route::group('v2', ...)`），供契约 ID 补齐组前缀。
+    /// Route-group ranges (`Route::group('v2', ...)`), for contract-ID group-prefix fill-in.
     pub route_groups: Vec<RouteGroup>,
-    /// 路由守卫区间（`Route::xxx(...)->middleware(...)`），供查询"这条路由过了哪些中间件"。
+    /// Route-guard ranges (`Route::xxx(...)->middleware(...)`), for querying "which middleware this route passed".
     pub route_guard_scopes: Vec<RouteGuardScope>,
-    /// FKB 是否授权「图里查不到节点的守卫也建成 `Middleware` 节点」。
+    /// Whether FKB authorizes "building a `Middleware` node even when the guarded class isn't found in the graph".
     ///
-    /// 由 `route_guards.synthesize_unresolved` 声明（JS / Python 的函数值中间件为 true，
-    /// PHP 的类中间件为 false），P14 据此决定是建节点还是跳过。
+    /// Declared by `route_guards.synthesize_unresolved` (JS / Python function-value middleware = true,
+    /// PHP class middleware = false); P14 decides whether to build the node or skip per this.
     pub synthesize_unresolved_guards: bool,
     pub symbols: BTreeMap<String, BTreeMap<String, Value>>,
-    /// 类属性默认值：`(class_node_id, property_name) → value`。
+    /// Class property default values: `(class_node_id, property_name) → value`.
     prop_values: HashMap<(i64, String), FactValue>,
-    /// 文件路径 → File 节点。
+    /// File path → File node.
     file_nodes: HashMap<String, i64>,
-    /// 文件路径 → 源文件 id（`resolve_name_in_file` 按路径查导入表用）。
+    /// File path → source-file id (used by `resolve_name_in_file` to look up the import table by path).
     file_id_by_path: HashMap<String, i64>,
-    /// 源文件 id → 路径（`file_id_by_path` 的反查表）。
+    /// Source-file id → path (reverse of `file_id_by_path`).
     ///
-    /// P6 的选择器作用在**图节点**上，节点的 `file_id` 要还原成 `文件:行号`
-    /// 才能给解析节点 / 合成节点记上可跳转的出处
-    /// （此前返回的是 identity 字符串，前端跳转会拿到一条假路径）。
+    /// P6's selector acts on **graph nodes**; a node's `file_id` must be restored to `file:line`
+    /// to give resolvable / synthesized nodes a jumpable origin
+    /// (previously it returned an identity string, and the frontend jump got a fake path).
     source_path_by_id: HashMap<i64, String>,
-    /// **每个文件自己的** `use` 导入表：`源文件 id → (短名小写 → FQN)`。
+    /// **Each file's own** `use` import table: `source-file id → (short name lowercased → FQN)`.
     ///
-    /// 为什么必须按文件存：PHP 的短名是按**文件**解析的（`use think\facade\Cache;`
-    /// 与 `use app\model\other\Cache;` 在不同文件里含义完全不同）。曾经只有一个
-    /// 全局短名索引（`by_short`）与一个先到先得的全局 `imports` 符号表，于是
-    /// `Cache::tag()` 被当成 `app\model\other\Cache`（一个 Model），凭空造出
-    /// `Model --MapsTo--> Table(cache)` 的类级语义边并污染整条调用链。
+    /// Why it must be per-file: PHP short names resolve **per file** (`use think\facade\Cache;`
+    /// and `use app\model\other\Cache;` mean completely different things in different files). There used to be only
+    /// one global short-name index (`by_short`) and a first-come-first-served global `imports` symbol table, so
+    /// `Cache::tag()` was treated as `app\model\other\Cache` (a Model), spuriously creating a
+    /// `Model --MapsTo--> Table(cache)` class-level semantic edge and polluting the whole call chain.
     file_imports: HashMap<i64, HashMap<String, String>>,
-    /// 出边邻接表：`from → [(kind, to)]`，用于祖先链判定。
+    /// Out-edge adjacency: `from → [(kind, to)]`, for ancestor-chain judgment.
     out_edges: HashMap<i64, Vec<(String, i64)>>,
-    /// 入边邻接表：`to → [(kind, from)]`。
+    /// In-edge adjacency: `to → [(kind, from)]`.
     ///
-    /// 约定类规则要据此判断「这个节点是不是已经有权威来源了」：已显式注册的路由
-    /// 指向某个控制器方法时，就不该再为它兜一条按约定推断的契约（显式优先于推断）。
+    /// Convention rules use this to judge "does this node already have an authoritative source": when an explicitly registered route
+    /// points at some controller method, we shouldn't also cover it with a convention-inferred contract (explicit beats inferred).
     in_edges: HashMap<i64, Vec<(String, i64)>>,
-    /// 短名索引：`短名(小写) → [node_id]`，替代全表线性扫描。
+    /// Short-name index: `short name (lowercased) → [node_id]`, replacing full-table linear scan.
     by_short: HashMap<String, Vec<i64>>,
-    /// 表名索引：`(归一化)表名 → Table 节点 id`，供 P7 按 `Db::name('x')` 透传的
-    /// 表名反查合成出的 Table 节点（合成节点没有 fqn，不能走 `by_fqn`）。
+    /// Table-name index: `(normalized) table name → Table node id`, for P7 to look up the synthesized Table node by the name propagated from `Db::name('x')` (synthesized nodes have no fqn, can't go through `by_fqn`).
     by_table_name: HashMap<String, i64>,
-    /// 数据库表前缀（来自工程配置，用于 identity 归一化与符号表查找）。
+    /// DB table prefix (from project config, for identity normalization and symbol-table lookup).
     table_prefixes: Vec<String>,
-    /// 父类型名索引：`子 FQN → [父 FQN]`。
+    /// Parent-type-name index: `child FQN → [parent FQN]`.
     ///
-    /// 必须用**名字**而不是节点边：CRMEB 的链路是
-    /// `StoreOrder → crmeb\basic\BaseModel → think\Model`，
-    /// 而 `think\Model` 在 vendor 里（P0 已排除），图上没有这条边。
+    /// Must use **names** not node edges: CRMEB's chain is
+    /// `StoreOrder → crmeb\basic\BaseModel → think\Model`,
+    /// and `think\Model` is in vendor (excluded by P0), so the edge isn't on the graph.
     supertypes: HashMap<String, Vec<String>>,
-    /// 子类型名索引（继承链下游）：`父 FQN → [子 FQN]`，由 `supertypes` 反转得到。
+    /// Subtype-name index (inheritance chain downstream): `parent FQN → [child FQN]`, reversed from `supertypes`.
     ///
-    /// 用于「基类方法里的读 / 写动词」反查其实例（子类）映射到的表：yoshop / CRMEB 的
-    /// 读库动词（`$this->select` / `getAll`）常写在 `app\common\model\X` 这类基类里，
-    /// 而 `MapsTo` 边只挂在具体子类（`app\api\model\X`）上 —— 不反向走到子类，这些动词
-    /// 永远落不出 `ReadsDb`，路由只能退回含糊的「映射到」。
+    /// Used to reverse-lookup the tables mapped by instances (subclasses) for "read / write verbs in base-class methods": yoshop / CRMEB's
+    /// read verbs (`$this->select` / `getAll`) are often written in base classes like `app\common\model\X`,
+    /// while `MapsTo` edges only hang on concrete subclasses (`app\api\model\X`) — without walking to subclasses, these verbs
+    /// can never produce `ReadsDb`, and the route can only fall back to a vague "maps to".
     subtypes: HashMap<String, Vec<String>>,
-    /// 方法参数类型：`方法 FQN → [(变量名, 类型 FQN)]`，供 P7 解析 `$var->method()`。
+    /// Method param types: `method FQN → [(var name, type FQN)]`, for P7 to resolve `$var->method()`.
     param_types: HashMap<String, Vec<(String, String)>>,
-    /// 类属性类型：`类 FQN → {属性名 → 类型 FQN}`（来自构造器注入 `$this->p = $param`、
-    /// 类型化属性声明、以及 `$this->p = new Y()` 这类右侧自带类型的赋值）。
+    /// Class property types: `class FQN → {prop name → type FQN}` (from constructor injection `$this->p = $param`,
+    /// typed-property declarations, and right-side-typed assignments like `$this->p = new Y()`).
     prop_types: HashMap<String, HashMap<String, String>>,
-    /// 类用 `@method` 声明的魔法方法名（`类 FQN → {方法名}`，供 `__call` 转发解析）。
+    /// Class magic-method names declared via `@method` (`class FQN → {method name}`, for `__call` forwarding resolution).
     magic_methods: HashMap<String, HashSet<String>>,
-    /// 方法内局部变量类型：`方法 FQN → {变量名 → 类型 FQN}`（`$x = new Y()` / `Y::make()`）。
+    /// In-method local-variable types: `method FQN → {var name → type FQN}` (`$x = new Y()` / `Y::make()`).
     ///
-    /// 服务于 `$x->m()` 这类"临时对象调用"：它们既不是参数类型提示也不是字段，
-    /// 没有这一层就整条链断在最常见的一句上。
+    /// Serves "temporary-object calls" like `$x->m()`: they are neither param-type hints nor fields,
+    /// without this layer the whole chain breaks on the most common single line.
     local_types: HashMap<String, HashMap<String, String>>,
-    /// 子工程事实（app_root 等），键为 sub_project_id。
+    /// Sub-project facts (app_root, etc.), keyed by sub_project_id.
     pub facts: BTreeMap<i64, BTreeMap<String, Value>>,
     pub diagnostics: Vec<Diagnostic>,
-    /// 局部变量赋值（`$sql = ...;`），按 (owner_fqn, var) → 右侧源码索引，
-    /// 供 `phase::taint` 在同函数内反向追踪变量来源。
+    /// Local-variable assignment (`$sql = ...;`), by (owner_fqn, var) → right-side source index,
+    /// for `phase::taint` to trace variable origin backward within the same function.
     pub variable_assignments: Vec<VariableAssignFact>,
     delta: GraphDelta,
 }
@@ -279,7 +276,7 @@ impl GraphWorkspace {
     pub fn new(project_id: ProjectId) -> Self {
         Self {
             project_id,
-            // 节点 id 按工程分段，不再依赖"启动时读一次全局 MAX"（见 `NODE_ID_STRIDE`）。
+            // Node ids are segmented per project, no longer relying on "read global MAX once at start" (see `NODE_ID_STRIDE`).
             next_node: node_id_base(project_id),
             next_edge: 1,
             next_ann: 1,
@@ -331,9 +328,9 @@ impl GraphWorkspace {
         self.project_id
     }
 
-    /// 登记一个调用点的「链式修饰」信息（P2 建调用点时调用）。
+    /// Register a call site's "chained modifier" info (called when P2 builds the call site).
     ///
-    /// 只记 (方法名, 首个实参里的字符串)：`->except(['read'])` → `("except", ["read"])`。
+    /// Only record (method name, string in first arg): `->except(['read'])` → `("except", ["read"])`.
     pub fn index_chained(&mut self, file: &str, line: u32, method: Option<&str>, args: &[FactValue]) {
         let Some(m) = method else { return };
         let mut strings: Vec<String> = Vec::new();
@@ -359,7 +356,7 @@ impl GraphWorkspace {
             .push((m.to_string(), strings));
     }
 
-    /// 取**同一行**上某链式调用的实参数组（`expanded_actions` 用）。
+    /// Get the arg array of a chained call **on the same line** (used by `expanded_actions`).
     pub fn chained_strings(&self, file: &str, line: u32, method: &str) -> Vec<String> {
         let mut out = Vec::new();
         for (m, vals) in self
@@ -375,7 +372,7 @@ impl GraphWorkspace {
         out
     }
 
-    /// 记录一个参数的类型：`方法 FQN → (变量名, 类型 FQN)`。
+    /// Record a param's type: `method FQN → (var name, type FQN)`.
     pub fn add_param_type(&mut self, owner_fqn: &str, var: &str, type_fqn: &str) {
         let entry = self.param_types.entry(owner_fqn.to_string()).or_default();
         if !entry.iter().any(|(v, _)| v == var) {
@@ -383,7 +380,7 @@ impl GraphWorkspace {
         }
     }
 
-    /// 查某方法内某变量的类型（供 `$var->method()` 解析）。
+    /// Look up a variable's type within a method (for `$var->method()` resolution).
     pub fn param_type(&self, owner_fqn: &str, var: &str) -> Option<&str> {
         self.param_types
             .get(owner_fqn)
@@ -391,7 +388,7 @@ impl GraphWorkspace {
             .map(|(_, t)| t.as_str())
     }
 
-    /// 记录一个类的属性类型（来自构造器注入 `$this->p = $param`）。
+    /// Record a class property's type (from constructor injection `$this->p = $param`).
     pub fn set_prop_type(&mut self, class_fqn: &str, prop: &str, type_fqn: &str) {
         self.prop_types
             .entry(class_fqn.to_string())
@@ -399,7 +396,7 @@ impl GraphWorkspace {
             .insert(prop.to_string(), type_fqn.to_string());
     }
 
-    /// 查某类属性的类型（供 `$this->prop->method()` 解析）。
+    /// Look up a class property's type (for `$this->prop->method()` resolution).
     pub fn prop_type(&self, class_fqn: &str, prop: &str) -> Option<&str> {
         self.prop_types
             .get(class_fqn)
@@ -407,7 +404,7 @@ impl GraphWorkspace {
             .map(|s| s.as_str())
     }
 
-    /// 登记一个类的 `@method` 魔法方法名。
+    /// Register a class's `@method` magic-method name.
     pub fn set_magic_methods(&mut self, class_fqn: &str, names: &[String]) {
         if names.is_empty() {
             return;
@@ -418,10 +415,9 @@ impl GraphWorkspace {
             .extend(names.iter().cloned());
     }
 
-    /// 该类（含祖先）通过 `MapsTo` 映射到的全部表节点。
+    /// All table nodes this class (incl. ancestors) maps to via `MapsTo`.
     ///
-    /// 「类映射到表」是模型类的静态身份；P7 据此把 `$model->save()` 这类
-    /// FKB 声明的读 / 写动词调用升级成真正的 `WritesDb` / `ReadsDb`。
+    /// "class maps to table" is a model class's static identity; P7 uses this to upgrade FKB-declared read / write verb calls like `$model->save()` into real `WritesDb` / `ReadsDb`.
     pub fn mapped_tables(&self, class_fqn: &str, maps_to_kind: &str) -> Vec<NodeId> {
         let mut out: Vec<NodeId> = Vec::new();
         let mut stack = vec![class_fqn.to_string()];
@@ -433,17 +429,13 @@ impl GraphWorkspace {
                 continue;
             }
             if let Some(edges) = self.out_edges.get(&{
-                // 类 FQN → 节点 id：走短名/全名索引
+                // class FQN → node id: go through short / full name index
                 self.find_by_name(&c).map(|id| id.get()).unwrap_or(0)
             }) {
                 for (k, to) in edges {
                     if k == maps_to_kind {
                         out.push(NodeId(*to));
                     } else if k == EdgeKind::RESOLVES_TO {
-                        // 数据访问对象（如 CRMEB 的 `app\dao\X`）本身不映射到表，
-                        // 但它 `ResolvesTo` 到真正的模型类（`app\model\X`），模型类才
-                        // 有 `MapsTo`。顺着这条边找到表，才能把 service 的 `save` 落成
-                        // `WritesDb`（否则 CRMEB 的写操作全退回「映射到」）。
                         if let Some(tf) = self.node(NodeId(*to)).and_then(|n| n.fqn.clone()) {
                             stack.push(tf);
                         }
@@ -459,7 +451,7 @@ impl GraphWorkspace {
         out
     }
 
-    /// 该类（或它的祖先）是否声明了名为 `method` 的魔法方法。
+    /// Whether this class (or its ancestor) declared a magic method named `method`.
     pub fn declares_magic_method(&self, class_fqn: &str, method: &str) -> bool {
         let mut stack = vec![class_fqn.to_string()];
         let mut visited: HashSet<String> = HashSet::new();
@@ -484,7 +476,7 @@ impl GraphWorkspace {
         false
     }
 
-    /// 记一个方法内局部变量的类型（`$x = new Y()`）。
+    /// Record an in-method local variable's type (`$x = new Y()`).
     pub fn set_local_type(&mut self, owner_fqn: &str, var: &str, type_fqn: &str) {
         self.local_types
             .entry(owner_fqn.to_string())
@@ -492,7 +484,7 @@ impl GraphWorkspace {
             .insert(var.to_string(), type_fqn.to_string());
     }
 
-    /// 查某方法内局部变量的类型（供 `$x->method()` 解析）。
+    /// Look up an in-method local variable's type (for `$x->method()` resolution).
     pub fn local_type(&self, owner_fqn: &str, var: &str) -> Option<&str> {
         self.local_types
             .get(owner_fqn)
@@ -500,11 +492,11 @@ impl GraphWorkspace {
             .map(|s| s.as_str())
     }
 
-    // ------------------------------------------------------------ 节点
+    // ------------------------------------------------------------ nodes
 
-    /// 新增语法节点。
+    /// Add a syntax node.
     ///
-    /// id 来自本工程独占的号段（见 [`NODE_ID_STRIDE`]），跨工程、跨进程都不会撞。
+    /// id comes from this project's exclusive segment (see [`NODE_ID_STRIDE`]), no collision across projects or processes.
     pub fn add_node(&mut self, mut new: NewNode) -> NodeId {
         let id = NodeId(self.next_node);
         self.next_node += 1;
@@ -525,16 +517,6 @@ impl GraphWorkspace {
         };
         if let Some(fqn) = &new.fqn {
             self.by_fqn.entry(fqn.clone()).or_insert(id.get());
-            // 短名索引**只登记类型节点**（Class / Interface / Trait / Enum）。
-            //
-            // 曾经把 Method / Function 一并登记，于是 `config()` / `get()` / `index()`
-            // 这类高频全局函数被短名解析撞到**同名方法**上
-            // （`config()` → `app\api\controller\v1\PayController::config`），
-            // 凭空生成几十条错误 Calls 边，再经 P8 传播把无关的配置依赖扩散到全部入口
-            // —— 表现就是"路由连到了毫不相关的文件"。
-            //
-            // 短名索引的语义本就只是「类短名 → 类 FQN」；方法一律用
-            // `Class::method` 全限定名精确查找，不需要也不该进短名索引。
             if is_type_kind(new.kind.as_str()) {
                 if let Some(short) = fqn.rsplit(['\\', ':', '/']).next() {
                     if !short.is_empty() {
@@ -546,8 +528,8 @@ impl GraphWorkspace {
                 }
             }
         }
-        // 合成节点（Table / HttpContract / ConfigKey / I18nKey）没有 fqn，按 name 建索引，
-        // 供 P7 按 `Db::name('x')` 透传的表名反查。只有 Table 需要反查，其余忽略。
+        // Synthesized nodes (Table / HttpContract / ConfigKey / I18nKey) have no fqn, indexed by name,
+        // for P7 to look up by the table name propagated from `Db::name('x')`. Only Table needs lookup, ignore the rest.
         if new.kind.as_str() == NodeKind::TABLE && !new.name.is_empty() {
             self.by_table_name.entry(new.name.clone()).or_insert(id.get());
         }
@@ -557,23 +539,23 @@ impl GraphWorkspace {
         id
     }
 
-    /// 新增或复用合成节点（**幂等合并**：相同 identity 只建一次）。
+    /// Add or reuse a synthesized node (**idempotent merge**: same identity built only once).
     ///
-    /// 合并分两层：
-    /// 1. **精确身份**（`Method /path`）：同端点同方法只建一个节点。
-    /// 2. **通配方法感知**：后端「自动路由 / `Route::rule`」不限方法（method = `ANY`
-    ///    / `RULE`），应与前端具体方法（`POST` / `GET`…）汇聚到同一个契约桥节点，
-    ///    否则路由视角里"前端调用方 ↔ 后端 handler"会落在两张节点上、对不齐。
-    ///    只要一侧是通配方法就复用同一节点（无论谁先建）。
+    /// Merge is two-layered:
+    /// 1. **exact identity** (`Method /path`): same endpoint same method builds only one node.
+    /// 2. **wildcard-method aware**: a backend "auto route / `Route::rule`" with no method restriction (method = `ANY`
+    ///    / `RULE`) should converge with the frontend's concrete method (`POST` / `GET`...) onto the same contract-bridge node,
+    ///    otherwise in the route view "frontend caller ↔ backend handler" would land on two nodes, misaligned.
+    ///    As long as one side is a wildcard method, reuse the same node (whoever builds first).
     pub fn get_or_create_synthesized(&mut self, new: NewNode) -> (NodeId, bool) {
         if let Some(identity) = &new.identity {
             let key = identity.key();
-            // 1) 精确身份合并
+            // 1) exact-identity merge
             if let Some(existing) = self.by_identity.get(&key).copied() {
                 self.merge_synthesized(existing, &new);
                 return (NodeId(existing), false);
             }
-            // 2) 通配方法感知合并
+            // 2) wildcard-method-aware merge
             if new.kind.as_str() == NodeKind::HTTP_CONTRACT
                 && identity.kind.as_str() == SynthesizedKind::CONTRACT_ID
             {
@@ -587,8 +569,8 @@ impl GraphWorkspace {
                     }
                 }
             }
-            // 把契约桥登记进路径索引（通配或具体都登记，供通配合并命中）。
-            // 必须在 `add_node` 移动 `new` 之前算好（path 与通配标志都是 owned 值）。
+            // Register the contract bridge into the path index (wildcard or concrete both registered, for wildcard-merge hits).
+            // Must be computed before `add_node` moves `new` (path and wildcard flag are both owned values).
             let contract_entry = if new.kind.as_str() == NodeKind::HTTP_CONTRACT {
                 identity
                     .contract_parts()
@@ -607,7 +589,7 @@ impl GraphWorkspace {
         (id, true)
     }
 
-    /// 复用已有合成节点时合并置信度（取 max）与 properties。
+    /// When reusing an existing synthesized node, merge confidence (take max) and properties.
     fn merge_synthesized(&mut self, existing: i64, new: &NewNode) {
         if let Some(node) = self.nodes.get_mut(&existing) {
             if new.confidence > node.confidence {
@@ -625,13 +607,13 @@ impl GraphWorkspace {
         self.nodes.get_mut(&id.0)
     }
 
-    /// 修改节点属性（同时同步到待落库的 delta）。
+    /// Modify a node's properties (also sync to the pending delta).
     pub fn patch_properties(&mut self, id: NodeId, patch: Value) {
         let key = id.get();
         if let Some(node) = self.nodes.get_mut(&key) {
             merge_properties(&mut node.properties, &patch);
         }
-        // delta 中的节点在插入时已带 properties；后续 patch 单独记一条 upsert
+        // Nodes in the delta already carry properties at insert; later patches record a separate upsert
         self.delta.property_patches.push((id, patch));
     }
 
@@ -655,11 +637,11 @@ impl GraphWorkspace {
         self.by_fqn.get(fqn).copied().map(NodeId)
     }
 
-    /// 按表名反查合成出的 Table 节点。
+    /// Look up the synthesized Table node by table name.
     ///
-    /// `Db::name('goods')` 这类写法在 P5 经 `strip_prefix → singularize → ...` 归一化后，
-    /// 表节点的 `name` 可能与原始字面量不同（`goods` → `good`）。这里对齐同一套归一化：
-    /// 依次尝试原串、singularize、去前缀、去前缀后 singularize，命中即返回。
+    /// Writings like `Db::name('goods')` get normalized via `strip_prefix → singularize → ...` at P5, so
+    /// the table node's `name` may differ from the raw literal (`goods` → `good`). Here we align the same normalization:
+    /// try in order the raw string, singularize, strip prefix, strip-prefix-then-singularize, return on hit.
     pub fn find_table_by_name(&self, raw: &str) -> Option<NodeId> {
         use crate::normalize::{singularize, strip_prefixes};
         let prefixes = self.table_prefixes();
@@ -677,7 +659,7 @@ impl GraphWorkspace {
             if let Some(id) = self.by_table_name.get(key) {
                 return Some(NodeId(*id));
             }
-            // 大小写不敏感兜底
+            // case-insensitive fallback
             if let Some(id) = self
                 .by_table_name
                 .iter()
@@ -690,20 +672,18 @@ impl GraphWorkspace {
         None
     }
 
-    /// 短名解析：`StoreOrderServices` → `app\services\order\StoreOrderServices`。
+    /// Short-name resolution: `StoreOrderServices` → `app\services\order\StoreOrderServices`.
     ///
-    /// 走 [`Self::by_short`] 索引，O(1)；否则在大库上会退化成 O(n) 全表扫描
-    /// （CRMEB 有约 5 万个 FQN，每次线性扫描会让 P5/P7 慢几十秒）。
-    /// **歧义短名一律拒绝**：只有唯一候选才采纳。
+    /// Go through the [`Self::by_short`] index, O(1); otherwise on a big DB it degrades to O(n) full-table scan
+    /// (CRMEB has ~50k FQNs, each linear scan would slow P5/P7 by tens of seconds). **Ambiguous short names are always rejected**: only adopt when there's a unique candidate.
     ///
-    /// 曾经"先到先得"地返回第一个候选，而候选顺序取决于节点插入顺序（非确定）。
-    /// 本仓库 897 个类型短名里有 112 个重名（`User` / `StoreProduct` / `Login` 各有
-    /// 3~5 个候选，跨 `adminapi` / `api` / `model` 等命名空间）—— 猜中的那个
-    /// 常常是 controller 而不是 model，于是 `Model --MapsTo--> Table` 这类
-    /// 类级语义边会被挂到完全不相干的类上。
+    /// Previously we returned the first candidate "first-come-first-served", but candidate order depended on node insertion order (non-deterministic).
+    /// Among this repo's 897 type short names, 112 are duplicated (`User` / `StoreProduct` / `Login` each have
+    /// 3~5 candidates across `adminapi` / `api` / `model` namespaces) — the guessed one
+    /// was often a controller not a model, so `Model --MapsTo--> Table` class-level semantic edges got hung on completely unrelated classes.
     ///
-    /// 猜不出来就返回 `None`（留下 `UnresolvedLink` 诊断），**胜过连错一条边**。
-    /// 需要精确结果时请改用 `resolve_name_in_file`（按该文件的 `use` 解析）。
+    /// When we can't guess, return `None` (leave an `UnresolvedLink` diagnostic) — **better than connecting a wrong edge**.
+    /// For precise results use `resolve_name_in_file` (resolve by that file's `use`).
     pub fn resolve_short_name(&self, short: &str) -> Option<String> {
         let target = short.trim_start_matches('\\').to_ascii_lowercase();
         let ids = self.by_short.get(&target)?;
@@ -721,7 +701,7 @@ impl GraphWorkspace {
         found.map(|f| f.to_string())
     }
 
-    // ------------------------------------------------------------ 边
+    // ------------------------------------------------------------ edges
 
     pub fn add_edge(&mut self, new: NewEdge) -> bool {
         let key = (new.kind.to_string(), new.from_id.get(), new.to_id.get());
@@ -755,7 +735,7 @@ impl GraphWorkspace {
         self.edges.len()
     }
 
-    /// 全部边（只读）。传播阶段据此构建反向调用索引。
+    /// All edges (read-only). Propagation phase builds the reverse call index from this.
     pub fn edges(&self) -> &[Edge] {
         &self.edges
     }
@@ -768,9 +748,9 @@ impl GraphWorkspace {
         self.fan_out.get(&id.get()).copied().unwrap_or(0)
     }
 
-    /// 节点的**出边**邻接表 `(边种类, 终点)`（只读视图）。
+    /// A node's **out-edge** adjacency `(edge kind, target)` (read-only view).
     ///
-    /// 供 `Project` 遍历"匹配节点的每条某类出边" —— 一对多地投影，而不是只取第一条。
+    /// For `Project` to traverse "each matching out-edge of a node" — one-to-many projection, not just the first.
     pub fn out_edges_of(&self, id: NodeId) -> &[(String, i64)] {
         self.out_edges
             .get(&id.get())
@@ -778,9 +758,9 @@ impl GraphWorkspace {
             .unwrap_or(&[])
     }
 
-    /// 沿**边种类链**从 `from` 走到落点节点；每一跳取第一条匹配的出边。
+    /// Walk from `from` to the landing node along the **edge-kind chain**; each hop takes the first matching out-edge.
     ///
-    /// 链为空则落点就是 `from` 自身（"不投影"）。典型：`[MapsTo]` —— 从实体类走到它映射的表。
+    /// Empty chain means the landing is `from` itself ("no projection"). Typical: `[MapsTo]` — from an entity class to the table it maps to.
     pub fn follow(&self, from: NodeId, kinds: &[String]) -> Option<NodeId> {
         let mut cur = from;
         for k in kinds {
@@ -795,10 +775,10 @@ impl GraphWorkspace {
         Some(cur)
     }
 
-    /// 传递闭包判定：`child` 是否（直接或间接）继承/实现了 `base_fqn`。
+    /// Transitive-closure judgment: does `child` (directly or indirectly) inherit/implement `base_fqn`.
     ///
-    /// CRMEB 的模型是 `StoreOrder extends BaseModel extends Model`，
-    /// 只匹配直接基类会漏掉几乎所有表。
+    /// CRMEB's models are `StoreOrder extends BaseModel extends Model`,
+    /// matching only the direct base class would miss almost all tables.
     pub fn has_ancestor(&self, child: NodeId, base_fqn: &str) -> bool {
         let base = base_fqn.trim_start_matches('\\').to_ascii_lowercase();
         if base.is_empty() {
@@ -834,9 +814,9 @@ impl GraphWorkspace {
         false
     }
 
-    // ------------------------------------------------------------ 标注
+    // ------------------------------------------------------------ annotations
 
-    /// 按合并策略打标。
+    /// Annotate by merge strategy.
     pub fn annotate(&mut self, new: NewAnnotation) {
         let key = new.node_id.get();
         match new.merge {
@@ -891,7 +871,7 @@ impl GraphWorkspace {
         self.annotations.len()
     }
 
-    // ------------------------------------------------------------ 别名
+    // ------------------------------------------------------------ aliases
 
     pub fn put_alias(&mut self, entry: AliasEntry) {
         self.by_alias.insert(
@@ -911,7 +891,7 @@ impl GraphWorkspace {
             .copied()
             .map(NodeId)
             .or_else(|| {
-                // 无 qualifier 时退化为「同 namespace + key 唯一命中」
+                // When no qualifier, degrade to "same namespace + key unique hit"
                 self.by_alias
                     .iter()
                     .find(|((n, k, _), _)| n == ns && k == key)
@@ -923,11 +903,11 @@ impl GraphWorkspace {
         self.by_alias.len()
     }
 
-    /// 追加一个"共现位置"。
+    /// Append a "co-occurrence location".
     ///
-    /// 合成节点（如 `Table:user`）既可能来自 `crmeb.sql`，也可能来自 Model 的
-    /// `$table` 定义。必须**全部保留**，前端才能给出多位置列表供用户跳转验证，
-    /// 而不是编造一个单一位置。
+    /// A synthesized node (e.g. `Table:user`) may come from `crmeb.sql` or from a Model's
+    /// `$table` definition. We must **keep all**, so the frontend can give a multi-location list for the user to jump and verify,
+    /// rather than fabricating a single location.
     pub fn append_location(
         &mut self,
         id: NodeId,
@@ -945,9 +925,6 @@ impl GraphWorkspace {
             note,
             snippet,
         };
-        // 同一「文件 + 行」只保留一份：`append_location` 的语义是记录该对象的
-        // **不同**共现位置，而不是"每次规则命中都追加一条"。
-        // 不去重时，同一调用点被重复命中就会让前端看到成对重复的条目。
         let dup = self
             .nodes
             .get(&id.get())
@@ -983,16 +960,16 @@ impl GraphWorkspace {
         self.delta.location_patches.push((id, loc));
     }
 
-    /// 把一个已有节点**晋升**为另一种 kind（语法节点 → 语义节点）。
+    /// Promote an existing node to another kind (syntax node → semantic node).
     ///
-    /// 与 `Synthesize` 的差别是决定性的：**不新建节点**，只改这一个节点的种类。
-    /// 中间件就是这么来的 —— P2 已按 `Class` 建了它，P14 确认它挂在路由上之后改 kind，
-    /// 于是它在折叠视图里默认可见，而图里**始终只有一个** `AuthTokenMiddleware`
-    /// （若改成"再造一个合成节点"，同一份代码会变成两个节点：扇入分裂、
-    /// Inspector 出现重复条目、`Node → 定义位置` 给出两份互不完整的位置）。
+    /// The difference from `Synthesize` is decisive: **no new node**, only change this one node's kind.
+    /// Middleware comes this way — P2 already built it as a `Class`, P14 changes its kind after confirming it hangs on a route,
+    /// so it's visible by default in the folded view, while the graph **always has only one** `AuthTokenMiddleware`
+    /// (if we "build another synthesized node", the same code becomes two nodes: fan-in splits,
+    /// Inspector shows duplicate entries, `Node → definition location` gives two incomplete locations).
     ///
-    /// 只改 kind 不重建索引：`by_short` / `by_fqn` 在 `add_node` 时就登记好了，
-    /// 晋升发生在 P14，此后的解析都已结束，保留既有索引反而更安全（名字仍然可解析）。
+    /// Only change kind, don't rebuild indexes: `by_short` / `by_fqn` were registered at `add_node`,
+    /// promotion happens at P14, after which all resolution is done; keeping the existing index is actually safer (the name still resolves).
     pub fn patch_kind(&mut self, id: NodeId, kind: &str) {
         let Some(node) = self.nodes.get_mut(&id.get()) else {
             return;
@@ -1006,7 +983,7 @@ impl GraphWorkspace {
             .push((id, NodeKind(kind.to_string())));
     }
 
-    // ------------------------------------------------------------ 配置
+    // ------------------------------------------------------------ config
 
     pub fn set_table_prefixes(&mut self, prefixes: Vec<String>) {
         self.table_prefixes = prefixes;
@@ -1016,18 +993,18 @@ impl GraphWorkspace {
         &self.table_prefixes
     }
 
-    /// 登记路由组区间（P3 从 `Route::group('v2', ...)` 调用点收集）。
+    /// Register a route-group range (P3 collects from `Route::group('v2', ...)` call sites).
     ///
-    /// 用**追加**而非覆盖：loaders 按子工程逐个调用，而收集时遍历的是全量调用点，
-    /// 覆盖会丢掉先处理子工程的数据（追加后由 `route_group_prefix` 去重）。
+    /// Use **append** not overwrite: loaders call per sub-project, but collection walks all call sites,
+    /// overwriting would drop data from sub-projects processed earlier (deduped later by `route_group_prefix`).
     pub fn add_route_groups(&mut self, groups: Vec<RouteGroup>) {
         self.route_groups.extend(groups);
     }
 
-    /// 求某个调用点（文件 + 行号）所在的路由组前缀，外层在前（如 `v2` / `v2/inner`）。
+    /// Get the route-group prefix containing a call site (file + line number), outer first (e.g. `v2` / `v2/inner`).
     ///
-    /// 用**行号区间包含**而非 AST 遍历：调用点的 `span` 天然覆盖整个
-    /// `Route::group(...)` 表达式（含闭包体），判断区间包含即可还原嵌套层级。
+    /// Use **line-range containment** not AST traversal: a call site's `span` naturally covers the whole
+    /// `Route::group(...)` expression (incl. closure body), judging range containment restores nesting levels.
     pub fn route_group_prefix(&self, file: &str, line: u32) -> String {
         let mut matched: Vec<&RouteGroup> = self
             .route_groups
@@ -1037,9 +1014,9 @@ impl GraphWorkspace {
         if matched.is_empty() {
             return String::new();
         }
-        // 外层组 start_line 更小、end_line 更大：按 (start 升序, end 降序) 即由外到内。
+        // Outer group has smaller start_line, larger end_line: order by (start asc, end desc) = outer-to-inner.
         matched.sort_by_key(|g| (g.start_line, std::cmp::Reverse(g.end_line), g.prefix.clone()));
-        // 同一区间被重复登记时只算一次（loaders 按子工程重复遍历全量调用点）。
+        // Count a repeated registration of the same range only once (loaders re-walk all call sites per sub-project).
         matched.dedup_by_key(|g| (g.start_line, g.end_line, g.prefix.clone()));
         matched
             .iter()
@@ -1049,10 +1026,10 @@ impl GraphWorkspace {
             .join("/")
     }
 
-    /// 登记并查询路由守卫区间（P3 从 `Route::xxx(...)->middleware(...)` 收集）。
+    /// Register and query route-guard ranges (P3 collects from `Route::xxx(...)->middleware(...)`).
     ///
-    /// 与 [`Self::add_route_groups`] 同理用**追加**：loaders 按子工程逐个调用，
-    /// 而收集时遍历的是全量调用点，覆盖会丢掉先处理子工程的数据。
+    /// Same **append** as [`Self::add_route_groups`]: loaders call per sub-project,
+    /// but collection walks all call sites, overwriting would drop data from sub-projects processed earlier.
     pub fn add_route_guard_scopes(&mut self, scopes: Vec<RouteGuardScope>) {
         self.route_guard_scopes.extend(scopes);
     }
@@ -1061,13 +1038,12 @@ impl GraphWorkspace {
         &self.route_guard_scopes
     }
 
-    /// 求某个调用点（文件 + 行号）被哪些中间件守着，**外层在前**。
+    /// Get which middleware guard a call site (file + line number) is under, **outer first**.
     ///
-    /// 用行号区间包含（而非 AST 遍历），与 [`Self::route_group_prefix`] 同一套打法：
-    /// 调用点的 `span` 天然覆盖整条 `Route::group(...)` 表达式（含闭包体）。
+    /// Use line-range containment (not AST traversal), same play as [`Self::route_group_prefix`]:
+    /// a call site's `span` naturally covers the whole `Route::group(...)` expression (incl. closure body).
     ///
-    /// 同名中间件按**内圈覆盖外圈**合并：组上挂 `AuthToken(true)`、组内某条路由
-    /// 挂 `AuthToken(false)` 时，生效的应当是后者。
+    /// Same-named middleware merge by **inner overrides outer**: a group hangs `AuthToken(true)`, a route inside hangs `AuthToken(false)`, the latter should win.
     pub fn route_guards(&self, file: &str, line: u32) -> Vec<RouteGuard> {
         let mut matched: Vec<&RouteGuardScope> = self
             .route_guard_scopes
@@ -1094,40 +1070,39 @@ impl GraphWorkspace {
         out
     }
 
-    /// 去掉已知表前缀；同时尝试若干通用前缀。
+    /// Strip known table prefixes; also try several generic prefixes.
     pub fn strip_table_prefix(&self, name: &str) -> String {
         crate::normalize::strip_prefixes(name, &self.table_prefixes)
     }
 
-    // ------------------------------------------------------------ 继承链
+    // ------------------------------------------------------------ inheritance chain
 
     pub fn record_supertype(&mut self, child_fqn: &str, base: &str) {
         self.supertypes
             .entry(child_fqn.to_string())
             .or_default()
             .push(base.to_string());
-        // 同步维护反向索引（子类 → 父类方向），供基类方法反查子类映射表。
+        // Maintain the reverse index in sync (subclass → parent direction), for base-class methods to reverse-lookup subclass mapping tables.
         self.subtypes
             .entry(base.to_string())
             .or_default()
             .push(child_fqn.to_string());
     }
 
-    /// 直接父类型名列表（`子 FQN → [父 FQN]`）。
+    /// Direct parent-type-name list (`child FQN → [parent FQN]`).
     pub fn parents_of(&self, fqn: &str) -> Vec<String> {
         self.supertypes.get(fqn).cloned().unwrap_or_default()
     }
 
-    /// 直接子类型名列表（`父 FQN → [子 FQN]`），继承链下游。
+    /// Direct subtype-name list (`parent FQN → [child FQN]`), inheritance-chain downstream.
     pub fn children_of(&self, fqn: &str) -> Vec<String> {
         self.subtypes.get(fqn).cloned().unwrap_or_default()
     }
 
-    /// 以 `root` 为起点沿继承链下游（子类型）做有界 BFS，返回所有可达的子类 FQN。
+    /// From `root`, do a bounded BFS downstream (subtypes) the inheritance chain, returning all reachable subclass FQNs.
     ///
-    /// `max_depth` 限制下探深度、`max_nodes` 限制访问节点总数，避免共享泛型基类
-    /// （如 `BaseModel`）瞬间展开到几十张表造成动作边爆炸。命中 `MapsTo` 的子类
-    /// 才真正有用，这里只负责把候选子类交出去。
+    /// `max_depth` bounds the descent depth, `max_nodes` bounds total visited nodes, to avoid a shared generic base class
+    /// (like `BaseModel`) instantly expanding to dozens of tables and blowing up action edges. Only subclasses that hit `MapsTo` are truly useful; here we just hand out the candidate subclasses.
     pub fn subtypes_bfs(&self, root: &str, max_depth: usize, max_nodes: usize) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
@@ -1152,9 +1127,9 @@ impl GraphWorkspace {
         out
     }
 
-    /// `child` 是否（传递地）继承/实现了与 `base` 同名的类型。
+    /// Whether `child` (transitively) inherits/implements a type with the same name as `base`.
     ///
-    /// 比较采用「小写相等 或 以 `\base` 结尾」，从而 `Model` 能匹配 `think\Model`。
+    /// Comparison uses "lowercase-equal or ends with `\base`", so `Model` matches `think\Model`.
     pub fn has_supertype(&self, child_fqn: &str, base: &str) -> bool {
         let want = base.trim_start_matches('\\').to_ascii_lowercase();
         if want.is_empty() {
@@ -1180,7 +1155,7 @@ impl GraphWorkspace {
         false
     }
 
-    // ------------------------------------------------------------ 文件节点
+    // ------------------------------------------------------------ file nodes
 
     pub fn record_file_node(&mut self, path: &str, id: NodeId) {
         self.file_nodes.insert(path.to_string(), id.get());
@@ -1190,7 +1165,7 @@ impl GraphWorkspace {
         self.file_nodes.get(path).copied().map(NodeId)
     }
 
-    // ------------------------------------------------------------ 属性默认值
+    // ------------------------------------------------------------ property defaults
 
     pub fn record_property(&mut self, class_node: NodeId, name: &str, value: FactValue) {
         self.prop_values.insert((class_node.get(), name.to_string()), value);
@@ -1200,7 +1175,7 @@ impl GraphWorkspace {
         self.prop_values.get(&(node.get(), name.to_string())).cloned()
     }
 
-    // ------------------------------------------------------------ 符号表 / 事实
+    // ------------------------------------------------------------ symbol tables / facts
 
     pub fn put_symbol(&mut self, project_id: ProjectId, table: &str, key: &str, value: Value) {
         self.symbols
@@ -1219,15 +1194,15 @@ impl GraphWorkspace {
         self.symbols.get(table).and_then(|m| m.get(key))
     }
 
-    /// 经由 import 别名把短名还原为 FQN（通用机制，**不绑定任何框架**）。
-    ///
-    /// `use think\facade\Queue as QueueThink;` 会被 P2 写进 `imports` 符号表，
-    /// 于是 `QueueThink` 能还原为 `think\facade\Queue`，从而命中 FKB 里
-    /// `Queue::push` 这类「以伞名结尾」的匹配模式。
-    ///
-    /// 这是全局索引（按短名小写），与 `resolve_short_name` 同样的启发式权衡：
-    /// 不同文件里同名别名可能指向不同 FQN，但匹配是尽力而为、可叠加的。
-    /// 登记**某个文件**的 `use` 导入表（P2 调用，一个文件一份）。
+/// Restore a short name to an FQN via import alias (generic mechanism, **bound to no framework**).
+///
+/// `use think\facade\Queue as QueueThink;` is written into the `imports` symbol table by P2,
+/// so `QueueThink` restores to `think\facade\Queue`, thus hitting FKB patterns like
+/// `Queue::push` that "end in an umbrella name".
+///
+/// This is a global index (by lowercased short name), the same heuristic trade-off as `resolve_short_name`:
+/// the same alias name in different files may point to different FQNs, but matching is best-effort and composable.
+/// Register **some file**'s `use` import table (called by P2, one per file).
     pub fn record_file_imports(
         &mut self,
         file_id: i64,
@@ -1239,19 +1214,19 @@ impl GraphWorkspace {
         self.file_imports.insert(file_id, imports);
     }
 
-    /// 源文件 id → 路径。
+    /// Source-file id → path.
     pub fn source_path_of(&self, file_id: i64) -> Option<String> {
         self.source_path_by_id.get(&file_id).cloned()
     }
 
-    /// 该节点是否**已经被认领**：已有该种类的入边，或有该种类的待定链接指向它。
+    /// Whether this node is **already claimed**: has an in-edge of this kind, or a pending link of this kind points at it.
     ///
-    /// 为什么单看入边不够：路由 handler 的边大多在 **P7** 才落成（P5 只能排个
-    /// `PendingLink`，因为类名要按 FKB 的模板拼），而"约定推断"规则跑在 **P6**，
-    /// 此时边还不存在，只看入边会把显式注册的路由也让 before/after 约定重复兜一遍。
+    /// Why in-edges alone aren't enough: most route-handler edges are laid at **P7** (P5 can only queue a
+    /// `PendingLink`, because the class name must be built from FKB's template), while "convention inference" rules run at **P6**,
+    /// when the edge doesn't exist yet; looking only at in-edges would let explicitly-registered routes also be covered by before/after conventions.
     ///
-    /// handler 的形状是通用的 `Class/method`（写方法名）或 `Class`（REST 资源路由，
-    /// 等价于认领整个类的标准动作），故按形状比对即可，内核不需要认识具体框架。
+    /// The handler shape is the generic `Class/method` (with method name) or `Class` (REST resource route,
+    /// equivalent to claiming the whole class's standard actions), so compare by shape; the kernel need not know the concrete framework.
     pub fn claimed_by(&self, node: NodeId, kind: &str) -> bool {
         if self
             .in_edges
@@ -1288,18 +1263,18 @@ impl GraphWorkspace {
                 return false;
             }
             match tail_method {
-                // 写了方法名 → 只认领这一个方法
+                // Wrote a method name → claim only this one method
                 Some(m) => member.as_ref().map(|x| x.to_ascii_lowercase()) == Some(m),
-                // 没写方法名（资源路由） → 整个控制器都被显式路由接管
+                // No method name (resource route) → the whole controller is taken over by explicit routing
                 None => true,
             }
         })
     }
 
-    /// 取**某个文件**的 `use` 导入表：短名(小写) → FQN。
+    /// Get **some file**'s `use` import table: short name (lowercased) → FQN.
     ///
-    /// P7 解析 `Class::method` 的接收者时必须先查它 —— 这是 PHP 真实的解析规则，
-    /// 与框架无关。查不到才允许退回全局短名索引。
+    /// P7 must query this first when resolving a `Class::method` receiver — this is PHP's real resolution rule,
+    /// framework-independent. Only when not found may it fall back to the global short-name index.
     pub fn imports_of_file(&self, file_id: i64) -> Option<&HashMap<String, String>> {
         self.file_imports.get(&file_id)
     }
@@ -1310,12 +1285,12 @@ impl GraphWorkspace {
             .and_then(|id| self.file_imports.get(id))
     }
 
-    /// **在某个文件里**把短名还原成 FQN —— 所有需要"猜类名"的地方都该走这里。
+    /// Restore a short name to an FQN **within some file** — everywhere that needs to "guess a class name" should go through here.
     ///
-    /// 规则（与 PHP 一致，不绑定任何框架）：
-    /// * 该文件 `use` 过这个短名 → **只**认它导入的 FQN，哪怕那个类不在图里
-    ///   （框架类，vendor 已被 P0 排除）。此时**绝不**退回全局索引去猜同名项目类；
-    /// * 否则退回全局短名索引，且**歧义短名一律拒绝**（见 `resolve_short_name`）。
+    /// Rules (consistent with PHP, bound to no framework):
+    /// * the file `use`d this short name → recognize **only** the FQN it imported, even if that class isn't in the graph
+    ///   (a framework class, vendor excluded by P0). Then **never** fall back to the global index to guess a same-named project class;
+    /// * otherwise fall back to the global short-name index, and **reject ambiguous short names outright** (see `resolve_short_name`).
     pub fn resolve_name_in_file(&self, file: Option<&str>, raw: &str) -> Option<String> {
         if let Some(path) = file {
             if let Some(fqn) = self
@@ -1328,9 +1303,9 @@ impl GraphWorkspace {
         self.resolve_short_name(raw)
     }
 
-    /// 在**某个节点所属文件**里把短名还原成 FQN（先 `use`，再全局短名索引）。
+    /// Restore a short name to an FQN **within the file a node belongs to** (first `use`, then global short-name index).
     ///
-    /// 供那些只有"调用方节点"而没有现成文件路径的解析点使用（接收者类型、自由函数）。
+    /// For resolution points that only have a "caller node" but no ready file path (receiver type, free function).
     pub fn resolve_name_at(&self, owner: NodeId, raw: &str) -> Option<String> {
         if let Some(fqn) = self
             .node(owner)
@@ -1363,14 +1338,14 @@ impl GraphWorkspace {
         self.facts.get(&sub.get()).and_then(|m| m.get(key))
     }
 
-    /// 某子工程的全部事实快照（用于回写到数据库）。
+    /// A sub-project's full fact snapshot (for writing back to the DB).
     pub fn facts_snapshot(&self, sub: SubProjectId) -> Option<Value> {
         self.facts
             .get(&sub.get())
             .map(|m| Value::Object(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()))
     }
 
-    // ------------------------------------------------------------ 诊断
+    // ------------------------------------------------------------ diagnostics
 
     pub fn diagnose(
         &mut self,
@@ -1392,9 +1367,9 @@ impl GraphWorkspace {
         });
     }
 
-    // ------------------------------------------------------------ 落库
+    // ------------------------------------------------------------ persist
 
-    /// 取出并清空累积的变更。
+    /// Take out and clear the accumulated changes.
     pub fn take_delta(&mut self) -> GraphDelta {
         std::mem::replace(&mut self.delta, GraphDelta::new(self.project_id))
     }
@@ -1404,7 +1379,7 @@ impl GraphWorkspace {
     }
 }
 
-/// 浅合并两个 JSON 对象（后者覆盖前者）。
+/// Shallow-merge two JSON objects (the latter overrides the former).
 fn merge_properties(base: &mut Value, patch: &Value) {
     match (base.as_object_mut(), patch.as_object()) {
         (Some(b), Some(p)) => {
@@ -1429,7 +1404,7 @@ fn merge_properties(base: &mut Value, patch: &Value) {
     }
 }
 
-/// 便捷构造：带 identity 的合成节点。
+/// Convenience constructor: a synthesized node with an identity.
 pub fn synthesized_node(
     project_id: ProjectId,
     kind: &str,

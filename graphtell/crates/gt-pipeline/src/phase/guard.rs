@@ -1,24 +1,24 @@
-//! P14 Guard：把「这条路由过了哪些中间件」落成图上的边。
+//! P14 Guard: turn "which middleware this route passed through" into edges on the graph.
 //!
-//! # 为什么是**桥边**，而不是语义边
+//! # Why a **bridge edge**, not a semantic edge
 //!
-//! `HttpContract --PassesThrough--> <中间件>` 两端性质不同：起点是语义节点，终点是一个
-//! `Class`（语法节点），中间件自身并不需要"多处引用汇聚才存在"。与 `HandledBy`
-//! （契约 → handler）、`HasColumn`（表 → 列）同族：**可沿链遍历，但不计入「语义入边 /
-//! 出边 N」，也不当画布边画出来** —— 否则一条路由挂 3 个中间件，它的"出边 N"就凭空 +3，
-//! 与旁边"读写了几张表"混进同一个口径。
+//! `HttpContract --PassesThrough--> <middleware>` has two ends of different nature: the start is a semantic node, the end is a
+//! `Class` (syntax node), and the middleware itself doesn't need "multiple references converging to exist". Same family as `HandledBy`
+//! (contract → handler), `HasColumn` (table → column): **traversable along the chain, but not counted in "semantic in/out-edge N",
+//! nor drawn as a canvas edge** — otherwise a route with 3 middleware would have its "out-edge N" magically +3,
+//! mixed into the same metric as the adjacent "read/wrote how many tables".
 //!
-//! # 为什么先造边、不先晋升节点
+//! # Why build the edge first, not promote the node first
 //!
-//! 中间件将来要不要在折叠视图里当邻居节点出现，是可以后验的选择；而"这条关系是否真的存在、
-//! 命中多少、组合有没有区分度"必须先有数据。边先落图，晋升与否就变成一个**可以量化决定**
-//! 的问题，而不是口味之争。
+//! Whether a middleware should later appear as a neighbor node in the folded view is a posteriori choice; but "does this relation really exist,
+//! how many hits, does the combination have discriminative power" needs data first. Once the edge is on the graph, promoting or not becomes a
+//! **quantifiable decision**, not a taste debate.
 //!
-//! # 已知边界
+//! # Known boundaries
 //!
-//! * 只接**路由级 / 路由组级**挂载（与 P3 的取舍一致）：全局中间件对每个端点都成立，是环境
-//!   常量；给它连边等于每条契约都加上同样几条 —— 数字涨了，信息没涨。
-//! * 中间件类不在图里时（`vendor` 里的类、尚未还原的动态别名）**跳过，不建悬空边也不猜**。
+//! * Only accept **route-level / route-group-level** mounts (consistent with P3's trade-off): global middleware holds for every endpoint, it's an environment
+//!   constant; connecting an edge to it equals adding the same few edges to every contract — numbers go up, information doesn't.
+//! * When the middleware class isn't in the graph (vendor classes, dynamic aliases not yet resolved) **skip, no dangling edge, no guess**.
 
 use gt_domain::model::{
     AnnotationChannel, EdgeKind, MergeStrategy, NewAnnotation, NewEdge, NewNode, NodeId, NodeKind,
@@ -28,16 +28,16 @@ use serde_json::{json, Value};
 
 use crate::context::PipelineContext;
 
-/// 语义边种类：`HttpContract --PassesThrough--> 中间件`。
+/// Semantic-edge kind: `HttpContract --PassesThrough--> middleware`.
 ///
-/// 名字取中性（"经过"而不是"守卫"）：中间件里既有会拒绝请求的守卫，也有只加响应头 /
-/// 记日志的旁路，统一叫"守卫"等于替后者过度声明。鉴不鉴权由 `Capability` 标注回答。
+/// The name is neutral ("passes through" not "guard"): middleware includes both guards that reject requests and side paths that only add response headers /
+/// log — calling them all "guard" over-declares for the latter. Whether auth is enforced is answered by the `Capability` annotation.
 const PASSES_THROUGH: &str = "PassesThrough";
 
-/// 「挂了鉴权中间件、但实参显式写着可选」的标注（未登录也能进，不等于没挂）。
+/// Annotation for "an auth middleware was mounted, but the arg explicitly says optional" (reachable without login, doesn't mean not mounted).
 const OPTIONAL_AUTH: &str = "auth.optional";
 
-/// 契约名 → 节点（`HttpContract.name` 与 `route_list` 的键同源）。
+/// Contract name → node (`HttpContract.name` shares the same source as `route_list`'s key).
 fn contract_index(ctx: &PipelineContext) -> std::collections::HashMap<String, NodeId> {
     let mut out = std::collections::HashMap::new();
     for id in ctx.ws.nodes_of_kind(NodeKind::HTTP_CONTRACT) {
@@ -48,7 +48,7 @@ fn contract_index(ctx: &PipelineContext) -> std::collections::HashMap<String, No
     out
 }
 
-/// 每行守卫的形状：`[(中间件短名, 挂载实参)]`。
+/// Shape of each guard row: `[(middleware short name, mount arg)]`.
 fn row_guards(value: &Value) -> Vec<(String, Option<String>)> {
     let Some(arr) = value.get("guards").and_then(Value::as_array) else {
         return Vec::new();
@@ -69,20 +69,20 @@ fn row_guards(value: &Value) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// P5.5：把中间件带来的能力标到契约上（`Capability` 通道）。
+/// P5.5: mark the capabilities brought by middleware onto the contract (the `Capability` channel).
 ///
-/// # 为什么必须在 P6 之前
+/// # Why must be before P6
 ///
-/// `crmeb-public-endpoint` 这类 P6 规则用 `none_of_capability` 判定"公开端点"。
-/// 反向判据只在正面证据**确实存在过**时才成立：能力若等 P14 才标注，
-/// P6 早已把每个契约都标成 `auth.public`（实测 1603 个里 1529 个），
-/// 之后再补也纠正不回来（标注已落库）。
+/// P6 rules like `crmeb-public-endpoint` use `none_of_capability` to decide "public endpoint".
+/// A reverse criterion only holds when positive evidence **has actually existed**: if capabilities were annotated only at P14,
+/// P6 would already have marked every contract `auth.public` (measured 1529 of 1603), and
+/// patching later can't recover it (annotations already persisted).
 ///
-/// # 为什么不算"推断"
+/// # Why this isn't "inference"
 ///
-/// 锚点是中间件的**确凿身份**（类名，由 FKB 声明哪个名字对应哪种能力），不是
-/// "这个端点看起来要不要登录"。挂载实参明确写着可选时（`AuthToken::class, false`
-/// == 未登录也能进）**不打能力** —— 宁可缺，不可把可选的当成强制的。
+/// The anchor is the middleware's **definite identity** (class name, which name maps to which capability is declared by FKB), not
+/// "does this endpoint look like it needs login". When the mount arg explicitly says optional (`AuthToken::class, false`
+/// == reachable without login) **don't mark the capability** — better missing than treating optional as mandatory.
 pub fn run_capabilities(ctx: &mut PipelineContext) {
     let phase = Phase("GuardCapability".to_string());
     if ctx.middleware_capabilities.is_empty() {
@@ -118,15 +118,11 @@ pub fn run_capabilities(ctx: &mut PipelineContext) {
             if hits.is_empty() {
                 continue;
             }
-            // 全部命中都是"可选"时，不能宣称这个端点被该能力守卫。
+            // When all hits are "optional", we can't claim this endpoint is guarded by this capability.
             let mandatory = hits
                 .iter()
                 .any(|(_, arg)| arg.as_deref().map(|a| a != "false").unwrap_or(true));
             if !mandatory {
-                // 不打能力，但**记录这个确凿事实**：确实挂了鉴权中间件、且实参显式写着可选
-                // （`AuthTokenMiddleware::class, false` == 未登录也能进）。
-                // 这是"可选"而不是"没有"——把两者混为一谈就是编造，故另起一个标注，
-                // 供 `write-endpoint-with-optional-auth` 这类**正向**规则命中。
                 ctx.ws.annotate(NewAnnotation {
                     node_id: *contract_id,
                     channel: AnnotationChannel(AnnotationChannel::FKB_MARK.to_string()),
@@ -171,9 +167,6 @@ pub fn run_capabilities(ctx: &mut PipelineContext) {
 pub fn run(ctx: &mut PipelineContext) {
     let phase = Phase("Guard".to_string());
 
-    // 先攒计划再改图：`add_edge` 要 &mut ws，不能一边遍历一边改。
-    // ① 契约名 → 节点：HttpContract 的 `name` 与 `route_list` 的键同源
-    //    （见 `prepare::load_routes`：键 = "METHOD /prefix/path"）。
     let mut contracts: std::collections::HashMap<String, NodeId> = std::collections::HashMap::new();
     for id in ctx.ws.nodes_of_kind(NodeKind::HTTP_CONTRACT) {
         if let Some(node) = ctx.ws.node(id) {
@@ -184,7 +177,7 @@ pub fn run(ctx: &mut PipelineContext) {
         return;
     }
 
-    // ② 计划：契约节点 + 它身上的中间件类名列表
+    // ② plan: contract node + the list of middleware class names on it
     let rows = ctx.ws.symbols.get("route_list").cloned().unwrap_or_default();
     let mut plan: Vec<(NodeId, Vec<String>)> = Vec::new();
     for (key, value) in rows.iter() {
@@ -206,19 +199,12 @@ pub fn run(ctx: &mut PipelineContext) {
         plan.push((*contract_id, classes));
     }
 
-    // ③ 落边，并把被挂上的那个东西晋升 / 建成为 `Middleware` 语义节点
+    // ③ lay the edge, and promote / build the mounted thing into a `Middleware` semantic node
     let mut created = 0usize;
     let mut promoted = 0usize;
     let mut synthesized = 0usize;
     let mut unresolved = 0usize;
-    // FKB 授权「查不到也建节点」？见 `route_guards.synthesize_unresolved`。
-    // JS / Python 的中间件是**函数值**（`const loginLimiter = rateLimit({...})`），解析器
-    // 不会为它建语法节点，但"这条路由挂了一个叫 X 的中间件"是源码里的确凿事实 ——
-    // 授权后建一个同名 `Middleware` 语义节点，是如实记录而不是猜测。
     let allow_synthesize = ctx.ws.synthesize_unresolved_guards;
-    // FKB 预声明的**已知中间件**（框架 / 库自带、源码不在图里）：`middleware_classes` 表，
-    // 由 FKB 的 `inline` 装载器写入（`{ class, capability }`），无需解析器改动。
-    // 按全名与短名两种键都可命中。
     let mut known_middleware: std::collections::HashMap<String, Option<Value>> =
         std::collections::HashMap::new();
     for (key, val) in ctx
@@ -236,9 +222,6 @@ pub fn run(ctx: &mut PipelineContext) {
     }
     for (contract_id, classes) in plan {
         for class in classes {
-            // 精确 FQN 优先；落空时（Laravel 常写裸短名 `NoCacheMiddleware`、
-            // ThinkPHP 也可能被写成不带命名空间的短名）按**短名**兜底 ——
-            // `resolve_short_name` 对歧义短名一律拒绝，不会连错类。
             let target = ctx
                 .ws
                 .find_by_name(&class)
@@ -248,10 +231,6 @@ pub fn run(ctx: &mut PipelineContext) {
                         .and_then(|fqn| ctx.ws.find_by_name(&fqn))
                 });
             let Some(target) = target else {
-                // 图里没有这个类 —— 但**没节点不等于没语义**：
-                // 框架 / 库自带的中间件常住在 `vendor/` / `node_modules/`（不进图），
-                // FKB 若已声明过它（`middleware_classes` 表），就按声明落成节点 ——
-                // 这不是猜测，与"靠名字猜"是两回事，故不受 `synthesize_unresolved` 限制。
                 let norm = crate::phase::prepare::norm_class(&class);
                 let known = known_middleware.get(&norm).or_else(|| {
                     let short = norm.rsplit(['\\', '/']).next().unwrap_or(&norm);
@@ -267,7 +246,7 @@ pub fn run(ctx: &mut PipelineContext) {
                     .and_then(|v| v.get("class").and_then(|c| c.as_str()))
                     .unwrap_or(&class)
                     .to_string();
-                // 显示用**短名**（与图里其它中间件节点一致），FQN 仍留在 `fqn` 字段备查。
+                // Display uses the **short name** (consistent with other middleware nodes in the graph); FQN stays in the `fqn` field for lookup.
                 let name = if known.is_some() {
                     crate::phase::prepare::norm_class(&full)
                         .rsplit(['\\', '/'])
@@ -284,7 +263,7 @@ pub fn run(ctx: &mut PipelineContext) {
                 if known.is_some() {
                     props["declared_by"] = json!("fkb");
                 }
-                // 建一个 `Middleware` 语义节点（FKB 已声明 / 已授权）。
+                // Build a `Middleware` semantic node (declared / authorized by FKB).
                 let id = ctx.ws.add_node(NewNode {
                     id: None,
                     project_id: ctx.project.id,
@@ -295,7 +274,7 @@ pub fn run(ctx: &mut PipelineContext) {
                     identity: None,
                     file_id: None,
                     span: Span::default(),
-                    // 语言随所属契约（新建的中间件节点没有自己的文件位置）。
+                    // Language follows the owning contract (a newly built middleware node has no file location of its own).
                     language: ctx
                         .ws
                         .node(contract_id)
@@ -322,11 +301,6 @@ pub fn run(ctx: &mut PipelineContext) {
             if target == contract_id {
                 continue;
             }
-            // 晋升：改 kind 而**不新建节点**（`patch_kind` 的注释里写了为何必须如此）。
-            // * `Class`：PHP 的中间件恒为类，无条件晋升；
-            // * `Function` / `Method`：JS / Python 的中间件是函数，仅当 FKB 授权
-            //   （`synthesize_unresolved`）时才晋升 —— 未授权时对别的东西一律不动，
-            //   万一某个 FKB 把不相干的东西当成中间件，也不会连带改坏。
             let kind = ctx
                 .ws
                 .node(target)
@@ -380,7 +354,7 @@ mod tests {
         }
     }
 
-    /// 契约节点：`name` 必须与 `route_list` 的键同形，否则查不到。
+    /// Contract node: `name` must share the same shape as `route_list`'s key, otherwise it won't be found.
     fn add_contract(ctx: &mut PipelineContext, name: &str) -> NodeId {
         let mut n = NewNode::new(
             ProjectId::new(1),
@@ -392,7 +366,7 @@ mod tests {
         id
     }
 
-    /// 中间件类节点：`by_fqn` 按 FQN 索引，故必须写 `fqn`。
+    /// Middleware class node: `by_fqn` indexes by FQN, so `fqn` must be written.
     fn add_class(ctx: &mut PipelineContext, fqn: &str) -> NodeId {
         let mut n = NewNode::new(
             ProjectId::new(1),
@@ -403,7 +377,7 @@ mod tests {
         ctx.ws.add_node(n)
     }
 
-    /// 内存：往 `route_list` 符号表塞一行带守卫的路由。
+    /// In-memory: insert a guard-bearing route row into the `route_list` symbol table.
     fn put_row(ctx: &mut PipelineContext, key: &str, guards: Value) {
         ctx.ws.put_symbol(
             ProjectId::new(1),
@@ -447,7 +421,7 @@ mod tests {
                 { "class": r"app\http\middleware\AllowOriginMiddleware", "arg": null },
             ]),
         );
-        // 键对不上（`route_list` 里没有的契约）不该凭空长边
+        // Key mismatch (a contract not in `route_list`) shouldn't grow an edge from nothing
         put_row(
             &mut ctx,
             "GET /not-a-contract",
@@ -468,7 +442,7 @@ mod tests {
         assert_ne!(auth, cors);
     }
 
-    /// 被挂上的类要**晋升**成 `Middleware`（改 kind，不新建节点）。
+    /// The mounted class must be **promoted** to `Middleware` (change kind, don't create a new node).
     #[test]
     fn promotes_class_to_middleware_without_duplicating() {
         let mut ctx = PipelineContext::new(project());
@@ -485,17 +459,17 @@ mod tests {
         let node = ctx.ws.node(mw).expect("中间件类节点应仍然存在");
         assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE, "kind 应被改成 Middleware");
         assert_eq!(node.fqn.as_deref(), Some(r"app\api\middleware\AuthTokenMiddleware"));
-        // 关键：晋升不产生第二个节点 —— 图里仍然只有这一个，fqn 仍可查到同一个 id
+        // Key: promotion produces no second node — the graph still has only this one, fqn still finds the same id
         assert_eq!(ctx.ws.find_by_name(r"app\api\middleware\AuthTokenMiddleware"), Some(mw));
         assert!(NodeKind(NodeKind::MIDDLEWARE.to_string()).is_semantic());
-        // 晋升要真的落库（delta 里带 kind 补丁），否则重跑就没了
+        // Promotion must actually persist (the delta carries the kind patch), otherwise re-run loses it
         assert!(
             ctx.ws.take_delta().kind_patches.iter().any(|(id, _)| *id == mw),
             "晋升必须写进 delta，否则持久化层收不到"
         );
     }
 
-    /// 中间件不在图里（vendor / 别名未还原）：跳过，不建悬空边。
+    /// Middleware not in the graph (vendor / alias unresolved): skip, no dangling edge.
     #[test]
     fn skips_absent_middleware() {
         let mut ctx = PipelineContext::new(project());

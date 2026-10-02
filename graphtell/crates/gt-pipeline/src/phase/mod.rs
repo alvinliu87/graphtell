@@ -1,4 +1,4 @@
-//! 流水线各阶段实现。
+//! Implementations of the pipeline phases.
 
 pub mod annotate;
 pub mod cf_ast;

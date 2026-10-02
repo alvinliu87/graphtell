@@ -1,8 +1,8 @@
-//! P3 Prepare：装载 FKB 与权威符号表。
+//! P3 Prepare: load FKB and authoritative symbol tables.
 //!
-//! * 用 FKB 的 `detectors` 识别每个子工程用了哪些框架
-//! * 用 `root_rules` 解析 `AppRoot`（如从 `composer.json` 的 `autoload.psr-4`）
-//! * 用 `loaders` 装载权威源：`schema` / `config_keys` / `i18n` / `facade_map`
+//! * use FKB's `detectors` to identify which frameworks each sub-project uses
+//! * use `root_rules` to parse `AppRoot` (e.g. from `composer.json`'s `autoload.psr-4`)
+//! * use `loaders` to load authoritative sources: `schema` / `config_keys` / `i18n` / `facade_map`
 //!   / `container_bindings` / `event_listeners` / `route_list` / `nginx`
 
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use crate::engine::{capture_locale, path_matches};
 use crate::normalize::strip_prefixes;
 use crate::workspace::{CallRecord, RouteGroup, RouteGuard, RouteGuardScope};
 
-/// 执行 Prepare。
+/// Run Prepare.
 pub fn run(
     ctx: &mut PipelineContext,
     kb: &dyn KnowledgeProvider,
@@ -33,12 +33,12 @@ pub fn run(
     let phase = Phase(Phase::PREPARE.to_string());
     let subs = ctx.sub_projects.clone();
     let project_root = ctx.project.root_path.clone();
-    // 全部子工程识别到的框架并集 —— 决定哪些框架规则有资格进入全局规则集。
+    // Union of frameworks recognized across all sub-projects — decides which framework rules qualify for the global rule set.
     let mut detected_frameworks: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for sub in &subs {
-        // 框架级 + 项目级知识分别识别：项目级仅在该子工程被识别为对应项目时加载，
-        // 其规则只进 `rules_by_sub`（不进 `ctx.frameworks`、不进全局），绝不串味到其它工程。
+        // Framework-level + project-level knowledge recognized separately: project-level loads only when that sub-project is recognized as the corresponding project,
+        // its rules only enter `rules_by_sub` (not `ctx.frameworks`, not global), never leaking into other projects.
         let frameworks = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Framework);
         info!("子工程 {} 识别到框架: {:?}", sub.name, frameworks);
         detected_frameworks.extend(frameworks.iter().cloned());
@@ -49,8 +49,8 @@ pub fn run(
             info!("子工程 {} 识别到项目知识: {:?}", sub.name, projects);
         }
 
-        // 路由 handler 解析规则 + 消费入口方法名：框架级优先，其次项目级。
-        // 都由 FKB 声明（每个框架怎么写 handler / 入口方法叫什么，是框架知识）。
+        // Route-handler resolution rules + consumer entry-method names: framework-level first, then project-level.
+        // Both declared by FKB (how each framework writes handlers / what entry methods are called is framework knowledge).
         if let Some(spec) = frameworks
             .iter()
             .chain(projects.iter())
@@ -62,7 +62,7 @@ pub fn run(
             }
             ctx.handler_specs.insert(sub.id.get(), spec);
         }
-        // `@method` 魔法方法的转发目标：同样是 FKB 知识（转发给哪个属性是框架/项目约定）。
+        // `@method` magic-method forwarding target: also FKB knowledge (which property to forward to is a framework/project convention).
         if let Some(spec) = frameworks
             .iter()
             .chain(projects.iter())
@@ -75,7 +75,7 @@ pub fn run(
             }
             ctx.magic_delegation.insert(sub.id.get(), spec);
         }
-        // 数据模型读 / 写动词：同样是 FKB 知识（框架的 Model/Query API 叫什么）。
+        // Data-model read / write verbs: also FKB knowledge (what the framework's Model/Query API is called).
         if let Some(spec) = frameworks
             .iter()
             .chain(projects.iter())
@@ -88,12 +88,6 @@ pub fn run(
             }
             ctx.db_verbs.insert(sub.id.get(), spec);
         }
-        // 外部系统调用 / 事务标记：与 db_verbs 同理属于知识库内容，但这两份名单
-        // **不含框架假设**（curl 是 PHP 内置、`transaction` 两家都这么写），所以取
-        // **同语言的全部 FKB** 而不只是本子工程识别到的框架 —— 否则声明在
-        // `fkb/php/common.yaml`（`apply_without_detection`、永不被"识别"）里的名单
-        // 永远加载不到，实测 P12/P13 会静默变成 0 命中。
-        // 不做子工程分桶：合并成一份全局集合即可。
         for fk in kb.all().iter().filter(|fk| fk.language == sub.language) {
             for c in &fk.external_calls {
                 if !ctx.external_calls.iter().any(|x| x.eq_ignore_ascii_case(c)) {
@@ -105,8 +99,8 @@ pub fn run(
                     ctx.tx_calls.push(c.clone());
                 }
             }
-            // 「中间件类 → 能力」：名字是框架/项目约定（`AuthTokenMiddleware` 这种
-            // 叫法内核不该认识），故同样由 FKB 声明、这里只做去重合并。
+            // "middleware class → capability": names are framework/project conventions (`AuthTokenMiddleware`-style
+            // naming the kernel shouldn't know), so also declared by FKB, here only dedup-merge.
             for mc in &fk.middleware_capabilities {
                 if !ctx
                     .middleware_capabilities
@@ -130,13 +124,13 @@ pub fn run(
             ctx.entry_methods.insert(sub.id.get(), methods);
         }
 
-        // 框架 + 项目知识都应用 root_rules / loaders（项目知识通常无，但通道通用）。
+        // Framework + project knowledge both apply root_rules / loaders (project knowledge usually none, but the channel is generic).
         let mut facts = serde_json::Map::new();
         for id in frameworks.iter().chain(projects.iter()) {
             let Some(fk) = kb.by_id(id) else { continue };
             apply_root_rules(ctx, fk, sub, &mut facts, &phase, fs, parsers);
-            // 自动探测表前缀：FKB 的 `db_prefix` root_rule 从工程配置读出，
-            // 并入工程显式配置的前缀（去重），供 P3 装载与 P5 归一化使用。
+            // Auto-detect table prefix: FKB's `db_prefix` root_rule reads it from project config,
+            // merged with the prefix from the project's explicit config (dedup), for P3 loading and P5 normalization.
             if let Some(v) = facts
                 .get("db_prefix")
                 .and_then(|v| v.get("value"))
@@ -159,14 +153,6 @@ pub fn run(
             ctx.ws.set_fact(sub.id, &k, v);
         }
 
-        // 规则按子工程装配：
-        // ① 本子工程识别到的框架规则；
-        // ② 同语言、未识别的框架级规则 —— **仅限显式声明 `apply_without_detection` 的**；
-        // ③ 本子工程识别到的**项目级**规则（仅检测到的，不外溢）。
-        //
-        // ② 曾经是无条件的，后果是用 A 框架的知识解释 B 框架的代码（ThinkPHP 规则
-        // 套到 Laravel 工程上凭空造出上百个 Table / HttpContract）。框架规则带强框架
-        // 假设，未识别到该框架时不应生效。
         let mut rules: Vec<Rule> = frameworks
             .iter()
             .filter_map(|id| kb.by_id(id))
@@ -189,9 +175,6 @@ pub fn run(
         ctx.rules_by_sub.insert(sub.id.get(), dedup_rules(rules));
     }
 
-    // 全局规则：仅**框架级**规则去重后共享（合成节点可能跨工程汇聚）。
-    // 项目级规则不进全局 —— 它们只在被识别为对应项目的子工程内生效。
-    // 框架级同样要求「被任一子工程识别」或「显式声明无需识别」，理由同 `rules_by_sub`。
     let mut global: Vec<(Language, Rule)> = Vec::new();
     for fk in kb.all() {
         if fk.scope != KnowledgeScope::Framework {
@@ -211,7 +194,7 @@ pub fn run(
     Ok(())
 }
 
-// ---------------------------------------------------------------- 框架识别
+// ---------------------------------------------------------------- framework detection
 
 fn detect_frameworks(
     kb: &dyn KnowledgeProvider,
@@ -262,7 +245,7 @@ fn manifest_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
     }
     let Ok(text) = fs.read_to_string(path) else { return false };
     let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        // composer.json 之外也可能是纯文本依赖清单
+        // Besides composer.json there may also be a plain-text dependency manifest
         return text.contains(dependency);
     };
     for section in ["require", "require-dev", "dependencies", "devDependencies"] {
@@ -343,20 +326,20 @@ fn apply_root_rules(
     }
 }
 
-/// 解析 `directory_exists` 根规则：在子工程内（含多级子目录，深度受限）查找目标相对路径
-/// （如 `src/main/java`）。命中后返回其**父目录**作为源根（`app_root` 的语义应是源码根，而非
-/// `src/main/java` 本身）。单模块工程在根目录直下命中时返回 `"."`；多模块工程返回首个命中模块
-/// 的相对目录（如 `mall-admin`）。仅当整棵目录树都找不到时才返回 `None`（触发兜底 / 告警）。
+/// Parse the `directory_exists` root rule: search for the target relative path within a sub-project (incl. multi-level subdirs, depth-limited)
+/// (e.g. `src/main/java`). On hit, return its **parent dir** as the source root (the semantics of `app_root` is the source root, not
+/// `src/main/java` itself). A single-module project hitting directly under the root returns `"."`; a multi-module project returns the first hit module's
+/// relative dir (e.g. `mall-admin`). Only when the whole tree can't be found do we return `None` (trigger fallback / warning).
 fn resolve_directory_exists(root: &Path, rel: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
         return None;
     }
-    // 根目录直下命中：源根即子工程根。
+    // Hit directly under the root: source root is the sub-project root.
     if root.join(rel).is_dir() {
         return Some((".".to_string(), format!("directory exists: {}", rel)));
     }
-    // 多模块：广度优先（优先浅层），深度受限避免扫描整棵大目录树。
+    // Multi-module: breadth-first (prefer shallow), depth-limited to avoid scanning the whole large tree.
     let mut queue: std::collections::VecDeque<(PathBuf, u32)> =
         std::collections::VecDeque::from([(root.to_path_buf(), 0)]);
     let max_depth = 5;
@@ -419,12 +402,11 @@ fn resolve_manifest_pointer(
     ))
 }
 
-/// 从 PHP 配置文件（如 ThinkPHP 的 `config/database.php`）按点分指针读取值。
+/// Read a value from a PHP config file (e.g. ThinkPHP's `config/database.php`) by dot-separated pointer.
 ///
-/// 复用 PHP 解析器把 `return [...]` 展平成 `config_entries`，再按 `key_path`
-/// 精确匹配 `pointer`（如 `connections.mysql.prefix`）。配置值若是
-/// `env('KEY', 'default')` 这类无法静态求值的写法（解析器记为 `Unknown`），
-/// 再用轻量正则提取其字面默认值作为兜底。
+/// Reuse the PHP parser to flatten `return [...]` into `config_entries`, then precisely match `pointer` (e.g. `connections.mysql.prefix`).
+/// If the config value is a form that can't be statically evaluated like `env('KEY', 'default')` (parser records as `Unknown`),
+/// use a lightweight regex to extract its literal default as a fallback.
 fn resolve_manifest_php(
     sub: &gt_domain::model::SubProject,
     project_root: &Path,
@@ -450,15 +432,15 @@ fn resolve_manifest_php(
             }
         }
     }
-    // 兜底：值可能是 `env('KEY', 'default')` → 从源文本提取叶子键对应的默认值。
+    // Fallback: the value may be `env('KEY', 'default')` → extract the default for the leaf key from source text.
     let leaf = pointer.rsplit('.').next().unwrap_or(pointer);
     extract_prefix_via_regex(&text, leaf).map(|s| {
         (s, format!("php config (env default): {}", abs.display()))
     })
 }
 
-/// 轻量兜底：从 `config/database.php` 源文本提取 `<leaf> => 'x'` 或
-/// `<leaf> => env('K', 'x')` 中的字面默认值。仅用于解析器无法静态求值的场景。
+/// Lightweight fallback: extract the literal default from `config/database.php` source text `<leaf> => 'x'` or
+/// `<leaf> => env('K', 'x')`. Only for cases the parser can't statically evaluate.
 fn extract_prefix_via_regex(text: &str, leaf: &str) -> Option<String> {
     let escaped = regex::escape(leaf);
     let re = regex::Regex::new(&format!(
@@ -469,7 +451,7 @@ fn extract_prefix_via_regex(text: &str, leaf: &str) -> Option<String> {
         .and_then(|c| c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()))
 }
 
-// ---------------------------------------------------------------- 装载器
+// ---------------------------------------------------------------- loaders
 
 fn run_loaders(
     ctx: &mut PipelineContext,
@@ -480,9 +462,6 @@ fn run_loaders(
     parsers: &dyn ParserRegistry,
     phase: &Phase,
 ) {
-    // 契约路径的归一化链来自**本框架**的 http-contract 规则：`route_list` 的键必须与
-    // P5 合成出来的 `HttpContract.name` 逐字一致，而路径怎么归一是框架知识
-    // （ThinkPHP 要 `strip_prefix ["api/"] + param_wildcard`，Laravel 只要 `leading_slash`）。
     let contract_steps = contract_steps_of(fk);
     for loader in &fk.loaders {
         if let Err(e) = run_loader(
@@ -501,9 +480,9 @@ fn run_loaders(
     }
 }
 
-/// 从一份 FKB 里取契约路径的归一化步骤（第一条 `ContractId` 规则）。
+/// Take the contract-path normalization steps from one FKB (the first `ContractId` rule).
 ///
-/// 取不到时退回 `[LeadingSlash]`：至少保证前导斜杠口径一致，不会把键写成半成品。
+/// When not obtainable, fall back to `[LeadingSlash]`: at least keeps the leading-slash convention consistent, won't write a half-key.
 fn contract_steps_of(fk: &FrameworkKnowledge) -> Vec<NormalizeStep> {
     for rule in &fk.rules {
         for action in &rule.binding {
@@ -521,11 +500,11 @@ fn contract_steps_of(fk: &FrameworkKnowledge) -> Vec<NormalizeStep> {
     vec![NormalizeStep::LeadingSlash]
 }
 
-/// 按**文件**选择解析器：优先用扩展名判定语言，取不到时回退到子工程语言。
+/// Choose the parser **per file**: prefer the extension to determine language, fall back to the sub-project language when not obtainable.
 ///
-/// 装载器处理的是具体文件（`config/database.php`、`app/event.php`、`lang/zh-cn/*.php`），
-/// 语言应由文件本身决定。写死成某一种语言会让新增语言后所有装载器**静默失效**
-/// （不报错、只是什么都不装载）—— 这是「内核不认识具体语言」在 P3 的落点。
+/// Loaders process concrete files (`config/database.php`, `app/event.php`, `lang/zh-cn/*.php`),
+/// the language should be decided by the file itself. Hard-coding one language would silently break all loaders when a new language is added
+/// (no error, just load nothing) — this is where "kernel knows no concrete language" lands in P3.
 fn parser_for_file<'a>(
     parsers: &'a dyn ParserRegistry,
     fallback_sub: Option<&gt_domain::model::SubProject>,
@@ -611,8 +590,8 @@ fn run_loader(
         }
         gt_domain::model::LoaderSource::Inline { rows } => {
             for row in rows {
-                // 键字段名按表而定：`facade_map` 用 `facade`、通用表用 `key`、
-                // 类清单表（如 `middleware_classes`）用 `class` —— 都是 FKB 说了算。
+                // The key field name depends on the table: `facade_map` uses `facade`, generic tables use `key`,
+                // class-list tables (e.g. `middleware_classes`) use `class` — all up to FKB.
                 let key = row
                     .get("facade")
                     .or_else(|| row.get("key"))
@@ -695,7 +674,7 @@ fn load_i18n(
     }
 }
 
-// ---------------------------------------------------------------- 内置装载器
+// ---------------------------------------------------------------- built-in loaders
 
 fn run_builtin(
     ctx: &mut PipelineContext,
@@ -712,12 +691,12 @@ fn run_builtin(
         "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
         "php_migration_schema" => load_migration_schema(ctx, params, project_root),
         "php_config_keys" => load_config_keys(ctx, params, sub),
-        // 通用别名装载器：文件 / 块标记 / 分隔符全由 FKB `params` 声明，不绑定任何语言。
+        // Generic alias loader: file / block marker / separator all declared by FKB `params`, bound to no language.
         "middleware_aliases" => load_middleware_aliases(ctx, project_root, params),
-        // 通用声明式中间件装载器：文件名 / 键 / 作用域全由 FKB `params` 声明，
-        // 把声明类名单合并进 `route_list` 的 `guards`，由 P14 统一晋升节点 + 连边。
+        // Generic declarative-middleware loader: file name / key / scope all declared by FKB `params`,
+        // merge the declared class list into `route_list`'s `guards`, nodes + edges unified by P14.
         "declared_middleware" => load_declared_middleware(ctx, project_root, params),
-        // 通用路由守卫装载器：识别逻辑完全来自 FKB 的 `route_guards` 声明，不再写死任何框架。
+        // Generic route-guard loader: recognition logic comes entirely from FKB's `route_guards` declaration, no framework hard-coded.
         "routes" => {
             if let Some(spec) = fk.route_guards.as_ref() {
                 load_routes(ctx, spec, sub, contract_steps);
@@ -735,8 +714,8 @@ fn load_schema(
     project_root: &Path,
     _phase: &Phase,
 ) {
-    // 表前缀以工程探测到的为准（P3 从 config/database.php 自动读出并写入
-    // `workspace.table_prefixes`）；YAML 仍可经 `params.prefixes` 追加额外前缀。
+    // Table prefix follows what the project detected (P3 auto-reads from config/database.php and writes to
+        // `workspace.table_prefixes`); YAML can still append extra prefixes via `params.prefixes`.
     let mut prefixes: Vec<String> = ctx.ws.table_prefixes().to_vec();
     if let Some(extra) = params
         .get("prefixes")
@@ -749,7 +728,7 @@ fn load_schema(
         }
     }
 
-    // ① 从 SQL 安装脚本解析表结构
+    // ① Parse table structure from the SQL install script
     for (path, text) in scan_text_files(project_root, &["sql"]) {
         for (table, columns) in parse_create_tables(&text) {
             let name = strip_prefixes(&table, &prefixes);
@@ -757,9 +736,6 @@ fn load_schema(
         }
     }
 
-    // ② 从代码中的 Db::name('x') 收集表名（只收集最小的必要集合，避免整体克隆）
-    // 表名识别的 receiver / method 由 FKB `params` 声明（缺省覆盖 ThinkPHP 的
-    // `Db::name` / `Model` 与 Laravel 的 `DB::table` / `Query` / `Model`）。
     let table_receivers: Vec<String> = params
         .get("table_receivers")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
@@ -770,8 +746,8 @@ fn load_schema(
         .unwrap_or_else(|| vec!["name".into(), "table".into()]);
     let mut found: Vec<(String, String)> = Vec::new();
     for call in ctx.ws.calls.iter() {
-        // 只有 DB 语义的 name()/table() 才算表名：
-        // `Route::name('xxx')` 是路由命名，不能当表。
+        // Only name()/table() with DB semantics count as table names:
+        // `Route::name('xxx')` is route naming, can't be a table.
         let is_db_receiver = call
             .receiver
             .as_deref()
@@ -816,12 +792,12 @@ fn load_schema(
     }
 }
 
-/// Laravel migration：`Schema::create('users', function (Blueprint $table) { … })`。
+/// Laravel migration: `Schema::create('users', function (Blueprint $table) { … })`.
 ///
-/// 为什么必须有它：PHP ORM 的模型**不声明字段**，列只写在 migration 里；而
-/// `$table->string('email')` 位于闭包内、调用点 owner 是闭包而非模型类，
-/// FKB 拿不到"这一列属于哪张表"（这是 PHP 与 TypeORM `@Column` 的关键差别）。
-/// 故由装载器直接把列写进 `schema` 符号表，P6 再沉淀成 `Column` 图节点。
+/// Why it must exist: PHP ORM models **don't declare fields**; columns are only written in migrations; and
+/// `$table->string('email')` is inside a closure, the call site owner is the closure not the model class,
+/// so FKB can't get "which table this column belongs to" (this is the key difference from TypeORM `@Column`).
+/// Hence the loader writes columns straight into the `schema` symbol table, and P6 settles them into `Column` graph nodes.
 fn load_migration_schema(ctx: &mut PipelineContext, params: &Value, project_root: &Path) {
     let mut prefixes: Vec<String> = ctx.ws.table_prefixes().to_vec();
     if let Some(extra) = params
@@ -834,7 +810,7 @@ fn load_migration_schema(ctx: &mut PipelineContext, params: &Value, project_root
             }
         }
     }
-    // migration 文件路径片段与扩展名由 FKB `params` 声明（缺省 Laravel/ThinkPHP 通用形态）。
+    // migration file path fragment and extension declared by FKB `params` (default Laravel/ThinkPHP common shape).
     let paths: Vec<String> = params
         .get("paths")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
@@ -851,8 +827,8 @@ fn load_migration_schema(ctx: &mut PipelineContext, params: &Value, project_root
     }
 }
 
-/// 扫描 migration 文件（路径片段 + 扩展名由 FKB `params` 声明，缺省 `database/migrations` + `php`）。
-/// 跳过依赖目录（通用，不绑定框架）。
+/// Scan migration files (path fragment + extension declared by FKB `params`, default `database/migrations` + `php`).
+/// Skip dependency dirs (generic, framework-independent).
 fn scan_migration_files(root: &Path, paths: &[String], exts: &[String]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut walker = walkdir::WalkDir::new(root).follow_links(false).into_iter();
@@ -891,7 +867,7 @@ fn scan_migration_files(root: &Path, paths: &[String], exts: &[String]) -> Vec<(
     out
 }
 
-/// 解析 migration 的 `Schema::create` / `Schema::table`，取出「表名 → 列名」。
+/// Parse migration's `Schema::create` / `Schema::table`, extract "table name → column names".
 fn parse_migration_tables(src: &str) -> Vec<(String, Vec<String>)> {
     let Ok(re) = regex::Regex::new(
         r#"Schema\s*::\s*(?:create|table)\s*\(\s*['"]([\w]+)['"]"#,
@@ -902,7 +878,7 @@ fn parse_migration_tables(src: &str) -> Vec<(String, Vec<String>)> {
     for cap in re.captures_iter(src) {
         let Some(m0) = cap.get(0) else { continue };
         let table = cap[1].to_string();
-        // 配对 `Schema::create(` 的右括号（跳过字符串里的括号），取出整个调用块
+        // Pair the `(` of `Schema::create(` with its `)` (skip parentheses inside strings), take the whole call block
         let Some(rel) = m0.as_str().find('(') else { continue };
         let open = m0.start() + rel;
         let Some(close) = matching_paren(src, open) else { continue };
@@ -914,11 +890,11 @@ fn parse_migration_tables(src: &str) -> Vec<(String, Vec<String>)> {
     out
 }
 
-/// 取 Blueprint 闭包体里的列声明：`$table->string('email')` → `email`。
+/// Take column declarations in the Blueprint closure body: `$table->string('email')` → `email`.
 ///
-/// **只认列声明方法（白名单）** —— 不能简单"取第一个字符串实参"：
-/// `->comment('说明')` / `->after('col')` / `->default('x')` 这类**修饰符**也带
-/// 字符串实参，会被误当成列名。
+/// **Only recognize column-declaration methods (whitelist)** — can't simply "take the first string arg":
+/// `->comment('说明')` / `->after('col')` / `->default('x')` modifiers also carry
+/// string args, would be mistaken as column names.
 fn columns_of_blueprint(body: &str) -> Vec<String> {
     let b = body.as_bytes();
     let mut cols: Vec<String> = Vec::new();
@@ -938,7 +914,7 @@ fn columns_of_blueprint(body: &str) -> Vec<String> {
             p += 1;
         }
         let method = &body[ms..p];
-        // 跳到实参列表的左括号
+        // Jump to the arg list's left paren
         while p < b.len() && b[p] != b'(' && b[p] != b';' && b[p] != b'{' {
             p += 1;
         }
@@ -956,7 +932,7 @@ fn columns_of_blueprint(body: &str) -> Vec<String> {
                 push_col(&mut cols, &col);
             }
         } else if q < b.len() && b[q] == b')' {
-            // 无实参的列声明（`$table->id()` / `->timestamps()`）：按 Laravel 约定补列名
+            // Column declarations with no args (`$table->id()` / `->timestamps()`): fill column name by Laravel convention
             for c in implicit_columns(method) {
                 push_col(&mut cols, c);
             }
@@ -973,7 +949,7 @@ fn skip_ws(b: &[u8], mut i: usize) -> usize {
     i
 }
 
-/// 读 `i` 处的字符串字面量内容（不含引号）。
+/// Read the string-literal content at `i` (without quotes).
 fn read_quoted(b: &[u8], i: usize) -> Option<String> {
     let quote = *b.get(i)?;
     if quote != b'\'' && quote != b'"' {
@@ -998,7 +974,7 @@ fn push_col(cols: &mut Vec<String>, c: &str) {
     }
 }
 
-/// Blueprint 里**真正声明列**的方法（白名单，见 [`columns_of_blueprint`]）。
+/// Methods in Blueprint that **really declare columns** (whitelist, see [`columns_of_blueprint`]).
 fn is_column_method(m: &str) -> bool {
     matches!(
         m,
@@ -1011,17 +987,17 @@ fn is_column_method(m: &str) -> bool {
         | "tinyText" | "unsignedBigInteger" | "unsignedDecimal" | "unsignedDouble"
         | "unsignedFloat" | "unsignedInteger" | "unsignedMediumInteger" | "unsignedSmallInteger"
         | "unsignedTinyInteger" | "ulid" | "uuid" | "year"
-        // 无实参、按约定补列名的方法
+        // Methods with no args, fill column name by convention
         | "rememberToken" | "softDeletes" | "softDeletesTz" | "timestamps" | "timestampsTz"
         | "nullableTimestamps" | "morphs" | "nullableMorphs" | "nullableUuidMorphs"
         | "nullableUlidMorphs"
     )
 }
 
-/// 无实参列声明的**隐含列名**（Laravel 约定）。
+/// **Implicit column names** for argument-less column declarations (Laravel convention).
 ///
-/// 刻意不含裸 `uuid()` / `ulid()`：它们默认列名就叫 `uuid` / `ulid`，
-/// 但代码里更常见的是 `$table->uuid('id')`（带实参已覆盖）—— 不猜。
+/// Deliberately exclude bare `uuid()` / `ulid()`: their default column name is `uuid` / `ulid`,
+        // but more commonly code writes `$table->uuid('id')` (covered by the arg form) — don't guess.
 fn implicit_columns(m: &str) -> Vec<&'static str> {
     match m {
         "id" | "increments" | "bigIncrements" | "mediumIncrements" | "smallIncrements"
@@ -1033,7 +1009,7 @@ fn implicit_columns(m: &str) -> Vec<&'static str> {
     }
 }
 
-/// 找到与 `open` 处 `(` 配对的 `)`（跳过字符串字面量内的括号）。
+/// Find the `)` pairing the `(` at `open` (skip parentheses inside string literals).
 fn matching_paren(src: &str, open: usize) -> Option<usize> {
     let b = src.as_bytes();
     if open >= b.len() || b[open] != b'(' {
@@ -1067,11 +1043,11 @@ fn matching_paren(src: &str, open: usize) -> Option<usize> {
     None
 }
 
-/// 把一批列并入 `schema` 符号表（**并集去重**，不整份覆盖）。
+/// Merge a batch of columns into the `schema` symbol table (**union dedup**, not full overwrite).
 ///
-/// 同一张表可能有两个来源：SQL 安装脚本与 Laravel migration。两个装载器都写 `schema`，
-/// 若各自 `put_symbol` 整份覆盖，后跑的会抹掉先跑的（**装载顺序不保证**）——
-/// 故统一走这里做并集。
+/// The same table may have two sources: the SQL install script and the Laravel migration. Both loaders write `schema`,
+/// if each `put_symbol` overwrote fully, the later one would wipe the earlier (***load order not guaranteed***) —
+/// so unify through here for a union.
 fn merge_schema_columns(
     ctx: &mut PipelineContext,
     table: &str,
@@ -1110,10 +1086,6 @@ fn merge_schema_columns(
 }
 
 fn load_config_keys(ctx: &mut PipelineContext, params: &Value, _sub: &gt_domain::model::SubProject) {
-    // 配置访问器全部由 FKB `params` 声明（不同框架写法不同：
-    // ThinkPHP 用 `sys_config` / `config`，Laravel 用 `config` / `env`）。
-    // `accessors` 为精确 callee（大小写不敏感），`suffixes` 为后缀匹配
-    // （如 `::get` 覆盖任意 `Xxx::get`）。缺省沿用当前跨框架通用写法。
     let accessors: Vec<String> = params
         .get("accessors")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
@@ -1163,11 +1135,11 @@ fn load_config_keys(ctx: &mut PipelineContext, params: &Value, _sub: &gt_domain:
     }
 }
 
-/// 归一化类名：把连续的反斜杠收成一个、去掉首尾空段。
+/// Normalize a class name: collapse consecutive backslashes into one, drop empty leading/trailing segments.
 ///
-/// 别名表 / 路由守卫里的类名经过 JSON 与文本扫描的多轮转义，可能出现
-/// `Illuminate\\Session\\Middleware\\X`（多个反斜杠）。比对前先归一，
-/// 否则 FKB 声明的已知中间件永远对不上（实测 laravel10 整表落空）。
+/// Class names in alias tables / route guards go through multiple rounds of JSON and text scanning escapes, possibly yielding
+/// `Illuminate\\Session\\Middleware\\X` (multiple backslashes). Normalize before comparing,
+/// otherwise FKB-declared known middleware never matches (measured: laravel10 whole table empty).
 pub fn norm_class(s: &str) -> String {
     s.split('\\')
         .filter(|p| !p.is_empty())
@@ -1175,12 +1147,12 @@ pub fn norm_class(s: &str) -> String {
         .join("\\")
 }
 
-/// 把 `callee`（可能带命名空间 `org.x.Y` / `x\Y`）折成短名，便于与声明里的装饰器 / 注解名比对。
+/// Fold `callee` (possibly namespaced `org.x.Y` / `x\Y`) into a short name, for comparing with decorator / annotation names in declarations.
 fn short_callee(callee: &str) -> &str {
     callee.rsplit(['\\', '.']).next().unwrap_or(callee)
 }
 
-/// 一个调用的 `receiver` 是否匹配某条 `route_calls` 模式的 `receiver` 字段。
+/// Whether a call's `receiver` matches the `receiver` field of some `route_calls` pattern.
 fn receiver_matches(rc: &RouteCallSpec, recv: &str) -> bool {
     let lower = recv.to_ascii_lowercase();
     let target = rc.receiver.to_ascii_lowercase();
@@ -1191,21 +1163,17 @@ fn receiver_matches(rc: &RouteCallSpec, recv: &str) -> bool {
     }
 }
 
-/// 取一个实参的「中间件名」。
+/// Take a call arg's "middleware name".
 ///
-/// 只认**字面量**（`String` / `ClassConst`）——PHP 的中间件恒为 `X::class`。
-/// 标识符（`Unknown(Some(name))`，即 JS / Python 的函数引用）**仅当 FKB 显式声明
-/// `accept_identifier`** 才收：PHP 的动态实参 `->middleware($v)` 若被收进来就是编造。
+/// Only recognize **literals** (`String` / `ClassConst`) — PHP middleware is always `X::class`.
+/// Identifiers (`Unknown(Some(name))`, i.e. JS / Python function references) are collected **only when FKB explicitly declares `accept_identifier`**:
+/// PHP's dynamic arg `->middleware($v)` if collected would be fabrication.
 fn guard_arg_name(v: &FactValue, accept_identifier: bool) -> Option<String> {
     match v {
         FactValue::String(s) | FactValue::ClassConst(s) if !s.trim().is_empty() => {
             Some(s.trim().to_string())
         }
         FactValue::Unknown(Some(name)) if accept_identifier => {
-            // JS / Python 的中间件实参可能是**整条调用表达式**
-            // （`lusca({ csrf: true })`、`passport.authenticate('google', {...})`）。
-            // 取调用名（`(` 之前的部分）作为中间件名：既可读，也让同一中间件的不同
-            // 实参写法自然汇聚成一个节点，而不是每种策略一个。
             let base = name.split('(').next().unwrap_or(name).trim().to_string();
             if base.is_empty() {
                 None
@@ -1217,7 +1185,7 @@ fn guard_arg_name(v: &FactValue, accept_identifier: bool) -> Option<String> {
     }
 }
 
-/// 判断一个调用点是否「路由定义」，命中则返回 `(verb, path, handler)`。
+/// Judge whether a call site is a "route definition"; on hit return `(verb, path, handler)`.
 fn match_route_call(call: &CallRecord, rc: &RouteCallSpec) -> Option<(String, String, Option<String>)> {
     let verb = match rc.by {
         RouteMatchBy::Receiver => {
@@ -1250,16 +1218,15 @@ fn match_route_call(call: &CallRecord, rc: &RouteCallSpec) -> Option<(String, St
     Some((verb, path, handler))
 }
 
-/// 收集「哪些中间件守着哪一段路由」——**完全按 FKB `route_guards` 声明识别**，
-/// 不再写死任何框架的 receiver / 方法名 / 动词表。
+/// Collect "which middleware guards which route segment" — **recognized entirely by FKB `route_guards` declaration**,
+/// no framework's receiver / method name / verb table hard-coded.
 ///
-/// 三种挂载模型：
-/// * `chain`：`Route::get(path)->middleware(X[, arg])`（ThinkPHP / Laravel）；
-/// * `positional`：`app.get(path, mw1, mw2, handler)`（Express / Koa）；
-/// * `decorator`：`@UseGuards(X)` / `@login_required` / `@PreAuthorize` 落在与被修饰
-///   路由**同一方法**上，按 `owner_fqn` 关联（NestJS / Python / Spring）。
+/// Three mount models:
+/// * `chain`: `Route::get(path)->middleware(X[, arg])` (ThinkPHP / Laravel);
+/// * `positional`: `app.get(path, mw1, mw2, handler)` (Express / Koa);
+/// * `decorator`: `@UseGuards(X)` / `@login_required` / `@PreAuthorize` lands on the **same method** as the decorated route, associated by `owner_fqn` (NestJS / Python / Spring).
 fn collect_route_guards(spec: &RouteGuardSpec, calls: &[CallRecord]) -> Vec<RouteGuardScope> {
-    // 可声明**多个**挂载模型（同一框架常有几种写法），结果取并集。
+    // Multiple mount models may be declared (one framework often has several styles); results take the union.
     let mut out = Vec::new();
     for attach in spec.guard_attach.specs() {
         let mut scopes = match attach {
@@ -1273,13 +1240,12 @@ fn collect_route_guards(spec: &RouteGuardSpec, calls: &[CallRecord]) -> Vec<Rout
     out
 }
 
-/// 链式守卫：`Route::get(path)->middleware(X[, arg])`。
+/// Chained guard: `Route::get(path)->middleware(X[, arg])`.
 ///
-/// 难点在**链式调用**：`Route::group('pc', fn)->middleware(A::class)` 在图上落成一串调用点，
-/// 根节点（`group`）与每个 `->middleware()` **共享同一个 `start_byte`**
-/// （`member_call_expression` 从根那一段源码开始）。按 `(file, start_byte)` 配对即可把
-/// 中间件挂回它真正修饰的那段区间；链上候选里**优先取 `group` 调用**（它才包住闭包区间），
-/// 其余取 `end_byte` 最小者作为根。
+/// The difficulty is the **chained call**: `Route::group('pc', fn)->middleware(A::class)` lands as a string of call sites on the graph,
+/// the root node (`group`) and each `->middleware()` **share the same `start_byte`**
+/// (`member_call_expression` starts from the root source segment). Pair by `(file, start_byte)` to hang the middleware back onto the segment it really decorates;
+/// among chain candidates **prefer the `group` call** (only it wraps the closure range), else take the one with smallest `end_byte` as root.
 fn extract_chain_guards(
     spec: &RouteGuardSpec,
     chain: &gt_domain::model::ChainGuardSpec,
@@ -1304,7 +1270,7 @@ fn extract_chain_guards(
             .unwrap_or(false)
     };
 
-    // ① 每条链的根：`(file, start_byte)` → 根调用。优先 `group`，否则 `end_byte` 最小者。
+    // ① each chain's root: `(file, start_byte)` → root call. Prefer `group`, else smallest `end_byte`.
     let mut roots: HashMap<(String, u32), &CallRecord> = HashMap::new();
     for call in calls {
         if !is_route_receiver(call) {
@@ -1329,13 +1295,13 @@ fn extract_chain_guards(
         }
     }
 
-    // ② 把每个 `->middleware(X[, arg])` 归并到它的根。实参可单值可数组。
+    // ② merge each `->middleware(X[, arg])` into its root. Arg may be single value or array.
     let mut scopes: HashMap<(String, u32), RouteGuardScope> = HashMap::new();
     for call in calls {
         if call.method.as_deref() != Some(chain.method.as_str()) || !is_route_receiver(call) {
             continue;
         }
-        // `accept_identifier` 由**命中的那条 route_calls 模式**给出（同框架的其它模式可能不同）。
+        // `accept_identifier` comes from **the matched route_calls pattern** (other patterns of the same framework may differ).
         let accept_identifier = spec
             .route_calls
             .iter()
@@ -1382,8 +1348,8 @@ fn extract_chain_guards(
     out
 }
 
-/// 位置参数守卫：`app.get(path, mw1, mw2, handler)`——`path_arg` 之后到 `handler_arg`
-/// （不含）之间的实参都是中间件；`handler_arg` 缺省时把**最后一个**实参当 handler 丢弃。
+/// Positional-arg guard: `app.get(path, mw1, mw2, handler)` — args between `path_arg` and `handler_arg`
+/// (exclusive) are all middleware; when `handler_arg` is absent, treat the **last** arg as handler and drop it.
 fn extract_positional_guards(spec: &RouteGuardSpec, calls: &[CallRecord]) -> Vec<RouteGuardScope> {
     let mut scopes: HashMap<(String, u32), RouteGuardScope> = HashMap::new();
     for call in calls {
@@ -1396,7 +1362,7 @@ fn extract_positional_guards(spec: &RouteGuardSpec, calls: &[CallRecord]) -> Vec
         if start >= call.args.len() {
             continue;
         }
-        // 有 handler_arg 时取 [start, handler_arg)，否则取 [start, len-1)（丢最后一个当 handler）。
+        // With handler_arg take [start, handler_arg), else [start, len-1) (drop the last as handler).
         let end = if rc.handler_arg.is_some() {
             rc.handler_arg.unwrap()
         } else {
@@ -1435,22 +1401,22 @@ fn extract_positional_guards(spec: &RouteGuardSpec, calls: &[CallRecord]) -> Vec
     out
 }
 
-/// 消费者式挂载（NestJS `MiddlewareConsumer`）：
+/// Consumer-style mount (NestJS `MiddlewareConsumer`):
 /// ```ts
 /// // user.module.ts
 /// consumer.apply(AuthMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
 /// ```
-/// 中间件在**模块**里声明，作用在**控制器**文件的路由上 —— 两者既不同 owner、
-/// 也没有 handler 实参可循，故：
-/// * 挂载点：`receiver == consumer` 且 `method == apply` 的调用，守卫名取自实参；
-/// * 作用范围：同一条链上 `forRoutes` 的实参。显式路径按路径匹配；命中通配时按
-///   FKB 声明的 [`gt_domain::model::ConsumerScope`] 展开（默认"与模块同目录"）。
+/// The middleware is declared in the **module**, acting on routes in the **controller** file — neither same owner nor
+/// any handler arg to follow, hence:
+/// * mount point: a call with `receiver == consumer` and `method == apply`, guard name from the arg;
+/// * scope: the `forRoutes` arg on the same chain. Explicit path matches by path; on wildcard hit, expand by
+///   the `ConsumerScope` declared in FKB (default "same dir as module").
 fn extract_consumer_guards(
     spec: &RouteGuardSpec,
     cg: &gt_domain::model::ConsumerGuardSpec,
     calls: &[CallRecord],
 ) -> Vec<RouteGuardScope> {
-    // 路由定义调用（@Get/@Post…），附带解析出的 (动词, 路径)，供下方按路径 + 动词匹配。
+    // Route-definition calls (@Get/@Post...), with parsed (verb, path) attached, for matching by path + verb below.
     let route_entries: Vec<(&CallRecord, String, String)> = calls
         .iter()
         .filter_map(|c| {
@@ -1474,7 +1440,7 @@ fn extract_consumer_guards(
         if !is_consumer(call) || call.method.as_deref() != Some(cg.apply_method.as_str()) {
             continue;
         }
-        // 守卫名：`apply(X)` / `apply(A, B)` —— 与位置参数写法同款取值。
+        // Guard name: `apply(X)` / `apply(A, B)` — same value form as the positional-arg style.
         let mut guards: Vec<RouteGuard> = Vec::new();
         for a in &call.args {
             if let Some(name) = guard_arg_name(a, true) {
@@ -1484,13 +1450,6 @@ fn extract_consumer_guards(
         if guards.is_empty() {
             continue;
         }
-        // 同一条链（同 file + start_byte）上的 `forRoutes(...)` 决定作用范围。
-        // 实参可以是：
-        //   * 字符串：`forRoutes('user')` —— 只给路径，动词不限；
-        //   * 对象字面量：`forRoutes({ path: 'user', method: RequestMethod.GET })` —— 解析出路径与动词；
-        //   * 通配：`forRoutes('*')` —— 按 `scope` 展开（默认"与模块同目录"）。
-        // 解析器把对象字面量落成 `FactValue::Array` 的 (key, value) 序列，
-        // 故这里也认 `Array`（实测 NestJS realworld 全用的对象字面量写法）。
         let targets: Vec<(String, Option<String>)> = calls
             .iter()
             .filter(|c| {
@@ -1528,9 +1487,6 @@ fn extract_consumer_guards(
                 }
             }
         } else {
-            // 显式路径：按 (路径前缀 + 动词) 匹配。
-            // `forRoutes({path:'articles', method:POST})` 只覆盖 POST 版，
-            // 不会误挂到同路径的 GET 路由（动词维度由 `RequestMethod.*` 还原）。
             route_entries
                 .iter()
                 .filter(|(_, verb, path)| {
@@ -1561,12 +1517,12 @@ fn extract_consumer_guards(
     out
 }
 
-/// 解析 `forRoutes` 的一个实参，取出 `(路径, 动词)`。
+/// Parse one `forRoutes` arg, extract `(path, verb)`.
 ///
-/// * 字符串实参：`forRoutes('user')` → `("user", None)`（动词不限）；
-/// * 对象字面量：`forRoutes({ path: 'user', method: RequestMethod.GET })` →
-///   `("user", Some("GET"))`；`RequestMethod.ALL` 视为动词不限（`None`）；
-/// * 其余（`Unknown` 文本）尽力按 `path: '...'` 形式抽取，抽不到则返回 `None`。
+/// * string arg: `forRoutes('user')` → `("user", None)` (verb unrestricted);
+/// * object literal: `forRoutes({ path: 'user', method: RequestMethod.GET })` →
+///   `("user", Some("GET"))`; `RequestMethod.ALL` treated as verb unrestricted (`None`);
+/// * others (`Unknown` text) try to extract by `path: '...'` form; if not, return `None`.
 fn parse_for_route_target(a: &FactValue) -> Option<(String, Option<String>)> {
     match a {
         FactValue::String(s) => Some((s.trim().to_string(), None)),
@@ -1583,7 +1539,7 @@ fn parse_for_route_target(a: &FactValue) -> Option<(String, Option<String>)> {
             path.map(|p| (p, verb))
         }
         FactValue::Unknown(Some(n)) if n.contains("path") => {
-            // 兜底：从 `{path: 'x'}` 形式的文本里抽路径（不引入正则依赖）。
+            // Fallback: extract path from `{path: 'x'}` form text (no regex dependency).
             let after = n.split_once("path")?.1;
             let quote = after.find('\'').or_else(|| after.find('"'))?;
             let rest = &after[quote + 1..];
@@ -1599,9 +1555,9 @@ fn parse_for_route_target(a: &FactValue) -> Option<(String, Option<String>)> {
     }
 }
 
-/// 把 `RequestMethod.GET` / `'GET'` / `ALL` 这类写法归一成 HTTP 动词（`GET`/`POST`…）。
+/// Normalize `RequestMethod.GET` / `'GET'` / `ALL` into an HTTP verb (`GET`/`POST`...).
 ///
-/// 返回 `None` 表示"不限动词"（`RequestMethod.ALL` / 空），由调用方按路径维度匹配。
+/// Return `None` means "verb unrestricted" (`RequestMethod.ALL` / empty), the caller matches by path dimension.
 fn request_method_verb(v: &FactValue) -> Option<String> {
     let s = match v {
         FactValue::String(s) | FactValue::Unknown(Some(s)) => s.clone(),
@@ -1614,21 +1570,21 @@ fn request_method_verb(v: &FactValue) -> Option<String> {
     Some(last)
 }
 
-/// 装饰器 / 注解守卫：`@UseGuards(X)` / `@login_required` / `@PreAuthorize` 落在与被修饰
-/// 路由**同一方法**上（parser 已把装饰器捕捉成调用、以被修饰方法的 `owner_fqn` 作为 owner），
-/// 故按 `owner_fqn` 关联：某 owner 上的所有守卫装饰器，挂到该 owner 上的每条路由装饰器。
+/// Decorator / annotation guard: `@UseGuards(X)` / `@login_required` / `@PreAuthorize` lands on the **same method** as the decorated route
+/// (the parser already captures decorators as calls, with the decorated method's `owner_fqn` as owner),
+/// so associate by `owner_fqn`: all guard decorators on an owner hang onto each route decorator on that owner.
 ///
-/// 「哪些调用算路由定义」两条路都认，覆盖两种框架形态：
-/// * `route_decorators` 名单（按 callee）—— NestJS 的 `@Get`、Spring 的 `@GetMapping`；
-/// * `route_calls` 模式（按 receiver + 动词，返回非空即算）—— Python 的
-///   `app.route(...)` / `router.get(...)` 这类"装饰器写法但实际是普通调用"的路由，
-///   守卫却挂在同一函数的另一个装饰器上，故守卫仍按 owner 关联。
+/// "Which calls count as route definitions" is recognized both ways, covering two framework shapes:
+/// * `route_decorators` list (by callee) — NestJS's `@Get`, Spring's `@GetMapping`;
+/// * `route_calls` pattern (by receiver + verb, non-empty return counts) — Python's
+///   `app.route(...)` / `router.get(...)` "decorator style but actually plain calls" routes,
+///   whose guard hangs on another decorator of the same function, so the guard still associates by owner.
 fn extract_decorator_guards(
     spec: &RouteGuardSpec,
     d: &gt_domain::model::DecoratorGuardSpec,
     calls: &[CallRecord],
 ) -> Vec<RouteGuardScope> {
-    // 形态约束：只认"看起来像装饰器"的调用点，避免把普通方法调用当成守卫。
+    // Shape constraint: only recognize calls "that look like decorators", to avoid treating plain method calls as guards.
     let shape_ok = |c: &CallRecord| -> bool {
         if d.require_at_prefix && !c.callee.starts_with('@') {
             return false;
@@ -1638,8 +1594,8 @@ fn extract_decorator_guards(
         }
         true
     };
-    // 只把 `@` 前缀约束作用于路由（TS 装饰器都有 `@`）；`require_no_receiver`
-    // **不能**用于路由 —— Python 的路由是 `app.route(...)`，本来就有接收者。
+    // Only apply the `@` prefix constraint to routes (TS decorators all have `@`); `require_no_receiver`
+    // **can't** be used for routes — Python's routes are `app.route(...)`, which have a receiver.
     let route_shape_ok = |c: &CallRecord| -> bool {
         !d.require_at_prefix || c.callee.starts_with('@')
     };
@@ -1652,14 +1608,14 @@ fn extract_decorator_guards(
                 .any(|x| short_callee(&c.callee).eq_ignore_ascii_case(x))
                 || spec.route_calls.iter().any(|rc| match_route_call(c, rc).is_some()))
     };
-    // 守卫名正则（FKB 声明）：JS / Python 的守卫常是项目自写的装饰器，穷举名字不现实，
-    // 故按"什么样的名字算守卫"匹配。编译一次复用；非法正则跳过（不因此崩掉整条装载）。
+    // Guard-name regex (declared by FKB): JS / Python guards are often project-written decorators, enumerating names is unrealistic,
+    // so match by "what kind of name counts as a guard". Compile once and reuse; skip invalid regex (don't crash the whole load over it).
     let patterns: Vec<regex::Regex> = d
         .guard_name_patterns
         .iter()
         .filter_map(|p| regex::Regex::new(&format!("(?i){}", p)).ok())
         .collect();
-    // 排除模式（deny）**优先于**包含模式：宁可漏，不可把文档装饰器当成鉴权守卫。
+    // Exclude pattern (deny) takes **precedence over** include pattern: better to miss than treat a doc decorator as an auth guard.
     let excludes: Vec<regex::Regex> = d
         .guard_exclude_patterns
         .iter()
@@ -1669,8 +1625,8 @@ fn extract_decorator_guards(
         if c.owner_fqn.is_empty() {
             return false;
         }
-        // 形态约束：必须是"看起来像装饰器 / 注解"的调用点，
-        // 否则 `this.userService.generateJWT(...)` 这类普通业务方法会被当成守卫。
+        // Shape constraint: must be a call "that looks like a decorator / annotation",
+        // otherwise plain business methods like `this.userService.generateJWT(...)` would be treated as guards.
         if !shape_ok(c) {
             return false;
         }
@@ -1683,19 +1639,19 @@ fn extract_decorator_guards(
             .any(|x| name.eq_ignore_ascii_case(x))
             || patterns.iter().any(|re| re.is_match(name))
     };
-    // 一个守卫装饰器 → 它的守卫名（可能多个：数组形式 `@UseGuards(A, B)`）。
+    // One guard decorator → its guard name (may be several: array form `@UseGuards(A, B)`).
     let guards_of = |c: &CallRecord| -> Vec<RouteGuard> {
         let decorator_name = || RouteGuard {
             class: short_callee(&c.callee).to_string(),
             arg: None,
         };
-        // Spring 的 `@PreAuthorize("hasRole('ADMIN')")`：实参是 SpEL 表达式，
-        // 真正的守卫是注解本身 —— 由 `name_from_args: false` 声明。
+        // Spring's `@PreAuthorize("hasRole('ADMIN')")`: the arg is a SpEL expression,
+        // the real guard is the annotation itself — declared by `name_from_args: false`.
         if !d.name_from_args {
             return vec![decorator_name()];
         }
-        // 排除模式同样作用于**推导出来的守卫名**：实参里可能是局部变量
-        // （实测 `_user` 被当成中间件），deny 优先。
+        // Exclude pattern also applies to **derived guard names**: the arg may be a local var
+        // (measured `_user` treated as middleware), deny first.
         let keep = |name: &str| !excludes.iter().any(|re| re.is_match(name));
         let from_args: Vec<RouteGuard> = c
             .args
@@ -1705,7 +1661,7 @@ fn extract_decorator_guards(
                     Some(s.trim().to_string())
                 }
                 FactValue::Unknown(Some(n)) => {
-                    // 标识符实参：取调用名（`(` 之前），如 `AuthGuard('jwt')` → `AuthGuard`
+                    // Identifier arg: take the call name (before `(`), e.g. `AuthGuard('jwt')` → `AuthGuard`
                     let base = n.split('(').next().unwrap_or(n).trim().to_string();
                     if base.is_empty() { None } else { Some(base) }
                 }
@@ -1714,7 +1670,7 @@ fn extract_decorator_guards(
             .filter(|n| keep(n))
             .map(|n| RouteGuard { class: n, arg: None })
             .collect();
-        // 无参装饰器（`@login_required`）：装饰器名本身就是守卫。
+        // Arg-less decorator (`@login_required`): the decorator name itself is the guard.
         if from_args.is_empty() {
             let name = decorator_name();
             if keep(&name.class) { vec![name] } else { vec![] }
@@ -1731,20 +1687,12 @@ fn extract_decorator_guards(
 
     let mut out = Vec::new();
     for rc in route_calls {
-        // 守卫来源①：**同一方法 / 函数**（owner_fqn 相同）
+        // Guard source ①: **same method / function** (same owner_fqn)
         let mut guards: Vec<RouteGuard> = guard_calls
             .iter()
             .filter(|g| g.owner_fqn == rc.owner_fqn)
             .flat_map(|g| guards_of(g))
             .collect();
-        // 守卫来源②：**类级**装饰器 / 注解（打在类上，作用于该类所有路由方法）。
-        //
-        // 两个候选类名都要试：
-        //   * `owner_class`（解析器透传的类 FQN）—— 有就最准；
-        //   * 从方法 owner 推导：`CatsController.findOne` → `CatsController`、
-        //     `com.x.Ctrl.method` → `com.x.Ctrl`。TS / Java 的装饰器调用点常常
-        //     **没有**回填 `owner_class`，只靠它会漏掉类级 `@UseGuards` / `@PreAuthorize`
-        //     （实测 NestJS `@Controller` 类上的守卫整段丢失）。
         if d.include_class_level {
             let mut class_names: Vec<&str> = Vec::new();
             if let Some(cls) = rc.owner_class.as_deref() {
@@ -1769,11 +1717,11 @@ fn extract_decorator_guards(
                 }
             }
         }
-        // 守卫来源③：**按 handler 实参跨文件关联**（Django：路由在 `urls.py`、
-        // 守卫装饰在 `views.py` 的视图函数上，两者 owner 不同）。
+        // Guard source ③: **cross-file associate by handler arg** (Django: route in `urls.py`,
+        // guard decorator on the view function in `views.py`, owners differ).
         if let Some(arg_idx) = d.link_via_handler_arg {
-            // handler 可能是字面量（`path("x", "pkg.mod.view")`）也可能是**标识符**
-            // （`path("x", views.profile)` → `Unknown(Some("views.profile"))`），两种都要取。
+            // handler may be a literal (`path("x", "pkg.mod.view")`) or an **identifier**
+            // (`path("x", views.profile)` → `Unknown(Some("views.profile"))`), take both.
             let handler = rc
                 .args
                 .get(arg_idx)
@@ -1817,22 +1765,22 @@ fn extract_decorator_guards(
     out
 }
 
-/// 中间件别名表：**文件名、块标记、键值分隔符全部由 FKB 声明**（`params`）。
+/// Middleware alias table: **file name, block marker, key-value separator all declared by FKB** (`params`).
 ///
-/// 路由上写的常常是**别名**（Laravel 的 `->middleware('auth')`），真实类名在别处登记。
-/// 不还原就只知道"过了一个叫 auth 的东西"，连不上真实类节点。
+/// What's written on the route is often an **alias** (Laravel's `->middleware('auth')`); the real class name is registered elsewhere.
+/// Without restoration we only know "passed something called auth", can't connect to the real class node.
 ///
-/// # 为什么必须由 FKB 声明
+/// # Why it must be declared by FKB
 ///
-/// 这三样**全是框架 / 版本约定**，内核不该认识其中任何一个：
-/// * 文件名：Laravel 是 `app/Http/Kernel.php`，别的框架可能根本没有这个文件；
-/// * 块标记：Laravel ≤9 叫 `$routeMiddleware`，**10.x 改叫 `$middlewareAliases`**
-///   （实测 10.x 骨架就是后者 —— 硬编码前者会整表落空）；
-/// * 分隔符：PHP 是 `=>`，别的语言可能是 `:` / `=`。
+/// All three are **framework / version conventions**, the kernel shouldn't know any of them:
+/// * file name: Laravel is `app/Http/Kernel.php`, other frameworks may not have this file at all;
+/// * block marker: Laravel ≤9 is `$routeMiddleware`, **10.x renamed it `$middlewareAliases`**
+///   (measured: 10.x skeleton is the latter — hard-coding the former empties the whole table);
+/// * separator: PHP is `=>`, other languages may be `:` / `=`.
 ///
-/// 故 FKB 给 `paths` / `markers`（**可多个，逐个尝试**）/ `end` / `separator` / `extensions`，
-/// 内核只做"按声明扫描固定写法"这一件事 —— 与 `load_nginx` 同款：
-/// **宁可只认固定写法，也不引入一整套解析**。
+/// So FKB gives `paths` / `markers` (**multiple, tried one by one**) / `end` / `separator` / `extensions`,
+/// the kernel only does "scan fixed写法 by declaration" — same as `load_nginx`:
+/// **better only recognize fixed写法 than introduce a whole parser**.
 fn load_middleware_aliases(ctx: &mut PipelineContext, project_root: &Path, params: &Value) {
     let strs = |k: &str| -> Vec<String> {
         params
@@ -1862,14 +1810,11 @@ fn load_middleware_aliases(ctx: &mut PipelineContext, project_root: &Path, param
     let exts: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
 
     for (path, text) in scan_text_files(project_root, &exts) {
-        // `**/X` 与 `X` 都按"路径以此结尾"匹配。
+        // Both `**/X` and `X` match by "path ends with this".
         let hit = paths.iter().any(|p| path.ends_with(p.trim_start_matches("**/")));
         if !hit {
             continue;
         }
-        // 只取指定块：同一个文件里还有 `$middleware` / `$middlewareGroups`，
-        // 它们的键含义完全不同（`$middlewareGroups` 的 `web` / `api` 是组名不是中间件名）。
-        // markers 为空时按整份文件扫。
         let block: String = if markers.is_empty() {
             text.clone()
         } else {
@@ -1906,14 +1851,14 @@ fn load_middleware_aliases(ctx: &mut PipelineContext, project_root: &Path, param
     }
 }
 
-/// 中间件别名表的符号表名。
+/// The symbol-table name for the middleware alias table.
 const MIDDLEWARE_ALIASES: &str = "middleware_aliases";
 
-/// 把挂载实参里的**别名**还原成类名（`auth` → `App\Http\Middleware\Authenticate`）。
+/// Restore an **alias** in a mount arg to a class name (`auth` → `App\Http\Middleware\Authenticate`).
 ///
-/// 带命名空间分隔符的视为已经类名（`app\api\middleware\AuthToken` / `AuthToken::class`），
-/// 原样返回；否则查别名表。查不到时**返回原名**（`throttle:60` 这类带参数写法的别名
-/// 表里存的是 `throttle`，这里按冒号前的部分再查一次）。
+/// One with a namespace separator is treated as already a class name (`app\api\middleware\AuthToken` / `AuthToken::class`),
+/// returned as-is; otherwise look up the alias table. When not found, **return the original name** (`throttle:60`-style param-bearing aliases
+/// store `throttle` in the table, here look up again by the part before the colon).
 fn resolve_guard_class(ctx: &PipelineContext, raw: &str, alias_table: Option<&str>) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -1934,7 +1879,7 @@ fn resolve_guard_class(ctx: &PipelineContext, raw: &str, alias_table: Option<&st
     {
         return Some(entry.to_string());
     }
-    // 查不到就不编造：返回 None，由调用方跳过（宁可缺不可猜）。
+    // Don't fabricate when not found: return None, let the caller skip (better missing than guessed).
     if raw.contains('\\') {
         Some(raw.to_string())
     } else {
@@ -1942,7 +1887,7 @@ fn resolve_guard_class(ctx: &PipelineContext, raw: &str, alias_table: Option<&st
     }
 }
 
-/// 取挂载实参的可读文本（`true` / `60` / `'auth:api'`…）；不可静态求值时返回 `None`。
+/// Take a mount arg's readable text (`true` / `60` / `'auth:api'`...); return `None` when not statically evaluable.
 fn guard_arg_text(v: &FactValue) -> Option<String> {
     match v {
         FactValue::String(s) | FactValue::ClassConst(s) => Some(s.clone()),
@@ -1959,9 +1904,6 @@ fn load_routes(
     _sub: &gt_domain::model::SubProject,
     contract_steps: &[NormalizeStep],
 ) {
-    // ① 路由组前缀（仅 `chain` 模型有 `group_method`）：`Route::group('v2', fn)` 的前缀
-    // 要拼到组内每条路由路径上，否则契约 ID 会丢掉 `v2`、与真实请求路径及前端调用对不上。
-    // 收集时遍历的是**全量**调用点，只需登记一次（后续子工程重复调用时跳过）。
     if ctx.ws.route_groups.is_empty() {
         let mut groups: Vec<RouteGroup> = Vec::new();
         for rc in &spec.route_calls {
@@ -1973,7 +1915,7 @@ fn load_routes(
                 if call.method.as_deref() != Some(gm.as_str()) {
                     continue;
                 }
-                // 无前缀写法：`group(fn)` 的 arg0 是闭包不是字符串，跳过。
+                // No-prefix style: `group(fn)`'s arg0 is a closure not a string, skip.
                 let Some(gt_domain::model::FactValue::String(prefix)) = call.args.first() else {
                     continue;
                 };
@@ -1995,13 +1937,13 @@ fn load_routes(
         }
     }
 
-    // FKB 授权「查不到节点的守卫也建成 Middleware 节点」时登记到工作区，供 P14 读取。
-    // （JS / Python 的中间件是函数值、解析器不为它建语法节点，故需要这条授权。）
+    // When FKB authorizes "building a Middleware node even for guards whose node isn't found", register it to the workspace for P14 to read.
+    // (JS / Python middleware are function values, the parser doesn't build a syntax node for them, so this authorization is needed.)
     if spec.synthesize_unresolved {
         ctx.ws.synthesize_unresolved_guards = true;
     }
 
-    // ② 中间件挂载：**必须在 prefixes 之后登记**（下面建 key 时要查），且同样只登记一次。
+    // ② middleware mount: **must register after prefixes** (key building below needs to query), and register only once too.
     if ctx.ws.route_guard_scopes().is_empty() {
         let scopes = collect_route_guards(spec, &ctx.ws.calls);
         if !scopes.is_empty() {
@@ -2011,11 +1953,11 @@ fn load_routes(
         ctx.ws.add_route_guard_scopes(scopes);
     }
 
-    // ③ 建 `route_list`：键 = `METHOD /归一化路径`，与 P5 合成的 `HttpContract.name` 逐字一致。
+    // ③ build `route_list`: key = `METHOD /normalized path`, identical character-by-character to the `HttpContract.name` synthesized by P5.
     let alias_table = spec.alias_table.as_deref();
     let mut found: Vec<(String, String, String, u32, Vec<RouteGuard>)> = Vec::new();
     for call in ctx.ws.calls.iter() {
-        // 找匹配的路由定义（含 decorator 模型）：逐一试 `route_calls` 模式。
+        // Find a matching route definition (incl. decorator model): try `route_calls` patterns one by one.
         let Some((method, path, handler)) =
             spec.route_calls.iter().find_map(|rc| match_route_call(call, rc))
         else {
@@ -2024,8 +1966,8 @@ fn load_routes(
         if path.is_empty() {
             continue;
         }
-        // 键归一化照搬 P5 的 CONTRACT_ID 三步：① FKB http-contract 的 normalize；
-        // ② 路由组前缀插到前导斜杠之后；③ 再整体过一遍同一套 normalize（幂等）。
+        // Key normalization copies P5's CONTRACT_ID three steps: ① FKB http-contract normalize;
+        // ② insert route-group prefix after the leading slash; ③ pass the whole thing through the same normalize again (idempotent).
         let steps = contract_steps;
         let normed = crate::normalize::apply_normalize(&path, steps);
         let prefix = ctx.ws.route_group_prefix(&call.file, call.span.start_line);
@@ -2044,10 +1986,6 @@ fn load_routes(
     }
     for (key, handler, file, line, guards) in found {
         let mut value = json!({ "handler": handler, "file": file, "line": line });
-        // 别名 → 类：Laravel 在路由上写的是 `'auth'`，类名在 `Kernel::$routeMiddleware`。
-        // 还原不了时**保留源码里写的那个名字**（`web` / `auth` 也可能是中间件**组名**，
-        // 它确实是路由文件里写下的事实），只是连不到类节点 —— 结论区照样能读，
-        // P14 建边时查不到节点就跳过。整条丢掉会让 Laravel 工程一点守卫信息都不剩。
         let guards: Vec<RouteGuard> = guards
             .into_iter()
             .map(|g| RouteGuard {
@@ -2102,28 +2040,28 @@ fn load_nginx(
     }
 }
 
-/// 声明式中间件列表：文件名 / 键 / 作用域**全由 FKB `params` 声明**——与 `middleware_aliases`、
-/// `nginx_config` 同款思路，内核只做"按声明扫固定写法"，不认任何框架 / 语言。
+/// Declarative middleware list: file name / key / scope **all declared by FKB `params`** — same idea as `middleware_aliases`,
+/// `nginx_config`, the kernel only does "scan fixed写法 by declaration", knows no framework / language.
 ///
-/// 中间件常在**文件**里登记，而非路由调用 `->middleware()`：
-/// * ThinkPHP 全局：`app/middleware.php` 返回裸类数组 `return [A::class, B::class];`；
-/// * ThinkPHP 多应用：`app/<app>/config/route.php` 的 `'middleware' => [A::class, ...]`。
-/// 这些写法不产生路由调用链，故 `guard_attach` 识别不到、`route_list` 的 `guards` 整段落空，
-/// 图里一个中间件都没有（likeadmin 就是典型）。
+/// Middleware is often registered in a **file**, not via a route call `->middleware()`:
+/// * ThinkPHP global: `app/middleware.php` returns a bare class array `return [A::class, B::class];`;
+/// * ThinkPHP multi-app: `app/<app>/config/route.php`'s `'middleware' => [A::class, ...]`.
+/// These writings produce no route-call chain, so `guard_attach` can't recognize them, `route_list`'s `guards` is entirely empty,
+/// and the graph has no middleware at all (likeadmin is typical).
 ///
-/// 本装载器把"声明类名单 + 作用域"存进工作区 `declared_middleware` 符号表；**不直接建节点**
-/// ——因为 HttpContract 节点（尤其是 likeadmin 这类自动路由 / 由 `frontend-http-contract`
-/// 规则合成的契约）在 prepare 阶段还不存在。真正的节点 / `PassesThrough` 边由建图完成后的
-/// 后置步骤（见 `gt-application::PipelineService::attach_declared_middleware`）在 HttpContract
-/// 节点已齐全时按作用域挂出来，复用 P14 同款机理，内核零框架字符串。
+/// This loader stores "declared class list + scope" into the workspace `declared_middleware` symbol table; **doesn't build nodes directly**
+/// — because HttpContract nodes (especially auto-route ones like likeadmin, or contracts synthesized by the `frontend-http-contract` rule)
+/// don't exist yet at prepare time. The real nodes / `PassesThrough` edges are hung by a post-build step
+/// (see `gt-application::PipelineService::attach_declared_middleware`) once HttpContract nodes are complete, by scope,
+/// reusing P14's same mechanism, kernel zero framework strings.
 ///
 /// # params
-/// * `paths`：要扫的文件（后缀匹配，支持 `**/X`）。`per_app` 时支持单个 `*` 通配段
-///   （如 `app/*/config/route.php`），匹配到的 `*` 段即应用名。
-/// * `key`：可选。声明数组所在键；省略时按整份文件取第一个 `[...]` 数组
-///   （即 `return [A::class, ...];` 形态）。
-/// * `scope`：`global`（挂到全部路由，默认）或 `per_app`（只挂到名字含 `/<app>` 前缀的路由，
-///   `prefix` 即 `/<app>`，从 `paths` 的 `*` 通配段抽取）。
+/// * `paths`: files to scan (suffix match, supports `**/X`). `per_app` supports a single `*` wildcard segment
+///   (e.g. `app/*/config/route.php`), the matched `*` segment is the app name.
+/// * `key`: optional. The key the declared array lives under; when omitted, take the first `[...]` array of the whole file
+///   (i.e. `return [A::class, ...];` form).
+/// * `scope`: `global` (hang on all routes, default) or `per_app` (only on routes whose name contains the `/<app>` prefix,
+///   `prefix` is `/<app>`, extracted from the `*` wildcard segment of `paths`).
 fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, params: &Value) {
     let paths = params
         .get("paths")
@@ -2158,8 +2096,8 @@ fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, para
         if classes.is_empty() {
             continue;
         }
-        // `per_app` 时从 `paths` 里形如 `app/*/config/route.php` 的 `*` 段抽应用名
-        // 作为路由前缀（如 `/adminapi`）—— 对齐结尾，不受 project_root 下多几层目录影响。
+        // `per_app` extracts the app name from the `*` segment of `paths` like `app/*/config/route.php`
+        // as the route prefix (e.g. `/adminapi`) — align at the end, unaffected by extra dir layers under project_root.
         let prefix: Option<String> = if scope == "per_app" {
             paths.iter().find_map(|p| {
                 let dseg: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
@@ -2179,10 +2117,6 @@ fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, para
         } else {
             None
         };
-        // 存进工作区，等建图完成后的后置步骤（见
-        // `gt-application::PipelineService::attach_declared_middleware`）按作用域挂链。
-        // key 加 `scope` 前缀 + 文件序号，保证同一工程内多个声明文件互不覆盖
-        // （`idx` 在每个 loader 调用内从 0 起算，不同 scope 必须靠前缀区分）。
         ctx.ws.put_symbol(
             ctx.project.id,
             "declared_middleware",
@@ -2199,17 +2133,17 @@ fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, para
     }
 }
 
-/// 从文件文本抽取中间件类名列表。
+/// Extract the middleware class-name list from file text.
 ///
-/// * `key` 给出时（如 `middleware`）：取 `key => [ ... ]` 数组块；
-///   注意 `key` 可能出现在命名空间里（如 `app\...\middleware\Foo`），故要求 key 后紧跟 `=>`
-///   （跳过引号 / 空白）才认作赋值键，避免命中命名空间。
-/// * 否则：取整份文件的第一个 `[ ... ]` 数组（即 `return [A::class, ...];` 形态）。
-/// 每行取 `X::class`（剥 `//` 注释、尾逗号、前导 `\`），得到归一后的 FQN。
+/// * when `key` is given (e.g. `middleware`): take the `key => [ ... ]` array block;
+///   note `key` may appear in a namespace (e.g. `app\...\middleware\Foo`), so require `=>` immediately after the key
+///   (skip quotes / whitespace) to count as an assignment key, avoiding hitting a namespace.
+/// * otherwise: take the first `[ ... ]` array of the whole file (i.e. `return [A::class, ...];` form).
+/// Each line takes `X::class` (strip `//` comments, trailing comma, leading `\`), get the normalized FQN.
 fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
     let block = match key {
         Some(k) => {
-            // 找「key => [」：遍历所有命中，取其后紧跟 `=>` 的那一处。
+            // Find "key => [": iterate all hits, take the one with `=>` immediately after.
             let mut from = 0;
             let mut found: Option<usize> = None;
             while let Some(rel) = text[from..].find(k) {
@@ -2282,12 +2216,12 @@ fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
     out
 }
 
-/// 路径后缀匹配（对齐结尾），支持 `*` 通配段（匹配恰好一个路径段）。
+/// Path suffix match (align at end), supports `*` wildcard segment (matches exactly one path segment).
 ///
-/// 用于 `declared_middleware` 的 `paths`：声明 `app/*/config/route.php` 能命中
-/// `server/app/adminapi/config/route.php`（无论 project_root 下多几层目录），而
-/// 不像 `engine::path_matches` 那样要求 pattern 从开头匹配 —— 自动路由项目的应用目录
-/// 常藏在 `server/app/<app>` 这类子目录里。无 `*` 时退化为普通后缀相等。
+/// For `declared_middleware`'s `paths`: declaring `app/*/config/route.php` hits
+/// `server/app/adminapi/config/route.php` (no matter how many dir layers under project_root), unlike `engine::path_matches`
+/// which requires the pattern to match from the start — auto-route projects' app dirs often hide in `server/app/<app>` subdirs.
+/// Without `*` degenerates to plain suffix equality.
 fn declared_mw_path_matches(pattern: &str, path: &str) -> bool {
     let pseg: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     let aseg: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -2300,7 +2234,7 @@ fn declared_mw_path_matches(pattern: &str, path: &str) -> bool {
         .all(|(p, a)| *p == "*" || p == a)
 }
 
-/// 扫描指定扩展名的文本文件（跳过依赖目录）。
+/// Scan text files of the given extension (skip dependency dirs).
 fn scan_text_files(root: &Path, exts: &[&str]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut walker = walkdir::WalkDir::new(root).follow_links(false).into_iter();
@@ -2341,7 +2275,7 @@ fn scan_text_files(root: &Path, exts: &[&str]) -> Vec<(String, String)> {
     out
 }
 
-/// 解析 `CREATE TABLE`：取表名与列名（按括号配对，避免被 `int(11)` 截断）。
+/// Parse `CREATE TABLE`: take table name and column names (by paren pairing, avoid truncation by `int(11)`).
 fn parse_create_tables(sql: &str) -> Vec<(String, Vec<String>)> {
     let re = regex::Regex::new(
         r#"(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?([\w.]+)[`"]?\s*\("#,
@@ -2354,7 +2288,7 @@ fn parse_create_tables(sql: &str) -> Vec<(String, Vec<String>)> {
             Some(t) => t.as_str().trim_matches(|c| c == '`' || c == '"').to_string(),
             None => continue,
         };
-        // 从 `(` 起做括号配对
+        // Paren pairing from `(`
         let bytes = sql.as_bytes();
         let open = m.start() + m.as_str().len() - 1;
         let mut depth = 0i32;
@@ -2391,7 +2325,7 @@ fn parse_create_tables(sql: &str) -> Vec<(String, Vec<String>)> {
     out
 }
 
-/// 拆分 `CREATE TABLE` 字段列表的第一层逗号。
+/// Split the first-level commas of a `CREATE TABLE` field list.
 fn split_columns(body: &str) -> Vec<String> {
     let mut columns = Vec::new();
     let mut depth = 0i32;
@@ -2459,17 +2393,17 @@ fn push_column(out: &mut Vec<String>, raw: &str) {
     }
 }
 
-/// 供 P5 判断配置条目文件是否匹配（含 `{app_root}` 占位展开）。
+/// For P5 to judge whether a config-entry file matches (incl. `{app_root}` placeholder expansion).
 pub fn expand(path: &str, app_root: &str) -> String {
     path.replace("{app_root}", app_root)
 }
 
-/// 供测试使用。
+/// For test use.
 pub fn _sub_id(id: SubProjectId) -> SubProjectId {
     id
 }
 
-/// `FactValue` 的文本化。
+/// Textualize a `FactValue`.
 trait LossyText {
     fn to_string_lossy(&self) -> String;
 }
@@ -2483,7 +2417,7 @@ impl LossyText for gt_domain::model::FactValue {
     }
 }
 
-/// 规则去重（按 id）。
+/// Rule dedup (by id).
 fn dedup_rules(rules: Vec<Rule>) -> Vec<Rule> {
     let mut out: Vec<Rule> = Vec::new();
     for r in rules {
@@ -2508,7 +2442,7 @@ mod tests {
         SubProjectId,
     };
 
-    /// ThinkPHP 6 的 `route_guards` 声明（与 `fkb/php/thinkphp6.yaml` 等价的最小集），供测试复用。
+    /// ThinkPHP 6's `route_guards` declaration (minimal set equivalent to `fkb/php/thinkphp6.yaml`), for test reuse.
     fn tp6_spec() -> RouteGuardSpec {
         RouteGuardSpec {
             route_calls: vec![RouteCallSpec {
@@ -2555,10 +2489,10 @@ mod tests {
         }
     }
 
-    /// 造一个调用点：`Route::group('pc', fn)` / `Route::get('x','C@m')` / `->middleware(...)`。
+    /// Build a call site: `Route::group('pc', fn)` / `Route::get('x','C@m')` / `->middleware(...)`.
     ///
-    /// `byte` 是这条调用在源码里的**起始字节**：同一条链上的所有调用点共享它
-    /// （`member_call_expression` 从根那一段源码开始），这是配对唯一的依据。
+    /// `byte` is this call's **start byte** in source: all call sites on the same chain share it
+    /// (`member_call_expression` starts from the root source segment), this is the only basis for pairing.
     fn call(
         file: &str,
         receiver: &str,
@@ -2597,16 +2531,16 @@ mod tests {
         FactValue::ClassConst(name.into())
     }
 
-    /// CRMEB 的真实写法：`Route::group('pc', fn){ ... })->middleware(A)->middleware(B, true)`，
-    /// 组内有多条路由。中间件必须落到**每条**路由上。
+    /// CRMEB's real style: `Route::group('pc', fn){ ... })->middleware(A)->middleware(B, true)`,
+    /// multiple routes inside the group. Middleware must land on **every** route.
     #[test]
     fn group_level_guard_covers_inner_routes() {
         let f = "app/api/route/pc.php";
         let calls = vec![
-            // 根：`Route::group(function(){...})`（无前缀写法，跨 1..3 行），byte=10
+            // root: `Route::group(function(){...})` (no-prefix style, spans lines 1..3), byte=10
             call(f, "Route", "group", vec![], 1, 3, 10, 200),
             call(f, "Route", "get", vec![FactValue::String("a".into())], 2, 2, 40, 90),
-            // 链上的两次 `->middleware`：与根共享 start_byte=10，span 更长
+            // the two `->middleware` on the chain: share start_byte=10 with the root, longer span
             call(
                 f,
                 "Route",
@@ -2648,11 +2582,11 @@ mod tests {
             ]
         );
         assert_eq!(got[1].arg.as_deref(), Some("true"), "`AuthToken::class, true` 的第二参数要留下");
-        // 区间外的路由不该被它守着（这正是"全局 vs 组级"的分界）
+        // Routes outside the range shouldn't be guarded by it (this is exactly the "global vs group-level" boundary)
         assert!(ws.route_guards(f, 40).is_empty());
     }
 
-    /// 路由自带的 `->middleware(X::class, false)`：粒度细到单条路由，第二参数才会出现。
+    /// Route's own `->middleware(X::class, false)`: granularity down to a single route, the second arg only appears here.
     #[test]
     fn route_level_guard_keeps_force_flag() {
         let f = "app/api/route/user.php";
@@ -2690,13 +2624,13 @@ mod tests {
         assert_eq!(got[0].arg.as_deref(), Some("false"));
     }
 
-    /// Laravel 的**修饰符前置**写法：`Route::middleware('auth')->group(fn){...}`。
-    /// 关键在根节点必须选 `group`（它才包着路由区间），而不是链首的 `middleware('auth')`。
+    /// Laravel's **modifier-prefix** style: `Route::middleware('auth')->group(fn){...}`.
+    /// The key is the root node must be `group` (only it wraps the route range), not the chain-head `middleware('auth')`.
     #[test]
     fn laravel_prefix_form_binds_to_group() {
         let f = "routes/web.php";
         let calls = vec![
-            // 链首：`Route::middleware('auth')`，span 很短（只有这一小段）
+            // chain head: `Route::middleware('auth')`, very short span (only this small segment)
             call(
                 f,
                 "Route",
@@ -2707,9 +2641,9 @@ mod tests {
                 10,
                 40,
             ),
-            // 链尾：`->group(fn){...}`，span 覆盖整个闭包（第 1~9 行）
+            // chain tail: `->group(fn){...}`, span covers the whole closure (lines 1~9)
             call(f, "Route", "group", vec![], 1, 9, 10, 400),
-            // 组内的一条路由
+            // a route inside the group
             call(
                 f,
                 "Route",
@@ -2735,7 +2669,7 @@ mod tests {
         assert_eq!(got[0].class, "auth");
     }
 
-    /// 数组形式的多个别名（`->middleware(['auth', 'throttle:60'])`）要分别收。
+    /// Array-form multiple aliases (`->middleware(['auth', 'throttle:60'])`) must be collected separately.
     #[test]
     fn collects_array_form_guards() {
         let f = "routes/web.php";
@@ -2759,8 +2693,8 @@ mod tests {
         assert_eq!(scopes[0].guards.len(), 2, "数组里每一项都算一次挂载");
     }
 
-    /// 非 Route 接收者上的同名 `->middleware()` 不能误配；
-    /// 非标量实参（`->middleware($v)`）不该产出伪事实。
+    /// The same-name `->middleware()` on a non-Route receiver must not mis-match;
+    /// non-scalar args (`->middleware($v)`) shouldn't produce pseudo-facts.
     #[test]
     fn ignores_foreign_and_dynamic_middleware() {
         let f = "app/Service.php";
@@ -2783,7 +2717,7 @@ mod tests {
         assert_eq!(guard_arg_text(&FactValue::Null), None);
     }
 
-    /// Express 的位置参数写法：`app.get('/x', mw1, mw2, handler)`——path 之后的实参都是中间件。
+    /// Express positional-arg style: `app.get('/x', mw1, mw2, handler)` — args after path are all middleware.
     #[test]
     fn express_positional_guards() {
         let f = "routes/index.js";
@@ -2817,12 +2751,12 @@ mod tests {
         assert_eq!(scopes.len(), 1);
         let names: Vec<&str> = scopes[0].guards.iter().map(|g| g.class.as_str()).collect();
         assert_eq!(names, vec!["AuthMiddleware", "CartOwnerMiddleware"]);
-        // 只有 `app.get` 收，裸 `router.use` 不带路径的不应误当路由守卫
+        // Only `app.get` is collected; bare `router.use` without a path shouldn't be mistaken as a route guard
         let calls2 = vec![call(f, "router", "use", vec![class("X")], 2, 2, 90, 120)];
         assert!(collect_route_guards(&spec, &calls2).is_empty());
     }
 
-    /// 装饰器 / 注解写法：`@UseGuards(X)` 与被修饰路由 `@Get` 同 owner_fqn，按 owner 关联。
+    /// Decorator / annotation style: `@UseGuards(X)` and the decorated route `@Get` share owner_fqn, associate by owner.
     #[test]
     fn decorator_guards_group_by_owner() {
         let f = "user.controller.ts";
@@ -2887,7 +2821,7 @@ mod tests {
         assert_eq!(by_line.remove(&20).unwrap(), vec!["AdminGuard".to_string()]);
     }
 
-    /// 一条「装饰器路由 + 消费者式中间件」的最小声明构造器（避免重复样板）。
+    /// A minimal declaration builder for "decorator route + consumer-style middleware" (avoid repetitive boilerplate).
     fn rc_callee(name: &str, verb: &str) -> RouteCallSpec {
         RouteCallSpec {
             receiver: name.into(),
@@ -2903,11 +2837,11 @@ mod tests {
         }
     }
 
-    /// NestJS `MiddlewareConsumer`：`consumer.apply(AuthMiddleware).forRoutes({path, method})`
-    /// 的**对象字面量**实参必须被解析成 (路径, 动词)，并按「路径 + 动词」落到对应路由。
+    /// NestJS `MiddlewareConsumer`: `consumer.apply(AuthMiddleware).forRoutes({path, method})`'s **object-literal** arg
+    /// must be parsed into (path, verb) and landed on the corresponding route by "path + verb".
     ///
-    /// 复现 realworld 工程 `user.module.ts` 的写法 —— 此前 `forRoutes` 只认字符串 /
-    /// `Unknown` 名，对象字面量被当成无名实参，整个模块 0 命中守卫。
+    /// Reproduces the realworld project's `user.module.ts` style — previously `forRoutes` only recognized string /
+    /// `Unknown` names, object literals were treated as nameless args, the whole module got 0 guard hits.
     #[test]
     fn nestjs_consumer_object_literal_routes() {
         let consumer_spec = ConsumerGuardSpec {
@@ -2952,7 +2886,7 @@ mod tests {
             sub: None,
             language: Language::new(Language::JAVASCRIPT),
         };
-        // 整条链 `consumer.apply(AuthMiddleware).forRoutes(...)` 共享 start_byte=100。
+        // The whole chain `consumer.apply(AuthMiddleware).forRoutes(...)` shares start_byte=100.
         let apply = CallRecord {
             node: NodeId::new(0),
             owner: NodeId::new(0),
@@ -3015,7 +2949,7 @@ mod tests {
             for_routes,
         ];
         let scopes = collect_route_guards(&spec, &calls);
-        // 只应命中 'user' GET 与 'user' PUT 两条（动词维度筛掉了 POST / DELETE）。
+        // Should hit only 'user' GET and 'user' PUT (the verb dimension filters out POST / DELETE).
         assert_eq!(scopes.len(), 2, "只应命中显式路径 + 动词匹配到的两条路由");
         let mut by_line: std::collections::HashMap<u32, Vec<String>> = scopes
             .iter()
@@ -3033,8 +2967,8 @@ mod tests {
         );
     }
 
-    /// Django：`path('profile', views.profile)` 的路由与视图函数**分处两个文件**，
-    /// 按 owner 关联必然落空 —— 靠 `link_via_handler_arg` 按 handler 实参跨文件接上。
+    /// Django: `path('profile', views.profile)`'s route and view function are **in two files**,
+    /// associating by owner would necessarily miss — rely on `link_via_handler_arg` to connect cross-file by handler arg.
     #[test]
     fn django_handler_link_guards() {
         let d = gt_domain::model::DecoratorGuardSpec {
@@ -3081,11 +3015,11 @@ mod tests {
             language: Language::new(Language::PHP),
         };
         let calls = vec![
-            // urls.py：路由，handler 是标识符 `views.profile`
+            // urls.py: route, handler is identifier `views.profile`
             mk("path", "urls", vec![FactValue::String("profile".into()), FactValue::Unknown(Some("views.profile".into()))], "urls.py", 5),
-            // views.py：守卫装饰器挂在视图函数上（owner 是 myapp.views.profile）
+            // views.py: guard decorator hangs on the view function (owner is myapp.views.profile)
             mk("login_required", "myapp.views.profile", vec![], "views.py", 12),
-            // 另一个视图的守卫不该串到 profile 上
+            // Another view's guard shouldn't bleed onto profile
             mk("login_required", "myapp.views.other", vec![], "views.py", 20),
         ];
         let scopes = collect_route_guards(&spec, &calls);
@@ -3096,13 +3030,13 @@ mod tests {
         );
     }
 
-    /// 宽泛的包含模式不能把**文档装饰器**和**普通成员调用**当成守卫（deny + 形态约束）。
+    /// A broad include pattern must not treat **doc decorators** and **plain member calls** as guards (deny + shape constraint).
     #[test]
     fn decorator_guards_reject_docs_and_member_calls() {
         let d = gt_domain::model::DecoratorGuardSpec {
             route_decorators: vec!["@Get".into()],
             guard_decorators: vec!["@UseGuards".into()],
-            // 宽泛模式（会命中 ApiBearerAuth 与 generateJWT）
+            // broad pattern (would hit ApiBearerAuth and generateJWT)
             guard_name_patterns: vec!["(auth|jwt)".into()],
             guard_exclude_patterns: vec!["^@?api".into(), "^_".into()],
             require_at_prefix: true,
@@ -3158,7 +3092,7 @@ mod tests {
         );
     }
 
-    /// 内圈覆盖外圈：组上 `AuthToken(true)`、路由上 `AuthToken(false)` 时生效的应是后者。
+    /// Inner overrides outer: group `AuthToken(true)`, route `AuthToken(false)` → the latter should win.
     #[test]
     fn inner_guard_overrides_outer() {
         let f = "app/api/route/pc.php";

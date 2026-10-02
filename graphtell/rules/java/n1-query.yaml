@@ -1,38 +1,41 @@
-# N+1：循环体内逐条访问数据库（Java / Spring Boot 版）。
+# N+1: per-row database access inside a loop (Java / Spring Boot version).
 #
-# 判据与 PHP 侧**完全同构**，是两个跨阶段拼起来的事实：
-#   1. `CallSite.properties.in_loop` —— Java parser 在 `for` / 增强 `for` / `while` /
-#      `do-while` 的 **body** 内收集到该调用时打上的标记（图里唯一表达"这段代码会被
-#      执行 N 次"的地方）；
-#   2. `db-query` / `db-write` 标注 —— P7 把这次调用落成 `ReadsDb` / `WritesDb` 边时，
-#      顺带打在该调用点上的投影。复用 P7 的动词分类结果（FKB `db_verbs`），
-#      不在规则里另写动词名单。
+# The criterion is **exactly isomorphic** to the PHP side; it is one fact assembled across two phases:
+#   1. `CallSite.properties.in_loop` — a mark the Java parser sets when the call is collected inside the
+#      **body** of a `for` / enhanced `for` / `while` / `do-while` (the only place on the graph that
+#      expresses "this code runs N times");
+#   2. the `db-query` / `db-write` annotation — a projection P7 leaves on the call site while turning
+#      that call into a `ReadsDb` / `WritesDb` edge. It reuses P7's verb classification result (FKB
+#      `db_verbs`) instead of writing its own verb list inside the rule.
 #
-# 为什么必须挂在 `CallSite` 而不是 `Method`：见 rules/php/n1-query.yaml 的说明 ——
-# 方法粒度分不清"循环里查 N 次"与"循环外查一次"。
+# Why it must hang off `CallSite` rather than `Method`: see the notes in rules/php/n1-query.yaml —
+# method granularity cannot distinguish "query N times inside the loop" from "query once outside it".
 #
-# 与 PHP 版的差异：去掉了 `migration` / `seeder` 的排除（那是 Laravel 的目录约定，
-# Java 没有等价物）。
+# Differences from the PHP version: the `migration` / `seeder` exclusions are gone (those are Laravel
+# directory conventions; Java has no equivalent).
 #
-# 前置条件（本轮才补齐，缺一不可）：
-#   * Java parser 识别循环体（in_loop）；
-#   * DAO（JPA Repository / MyBatis Mapper）经泛型实参拿到 `MapsTo`（DAO → 表）；
-#   * 字段声明类型按同包补成 FQN —— 否则 P7 拿短名查不到 `MapsTo`，落不出动作边。
+# Preconditions (only completed in this round, all of them required):
+#   * the Java parser recognises loop bodies (in_loop);
+#   * DAOs (JPA Repository / MyBatis Mapper) get `MapsTo` (DAO → table) via generic type arguments;
+#   * field declaration types are completed into FQNs by same-package resolution — otherwise P7 cannot
+#     find `MapsTo` from a short name and produces no action edge.
 
 rules:
   - id: java-n1-query-in-loop
-    title: 循环内逐条查库（N+1）
+    title: Per-row database read inside a loop (N+1)
     description: >-
-      一次数据库**读**发生在循环体内：N 条记录就是 N 次往返，数据量一大就退化成
-      N+1 查询。修法是循环外一次批量取回（`findAllById(ids)` / `whereIn` / 预加载关联）
-      再在内存里配对。两类例外要先排除：循环的是配置 / 字典这类**常数长度**的集合
-      （N 很小，不必改），以及按天 / 按枚举分桶的统计循环（N 有上界，属于可接受写法）。
+      A database **read** happens inside a loop body: N records means N round trips, which degrades into
+      an N+1 query as the data grows. The fix is one batch fetch outside the loop
+      (`findAllById(ids)` / `whereIn` / eager-loading the association) and pairing in memory.
+      Two kinds of exceptions to exclude first: looping over a **constant-length** collection such as
+      config or a dictionary (N is small, no change needed), and per-day / per-enum bucketed
+      aggregation loops (N is bounded, an acceptable pattern).
     severity: info
     category: performance
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 节点数量上限；超大库调低可加速（但会漏检靠后的调用点）。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases to speed up (at the cost of missing later call sites).
         kind: number
         default: 200000
         min: 1000
@@ -44,23 +47,24 @@ rules:
     when:
       - property_is: { name: in_loop, value: "true" }
       - has_annotation: db-query
-    message: "循环体内逐条查库（{name}）—— N 条记录 = N 次查询，建议改为循环外批量查询"
-    remediation: "把循环内的单条查询提到循环外一次性取回（findAllById / whereIn / 预加载关联），再在内存里按 key 配对"
+    message: "Per-row database read inside a loop ({name}) — N records = N queries; fetch in one batch outside the loop instead"
+    remediation: "Hoist the per-row query out of the loop into one batch fetch (findAllById / whereIn / eager-load the association), then pair by key in memory"
 
   - id: java-n1-write-in-loop
-    title: 循环内逐条写库
+    title: Per-row database write inside a loop
     description: >-
-      一次数据库**写**发生在循环体内：N 条记录就是 N 次 INSERT / UPDATE 往返。
-      与 N+1 读同源，但改法不同 —— 批量写（`saveAll` / `insertBatch` / 一次
-      whereIn update）或把多次更新合并成一次条件更新。
-      注意：循环体里带业务校验（每条要单独判断是否可写）时，逐条写是**合理**的，
-      此时应改的是事务边界（整体包一个 `@Transactional`）而不是强行批量。
+      A database **write** happens inside a loop body: N records means N INSERT / UPDATE round trips.
+      Same root cause as the N+1 read, but a different fix — batch writes (`saveAll` / `insertBatch` /
+      a single whereIn update) or merging several updates into one conditional update.
+      Note: when the loop body carries business validation (each row must be checked individually
+      before writing), per-row writes are **reasonable**; what should change then is the transaction
+      boundary (wrap the whole thing in `@Transactional`), not forcing a batch.
     severity: info
     category: performance
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 节点数量上限；超大库调低可加速（但会漏检靠后的调用点）。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases to speed up (at the cost of missing later call sites).
         kind: number
         default: 200000
         min: 1000
@@ -72,5 +76,5 @@ rules:
     when:
       - property_is: { name: in_loop, value: "true" }
       - has_annotation: db-write
-    message: "循环体内逐条写库（{name}）—— N 条记录 = N 次写入，建议改为批量写或把更新合并成一次"
-    remediation: "改用批量写入（saveAll / insertBatch / whereIn 一次更新）；若每条都需单独校验，则把整个循环包进一个 @Transactional"
+    message: "Per-row database write inside a loop ({name}) — N records = N writes; batch the writes or merge the updates into one"
+    remediation: "Switch to batch writes (saveAll / insertBatch / a single whereIn update); if each row needs its own validation, wrap the whole loop in one @Transactional instead"

@@ -1,4 +1,4 @@
-//! 流水线上下文：一次建图运行所共享的全部状态。
+//! Pipeline context: all the state shared by one graph-building run.
 
 use std::collections::HashMap;
 
@@ -10,66 +10,69 @@ use gt_domain::model::{
 
 use crate::workspace::GraphWorkspace;
 
-/// 传播种子：合成阶段里，某个「动作发出方」方法节点与语义节点之间的边。
+/// A propagation seed: an edge between an "action emitter" method node and a semantic node, produced in the
+/// synthesis phase.
 ///
-/// 传播阶段（P8）据此沿 `Calls` 调用链向上，把同一语义关系复刻到该方法的每一个调用方，
-/// 从而兑现「一个功能最终调用了 FKB 认得的东西，就该被正确解析，无论多深」的原则。
+/// The propagation phase (P8) walks upward along the `Calls` chain from here, replicating the same semantic
+/// relation onto every caller of that method, thereby honouring the principle "if a feature ultimately calls
+/// something FKB recognises, it should be resolved correctly no matter how deep".
 ///
-/// 这是通用机制：不认识任何框架，只搬运「方法 → 语义节点」这一事实。
+/// This is a generic mechanism: it knows no framework and only carries the fact "method -> semantic node".
 #[derive(Debug, Clone)]
 pub struct PropSeed {
-    /// 动作的发出方（被 FKB 规则命中的调用点所在方法）。
+    /// The emitter of the action (the method holding the call site an FKB rule matched).
     pub source: NodeId,
-    /// 语义节点（Queue / Table / Cache / ConfigKey …）。
+    /// The semantic node (Queue / Table / Cache / ConfigKey …).
     pub target: NodeId,
-    /// 语义边种类（如 `PublishesTo` / `ReadsDb` / `ReadsCache` / `ReadsConfig`）。
+    /// The semantic edge kind (e.g. `PublishesTo` / `ReadsDb` / `ReadsCache` / `ReadsConfig`).
     pub kind: String,
     pub confidence: f32,
     pub sub: Option<SubProjectId>,
     pub phase: Phase,
 }
 
-/// 一次流水线运行的上下文。
+/// The context of one pipeline run.
 pub struct PipelineContext {
     pub project: Project,
     pub ws: GraphWorkspace,
     pub sub_projects: Vec<SubProject>,
     pub files: Vec<SourceFile>,
-    /// 子工程 → 识别出的框架 id。
+    /// Sub-project -> the recognised framework id.
     pub frameworks: HashMap<i64, Vec<String>>,
-    /// 子工程 → 路由 handler 解析规则（由 FKB 声明，P3 装配、P7 消费）。
+    /// Sub-project -> route handler resolution rules (declared by FKB, assembled by P3, consumed by P7).
     pub handler_specs: HashMap<i64, HandlerSpec>,
-    /// 全局兜底的 handler 解析规则：单框架工程里 P7 常常拿不到子工程上下文，
-    /// 用第一个声明了 `handler` 的框架兜底。
+    /// Global fallback handler resolution rules: in a single-framework project P7 often cannot reach the
+    /// sub-project context, so the first framework that declares `handler` serves as the fallback.
     pub handler_spec_default: Option<HandlerSpec>,
-    /// 子工程 → `@method` 魔法方法的转发目标（FKB `magic_delegation`）。
+    /// Sub-project -> the forwarding target of `@method` magic methods (FKB `magic_delegation`).
     pub magic_delegation: HashMap<i64, MagicDelegationSpec>,
-    /// 全局兜底的转发目标（同 `handler_spec_default` 的取法）。
+    /// Global fallback forwarding target (chosen the same way as `handler_spec_default`).
     pub magic_delegation_default: Option<MagicDelegationSpec>,
-    /// 子工程 → 数据模型读 / 写动词（FKB `db_verbs`）。
+    /// Sub-project -> the data model's read / write verbs (FKB `db_verbs`).
     pub db_verbs: HashMap<i64, DbVerbsSpec>,
-    /// 全局兜底的读 / 写动词。
+    /// Global fallback read / write verbs.
     pub db_verbs_default: Option<DbVerbsSpec>,
-    /// 语言 → 命名空间 / 成员书写规则（P0 从解析器注册表抽取）。
+    /// Language -> namespace / member notation rules (extracted by P0 from the parser registry).
     pub lang_policies: HashMap<String, NamespacePolicy>,
-    /// 兜底书写规则（单语言工程 / 语言未知时使用）。
+    /// Fallback notation rules (used for single-language projects / unknown languages).
     pub lang_policy_default: NamespacePolicy,
-    /// 外部系统调用名单（FKB `external_calls`）；跨框架差异小，只需一份全局合并结果。
+    /// The external-system-call list (FKB `external_calls`); cross-framework differences are small, so one globally merged result suffices.
     pub external_calls: Vec<String>,
-    /// 「中间件类 → 能力」映射（FKB `middleware_capabilities`）；同样全局合并即可。
+    /// The "middleware class -> capability" mapping (FKB `middleware_capabilities`); likewise merged globally.
     pub middleware_capabilities: Vec<MiddlewareCapability>,
-    /// 事务边界标记（FKB `tx_calls`）；同上，全局合并即可。
+    /// Transaction-boundary markers (FKB `tx_calls`); same again, merged globally.
     pub tx_calls: Vec<String>,
-    /// 子工程 → 消费入口方法名候选（FKB `entry_methods`）。
+    /// Sub-project -> candidate consumer entry method names (FKB `entry_methods`).
     pub entry_methods: HashMap<i64, Vec<String>>,
-    /// 全局兜底的入口方法名（取第一个声明了 `entry_methods` 的框架）。
+    /// Global fallback entry method names (taken from the first framework declaring `entry_methods`).
     pub entry_methods_default: Vec<String>,
-    /// 子工程 → 该子工程适用的规则。
+    /// Sub-project -> the rules applicable to that sub-project.
     pub rules_by_sub: HashMap<i64, Vec<Rule>>,
-    /// 跨子工程共享的规则（合成节点可能跨工程汇聚），**带来源语言** ——
-    /// 全局规则仍要按子工程语言过滤，否则会跨语言错配（见 `rules_for`）。
+    /// Rules shared across sub-projects (synthesised nodes may converge across projects), **carrying their source
+    /// language** — global rules still have to be filtered by sub-project language, otherwise they mismatch across
+    /// languages (see `rules_for`).
     pub rules_global: Vec<(Language, Rule)>,
-    /// 传播种子：合成阶段产出的「方法 → 语义节点」动作边，待 P8 沿调用链向上复刻。
+    /// Propagation seeds: the "method -> semantic node" action edges produced by the synthesis phase, waiting for P8 to replicate them upward along the call chain.
     pub propagation_seeds: Vec<PropSeed>,
 }
 
@@ -101,7 +104,7 @@ impl PipelineContext {
         }
     }
 
-    /// 取某语言的命名空间 / 成员书写规则；未知语言用兜底策略。
+    /// Take a language's namespace / member notation rules; an unknown language uses the fallback strategy.
     pub fn lang_policy(&self, lang: Option<&Language>) -> &NamespacePolicy {
         if let Some(l) = lang {
             if let Some(p) = self.lang_policies.get(l.as_str()) {
@@ -111,7 +114,7 @@ impl PipelineContext {
         &self.lang_policy_default
     }
 
-    /// 取某子工程所属语言的书写规则。
+    /// Take the notation rules of the language a sub-project belongs to.
     pub fn lang_policy_for_sub(&self, sub: Option<SubProjectId>) -> &NamespacePolicy {
         let lang = sub.and_then(|s| {
             self.sub_projects
@@ -122,9 +125,9 @@ impl PipelineContext {
         self.lang_policy(lang.as_ref())
     }
 
-    /// 取某子工程的规则；跨工程节点（sub 为空）用全局规则。
+    /// Take the rules of a sub-project; cross-project nodes (sub is empty) use the global rules.
     pub fn rules_for(&self, sub: Option<SubProjectId>, phase: &Phase) -> Vec<Rule> {
-        // 该子工程的语言（全局规则要按语言过滤，见下）。
+        // The language of that sub-project (global rules must be filtered by language, see below).
         let lang = sub.and_then(|s| {
             self.sub_projects
                 .iter()
@@ -139,11 +142,6 @@ impl PipelineContext {
                 .unwrap_or_default(),
             None => self.rules_global.iter().map(|(_, r)| r.clone()).collect(),
         };
-        // 合成节点（Table / HttpContract）没有归属子工程时，也要应用全局规则。
-        //
-        // **按语言过滤**：全局规则来自各语言的框架 FKB（`rules_by_sub` 已经按语言
-        // 装配过），若不过滤就会把 PHP 的 `config('key')` 规则套到 JS 的
-        // `config(...)` 调用上 —— 用 A 语言的知识解释 B 语言的代码，凭空造节点。
         if sub.is_some() {
             out.extend(
                 self.rules_global

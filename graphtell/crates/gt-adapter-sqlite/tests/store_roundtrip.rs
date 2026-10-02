@@ -1,8 +1,8 @@
-//! SQLite 适配器的持久化往返契约测试：建工程 → 落图（节点 / 边）→ 查询回读。
+//! Persistence round-trip contract tests for the SQLite adapter: create project -> persist graph (nodes / edges) -> query back.
 //!
-//! 这是此前**完全零测试**的高风险 crate（全部持久化逻辑都在 `store.rs`）。这里只验证
-//! 「写进去能读出来」的核心契约，不追求覆盖每个列 / 分支 —— 但足以在迁移脚本或
-//! 读写逻辑被改坏时立刻报警。
+//! This crate previously had **zero tests** while carrying all persistence logic (`store.rs`). These tests only
+//! verify the core contract "what is written can be read back", not every column / branch — but that is enough to
+//! raise the alarm immediately when a migration script or the read/write logic is broken.
 
 use gt_adapter_sqlite::SqliteStore;
 use gt_domain::model::{
@@ -11,7 +11,7 @@ use gt_domain::model::{
 use gt_domain::port::{EdgeDirection, GraphQuery, GraphSink, ProjectReader, ProjectWriter};
 
 fn make_store() -> SqliteStore {
-    SqliteStore::in_memory().expect("内存库应可打开")
+    SqliteStore::in_memory().expect("the in-memory database should open")
 }
 
 fn seed_project(store: &SqliteStore) -> gt_domain::model::ProjectId {
@@ -22,7 +22,7 @@ fn seed_project(store: &SqliteStore) -> gt_domain::model::ProjectId {
             description: None,
             config: None,
         })
-        .expect("建工程应成功");
+        .expect("creating the project should succeed");
     p.id
 }
 
@@ -30,8 +30,8 @@ fn seed_project(store: &SqliteStore) -> gt_domain::model::ProjectId {
 fn project_is_persisted_and_readable() {
     let store = make_store();
     let pid = seed_project(&store);
-    let got = store.get_project(pid).expect("get_project 应成功");
-    let p = got.expect("工程应存在");
+    let got = store.get_project(pid).expect("get_project should succeed");
+    let p = got.expect("the project should exist");
     assert_eq!(p.id, pid);
     assert_eq!(p.name, "test-proj");
     assert_eq!(p.root_path.to_string_lossy(), "/tmp/test-proj");
@@ -80,9 +80,9 @@ fn node_and_edge_roundtrip() {
             edges: vec![NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(105), NodeId(101))],
             ..Default::default()
         })
-        .expect("落图应成功");
+        .expect("persisting the graph should succeed");
 
-    // 按 kind 查：只应命中 Table
+    // Query by kind: only Table should match
     let tables = store
         .query_nodes(&gt_domain::port::NodeFilter {
             project_id: pid,
@@ -91,11 +91,11 @@ fn node_and_edge_roundtrip() {
             limit: None,
             offset: None,
         })
-        .expect("query_nodes 应成功");
+        .expect("query_nodes should succeed");
     assert_eq!(tables.len(), 1);
     assert_eq!(tables[0].name, "user");
 
-    // 按 name 模糊查
+    // Fuzzy query by name
     let by_name = store
         .query_nodes(&gt_domain::port::NodeFilter {
             project_id: pid,
@@ -104,19 +104,19 @@ fn node_and_edge_roundtrip() {
             limit: None,
             offset: None,
         })
-        .expect("query_nodes 应成功");
+        .expect("query_nodes should succeed");
     assert_eq!(by_name.len(), 1);
     assert_eq!(by_name[0].name, "createOrder");
 
-    // 精确取节点
-    let got = store.get_node(NodeId(101)).expect("get_node 应成功");
+    // Fetch a node exactly
+    let got = store.get_node(NodeId(101)).expect("get_node should succeed");
     assert!(got.is_some());
     assert_eq!(got.unwrap().name, "user");
 
-    // 边往返：Method(105) → Table(101)
+    // Edge round trip: Method(105) -> Table(101)
     let out = store
         .edges_of(NodeId(105), EdgeDirection::Outgoing)
-        .expect("edges_of 应成功");
+        .expect("edges_of should succeed");
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].to_id, NodeId(101));
 }

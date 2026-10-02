@@ -1,40 +1,41 @@
-# 前端 uni-app 专属知识（CRMEB 等多端工程）
+# Front-end uni-app-specific knowledge (multi-end projects such as CRMEB)
 #
-# 与 `fkb/js/common.yaml`（语言通用层）的分工：
-#   * common.yaml 放**跨前端框架通用**的写法（axios / fetch / localStorage /
-#     i18n / 配置），对所有 JS 子工程生效（`apply_without_detection`）；
-#   * 本文件只放 **uni-app 专属** 的写法：`uni.request`、`uni.setStorageSync`、
-#     `$store`、`pages.json`、`uni.navigateTo`、`uni.$emit` ……避免用 uni-app 知识
-#     解释 Vue / React 工程。
+# Division of labour with `fkb/js/common.yaml` (the language-common layer):
+#   * common.yaml holds spellings **common across front-end frameworks** (axios / fetch / localStorage /
+#     i18n / config), applied to every JS sub-project (`apply_without_detection`);
+#   * this file holds only **uni-app-specific** spellings: `uni.request`, `uni.setStorageSync`,
+#     `$store`, `pages.json`, `uni.navigateTo`, `uni.$emit`, … so uni-app knowledge is never used to
+#     explain a Vue / React project.
 #
-# 前端子工程与后端子工程各自建出 HttpContract 节点，靠**同一个 identity** 合并
-# —— 这就是契约桥配对。死端点 / 幽灵调用检测由此自动成立：
-#   * 有 HandledBy 无 CallsHttp = 后端死端点（没人调）
-#   * 有 CallsHttp 无 HandledBy = 前端幽灵调用（调了个不存在的路由）
+# Front-end and back-end sub-projects each build their own HttpContract nodes, and they merge on the
+# **same identity** — that is the contract bridge pairing. Dead-endpoint / phantom-call detection then
+# follows automatically:
+#   * HandledBy but no CallsHttp = a dead backend endpoint (nobody calls it)
+#   * CallsHttp but no HandledBy = a front-end phantom call (calling a route that does not exist)
 
 id: frontend-js
-display_name: 前端 JS/TS
+display_name: Front-end JS/TS
 language: javascript
 version_hint: "*"
 
-# 本 FKB 引入的**语义节点种类**（在内核内置清单之外追加）。
-# `Store`（Vuex / Pinia 状态容器）与后端 `Table` / `Cache` 同级；`Page` 是
-# uni-app `pages.json` 声明的路由节点，与后端 `Route` 同构；`EventBus` 是组件间
-# 事件总线，与后端 `Event` 同构。
+# **Semantic node kinds** introduced by this FKB (appended to the kernel's built-in list).
+# `Store` (a Vuex / Pinia state container) sits at the same level as the backend's `Table` / `Cache`;
+# `Page` is the route node declared by uni-app's `pages.json`, isomorphic to the backend's `Route`;
+# `EventBus` is the inter-component event bus, isomorphic to the backend's `Event`.
 semantic_kinds: [Store, Page, EventBus]
 
 detectors:
-  # uni-app / CRMEB 类多端工程
+  # uni-app / CRMEB-style multi-end projects
   - kind: manifest_dependency
     manifest: package.json
     dependency: "@dcloudio/uni-app"
     confidence: 0.95
-  # 通用前端工程（axios 是 HTTP 客户端的事实标准）
+  # Generic front-end projects (axios is the de-facto standard HTTP client)
   - kind: manifest_dependency
     manifest: package.json
     dependency: "axios"
     confidence: 0.9
-  # 退路：存在 package.json 即视为 JS 前端子工程（后端通常不是 JS）
+  # Fallback: a package.json present means this is a JS front-end sub-project (backends are usually not JS)
   - kind: file_exists
     path: package.json
     confidence: 0.6
@@ -50,10 +51,10 @@ exclude_globs:
   - ".next/**"
 
 rules:
-  # 通用 HTTP 调用（axios / fetch / localStorage / i18n / config）已抽到
-  # `fkb/js/common.yaml`。本文件只保留 uni-app 专属写法。
+  # Common HTTP calls (axios / fetch / localStorage / i18n / config) were factored into
+  # `fkb/js/common.yaml`. This file keeps only uni-app-specific spellings.
 
-  # ===== P5 Synthesize：HttpContract（uni-app 专属写法 `uni.request`）=====
+  # ===== P5 Synthesize: HttpContract (uni-app-specific `uni.request`) =====
   - id: frontend-http-uni
     phase: Synthesize
     selector:
@@ -83,10 +84,10 @@ rules:
           link: { kind: CallsHttp, direction: incoming }
           confidence: 0.9
 
-  # ===== P5 Synthesize：本地存储（Cache，uni-app 专属写法）=====
-  # 与后端 `Cache::get('k')` 同构。Web 标准 `localStorage` / `sessionStorage`
-  # 已抽到 `fkb/js/common.yaml`；此处只覆盖 uni-app 的 `uni.getStorageSync`。
-  # 前提只是解析器把实参采上来（非字面量给 Unknown，由 `require_literal` 拒收）。
+  # ===== P5 Synthesize: local storage (Cache, uni-app-specific spelling) =====
+  # Isomorphic to the backend's `Cache::get('k')`. The web standards `localStorage` / `sessionStorage`
+  # were factored into `fkb/js/common.yaml`; this only covers uni-app's `uni.getStorageSync`.
+  # The only precondition is that the parser captures the argument (a non-literal yields Unknown, rejected by `require_literal`).
   - id: frontend-cache-read
     phase: Synthesize
     selector:
@@ -112,7 +113,7 @@ rules:
     phase: Synthesize
     selector:
       kind: call
-      # `removeStorageSync` 也是写操作（删除 = 写），故并入本条。
+      # `removeStorageSync` is also a write (deleting = writing), so it is folded into this rule.
       callee: "uni::{setStorageSync,setStorage,removeStorageSync}"
     binding:
       - Synthesize:
@@ -130,9 +131,9 @@ rules:
           link: { kind: WritesCache, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：Store（Vuex / Pinia 状态容器，uni-app 专属 `$store`）=====
-  # `$store.commit('menus/set')` / `$store.dispatch('routesList')` → `Store` 节点。
-  # `Store` 是**本 FKB 声明的新语义种类**（见文件头 `semantic_kinds`）。
+  # ===== P5 Synthesize: Store (the Vuex / Pinia state container, uni-app-specific `$store`) =====
+  # `$store.commit('menus/set')` / `$store.dispatch('routesList')` -> `Store` node.
+  # `Store` is a **new semantic kind declared by this FKB** (see `semantic_kinds` at the top of the file).
   - id: frontend-store-mutation
     phase: Synthesize
     selector:
@@ -152,19 +153,20 @@ rules:
           link: { kind: Mutates, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：Page（uni-app 路由节点，来自 `pages.json`）=====
-  # `pages.json` 已被 JSON 解析器采成 `配置条目`（仅 `pages` / `subPackages.*.pages`
-  # 段，其余 JSON 不污染），于是 `kind: config_entry` 选择器对前端路由同样可用 ——
-  # 与后端 `Route::get(...)` 合成的 `HttpContract` 同构。路由视角里前后端
-  # 「页面 ↔ 接口」直接对看。
+  # ===== P5 Synthesize: Page (uni-app route node, from `pages.json`) =====
+  # `pages.json` is already collected by the JSON parser as **config entries** (only the `pages` /
+  # `subPackages.*.pages` segments; the rest of the JSON does not pollute), so a `kind: config_entry`
+  # selector works for front-end routes too — isomorphic to the `HttpContract` synthesized from the
+  # backend's `Route::get(...)`. In the route perspective front-end and back-end
+  # "page <-> endpoint" can then be compared directly.
   - id: frontend-page
     phase: Synthesize
     selector:
       kind: config_entry
       file: "*/pages.json"
-      # `pages.json` 经 JSON 解析器**只**产出页面路由条目（主包 `pages.*` 与
-      # 子包 `subPackages.*.pages.*`），其它 JSON 不产出配置条目，故 `*` 即足够、
-      # 且不会误伤——无需在 `key_path` 里写 `|` 多选。
+      # Through the JSON parser, `pages.json` produces **only** page route entries (main package `pages.*` and
+      # sub-package `subPackages.*.pages.*`); other JSON produces no config entries, so `*` is sufficient
+      # and cannot misfire — no `|` alternation is needed in `key_path`.
       key_path: "*"
     binding:
       - Synthesize:
@@ -177,11 +179,9 @@ rules:
               value: { literal: "frontend" }
           confidence: 0.9
 
-  # ===== P5 Synthesize：前端页面跳转（NavigatesTo 边，uni-app 专属）=====
-  # `uni.navigateTo({ url })` / `redirectTo` / `reLaunch` / `switchTab`：从发起方
-  # （函数 / 组件方法）指向目标 `Page` 节点。URL 的查询串（`?id=1`）与分包前缀
-  # 都按 `pages.json` 同一套身份归一（leading_slash / strip_query），保证跳转边
-  # 精确连到 `frontend-page` 合成的同一个节点。
+  # ===== P5 Synthesize: front-end page navigation (NavigatesTo edge, uni-app-specific) =====
+  # `uni.navigateTo({ url })` / `redirectTo` / `reLaunch` / `switchTab`: from the initiator
+  # (a function / component method) to the target `Page` node
   - id: frontend-navigate
     phase: Synthesize
     selector:
@@ -205,12 +205,13 @@ rules:
           link: { kind: NavigatesTo, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：EventBus（前端组件间事件总线，uni-app 专属）=====
-  # `uni.$emit('evt')` / `bus.$emit('evt')` / `this.$eventHub.$emit('evt')` 与
-  # `uni.$on('evt')` / `bus.$on('evt')`：uni-app / Vue2 的组件解耦通信主干，
-  # 与后端 `Event::dispatch` 同构。事件名即身份，同一事件名的发射方与监听方
-  # 幂等合并到同一个 `EventBus` 节点——折叠视图里事件节点充当「via」桥，
-  # 把「谁发 / 谁听」两边都亮出来（组件交互终于可见）。
+  # ===== P5 Synthesize: EventBus (front-end inter-component event bus, uni-app-specific) =====
+  # `uni.$emit('evt')` / `bus.$emit('evt')` / `this.$eventHub.$emit('evt')` and
+  # `uni.$on('evt')` / `bus.$on('evt')`: the backbone of decoupled component communication in uni-app /
+  # Vue2, isomorphic to the backend's `Event::dispatch`. The event name is the identity, so emitters and
+  # listeners of the same event name merge idempotently into one `EventBus` node — in the folded view the
+  # event node acts as a "via" bridge and lights up both "who emits" and "who listens"
+  # (component interaction finally becomes visible).
   - id: frontend-emit
     phase: Synthesize
     selector:

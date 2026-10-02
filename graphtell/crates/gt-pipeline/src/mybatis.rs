@@ -1,19 +1,22 @@
-//! MyBatis mapper XML → 伪调用点（喂给 P5 通用规则管道）。
+//! MyBatis mapper XML -> pseudo call sites (fed into the P5 generic rule pipeline).
 //!
-//! 原生 MyBatis（无 MyBatis-Plus `@TableName` / JPA `@Table` 注解）的表访问全部写在
-//! `resources/mapper/*.xml` 里：`<select id="findCarouselList">… from tb_x …</select>`。
-//! 这些文件不是源码、语言解析器不碰它们 —— newbee-mall / litemall / mall 这类工程的图里
-//! 因此一条表语义都没有（表视角 0 候选、路由徽标「语义依赖 0 · 入边 0」），而
-//! crmeb-java / snowy 这类 MyBatis-Plus 工程靠注解规则就有表。
+//! In native MyBatis (no MyBatis-Plus `@TableName` / no JPA `@Table` annotation) every table access is written in
+//! `resources/mapper/*.xml`: `<select id="findCarouselList">… from tb_x …</select>`. Those files are not source
+//! code and the language parser never touches them — so the graphs of projects like newbee-mall / litemall / mall
+//! contain not one piece of table semantics (the table perspective has 0 candidates, the route badge reads
+//! "semantic dependencies 0 · in-edges 0"), while MyBatis-Plus projects like crmeb-java / snowy do get tables from
+//! the annotation rules.
 //!
-//! 做法：扫描 mapper XML，把每条语句 × 每张表合成**伪调用点**
-//! `mybatis::select|insert|update|delete(表名)`，`owner_fqn = namespace.statementId`
-//! —— 正好是 Mapper 接口方法的 FQN，节点已由 P2 建好。之后 spring-boot FKB 的两条
-//! 规则即可复用通用的 Table 合成 + ReadsDb/WritesDb 边，与 PHP 侧 `DB::table()` 规则同构。
+//! Approach: scan the mapper XMLs and synthesise, for each statement x each table, a **pseudo call site**
+//! `mybatis::select|insert|update|delete(table name)` with `owner_fqn = namespace.statementId` — exactly the FQN of
+//! the Mapper interface method, whose node P2 has already built. After that, two rules in the spring-boot FKB
+//! reuse the generic Table synthesis + ReadsDb/WritesDb edges, isomorphic to the PHP side's `DB::table()` rule.
 //!
-//! 读表名的正则只认 `from|join|into|update + 标识符`：
-//! * `from (` 子查询、`from \${tableName}` 动态表名**不匹配** —— 如实跳过，不猜；
-//! * 同一语句里的多表（join）各生成一条伪调用点，去重键为 `(语句, 表)`。
+//! The regex that reads table names only recognises `from|join|into|update + identifier`:
+//! * `from (` sub-queries and `from ${tableName}` dynamic table names **do not match** — skipped faithfully, not
+//!   guessed;
+//! * several tables in one statement (a join) each produce a pseudo call site; the dedup key is
+//!   `(statement, table)`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -28,7 +31,7 @@ use gt_domain::model::{
 use crate::context::PipelineContext;
 use crate::workspace::CallRecord;
 
-/// 每子工程最多扫描的 XML 数（防第三方怪库拖慢；mapper 一般 ≤ 100）。
+/// Maximum number of XMLs scanned per sub-project (so a weird third-party library cannot slow things down; mappers are usually <= 100).
 const MAX_XML_PER_SUB: usize = 400;
 
 pub fn run(ctx: &mut PipelineContext) {
@@ -36,7 +39,7 @@ pub fn run(ctx: &mut PipelineContext) {
     let project_root = ctx.project.root_path.clone();
     let phase = Phase(Phase::CF_AST.to_string());
 
-    // rust 的 regex 不支持反向引用：闭合标签用通用名捕获、事后与开标签比对。
+    // Rust's regex does not support back-references: the closing tag is captured under a generic name and compared with the opening tag afterwards.
     let stmt_re = Regex::new(
         r#"(?is)<\s*(select|insert|update|delete)\b([^>]*)>(.*?)</\s*([a-zA-Z]+)\s*>"#,
     )
@@ -50,8 +53,8 @@ pub fn run(ctx: &mut PipelineContext) {
     let mut total_calls = 0usize;
 
     for sub in &subs {
-        // 只对 Java 子工程做 —— 伪调用点的 callee 带语言无关前缀，但扫描本身没必要
-        // 在 PHP / 前端子工程上白跑一遍。
+        // Only for Java sub-projects — the pseudo call site's callee carries a language-agnostic prefix, but there is
+        // no reason to run the scan itself pointlessly over PHP / frontend sub-projects.
         if sub.language.as_str() != Language::JAVA {
             continue;
         }
@@ -61,7 +64,7 @@ pub fn run(ctx: &mut PipelineContext) {
             project_root.join(&sub.root_path)
         };
 
-        // 收集本子工程的 mapper XML（内容含 `<mapper` 才算，文件名不做假设）。
+        // Collect this sub-project's mapper XMLs (only files whose content contains `<mapper` count; no assumption is made about file names).
         let mut xmls: Vec<(String, String)> = Vec::new();
         let mut walker = walkdir::WalkDir::new(&root).follow_links(false).into_iter();
         while let Some(entry) = walker.next() {
@@ -103,7 +106,7 @@ pub fn run(ctx: &mut PipelineContext) {
             }
         }
 
-        // 同一语句多表（join）各一条；`语句×表` 去重。
+        // Several tables in one statement (a join) each get one; deduped by `statement x table`.
         let mut seen: HashSet<(String, String)> = HashSet::new();
         for (rel, text) in &xmls {
             let Some(ns_cap) = ns_re.captures(text) else {
@@ -115,7 +118,7 @@ pub fn run(ctx: &mut PipelineContext) {
             }
             for stmt in stmt_re.captures_iter(text) {
                 let kind = stmt[1].to_ascii_lowercase();
-                // 闭合标签与开标签不一致（嵌套同名块等怪异写法）——跳过，不猜。
+                // The closing tag does not match the opening tag (nested same-named blocks and other oddities) — skip, do not guess.
                 if !stmt[4].eq_ignore_ascii_case(&stmt[1]) {
                     continue;
                 }
@@ -127,7 +130,7 @@ pub fn run(ctx: &mut PipelineContext) {
                     continue;
                 }
                 let owner_fqn = format!("{}.{}", ns, stmt_id);
-                // owner 解析：优先 Mapper 接口方法（P2 已建）；接口本身兜底。
+                // Owner resolution: prefer the Mapper interface method (already built by P2); the interface itself is the fallback.
                 let owner = ctx
                     .ws
                     .find_by_name(&owner_fqn)
@@ -135,7 +138,7 @@ pub fn run(ctx: &mut PipelineContext) {
                 let Some(owner) = owner else {
                     continue;
                 };
-                // 语句起始行（UI 的「调用处」定位用）。
+                // The statement's starting line (used by the UI to locate the "call site").
                 let line = text[..stmt.get(0).map(|m| m.start()).unwrap_or(0)]
                     .bytes()
                     .filter(|&b| b == b'\n')
@@ -166,7 +169,7 @@ pub fn run(ctx: &mut PipelineContext) {
                         language: Language(Language::JAVA.to_string()),
                         phase: phase.clone(),
                         confidence: 0.9,
-                        // 证据：mapper 文件与语句 id，供 UI 一眼核对。
+                        // Evidence: the mapper file and statement id, so the UI can verify at a glance.
                         properties: serde_json::json!({
                             "snippet": format!("<{} id=\"{}\"> … {} …", kind, stmt_id, table),
                             "mapper": rel,
@@ -187,13 +190,13 @@ pub fn run(ctx: &mut PipelineContext) {
                         owner_fqn: owner_fqn.clone(),
                         owner_class: Some(ns.clone()),
                         callee: callee.clone(),
-                        // 匹配器把 `A::b` 模式拆成 receiver + method 来比（见
-                        // `callee_matches`），伪调用点必须如实带上这两个字段。
+                        // The matcher splits an `A::b` pattern into receiver + method to compare (see
+                        // `callee_matches`), so a pseudo call site must carry both fields faithfully.
                         receiver: Some("mybatis".to_string()),
                         method: Some(kind.clone()),
                         args: vec![FactValue::String(table.clone())],
                         db_table: None,
-                        // MyBatis 的伪调用点来自 XML，没有"循环体内"这个概念。
+                        // MyBatis pseudo call sites come from XML, which has no notion of "inside a loop body".
                         in_loop: false,
                         entity: None,
                         span,
@@ -210,7 +213,7 @@ pub fn run(ctx: &mut PipelineContext) {
 
     if total_calls > 0 {
         info!(
-            "MyBatis mapper 扫描：注入 {} 条伪调用点，涉及 {} 张表",
+            "MyBatis mapper scan: injected {} pseudo call sites, across {} tables",
             total_calls,
             total_tables.len()
         );

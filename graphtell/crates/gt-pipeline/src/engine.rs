@@ -1,7 +1,7 @@
-//! FKB 规则引擎：选择器匹配 + 绑定动作执行。
+//! The FKB rules engine: selector matching + bound-action execution.
 //!
-//! 内核不认识任何框架 —— 它只认识"选择器"与"绑定"这两个抽象概念，
-//! 具体语义全部来自 FKB YAML（依赖倒置 + 开闭原则）。
+//! The kernel knows no framework — it only knows the two abstractions "selector" and "binding";
+//! all concrete semantics come from the FKB YAML (dependency inversion + open-closed principle).
 
 use std::collections::HashSet;
 
@@ -18,26 +18,26 @@ use crate::normalize::{apply_normalize, apply_table_prefix_steps};
 use crate::workspace::{CallRecord, ConfigRecord, GraphWorkspace, InheritRecord};
 use crate::context::PipelineContext;
 
-// ---------------------------------------------------------------- 命名空间
+// ---------------------------------------------------------------- Namespace
 
-/// 已知命名空间分隔符的并集：PHP `\`、Java/JS `.`、路径式 `/`、C++/Ruby `:`。
+/// The union of known namespace separators: PHP `\`, Java/JS `.`, path-style `/`, C++/Ruby `:`.
 ///
-/// 内核做 FQN 归一与短名提取时按**并集**处理，不假设某一门语言用哪个符号。
-/// "本语言分隔符"由 [`gt_domain::port::LanguageParser::namespace_separator()`]
-/// 提供，并经 [`gt_domain::model::NamespacePolicy`] 随流水线传递到每个子工程
-/// （见 [`crate::context::PipelineContext::lang_policy_for_sub`]），拼接与解析
-/// 都按该语言的分隔符取值 —— 内核不认识任何具体语言。
+/// The kernel normalises FQNs and extracts short names by the **union**, assuming no specific language uses which symbol.
+/// "This language's separator" is provided by [`gt_domain::port::LanguageParser::namespace_separator()`]
+/// and passed to every sub-project along the pipeline via [`gt_domain::model::NamespacePolicy`]
+/// (see [`crate::context::PipelineContext::lang_policy_for_sub`]); concatenation and parsing both take that language's separator —
+/// the kernel knows no concrete language.
 pub const NS_SEPARATORS: [char; 4] = ['\\', '.', '/', ':'];
 
-// ---------------------------------------------------------------- 选择器
+// ---------------------------------------------------------------- Selector
 
-/// callee 模式匹配。
+/// Callee pattern matching.
 ///
-/// 支持：
-/// * `|` 分隔多个备选
-/// * `A::b` / `A->b` 形式（`A` 支持 `*` 与尾部匹配，如 `Db::name` 可匹配 `think\facade\Db::name`）
-/// * `A::{b,c}` 方法列表
-/// * 裸方法名（匹配 `method`）
+/// Supports:
+/// * `|`-separated alternatives
+/// * `A::b` / `A->b` forms (`A` supports `*` and tail matching, e.g. `Db::name` matches `think\facade\Db::name`)
+/// * `A::{b,c}` method lists
+/// * bare method names (match `method`)
 pub fn callee_matches(
     pattern: &str,
     callee: &str,
@@ -52,7 +52,7 @@ pub fn callee_matches(
 }
 
 fn alt_matches(alt: &str, callee: &str, receiver: Option<&str>, method: Option<&str>) -> bool {
-    // 方法列表：A::{b,c}
+    // Method list: A::{b,c}
     if let Some(open) = alt.find("::{") {
         if let Some(close) = alt[open..].find('}') {
             let recv = &alt[..open];
@@ -71,7 +71,7 @@ fn alt_matches(alt: &str, callee: &str, receiver: Option<&str>, method: Option<&
         let (r, m) = (&alt[..pos], &alt[pos + 2..]);
         return recv_matches(r, receiver, callee) && meth_matches(m, method);
     }
-    // 单冒号形式：`*:dispatch` 表示「任意接收者、方法 dispatch」。
+    // Single-colon form: `*:dispatch` means "any receiver, method dispatch".
     if let Some(pos) = alt.find(':') {
         let (r, m) = (&alt[..pos], &alt[pos + 1..]);
         return recv_matches(r, receiver, callee) && meth_matches(m, method);
@@ -80,7 +80,7 @@ fn alt_matches(alt: &str, callee: &str, receiver: Option<&str>, method: Option<&
         let (r, m) = (&alt[..pos], &alt[pos + 2..]);
         return recv_matches(r, receiver, callee) && meth_matches(m, method);
     }
-    // 裸模式：优先按方法名匹配，其次按完整 callee
+    // Bare pattern: match by method name first, then by full callee
     if let Some(m) = method {
         if m.eq_ignore_ascii_case(alt) {
             return true;
@@ -89,19 +89,19 @@ fn alt_matches(alt: &str, callee: &str, receiver: Option<&str>, method: Option<&
     callee.eq_ignore_ascii_case(alt) || callee.ends_with(&format!("::{}", alt))
 }
 
-/// 在匹配前，把调用点的 `receiver` / `callee` 经由 **import 别名** 还原（通用，不针对任何框架）。
+/// Before matching, restore the call site's `receiver` / `callee` via the **import alias** (generic, framework-agnostic).
 ///
-/// 例：`use think\facade\Queue as QueueThink;` 后写 `QueueThink::push()`，receiver `QueueThink`
-/// 被还原成 `think\facade\Queue`，从而能命中 FKB 里 `Queue::push` 这类「以伞名结尾」的模式
-/// （`recv_matches` 的尾部 `\Queue` 匹配）。别名查的是 P2 写进 `imports` 符号表的全局索引。
+/// Example: after `use think\facade\Queue as QueueThink;` writing `QueueThink::push()`, the receiver `QueueThink`
+/// is restored to `think\facade\Queue`, so it can hit FKB patterns like `Queue::push` that "end in an umbrella name"
+/// (the tail `\Queue` match of `recv_matches`). The alias looks up the global index written into the `imports` symbol table by P2.
 ///
-/// 若没有对应别名，调用点原样匹配，行为与此前完全一致（无回归）。
+/// If there is no matching alias, the call site matches as-is, behaviour identical to before (no regression).
 pub fn aliased_callee_matches(ws: &GraphWorkspace, pattern: &str, rec: &CallRecord) -> bool {
     let (recv, method, callee) = resolve_aliased_call(ws, rec);
     callee_matches(pattern, &callee, recv.as_deref(), method.as_deref())
 }
 
-/// 把调用点的 receiver / callee 还原成别名对应的 FQN。
+/// Restore a call site's receiver / callee into the alias's FQN.
 fn resolve_aliased_call(ws: &GraphWorkspace, rec: &CallRecord) -> (Option<String>, Option<String>, String) {
     let method = rec.method.clone();
     let mut recv = rec.receiver.clone();
@@ -127,18 +127,14 @@ fn recv_matches(pattern: &str, receiver: Option<&str>, callee: &str) -> bool {
         return true;
     }
     let Some(r) = receiver else { return false };
-    // 前导分隔符折叠：Java 的 `com.x.X` 与 PHP 的 `\X` 统一去掉前缀分隔符。
+    // Leading-separator folding: Java's `com.x.X` and PHP's `\X` both drop the prefix separator.
     let r = r.trim_start_matches(|c| NS_SEPARATORS.contains(&c));
-    // 前导 `*` 通配：匹配「任意前缀 + 该后缀」的类（如 `*CacheService` 匹配
-    // `crmeb\services\CacheService`、`*Cache` 匹配 `app\model\other\Cache`）。
-    // 与既有「尾部伞名匹配」一致，只是不要求后缀前有命名空间分隔符——这正是
-    // 能力接口 `wrapper` 模式（`*Type::method`）所需的「按封装类命名约定匹配」。
     let pat = pattern.strip_prefix('*').unwrap_or(pattern);
     if r.eq_ignore_ascii_case(pat) {
         return true;
     }
-    // 尾部匹配（伞名）：`Queue` 匹配 `think\facade\Queue`，`Service` 匹配 `com.x.Service`。
-    // 分隔符取已知语言的并集，不假设某门语言用哪个符号（内核零语言知识）。
+    // Tail matching (umbrella name): `Queue` matches `think\facade\Queue`, `Service` matches `com.x.Service`.
+    // The separator takes the union of known languages, assuming no specific language uses which symbol (kernel has zero language knowledge).
     if r.len() > pat.len() {
         for sep in NS_SEPARATORS {
             let prefix = format!("{}{}", sep, pat);
@@ -162,7 +158,7 @@ fn meth_matches(pattern: &str, method: Option<&str>) -> bool {
     }
 }
 
-/// 调用点是否匹配选择器。
+/// Whether a call site matches the selector.
 pub fn matches_call(sel: &Selector, rec: &CallRecord, ws: &GraphWorkspace) -> bool {
     let (callee_pat, preds) = match sel {
         Selector::Call { callee, r#where } => (callee, r#where),
@@ -179,7 +175,7 @@ pub fn matches_call(sel: &Selector, rec: &CallRecord, ws: &GraphWorkspace) -> bo
         .all(|p| eval_predicate(p, rec.node, Some(MatchCtx::Call(rec)), ws, &ev))
 }
 
-/// 配置条目是否匹配选择器（支持 `file` 中含 `{locale}` 的占位与 `*` 通配）。
+/// Whether a config entry matches the selector (supports `{locale}` placeholders and `*` wildcards in `file`).
 pub fn matches_config(
     sel: &Selector,
     rec: &ConfigRecord,
@@ -212,13 +208,13 @@ pub fn matches_config(
     true
 }
 
-/// 路径匹配：支持 `*` 通配与 `{locale}` 占位（占位内容不参与匹配）。
+/// Path matching: supports `*` wildcards and `{locale}` placeholders (the placeholder content does not participate in matching).
 pub fn path_matches(pattern: &str, path: &str) -> bool {
     let normalized = pattern.replace("{locale}", "*");
     wildcard_matches(&normalized, path)
 }
 
-/// 从路径中抽取 `{locale}` 占位对应的片段。
+/// Extract the fragment corresponding to the `{locale}` placeholder from a path.
 pub fn capture_locale(pattern: &str, path: &str) -> Option<String> {
     let idx = pattern.find("{locale}")?;
     let prefix = &pattern[..idx];
@@ -261,20 +257,20 @@ fn wildcard_matches(pattern: &str, value: &str) -> bool {
     parts.last().map(|l| l.is_empty() || value.ends_with(l)).unwrap_or(true)
 }
 
-/// 继承是否匹配选择器。
+/// Whether inheritance matches the selector.
 pub fn matches_inherit(sel: &Selector, rec: &InheritRecord, ws: &GraphWorkspace) -> bool {
     let (base, with_property) = match sel {
         Selector::Inheritance { base, with_property } => (base, with_property),
         _ => return false,
     };
     if let Some(pat) = base {
-        // 直接基类匹配，或**传递继承**匹配（`X extends BaseModel extends Model`）
+        // Direct base-class match, or **transitive inheritance** match (`X extends BaseModel extends Model`)
         let direct = pat
             .split('|')
             .map(str::trim)
             .any(|p| recv_matches(p, Some(&rec.base), &rec.base));
         if !direct {
-            // 传递继承按**名字链**判定，容忍 vendor 里的中间/末端类缺失
+            // Transitive inheritance is judged by the **name chain**, tolerating missing intermediate/leaf classes in vendor
             let transitive = pat
                 .split('|')
                 .map(str::trim)
@@ -292,7 +288,7 @@ pub fn matches_inherit(sel: &Selector, rec: &InheritRecord, ws: &GraphWorkspace)
     true
 }
 
-/// 图节点是否匹配选择器。
+/// Whether a graph node matches the selector.
 pub fn matches_node(sel: &Selector, id: NodeId, ws: &GraphWorkspace) -> bool {
     let (kind, preds) = match sel {
         Selector::Node { node_kind, r#where } => (node_kind, r#where),
@@ -310,11 +306,11 @@ pub fn matches_node(sel: &Selector, id: NodeId, ws: &GraphWorkspace) -> bool {
         .all(|p| eval_predicate(p, id, Some(MatchCtx::Node(id)), ws, &ev))
 }
 
-/// 把节点属性值转成用于 `property_is` 比较的字符串。
+/// Turn a node property value into a string for `property_is` comparison.
 ///
-/// 同时支持字符串与布尔：解析器把 `in_loop` 写成 JSON 布尔（`true` / `false`），
-/// 而规则里写的是 `"true"` 字符串。若只用 `as_str()`，布尔值会返回 `None`，
-/// 导致 `property_is: { name: in_loop, value: "true" }` 永远不成立。
+/// Supports both string and boolean: the parser writes `in_loop` as a JSON boolean (`true` / `false`),
+/// while the rule writes the string `"true"`. Using only `as_str()` would return `None` for a boolean,
+/// making `property_is: { name: in_loop, value: "true" }` never hold.
 fn node_prop_str(v: Option<&serde_json::Value>) -> Option<&str> {
     match v {
         Some(serde_json::Value::String(s)) => Some(s.as_str()),
@@ -323,7 +319,7 @@ fn node_prop_str(v: Option<&serde_json::Value>) -> Option<&str> {
     }
 }
 
-/// 谓词求值。
+/// Predicate evaluation.
 pub fn eval_predicate(
     pred: &Predicate,
     node: NodeId,
@@ -372,8 +368,8 @@ pub fn eval_predicate(
         }
         Predicate::FanInGte(n) => ws.fan_in(node) as u64 >= *n,
         Predicate::EntryArityGte(n) => match mctx {
-            // 只放行「值是数组且元素数 >= n」的配置条目：
-            // 既排除数组展开出的标量叶子条目（`listen.evt.0`），也排除空数组条目。
+            // Only pass config entries where "the value is an array with element count >= n":
+            // excludes both scalar leaf entries expanded from an array (`listen.evt.0`) and empty-array entries.
             Some(MatchCtx::Config(c)) => {
                 matches!(&c.value, FactValue::Array(_)) && c.value.array_len() >= *n
             }
@@ -423,7 +419,7 @@ fn column_matches(column: &str, wanted: &str) -> bool {
     c == w || c.ends_with(&format!("_{}", w))
 }
 
-/// 查 schema 表的列（兼容带/不带前缀的表名）。
+/// Look up columns of the schema table (compatible with prefixed / unprefixed table names).
 pub fn schema_columns(ws: &GraphWorkspace, table: &str, name: &str) -> Option<Vec<String>> {
     let stripped = ws.strip_table_prefix(name);
     if stripped != name {
@@ -444,9 +440,9 @@ fn columns_of(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-// ---------------------------------------------------------------- 绑定执行
+// ---------------------------------------------------------------- Binding execution
 
-/// 执行一条规则的全部动作。
+/// Execute all actions of one rule.
 #[allow(clippy::too_many_arguments)]
 pub fn exec_binding(
     ctx: &mut PipelineContext,
@@ -473,7 +469,7 @@ pub fn exec_binding(
                         phase,
                         "AnnotateTargetMissing",
                         Severity::Warning,
-                        format!("规则 {} 的标注目标未能解析", rule.id),
+                        format!("rule {}: annotation target could not be resolved", rule.id),
                         location_of(ctx, mctx),
                     );
                     continue;
@@ -532,12 +528,12 @@ pub fn exec_binding(
     }
 }
 
-/// 边投影：遍历匹配节点的每条 `along` 出边，两端各沿自己的边种类链走到落点，
-/// 在两落点之间建 `kind` 边。
+/// Edge projection: for each matching node's `along` out-edge, walk each end along its own edge-kind chain to the landing point,
+/// and build a `kind` edge between the two landing points.
 ///
-/// **一对多**是它存在的理由：一个实体类有几条 `@ManyToOne` 就产出几条外键边，
-/// 而 `Link` 的两端只能各取一个名字、多关系时必然只建一条（静默丢边）。
-/// 落点走不到（如该实体没有对应的 `Table`）就跳过这一条 —— 宁可缺不可猜。
+/// **One-to-many** is why it exists: an entity class with several `@ManyToOne` produces several foreign-key edges,
+/// while `Link`'s two ends can each take only one name, and multiple relations would necessarily build only one (silently dropping edges).
+/// When a landing point cannot be reached (e.g. that entity has no corresponding `Table`), skip that one — better missing than guessed.
 fn exec_project(
     ctx: &mut PipelineContext,
     rule: &Rule,
@@ -545,7 +541,7 @@ fn exec_project(
     matched: NodeId,
     phase: &Phase,
 ) {
-    // 先拷一份邻接表：`add_edge` 要 &mut，不能同时借用 `out_edges_of` 的切片。
+    // Copy the adjacency list first: `add_edge` needs &mut, so it cannot simultaneously borrow the `out_edges_of` slice.
     let outs: Vec<(String, i64)> = ctx.ws.out_edges_of(matched).to_vec();
     for (kind, to) in outs {
         if kind != p.along.as_str() {
@@ -557,7 +553,7 @@ fn exec_project(
             continue;
         };
         if f == t {
-            continue; // 自环（自己引用自己）没有信息量
+            continue; // a self-loop (references itself) carries no information
         }
         ctx.ws.add_edge(NewEdge {
             project_id: ctx.project.id,
@@ -571,7 +567,7 @@ fn exec_project(
     }
 }
 
-/// `Annotate.phase` 只写 `Pre` / `Post`，需要拼成完整阶段名。
+/// `Annotate.phase` only writes `Pre` / `Post`; needs to be assembled into a full phase name.
 fn suffix_of(p: &Phase) -> &str {
     if p.as_str().ends_with("Post") {
         "Post"
@@ -593,8 +589,8 @@ fn location_of(ctx: &PipelineContext, m: MatchCtx) -> Option<String> {
         MatchCtx::Call(c) => Some(format!("{}:{}", c.file, c.span.start_line)),
         MatchCtx::Config(c) => Some(format!("{}:{}", c.file, c.span.start_line)),
         MatchCtx::Inherit(i) => Some(format!("{}:{}", i.file, i.span.start_line)),
-        // P6 的选择器作用在**图节点**上：此时"出处"是节点自己的声明位置，而不是
-        // identity / FQN 字符串（那会让 `locations[].file` 塞进一个 FQN，前端跳转失效）。
+        // P6's selector acts on **graph nodes**: here the "origin" is the node's own declaration location, not the
+        // identity / FQN string (that would stuff an FQN into `locations[].file` and break the frontend jump).
         MatchCtx::Node(id) => {
             let n = ctx.ws.node(id)?;
             let file = n.file_id.and_then(|fid| ctx.ws.source_path_of(fid.get()))?;
@@ -647,7 +643,7 @@ fn resolve_annotate_targets(
                 }
             }
             if out.is_empty() {
-                tracing::debug!("规则 {} 的 from_field 未命中任何节点", rule.id);
+                tracing::debug!("rule {}: from_field matched no node", rule.id);
             }
             out
         }
@@ -718,12 +714,11 @@ fn resolve_subkind(
 
 // ---------------------------------------------------------------- Synthesize
 
-/// 展开表：**一条调用 → N 个语义节点**（如 REST 资源路由）。
+/// Expansion table: **one call -> N semantic nodes** (e.g. a REST resource route).
 ///
-/// 顺序执行每个「被允许」的变体，各自用同一份 `identity` / `fields` / `link`
-/// 合成一个节点；变体带来的差异(method / 路径后缀 / 入口方法)由
-/// `{ expand_method: true }` / `{ expand_entry: true }` 注入。
-/// 返回**最后一个**变体的节点（供同一规则内后续 binding 的 `@self` 引用）。
+/// Execute each "allowed" variant in order, each synthesising one node with the same `identity` / `fields` / `link`;
+/// the variant's differences (method / path suffix / entry method) are injected via `{ expand_method: true }` / `{ expand_entry: true }`.
+/// Returns the **last** variant's node (for `@self` references of later bindings in the same rule).
 fn exec_synthesize(
     ctx: &mut PipelineContext,
     rule: &Rule,
@@ -753,11 +748,11 @@ fn exec_synthesize(
     last
 }
 
-/// 展开表里**实际生效**的动作名集合；返回 `None` 表示「未声明过滤，全部生效」。
+/// The actually-effective action-name set in the expansion table; `None` means "no filter declared, all take effect".
 ///
-/// 过滤条件来自**同一语句行**上的链式调用 —— `Route::resource(...)->except(['read'])`
-/// 被解析成同一行内方法名为 `except` 的另一个调用点，其首个实参即动作名数组。
-/// 这样内核不需要认识任何框架的 `only` / `except` 语义（名字由 FKB 给出）。
+/// The filter comes from a chained call on the **same statement line** — `Route::resource(...)->except(['read'])`
+/// is parsed into another call site on the same line whose method name is `except`, with its first argument being the action-name array.
+/// This way the kernel need not know any framework's `only` / `except` semantics (the names come from FKB).
 fn expanded_actions(
     ctx: &PipelineContext,
     spec: &ExpandSpec,
@@ -801,8 +796,8 @@ fn expanded_actions(
 
 
 
-/// 变体感知的求值器：`Synthesize.expand` 逐条执行时，把当前变体注入求值上下文，
-/// 使 `{ expand_method: true }` / `{ expand_entry: true }` 取到该变体的值。
+/// A variant-aware evaluator: as `Synthesize.expand` runs each variant, it injects the current variant into the evaluation context,
+/// so `{ expand_method: true }` / `{ expand_entry: true }` take that variant's value.
 fn ev_of<'a>(
     ws: &'a GraphWorkspace,
     mctx: MatchCtx<'a>,
@@ -829,22 +824,12 @@ fn exec_synthesize_one(
             phase,
             "IdentityUnresolved",
             Severity::Warning,
-            format!("规则 {} 未能算出 identity", rule.id),
+            format!("rule {}: could not compute an identity", rule.id),
             location_of(ctx, mctx),
         );
         return matched;
     };
 
-    // 把 `side`（frontend / backend）收进身份作用域，避免同名 key 前后端合并。
-    // 展示名 `value` 保持干净（仍是 key 原文，如 `token`），只在幂等合并键上区分。
-    // 适用：缓存 / 配置 / 事件 / 队列 / Topic 等「进程外中介」与资产类节点
-    // （ConfigKey / Event / Queue / Topic / Cache …），它们各自属于某一端，
-    // 前端 `uni.setStorageSync('token')` 与后端 `Cache::get('token')` 因此是
-    // 两个独立节点，而非共用一个。
-    //
-    // **唯一例外是 HttpContract（API 契约）**：前端调用与后端路由的同名契约本就该
-    // 合并（那是前后端链路打通的关键），绝不能按端拆分。契约身份用 `CONTRACT_ID`
-    // 标记，这里据此放行。
     if identity.kind.as_str() != SynthesizedKind::CONTRACT_ID {
         if let Some(side) = s
             .fields
@@ -857,10 +842,6 @@ fn exec_synthesize_one(
         }
     }
 
-    // 子类型提升为"种类"：`node: ExternalSystem, subtype: Cache` → kind = `Cache`。
-    // 不再写 `ExternalSystem` 伞类别：每个语义节点都以其**具体种类**（Event / Queue /
-    // Cache / Topic / Table / ConfigKey…）作为 kind，视角直接按 kind 切换；`category`
-    // 仅保留为"等于 kind"的冗余标签（第一类语义节点本就等同于 kind）。
     let kind = match &s.subtype {
         Some(sub) if !sub.is_empty() => NodeKind(sub.clone()),
         _ => s.node.clone(),
@@ -877,12 +858,12 @@ fn exec_synthesize_one(
         &ctx.language_of(sub),
         gt_domain::model::Span::default(),
     );
-    // 记录来源，便于冲突诊断
+    // Record the source, for conflict diagnosis
     props["sources"] = json!([rule.id]);
     new_node.properties = props.clone();
 
-    // 调用语句原文（CallSite 由 P2 从 span 提取）。让边的证据与合成节点的出处
-    // 都能直接显示"这条边 / 这个配置是怎么读出来的"，不必自己打开文件核对。
+    // The call statement source (CallSite is extracted from the span by P2). Let both an edge's evidence and a synthesised node's origin
+    // directly show "how this edge / this config was read", without opening the file to check.
     let snippet = ctx
         .ws
         .node(matched)
@@ -892,7 +873,7 @@ fn exec_synthesize_one(
 
     let (node_id, created) = ctx.ws.get_or_create_synthesized(new_node);
 
-    // 记录"这个语义对象在源码里的出处"，供前端给出**多位置列表**跳转
+    // Record "where this semantic object comes from in source", for the frontend to give a **multi-location** jump list
     if let Some(loc) = location_of(ctx, mctx) {
         let (file, line) = match loc.split_once(':') {
             Some((f, l)) => (f.to_string(), l.parse::<u32>().unwrap_or(0)),
@@ -903,19 +884,12 @@ fn exec_synthesize_one(
             file,
             line,
             Some(identity.value.clone()),
-            Some(format!("规则 {}", rule.id)),
+            Some(format!("rule {}", rule.id)),
             snippet.clone(),
         );
     }
 
     if !created {
-        // 幂等合并：**只补 `sources`**，绝不整份回写 properties。
-        //
-        // 内存里的 `node.properties` 已被 `append_location` 累积了 `locations` 数组；
-        // 若把它整份作为 property patch 推给落库，而 `location_patches` 又会逐条追加，
-        // 同一份 locations 就会被写两遍 —— 落库时 `merge_into` 是浅合并，
-        // 整份 patch 里的 `locations` 会先覆盖、随后又被逐条追加
-        // （实测 7 个位置变成 14 条，"整批重复"）。
         if let Some(node) = ctx.ws.node(node_id) {
             let mut sources = node
                 .properties
@@ -981,7 +955,7 @@ fn exec_synthesize_one(
                         },
                     }),
                 });
-                // 记录传播种子：owner 是「动作发出方」，其调用方沿 CALLS 链也应被识别为同一语义动作的发出方。
+                // Record a propagation seed: owner is the "action emitter", and its callers along the CALLS chain should also be recognised as emitters of the same semantic action.
                 ctx.propagation_seeds.push(crate::context::PropSeed {
                     source: owner,
                     target: node_id,
@@ -1003,7 +977,7 @@ fn exec_synthesize_one(
                 });
             }
             gt_domain::model::Direction::ToTarget => {
-                // 目标方法名：数组式 handler 的 `[Ctrl::class, 'method']` 在这里给出。
+                // The target method name: an array-style handler's `[Ctrl::class, 'method']` is given here.
                 let method = link
                     .to_method
                     .as_ref()
@@ -1020,7 +994,7 @@ fn exec_synthesize_one(
                     .as_ref()
                     .map(|src| ev_of(&ctx.ws, mctx, variant).list(src))
                     .unwrap_or_default();
-                // 主来源里「可当作字符串目标」的项（跳过数组/空，正是队列 `arg:0` 是数组的场景）。
+                // Items in the main source that "can be treated as a string target" (skip arrays / empty — exactly the queue `arg:0` is-an-array case).
                 let primary_strings: Vec<String> = items
                     .iter()
                     .filter_map(|item| match item {
@@ -1031,8 +1005,8 @@ fn exec_synthesize_one(
                     })
                     .collect();
                 if primary_strings.is_empty() && !fb_items.is_empty() {
-                    // 主来源解析不出（如队列 `arg:0` 是数组/动作名而非类），
-                    // 整体退回 `to_fallback`（如 `receiver_class`）继续找消费方。
+                    // The main source cannot resolve (e.g. queue `arg:0` is an array / action name rather than a class),
+                    // fall back entirely to `to_fallback` (e.g. `receiver_class`) to keep finding the consumer.
                     push_to_target_edges(
                         ctx, mctx, rule, link, node_id, phase, confidence, sub, &fb_items,
                     );
@@ -1061,15 +1035,15 @@ fn exec_synthesize_one(
                                 }),
                             });
                         } else {
-                            // 交给 P7：路由 handler 可能需要按约定拼装后才知道是否存在
+                            // Hand to P7: a route handler may need convention-based assembly before it is known to exist
                             ctx.ws.pending_links.push(crate::workspace::PendingLink {
                                 from: node_id,
                                 kind: link.kind.clone(),
                                 raw: resolved.clone(),
-                                // 带上 FKB 显式给出的入口方法（资源路由的 `expand_entry`），
-                                // 否则 P7 只有类名可用，会退化到「类级回退」。
+                                // Carry the entry method explicitly given by FKB (the `expand_entry` of a resource route),
+                                // otherwise P7 only has the class name and degrades to "class-level fallback".
                                 method: method.clone(),
-                                // `resolve` 既可以写在 link 上，也可以写在 to 的值来源里
+                                // `resolve` can be written on either a link or on the `to` value source
                                 resolve: link
                                     .resolve
                                     .clone()
@@ -1087,7 +1061,7 @@ fn exec_synthesize_one(
         }
     }
 
-    // alias 注册
+    // alias registration
     if let Some(alias) = &s.alias {
         if let Some(key) = ev_of(&ctx.ws, mctx, variant).string(&alias.key) {
             let qualifier = alias
@@ -1108,15 +1082,15 @@ fn exec_synthesize_one(
     node_id
 }
 
-/// 全限定名的候选形态。
+/// Candidate forms of a fully qualified name.
 ///
-/// 源码里指涉一个类有两种写法：**标识符引用**（`app\common\X`、`com.example.X`）
-/// 与**字符串字面量**（`'app\\common\\X'`）。后者取到的是源码原文，命名空间分隔符
-/// 常被转义成连续两个字符，与图里已经建好的 FQN 对不上，边就连不上。
+/// There are two ways to refer to a class in source: an **identifier reference** (`app\common\X`, `com.example.X`)
+/// and a **string literal** (`'app\\common\\X'`). The latter takes the source verbatim, where the namespace separator
+/// is often escaped into two consecutive characters, mismatching the FQN already built in the graph, so the edge fails to connect.
 ///
-/// 这里做的是**语言无关**的归一：折叠连续重复的命名空间分隔符、去掉前导分隔符
-/// （全局命名空间写法）。内核不假设某门语言用哪个符号 —— 分隔符取已知语言的并集。
-/// 顺序上先试原值，因此不会改变任何原本就能匹配的情形。
+/// What is done here is **language-agnostic** normalisation: fold consecutive repeated namespace separators, drop the leading separator
+/// (global-namespace form). The kernel assumes no specific language uses which symbol — the separator takes the union of known languages.
+/// In order, the original value is tried first, so nothing that already matched is changed.
 fn fqn_variants(fqn: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |s: String| {
@@ -1126,7 +1100,7 @@ fn fqn_variants(fqn: &str) -> Vec<String> {
     };
     push(fqn.to_string());
 
-    // 折叠连续重复的分隔符：`app\\common\\X` ≡ `app\common\X`
+    // Fold consecutive repeated separators: `app\\common\\X` == `app\common\X`
     let mut collapsed = String::with_capacity(fqn.len());
     let mut prev: Option<char> = None;
     for ch in fqn.chars() {
@@ -1138,14 +1112,14 @@ fn fqn_variants(fqn: &str) -> Vec<String> {
     }
     push(collapsed.clone());
 
-    // 去前导分隔符：`\app\X` ≡ `app\X`
+    // Drop leading separator: `\app\X` == `app\X`
     for cand in [fqn.to_string(), collapsed] {
         push(cand.trim_start_matches(|c| NS_SEPARATORS.contains(&c)).to_string());
     }
     out
 }
 
-/// 取某子工程（或全局兜底）的消费入口方法名候选（FKB `entry_methods`）。
+/// Take a sub-project's (or the global fallback's) candidate consumer-entry method names (FKB `entry_methods`).
 fn entry_methods_for(ctx: &PipelineContext, sub: Option<SubProjectId>) -> Vec<String> {
     if let Some(s) = sub {
         if let Some(v) = ctx.entry_methods.get(&s.get()) {
@@ -1155,10 +1129,10 @@ fn entry_methods_for(ctx: &PipelineContext, sub: Option<SubProjectId>) -> Vec<St
     ctx.entry_methods_default.clone()
 }
 
-/// 解析边目标：类 → 优先其 `handle`/`fire`/`doJob` 方法，否则类本身。
+/// Resolve an edge target: class -> prefer its `handle`/`fire`/`doJob` method, otherwise the class itself.
 ///
-/// `doJob` 是 ThinkPHP/CRMEB 队列 Job 类的通用入口（`QueueTrait` 约定），
-/// 与 Laravel 的 `handle`、Symfony 的 `__invoke` 并列纳入。
+/// `doJob` is the common entry of ThinkPHP/CRMEB queue Job classes (the `QueueTrait` convention),
+/// listed alongside Laravel's `handle` and Symfony's `__invoke`.
 fn find_target_node(
     ctx: &PipelineContext,
     fqn: &str,
@@ -1172,15 +1146,15 @@ fn find_target_node(
             .find_by_name(cand)
             .or_else(|| ctx.ws.resolve_short_name(cand).and_then(|f| ctx.ws.find_by_name(&f)))
     })?;
-    // FKB 显式指定了方法名（如数组式 handler 的 `[Ctrl::class, 'method']`）—— 优先于约定入口
+    // FKB explicitly gave a method name (e.g. an array-style handler's `[Ctrl::class, 'method']`) — precedence over the convention entry
     if let Some(m) = method.filter(|m| !m.is_empty()) {
         let method_fqn = policy.join_member(&fqn_of(ctx, class_id), m);
         if let Some(id) = ctx.ws.find_by_name(&method_fqn) {
             return Some(id);
         }
     }
-    // 消费入口方法：优先 FKB 的 `entry_methods`（框架知识），未声明时回退到
-    // 跨框架常见入口名默认集。新框架只需在 YAML 里声明，不必改内核。
+    // Consumer entry method: prefer FKB's `entry_methods` (framework knowledge); fall back to
+    // the cross-framework common entry-name default set when undeclared. A new framework only declares it in YAML, no kernel change.
     const DEFAULT_ENTRY_METHODS: [&str; 5] = ["handle", "fire", "doJob", "__invoke", "run"];
     let list: Vec<&str> = if entry_methods.is_empty() {
         DEFAULT_ENTRY_METHODS.to_vec()
@@ -1196,9 +1170,9 @@ fn find_target_node(
     Some(class_id)
 }
 
-/// `ToTarget` 边生成：把一组值来源解析为「目标节点」并建边（查不到则降级为 PendingLink）。
+/// `ToTarget` edge generation: resolve a set of value sources into "target nodes" and build edges (degrade to a PendingLink if not found).
 ///
-/// 与内联逻辑一致，供主 `to` 解析失败后的 `to_fallback` 复用。
+/// Consistent with the inline logic, reused by the `to_fallback` after the main `to` resolution fails.
 fn push_to_target_edges(
     ctx: &mut PipelineContext,
     mctx: MatchCtx<'_>,
@@ -1210,7 +1184,7 @@ fn push_to_target_edges(
     sub: Option<gt_domain::model::SubProjectId>,
     items: &[gt_domain::model::FactValue],
 ) {
-    // 目标方法名（与主路径一致，供 `to_fallback` 场景复用）
+    // The target method name (consistent with the main path, reused in the `to_fallback` scenario)
     let method = link
         .to_method
         .as_ref()
@@ -1227,7 +1201,7 @@ fn push_to_target_edges(
         if raw.is_empty() {
             continue;
         }
-        // 先解析（临时 Evaluator，用后即弃，避免与下方 `find_target_node(ctx, …)` 的整结构借用冲突）。
+        // Resolve first (a temporary Evaluator, discarded after use, to avoid a whole-structure borrow conflict with the `find_target_node(ctx, …)` below).
         let resolved = Evaluator::new(&ctx.ws, mctx).resolve_name(&raw);
         if let Some(target) =
             find_target_node(ctx, &resolved, &link.kind, method.as_deref(), &entry, &policy)
@@ -1285,13 +1259,6 @@ fn compute_identity(
             .and_then(|s| ev.string(s))
             .unwrap_or_else(|| "GET".to_string());
         let path = spec.path.as_ref().and_then(|s| ev.string(s))?;
-        // 补齐 `Route::group('v2', ...)` 的路由组前缀。
-        // 不补的话 `Route::group('v2', fn(){ Route::get('order/x') })` 会建成
-        // `GET /order/x`，与真实请求路径 `/v2/order/x` 不符，也无法与前端契约汇聚。
-        //
-        // 注意：`path` 已由 `ValueSource.normalize`（含 `leading_slash`）处理过，
-        // 而 `IdentitySpec.normalize` 通常为空 —— 所以这里必须**自己保住前导斜杠**，
-        // 把组前缀插到斜杠之后，而不是简单前置（否则会产出 `GET v2/order/x`）。
         let path = match ev.ctx() {
             crate::eval::MatchCtx::Call(c) => {
                 let prefix = ev.ws().route_group_prefix(&c.file, c.span.start_line);
@@ -1303,9 +1270,6 @@ fn compute_identity(
             }
             _ => path,
         };
-        // 展开变体的路径后缀（`/create` / `/:id` / `/:id/edit`）：必须接在
-        // **组前缀之后**，否则 `Route::group('cms')` + `resource('cms')` 的
-        // `create` 会算成 `/create/cms` 而不是 `/cms/cms/create`。
         let path = match variant.and_then(|v| v.path_suffix.as_deref()) {
             Some(suffix) if !suffix.is_empty() => format!("{}{}", path, suffix),
             _ => path,
@@ -1325,17 +1289,17 @@ fn compute_identity(
     Some(IdentityKey { kind, value, scope: None })
 }
 
-/// 供外部复用的解析层级判定（P7 用）。
+/// A resolution-tier judgement reused externally (used by P7).
 pub fn tier_of(t: ResolveTier) -> ResolveTier {
     t
 }
 
-/// 常用的合并策略默认值。
+/// Common merge-strategy default values.
 pub fn default_merge() -> MergeStrategy {
     MergeStrategy::MaxByKind
 }
 
-/// 语言占位（供编译期校验）。
+/// Language placeholder (for compile-time validation).
 pub fn _assert_language(_l: &Language) {}
 
 #[cfg(test)]
@@ -1367,7 +1331,7 @@ mod tests {
     #[test]
     fn alias_resolution_makes_facade_pattern_match() {
         let mut ws = GraphWorkspace::new(ProjectId(1));
-        // 模拟 P2 写进的 import 符号表：`use think\facade\Queue as QueueThink;`
+        // Simulate the import symbol table written by P2: `use think\facade\Queue as QueueThink;`
         ws.put_symbol(
             ProjectId(1),
             "imports",
@@ -1376,14 +1340,14 @@ mod tests {
         );
         let rec = call_record(Some("QueueThink"), Some("push"), "QueueThink::push");
 
-        // 未做别名还原时，原始匹配失败（receiver 是 QueueThink，不是 \Queue 结尾）。
+        // Without alias restoration, the original match fails (receiver is QueueThink, not ending in \Queue).
         assert!(!callee_matches(
             "Queue::push",
             &rec.callee,
             rec.receiver.as_deref(),
             rec.method.as_deref()
         ));
-        // 经 import 别名还原后应命中 FKB 的 `Queue::push` 伞名模式。
+        // After import-alias restoration it should hit FKB's `Queue::push` umbrella-name pattern.
         assert!(aliased_callee_matches(&ws, "Queue::push", &rec));
     }
 
@@ -1399,8 +1363,8 @@ mod tests {
 
     #[test]
     fn leading_wildcard_matches_class_suffix() {
-        // 能力接口 `wrapper` 模式（`*CacheService`）应匹配「任意前缀 + 该后缀」的类 FQN，
-        // 即框架缓存门面经魔术分发后只能认「名为 `*CacheService::get` 的封装方法」这一约定。
+        // The capability interface `wrapper` pattern (`*CacheService`) should match class FQNs of "any prefix + that suffix",
+        // i.e. a framework cache facade, after magic dispatch, can only know the convention "a wrapper method named `*CacheService::get`".
         let ws = GraphWorkspace::new(ProjectId(1));
         let rec = call_record(
             Some("crmeb\\services\\CacheService"),
@@ -1408,13 +1372,13 @@ mod tests {
             "crmeb\\services\\CacheService::get",
         );
         assert!(aliased_callee_matches(&ws, "*CacheService::get", &rec));
-        // 同义的短名 receiver（无 import 别名）也应命中（尾部伞名匹配）。
+        // The synonymous short-name receiver (no import alias) should also hit (tail umbrella-name match).
         let rec2 = call_record(Some("CacheService"), Some("get"), "CacheService::get");
         assert!(aliased_callee_matches(&ws, "*CacheService::get", &rec2));
-        // 不含该后缀的类（如框架门面 `Cache`）不应命中。
+        // A class without that suffix (e.g. the framework facade `Cache`) should not hit.
         let rec3 = call_record(Some("Cache"), Some("get"), "Cache::get");
         assert!(!aliased_callee_matches(&ws, "*CacheService::get", &rec3));
-        // 既有 `*Cache` 伞名仍匹配同名模型 `app\model\other\Cache`（无回归）。
+        // The existing `*Cache` umbrella still matches the same-named model `app\model\other\Cache` (no regression).
         let rec4 = call_record(
             Some("app\\model\\other\\Cache"),
             Some("get"),
@@ -1425,12 +1389,12 @@ mod tests {
 
     #[test]
     fn alias_resolution_is_global_heuristic_safe() {
-        // 不存在的别名不应改变匹配结果（无回归）。
+        // A non-existent alias should not change the match result (no regression).
         let ws = GraphWorkspace::new(ProjectId(1));
         let rec = call_record(Some("QueueThink"), Some("push"), "QueueThink::push");
-        // 没有写 imports 表，QueueThink 解析不到 → 仍不匹配。
+        // With no imports table written, QueueThink cannot be resolved -> still no match.
         assert!(!aliased_callee_matches(&ws, "Queue::push", &rec));
-        // 但裸方法模式（`*:dispatch`）不受 receiver 影响。
+        // But the bare-method pattern (`*:dispatch`) is unaffected by the receiver.
         assert!(aliased_callee_matches(
             &ws,
             "*:dispatch",
@@ -1444,7 +1408,7 @@ mod tests {
         use gt_domain::model::ValueSource;
         let ws = GraphWorkspace::new(ProjectId(1));
         let mut rec = call_record(Some("QueueTrait"), Some("dispatch"), "QueueTrait::dispatch");
-        // `owner_fqn` 是「调用方方法」的完全限定名，去掉末尾 ::method 即所属类。
+        // `owner_fqn` is the call site's method's fully qualified name; dropping the trailing ::method gives the owning class.
         rec.owner_fqn = "app\\services\\order\\StoreOrderServices::createOrder".to_string();
         let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
         let vs = ValueSource {
@@ -1462,7 +1426,7 @@ mod tests {
         use crate::eval::{Evaluator, MatchCtx};
         use gt_domain::model::{ValueSource, ResolveAs};
         let ws = GraphWorkspace::new(ProjectId(1));
-        // `$action` 不是代码库里的类 → class_const + require_class 应返回 None。
+        // `$action` is not a class in the codebase -> class_const + require_class should return None.
         let rec = call_record(Some("QueueTrait"), Some("dispatch"), "QueueTrait::dispatch");
         let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
         let vs = ValueSource {
@@ -1472,7 +1436,7 @@ mod tests {
             literal: None,
             ..Default::default()
         };
-        // CallRecord 没有真实实参，这里直接验证 owner_class 兜底路径可用。
+        // CallRecord has no real arguments; here directly verify the owner_class fallback path is usable.
         let fb = ValueSource {
             owner_class: Some(true),
             ..Default::default()
@@ -1480,7 +1444,7 @@ mod tests {
         let mut rec2 = rec.clone();
         rec2.owner_fqn = "app\\services\\Foo::bar".to_string();
         let ev2 = Evaluator::new(&ws, MatchCtx::Call(&rec2));
-        // 主源（arg0，无实参）取不到，回退到 owner_class。
+        // The main source (arg0, no args) cannot be taken; fall back to owner_class.
         let value = ev.string(&vs).or_else(|| ev2.string(&fb));
         assert_eq!(value, Some("app\\services\\Foo".to_string()));
     }

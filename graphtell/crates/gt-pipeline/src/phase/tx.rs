@@ -1,28 +1,33 @@
-//! P13 Tx：同一方法内**跨多张表写库、但未识别到事务边界**。
+//! P13 Tx: **writing across several tables inside one method without a recognised transaction boundary**.
 //!
-//! # 动机
+//! # Motivation
 //!
-//! 一个方法里写订单又写库存（或写主表又写流水），中间任何一步失败都会留下
-//! **部分成功**的脏数据。这是电商 / 后台最常见的一致性事故来源，靠 code review
-//! 很难发现 —— 写操作往往分散在若干被调服务里。
+//! A method that writes the order and also writes stock (or writes the main table and also a journal) leaves
+//! **partially successful** dirty data behind if any step in between fails. This is the most common source of
+//! consistency incidents in e-commerce / admin systems, and code review rarely catches it — the writes are usually
+//! spread across several called services.
 //!
-//! # 判据（刻意保守）
+//! # The predicate (deliberately conservative)
 //!
-//! * 同一方法对 **≥2 张不同的表**有直接 `WritesDb` 边（"直接"= P7 动词分类落下的边，
-//!   不含 P8 沿调用链传播来的间接边 —— 间接边会把"调用了两个服务"也算进来，
-//!   那属于调用方的事务边界，判据会失控）；
-//! * 且该方法内没有任何 `tx_calls` 声明的事务标记（`transaction` / `startTrans` /
-//!   `commit` …）。
+//! * One method has direct `WritesDb` edges to **>= 2 different tables** ("direct" = an edge laid down by P7's verb
+//!   classification, excluding the indirect edges propagated along the call chain by P8 — indirect edges would
+//!   count "called two services" as well, which belongs to the caller's transaction boundary and makes the
+//!   predicate lose control);
+//! * and no transaction marker declared by `tx_calls` (`transaction` / `startTrans` / `commit` …) appears anywhere
+//!   in that method.
 //!
-//! 为什么用"表数"而不是"写动词调用点数"：后者会把同一张表的 `if/else` 两分支各写一次
-//! （`CartLogic::add` 的 `update` / `insert`）也算成两次写 —— 那是**互斥分支**，
-//! 不存在部分成功的问题。实测口径从"≥2 次写动词"改成"≥2 张表"后，
-//! likeshop 的命中从 105 降到更可信的量级，且互斥分支的误报自然消失。
+//! Why "table count" rather than "write-verb call-site count": the latter counts one table written once in each of
+//! two `if/else` branches (`CartLogic::add`'s `update` / `insert`) as two writes — those are **mutually exclusive
+//! branches**, where partial success is not a thing. Measured: after switching the threshold from ">= 2 write
+//! verbs" to ">= 2 tables", likeshop's hit count dropped from 105 to a far more credible level and the false
+//! positives on mutually exclusive branches disappeared naturally.
 //!
-//! 保守方向是**宁可漏报**：事务可能开在更外层的调用方（跨过程），图上判不到，
-//! 所以文案写"未识别到事务边界"，而不是"没有事务"。
+//! The conservative direction is **better a false negative**: the transaction may be opened by an outer caller
+//! (across procedures), which the graph cannot see, so the copy says "no transaction boundary recognised" rather
+//! than "no transaction".
 //!
-//! 标注落在**方法节点**上：事务是方法级的边界问题，不是某一行的问题。
+//! The annotation lands on the **method node**: a transaction is a method-level boundary concern, not a concern of
+//! one particular line.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,24 +38,24 @@ use serde_json::json;
 
 use crate::context::PipelineContext;
 
-/// 多表写无事务标注（规则用 `has_annotation: multi-write-without-tx` 命中）。
+/// The "multi-table write without a transaction" annotation (rules match it via `has_annotation: multi-write-without-tx`).
 const MULTI_WRITE: &str = "multi-write-without-tx";
 
-/// 触发阈值：同一方法直接写的**不同表**数量。
+/// Trigger threshold: the number of **distinct tables** one method writes directly.
 const MIN_TABLES: usize = 2;
 
 pub fn run(ctx: &mut PipelineContext) {
     let phase = Phase("Tx".to_string());
     let mut count = 0usize;
 
-    // ① 每个方法直接写了哪些表（只看 P7 落下的直接边）。
+    // (1) Which tables each method writes directly (only the direct edges P7 laid down).
     let mut tables_by_owner: HashMap<i64, HashSet<i64>> = HashMap::new();
     for e in ctx.ws.edges() {
         if e.kind.as_str() != EdgeKind::WRITES_DB {
             continue;
         }
-        // P8 传播边带 `via: "propagate"`；只保留直接写，避免把"调用了两个写服务"
-        // 也算成"这个方法自己写了两张表"。
+        // P8 propagation edges carry `via: "propagate"`; keep direct writes only, so that "called two writing
+        // services" does not count as "this method itself wrote two tables".
         if e.properties.get("via").is_some() {
             continue;
         }
@@ -60,7 +65,7 @@ pub fn run(ctx: &mut PipelineContext) {
             .insert(e.to_id.get());
     }
 
-    // ② 每个方法：是否出现事务标记 + 代表位置（取最靠前的写，便于顺着读下去）。
+    // (2) Per method: whether a transaction marker appears, plus a representative location (take the earliest write, so it reads on).
     struct Meta {
         owner_fqn: String,
         file: String,
@@ -93,7 +98,7 @@ pub fn run(ctx: &mut PipelineContext) {
         }
     }
 
-    // ③ 命中：写 ≥2 张表且方法内没有事务标记。
+    // (3) A hit: writes to >= 2 tables and no transaction marker inside the method.
     let mut targets: Vec<(NodeId, String, u32, usize, String)> = Vec::new();
     for (owner, tables) in tables_by_owner {
         if tables.len() < MIN_TABLES {
@@ -131,7 +136,7 @@ pub fn run(ctx: &mut PipelineContext) {
         count += 1;
     }
 
-    tracing::info!("P13 事务完成：跨多表写但无事务边界 {} 处", count);
+    tracing::info!("P13 transaction check done: {} multi-table writes with no transaction boundary", count);
 }
 
 #[cfg(test)]
@@ -157,7 +162,7 @@ mod tests {
     #[test]
     fn tx_markers_are_case_insensitive() {
         let ctx = ctx_with(vec!["startTrans", "transaction"]);
-        // 判据本身在 run() 里，这里只锁住名单的大小写不敏感约定
+        // The predicate itself lives in run(); this only pins the case-insensitive convention of the name list
         assert!(ctx.tx_calls.iter().any(|p| p.eq_ignore_ascii_case("STARTTRANS")));
         assert!(ctx.tx_calls.iter().any(|p| p.eq_ignore_ascii_case("Transaction")));
         assert!(!ctx.tx_calls.iter().any(|p| p.eq_ignore_ascii_case("save")));

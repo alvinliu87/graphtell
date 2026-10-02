@@ -1,4 +1,4 @@
-//! SQLite 仓储实现。
+//! The SQLite repository implementation.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -24,15 +24,17 @@ use tracing::{debug, info, warn};
 
 use crate::schema::MIGRATIONS;
 
-/// 把引用 `nodes(id)` 的表升级为带外键的版本（老库没有外键）。
+/// Upgrade tables that reference `nodes(id)` to a version with foreign keys (old databases have none).
 ///
-/// # 为什么必须重建表
+/// # Why the table must be rebuilt
 ///
-/// SQLite 的 `ALTER TABLE` 加不了外键约束，只能：建新表 → 拷数据 → 删旧表 → 改名 → 补索引。
-/// 拷贝时用 `JOIN nodes` 过滤，顺带**丢掉指向不存在节点的悬空行** ——
-/// 它们正是"节点被覆盖后残留的边/标注/别名"，留着只会让脏数据看起来像正常数据。
+/// SQLite's `ALTER TABLE` cannot add a foreign key constraint, so the only route is:
+/// create a new table -> copy the data -> drop the old one -> rename -> add indexes back.
+/// The copy filters with `JOIN nodes`, which incidentally **drops dangling rows pointing at non-existent
+/// nodes** — exactly the "edges/annotations/aliases left behind after a node was overwritten"; keeping them
+/// would only make dirty data look like normal data.
 ///
-/// `PRAGMA foreign_keys` 不能在事务内切换，所以它在事务外单独开关。
+/// `PRAGMA foreign_keys` cannot be toggled inside a transaction, so it is switched separately, outside one.
 fn ensure_node_fks(conn: &Connection) -> Result<()> {
     for table in ["edges", "node_annotations", "aliases"] {
         let has_fk: i64 = conn
@@ -70,7 +72,7 @@ fn ensure_node_fks(conn: &Connection) -> Result<()> {
             .map_err(DomainError::infra)?;
         if before != after {
             warn!(
-                "外键迁移：{table} 丢弃 {} 条悬空记录（指向不存在的节点），保留 {after} 条",
+                "foreign-key migration: {table} dropped {} dangling records (pointing at non-existent nodes), kept {after}",
                 before - after
             );
         }
@@ -78,7 +80,7 @@ fn ensure_node_fks(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// 返回 (建新表, 拷数据, 补索引) 三段 SQL。新表带 `REFERENCES nodes(id)`。
+/// Returns the three SQL fragments (create new table, copy data, add indexes). The new table carries `REFERENCES nodes(id)`.
 fn rebuild_sql(table: &str) -> (&'static str, &'static str, &'static str) {
     match table {
         "edges" => (
@@ -143,12 +145,13 @@ fn rebuild_sql(table: &str) -> (&'static str, &'static str, &'static str) {
     }
 }
 
-/// 给 `node_annotations` 补 `project_id` 列并回填。
+/// Add a `project_id` column to `node_annotations` and back-fill it.
 ///
-/// 表里原本只有 `node_id`，按工程清理只能写成
-/// `node_id IN (SELECT id FROM nodes WHERE project_id=?)`；节点先被清掉时这个
-/// 子查询为空，注解就永远删不掉（历史库里堆了近万条）。补列之后按工程删/查
-/// 都是一次直查，也不再依赖"节点还在"这个前提。
+/// The table originally had only `node_id`, so cleaning by project could only be written as
+/// `node_id IN (SELECT id FROM nodes WHERE project_id=?)`; when the nodes were cleared first the sub-query
+/// came back empty and the annotations could never be deleted (historical databases accumulated nearly ten
+/// thousand of them). With the column added, deleting or querying by project is a single direct lookup and no
+/// longer depends on "the node still exists".
 fn ensure_annotation_project(conn: &Connection) -> Result<()> {
     let has_col: i64 = conn
         .query_row(
@@ -163,7 +166,7 @@ fn ensure_annotation_project(conn: &Connection) -> Result<()> {
         )
         .map_err(DomainError::infra)?;
     }
-    // 回填：此刻外键已生效（`ensure_node_fks` 先跑），每条注解都能查到工程号。
+    // Back-fill: foreign keys are already in effect here (`ensure_node_fks` ran first), so every annotation can find its project.
     let stale: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM node_annotations WHERE project_id = 0",
@@ -180,7 +183,7 @@ fn ensure_annotation_project(conn: &Connection) -> Result<()> {
                 [],
             )
             .map_err(DomainError::infra)?;
-        warn!("注解补工程号：回填 {backfilled} 条历史标注的 project_id");
+        warn!("backfilling project_id on annotations: filled in {backfilled} historical annotations");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_annotations_project ON node_annotations(project_id);",
@@ -189,33 +192,33 @@ fn ensure_annotation_project(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// SQLite 仓储。
+/// The SQLite repository.
 ///
-/// `Connection` 不是 `Sync`，用 `Mutex` 包装以满足端口的 `Send + Sync` 约束。
+/// `Connection` is not `Sync`, so it is wrapped in a `Mutex` to satisfy the port's `Send + Sync` bound.
 pub struct SqliteStore {
     conn: Mutex<Connection>,
     path: PathBuf,
 }
 
 impl SqliteStore {
-    /// 取一批节点所属的工程集合（去重）。
+    /// Collect the set of projects owning a batch of nodes (deduped).
     ///
-    /// # 为什么必须**只在批量查询开头算一次**
+    /// # Why this must be computed **only once, at the start of a batch query**
     ///
-    /// 原来这个过滤是写在每个 chunk 的 SQL 里的子查询
-    /// `project_id IN (SELECT project_id FROM nodes WHERE id IN (<本 chunk 的 400 个 id>))`。
-    /// chunk 数随规模线性增长，于是这个子查询被**重复执行 N/400 次**；
-    /// 更要命的是 SQLite 对 `IN (SELECT …)` 会为每次执行重建一张临时表，
-    /// 代价与子查询结果集大小相关 —— 实测让批量取边退化到约 **N^1.5~1.7**
-    /// （16k 节点：取入边 156ms / 出边 131ms，是 `query_nodes` 的 4~5 倍）。
+    /// This filter used to be a sub-query written into each chunk's SQL:
+    /// `project_id IN (SELECT project_id FROM nodes WHERE id IN (<the chunk's 400 ids>))`.
+    /// The chunk count grows linearly with size, so that sub-query ran **N/400 times over**; worse, SQLite
+    /// rebuilds a temporary table for `IN (SELECT …)` on every execution, a cost proportional to the size of
+    /// the sub-query result — measured, this degraded batch edge fetching to about **N^1.5~1.7**
+    /// (16k nodes: in-edges 156ms / out-edges 131ms, 4~5 times `query_nodes`).
     ///
-    /// 调用方总是传同一工程的 id 集合，所以这里一次性求出工程集合、
-    /// 再以极短的常量列表（通常只有 1 个值）下发给每个 chunk 即可。
-    /// 语义完全不变，代价从"每 chunk 一次子查询"降为"总共一次查询"。
+    /// Callers always pass ids from a single project, so the project set is resolved once here and then sent
+    /// down to each chunk as a very short constant list (usually a single value).
+    /// The semantics are unchanged; the cost drops from "one sub-query per chunk" to "one query in total".
     fn project_ids_of(&self, ids: &[NodeId]) -> Result<Vec<i64>> {
         let conn = self.conn.lock().unwrap();
         let mut out: Vec<i64> = Vec::new();
-        // 900 是 SQLite 默认变量上限的保守取值（默认 999，留点余量）
+        // 900 is a conservative value below SQLite's default variable limit (999 by default, leaving some headroom)
         for chunk in ids.chunks(900) {
             let ph = vec!["?"; chunk.len()].join(",");
             let sql = format!("SELECT DISTINCT project_id FROM nodes WHERE id IN ({ph})");
@@ -236,15 +239,16 @@ impl SqliteStore {
         Ok(out)
     }
 
-    /// 打开（或创建）数据库并执行迁移。
+    /// Open (or create) the database and run migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(DomainError::infra)?;
         }
         let conn = Connection::open(&path).map_err(DomainError::infra)?;
-        // busy_timeout：建图可能并发（HTTP 后台线程 + CLI），且 CLI 与服务端是两个进程，
-        // 共用同一个 SQLite 文件。没有它，写冲突会立刻返回 SQLITE_BUSY 而不是等锁。
+        // busy_timeout: graph building can run concurrently (an HTTP background thread + the CLI), and the CLI and
+        // the server are two processes sharing one SQLite file. Without it a write conflict returns SQLITE_BUSY
+        // immediately instead of waiting for the lock.
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;",
         )
@@ -252,8 +256,8 @@ impl SqliteStore {
         for sql in MIGRATIONS {
             conn.execute_batch(sql).map_err(DomainError::infra)?;
         }
-        // 老库兼容：诊断表在加入 `sub_project_id` 列之前可能已存在；
-        // 用 pragma_table_info 判断是否缺列，缺则 ALTER 补上（幂等）。
+        // Old-database compatibility: the diagnostics table may exist from before the `sub_project_id` column;
+        // use pragma_table_info to detect the missing column and ALTER it in if needed (idempotent).
         let has_sub_col: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('diagnostics') WHERE name = 'sub_project_id'",
@@ -265,22 +269,22 @@ impl SqliteStore {
             conn.execute_batch("ALTER TABLE diagnostics ADD COLUMN sub_project_id INTEGER;")
                 .map_err(DomainError::infra)?;
         }
-        // 列补好后索引也要补（新建库在 MIGRATIONS 里建，这里幂等兜底）。
+        // Once the column is added, the index has to be added too (new databases create it in MIGRATIONS; this is the idempotent fallback).
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_diag_sub ON diagnostics(sub_project_id);")
             .map_err(DomainError::infra)?;
-        // 老库补外键（edges / node_annotations / aliases → nodes）。
+        // Add the missing foreign keys to old databases (edges / node_annotations / aliases -> nodes).
         ensure_node_fks(&conn)?;
-        // 再给注解补 `project_id`：回填要靠 `node_id → nodes`，
-        // 所以必须排在补外键之后（悬空记录已在上面被清掉）。
+        // Then add `project_id` to annotations: the back-fill relies on `node_id -> nodes`, so it must run after
+        // the foreign keys are added (dangling records were already dropped above).
         ensure_annotation_project(&conn)?;
-        info!("SQLite 已打开: {}", path.display());
+        info!("SQLite opened: {}", path.display());
         Ok(Self { conn: Mutex::new(conn), path })
     }
 
-    /// 内存库（测试用）。
+    /// An in-memory database (for tests).
     ///
-    /// 同样开 `foreign_keys`：测试写脏数据时应当**当场报错**，
-    /// 而不是等它静悄悄流进真实库。
+    /// `foreign_keys` is enabled here too: dirty data written by a test should **fail on the spot**, not flow
+    /// silently into a real database later.
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(DomainError::infra)?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")
@@ -309,7 +313,7 @@ impl SqliteStore {
     }
 }
 
-// ---------------------------------------------------------------- 工程
+// ---------------------------------------------------------------- projects
 
 impl ProjectReader for SqliteStore {
     fn get_project(&self, id: ProjectId) -> Result<Option<Project>> {
@@ -477,7 +481,7 @@ impl ProjectWriter for SqliteStore {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM projects WHERE id = ?1", params![id.get()])
             .map_err(DomainError::infra)?;
-        // 外键未级联到的图数据手动清理
+        // Graph data not covered by cascading foreign keys is cleaned up by hand
         for sql in [
             "DELETE FROM nodes WHERE project_id = ?1",
             "DELETE FROM edges WHERE project_id = ?1",
@@ -577,14 +581,14 @@ impl ProjectWriter for SqliteStore {
             ])
             .map_err(DomainError::infra)?;
         }
-        // 回填 sub_project_id 后由调用方重新写入
+        // After back-filling sub_project_id, the caller writes it again
         drop(stmt);
         drop(conn);
         self.list_files(project_id, None)
     }
 }
 
-// ---------------------------------------------------------------- 图
+// ---------------------------------------------------------------- graph
 
 impl GraphSink for SqliteStore {
     fn apply(&self, delta: &GraphDelta) -> Result<()> {
@@ -596,12 +600,13 @@ impl GraphSink for SqliteStore {
 
         if delta.reset_project {
             if let Some(pid) = delta.project_id {
-                // 顺序重要：引用 `nodes(id)` 的表必须**先于** nodes 删除。
+                // Order matters: tables referencing `nodes(id)` must be deleted **before** nodes.
                 //
-                // 这些表现在都有外键并配了 `ON DELETE CASCADE` 兜底，但显式先删子表
-                // 能让"级联是否真的生效"不成为正确性前提。注解已经自带 `project_id`，
-                // 不必再绕 `node_id IN (SELECT id FROM nodes …)` —— 那种写法在节点
-                // 先被清掉时会退化成"一条都删不掉"。
+                // These tables now all have foreign keys with `ON DELETE CASCADE` as a backstop, but deleting the
+                // child tables explicitly means "whether cascading really works" is not a precondition for
+                // correctness. Annotations already carry `project_id`, so there is no need to route through
+                // `node_id IN (SELECT id FROM nodes …)` — that spelling degrades to "deletes nothing" once the
+                // nodes have been cleared first.
                 for sql in [
                     "DELETE FROM node_annotations WHERE project_id = ?1",
                     "DELETE FROM edges WHERE project_id = ?1",
@@ -633,8 +638,8 @@ impl GraphSink for SqliteStore {
                     n.name,
                     n.fqn,
                     n.identity.as_ref().map(|i| {
-                        // 存完整 JSON（含 scope），保证前后端同名缓存 key 的 scope 不丢；
-                        // 序列化失败时退回扁平 key 字符串（旧数据兼容）。
+                        // Store the full JSON (including scope) so the scope of same-named cache keys is not lost between
+                        // front end and back end; fall back to the flat key string when serialization fails (old-data compatibility).
                         serde_json::to_string(i).unwrap_or_else(|_| i.key())
                     }),
                     n.file_id.map(|f| f.get()),
@@ -655,7 +660,7 @@ impl GraphSink for SqliteStore {
             }
         }
 
-        // 属性补丁
+        // Property patch
         for (id, patch) in &delta.property_patches {
             let current: Option<String> = tx
                 .query_row("SELECT properties FROM nodes WHERE id = ?1", params![id.get()], |r| r.get(0))
@@ -673,7 +678,7 @@ impl GraphSink for SqliteStore {
             .map_err(DomainError::infra)?;
         }
 
-        // 种类晋升（语法节点 → 语义节点，**不新增节点**）
+        // Kind promotion (syntax node -> semantic node, **no new node created**)
         for (id, kind) in &delta.kind_patches {
             tx.execute(
                 "UPDATE nodes SET kind = ?1 WHERE id = ?2",
@@ -682,7 +687,7 @@ impl GraphSink for SqliteStore {
             .map_err(DomainError::infra)?;
         }
 
-        // 共现位置追加（合成节点的多处定义）
+        // Append co-occurrence locations (several definitions of a synthetic node)
         for (id, loc) in &delta.location_patches {
             let current: Option<String> = tx
                 .query_row("SELECT properties FROM nodes WHERE id = ?1", params![id.get()], |r| r.get(0))
@@ -741,8 +746,9 @@ impl GraphSink for SqliteStore {
         {
             let mut stmt = tx
                 .prepare(
-                    // `project_id` 随注解一起落库；delta 没带工程号时回落到节点自身的
-                    // 所属工程（外键保证该节点一定在库里，不会取到空）。
+                    // `project_id` is persisted together with the annotation; when the delta carries no project id it falls
+                    // back to the owning project of the node itself (the foreign key guarantees that node is in the
+                    // database, so this never yields empty).
                     "INSERT INTO node_annotations (project_id, node_id, channel, kind, subkind, confidence, evidence, phase)
                      VALUES (COALESCE(?1, (SELECT project_id FROM nodes WHERE id = ?2)), ?2,?3,?4,?5,?6,?7,?8)",
                 )
@@ -826,7 +832,7 @@ impl GraphSink for SqliteStore {
 
         tx.commit().map_err(DomainError::infra)?;
         debug!(
-            "落库: {} 节点 / {} 边 / {} 标注",
+            "persisted: {} nodes / {} edges / {} annotations",
             delta.nodes.len(),
             delta.edges.len(),
             delta.annotations.len()
@@ -845,9 +851,9 @@ impl GraphQuery for SqliteStore {
         );
         let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(filter.project_id.get())];
         if let Some(kind) = &filter.kind {
-            // 同时匹配 `kind` 与 `properties.category`：
-            // 同时匹配 `kind` 与 `properties.category`（`category` 目前与 `kind` 一致，
-            // 此兜底保留以兼容任何以 category 分组的查询）。
+            // Match both `kind` and `properties.category`:
+            // `category` is currently identical to `kind`; this fallback is kept for compatibility with any
+            // query that groups by category.
             let p = binds.len() + 1;
             sql.push_str(&format!(
                 " AND (kind = ?{p} OR json_extract(properties, '$.category') = ?{p})"
@@ -967,9 +973,10 @@ impl GraphQuery for SqliteStore {
 
     fn edges_of(&self, node: NodeId, direction: EdgeDirection) -> Result<Vec<Edge>> {
         let conn = self.conn.lock().unwrap();
-        // 边必须与其端点节点同属一个工程：库中可能残留历史工程的边
-        // （删除工程后节点被清、边未清，或端点 id 被新工程复用），
-        // 不过滤会把旧工程的边混进当前工程，污染视图与证据链。
+        // An edge must belong to the same project as its endpoint nodes: the database may hold leftover edges from
+        // historical projects (nodes cleared but edges not when a project was deleted, or an endpoint id reused by a
+        // new project). Without this filter, old-project edges mix into the current project and pollute views and
+        // evidence chains.
         let sql = match direction {
             EdgeDirection::Outgoing => {
                 "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties FROM edges \
@@ -1006,7 +1013,7 @@ impl GraphQuery for SqliteStore {
         let mut out: HashMap<i64, Vec<Edge>> = HashMap::new();
         for chunk in ids.chunks(400) {
             let placeholders = vec!["?"; chunk.len()].join(",");
-            // 同 `edges_of`：按端点节点所属工程过滤，挡掉历史工程的残留边。
+            // Same as `edges_of`: filter by the project owning the endpoint nodes, blocking leftover edges from old projects.
             let sql = format!(
                 "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
                  FROM edges WHERE from_id IN ({placeholders}) AND project_id IN ({proj_ph})"
@@ -1031,7 +1038,7 @@ impl GraphQuery for SqliteStore {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        // 工程集合**只算一次**（见 `project_ids_of` 的说明）。
+        // The project set is computed **only once** (see the notes on `project_ids_of`).
         let projects = self.project_ids_of(ids)?;
         if projects.is_empty() {
             return Ok(HashMap::new());
@@ -1041,7 +1048,7 @@ impl GraphQuery for SqliteStore {
         let mut inc: HashMap<i64, Vec<Edge>> = HashMap::new();
         for chunk in ids.chunks(400) {
             let placeholders = vec!["?"; chunk.len()].join(",");
-            // 同 `edges_of`：按端点节点所属工程过滤，挡掉历史工程的残留边。
+            // Same as `edges_of`: filter by the project owning the endpoint nodes, blocking leftover edges from old projects.
             let sql = format!(
                 "SELECT id, project_id, kind, from_id, to_id, phase, confidence, properties \
                  FROM edges WHERE to_id IN ({placeholders}) AND project_id IN ({proj_ph})"
@@ -1071,7 +1078,7 @@ impl GraphQuery for SqliteStore {
         HashMap<i64, Vec<i64>>,
     )> {
         let conn = self.conn.lock().unwrap();
-        // 只取链边的整数邻接，不含 `properties` 等重列；一次取全工程，内存里分桶。
+        // Take only the integer adjacency of chain edges, without heavy columns such as `properties`; fetch the whole project once and bucket in memory.
         let mut stmt = conn
             .prepare("SELECT from_id, to_id, kind FROM edges WHERE project_id = ?1")
             .map_err(DomainError::infra)?;
@@ -1082,8 +1089,9 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?;
         let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
         let mut inc: HashMap<i64, Vec<i64>> = HashMap::new();
-        // 只含**语义边**的入边邻接：给候选徽标按"语义入边"计数（语法调用边不计）。
-        // 同一次查询顺手分桶，不额外往返（kind 本来就在结果行里）。
+        // In-edge adjacency of **semantic edges only**: used to count "semantic in-edges" for candidate badges
+        // (syntax call edges do not count). The same query buckets as it goes, with no extra round trip (kind is
+        // already in the result rows).
         let mut sem_inc: HashMap<i64, Vec<i64>> = HashMap::new();
         for r in rows
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -1249,7 +1257,7 @@ impl GraphQuery for SqliteStore {
             .map_err(DomainError::infra)?
             .collect::<std::result::Result<BTreeMap<_, _>, _>>()
             .map_err(DomainError::infra)?;
-        // 按 `properties.category` 统计（`category` 目前与 `kind` 一致）。
+        // Count by `properties.category` (`category` is currently identical to `kind`).
         let mut stmt_cat = conn
             .prepare(
                 "SELECT json_extract(properties, '$.category'), COUNT(*) FROM nodes \
@@ -1294,7 +1302,7 @@ impl GraphQuery for SqliteStore {
     }
 }
 
-// ---------------------------------------------------------------- 符号表 & 诊断
+// ---------------------------------------------------------------- symbol table & diagnostics
 
 impl SymbolTableReader for SqliteStore {
     fn get_symbol(&self, project_id: ProjectId, table: &str, key: &str) -> Result<Option<Value>> {
@@ -1429,8 +1437,8 @@ impl DiagnosticSink for SqliteStore {
             if !ids.is_empty() {
                 let placeholders: Vec<String> =
                     ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 3)).collect();
-                // 共享诊断（sub_project_id IS NULL，如跨子工程的表/队列）在任一过滤下都保留，
-                // 与图视图「共享节点始终显示」的语义一致。
+                // Shared diagnostics (sub_project_id IS NULL, e.g. cross-sub-project tables / queues) survive every
+                // filter, consistent with the graph view's "shared nodes are always shown" semantics.
                 sql.push_str(&format!(
                     " AND (sub_project_id IS NULL OR sub_project_id IN ({}))",
                     placeholders.join(", ")
@@ -1440,14 +1448,14 @@ impl DiagnosticSink for SqliteStore {
                 }
             }
         }
-        // 排序刻意**先按严重度、再按写入顺序**：这个查询带 `LIMIT`，一旦违规数超过
-        // 上限就会被截断 —— 若按 `id DESC`（写入顺序）截断，被砍掉的是"最后跑完的
-        // 规则"，留下来的可能全是 info，critical / error 整档消失，用户看到的
-        // 严重度分布与真实结果完全不符（实测：996 条里 59 条 critical，
-        // 取 500 条后 critical 为 0）。截断必须优先淘汰最不严重的。
+        // The ordering is deliberately **severity first, then write order**: this query carries a `LIMIT`, so once
+        // the violation count exceeds the cap it is truncated — truncating by `id DESC` (write order) would cut off
+        // "the rules that finished last" and might leave only info, making the whole critical / error tier vanish,
+        // so the severity distribution the user sees bears no relation to the real result (measured: of 996
+        // violations 59 were critical, but taking 500 left critical at 0). Truncation must evict the least severe first.
         //
-        // `severity` 存的是 JSON 字符串（如 `"critical"`，带引号），用 `LIKE` 匹配
-        // 而不是等号，避免依赖具体的序列化形式。
+        // `severity` is stored as a JSON string (e.g. `"critical"`, with quotes), so `LIKE` is used rather than
+        // equality to avoid depending on the exact serialization form.
         sql.push_str(
             " ORDER BY CASE
                 WHEN severity LIKE '%critical%' THEN 0
@@ -1540,8 +1548,9 @@ impl DiagnosticSink for SqliteStore {
         project_id: ProjectId,
         exclude_prefix: &str,
     ) -> Result<Vec<(String, u64)>> {
-        // 四档汇总由**同一份**按 code 聚合的结果折出来，而不是另写一条 `GROUP BY severity`：
-        // "排除哪些 code" 的口径只允许存在一处，否则角标与诊断页总有一天会各说各话。
+        // The four-tier rollup is folded out of **the same** per-code aggregation rather than a separate
+        // `GROUP BY severity`: the "which codes to exclude" definition is allowed to exist in exactly one place,
+        // otherwise the badge and the diagnostics page will sooner or later disagree.
         let mut acc: Vec<(String, u64)> = Vec::new();
         for (_code, sev, n) in self.count_diagnostics_by_code_excluding(project_id, exclude_prefix)? {
             match acc.iter_mut().find(|(s, _)| *s == sev) {
@@ -1581,12 +1590,12 @@ impl DiagnosticSink for SqliteStore {
     }
 }
 
-/// 转义 `LIKE` 通配符，避免规则 id 里的 `%` / `_` 被当成通配符。
+/// Escape `LIKE` wildcards so `%` / `_` inside a rule id are not treated as wildcards.
 fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
-/// `Severity` → 落库 / 接口口径的小写标签（与 serde 的 `snake_case` 一致）。
+/// `Severity` -> the lowercase label used for storage / API (consistent with serde's `snake_case`).
 fn severity_label(s: Severity) -> &'static str {
     match s {
         Severity::Critical => "critical",
@@ -1596,7 +1605,7 @@ fn severity_label(s: Severity) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------- 辅助
+// ---------------------------------------------------------------- helpers
 
 fn row_to_node(row: &rusqlite::Row) -> rusqlite::Result<Node> {
     Ok(Node {
@@ -1627,11 +1636,11 @@ fn row_to_node(row: &rusqlite::Row) -> rusqlite::Result<Node> {
 }
 
 fn identity_from_key(raw: &str) -> Option<gt_domain::model::IdentityKey> {
-    // 新格式：完整 JSON（含 `scope`）。
+    // New format: full JSON (including `scope`).
     if let Ok(k) = serde_json::from_str::<gt_domain::model::IdentityKey>(raw) {
         return Some(k);
     }
-    // 旧格式兼容：扁平 `kind:value`（或 `kind:scope:value` 退化处理）。
+    // Old-format compatibility: flat `kind:value` (or a degraded handling of `kind:scope:value`).
     match raw.split_once(':') {
         Some((kind, value)) => Some(gt_domain::model::IdentityKey {
             kind: gt_domain::model::SynthesizedKind(kind.to_string()),
@@ -1702,7 +1711,7 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-// ---------------------------------------------------------------- 工程级规则配置
+// ---------------------------------------------------------------- project-level rule config
 
 impl RuleConfigStore for SqliteStore {
     fn get_rule_configs(
@@ -1742,7 +1751,7 @@ impl RuleConfigStore for SqliteStore {
     }
 
     fn set_rule_config(&self, cfg: &ProjectRuleConfig) -> Result<()> {
-        // 空覆盖（未启用覆盖且选项为空）= 回归继承态，直接删行。
+        // An empty override (override not enabled and options empty) = back to the inherited state, so delete the row.
         let is_empty = cfg.enabled.is_none()
             && cfg
                 .options

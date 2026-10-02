@@ -1,22 +1,22 @@
-//! MCP(stdio) 桥接：IDE 启动 `graphtell mcp` 子进程，经 HTTP 连常驻服务。
+//! MCP (stdio) bridge: the IDE launches the `graphtell mcp` child process, which connects to the resident service over HTTP.
 //!
-//! 设计要点：
-//! * stdout **只**承载 JSON-RPC 行；任何诊断日志都走 stderr（见 `main` 里 tracing 写 stderr）。
-//! * 不引入 HTTP 客户端 crate（离线构建安全）：`http_call` 用 `std::net::TcpStream` 手写
-//!   本地 HTTP/1.1 请求，足够对接常驻的 axum 服务。
-//! * 暴露四个工具：
-//!   - `recall_code`：按提示词召回相关代码，返回紧凑 Markdown 上下文（路径/行号/片段），
-//!     让 IDE 里的 LLM 注入这段而非自行读全仓，节省 token。
-//!   - `compose_prompt`：在召回上下文之上再拼上「用户意图 + 质量约束」，产出一段可直接
-//!     投喂代码生成 LLM 的完整提示词；与 Web UI 的 `/compose` 共用服务端同一份模板。
-//!   - `check_compliance`：跑合规检查，返回严重度汇总 + 违规清单。
-//!   - `list_violations`：读取最近一次落库的违规。
+//! Design notes:
+//! * stdout carries **only** JSON-RPC lines; every diagnostic log goes to stderr (see tracing writing to stderr in `main`).
+//! * No HTTP-client crate is pulled in (offline build safety): `http_call` hand-writes a local HTTP/1.1 request with
+//!   `std::net::TcpStream`, which is enough to talk to the resident axum service.
+//! * Four tools are exposed:
+//!   - `recall_code`: recall relevant code by the prompt and return compact Markdown context (path / line / snippet),
+//!     so the LLM inside the IDE injects this instead of reading the whole repo, saving tokens.
+//!   - `compose_prompt`: on top of the recalled context, append "user intent + quality constraints" to produce a complete
+//!     prompt ready to feed a code-generation LLM; shares the same server-side template with the Web UI's `/compose`.
+//!   - `check_compliance`: run the compliance check and return a severity rollup + violation list.
+//!   - `list_violations`: read the most recently persisted violations.
 
 use std::io::{BufRead, BufWriter, Read, Write};
 
 use serde_json::{json, Value};
 
-/// MCP 桥：记住常驻服务地址与目标工程。
+/// The MCP bridge: remembers the resident service address and the target project.
 pub struct McpBridge {
     base: String,
     project: i64,
@@ -27,7 +27,7 @@ impl McpBridge {
         Self { base, project }
     }
 
-    /// 从 stdin 逐行读 JSON-RPC，把响应写回 stdout；EOF 退出。
+    /// Read JSON-RPC line by line from stdin, write responses back to stdout; exit on EOF.
     pub fn run(&self) -> anyhow::Result<()> {
         eprintln!(
             "graphtell mcp: connected to service {} project #{}",
@@ -55,7 +55,7 @@ impl McpBridge {
         Ok(())
     }
 
-    /// 处理一行 JSON-RPC 请求；通知类（无 id）返回 `None` 表示不回包。
+    /// Handle one JSON-RPC request line; a notification (no id) returns `None` meaning no reply is sent.
     fn handle(&self, line: &str) -> Option<Value> {
         let v: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -71,7 +71,7 @@ impl McpBridge {
         let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = v.get("params").cloned().unwrap_or(Value::Null);
 
-        // 通知类：不回包。
+        // Notification: no reply.
         if method.starts_with("notifications/") {
             return None;
         }
@@ -181,7 +181,7 @@ impl McpBridge {
         }))
     }
 
-    // ---- 工具实现 ----
+    // ---- Tool implementations ----
 
     fn recall(&self, args: &Value) -> (String, bool) {
         let query = match args.get("query").and_then(|q| q.as_str()) {
@@ -226,8 +226,8 @@ impl McpBridge {
         }
     }
 
-    /// 合成提示词：走服务端 `/prompt` 端点，与 Web UI 的 `/compose` 共用同一套模板，
-    /// 因此两处产出的提示词完全一致（此处不另复制一份模板）。
+    /// Compose the prompt: go through the server-side `/prompt` endpoint, sharing the same template with the Web UI's
+    /// `/compose`, so the two places produce identical prompts (no second template is copied here).
     fn compose(&self, args: &Value) -> (String, bool) {
         let query = match args.get("query").and_then(|q| q.as_str()) {
             Some(q) if !q.trim().is_empty() => q.to_string(),
@@ -293,7 +293,7 @@ impl McpBridge {
         }
     }
 
-    /// 查询当前工程的后台预热进度（语义向量 bge 计算）。
+    /// Query the background warm-up progress of the current project (semantic bge vector computation).
     fn warmup_status(&self) -> (String, bool) {
         let path = format!("/api/projects/{}/warmup", self.project);
         match http_call(&self.base, &path, "GET", None) {
@@ -303,12 +303,12 @@ impl McpBridge {
     }
 }
 
-// ---------------------------------------------------------------- 响应格式化
+// ---------------------------------------------------------------- Response formatting
 
-/// 抽取召回的**质量元数据**（quality / confidence / missing_terms）。
+/// Extract the recall's **quality metadata** (quality / confidence / missing_terms).
 ///
-/// 单独一个函数而非塞进 [`extract_markdown`]：markdown 解析失败时仍能独立诊断，
-/// 也让 MCP 侧可以按档位追加"下一步该做什么"。缺省按 high 处理（不打扰正常结果）。
+/// A separate function rather than stuffed into [`extract_markdown`]: it can still be diagnosed independently when
+/// Markdown parsing fails, and lets the MCP side append "what to do next" by tier. Defaults to high (does not disturb normal results).
 fn extract_quality(resp: &str) -> (String, f64, Vec<String>) {
     let Ok(v) = serde_json::from_str::<Value>(resp) else {
         return ("high".to_string(), 1.0, Vec::new());
@@ -334,7 +334,7 @@ fn extract_quality(resp: &str) -> (String, f64, Vec<String>) {
     (quality, confidence, missing)
 }
 
-/// 从召回响应抽取后台预热状态，并在「预热中」时给出提示，让 IDE 知道召回质量可能偏弱。
+/// Extract the background warm-up status from the recall response, and hint when "warming up" so the IDE knows recall quality may be weak.
 fn extract_warmup_note(resp: &str) -> String {
     let Ok(v) = serde_json::from_str::<Value>(resp) else {
         return String::new();
@@ -357,11 +357,11 @@ fn extract_warmup_note(resp: &str) -> String {
     String::new()
 }
 
-/// 按质量档位追加"下一步该做什么"。
+/// Append "what to do next" by quality tier.
 ///
-/// **只提示，绝不丢弃已召回的片段** —— 片段仍有参考价值，扔掉已付出的检索成本
-/// 并不划算。目的是避免"拿着噪声当证据"的静默失败：低质量时明确要求调用方
-/// 改用给出的特征词自行检索 / 直接阅读文件。
+/// **Only hint, never drop the already-recalled snippet** — the snippet is still informative, and discarding the
+/// retrieval cost already paid is not worthwhile. The goal is to avoid a silent failure of "taking noise as evidence":
+/// at low quality, explicitly ask the caller to search with the given feature terms / read the file directly.
 fn with_quality_guidance(
     md: String,
     quality: &str,
@@ -404,7 +404,7 @@ fn extract_markdown(resp: &str) -> anyhow::Result<String> {
     Ok(md.to_string())
 }
 
-/// 从 `/prompt` 响应里取出服务端合成好的提示词。
+/// Take the server-composed prompt from the `/prompt` response.
 fn extract_prompt(resp: &str) -> anyhow::Result<String> {
     let v: Value = serde_json::from_str(resp)?;
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
@@ -480,7 +480,7 @@ fn format_violation(v: &Value) -> String {
     format!("[{sev}] {rid} {file}:{line} — {msg}\n")
 }
 
-/// 把 `/warmup` 响应格式化为人话状态。
+/// Format the `/warmup` response into a human-readable status.
 fn format_warmup(resp: &str) -> (String, bool) {
     let v: Value = match serde_json::from_str(resp) {
         Ok(v) => v,
@@ -508,9 +508,9 @@ fn format_warmup(resp: &str) -> (String, bool) {
     (format!("Warm-up status: {status}"), false)
 }
 
-// ---------------------------------------------------------------- 极简本地 HTTP 客户端
+// ---------------------------------------------------------------- Minimal local HTTP client
 
-/// 向常驻服务发一次 HTTP/1.1 请求，返回响应体（已处理 chunked）。
+/// Send one HTTP/1.1 request to the resident service and return the body (chunked already handled).
 fn http_call(base: &str, path: &str, method: &str, body: Option<&str>) -> anyhow::Result<String> {
     let (host, port) = parse_base(base)?;
     let req = match body {
@@ -538,7 +538,7 @@ fn http_call(base: &str, path: &str, method: &str, body: Option<&str>) -> anyhow
     }
 }
 
-/// 解析 `http://host:port` 或 `host:port`。
+/// Parse `http://host:port` or `host:port`.
 fn parse_base(base: &str) -> anyhow::Result<(String, u16)> {
     let s = base.trim_end_matches('/').strip_prefix("http://").unwrap_or(base);
     let (host, port) = s
@@ -550,7 +550,7 @@ fn parse_base(base: &str) -> anyhow::Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
-/// 解码 HTTP chunked 传输编码。
+/// Decode HTTP chunked transfer encoding.
 fn decode_chunked(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;

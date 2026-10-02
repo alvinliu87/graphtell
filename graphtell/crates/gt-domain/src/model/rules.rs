@@ -1,18 +1,18 @@
-//! 合规规则（Check）—— 在建好的图上回答「这个代码库是否违规」。
+//! Compliance rules (Check) — answering "does this codebase violate anything" on the built graph.
 //!
-//! # 与 FKB `Rule` 的区别
+//! # How this differs from the FKB `Rule`
 //!
-//! FKB 的 [`crate::model::Rule`] 是**合成规则**：在 P4/P6 阶段给图"添东西"
-//! （打标注、合成语义节点）。本模块的 [`CheckRule`] 是**检查规则**：图建完之后
-//! 只读地遍历它，产出"违规"（[`Violation`]）。
+//! The FKB [`crate::model::Rule`] is a **synthesis rule**: it "adds things" to the graph during P4/P6 (tagging
+//! annotations, synthesising semantic nodes). [`CheckRule`] in this module is a **check rule**: after the graph is
+//! built it walks the graph read-only and produces "violations" ([`Violation`]).
 //!
-//! 二者都声明在 YAML 里、都由内核之外的知识驱动 —— 内核不认识任何具体规则。
+//! Both are declared in YAML and both are driven by knowledge outside the kernel — the kernel knows no concrete rule.
 //!
-//! # 为什么违规落成 `Diagnostic`
+//! # Why a violation lands as a `Diagnostic`
 //!
-//! [`Violation::to_diagnostic`] 把违规转成诊断（code = `rule:<id>`）。诊断已经是
-//! 一等产物（有 `severity` / `location` / `payload`，DiagnosticsPage 直接渲染），
-//! 复用它意味着规则引擎**不需要新的存储与新的页面**。
+//! [`Violation::to_diagnostic`] turns a violation into a diagnostic (code = `rule:<id>`). Diagnostics are already a
+//! first-class product (they carry `severity` / `location` / `payload` and DiagnosticsPage renders them directly),
+//! so reusing them means the rule engine needs **no new storage and no new page**.
 
 use std::collections::BTreeMap;
 
@@ -23,25 +23,25 @@ use crate::model::graph::{Diagnostic, Severity};
 use crate::model::ids::{NodeId, ProjectId, SubProjectId};
 use crate::model::kinds::Phase;
 
-/// 违规诊断的 code 前缀（用于与建图期诊断区分、以及重跑时清理）。
+/// The code prefix of violation diagnostics (to distinguish them from build-time diagnostics and to clean up on re-run).
 pub const RULE_CODE_PREFIX: &str = "rule:";
 
-/// 违规诊断所处的阶段。
+/// The phase a violation diagnostic belongs to.
 pub fn check_phase() -> Phase {
     Phase(Phase::CHECK.to_string())
 }
 
-/// 参数引用的前缀：`$key` 表示"取 `params` 里 key 的值"。
+/// The prefix of a parameter reference: `$key` means "take the value of key from `params`".
 ///
-/// 必须显式带前缀，不能靠"是不是纯数字"来猜 —— 字符串型参数尤其如此：
-/// `"50"` 既可能是字面量也可能是引用，猜错就是静默的错误结果。
+/// The prefix must be explicit; guessing from "is it a pure number" is not acceptable — especially for string
+/// parameters: `"50"` could be either a literal or a reference, and guessing wrong is a silently wrong result.
 pub const PARAM_PREFIX: char = '$';
 
-/// 解析一个可能是"字面量 / 参数引用"的字符串。
+/// Parse a string that may be a "literal / parameter reference".
 ///
-/// * `"$key"` → 引用参数 `key`
-/// * `"$$x"` → 字面量 `$x`（转义：先吞一个 `$`）
-/// * `"$"` 或 `"50"` → 字面量（孤立的 `$` 不构成引用）
+/// * `"$key"` -> reference to parameter `key`
+/// * `"$$x"` -> the literal `$x` (escaping: one `$` is swallowed)
+/// * `"$"` or `"50"` -> a literal (a lone `$` is not a reference)
 fn parse_param_ref(s: String) -> Result<String, String> {
     if let Some(rest) = s.strip_prefix("$$") {
         Ok(format!("{PARAM_PREFIX}{rest}"))
@@ -56,12 +56,12 @@ fn parse_param_ref(s: String) -> Result<String, String> {
     }
 }
 
-/// 规则参数可取的值：字面量，或引用 `params` 里声明的参数（写 `$key`）。
+/// Values a rule parameter can take: a literal, or a reference to a parameter declared in `params` (written `$key`).
 ///
-/// 序列化刻意**不是** untagged：untagged 对字符串无从区分字面量与引用
-/// （`Str` 变体会吃掉 `"$x"`），而数值侧会把 `$` 一起留在键名里，
-/// 于是 `params.get("$x")` 永远取不到值、静默退化成 0。
-/// 手写 impl 把 `$` 前缀在**解析时**就吃掉，`Param` 里只留干净的键。
+/// Serialization is deliberately **not** untagged: untagged cannot tell a literal from a reference for strings (the
+/// `Str` variant would swallow `"$x"`), while on the numeric side the `$` stays inside the key name, so
+/// `params.get("$x")` never finds a value and silently degrades to 0.
+/// The hand-written impl swallows the `$` prefix at **parse time**, leaving only a clean key inside `Param`.
 #[derive(Debug, Clone)]
 pub enum NumOrParam {
     Num(u64),
@@ -97,7 +97,7 @@ impl<'de> Deserialize<'de> for NumOrParam {
     }
 }
 
-/// 同上，针对字符串型参数（名称前缀、忽略名单等）。
+/// Same as above, for string parameters (name prefixes, ignore lists, etc.).
 #[derive(Debug, Clone)]
 pub enum StrOrParam {
     Str(String),
@@ -132,7 +132,7 @@ impl<'de> Deserialize<'de> for StrOrParam {
     }
 }
 
-/// 一条规则可暴露给用户调节的参数种类。
+/// The kinds of parameter a rule may expose for the user to tune.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParamKind {
@@ -142,41 +142,41 @@ pub enum ParamKind {
     Bool,
 }
 
-/// 一条规则暴露给用户的可调参数（在 YAML `params:` 下声明）。
+/// A tunable parameter a rule exposes to the user (declared under `params:` in YAML).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleParam {
-    /// 参数键（在 `when` / `applies_to` 里用 `$key` 引用）。
+    /// Parameter key (referenced as `$key` inside `when` / `applies_to`).
     pub key: String,
-    /// 展示名（UI 用）。
+    /// Display name (for the UI).
     pub label: String,
     #[serde(default)]
     pub description: Option<String>,
     pub kind: ParamKind,
-    /// 默认值（与 `kind` 对应的 JSON 标量）。
+    /// Default value (a JSON scalar matching `kind`).
     pub default: Value,
     #[serde(default)]
     pub min: Option<f64>,
     #[serde(default)]
     pub max: Option<f64>,
-    /// `kind = enum` 时的候选值。
+    /// Candidate values when `kind = enum`.
     #[serde(default)]
     pub choices: Vec<String>,
 }
 
-/// 工程级对单条规则的配置覆盖。
+/// A project-level config override for one rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRuleConfig {
     pub project_id: ProjectId,
     pub rule_id: String,
-    /// `None` = 继承 YAML 里的全局 `enabled`；`Some(b)` = 工程级覆盖。
+    /// `None` = inherit the global `enabled` from YAML; `Some(b)` = a project-level override.
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// 参数覆盖（`param_key -> value`），未覆盖的取规则 `params` 的默认。
+    /// Parameter overrides (`param_key -> value`); ones not overridden take the rule `params` default.
     #[serde(default)]
     pub options: Value,
 }
 
-/// 配置写入请求（部分字段可省略 = 不改动该项）。
+/// A config write request (fields may be omitted = leave that item unchanged).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfigPatch {
     pub rule_id: String,
@@ -186,10 +186,10 @@ pub struct RuleConfigPatch {
     pub options: Option<Value>,
 }
 
-/// 解析后的参数表：`param_key -> value`（全局默认 + 工程覆盖已合并）。
+/// The resolved parameter table: `param_key -> value` (global defaults + project overrides already merged).
 pub type ParamValues = std::collections::HashMap<String, Value>;
 
-/// 把规则的 `params` 默认值与工程覆盖合并成求值可用的参数表。
+/// Merge a rule's `params` defaults with the project overrides into a parameter table usable for evaluation.
 pub fn resolve_param_values(rule: &CheckRule, overrides: &Value) -> ParamValues {
     let mut m = ParamValues::new();
     for p in &rule.params {
@@ -203,7 +203,7 @@ pub fn resolve_param_values(rule: &CheckRule, overrides: &Value) -> ParamValues 
     m
 }
 
-/// 取出一个数值参数（字面量直接返回，引用则从参数表取；缺失回退 0）。
+/// Read a numeric parameter (a literal is returned directly, a reference is read from the table; missing falls back to 0).
 pub fn resolve_num(v: &NumOrParam, params: &ParamValues) -> u64 {
     match v {
         NumOrParam::Num(n) => *n,
@@ -215,7 +215,7 @@ pub fn resolve_num(v: &NumOrParam, params: &ParamValues) -> u64 {
     }
 }
 
-/// 取出一个字符串参数（字面量直接返回，引用则从参数表取；缺失回退空串）。
+/// Read a string parameter (a literal is returned directly, a reference is read from the table; missing falls back to an empty string).
 pub fn resolve_str(v: &StrOrParam, params: &ParamValues) -> String {
     match v {
         StrOrParam::Str(s) => s.clone(),
@@ -226,7 +226,7 @@ pub fn resolve_str(v: &StrOrParam, params: &ParamValues) -> String {
     }
 }
 
-/// `Option<StrOrParam>` 的便捷解析：空串视为 `None`。
+/// Convenience parsing for `Option<StrOrParam>`: an empty string counts as `None`.
 pub fn resolve_str_opt(v: &Option<StrOrParam>, params: &ParamValues) -> Option<String> {
     match v {
         None => None,
@@ -241,47 +241,47 @@ pub fn resolve_str_opt(v: &Option<StrOrParam>, params: &ParamValues) -> Option<S
     }
 }
 
-/// 一条检查规则。
+/// A check rule.
 ///
 /// ```yaml
 /// - id: http-contract-without-handler
-///   title: HTTP 契约没有处理者
+///   title: HTTP contract without a handler
 ///   severity: error
 ///   category: correctness
 ///   applies_to: { kinds: [HttpContract] }
 ///   when:
 ///     - no_incoming: HandledBy
-///   message: "契约 {name} 没有 handler，请求它会在运行时报错"
+///   message: "contract {name} has no handler, calling it fails at runtime"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckRule {
-    /// 稳定标识，同时是诊断 code 的后缀（`rule:<id>`）。
+    /// Stable identifier, also the suffix of the diagnostic code (`rule:<id>`).
     pub id: String,
-    /// 人类可读的规则名。
+    /// Human-readable rule name.
     pub title: String,
-    /// 规则意图说明（供 UI 展示）。
+    /// Description of the rule's intent (for the UI).
     #[serde(default)]
     pub description: Option<String>,
-    /// 命中时的严重级别。
+    /// Severity level when it matches.
     #[serde(default = "default_severity")]
     pub severity: Severity,
-    /// 分组标签（architecture / security / deadcode / contract …）。
+    /// Grouping tag (architecture / security / deadcode / contract …).
     #[serde(default = "default_category")]
     pub category: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 规则作用的节点范围（决定候选集，也决定求值成本）。
+    /// The node scope the rule applies to (decides both the candidate set and the evaluation cost).
     #[serde(default)]
     pub applies_to: RuleScope,
-    /// 暴露给用户调节的参数（在 `when` / `applies_to` 里用 `$key` 引用）。
+    /// Parameters exposed for the user to tune (referenced as `$key` in `when` / `applies_to`).
     #[serde(default)]
     pub params: Vec<RuleParam>,
-    /// 命中条件：**全部满足**才判违规（`when` 为空表示范围内全部命中）。
+    /// Match condition: **all** must hold before it is a violation (an empty `when` matches everything in scope).
     #[serde(default)]
     pub when: Vec<CheckPredicate>,
-    /// 违规文案，支持 `{name}` / `{kind}` / `{fqn}` / `{identity}` / `{file}` / `{line}` 占位符。
+    /// Violation copy; supports the placeholders `{name}` / `{kind}` / `{fqn}` / `{identity}` / `{file}` / `{line}`.
     pub message: String,
-    /// 修复建议。
+    /// Remediation advice.
     #[serde(default)]
     pub remediation: Option<String>,
 }
@@ -297,12 +297,12 @@ fn default_true() -> bool {
 }
 
 impl CheckRule {
-    /// 诊断 code：`rule:<id>`。
+    /// Diagnostic code: `rule:<id>`.
     pub fn code(&self) -> String {
         format!("{RULE_CODE_PREFIX}{}", self.id)
     }
 
-    /// 判据依赖的图事实（自动推导，见 [`RuleRequirements`]）。
+    /// Graph facts the predicate depends on (derived automatically, see [`RuleRequirements`]).
     pub fn requirements(&self) -> RuleRequirements {
         let mut out = RuleRequirements::default();
         for p in &self.when {
@@ -311,7 +311,7 @@ impl CheckRule {
         out
     }
 
-    /// 判据里以 `$key` 形式引用的参数键（去重、保持出现顺序）。
+    /// Parameter keys referenced as `$key` in the predicate (deduplicated, order of appearance preserved).
     pub fn referenced_params(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut push = |k: &str| {
@@ -329,11 +329,12 @@ impl CheckRule {
         out
     }
 
-    /// 被引用、却没在 `params` 里声明的参数键。
+    /// Parameter keys that are referenced but not declared in `params`.
     ///
-    /// 这类引用在求值时会静默退化成 `0` / `""` —— 用在 `limit` 上就是
-    /// **候选集直接变空**（规则静默 0 命中），正是本项目最想避免的失效方式。
-    /// 因此它必须在装载阶段就被发现，而不是等用户把"0 违规"读成"代码干净"。
+    /// Such a reference silently degrades to `0` / `""` at evaluation time — used on a `limit` that makes
+    /// **the candidate set empty outright** (the rule silently matches 0 times), exactly the failure mode this
+    /// project most wants to avoid. So it has to be caught at load time, rather than waiting for a user to read
+    /// "0 violations" as "the code is clean".
     pub fn undeclared_params(&self) -> Vec<String> {
         self.referenced_params()
             .into_iter()
@@ -341,10 +342,11 @@ impl CheckRule {
             .collect()
     }
 
-    /// 环境是否匹配：语言的**任一**子工程命中即可，框架同理。
+    /// Whether the environment matches: **any** sub-project matching the language is enough, and likewise for
+    /// frameworks.
     ///
-    /// 一个工程往往是多语言的（CRMEB = php + javascript，litemall = java + javascript），
-    /// 所以是"存在匹配"而不是"全部匹配" —— 只要有 PHP 子工程，PHP 规则就该跑。
+    /// A project is often multi-language (CRMEB = php + javascript, litemall = java + javascript), so this is
+    /// "a match exists" rather than "all match" — as long as there is a PHP sub-project, PHP rules should run.
     pub fn applies_to_env(&self, languages: &[String], frameworks: &[String]) -> bool {
         let lang_ok = self.applies_to.languages.is_empty()
             || self
@@ -363,7 +365,7 @@ impl CheckRule {
                 .any(|f| frameworks.iter().any(|x| x.eq_ignore_ascii_case(f)))
     }
 
-    /// 渲染违规文案。
+    /// Render the violation copy.
     pub fn render(
         &self,
         node_name: &str,
@@ -378,14 +380,15 @@ impl CheckRule {
         )
     }
 
-    // 占位符有 6 个（节点名 / 种类 / FQN / identity / 文件 / 行号），加参数表就是 8 个；
-    // 硬拆成结构体只会让调用点更难读，这里选择保留平铺签名。
+    // There are 6 placeholders (node name / kind / FQN / identity / file / line), plus the parameter table makes 8;
+    // splitting them into a struct would only make the call site harder to read, so the flat signature is kept here.
     #[allow(clippy::too_many_arguments)]
-    /// 渲染违规文案（带参数表）。
+
+    /// Render the violation copy (with a parameter table).
     ///
-    /// 除 `{name}` / `{file}` 等节点占位符外，还支持 `{param:key}` ——
-    /// 把工程调过的阈值写进文案。否则用户把"热点表阈值"调成 200 之后，
-    /// 报告里仍然写着"≥ 50"，读起来像规则没生效。
+    /// Besides node placeholders like `{name}` / `{file}`, this also supports `{param:key}` — writing the
+    /// threshold the project tuned into the copy. Otherwise, after the user raises the "hot table threshold" to
+    /// 200, the report still says ">= 50" and reads as if the rule had not taken effect.
     pub fn render_with(
         &self,
         node_name: &str,
@@ -423,33 +426,34 @@ impl CheckRule {
     }
 }
 
-/// 规则作用的节点范围。
+/// The node scope a rule applies to.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RuleScope {
-    /// 节点种类白名单；为空表示不限制种类（慎用，成本高）。
+    /// Node-kind allowlist; empty means no kind restriction (use sparingly, it is expensive).
     #[serde(default)]
     pub kinds: Vec<String>,
-    /// 名字预筛选（大小写不敏感子串），可显著降低候选集规模。支持 `$param` 引用。
+    /// Name pre-filter (case-insensitive substring); can shrink the candidate set significantly. Supports `$param` references.
     #[serde(default)]
     pub name_contains: Option<StrOrParam>,
-    /// 候选集上限，防止规则扫全图拖垮一次检查。支持 `$param` 引用。
+    /// Candidate-set cap, so a rule cannot scan the whole graph and stall a check. Supports `$param` references.
     #[serde(default = "default_scope_limit")]
     pub limit: NumOrParam,
-    /// **适用语言白名单**（`php` / `java` / `javascript` / `typescript` …）。
+    /// **Applicable language allowlist** (`php` / `java` / `javascript` / `typescript` …).
     ///
-    /// 为空表示跨语言通用 —— 这类规则的判据必须只依赖**图拓扑**
-    /// （边种类 / 扇入扇出），因为拓扑是归一化的：PHP 与 Java 都产出
-    /// `HttpContract --HandledBy--> Method`。
+    /// Empty means language-agnostic — such a rule's predicate must depend only on **graph topology** (edge kinds /
+    /// fan-in fan-out), because topology is normalised: both PHP and Java produce
+    /// `HttpContract --HandledBy--> Method`.
     ///
-    /// 一旦规则的判据依赖某个 FKB 产出的标注或边（例如 PHP 的事件语义
-    /// `Triggers` / `Emits`），就必须声明语言：Java 工程里根本没有这些边，
-    /// 规则会把每个事件节点都报成"没人触发"—— 环境闸门就是要挡住这种误报。
+    /// As soon as a rule's predicate depends on an annotation or edge produced by some FKB (e.g. the PHP event
+    /// semantics `Triggers` / `Emits`), it must declare the language: a Java project has none of those edges, and
+    /// the rule would report every event node as "nobody triggers it" — the environment gate exists to block
+    /// exactly that kind of false positive.
     #[serde(default)]
     pub languages: Vec<String>,
-    /// **适用框架白名单**（`thinkphp6` / `laravel` / `spring-boot` / `uni-app` …）。
+    /// **Applicable framework allowlist** (`thinkphp6` / `laravel` / `spring-boot` / `uni-app` …).
     ///
-    /// 粒度比 `languages` 更细：同一语言下不同框架的边语义也可能不同。
-    /// 为空表示不限框架。
+    /// A finer granularity than `languages`: even within one language, edge semantics can differ per framework.
+    /// Empty means no framework restriction.
     #[serde(default)]
     pub frameworks: Vec<String>,
 }
@@ -458,76 +462,80 @@ fn default_scope_limit() -> NumOrParam {
     NumOrParam::Num(20_000)
 }
 
-/// 检查谓词。
+/// A check predicate.
 ///
-/// 命名刻意贴近 [`crate::model::Predicate`]（FKB 合成用），但语义是**面向已建成的图**：
-/// 边种类、扇入扇出、标注、属性 —— 而不是源码里的调用点。
+/// The naming deliberately mirrors [`crate::model::Predicate`] (used for FKB synthesis), but the semantics are
+/// **about the already-built graph**: edge kinds, fan-in / fan-out, annotations, properties — not call sites in
+/// source code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckPredicate {
-    /// 节点种类属于给定集合。
+    /// The node kind is in the given set.
     KindIn(Vec<String>),
-    /// 名字包含子串（大小写不敏感）。支持 `$param` 引用。
+    /// The name contains the substring (case-insensitive). Supports `$param` references.
     NameContains(StrOrParam),
-    /// 名字以给定前缀开头（大小写不敏感）。支持 `$param` 引用。
+    /// The name starts with the given prefix (case-insensitive). Supports `$param` references.
     NameStartsWith(StrOrParam),
-    /// FQN 包含子串。支持 `$param` 引用。
+    /// The FQN contains the substring. Supports `$param` references.
     FqnContains(StrOrParam),
-    /// identity 值包含子串（如 `POST /api/xxx`）。支持 `$param` 引用。
+    /// The identity value contains the substring (e.g. `POST /api/xxx`). Supports `$param` references.
     IdentityContains(StrOrParam),
-    /// `name` / `fqn` / `identity` 任一包含子串。支持 `$param` 引用。
+    /// Any of `name` / `fqn` / `identity` contains the substring. Supports `$param` references.
     TextContains(StrOrParam),
-    /// 节点上有给定种类的标注。
+    /// The node carries an annotation of the given kind.
     HasAnnotation(String),
-    /// 节点上**没有**给定种类的标注。
+    /// The node does **not** carry an annotation of the given kind.
     NoAnnotation(String),
-    /// 节点属性等于给定值（如 `side = frontend`）。
+    /// A node property equals the given value (e.g. `side = frontend`).
     PropertyIs { name: String, value: String },
-    /// 节点缺少给定属性。
+    /// The node lacks the given property.
     PropertyMissing(String),
-    /// 作用域链上没有给定能力（如 `Authentication` / `RateLimiting`）。
+    /// The scope chain lacks the given capability (e.g. `Authentication` / `RateLimiting`).
     NoCapability(Vec<String>),
-    /// 扇入（语义入边数）不小于阈值。支持 `$param` 引用。
+    /// Fan-in (semantic in-edge count) is at least the threshold. Supports `$param` references.
     FanInGte(NumOrParam),
-    /// 扇入不大于阈值（`0` = 没有任何语义入边）。支持 `$param` 引用。
+    /// Fan-in is at most the threshold (`0` = no semantic in-edges at all). Supports `$param` references.
     FanInLte(NumOrParam),
-    /// 扇出不小于阈值。支持 `$param` 引用。
+    /// Fan-out is at least the threshold. Supports `$param` references.
     FanOutGte(NumOrParam),
-    /// **没有**给定种类的入边（如契约没有 `HandledBy`）。
+    /// **No** in-edge of the given kind (e.g. a contract has no `HandledBy`).
     NoIncoming(String),
-    /// 有给定种类的入边。
+    /// Has an in-edge of the given kind.
+
     HasIncoming(String),
-    /// **没有**给定种类的出边。
+    /// **No** out-edge of the given kind.
     NoOutgoing(String),
-    /// 有给定种类的出边。
+    /// Has an out-edge of the given kind.
     HasOutgoing(String),
-    /// 全部满足。
+    /// All hold.
     AllOf(Vec<CheckPredicate>),
-    /// 任一满足。
+    /// Any holds.
     AnyOf(Vec<CheckPredicate>),
-    /// 取反。
+    /// Negation.
     Not(Box<CheckPredicate>),
 }
 
-/// 规则判据所依赖的图事实。
+/// The graph facts a rule predicate depends on.
 ///
-/// 由 [`CheckRule::requirements`] 从谓词**自动推导**，不需要人工在 YAML 里声明 ——
-/// 人工声明的 `requires` 会和 `when` 脱节（`when` 改了忘记改 `requires`），
-/// 而推导出来的永远和判据一致。
+/// Derived **automatically** from the predicate by [`CheckRule::requirements`]; it need not be declared by hand in
+/// YAML — a hand-written `requires` drifts away from `when` (you change `when` and forget `requires`), while the
+/// derived one always agrees with the predicate.
 ///
-/// # 为什么必须有这个
+/// # Why this has to exist
 ///
-/// **反向谓词在"证据不存在"时是恒真的**。图上从来没有 `Triggers` 边时，
-/// `no_incoming: Triggers` 对每个节点都成立 —— 于是"没人触发"会命中全部事件节点。
-/// 这正是本项目已经踩过的两个坑（2683 条幽灵调用、28 个 EventBus 全误报）。
-/// 因此跑规则前必须确认：**判据里提到的边/标注，图里真的存在过**。
+/// **A negative predicate is trivially true when the evidence does not exist.** When the graph has never had a
+/// `Triggers` edge, `no_incoming: Triggers` holds for every node — so "nobody triggers it" matches every event
+/// node. That is exactly the pair of traps this project has already fallen into (2683 phantom calls, 28 EventBus
+/// nodes all false positives).
+/// So before running a rule we must confirm: **the edges / annotations the predicate mentions really do occur in
+/// the graph**.
 #[derive(Debug, Clone, Default)]
 pub struct RuleRequirements {
-    /// 判据用到的边种类（`HasIncoming` / `NoIncoming` / `HasOutgoing` / `NoOutgoing`）。
+    /// Edge kinds used by the predicate (`HasIncoming` / `NoIncoming` / `HasOutgoing` / `NoOutgoing`).
     pub edges: Vec<String>,
-    /// 判据用到的标注种类（`HasAnnotation` / `NoAnnotation`）。
+    /// Annotation kinds used by the predicate (`HasAnnotation` / `NoAnnotation`).
     pub annotations: Vec<String>,
-    /// 判据用到的能力（`NoCapability`）；要求 `Capability` 通道上有对应标注。
+    /// Capabilities used by the predicate (`NoCapability`); requires a matching annotation on the `Capability` channel.
     pub capabilities: Vec<String>,
 }
 
@@ -554,7 +562,7 @@ impl RuleRequirements {
     }
 }
 
-/// 递归收集谓词里引用的参数键。
+/// Recursively collect the parameter keys referenced inside a predicate.
 fn collect_params(predicates: &[CheckPredicate], out: &mut Vec<String>) {
     fn push(out: &mut Vec<String>, k: &str) {
         if !out.iter().any(|x| x == k) {
@@ -586,10 +594,11 @@ fn collect_params(predicates: &[CheckPredicate], out: &mut Vec<String>) {
     }
 }
 
-/// 递归收集谓词里的依赖。
+/// Recursively collect the dependencies inside a predicate.
 ///
-/// `Not` 内部照收不翻转极性：这里做的是"判据是否成立"的**保守检查**，
-/// 漏报一次（该拦没拦）远好过误拦一条本来能跑的规则。
+/// `Not` is collected as-is, without flipping polarity: this is a **conservative** check of "does the predicate
+/// hold", and missing one block (failing to stop something that should have been stopped) is far better than
+/// wrongly blocking a rule that could have run.
 fn collect(p: &CheckPredicate, out: &mut RuleRequirements) {
     match p {
         CheckPredicate::HasIncoming(k)
@@ -610,7 +619,7 @@ fn collect(p: &CheckPredicate, out: &mut RuleRequirements) {
     }
 }
 
-/// 一次命中的违规。
+/// One matched violation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Violation {
     pub project_id: ProjectId,
@@ -633,12 +642,12 @@ pub struct Violation {
 }
 
 impl Violation {
-    /// 诊断 code（`rule:<id>`）。
+    /// Diagnostic code (`rule:<id>`).
     pub fn code(&self) -> String {
         format!("{RULE_CODE_PREFIX}{}", self.rule_id)
     }
 
-    /// `path:line` 定位串；没有文件信息时为 `None`。
+    /// A `path:line` locator string; `None` when there is no file information.
     pub fn location(&self) -> Option<String> {
         match (&self.file, self.line) {
             (Some(f), Some(l)) => Some(format!("{f}:{l}")),
@@ -647,7 +656,7 @@ impl Violation {
         }
     }
 
-    /// 落成诊断（复用既有的一等产物通道）。
+    /// Land it as a diagnostic (reusing the existing first-class product channel).
     pub fn to_diagnostic(&self) -> Diagnostic {
         Diagnostic {
             project_id: self.project_id,
@@ -672,7 +681,7 @@ impl Violation {
         }
     }
 
-    /// 从诊断还原（诊断表里只有 payload 时用于重建违规）。
+    /// Restore from a diagnostic (used to rebuild a violation when the diagnostic table only has a payload).
     pub fn from_diagnostic(d: &Diagnostic) -> Option<Self> {
         let p = d.payload.as_object()?;
         Some(Self {
@@ -696,44 +705,48 @@ impl Violation {
     }
 }
 
-/// 一次规则检查的报告。
+/// A report of one rule check.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CheckReport {
     pub project_id: ProjectId,
-    /// 已装载的规则总数（含被禁用的）。
+    /// Total number of loaded rules (including disabled ones).
     pub rules_total: usize,
-    /// 实际执行的规则数。
+    /// Number of rules actually executed.
     pub rules_run: usize,
-    /// 命中的违规。
+    /// Violations matched.
     pub violations: Vec<Violation>,
-    /// 按严重级别计数。
+    /// Count by severity.
     pub by_severity: BTreeMap<String, u64>,
-    /// 按规则计数。
+    /// Count by rule.
     pub by_rule: BTreeMap<String, u64>,
-    /// **跑了但一条都没命中的规则 id**。
+    /// Ids of rules that **ran but matched nothing**.
     ///
-    /// 为什么要有这个字段：规则最常见的失效方式不是误报，而是**静默归零** ——
-    /// 判据用了一个图上根本不存在的标注/边（例如 `pii`、`Capability:Authentication`），
-    /// 于是永远匹配不上。此时报告"0 条违规"会被读成"代码没问题"，
-    /// 比误报危险得多。把它们显式列出来，就没人能把"规则瞎了"当成"代码干净"。
+    /// Why this field exists: the most common way a rule fails is not a false positive but a **silent zero** — the
+    /// predicate uses an annotation / edge that does not exist on the graph at all (e.g. `pii`,
+    /// `Capability:Authentication`), so it never matches. A report of "0 violations" then reads as "the code is
+    /// fine", which is far more dangerous than a false positive. Listing them explicitly means nobody can mistake
+    /// "the rule went blind" for "the code is clean".
     pub rules_silent: Vec<String>,
-    /// **环境不匹配而跳过的规则**（声明了 `languages` / `frameworks`，本工程没有该栈）。
+    /// Rules **skipped because the environment does not match** (they declared `languages` / `frameworks` and this
+    /// project lacks that stack).
     ///
-    /// 这是**预期行为**，不是故障：PHP 专属规则不该在纯 Java 工程上跑。
-    /// 单独列出是为了和"静默归零"区分开 —— 两者都表现为 0 命中，但性质完全不同。
+    /// That is **expected behaviour**, not a fault: a PHP-only rule should not run on a pure Java project.
+    /// They are listed separately to tell them apart from "silent zero" — both look like 0 matches, but they are
+    /// completely different in nature.
     #[serde(default)]
     pub rules_not_applicable: Vec<String>,
-    /// **判据不成立而停用的规则**：判据提到的边/标注/能力在本工程图上一个都没有。
+    /// Rules **disabled because their predicate does not hold**: the edges / annotations / capabilities the
+    /// predicate mentions do not occur once in this project's graph.
     ///
-    /// 这时跑规则只会产出**恒真误报**（`no_incoming: X` 在 X 不存在时对所有节点成立）。
-    /// 宁可不跑，也不要报一堆假的。
+    /// Running such a rule would only produce **trivially-true false positives** (`no_incoming: X` holds for every
+    /// node when X does not exist). Better not to run it than to report a pile of fakes.
     #[serde(default)]
     pub rules_unavailable: Vec<String>,
     pub duration_ms: u64,
 }
 
 impl CheckReport {
-    /// 按严重级别降序、再按规则 id 排序（保证输出可复现）。
+    /// Sort by severity descending, then by rule id (so the output is reproducible).
     pub fn sort_violations(&mut self) {
         let rank = |s: Severity| match s {
             Severity::Critical => 0,
@@ -754,15 +767,15 @@ mod tests {
     use super::*;
 
     fn rule_with_params() -> CheckRule {
-        // 走一遍反序列化：参数体系的价值就在于"规则作者写的声明能被正确读进来"。
+        // Go through deserialization once: the whole value of the parameter system is that "the declaration the rule author wrote can be read back correctly".
         let v = json!({
             "id": "hot-table",
-            "title": "热点表",
+            "title": "Hot table",
             "severity": "info",
             "category": "architecture",
             "params": [
-                { "key": "min_fan_in", "label": "扇入阈值", "kind": "number", "default": 50 },
-                { "key": "name_filter", "label": "名称过滤", "kind": "string", "default": "" }
+                { "key": "min_fan_in", "label": "Fan-in threshold", "kind": "number", "default": 50 },
+                { "key": "name_filter", "label": "Name filter", "kind": "string", "default": "" }
             ],
             "applies_to": {
                 "kinds": ["Table"],
@@ -770,13 +783,13 @@ mod tests {
                 "limit": "$max_nodes"
             },
             "when": [{ "fan_in_gte": "$min_fan_in" }],
-            "message": "表 {name} 热（入边 ≥ {param:min_fan_in}）"
+            "message": "table {name} is hot (in-edges >= {param:min_fan_in})"
         });
-        serde_json::from_value(v).expect("规则声明应能解析")
+        serde_json::from_value(v).expect("the rule declaration should parse")
     }
 
     #[test]
-    fn 参数声明与默认解析() {
+    fn parameter_declaration_and_default_resolution() {
         let r = rule_with_params();
         assert_eq!(r.params.len(), 2);
         assert_eq!(r.params[0].key, "min_fan_in");
@@ -784,12 +797,12 @@ mod tests {
 
         let params = resolve_param_values(&r, &Value::Null);
         assert_eq!(resolve_num(&NumOrParam::Param("min_fan_in".into()), &params), 50);
-        // 字符串参数默认空串 → `name_contains` 退化为"不过滤"。
+        // A string parameter defaults to an empty string, so `name_contains` degenerates into "no filtering".
         assert_eq!(resolve_str_opt(&r.applies_to.name_contains, &params), None);
     }
 
     #[test]
-    fn 工程覆盖优先于默认值() {
+    fn project_override_takes_priority_over_default() {
         let r = rule_with_params();
         let params = resolve_param_values(&r, &json!({ "min_fan_in": 5, "name_filter": "order" }));
         assert_eq!(resolve_num(&NumOrParam::Param("min_fan_in".into()), &params), 5);
@@ -797,23 +810,23 @@ mod tests {
             resolve_str_opt(&r.applies_to.name_contains, &params),
             Some("order".to_string())
         );
-        // 覆盖里没给的键仍然取默认。
+        // Keys not given in the override still take the default.
         let defaults = resolve_param_values(&r, &json!({ "min_fan_in": 5 }));
         assert_eq!(resolve_str_opt(&r.applies_to.name_contains, &defaults), None);
     }
 
     #[test]
-    fn 未声明的参数引用会被发现() {
+    fn undeclared_parameter_reference_is_detected() {
         let r = rule_with_params();
-        // `limit: "$max_nodes"` 引用了没声明的参数 —— 求值时退化成 0，
-        // 候选集直接变空（规则静默 0 命中），必须在装载阶段暴露。
+        // `limit: "$max_nodes"` references an undeclared parameter — it degrades to 0 at evaluation time and the
+        // candidate set becomes empty outright (the rule silently matches 0 times); this must surface at load time.
         assert_eq!(r.undeclared_params(), vec!["max_nodes".to_string()]);
     }
 
     #[test]
-    fn 美元符号的字面量与引用可以区分() {
-        // `$` 既是参数引用前缀，也可能是**名字本身的一部分**（PHP 变量、
-        // 配置键名）。转义规则：`$$x` 表示字面量 `$x`，孤立的 `$` 也是字面量。
+    fn dollar_sign_literal_and_reference_are_distinguishable() {
+        // `$` is both the parameter-reference prefix and possibly **part of a name itself** (a PHP variable, a
+        // config key). Escaping rule: `$$x` means the literal `$x`, and a lone `$` is also a literal.
         let as_str = |v: serde_json::Value| -> StrOrParam { serde_json::from_value(v).unwrap() };
         assert!(matches!(as_str(json!("$key")), StrOrParam::Param(k) if k == "key"));
         assert!(matches!(as_str(json!("$$key")), StrOrParam::Str(s) if s == "$key"));
@@ -822,13 +835,14 @@ mod tests {
     }
 
     #[test]
-    fn 文案里的参数占位符按生效值渲染() {
+    fn parameter_placeholders_in_copy_render_with_the_effective_value() {
         let r = rule_with_params();
         let params = resolve_param_values(&r, &json!({ "min_fan_in": 8 }));
         let msg = r.render_with("users", "Table", None, None, None, None, Some(&params));
-        assert!(msg.contains("入边 ≥ 8"), "实际文案: {msg}");
-        // 不传参数表时保持原样（老调用点不受影响）。
+        assert!(msg.contains("in-edges >= 8"), "actual copy: {msg}");
+        // Without a parameter table, keep the original behaviour (old call sites are unaffected).
+
         let raw = r.render("users", "Table", None, None, None, None);
-        assert!(raw.contains("{param:min_fan_in}"), "实际文案: {raw}");
+        assert!(raw.contains("{param:min_fan_in}"), "actual copy: {raw}");
     }
 }

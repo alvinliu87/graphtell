@@ -1,14 +1,14 @@
-//! 框架知识库（FKB）的领域模型。
+//! Domain model of the Framework Knowledge Base (FKB).
 //!
-//! FKB 是「预置框架知识」的可序列化形式：ThinkPHP 6、Uni-app、Laravel、CRMEB…
-//! 每个框架一份 YAML，描述
-//! * 如何**识别**该框架（[`Detector`]）
-//! * 如何**解析框架根**（[`RootRule`]，如 `composer.json` 的 `autoload.psr-4`）
-//! * P3 要装载哪些**权威符号表**（[`LoaderSpec`]）
-//! * 各阶段执行的**规则**（[`Rule`] = 选择器 + 绑定）
+//! FKB is the serialisable form of "preset framework knowledge": ThinkPHP 6, Uni-app, Laravel, CRMEB…
+//! one YAML per framework, describing
+//! * how to **recognise** the framework ([`Detector`])
+//! * how to **resolve its root** ([`RootRule`], e.g. `autoload.psr-4` in `composer.json`)
+//! * which **authoritative symbol tables** P3 should load ([`LoaderSpec`])
+//! * the **rules** to run in each phase ([`Rule`] = selector + binding)
 //!
-//! 全部数据驱动，内核不认识任何具体框架 —— 这是 **开闭原则** 与
-//! **依赖倒置** 的落点：新增框架只需加一份 YAML。
+//! Everything is data-driven and the kernel knows no concrete framework — this is where the **open-closed
+//! principle** and **dependency inversion** land: supporting a new framework only means adding one YAML file.
 
 use std::collections::HashMap;
 
@@ -19,306 +19,335 @@ use super::graph::{MergeStrategy, Span};
 use super::kinds::{AnnotationChannel, EdgeKind, NodeKind, Phase, SynthesizedKind};
 use crate::model::kinds::Language;
 
-/// 一份框架知识。
+/// One framework's knowledge.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FrameworkKnowledge {
     pub id: String,
     pub display_name: String,
     pub language: Language,
-    /// 适用版本提示，仅用于展示。
+    /// Applicable-version hint, display only.
     pub version_hint: Option<String>,
-    /// 识别信号。
+    /// Recognition signals.
     pub detectors: Vec<Detector>,
-    /// 框架根 / 关键路径解析规则。
+    /// Rules for resolving the framework root / key paths.
     pub root_rules: Vec<RootRule>,
-    /// P3 权威符号表装载器。
+    /// P3 authoritative symbol-table loaders.
     pub loaders: Vec<LoaderSpec>,
-    /// 分阶段规则。
+    /// Rules grouped by phase.
     pub rules: Vec<Rule>,
-    /// 能力接口声明（库 / 框架 → 能力映射）：按 `capability` 名查**跨语言的能力模板**
-    /// （`capability_templates`，由装载器从核心配置载入），摊平成 `rules`。
+    /// Capability interface declarations (library / framework -> capability mapping): look up the
+    /// **cross-language capability template** by `capability` name (`capability_templates`, loaded by the loader
+    /// from the core config) and flatten it into `rules`.
     ///
-    /// 这是「框架 / 库知识」（分语言、可用户扩展），与跨语言的能力模板（识别机制）分离：
-    /// 模板只写一次，各语言 / 各库只声明「谁暴露了什么能力」。
+    /// This is "framework / library knowledge" (per language, user-extensible), kept separate from the
+    /// cross-language capability templates (the recognition mechanism): a template is written once, and each
+    /// language / library only declares "who exposes which capability".
     #[serde(default)]
     pub capability_interfaces: Vec<CapabilityInterface>,
-    /// 标准**注解识别器**引用（P6 标注的「接口实现」）：每个栈按自己的数据声明
-    /// 本栈如何实例化内核标准识别器（PII 列名 / 配置源表 / 重要度阈值 …）。
-    /// 识别器本身是内核标准（见 `gt_adapter_fkb::loader` 的 `annotation_templates`），
-    /// 各栈只填参数、不造识别器、不发明注解种类 —— 与 `capability_interfaces` 同构。
+    /// References to standard **annotation recognisers** (the "interface implementation" behind P6 tagging): each
+    /// stack declares, against its own data, how it instantiates the kernel's standard recognisers (PII column
+    /// names / config source tables / criticality thresholds …).
+    /// The recognisers themselves are kernel standard (see `annotation_templates` in `gt_adapter_fkb::loader`);
+    /// each stack only fills in parameters, it does not build recognisers or invent annotation kinds — isomorphic
+    /// to `capability_interfaces`.
     #[serde(default)]
     pub annotation_interfaces: Vec<AnnotationInterface>,
-    /// 本 FKB 引入的**业务特有标注种类**（在内核标准 [`AnnotationKind`] 之外追加）。
+    /// **Business-specific annotation kinds** introduced by this FKB (appended to the kernel-standard
+    /// [`AnnotationKind`]).
     ///
-    /// 标准种类（pii / data.criticality / config.storage / auth.public / i18n.missing_locale …）
-    /// 由内核识别器产出，不在此列；此处只放「项目特有的业务语义」（如 `entrypoint.login`）。
-    /// 加载时登记进 [`crate::model::kinds::register_annotation_kinds`]，与 `semantic_kinds`
-    /// （节点）同构 —— 新增一种业务标注不该以改内核为代价。
+    /// The standard kinds (pii / data.criticality / config.storage / auth.public / i18n.missing_locale …) are
+    /// produced by kernel recognisers and are not listed here; only "project-specific business semantics" goes
+    /// here (e.g. `entrypoint.login`).
+    /// They are registered at load time into [`crate::model::kinds::register_annotation_kinds`], isomorphic to
+    /// `semantic_kinds` (nodes) — adding a business annotation should not cost a kernel change.
     #[serde(default)]
     pub annotation_kinds: Vec<String>,
-    /// P7 动态解析声明：哪些调用是容器解析 / 事件触发 / 门面调用。
+    /// P7 dynamic-resolution declarations: which calls are container resolutions / event triggers / facade calls.
     pub resolvers: Vec<ResolverSpec>,
-    /// 缺省排除目录（叠加在工程/语言默认规则之上）。
+    /// Additional exclusion directories (layered on top of the project / language defaults).
     pub exclude_globs: Vec<String>,
-    /// 知识库作用域：框架级（默认）vs 项目级。
+    /// Scope of the knowledge base: framework-level (default) vs project-level.
     ///
-    /// * `Framework`：通用框架知识（如 `thinkphp6` / `laravel`），被任意使用该框架的工程加载；
-    /// * `Project`：项目专有知识（如 `crmeb`），**仅当工程被识别为该项目时才加载**，
-    ///   避免把项目约定（如 CRMEB 的 crontab 路由）串味到其它同框架工程。
+    /// * `Framework`: generic framework knowledge (e.g. `thinkphp6` / `laravel`), loaded by any project using that
+    ///   framework;
+    /// * `Project`: project-specific knowledge (e.g. `crmeb`), loaded **only when the project is recognised as
+    ///   that project**, so project conventions (e.g. CRMEB's crontab routes) do not bleed into other projects on
+    ///   the same framework.
     pub scope: KnowledgeScope,
-    /// 路由 handler 的解析规则：如何把 `Route::get` 的第二实参还原成「类 + 方法」。
+    /// Resolution rules for route handlers: how to turn the second argument of `Route::get` back into "class +
+    /// method".
     ///
-    /// 这是**框架知识**而非内核知识 —— 见 [`HandlerSpec`]。
+    /// This is **framework knowledge**, not kernel knowledge — see [`HandlerSpec`].
     #[serde(default)]
     pub handler: Option<HandlerSpec>,
-    /// 魔法方法委派：类用 `@method getList(...)` 声明、由 `__call` 转发到某个属性。
+    /// Magic-method delegation: a class declares `@method getList(...)` and forwards it to some property via
+    /// `__call`.
     ///
-    /// PHP 生态里"注解声明 + `__call` 转发"很常见（CRMEB 的 `BaseServices` 把 20 多个
-    /// `get*` / `count*` / `delete*` 转发给 `$this->dao`），但**转发给谁**是项目约定，
-    /// 内核不该猜 —— 由 FKB 指明属性名即可，其余（注解解析、类型来源、继承回溯）都是通用能力。
+    /// "annotation declaration + `__call` forwarding" is common in the PHP ecosystem (CRMEB's `BaseServices`
+    /// forwards 20-odd `get*` / `count*` / `delete*` to `$this->dao`), but **who it forwards to** is a project
+    /// convention the kernel must not guess — FKB just names the property, and everything else (annotation
+    /// parsing, where the type comes from, inheritance walk-back) is a generic capability.
     #[serde(default)]
     pub magic_delegation: Option<MagicDelegationSpec>,
-    /// 数据模型 CRUD 动词 → 读 / 写分类（与 `MapsTo` 配合）。
+    /// Data-model CRUD verb -> read / write classification (used together with `MapsTo`).
     ///
-    /// 「模型映射到表」是**静态结构**；`$model->save()` / `$model->find()` 才是
-    /// **动作**。哪些方法名算读、哪些算写是框架 API 约定（ThinkPHP 的 `save` /
-    /// `find`、Laravel 的 `create`…），由 FKB 声明后，P7 就能把
-    /// `入口 → 模型 → 表` 的边标成真正的 `WritesDb` / `ReadsDb`，
-    /// 而不是一路传播含糊的 `MapsTo`。
+    /// "A model maps to a table" is **static structure**; `$model->save()` / `$model->find()` are the
+    /// **actions**. Which method names count as reads and which as writes is a framework API convention (ThinkPHP's
+    /// `save` / `find`, Laravel's `create`…); once FKB declares them, P7 can label the
+    /// `entry -> model -> table` edge as a real `WritesDb` / `ReadsDb` instead of propagating a vague `MapsTo` all
+    /// the way through.
     #[serde(default)]
     pub db_verbs: Option<DbVerbsSpec>,
-    /// **外部系统调用**的 callee 名单（HTTP / 短信 / 邮件 / RPC）：`curl_exec`、
-    /// `Http::get` … 由 FKB 声明，供「循环内外部调用」判定（一次网络往返比一次
-    /// 查询贵得多，放进循环里比 N+1 更容易拖垮接口）。
+    /// A callee list for **external system calls** (HTTP / SMS / email / RPC): `curl_exec`, `Http::get` …
+    /// declared by FKB for the "external call inside a loop" judgement (one network round trip costs far more
+    /// than one query, so putting it in a loop kills an endpoint even more reliably than N+1).
     #[serde(default)]
     pub external_calls: Vec<String>,
-    /// **「中间件类 → 能力」映射**：某个中间件带什么能力（鉴权 / 限流 …）。
+    /// A **"middleware class -> capability" mapping**: what capability a given middleware carries (auth /
+    /// rate limiting …).
     ///
-    /// 这份名单**属于框架知识**（什么叫鉴权中间件、项目自己给它起了什么名字），
-    /// 所以放在 FKB 而不是内核 —— 内核不认识任何一个中间件名字。判定锚点是
-    /// **中间件自身的确凿身份**（类名），而不是"这个端点看起来要不要登录"。
+    /// This list **belongs to framework knowledge** (what counts as an auth middleware, and what name the project
+    /// gave it), so it lives in FKB rather than the kernel — the kernel knows no middleware name. The judgement is
+    /// anchored on the middleware's **own confirmed identity** (its class name), not on "does this endpoint look
+    /// like it needs a login".
     #[serde(default)]
     pub middleware_capabilities: Vec<MiddlewareCapability>,
-    /// **路由守卫识别规则**：怎么从调用图里认出「哪些中间件守着哪条路由」。
+    /// **Route-guard recognition rules**: how to tell from the call graph "which middleware guards which route".
     ///
-    /// 这是**框架知识而非内核知识**——`Route::get()->middleware(X)` 是 ThinkPHP/Laravel
-    /// 的链式写法，`app.get(path, mw, handler)` 是 Express 的位置参数写法，
-    /// `@UseGuards(X)` / `@login_required` / `@PreAuthorize` 是 NestJS/Python/Spring 的
-    /// 装饰器 / 注解写法。内核不认识任何一种，全部由 FKB 声明，通用提取器按声明去图上
-    /// 收，再写进 `route_list` 符号表（键与 P5 合成的 `HttpContract.name` 同形），
-    /// 供 P14 把守卫类晋升为 `Middleware` 并连 `PassesThrough` 边。
+    /// This is **framework knowledge, not kernel knowledge** — `Route::get()->middleware(X)` is the ThinkPHP /
+    /// Laravel chained form, `app.get(path, mw, handler)` is the Express positional-argument form, and
+    /// `@UseGuards(X)` / `@login_required` / `@PreAuthorize` are the NestJS / Python / Spring decorator /
+    /// annotation forms. The kernel knows none of them; FKB declares all of them, the generic extractor collects
+    /// them from the graph per the declaration and writes them into the `route_list` symbol table (with keys of
+    /// the same shape as the `HttpContract.name` synthesised in P5), so P14 can promote the guard class to a
+    /// `Middleware` and attach a `PassesThrough` edge.
     ///
-    /// 新增语言 / 框架支持中间件 = 加一段 `route_guards`，**不改 Rust**。
+    /// Supporting middleware for a new language / framework = add one `route_guards` block, **no Rust change**.
     #[serde(default)]
     pub route_guards: Option<RouteGuardSpec>,
-    /// **事务边界标记**：`transaction` / `startTrans` / `beginTransaction` …
-    /// 供「同一方法多次写库但未识别到事务」判定（部分成功会留下脏数据）。
+    /// **Transaction-boundary markers**: `transaction` / `startTrans` / `beginTransaction` …
+    /// for the "several writes to the DB in one method but no transaction recognised" judgement (a partial
+    /// success leaves dirty data).
     #[serde(default)]
     pub tx_calls: Vec<String>,
-    /// 「消费入口方法名」候选：连向一个类时，优先连到它的哪个方法。
+    /// Candidates for the "consumer entry method name": when connecting to a class, which of its methods to
+    /// connect to first.
     ///
-    /// 各框架约定不同：Laravel/队列 Job 是 `handle`、Symfony 是 `__invoke`、
-    /// ThinkPHP/CRMEB 的 Job 是 `doJob`、TP5 行为类是 `run`。
-    /// 由 FKB 声明，避免新框架为了一个方法名去改内核。
-    /// 未声明时回退到内核内置的**跨框架常见入口名**默认集。
+    /// Conventions differ per framework: Laravel / queue Jobs use `handle`, Symfony uses `__invoke`,
+    /// ThinkPHP / CRMEB Jobs use `doJob`, TP5 behaviour classes use `run`.
+    /// Declared by FKB so a new framework does not have to change the kernel for one method name.
+    /// When undeclared it falls back to the kernel's built-in **cross-framework common entry names** default set.
     #[serde(default)]
     pub entry_methods: Vec<String>,
-    /// 本 FKB 引入的**第一类语义节点种类**（在 [`NodeKind::SYNTHESIZED`] 之外追加）。
+    /// **First-class semantic node kinds** introduced by this FKB (appended to [`NodeKind::SYNTHESIZED`]).
     ///
-    /// 「哪些 kind 算语义节点」此前只写在 `kinds.rs` 的常量清单里 —— 于是每加一种
-    /// 语义节点（前端的 `Store`、页面视角的 `Page`…）都要动内核，违反 OCP。
-    /// 现在 FKB 可以自己声明：`semantic_kinds: [Store, Page]`，加载时登记进
-    /// [`crate::model::kinds::register_semantic_kinds`]，折叠视图随即按语义节点渲染。
+    /// "Which kinds count as semantic nodes" used to live only in the constant list in `kinds.rs` — so every new
+    /// semantic node (the frontend's `Store`, the page perspective's `Page`…) required a kernel change, violating
+    /// OCP.
+    /// Now FKB can declare it itself: `semantic_kinds: [Store, Page]`, registered at load time into
+    /// [`crate::model::kinds::register_semantic_kinds`], and the folded view then renders them as semantic nodes.
     #[serde(default)]
     pub semantic_kinds: Vec<String>,
-    /// 本 FKB 引入的**第一类语义边种类**（在 [`EdgeKind::SEMANTIC`] 内置清单之外追加）。
+    /// **First-class semantic edge kinds** introduced by this FKB (appended to the built-in [`EdgeKind::SEMANTIC`]
+    /// list).
     ///
-    /// 与 `semantic_kinds`（节点）同构：新增一种语义边不该以改内核为代价。
-    /// 例：某框架发明了 `SendsWebhook` 边，声明 `semantic_edge_kinds: [SendsWebhook]`
-    /// 后它就像 `ReadsDb` 一样被当语义边计数 / 绘制，无需改 `kinds.rs`。
+    /// Isomorphic to `semantic_kinds` (nodes): adding a semantic edge should not cost a kernel change.
+    /// Example: a framework invents a `SendsWebhook` edge; after declaring
+    /// `semantic_edge_kinds: [SendsWebhook]` it is counted and drawn as a semantic edge just like `ReadsDb`,
+    /// with no change to `kinds.rs`.
     #[serde(default)]
     pub semantic_edge_kinds: Vec<String>,
-    /// 本 FKB 引入的**桥边种类**（在 [`EdgeKind::BRIDGE`] 内置清单之外追加）。
+    /// **Bridge edge kinds** introduced by this FKB (appended to the built-in [`EdgeKind::BRIDGE`] list).
     #[serde(default)]
     pub bridge_edge_kinds: Vec<String>,
-    /// 未识别到本框架时，是否仍应用其规则（默认 **false**）。
+    /// Whether to apply this knowledge's rules even when the framework was not recognised (default **false**).
     ///
-    /// 框架级规则带有强烈的框架假设（`Db::name` 是表名、`Route::get` 的第二个实参是
-    /// handler……）。若对**同语言但不同框架**的工程无条件套用，就会用 A 框架的知识
-    /// 去解释 B 框架的代码，产出**看似合理实则不可信**的图 —— 实测把 ThinkPHP 规则
-    /// 套到 Laravel 工程上会凭空造出上百个 `Table` / `HttpContract` 节点。
+    /// Framework-level rules carry strong framework assumptions (`Db::name` is a table name, the second argument
+    /// of `Route::get` is a handler…). Applying them unconditionally to a project that **uses the same language
+    /// but a different framework** means interpreting framework B's code with framework A's knowledge, producing
+    /// a graph that **looks reasonable but is not trustworthy** — measured: applying ThinkPHP rules to a Laravel
+    /// project conjures hundreds of `Table` / `HttpContract` nodes out of nothing.
     ///
-    /// 因此默认只在 detector 命中时生效；仅当某份知识确实是「该语言的通用兜底」
-    /// （不含具体框架假设）时才显式打开。
+    /// So by default they take effect only when the detector matches; this is switched on explicitly only for
+    /// knowledge that really is "a generic fallback for that language" (carrying no concrete framework
+    /// assumptions).
     #[serde(default)]
     pub apply_without_detection: bool,
 }
 
-/// 知识库作用域。
+/// Scope of a knowledge base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeScope {
-    /// 框架知识：随框架识别加载，适用于所有使用该框架的工程。
+    /// Framework knowledge: loaded along with framework recognition, applies to every project using that framework.
     #[default]
     Framework,
-    /// 项目知识：随项目识别加载，仅适用于被识别为该项目（其 detectors 命中）的工程。
+    /// Project knowledge: loaded along with project recognition, applies only to projects recognised as that project (its detectors matched).
     Project,
 }
 
-/// 路由 handler 的解析规则（**框架知识，不写死在内核**）。
+/// Resolution rules for route handlers (**framework knowledge, not hard-coded in the kernel**).
 ///
-/// 「哪个类/方法处理这个请求」在各框架里是完全不同的形态：
+/// "Which class / method handles this request" looks completely different in every framework:
 ///
-/// | 框架 | handler 形态 |
+/// | Framework | handler form |
 /// |------|-------------|
-/// | ThinkPHP | `'admin.Login/login'`（点号表层级，斜杠分隔方法） |
+/// | ThinkPHP | `'admin.Login/login'` (dots for hierarchy, slash before the method) |
 /// | Laravel | `[LoginController::class, 'login']` / `'Ctrl@login'` |
 /// | Symfony | `App\Controller\LoginController::login` |
 /// | Rails | `'login#index'` |
 ///
-/// 因此「用什么符号分隔方法」「类名怎么拼」「应用段有哪些」全部由 FKB 声明；
-/// 内核只负责按声明展开候选并查表。
+/// So "which symbol separates the method", "how the class name is assembled" and "what the app segments are" are
+/// all declared by FKB; the kernel only expands the candidates per the declaration and looks them up.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HandlerSpec {
-    /// handler 串里 controller 与 method 的分隔符（按序尝试，取第一个能拆开的）。
+    /// Separators between controller and method inside the handler string (tried in order, the first one that splits wins).
     pub method_separators: Vec<String>,
-    /// controller 内部表示命名空间层级的字符（会被替换成该语言的命名空间分隔符）。
+    /// The character that represents a namespace level inside the controller (it is replaced by that language's
+    /// namespace separator).
     ///
-    /// ThinkPHP 的 `v1.agent.AgentManage` → `v1\agent\AgentManage`。
+    /// ThinkPHP's `v1.agent.AgentManage` -> `v1\agent\AgentManage`.
     pub hierarchy_separators: Vec<String>,
-    /// 类名候选模板，`{app}` 与 `{controller}` 为占位符。
+    /// Class-name candidate template; `{app}` and `{controller}` are placeholders.
     pub class_templates: Vec<String>,
-    /// `{app}` 的候选值（模板 × 段 逐个展开）。
+    /// Candidate values for `{app}` (template x segment, expanded one by one).
     pub app_segments: Vec<String>,
-    /// 从路由文件路径推断 `{app}`：取该锚点目录的**上一级**目录名。
-    /// 例：`app/api/route/pc.php` + 锚点 `route` → `api`。
+    /// Infer `{app}` from the route file path: take the directory name **one level above** the anchor directory.
+    /// Example: `app/api/route/pc.php` + anchor `route` -> `api`.
     pub app_anchor_dir: Option<String>,
-    /// 推断不出时 `{app}` 的兜底值。
+    /// Fallback value for `{app}` when it cannot be inferred.
     pub app_fallback: String,
 }
 
-/// 一条「中间件类 → 能力」声明：某个中间件确凿地提供了什么能力。
+/// One "middleware class -> capability" declaration: what capability a middleware definitively provides.
 ///
-/// 例（CRMEB）：`AuthTokenMiddleware` 提供 `Authentication`。
-/// 匹配只对**短名**（去命名空间后的最后一段）做，且大小写不敏感 —— 同一类中间件
-/// 在不同 app 目录下会有不同命名空间（`app\api\middleware\AuthTokenMiddleware`
-/// 与 `app\kefuapi\middleware\KefuAuthTokenMiddleware`），但语义由名字表达。
+/// Example (CRMEB): `AuthTokenMiddleware` provides `Authentication`.
+/// Matching is done on the **short name** only (the last segment after stripping the namespace) and is
+/// case-insensitive — the same kind of middleware lives under different namespaces in different app directories
+/// (`app\api\middleware\AuthTokenMiddleware` vs `app\kefuapi\middleware\KefuAuthTokenMiddleware`), yet the
+/// semantics are expressed by the name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiddlewareCapability {
-    /// 中间件类短名里需要**包含**的片段，如 `AuthToken` / `Throttle`。
+    /// A fragment that must be **contained** in the middleware class short name, e.g. `AuthToken` / `Throttle`.
     pub matches: String,
-    /// 产出的能力名（进 `Capability` 通道，如 `Authentication` / `RateLimiting`）。
+    /// The capability name produced (goes into the `Capability` channel, e.g. `Authentication` / `RateLimiting`).
     pub capability: String,
 }
 
-/// **路由守卫识别规则**（框架级声明，内核据此从调用图收守卫）。
+/// **Route-guard recognition rules** (declared at framework level; the kernel collects guards from the call graph
+/// accordingly).
 ///
-/// 三种挂载模型覆盖主流写法：
-/// * `chain`：`Route::get(path)->middleware(X)`（ThinkPHP / Laravel 反向）；
-/// * `positional`：`app.get(path, mw1, mw2, handler)`（Express / Koa）；
-/// * `decorator`：`@UseGuards(X)` / `@login_required` / `@PreAuthorize` 落在与被修饰
-///   路由**同一方法**上，按 `owner_fqn` 关联（NestJS / Python / Spring）。
+/// Three attachment models cover the mainstream forms:
+/// * `chain`: `Route::get(path)->middleware(X)` (ThinkPHP / Laravel style);
+/// * `positional`: `app.get(path, mw1, mw2, handler)` (Express / Koa);
+/// * `decorator`: `@UseGuards(X)` / `@login_required` / `@PreAuthorize` sits on **the same method** as the route
+///   it decorates, associated by `owner_fqn` (NestJS / Python / Spring).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RouteGuardSpec {
-    /// 路由定义调用模式（可多条：如 ThinkPHP 的 `Route::`、Express 的 `app`/`router`、
-    /// NestJS 的 `@Get` 装饰器）。
+    /// Route-definition call patterns (several allowed: e.g. ThinkPHP's `Route::`, Express's `app` / `router`,
+    /// NestJS's `@Get` decorator).
     pub route_calls: Vec<RouteCallSpec>,
-    /// 守卫如何挂到路由上。**可以声明多个**：同一框架常有多种挂载写法
-    /// （NestJS 既有 `@UseGuards` 也有 `consumer.apply(...).forRoutes(...)`），
-    /// 内核会把各模型产出的守卫**并集**起来。
+    /// How a guard is attached to a route. **Several may be declared**: one framework often has multiple
+    /// attachment forms (NestJS has both `@UseGuards` and `consumer.apply(...).forRoutes(...)`), and the kernel
+    /// takes the **union** of the guards produced by each model.
     #[serde(default)]
     pub guard_attach: GuardAttach,
-    /// 可选：中间件别名表符号名（Laravel 的 `Kernel::$routeMiddleware` → `middleware_aliases`）。
-    /// 守卫写的是别名（`auth` / `web`）时，按此表还原成真实类。
+    /// Optional: the symbol-table name of a middleware alias table (Laravel's `Kernel::$routeMiddleware` ->
+    /// `middleware_aliases`).
+    /// When a guard is written as an alias (`auth` / `web`), it is resolved back to the real class via this table.
     #[serde(default)]
     pub alias_table: Option<String>,
-    /// 是否把**图里查不到节点的守卫**也当一个 `Middleware` 节点建出来。默认 **false**。
+    /// Whether to also create a `Middleware` node for a **guard whose node cannot be found in the graph**. Default
+    /// **false**.
     ///
-    /// 为什么是框架知识：
-    /// * PHP 的守卫恒为类，查不到 = 类在 `vendor` / 命名空间未还原 —— 建出来就是凭空造节点，
-    ///   故保持 false（「宁可缺不可猜」，该行为由测试钉住）。
-    /// * JS / Python 的守卫是**函数值**（`const loginLimiter = rateLimit({...})`），解析器
-    ///   不会为它建语法节点 —— 但"这条路由挂了一个叫 `loginLimiter` 的中间件"是源码里的
-    ///   确凿事实。此时建一个同名 `Middleware` 语义节点是**如实记录**，不是猜测。
+    /// Why this is framework knowledge:
+    /// * In PHP a guard is always a class, so not finding it means the class lives in `vendor` or the namespace was
+    ///   not restored — creating a node would be fabricating one, so it stays false ("better missing than
+    ///   guessed"; that behaviour is pinned by tests).
+    /// * In JS / Python a guard is a **function value** (`const loginLimiter = rateLimit({...})`) for which the
+    ///   parser builds no syntax node — yet "this route has a middleware called `loginLimiter`" is a confirmed
+    ///   fact in the source. Creating a same-named `Middleware` semantic node is then **faithful recording**, not
+    ///   guessing.
     #[serde(default)]
     pub synthesize_unresolved: bool,
 }
 
-/// 一条「路由定义调用」识别模式。
+/// One route-definition call recognition pattern.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RouteCallSpec {
-    /// 匹配目标：
-    /// * `by = receiver`（默认）：`call.receiver`（大小写不敏感）**含**此串即命中
-    ///   （ThinkPHP `Route`、Express `app`）；`receiver_ends_with = true` 时改为「以此串结尾」
-    ///   （Laravel 的 `\Route`）。
-    /// * `by = callee`：按 `call.callee`（大小写不敏感）匹配——装饰器 / 注解写法
-    ///   （NestJS `@Get` 的 callee 即 `Get`、Spring `@GetMapping` 的 callee 即 `GetMapping`、
-    ///   Python `@app.route` 的 callee 即 `app.route`）。此时 `receiver` 字段填装饰器名。
+    /// Match target:
+    /// * `by = receiver` (default): `call.receiver` (case-insensitive) **containing** this string matches
+    ///   (ThinkPHP `Route`, Express `app`); with `receiver_ends_with = true` it becomes "ends with this string"
+    ///   instead (Laravel's `\Route`).
+    /// * `by = callee`: match on `call.callee` (case-insensitive) — the decorator / annotation form
+    ///   (NestJS `@Get` has callee `Get`, Spring `@GetMapping` has callee `GetMapping`, Python `@app.route` has
+    ///   callee `app.route`). In that case the `receiver` field holds the decorator name.
     pub receiver: String,
-    /// 匹配维度：`receiver`（默认）或 `callee`。
+    /// Match dimension: `receiver` (default) or `callee`.
     #[serde(default)]
     pub by: RouteMatchBy,
-    /// 方法名 → HTTP 动词（`GET`/`POST`/`PUT`/`DELETE`/`PATCH`/`ANY`）。键大小写不敏感；
-    /// 值取大写。ThinkPHP 的 `rule` → `ANY`、Laravel 的 `any` → `ANY` 都在此归一。
+    /// Method name -> HTTP verb (`GET`/`POST`/`PUT`/`DELETE`/`PATCH`/`ANY`). Keys are case-insensitive; values are
+    /// upper-cased. ThinkPHP's `rule` -> `ANY` and Laravel's `any` -> `ANY` are both normalised here.
     #[serde(default)]
     pub verb_methods: HashMap<String, String>,
-    /// 路径实参下标（默认 0）。
+    /// Index of the path argument (default 0).
     #[serde(default = "default_zero")]
     pub path_arg: usize,
-    /// handler 实参下标（默认 1）。`None` 表示路由定义不带 handler 实参。
+    /// Index of the handler argument (default 1). `None` means the route definition carries no handler argument.
     #[serde(default)]
     pub handler_arg: Option<usize>,
-    /// 组前缀方法名（如 ThinkPHP `group`）——用于把组前缀拼到组内每条路由路径前。
+    /// Group-prefix method name (e.g. ThinkPHP's `group`) — used to prepend the group prefix to every route path inside the group.
     #[serde(default)]
     pub group_method: Option<String>,
-    /// `by = receiver` 时是否「以 `receiver` 结尾」而非「含」。默认 false。
+    /// When `by = receiver`, whether it "ends with `receiver`" instead of "contains". Default false.
     #[serde(default)]
     pub receiver_ends_with: bool,
-    /// 是否把**标识符实参**（`app.post('/x', loginLimiter, handler)` 里的 `loginLimiter`）
-    /// 也当作中间件。默认 **false**。
+    /// Whether to also treat an **identifier argument** (`loginLimiter` in `app.post('/x', loginLimiter, handler)`)
+    /// as middleware. Default **false**.
     ///
-    /// 为什么是框架知识：PHP 的中间件恒为 `X::class` 字面量，而 JS / Python 的中间件是
-    /// **函数引用**（`loginLimiter` / `isAuthenticated`），在调用图里落成变量名的
-    /// `Unknown`。PHP 侧必须保持 false —— `->middleware($v)` 这种动态实参若被收进来，
-    /// 会把一个变量名当成中间件挂上去，是编造（该行为由测试钉住）。
+    /// Why this is framework knowledge: in PHP middleware is always an `X::class` literal, while in JS / Python it
+    /// is a **function reference** (`loginLimiter` / `isAuthenticated`) that lands in the call graph as an
+    /// `Unknown` with the variable name. The PHP side must stay false — pulling in a dynamic argument like
+    /// `->middleware($v)` would attach a variable name as middleware, which is fabrication (that behaviour is
+    /// pinned by tests).
     #[serde(default)]
     pub accept_identifier: bool,
 }
 
-/// 路由匹配的维度。
+/// The dimension a route matches on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteMatchBy {
-    /// 按 `call.receiver` 匹配（链式 / 位置参数写法）。
+    /// Match on `call.receiver` (the chained / positional-argument form).
     #[default]
     Receiver,
-    /// 按 `call.callee` 匹配（装饰器 / 注解写法）。
+    /// Match on `call.callee` (the decorator / annotation form).
     Callee,
 }
 
-/// 守卫挂载模型。
+/// Guard attachment model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GuardAttachSpec {
-    /// 链式：`Route::get(path)->middleware(X[, arg])`。
+    /// Chained: `Route::get(path)->middleware(X)`.
     Chain(ChainGuardSpec),
-    /// 位置参数：`app.get(path, mw1, mw2, handler)`——`path_arg` 之后到 `handler_arg`
-    /// （不含）之间的实参都是中间件。
+    /// Positional: `app.get(path, mw1, mw2, handler)` — every argument after `path_arg` up to (excluding)
+    /// `handler_arg` is middleware.
     #[default]
     Positional,
-    /// 装饰器 / 注解：守卫与被修饰路由**同 owner**（方法 / 函数），按 `owner_fqn` 关联。
+    /// Decorator / annotation: the guard and the route it decorates share an **owner** (method / function), associated by `owner_fqn`.
     Decorator(DecoratorGuardSpec),
-    /// 消费者式挂载：NestJS 的 `consumer.apply(X).forRoutes(...)`。
+    /// Consumer-style attachment: NestJS's `consumer.apply(X).forRoutes(...)`.
     Consumer(ConsumerGuardSpec),
 }
 
-/// 一个 / 多个守卫挂载模型（`guard_attach` 的值）。
+/// One / many guard attachment models (the value of `guard_attach`).
 ///
-/// 允许单值或列表，是为了让同一框架声明**多种**挂载写法而不改内核、也不破坏既有 FKB。
+/// A single value or a list is accepted so that one framework can declare **several** attachment forms without changing the kernel or breaking existing FKBs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GuardAttach {
@@ -327,7 +356,7 @@ pub enum GuardAttach {
 }
 
 impl GuardAttach {
-    /// 归一成模型列表。
+    /// Normalise into a list of models.
     pub fn specs(&self) -> Vec<&GuardAttachSpec> {
         match self {
             GuardAttach::One(s) => vec![s],
@@ -342,40 +371,40 @@ impl Default for GuardAttach {
     }
 }
 
-/// `consumer.apply(X).forRoutes(...)` 这类「模块里声明、作用于别处路由」的挂载。
+/// Attachment of the `consumer.apply(X).forRoutes(...)` kind: "declared in a module, applied to routes elsewhere".
 ///
-/// NestJS 的中间件是在 `*.module.ts` 的 `configure()` 里挂的：
+/// NestJS middleware is attached inside `configure()` in `*.module.ts`:
 /// ```ts
 /// consumer.apply(AuthMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
 /// ```
-/// 它对哪些路由生效由 `forRoutes` 的**实参**决定，而模块 → 控制器 → 路由的映射
-/// 内核无从得知，故"作用范围"必须由 FKB 声明（见 [`ConsumerScope`]）。
+/// Which routes it applies to is decided by the **arguments** of `forRoutes`, and the module -> controller -> route
+/// mapping is unknowable to the kernel, so the "scope" must be declared by FKB (see [`ConsumerScope`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConsumerGuardSpec {
-    /// 消费者变量名（默认 `consumer`）。
+    /// The consumer variable name (default `consumer`).
     pub receiver: String,
-    /// 挂载中间件的方法名（默认 `apply`）。
+    /// The method name that attaches middleware (default `apply`).
     pub apply_method: String,
-    /// 指定作用范围的方法名（默认 `forRoutes`）。
+    /// The method name that declares the scope (default `forRoutes`).
     pub for_routes_method: String,
-    /// 视为"本模块全部路由"的通配实参（默认 `["*"]`）。
+    /// Wildcard arguments that mean "every route in this module" (default `["*"]`).
     pub wildcards: Vec<String>,
-    /// 命中通配时按什么范围展开（默认 [`ConsumerScope::Directory`]）。
+    /// Which scope to expand to when the wildcard matches (default [`ConsumerScope::Directory`]).
     pub scope: ConsumerScope,
 }
 
-/// `forRoutes` 命中通配时，中间件作用于哪些路由。
+/// Which routes the middleware applies to when `forRoutes` matches the wildcard.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsumerScope {
-    /// 只认**显式路径**（`forRoutes('users')`），通配一律不展开 —— 最保守。
+    /// Only honour **explicit paths** (`forRoutes('users')`); a wildcard never expands — the most conservative.
     ExplicitOnly,
-    /// 通配时作用于**与模块同目录**的控制器里的路由（NestJS 的惯例：
-    /// `user.module.ts` 与 `user.controller.ts` 同在 `src/user/`）。默认。
+    /// On a wildcard, apply to routes in controllers **in the same directory as the module** (the NestJS
+    /// convention: `user.module.ts` and `user.controller.ts` both live in `src/user/`). Default.
     #[default]
     Directory,
-    /// 通配时作用于**全部**路由（单模块工程的等价写法，多模块会过度声称）。
+    /// On a wildcard, apply to **all** routes (equivalent for a single-module project; over-claims for multi-module ones).
     All,
 }
 
@@ -391,84 +420,89 @@ impl Default for ConsumerGuardSpec {
     }
 }
 
-/// 链式守卫：`Route::get(path)->middleware(X)`。
+/// Chained guard: `Route::get(path)->middleware(X)`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChainGuardSpec {
-    /// 挂载守卫的成员方法名（如 `middleware`）。
+    /// The member method name that attaches the guard (e.g. `middleware`).
     pub method: String,
-    /// 守卫类实参下标（默认 0）。
+    /// Index of the guard-class argument (default 0).
     #[serde(default = "default_zero")]
     pub arg_index: usize,
-    /// 第二实参下标（区分强制 / 可选，如 `AuthTokenMiddleware::class, false`）。`None` 表示无。
+    /// Index of the second argument (distinguishing mandatory from optional, e.g. `AuthTokenMiddleware::class, false`). `None` means there is none.
     #[serde(default)]
     pub arg2_index: Option<usize>,
 }
 
-/// 装饰器 / 注解守卫：按 `owner_fqn` 关联。
+/// Decorator / annotation guard: associated by `owner_fqn`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DecoratorGuardSpec {
-    /// 路由装饰器 / 注解的 callee 名单（如 `app.route` / `@Get` / `@GetMapping`）。
-    /// 与解析器输出的 callee 逐字比对（TS 的装饰器带 `@` 前缀）；大小写不敏感。
+    /// The callee list of route decorators / annotations (e.g. `app.route` / `@Get` / `@GetMapping`).
+    /// Compared verbatim against the parser's callee output (the TS parser prefixes decorators with `@`); case-insensitive.
     pub route_decorators: Vec<String>,
-    /// 守卫装饰器 / 注解的 callee 名单（如 `login_required` / `@UseGuards` / `@PreAuthorize`）。
+    /// The callee list of guard decorators / annotations (e.g. `login_required` / `@UseGuards` / `@PreAuthorize`).
     pub guard_decorators: Vec<String>,
-    /// 守卫名的**正则模式**（大小写不敏感）。命中其一即算守卫。
+    /// **Regex patterns** for guard names (case-insensitive). Matching any one of them counts as a guard.
     ///
-    /// 为什么必须有它：JS / Python 的守卫常常是**项目自己写的装饰器**
-    /// （`@requires_admin` / `@jwt_or_403` / `@staff_only`…），穷举名字是打地鼠。
-    /// 而"什么样的名字算守卫"是框架 / 项目约定，由 FKB 声明：
+    /// Why this has to exist: in JS / Python guards are often **decorators the project wrote itself**
+    /// (`@requires_admin` / `@jwt_or_403` / `@staff_only`…), so enumerating names is whack-a-mole.
+    /// And "which names count as a guard" is a framework / project convention, declared by FKB:
     ///   `["(login|auth|jwt|token)", "(permission|role|admin|staff|owner)", "(guard|secure|required|only)"]`
-    /// Java / Spring 的注解是框架固定的（`@PreAuthorize` 等），用 `guard_decorators` 精确列举即可。
+    /// Java / Spring annotations are fixed by the framework (`@PreAuthorize` etc.), so listing them precisely in
+    /// `guard_decorators` is enough.
     #[serde(default)]
     pub guard_name_patterns: Vec<String>,
-    /// 守卫名的**排除正则**（大小写不敏感），**优先级高于** `guard_decorators` 与
-    /// `guard_name_patterns` —— 命中即"不是守卫"。
+    /// **Exclusion regexes** for guard names (case-insensitive), taking **priority over** both `guard_decorators`
+    /// and `guard_name_patterns` — a match means "not a guard".
     ///
-    /// 为什么必须有它：宽泛的包含模式会误伤——
-    /// * Swagger / OpenAPI 的**文档**装饰器 `@ApiBearerAuth()` 名字里带 `auth`，
-    ///   却完全不做鉴权（实测 NestJS realworld 有 17 条路由被它误标成"过了守卫"）；
-    /// * NestJS 的**参数**装饰器 `@User('email')` / `@Body()` / `@Param()` 只是取值，
-    ///   不是守卫；局部变量名（`_user`）也不该当中间件。
-    /// 「哪些名字不算守卫」同样是框架知识，由 FKB 声明。
+    /// Why this has to exist: broad containment patterns cause collateral damage —
+    /// * The Swagger / OpenAPI **documentation** decorator `@ApiBearerAuth()` has `auth` in its name but performs
+    ///   no authentication at all (measured: 17 routes in the NestJS realworld sample were mislabelled as
+    ///   "guard passed" because of it);
+    /// * NestJS **parameter** decorators `@User('email')` / `@Body()` / `@Param()` only read values, they are not
+    ///   guards; and local variable names (`_user`) should not become middleware either.
+    /// "Which names are not guards" is likewise framework knowledge, declared by FKB.
     #[serde(default)]
     pub guard_exclude_patterns: Vec<String>,
-    /// 要求守卫 / 路由调用的 callee **以 `@` 开头**（即解析器标注的装饰器调用点）。
-    /// 默认 false。
+    /// Require the guard / route call's callee to **start with `@`** (i.e. a call site the parser marked as a
+    /// decorator). Default false.
     ///
-    /// TS 解析器给装饰器 callee 加 `@` 前缀（`@Get` / `@UseGuards`），据此可把装饰器与
-    /// **普通方法调用**区分开 —— 否则 `this.userService.generateJWT(...)` 这种名字里带
-    /// `jwt` 的业务方法会被当成守卫（实测误报）。
+    /// The TS parser prefixes a decorator's callee with `@` (`@Get` / `@UseGuards`), which distinguishes decorators
+    /// from **ordinary method calls** — otherwise a business method like `this.userService.generateJWT(...)`, whose
+    /// name contains `jwt`, would be taken for a guard (measured false positive).
     #[serde(default)]
     pub require_at_prefix: bool,
-    /// 按**路由调用的 handler 实参**去关联守卫（而不是按 owner）。默认 `None`。
+    /// Associate guards by the **route call's handler argument** instead of by owner. Default `None`.
     ///
-    /// Django 这类框架把路由与视图**分开写**：
-    ///   urls.py     `path('profile', views.profile)`        ← 路由在这里
-    ///   views.py    `@login_required\ndef profile(request):` ← 守卫在这里
-    /// 两者 owner 不同（一个是 urls 模块、一个是视图函数），按 owner 关联必然落空。
-    /// 声明本字段（handler 所在实参下标）后，守卫按"owner_fqn **以 handler 名结尾**"匹配 ——
-    /// handler 写 `views.profile`，视图函数 owner 是 `myapp.views.profile`，后缀即命中。
+    /// Frameworks like Django write routes and views **apart**:
+    ///   urls.py     `path('profile', views.profile)`        <- the route lives here
+    ///   views.py    `@login_required\ndef profile(request):` <- the guard lives here
+    /// The two have different owners (a urls module vs a view function), so associating by owner always misses.
+    /// With this field declared (the index of the argument holding the handler), guards match on "`owner_fqn`
+    /// **ends with the handler name**" — the handler reads `views.profile` and the view function's owner is
+    /// `myapp.views.profile`, so the suffix matches.
     #[serde(default)]
     pub link_via_handler_arg: Option<usize>,
-    /// 要求守卫 / 路由调用**没有接收者**（裸名调用）。默认 false。
+    /// Require the guard / route call to have **no receiver** (a bare-name call). Default false.
     ///
-    /// Python 的 `@login_required`、Java 的 `@PreAuthorize` 都是裸名；而
-    /// `self.generate_jwt()` / `this.checkAuth()` 这类成员调用有接收者，不是装饰器。
+    /// Python's `@login_required` and Java's `@PreAuthorize` are both bare names, whereas member calls like
+    /// `self.generate_jwt()` / `this.checkAuth()` have a receiver and are not decorators.
     #[serde(default)]
     pub require_no_receiver: bool,
-    /// 守卫名取自**实参**还是**装饰器名本身**。默认 **true**（取自实参）。
+    /// Whether the guard name comes from the **argument** or from **the decorator name itself**. Default **true**
+    /// (from the argument).
     ///
-    /// * `true`：NestJS 的 `@UseGuards(JwtAuthGuard)` —— 守卫是实参里的那个类；
-    ///           无参的 `@login_required` 仍退回装饰器名。
-    /// * `false`：Spring 的 `@PreAuthorize("hasRole('ADMIN')")` —— 实参是 SpEL 表达式，
-    ///           真正的"守卫"是注解本身（`PreAuthorize` / `Secured` / `RolesAllowed`）。
+    /// * `true`: NestJS's `@UseGuards(JwtAuthGuard)` — the guard is the class in the argument; a no-argument
+    ///   `@login_required` still falls back to the decorator name.
+    /// * `false`: Spring's `@PreAuthorize("hasRole('ADMIN')")` — the argument is a SpEL expression, and the real
+    ///   "guard" is the annotation itself (`PreAuthorize` / `Secured` / `RolesAllowed`).
     #[serde(default = "default_true")]
     pub name_from_args: bool,
-    /// 是否也认**类级**守卫（守卫注解 / 装饰器打在类上，作用于该类的所有路由方法）。
-    /// 默认 **true**：NestJS 常在 `@Controller` 类上打 `@UseGuards`，
-    /// Spring 常在类上打 `@PreAuthorize`，Python 类视图也常用类级装饰器。
+    /// Whether to also honour **class-level** guards (a guard annotation / decorator on the class, applying to every
+    /// route method of that class). Default **true**: NestJS commonly puts `@UseGuards` on the `@Controller`
+    /// class, Spring commonly puts `@PreAuthorize` on the class, and Python class-based views often use
+    /// class-level decorators too.
     #[serde(default = "default_true")]
     pub include_class_level: bool,
 }
@@ -481,25 +515,25 @@ fn default_zero() -> usize {
     0
 }
 
-/// 数据模型的读 / 写动词清单（方法名，大小写不敏感）。
+/// The read / write verb list of a data model (method names, case-insensitive).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DbVerbsSpec {
-    /// 写动词：`save` / `insert` / `update` / `delete` …
+    /// Write verbs: `save` / `insert` / `update` / `delete` …
     #[serde(default)]
     pub write: Vec<String>,
-    /// 读动词：`find` / `select` / `value` / `count` …
+    /// Read verbs: `find` / `select` / `value` / `count` …
     #[serde(default)]
     pub read: Vec<String>,
 }
 
-/// 魔法方法（`@method` 注解）的转发目标。
+/// The forwarding target of magic methods (`@method` annotations).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MagicDelegationSpec {
-    /// 转发目标属性名（如 CRMEB 的 `dao`）。类型由该属性的注入方式按既有规则推断。
+    /// Name of the property to forward to (e.g. CRMEB's `dao`). Its type is inferred from how the property is injected, per the existing rules.
     pub property: String,
-    /// 转发解析的置信度（低于"方法精确命中"，因为它是注解声明而非源码）。
+    /// Confidence of the forwarding resolution (lower than an "exact method hit", since this is an annotation declaration rather than source code).
     pub confidence: f32,
 }
 
@@ -522,18 +556,18 @@ impl Default for HandlerSpec {
     }
 }
 
-/// 框架识别信号。
+/// A framework recognition signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Detector {
-    /// manifest 文件里存在某个依赖。
+    /// A dependency exists in the manifest file.
     ManifestDependency {
         manifest: String,
         dependency: String,
         #[serde(default = "default_conf")]
         confidence: f32,
     },
-    /// 存在某个特征文件/目录。
+    /// A characteristic file / directory exists.
     FileExists {
         path: String,
         #[serde(default = "default_conf")]
@@ -545,18 +579,18 @@ fn default_conf() -> f32 {
     0.9
 }
 
-/// 框架根解析规则。
+/// Framework root resolution rules.
 ///
-/// 例：从 `composer.json` 的 `autoload.psr-4` 解析出 `AppRoot = "app"`。
+/// Example: resolving `AppRoot = "app"` from `autoload.psr-4` in `composer.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootRule {
     pub id: String,
-    /// 产出的事实键，如 `app_root`。
+    /// The fact key produced, e.g. `app_root`.
     pub key: String,
     pub source: RootSource,
     #[serde(default = "default_conf")]
     pub confidence: f32,
-    /// 兜底候选目录；解析失败时按顺序探测。
+    /// Fallback candidate directories; probed in order when resolution fails.
     #[serde(default)]
     pub fallbacks: Vec<String>,
 }
@@ -564,23 +598,23 @@ pub struct RootRule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RootSource {
-    /// 从 JSON manifest 的某个指针取值。
+    /// Read a value from a JSON manifest by pointer.
     ManifestJson {
         manifest: String,
-        /// 点分路径，如 `autoload.psr-4`。
+        /// Dotted path, e.g. `autoload.psr-4`.
         pointer: String,
-        /// 取值策略。
+        /// Value-selection strategy.
         pick: PickStrategy,
     },
-    /// 直接探测目录是否存在。
+    /// Probe directly whether a directory exists.
     DirectoryExists { path: String },
-    /// 从 PHP 配置文件（如 ThinkPHP 的 `config/database.php`）按点分指针取值。
+    /// Read a value from a PHP config file (e.g. ThinkPHP's `config/database.php`) by dotted pointer.
     ///
-    /// 用于自动探测工程级配置（如表前缀），避免把项目特定约定写死在 FKB。
+    /// Used to auto-detect project-level config (e.g. a table prefix) so project-specific conventions are not hard-coded into FKB.
     ManifestPhp {
-        /// 相对工程根的路径，如 `config/database.php`。
+        /// Path relative to the project root, e.g. `config/database.php`.
         manifest: String,
-        /// 点分路径，如 `connections.mysql.prefix`。
+        /// Dotted path, e.g. `connections.mysql.prefix`.
         pointer: String,
     },
 }
@@ -588,19 +622,19 @@ pub enum RootSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PickStrategy {
-    /// 取所有映射目录中最浅的一个。
+    /// Take the shallowest of all mapped directories.
     ShallowestDir,
-    /// 取第一个映射目录。
+    /// Take the first mapped directory.
     FirstDir,
-    /// 取键名等于指定值的映射目录。
+    /// Take the mapped directory whose key name equals the given value.
     ByNamespaceKey,
 }
 
-/// P3 符号表装载器。
+/// A P3 symbol-table loader.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoaderSpec {
     pub id: String,
-    /// 输出符号表名：`schema` / `config_keys` / `i18n` / `facade_map` / `route_list` 等。
+    /// Output symbol-table name: `schema` / `config_keys` / `i18n` / `facade_map` / `route_list`, etc.
     pub table: String,
     pub from: LoaderSource,
     #[serde(default = "default_conf")]
@@ -610,7 +644,7 @@ pub struct LoaderSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LoaderSource {
-    /// 读取单个文件并按 key_path 取值。
+    /// Read a single file and take values by key_path.
     File {
         path: String,
         #[serde(default)]
@@ -618,18 +652,18 @@ pub enum LoaderSource {
         #[serde(default)]
         format: FileFormat,
     },
-    /// 按 glob 批量读取（如 `lang/*/*.php`），可用捕获组提取 locale。
+    /// Read in bulk by glob (e.g. `lang/*/*.php`); capture groups can extract the locale.
     Glob {
         pattern: String,
-        /// 从路径捕获组中提取 locale 的正则（第一个捕获组）。
+        /// Regex that extracts the locale from a path capture group (the first capture group).
         #[serde(default)]
         locale_regex: Option<String>,
         #[serde(default)]
         format: FileFormat,
     },
-    /// FKB 内联声明的常量表（如 FacadeMap —— 由框架知识给出，不靠猜）。
+    /// A constant table declared inline by FKB (e.g. FacadeMap — given by framework knowledge, not guessed).
     Inline { rows: Vec<Value> },
-    /// 内置装载器（由流水线实现，如从 PHP 源码收集 `$table` 与 `Db::name`）。
+    /// A built-in loader (implemented by the pipeline, e.g. collecting `$table` and `Db::name` from PHP source).
     Builtin {
         name: String,
         #[serde(default)]
@@ -649,7 +683,7 @@ pub enum FileFormat {
     Auto,
 }
 
-/// 一条规则：在某阶段，对匹配到的目标执行一组动作。
+/// One rule: in a given phase, run a set of actions against the matched targets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
     pub id: String,
@@ -660,120 +694,128 @@ pub struct Rule {
     pub confidence: f32,
 }
 
-/// 能力接口的匹配模式：按什么维度把「类型 × 方法」摊成调用匹配串。
+/// The matching pattern of a capability interface: on which dimension to flatten "type x method" into a call-matching string.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchMode {
-    /// 按「真实实现类型」匹配：对 `types × methods` 摊出 `Type::method|*Suffix::method`。
-    /// `Type::method` 精确匹配声明的类；`*Suffix::method` 兜底匹配「任何以该尾部片段
-    /// 结尾的类」（如 `Predis\Client` → 也命中 `XxxClient`）。适用于 P7 能解析出内部
-    /// 真实调用的库（Predis / Redis / 自研客户端）。
+    /// Match on the "real implementation type": flatten `types x methods` into `Type::method|*Suffix::method`.
+    /// `Type::method` matches the declared class exactly; `*Suffix::method` is the fallback matching "any class whose
+    /// name ends with that tail fragment" (e.g. `Predis\Client` -> also matches `XxxClient`). For libraries where
+    /// P7 can resolve the internal real call (Predis / Redis / an in-house client).
     #[default]
     ByType,
-    /// 按「命名约定」匹配：对 `types` 摊出 `*Type::method`（类后缀 + 方法名）。
-    /// 适用于框架门面（ThinkPHP / Laravel `Cache`）经魔术分发、P7 看不到内部真实调用，
-    /// 只认「名为 `*CacheService::get` 的封装方法」——这是框架自带约定，非随意猜测。
+    /// Match on "naming convention": flatten `types` into `*Type::method` (class suffix + method name).
+    /// For framework facades (ThinkPHP / Laravel `Cache`) that dispatch magically so P7 cannot see the internal
+    /// real call and can only recognise "a wrapper method named `*CacheService::get`" — that is a convention the
+    /// framework ships with, not an arbitrary guess.
     ByName,
 }
 
-/// 能力接口声明：某库 / 框架的哪些**特有**类型、哪些方法暴露某能力（读 / 写）。
+/// A capability interface declaration: which **specific** types and methods of a library / framework expose a
+/// capability (read / write).
 ///
-/// 例：`{ capability: cache, types: ["Predis\\Client"], read: [get], write: [set] }`
-/// 由装载器查 `capability_templates`，与本模板的**跨语言通用约定**取并集，摊平成
-/// 匹配 `Predis\Client::get` / `*Client::get` 的合成规则。属于「框架 / 库知识」
-/// （分语言、可用户扩展），与跨语言的能力模板（识别机制）分离：通用命名约定
-/// （`Cache` / `*CacheService` …）只写一次在模板里，这里只补「词根不合通用约定、
-/// 必须精确声明」的库类型。
+/// Example: `{ capability: cache, types: ["Predis\\Client"], read: [get], write: [set] }`
+/// The loader looks up `capability_templates`, unions it with this template's **cross-language generic
+/// conventions**, and flattens it into synthesis rules matching `Predis\Client::get` / `*Client::get`. This is
+/// "framework / library knowledge" (per language, user-extensible), kept separate from the cross-language
+/// capability templates (the recognition mechanism): the generic naming conventions (`Cache` /
+/// `*CacheService` …) are written once in the template, and this only adds the library types whose word stem
+/// does not follow the generic convention and therefore must be declared explicitly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CapabilityInterface {
-    /// 能力名（查核心能力模板，如 `cache` / `queue` / `config`）。
+    /// Capability name (looks up the core capability template, e.g. `cache` / `queue` / `config`).
     pub capability: String,
-    /// 暴露该能力的类型 FQN（或尾部片段，如 `Predis\Client` / `Cache`）。
+    /// FQN of the type exposing the capability (or a tail fragment, e.g. `Predis\Client` / `Cache`).
     pub types: Vec<String>,
-    /// 读语义方法名。
+    /// Method names with read semantics.
     pub read: Vec<String>,
-    /// 写语义方法名。
+    /// Method names with write semantics.
     pub write: Vec<String>,
-    /// 覆盖默认置信度。
+    /// Override the default confidence.
     pub confidence: Option<f32>,
-    /// 匹配模式：`by_type`（按真实实现类型）或 `by_name`（按封装类命名约定）。
+    /// Matching pattern: `by_type` (by real implementation type) or `by_name` (by wrapper-class naming convention).
     pub match_mode: MatchMode,
 }
 
-/// 标准**注解识别器**引用：每栈按自己的数据「实现」内核提供的接口 / 标准。
+/// A reference to a standard **annotation recogniser**: each stack "implements", against its own data, the
+/// interfaces / standards the kernel provides.
 ///
-/// 例：`{ annotation: pii, params: { table: schema, names: [phone, mobile, ...], subkind: phone } }`
-/// 由装载器查**内核标准识别器** `annotation_templates`（见 `gt_adapter_fkb::loader`
-/// 的 `DEFAULT_ANNOTATIONS_YAML`），把模板里的 `{{key}}` 占位符替换成 `params` 后，
-/// 摊平成一条具体的 `Annotate` 规则。
+/// Example: `{ annotation: pii, params: { table: schema, names: [phone, mobile, ...], subkind: phone } }`
+/// The loader looks up the **kernel-standard recogniser** `annotation_templates` (see `DEFAULT_ANNOTATIONS_YAML`
+/// in `gt_adapter_fkb::loader`), substitutes the template's `{{key}}` placeholders from `params`, and flattens it
+/// into one concrete `Annotate` rule.
 ///
-/// 这把「能力识别」那套开闭原则原样平移到 **P6 标注**：
-/// * 「哪些注解种类存在、怎么识别」是**内核标准**（与 `NodeKind` / `EdgeKind` 同构），
-///   只写一次在 `annotation_templates` 里，且产出的 `kind` 全部来自内核标准词汇
-///   （[`crate::model::kinds::AnnotationKind`]）—— 栈**无法自己发明**注解种类；
-/// * 各栈只声明「本栈的数据长什么样」（列名 / 源表 / 阈值 / 能力名单），即「接口的实现」；
-/// * 业务特有的标注种类仍可由 FKB 经 [`FrameworkKnowledge::annotation_kinds`] 注册
-///   （OCP 逃生舱），但识别器本身永远是内核标准提供的那几个，不重复造。
+/// This moves the open-closed principle of "capability recognition" straight across to **P6 tagging**:
+/// * "which annotation kinds exist and how they are recognised" is a **kernel standard** (isomorphic to
+///   `NodeKind` / `EdgeKind`), written once in `annotation_templates`, and every `kind` it produces comes from the
+///   kernel's standard vocabulary ([`crate::model::kinds::AnnotationKind`]) — a stack **cannot invent** annotation
+///   kinds;
+/// * each stack only declares "what this stack's data looks like" (column names / source tables / thresholds /
+///   capability lists), i.e. "the implementation of the interface";
+/// * business-specific annotation kinds can still be registered by FKB via
+///   [`FrameworkKnowledge::annotation_kinds`] (the OCP escape hatch), but the recognisers themselves are always
+///   the handful the kernel provides — never rebuilt.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnnotationInterface {
-    /// 内核标准识别器名（查 `annotation_templates`，如 `pii` / `table_criticality`
+    /// Kernel-standard recogniser name (looks up `annotation_templates`, e.g. `pii` / `table_criticality`
     /// / `config_metadata` / `public_endpoint` / `i18n_coverage`）。
     pub annotation: String,
-    /// 替换模板占位符的参数（`{{key}}` → 参数值）。
+    /// Parameters substituted into the template's placeholders (`{{key}}` -> parameter value).
     pub params: HashMap<String, Value>,
-    /// 覆盖默认置信度（同时覆盖 `Rule` 与 `Annotate` 动作里的置信度）。
+    /// Override the default confidence (overriding the confidence in both the `Rule` and the `Annotate` action).
     pub confidence: Option<f32>,
 }
 
 
 
-/// 选择器：决定规则作用于什么。
+/// A selector: decides what a rule acts on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Selector {
-    /// 调用点，如 `Db::name('store_order')`。
+    /// A call site, e.g. `Db::name('store_order')`.
     Call {
-        /// callee 匹配模式，支持 `|` 分隔多模式与 `*` 通配：
+        /// Callee matching pattern; supports `|`-separated alternatives and `*` wildcards:
         /// `think\facade\Db::name|*:where|Db::raw`
         #[serde(default)]
         callee: Option<String>,
         #[serde(default)]
         r#where: Vec<Predicate>,
     },
-    /// 继承 / 实现 / trait。
+
+    /// Inheritance / implementation / trait.
     Inheritance {
         #[serde(default)]
         base: Option<String>,
         #[serde(default)]
         with_property: Option<String>,
     },
-    /// 配置文件条目。
+    /// A config-file entry.
     ConfigEntry {
         #[serde(default)]
         file: Option<String>,
         #[serde(default)]
         key_path: Option<String>,
-        /// 附加谓词（只作用在配置条目上）。
+        /// Additional predicates (applied to config entries only).
         #[serde(default)]
         r#where: Vec<Predicate>,
     },
-    /// 语法声明。
+    /// A syntax declaration.
     Declaration {
         #[serde(default)]
         node_kind: Option<NodeKind>,
         #[serde(default)]
         fqn_matches: Option<String>,
     },
-    /// **图上的节点**（P6 专用：选择器是节点而非源码）。
+    /// **A node on the graph** (P6 only: the selector is a node rather than source code).
     Node {
         #[serde(default)]
         node_kind: Option<NodeKind>,
         #[serde(default)]
         r#where: Vec<Predicate>,
     },
-    /// P7 动态解析：容器 make / 事件触发 / 门面调用 / 获取器等。
+    /// P7 dynamic resolution: container make / event trigger / facade call / getters, etc.
     Dynamic {
         #[serde(default)]
         call: Option<String>,
@@ -782,89 +824,91 @@ pub enum Selector {
     },
 }
 
-/// 谓词（`where` 条件）。
+/// A predicate (a `where` condition).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Predicate {
-    /// 目标（类）拥有某属性。
+    /// The target (class) has a given property.
     HasProperty(String),
-    /// 权威符号表中该键存在。
+    /// The key exists in the authoritative symbol table.
     InSymbolTable { table: String, key_of: ValueSource },
-    /// 权威符号表的列命中给定名字之一。
+    /// A column of the authoritative symbol table matches one of the given names.
     ColumnsMatch { table: String, names: Vec<String> },
-    /// 节点上已有某标注。
+    /// The node already carries a given annotation.
     HasAnnotation { kind: String },
-    /// 作用域链上不存在给定能力。
+    /// The given capability does not exist on the scope chain.
     NoneOfCapability(Vec<String>),
-    /// i18n 是否存在缺失 locale。
+    /// Whether i18n has a missing locale.
     HasMissing(bool),
-    /// fan_in 不小于阈值。
+    /// fan_in is at least the threshold.
     FanInGte(u64),
-    /// 参数个数等于给定值。
+    /// The argument count equals the given value.
     ArgCount(usize),
-    /// 节点名（或 identity 值）包含给定子串（大小写不敏感）。
+    /// The node name (or identity value) contains the given substring (case-insensitive).
     NameMatches(String),
-    /// 节点属性等于给定值。
+    /// A node property equals the given value.
     PropertyIs { name: String, value: String },
-    /// 调用点第 `arg` 个实参（字符串）以 `prefix` 开头（大小写敏感）。
-    /// 用于按调用实参前缀收窄匹配，例如只挑 `Route::get('crontab/...')` 这类路由。
+    /// The `arg`-th argument of the call site (a string) starts with `prefix` (case-sensitive).
+    /// Used to narrow matching by call-argument prefix, e.g. picking out only routes like `Route::get('crontab/...')`.
     ArgStartsWith { arg: usize, prefix: String },
-    /// 配置条目的值是**数组**且元素个数不少于 `n`（仅对 `kind: config_entry` 生效）。
+    /// The config entry's value is an **array** with at least `n` elements (only effective for `kind: config_entry`).
     ///
-    /// PHP 配置解析会把数组元素展开成独立条目（`listen.evt.0`）并与父条目
-    /// （`listen.evt`）**同时存在**。而 `key_path` 是纯子串通配，`"*"` 与
-    /// `"listen.*"` 都会把父子两条都匹配上，于是同一事件合成出 `evt` 与 `evt.0`
-    /// 两个节点（后者是标量，建不出 `HandledBy` 边，纯噪声）。
-    /// 本谓词只放行数组条目：既排除掉展开出的标量叶子，也顺带滤掉
-    /// `app_init => []` 这类框架级空标签。
+    /// PHP config parsing expands array elements into independent entries (`listen.evt.0`) that exist **alongside**
+    /// the parent entry (`listen.evt`). Since `key_path` is a plain substring wildcard, both `"*"` and
+    /// `"listen.*"` match the parent and the child, so one event synthesises two nodes `evt` and `evt.0` (the
+    /// latter is a scalar, cannot get a `HandledBy` edge, and is pure noise).
+    /// This predicate admits array entries only: it drops the expanded scalar leaves and incidentally also filters
+    /// out framework-level empty tags like `app_init => []`.
     EntryArityGte(usize),
-    /// 节点 **FQN** 包含给定子串（大小写不敏感）。
+    /// The node's **FQN** contains the given substring (case-insensitive).
     ///
-    /// 为什么需要它：很多约定是按**命名空间位置**成立的，节点短名看不出来 ——
-    /// 控制器方法 `detail` 的语义来自它的 FQN `app\api\controller\Goods::detail`，
-    /// 自动路由规则只能靠 `\controller\` 这一段筛出来。
+    /// Why it is needed: many conventions hold by **namespace position**, which a node's short name cannot reveal
+    /// — the semantics of the controller method `detail` come from its FQN `app\api\controller\Goods::detail`,
+    /// and the auto-route rule can only be selected by the `\controller\` segment.
     FqnMatches(String),
-    /// 节点名**不在**给定列表内（大小写不敏感）。
+    /// The node name is **not** in the given list (case-insensitive).
     ///
-    /// 约定的适用面总要剔掉语言 / 框架钩子：`__construct` / `initialize` 同样落在
-    /// controller 命名空间里，但绝不是 HTTP 入口。名单由 FKB 给出，内核不认识具体名字。
+    /// A convention's scope always has to exclude language / framework hooks: `__construct` / `initialize` also
+    /// live in the controller namespace but are definitely not HTTP entries. The list comes from FKB; the kernel
+    /// knows no concrete name.
     NameNotIn(Vec<String>),
-    /// 节点**尚未被认领**：既没有指定种类的入边，也没有该种类的待定链接指向它
-    /// （详见 [`crate::GraphWorkspace::claimed_by`] 的形态比对）。
+    /// The node is **not yet claimed**: it has neither an in-edge of the given kind nor a pending link of that
+    /// kind pointing at it (see the shape comparison in [`crate::GraphWorkspace::claimed_by`]).
     ///
-    /// 「显式声明优先于约定推断」：已经写在 `Route::get` / `Route::resource` 里的某个
-    /// 方法，不该再被目录约定兜出第二个契约 —— 否则 CRMEB 这类全量注册路由的工程会
-    /// 凭空多出上千个重复端点。与"宁可缺边，不可错边"是同一条记账原则。
+    /// "An explicit declaration beats a convention inference": a method already written into `Route::get` /
+    /// `Route::resource` must not be scooped up a second time by a directory convention — otherwise a project like
+    /// CRMEB, which registers routes exhaustively, sprouts thousands of duplicate endpoints. This is the same
+    /// accounting principle as "better a missing edge than a wrong edge".
     NotClaimedBy(String),
 }
 
-/// 绑定动作。
+/// A binding action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum Action {
-    /// 打标注。
+    /// Tag an annotation.
     Annotate(AnnotateAction),
-    /// 合成节点。
+    /// Synthesise a node.
     Synthesize(SynthesizeAction),
-    /// 仅建边。
+    /// Build an edge only.
     Link(LinkAction),
-    /// 把**一类边投影到另一层**。
+    /// **Project one class of edges onto another layer**.
     Project(ProjectAction),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnnotateAction {
-    /// 期望执行的阶段（Pre / Post）。当规则 phase 与此处不一致时跳过。
+    /// The phase in which it is expected to run (Pre / Post). Skipped when the rule's phase differs from this.
     pub phase: Option<Phase>,
     pub channel: AnnotationChannel,
     pub target: AnnotateTarget,
     pub annotations: Vec<AnnotationSpec>,
     pub merge: MergeStrategy,
-    /// 作用域：`[RouteSelf, EnclosingGroup, Global]`。
+    /// Scope: `[RouteSelf, EnclosingGroup, Global]`.
     pub scope: Option<Vec<String>>,
     pub r#where: Vec<Predicate>,
-    /// 从作用域链继承能力时的置信度衰减。
+    /// Confidence decay when inheriting a capability from the scope chain.
     pub confidence_scale: Option<f32>,
 }
 
@@ -883,18 +927,18 @@ impl Default for AnnotateAction {
     }
 }
 
-/// 标注目标。
+/// Annotation target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnotateTarget {
-    /// 选择器直接匹配到的节点。
+    /// The node the selector matched directly.
     Matched,
-    /// 从匹配结果的某个字段派生（如 `array_values` → 解析成类）。
+    /// Derived from a field of the match result (e.g. `array_values` -> resolved into a class).
     FromField {
         source: ValueSource,
         resolve: Option<ResolveAs>,
     },
-    /// 引用本规则此前合成出的节点。
+    /// Reference a node synthesised earlier by this same rule.
     SynthesizedRef(String),
 }
 
@@ -928,7 +972,7 @@ impl Default for AnnotationSpec {
     }
 }
 
-/// subkind 的来源：字面量 / 权威符号表 / 计算值 / fan_in 分级。
+/// Where a subkind comes from: a literal / an authoritative symbol table / a computed value / a fan_in grade.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubkindSource {
@@ -957,45 +1001,45 @@ pub struct FanInThresholds {
     pub high_label: Option<String>,
 }
 
-/// 合成动作。
+/// A synthesis action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SynthesizeAction {
-    /// 节点种类（开放字符串，如 `Table` / `HttpContract` / `Event` / `Queue` / `Cache` / `Topic`）。
+    /// Node kind (an open string, e.g. `Table` / `HttpContract` / `Event` / `Queue` / `Cache` / `Topic`).
     ///
-    /// 若同时给了 `subtype`，则**子类型提升为 kind**（`kind = subtype`）；
-    /// 此时 `category` 仍记为最终 kind（第一类语义节点等同于 kind）。
+    /// If `subtype` is given too, the **subtype is promoted to kind** (`kind = subtype`);
+    /// `category` then still records the final kind (a first-class semantic node equals its kind).
     pub node: NodeKind,
-    /// 子类型（`Event` / `Queue` / `Cache`…），可选；给了就作为最终 kind。
+    /// Subtype (`Event` / `Queue` / `Cache`…), optional; when given it becomes the final kind.
     pub subtype: Option<String>,
     pub identity: IdentitySpec,
     pub fields: Vec<FieldSpec>,
     pub link: Option<LinkSpec>,
     pub confidence: f32,
-    /// `MergeBy(key)` —— 多份数据源合并成一个节点的不同字段，而不是建多个节点。
+    /// `MergeBy(key)` — several data sources merge into different fields of one node rather than into several nodes.
     pub modifiers: Vec<String>,
-    /// 别名注册（合成后自动写入 by_alias）。
+    /// Alias registration (written into by_alias automatically after synthesis).
     pub alias: Option<AliasSpec>,
-    /// **一条调用展开成 N 个语义节点**（表驱动）。
+    /// **Expand one call into N semantic nodes** (table-driven).
     ///
-    /// 典型场景：REST 资源路由 `Route::resource('cms', Ctrl::class)` 一条语句
-    /// 其实是 7 条契约（index / create / save / read / edit / update / delete）。
-    /// 展开表由 **FKB 给出**（内核零框架知识），内核只负责：按表逐个变体执行
-    /// 同一份 `identity` / `fields` / `link`，并把变体的 `method` / `entry`
-    /// 注入 `{ expand_method: true }` / `{ expand_entry: true }` 两个来源，
-    /// 把 `path_suffix` 追加到算出的路径之后（在 `Route::group` 前缀之后）。
+    /// Typical case: the REST resource route `Route::resource('cms', Ctrl::class)` is really 7 contracts in one
+    /// statement (index / create / save / read / edit / update / delete).
+    /// The expansion table comes from **FKB** (the kernel has zero framework knowledge); the kernel only: runs the
+    /// same `identity` / `fields` / `link` once per variant in the table, injects the variant's `method` / `entry`
+    /// into the two sources `{ expand_method: true }` / `{ expand_entry: true }`, and appends `path_suffix` to the
+    /// computed path (after the `Route::group` prefix).
     pub expand: Option<ExpandSpec>,
 }
 
-/// 展开表：一条调用 → N 个语义节点。
+/// An expansion table: one call -> N semantic nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExpandSpec {
     pub variants: Vec<ExpandVariant>,
-    /// 白名单来源：**同一语句行**上名为该值的链式调用的实参数组
-    /// （`->only(['index','delete'])`）。给出时只合成列表内的动作。
+    /// Allowlist source: the argument array of a chained call with this name **on the same statement line**
+    /// (`->only(['index','delete'])`). When given, only the actions in the list are synthesised.
     pub only: Option<String>,
-    /// 黑名单来源：`->except(['read'])`。给出时从动作表里剔除。
+    /// Denylist source: `->except(['read'])`. When given, those actions are removed from the action table.
     pub except: Option<String>,
 }
 
@@ -1005,18 +1049,18 @@ impl Default for ExpandSpec {
     }
 }
 
-/// 展开表的一行：一个动作（如 REST 的 `index`）。
+/// One row of the expansion table: one action (e.g. REST's `index`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
 pub struct ExpandVariant {
-    /// 动作名（与 `only` / `except` 里写的名字对应）。
+    /// Action name (corresponding to the names written in `only` / `except`).
     pub name: String,
-    /// HTTP method（供 `{ expand_method: true }` 取用）。
+    /// HTTP method (read by `{ expand_method: true }`).
     pub method: Option<String>,
-    /// 追加到路径之后的后缀（如 `/create`、`/:id`）。
+    /// Suffix appended to the path (e.g. `/create`, `/:id`).
     pub path_suffix: Option<String>,
-    /// handler 的入口方法名（供 `{ expand_entry: true }` 取用）。
+    /// The handler's entry method name (read by `{ expand_entry: true }`).
     pub entry: Option<String>,
 }
 
@@ -1036,27 +1080,28 @@ impl Default for SynthesizeAction {
             }
 }
 
-/// 合成节点的身份规格。
+/// The identity spec of a synthesised node.
 ///
-/// **`identity` 是整个 Synthesize 阶段的核心**：三条不同的规则只要算出
-/// 相同的 identity，产出就会幂等合并成一个节点。
+/// **`identity` is the core of the whole Synthesize phase**: as long as three different rules compute the same
+/// identity, their output merges idempotently into one node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IdentitySpec {
     /// `Fqn` / `Named` / `ContractId`。
     pub kind: SynthesizedKind,
-    /// 单值身份（`Fqn` / `Named`）。
+    /// A single-value identity (`Fqn` / `Named`).
     pub value: Option<ValueSource>,
-    /// `ContractId` 的 HTTP 方法来源。
+    /// Where the HTTP method of a `ContractId` comes from.
     pub method: Option<ValueSource>,
-    /// `ContractId` 的路径来源。
+    /// Where the path of a `ContractId` comes from.
     pub path: Option<ValueSource>,
     #[serde(default)]
     pub normalize: Vec<NormalizeStep>,
-    /// 主身份取不到（或 `require_class` 判定非类）时的兜底来源。
+    /// Fallback source when the primary identity cannot be obtained (or `require_class` judges it not a class).
     ///
-    /// 例：队列 topic 优先取 `arg:0`（实参里的 Job 类），取不到时退回 `owner_class`
-    /// （产生该调用的类自身）。两条来源算出相同 identity 时幂等合并为同一节点。
+    /// Example: a queue topic prefers `arg:0` (the Job class in the argument) and falls back to `owner_class`
+    /// (the class that made the call) when that fails. When both sources compute the same identity they merge
+    /// idempotently into one node.
     #[serde(default)]
     pub value_fallback: Option<ValueSource>,
 }
@@ -1067,9 +1112,9 @@ pub struct IdentitySpec {
 pub struct FieldSpec {
     pub name: String,
     pub value: Option<ValueSource>,
-    /// 累积合并：`{ key: locale, value: text }`。
+    /// Accumulating merge: `{ key: locale, value: text }`.
     pub accumulate: Option<AccumulateSpec>,
-    /// 从权威符号表补充字段。
+    /// Supplement fields from the authoritative symbol table.
     pub from_symbol_table: Option<SymbolFieldSpec>,
 }
 
@@ -1092,19 +1137,20 @@ pub struct SymbolFieldSpec {
 #[derive(Default)]
 pub struct LinkSpec {
     pub kind: EdgeKind,
-    /// 边的另一端来源（如 handler 字符串）。
+    /// Source of the edge's other end (e.g. a handler string).
+
     pub to: Option<ValueSource>,
-    /// 目标**方法名**（可选）。给出时优先连到 `类::方法`。
+    /// The target **method name** (optional). When given, prefer connecting to `Class::method`.
     ///
-    /// 两个用途：① 数组式 handler 的方法部分（`[Ctrl::class, 'method']` 的第 1 项）；
-    /// ② 让「消费入口方法」由 FKB 决定，而不是内核硬编码的
-    /// `handle`/`fire`/`doJob`/`__invoke`/`run` 列表。
+    /// Two uses: (1) the method part of an array-style handler (item 1 of `[Ctrl::class, 'method']`); (2) letting
+    /// FKB decide the "consumer entry method" instead of the kernel's hard-coded list of
+    /// `handle`/`fire`/`doJob`/`__invoke`/`run`.
     #[serde(default)]
     pub to_method: Option<ValueSource>,
-    /// `to` 取不到目标时的兜底来源（如队列消费方 `arg:0` 解析不出时退回 `receiver_class`）。
+    /// Fallback source when `to` yields no target (e.g. falling back to `receiver_class` when a queue consumer's `arg:0` cannot be resolved).
     #[serde(default)]
     pub to_fallback: Option<ValueSource>,
-    /// 方向：incoming（来源指向新节点）/ outgoing（新节点指向来源）/ to_target。
+    /// Direction: incoming (the source points at the new node) / outgoing (the new node points at the source) / to_target.
     pub direction: Direction,
     pub resolve: Option<ResolveAs>,
     pub confidence: Option<f32>,
@@ -1113,12 +1159,12 @@ pub struct LinkSpec {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
-    /// 匹配到的调用方 ——> 新合成节点。
+    /// The matched caller ——> the newly synthesised node.
     #[default]
     Incoming,
-    /// 新合成节点 ——> 匹配到的调用方。
+    /// The newly synthesised node ——> the matched caller.
     Outgoing,
-    /// 新合成节点 ——> `to` 解析出的目标。
+    /// The newly synthesised node ——> the target resolved from `to`.
     ToTarget,
 }
 
@@ -1131,97 +1177,102 @@ pub struct AliasSpec {
     pub qualifier: Option<ValueSource>,
 }
 
-/// 值来源（结构化，便于 YAML 书写）。
+/// A value source (structured, for convenient YAML authoring).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ValueSource {
-    /// 第 n 个实参。
+    /// The n-th argument.
     pub arg: Option<usize>,
-    /// 实参是**数组**时，按下标取第 n 项。
+    /// When the argument is an **array**, take the n-th item by index.
     ///
-    /// 用于数组式 handler —— Laravel 主形式 `Route::get('/x', [Ctrl::class, 'method'])`
-    /// 的类名在 `arg1[0]`、方法名在 `arg1[1]`，此前无法表达（只能取整个数组）。
+    /// For array-style handlers — Laravel's main form `Route::get('/x', [Ctrl::class, 'method'])` has the class
+    /// name in `arg1[0]` and the method name in `arg1[1]`, which previously could not be expressed (only the whole
+    /// array could be taken).
     pub element: Option<usize>,
-    /// 实参是对象字面量时取其字段（如 `uni.request({url:..})`）。
+    /// Take a field when the argument is an object literal (e.g. `uni.request({url:..})`).
     pub field: Option<String>,
-    /// 取类属性（如 Model 的 `$table`）。
+    /// Read a class property (e.g. a Model's `$table`).
     pub property: Option<String>,
-    /// 取当前节点自身（类短名 / FQN）。
+    /// Take the current node itself (class short name / FQN).
     #[serde(rename = "self")]
     pub self_value: Option<bool>,
-    /// 跳过 key_path 的前 n 段后剩余的部分（点分连接）。
+    /// Skip the first n segments of key_path and take what remains (joined with dots).
     pub path_segment: Option<usize>,
-    /// 调用点的方法名（如 `Route::post` 的 `post`）。
+    /// The call site's method name (e.g. the `post` of `Route::post`).
     pub method_name: Option<bool>,
-    /// 配置条目的值本身。
+    /// The config entry's own value.
     pub entry_value: Option<bool>,
-    /// 取数组的全部值（一对多）。
+    /// Take all values of an array (one-to-many).
     pub array_values: Option<bool>,
-    /// 取数组长度。
+    /// Take the array length.
     pub array_length: Option<bool>,
-    /// 取配置文件条目的 key_path。
+    /// Take the key_path of a config-file entry.
     pub key_path: Option<bool>,
-    /// 取文件名主干。
+    /// Take the file-name stem.
     pub file_stem: Option<bool>,
-    /// 取当前 locale（i18n 装载时）。
+    /// Take the current locale (when loading i18n).
     pub locale: Option<bool>,
-    /// 取「发起调用的类」：`owner_fqn` 去掉末尾 `::method` 后的类 FQN。
+    /// Take "the class that made the call": the class FQN after stripping the trailing `::method` from
+    /// `owner_fqn`.
     ///
-    /// 通用语义：当身份是「调用方类」而非某个实参时（如 self-enqueue 模式里，
-    /// 队列的 Job / topic 就是产生它的那个类自身，典型如 `QueueTrait::dispatch`
-    /// 经 `->job(__CLASS__)` 把消费方设成调用类）。这是框架无关的提取能力。
+    /// Generic semantics: for when the identity is "the calling class" rather than some argument (e.g. in the
+    /// self-enqueue pattern the queue's Job / topic is the class that produced it, typically `QueueTrait::dispatch`
+    /// setting the consumer to the calling class via `->job(__CLASS__)`). This is a framework-agnostic extraction
+    /// capability.
     pub owner_class: Option<bool>,
-    /// 取 `owner_fqn` 末尾的**成员名**（方法 / 字段），与 `owner_class` 互补。
+    /// Take the **member name** at the end of `owner_fqn` (method / field), complementing `owner_class`.
     ///
-    /// 典型用途：Java 方法级注解（`@GetMapping`）的调用点 `owner_fqn` 是方法 FQN
-    /// `com.example.Ctrl.list`，`owner_member` 取出 `list`，供 link 的 `to_method`
-    /// 把 `HandledBy` 精确连到**处理方法**节点（而非控制器类），让视角能沿方法
-    /// 的调用链继续下钻。类级注解 `owner_fqn` 已是类 FQN，取到的是类短名，
-    /// 查不到方法节点时 `find_target_node` 回退到类节点，语义安全。
+    /// Typical use: the call site of a Java method-level annotation (`@GetMapping`) has `owner_fqn` = the method FQN
+    /// `com.example.Ctrl.list`, and `owner_member` extracts `list` so that a link's `to_method` connects the
+    /// `HandledBy` edge precisely to the **handler method** node (rather than the controller class), letting a
+    /// perspective keep drilling down along the method's call chain. For a class-level annotation `owner_fqn` is
+    /// already a class FQN, so this yields the class short name; when no method node is found,
+    /// `find_target_node` falls back to the class node, which is semantically safe.
     pub owner_member: Option<bool>,
-    /// 取调用点的接收者类：把 `receiver` 经 import 别名还原成 FQN。
+    /// Take the call site's receiver class: resolve `receiver` into an FQN via import aliases.
     ///
-    /// 与 `owner_class`（调用所在类）不同，这是「被调用方的接收者类」，
-    /// 例如 `QueueThink::push()` 里 `QueueThink` 经别名还原成 `think\facade\Queue`。
+    /// Unlike `owner_class` (the class the call sits in), this is "the receiver class of the callee", e.g. in
+    /// `QueueThink::push()` resolving `QueueThink` through an alias into `think\facade\Queue`.
     pub receiver_class: Option<bool>,
-    /// 取调用点关切的「主领域类型」（`CallSiteFact.entity`），如事件类型
-    /// `OrderPlacedEvent`。用于把「同一事件类型」的发布方与订阅方归并到同一个
-    /// `Event` 节点（而非各自以方法名命名）。取不到（parser 未识别）时整体返回
-    /// `None`，交给 `value_fallback`（如 `owner_member`）兜底。
+    /// Take the "primary domain type" the call site is about (`CallSiteFact.entity`), e.g. the event type
+    /// `OrderPlacedEvent`. Used to merge the publisher and the subscriber of "the same event type" onto one
+    /// `Event` node (rather than naming each after its method). When it cannot be obtained (the parser did not
+    /// recognise it), return `None` overall and let `value_fallback` (e.g. `owner_member`) cover it.
     pub entity: Option<bool>,
-    /// 当 `resolve: class_const` 时，若解析结果在代码库中不存在为类节点，则整体返回
-    /// `None`（而不是把变量名 / 字面量当类用）。用于「优先用实参里的 Job 类，否则
-    /// 退回 `owner_class`」这类兜底，避免 `$action` 之类的字符串污染语义身份。
+    /// With `resolve: class_const`, if the resolved result does not exist as a class node in the codebase, return
+    /// `None` overall (instead of treating a variable name / literal as a class). For fallbacks like "prefer the
+    /// Job class in the argument, otherwise fall back to `owner_class`", so strings like `$action` cannot pollute
+    /// the semantic identity.
     pub require_class: Option<bool>,
-    /// 只接受**字面量**（字符串 / 标量），拒绝变量与表达式文本。
+    /// Accept **literals only** (strings / scalars); reject variables and expression text.
     ///
-    /// `arg` 对变量 / 拼接表达式会求值成 `FactValue::Unknown(Some(原文))`（见
-    /// `gt-adapter-parser::php::value`），直接采信会把 `$name`、`self::X . $y` 这类
-    /// 源码文本当成身份，凭空造出垃圾语义节点。与 `require_class` 对称：判否即整体
-    /// 返回 `None`，交给 `value_fallback` 兜底。
+    /// `arg` evaluates a variable / concatenated expression into `FactValue::Unknown(Some(verbatim))` (see
+    /// `gt-adapter-parser::php::value`), so trusting it directly would take source text like `$name` or
+    /// `self::X . $y` as an identity and conjure garbage semantic nodes. Symmetric with `require_class`: if the
+    /// test fails, return `None` overall and let `value_fallback` cover it.
     pub require_literal: Option<bool>,
-    /// 字面量。
+    /// A literal.
     pub literal: Option<String>,
-    /// 嵌套来源：`{ source: { arg: 1 }, field: 'url' }`。
+    /// A nested source: `{ source: { arg: 1 }, field: 'url' }`.
     pub source: Option<Box<ValueSource>>,
-    /// 变换（如 `class_to_topic`、`snake_plural`）。
+    /// A transformation (e.g. `class_to_topic`, `snake_plural`).
     pub transform: Option<TransformSpec>,
-    /// 归一化链。
+    /// A normalisation chain.
     pub normalize: Option<Vec<NormalizeStep>>,
-    /// 解析方式。
+    /// Resolution method.
     pub resolve: Option<ResolveAs>,
-    /// 取不到时的默认值。
+    /// Default value when it cannot be obtained.
     pub default: Option<String>,
-    /// 多段拼接：`{ path: [{file_stem:true},{key_path:true}], join: '.' }`。
+    /// Multi-segment joining: `{ path: [{file_stem:true},{key_path:true}], join: '.' }`.
     pub path: Option<Vec<ValueSource>>,
     pub join: Option<String>,
-    /// 取**当前展开变体**的 HTTP method（`expand.variants[].method`）。
+    /// Take the HTTP method of the **current expansion variant** (`expand.variants[].method`).
     ///
-    /// 只有配合 `Synthesize.expand` 使用才有值：一条调用展开成 N 个语义节点时，
-    /// 每个变体各有一套 method / 路径后缀 / 入口方法（如 REST 资源路由）。
+    /// Only has a value together with `Synthesize.expand`: when one call expands into N semantic nodes, each
+    /// variant has its own method / path suffix / entry method (as in a REST resource route).
     pub expand_method: Option<bool>,
-    /// 取**当前展开变体**的入口方法名（`expand.variants[].entry`），供
-    /// `link.to_method` 把边精确连到「处理该动作的方法」。
+    /// Take the entry method name of the **current expansion variant** (`expand.variants[].entry`), so that
+    /// `link.to_method` connects the edge precisely to "the method handling that action".
     pub expand_entry: Option<bool>,
 }
 
@@ -1239,55 +1290,56 @@ pub struct TransformSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolveAs {
-    /// `Foo::class` → 完全限定类名 → 查 by_name。
+    /// `Foo::class` -> a fully qualified class name -> look up by_name.
     ClassConst,
-    /// `'Login/appleLogin'` → 按 控制器/方法 模式拼出 FQN。
+    /// `'Login/appleLogin'` -> assemble an FQN per the controller / method pattern.
     HandlerPattern,
-    /// 查 by_alias 索引。
+    /// Look up the by_alias index.
     ByAlias,
-    /// 直接当作名字使用。
+    /// Use it directly as a name.
     AsIs,
 }
 
-/// 归一化步骤（identity 幂等合并的关键）。
+/// A normalisation step (the key to idempotent identity merging).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NormalizeStep {
     StripPrefix(Vec<String>),
     Lower,
     Upper,
-    /// 保证以 `/` 开头。
+    /// Guarantee a leading `/`.
     LeadingSlash,
-    /// 复数转单数。
+    /// Plural to singular.
     Singularize,
-    /// 类名转 `snake_case` 复数（Model 约定表名）。
+    /// Class name to `snake_case` plural (the Model table-name convention).
     SnakePlural,
-    /// 去掉命名空间，只留最后一段。
+    /// Strip the namespace, keep only the last segment.
     StripNamespace,
-    /// 取**点分**路径的最后一段：`app.tasks.send_email` → `send_email`。
+    /// Take the last segment of a **dot-separated** path: `app.tasks.send_email` -> `send_email`.
     ///
-    /// 与 [`Self::StripNamespace`] 只差一个分隔符 `.`：Python / Java 的命名空间是
-    /// 点分的，而 `StripNamespace` 刻意**不拆** `.`（否则会把 Java 自动路由的包名
-    /// 一起拆掉，改变既有行为）。故另起一个**加性**的步骤，专供「同一语义实体的
-    /// 长短名要归并」这类场景 —— 例如 Celery 任务的注册方只有短名、投递方却因
-    /// `import` 还原成了完全限定名，不归一就会拆成两个节点。
+    /// It differs from [`Self::StripNamespace`] by only one separator, `.`: Python / Java namespaces are dot
+    /// separated, while `StripNamespace` deliberately does **not** split on `.` (otherwise it would split Java
+    /// auto-route package names too and change existing behaviour). Hence a separate **additive** step, aimed at
+    /// scenarios like "the long and short names of one semantic entity must merge" — e.g. a Celery task's
+    /// registrar only has the short name while its dispatcher restored a fully qualified name via `import`, and
+    /// without normalisation they split into two nodes.
     ShortName,
-    /// 路径参数段归一化：每个 `:` 开头的段都折成 `:*`。
+    /// Path-parameter segment normalisation: every segment starting with `:` folds into `:*`.
     ///
-    /// 契约桥的关键一步：后端路由写 `invoice/detail/:id`，前端拼接式 URL
-    /// `'invoice/detail/' + id` 规整出 `invoice/detail/:param` —— 参数名不同但
-    /// **形状相同**，HTTP 匹配本就只看形状。不折一下这两条永远合不到一个节点，
-    /// 路由视角里就"看不到前端"。
+    /// A key step of the contract bridge: the backend route writes `invoice/detail/:id` while the frontend's
+    /// concatenated URL `'invoice/detail/' + id` normalises to `invoice/detail/:param` — different parameter
+    /// names but the **same shape**, and HTTP matching only ever looks at the shape. Without folding, the two
+    /// never merge onto one node and the route perspective "cannot see the frontend".
     ParamWildcard,
-    /// 去掉 `?` 起的查询串（页面跳转 URL 常带 `?id=1`，但路由身份只看路径）：
-    /// `uni.navigateTo({ url: '/pages/detail?id=1' })` 与 `pages.json` 里的
-    /// `/pages/detail` 汇聚到同一个 `Page` 节点。
+    /// Drop the query string starting at `?` (page-navigation URLs often carry `?id=1`, but a route identity only
+    /// looks at the path): `uni.navigateTo({ url: '/pages/detail?id=1' })` and the `/pages/detail` in `pages.json`
+    /// converge onto the same `Page` node.
     StripQuery,
     Trim,
     Replace { from: String, to: String },
 }
 
-/// 仅建边的动作。
+/// An edge-only action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
@@ -1299,54 +1351,57 @@ pub struct LinkAction {
     pub confidence: Option<f32>,
 }
 
-/// 边投影动作：把**一类边**从它所在的层投影到另一层。
+/// An edge-projection action: project **one class of edges** from the layer they live in onto another layer.
 ///
-/// 遍历匹配节点的每条 `along` 出边，起点沿 `from` 边种类链走、终点沿 `to` 链走，
-/// 在两头的落点之间建一条 `kind` 边。**一对多**：一个实体有几条 `@ManyToOne`
-/// 就产出几条外键边（这是 `Link` 做不到的 —— 它的两端只能各取一个名字）。
+/// Walk every `along` out-edge of the matched node; the start walks along the `from` edge-kind chain and the end
+/// along the `to` chain, and a `kind` edge is built between the two landing points. It is **one-to-many**: an
+/// entity with several `@ManyToOne` produces several foreign-key edges (something `Link` cannot do — its two ends
+/// can each take only one name).
 ///
-/// 为什么需要内核给这条能力：「类 → 它映射的表」本质是**沿 `MapsTo` 走一跳**，
-/// 而 `ValueSource` 只认名字（`self_value` / `property`），取不到"边的那一头"。
-/// 走哪条边仍完全由 FKB 声明 —— 内核依旧不认识 TypeORM。
+/// Why the kernel has to provide this ability: "class -> the table it maps to" is essentially **walking one hop
+/// along `MapsTo`**, while `ValueSource` only understands names (`self_value` / `property`) and cannot reach "the
+/// far end of an edge". Which edge to walk is still declared entirely by FKB — the kernel still knows nothing
+/// about TypeORM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
 pub struct ProjectAction {
-    /// 产出的边种类。
+    /// The edge kind produced.
     pub kind: EdgeKind,
-    /// 遍历匹配节点的每条**此类**出边（没有该类边 → 无产出，天然跳过无关节点）。
+    /// Walk every out-edge **of this kind** on the matched node (no edge of that kind -> no output, so unrelated nodes are skipped naturally).
     pub along: EdgeKind,
-    /// 从**边的起点**沿此边种类链走到落点；为空则落点就是起点自身。
+
+    /// Walk from the **edge's start** along this edge-kind chain to the landing point; empty means the landing point is the start itself.
     #[serde(default)]
     pub from: Vec<String>,
-    /// 从**边的终点**沿此边种类链走到落点；为空则落点就是终点自身。
+    /// Walk from the **edge's end** along this edge-kind chain to the landing point; empty means the landing point is the end itself.
     #[serde(default)]
     pub to: Vec<String>,
     pub confidence: Option<f32>,
 }
 
-/// P7 解析漏斗的层级。
+/// Levels of the P7 resolution funnel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolveTier {
-    /// L1 字面 FQN，如 `app()->make(StoreOrderServices::class)`。
+    /// L1 literal FQN, e.g. `app()->make(StoreOrderServices::class)`.
     Exact = 1,
-    /// L2 容器注册表（`provider.php` 中的绑定）。
+    /// L2 container registry (the bindings in `provider.php`).
     Registry = 2,
-    /// L3 别名索引（Facade / 事件名 / 获取器）。
+    /// L3 alias index (Facade / event name / getter).
     Alias = 3,
-    /// L4 约定（命名空间拼接、类名推导表名）。
+    /// L4 convention (namespace concatenation, deriving a table name from a class name).
     Convention = 4,
-    /// L5 常量传播。
+    /// L5 constant propagation.
     ConstProp = 5,
-    /// L6 与有限全集求交（schema 的 203 张表）。
+    /// L6 intersection with a finite universe (the 203 tables of the schema).
     Intersection = 6,
-    /// L7 完全未知。
+    /// L7 completely unknown.
     Unknown = 7,
 }
 
 impl ResolveTier {
-    /// 该层级对应的基础置信度。
+    /// The base confidence of that level.
     pub fn base_confidence(self) -> f32 {
         match self {
             Self::Exact => 1.0,
@@ -1360,11 +1415,11 @@ impl ResolveTier {
     }
 }
 
-/// 一次动态解析的产物。
+/// The product of one dynamic resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resolution {
     pub tier: ResolveTier,
-    /// 候选节点；空表示未解析。
+    /// Candidate nodes; empty means unresolved.
     pub candidates: Vec<super::ids::NodeId>,
     pub confidence: f32,
     pub evidence: String,
@@ -1384,7 +1439,7 @@ impl Resolution {
     }
 }
 
-/// 调用点上下文（供选择器匹配使用）。
+/// Call-site context (used by selector matching).
 #[derive(Debug, Clone)]
 pub struct CallContext {
     pub owner_fqn: String,
@@ -1398,41 +1453,41 @@ pub struct CallContext {
     pub file_path: String,
 }
 
-/// P7 动态解析声明。
+/// A P7 dynamic-resolution declaration.
 ///
-/// 让「哪些调用需要动态解析」这件事也由 FKB 决定，而不是写死在内核里。
+/// Letting FKB decide "which calls need dynamic resolution" too, rather than hard-coding it in the kernel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolverSpec {
     pub id: String,
-    /// 匹配模式，如 `app()->make|app|make`。
+    /// Matching pattern, e.g. `app()->make|app|make`.
     #[serde(default)]
     pub call: Option<String>,
     pub strategy: ResolveStrategy,
-    /// 起始解析层级（容器默认 Regist发ry）。
+    /// Starting resolution level (containers default to Registry).
     #[serde(default)]
     pub from_tier: Option<ResolveTier>,
 }
 
-/// 具体解析策略。
+/// A concrete resolution strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolveStrategy {
-    /// `app()->make(X)` / `app('x')`：L1 字面 → L2 注册表 → L4 约定 → L6 求交。
+    /// `app()->make(X)` / `app('x')`: L1 literal -> L2 registry -> L4 convention -> L6 intersection.
     Container,
-    /// `event('x')`：查 L3 别名索引。
+    /// `event('x')`: look up the L3 alias index.
     Event,
-    /// `Event::listen('x', Listener::class)` / `Event::subscribe(Listener::class)`：
-    /// arg0 解析为事件节点（L3 别名），再把 `HandledBy` 边从事件节点指向 arg1 监听器类。
+    /// `Event::listen('x', Listener::class)` / `Event::subscribe(Listener::class)`:
+    /// arg0 resolves to an event node (L3 alias), then a `HandledBy` edge goes from the event node to the arg1 listener class.
     EventListen,
-    /// `think\facade\Cache::get()`：查 L3 FacadeMap。
+    /// `think\facade\Cache::get()`: look up the L3 FacadeMap.
     Facade,
-    /// `$order->status_text`：复合键 accessor 别名。
+    /// `$order->status_text`: a composite-key accessor alias.
     Accessor,
-    /// `Route::post('p','Login/appleLogin')`：handler 模式解析。
+    /// `Route::post('p','Login/appleLogin')`: handler-pattern resolution.
     Handler,
-    /// `$services->appAuth()`：按变量类型解析实例方法调用。
+    /// `$services->appAuth()`: resolve an instance method call by variable type.
     ///
-    /// 类型来源：方法参数类型提示（ThinkPHP 控制器 DI 约定）与构造器属性注入
-    /// （`__construct(T $x){ $this->p = $x; }`），由 P2 记录、本策略消费。
+    /// Type sources: method parameter type hints (the ThinkPHP controller DI convention) and constructor property
+    /// injection (`__construct(T $x){ $this->p = $x; }`), recorded by P2 and consumed by this strategy.
     VariableType,
 }

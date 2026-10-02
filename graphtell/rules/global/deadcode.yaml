@@ -1,21 +1,22 @@
-# 跨语言通用的死代码规则。
+# Language-agnostic dead-code rules.
 #
-# 只保留"纯拓扑"判据的部分；依赖语言特有边（Triggers / Emits / PublishesTo）
-# 的那几条在 rules/php/deadcode.yaml —— 那些边目前只有 PHP 的 FKB 会产出，
-# 放到 Java 工程上跑会把每个事件节点都报成"没人触发"。
+# Only the "pure topology" criteria live here; the few that depend on language-specific edges
+# (Triggers / Emits / PublishesTo) are in rules/php/deadcode.yaml — those edges are currently only
+# produced by the PHP FKB, so running them on a Java project would report every event node as
+# "never triggered".
 
 rules:
   - id: dead-table
-    title: 没有任何读写引用的表
+    title: Table with no read or write reference at all
     description: >-
-      表被建出来（SQL 建表 / Model 的 $table）但图上没有任何读写边。
-      两种可能：真未使用，或图缺边。
+      The table was created (SQL create table / Model `$table`) but has no read or write edge on the
+      graph. Two possibilities: genuinely unused, or the graph is missing an edge.
     severity: info
     category: deadcode
     params:
       - key: max_fan_in
-        label: 扇入上限
-        description: 语义入边数 ≤ 该值才报；0 = 完全没人引用，调到 1~2 可容忍少量引用。
+        label: Fan-in ceiling
+        description: Semantic in-edges must be <= this value to report; 0 = nobody references it at all, 1~2 tolerates a few references.
         kind: number
         default: 0
         min: 0
@@ -24,25 +25,26 @@ rules:
       kinds: [Table]
     when:
       - fan_in_lte: "$max_fan_in"
-    message: "表 {name} 在图上最多只有 {param:max_fan_in} 处读写引用（可能真未使用，也可能是图缺边）"
-    remediation: "抽样人工确认；若确实有代码在读写它，说明 FKB 的读写动词规则需要补充"
+    message: "Table {name} has at most {param:max_fan_in} read/write reference(s) on the graph (possibly genuinely unused, possibly a missing edge)"
+    remediation: "Sample and confirm by hand; if code really does read and write it, FKB's read/write verb rules need extending"
 
-  # 为什么用 `no_incoming: ReadsDb` 配合 `fan_in_gte` 而不是另写一个"写入处数"谓词：
-  # `fan_in` 数的是**语义入边**（ReadsDb + WritesDb）。既然 `no_incoming: ReadsDb`
-  # 已经把读取边排除干净，剩下的语义入边就**全是写入**，`fan_in_gte` 自然等价于
-  # "写入处数 ≥ 阈值" —— 不用新增谓词种类就能精确表达。
+  # Why `no_incoming: ReadsDb` combined with `fan_in_gte` instead of a separate "write count" predicate:
+  # `fan_in` counts **semantic in-edges** (ReadsDb + WritesDb). Once `no_incoming: ReadsDb` has removed
+  # all read edges, the remaining semantic in-edges are **all writes**, so `fan_in_gte` is naturally
+  # equivalent to "write count >= threshold" — expressible precisely without adding a predicate kind.
   - id: write-only-table
-    title: 只写不读的表
+    title: Table that is written but never read
     description: >-
-      表有写入（WritesDb 入边）但图上没有任何读取（ReadsDb 入边）。
-      写进去的数据从不被读：要么是审计 / 日志类表的预期形态，要么是"写错地方"
-      或"读路径未被 FKB 识别"的缺陷。阈值可按工程调节，只盯"确实在被写"的表。
+      The table has writes (WritesDb in-edges) but nothing on the graph reads it (no ReadsDb in-edges).
+      Data written in is never read: either the expected shape for an audit / log table, or a defect —
+      "writing to the wrong place" or "the read path was not recognised by FKB".
+      The threshold is tunable per project, so you only watch tables that really are being written to.
     severity: info
     category: deadcode
     params:
       - key: min_writes
-        label: 最少写入处数
-        description: 写入该表的调用点数量 ≥ 该值才报；调到 2~3 可只看"确实在被写"的表，过滤掉偶发单次写入。
+        label: Minimum write sites
+        description: The number of call sites writing the table must be >= this value; set it to 2~3 to see only tables that really are being written and filter out occasional single writes.
         kind: number
         default: 1
         min: 1
@@ -53,5 +55,5 @@ rules:
       - no_incoming: ReadsDb
       - has_incoming: WritesDb
       - fan_in_gte: "$min_writes"
-    message: "表 {name} 被写入（≥ {param:min_writes} 处）但从不被读取 —— 写进去的数据没人用，可能是死写路径或读路径未被识别"
-    remediation: "确认这是否为审计 / 日志类表的预期形态；否则检查是否写错了表，或读它的代码未被 FKB 识别"
+    message: "Table {name} is written (>= {param:min_writes} places) but never read — nobody uses the data written in; possibly a dead write path or an unrecognised read path"
+    remediation: "Confirm whether this is the expected shape for an audit / log table; otherwise check for a wrong target table, or code reading it that FKB did not recognise"

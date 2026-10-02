@@ -1,19 +1,20 @@
-# Fastify（Node.js）框架知识 —— 路由契约
+# Fastify (Node.js) framework knowledge — route contracts
 #
-# **解析器零改动**：`fastify.get('/users', handler)` 在 `JsFrontendParser` 眼里是普通的
-# 成员调用（receiver = `fastify`、method = `get`、arg0 = `/users`），与 Express / Koa 同形。
+# **Zero parser changes**: to `JsFrontendParser`, `fastify.get('/users', handler)` is an ordinary member call
+# (receiver = `fastify`, method = `get`, arg0 = `/users`), the same shape as Express / Koa.
 #
-# 三个框架的接收者不同，故各写一份（判据是「哪个对象是路由注册者」）：
-#   | 框架    | 典型接收者                |
-#   |---------|---------------------------|
-#   | Express | `app` / `router` / `api`  |
-#   | Koa     | `router`（不含 `app`）    |
-#   | Fastify | `fastify` / `app` / `server` |
+# The three frameworks differ in receiver, so each gets its own file (the criterion is "which object registers routes"):
+#   | framework | typical receivers           |
+#   |-----------|-----------------------------|
+#   | Express   | `app` / `router` / `api`    |
+#   | Koa       | `router` (no `app`)         |
+#   | Fastify   | `fastify` / `app` / `server`|
 #
-# 与 Express / Koa 一致：**不强行连 `HandledBy`**（handler 常在别的文件里）。
+# Consistent with Express / Koa: **`HandledBy` is not forced** (the handler often lives in another file).
 #
-# 已知边界：`fastify.route({ method: 'GET', url: '/x', handler })` 这种**schema 写法**
-# 当前不成契约 —— 方法 / 路径藏在对象字面量里，需 parser 支持对象字段取值后再补。
+# Known boundary: the **schema style** `fastify.route({ method: 'GET', url: '/x', handler })` currently produces no
+# contract — the method / path hide inside an object literal, and support for reading object fields in the parser is
+# needed first.
 
 id: fastify
 display_name: Fastify
@@ -33,7 +34,7 @@ exclude_globs:
   - "build/**"
 
 rules:
-  # ===== P5 Synthesize：HTTP 契约（路由）=====
+  # ===== P5 Synthesize: HTTP contract (route) =====
   # `fastify.get('/users', handler)` / `app.post('/x', ...)` / `server.put(...)`。
   - id: fastify-route-contract
     phase: Synthesize

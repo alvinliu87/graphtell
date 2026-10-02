@@ -1,13 +1,13 @@
-//! `gt-domain` —— GraphTell 的领域内核（六边形架构最内层）。
+//! `gt-domain` — GraphTell's domain kernel (the innermost layer of the hexagonal architecture).
 //!
-//! 本 crate 只描述"是什么"与"要什么能力"（端口 trait），
-//! **不包含任何 IO 实现**：不碰文件系统、不碰数据库、不碰 tree-sitter。
-//! 所有外部能力都通过 [`port`] 中定义的 trait 反向注入。
+//! This crate only describes "what things are" and "what capabilities are needed" (port traits); it
+//! **contains no IO implementation**: no filesystem, no database, no tree-sitter. Every external capability is
+//! injected backwards through the traits defined in [`port`].
 //!
-//! 分层约定：
-//! * [`model`] —— 实体与值对象（语言无关、框架无关）
-//! * [`port`] —— 出站/入站端口
-//! * [`error`] —— 领域错误
+//! Layering convention:
+//! * [`model`] — entities and value objects (language-agnostic, framework-agnostic)
+//! * [`port`] — outbound / inbound ports
+//! * [`error`] — domain errors
 
 pub mod error;
 pub mod model;

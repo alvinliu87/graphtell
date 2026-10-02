@@ -1,24 +1,27 @@
-//! P10 Cors：检测「CORS 反射源站」—— 响应头 `Access-Control-Allow-Origin`
-//! 被直接设为请求的 `Origin`（或整段 `Access-Control-Allow-Origin` 头由变量拼接）。
+//! P10 Cors: detect "CORS reflected origin" — the response header `Access-Control-Allow-Origin` is set straight
+//! from the request's `Origin` (or the whole `Access-Control-Allow-Origin` header is concatenated from a variable).
 //!
-//! # 动机
+//! # Motivation
 //!
-//! 反射源站（Reflective CORS）是教科书级的高危跨域配置：把任意站点的请求都当成同源、
-//! 再配合 `Access-Control-Allow-Credentials: true` 即可泄露用户凭证（Cookie / 鉴权头）。
-//! 它和 SQL 注入一样，是「所有 PHP 工程通用」的代码坏味，却长期没有规则能拦。
+//! A reflective CORS origin is a textbook high-risk cross-origin configuration: treating any site's request as
+//! same-origin and combining it with `Access-Control-Allow-Credentials: true` leaks user credentials (cookies /
+//! auth headers). Like SQL injection it is a code smell "common to every PHP project", yet for a long time no rule
+//! could catch it.
 //!
-//! # 覆盖的形态
+//! # Forms covered
 //!
-//! * 形态一（数组赋值）：`$header['Access-Control-Allow-Origin'] = app()->request->header('origin');`
-//!   —— 解析期在 `collect_call_sites` 捕获该赋值（[`gt_domain::model::syntax::HeaderAssignFact`]），
-//!   本阶段确认右侧读取了请求 Origin，并在同行定位到 `->header('origin')` 调用点作为标注落点。
-//! * 形态二（`header()` 调用）：`header("Access-Control-Allow-Origin: " . $origin)` /
-//!   `$response->header("Access-Control-Allow-Origin: $origin")` —— 全局 `header()` 函数
-//!   或响应对象的 `header()` 方法，其首个实参字符串里同时含有 `Access-Control-Allow-Origin`
-//!   与一个变量（$var）。标注直接落在该调用点。
+//! * Form one (array assignment): `$header['Access-Control-Allow-Origin'] = app()->request->header('origin');`
+//!   — the assignment is captured at parse time in `collect_call_sites`
+//!   ([`gt_domain::model::syntax::HeaderAssignFact`]); this phase confirms that the right-hand side reads the
+//!   request Origin and locates the `->header('origin')` call site on the same line as the annotation landing point.
+//! * Form two (a `header()` call): `header("Access-Control-Allow-Origin: " . $origin)` /
+//!   `$response->header("Access-Control-Allow-Origin: $origin")` — the global `header()` function or the response
+//!   object's `header()` method, whose first argument string contains both `Access-Control-Allow-Origin` and a
+//!   variable ($var). The annotation lands directly on that call site.
 //!
-//! 形态二里「整段头由变量拼接」用 `text_has_var` 判定，因此 `header("Access-Control-Allow-Origin: *")`
-//! （通配，无变量）不会被误报——那属于另一类、更轻的配置问题，不在本规则范围内。
+//! In form two, "the whole header is concatenated from a variable" is judged by `text_has_var`, so
+//! `header("Access-Control-Allow-Origin: *")` (a wildcard, no variable) is not a false positive — that is a
+//! different, lighter configuration issue and outside this rule's scope.
 
 use gt_domain::model::{
     AnnotationChannel, FactValue, Language, MergeStrategy, NewAnnotation, NodeId, Phase,
@@ -27,16 +30,16 @@ use serde_json::json;
 
 use crate::context::PipelineContext;
 
-/// 反射源站标注的 kind（规则用 `has_annotation: cors_origin_reflect` 命中）。
+/// The kind of the reflected-origin annotation (rules match it via `has_annotation: cors_origin_reflect`).
 const CORS_REFLECT: &str = "cors_origin_reflect";
 
 pub fn run(ctx: &mut PipelineContext) {
     let mut count = 0usize;
 
-    // 先收集待标注的调用点，避免 `ctx.ws` 的不可变借用与 `annotate` 的可变借用冲突。
+    // Collect the call sites to annotate first, to avoid a conflict between the immutable borrow of `ctx.ws` and the mutable borrow in `annotate`.
     let mut targets: Vec<(NodeId, String, u32, String)> = Vec::new();
 
-    // 形态一：解析期捕获的「Allow-Origin 头赋值」，需右侧读取请求 Origin。
+    // Form one: the "Allow-Origin header assignment" captured at parse time; the right-hand side must read the request Origin.
     for ha in ctx.ws.header_assignments.iter() {
         if ha.key != "access-control-allow-origin" {
             continue;
@@ -44,13 +47,13 @@ pub fn run(ctx: &mut PipelineContext) {
         if !rhs_is_request_origin(&ha.rhs_snippet) {
             continue;
         }
-        // 在同文件、[start_line, end_line] 区间内定位 `->header('origin')` 调用点作为标注落点。
+        // Locate the `->header('origin')` call site within the same file and [start_line, end_line] range as the annotation landing point.
         if let Some(node) = find_origin_read_node(ctx, &ha.file, ha.span.start_line, ha.span.end_line) {
             targets.push((node, ha.file.clone(), ha.span.start_line, ha.rhs_snippet.clone()));
         }
     }
 
-    // 形态二：直接 `header("Access-Control-Allow-Origin: ...")` 且含变量。
+    // Form two: a direct `header("Access-Control-Allow-Origin: ...")` containing a variable.
     for call in ctx.ws.calls.iter() {
         if call.language.0 != Language::PHP {
             continue;
@@ -74,13 +77,13 @@ pub fn run(ctx: &mut PipelineContext) {
         count += 1;
     }
 
-    tracing::info!("P10 CORS 完成：反射源站 {} 处", count);
+    tracing::info!("P10 CORS done: {} reflected origins", count);
 }
 
-/// 右侧是否读取了请求 Origin（反射源站的数据源）。
+/// Whether the right-hand side reads the request Origin (the data source of a reflected origin).
 fn rhs_is_request_origin(rhs: &str) -> bool {
     let lower = rhs.to_ascii_lowercase();
-    // 读取请求 Origin 的常见写法：
+    // Common ways of reading the request Origin:
     //   app()->request->header('origin') / request()->header('origin') / $request->header('origin')
     //   $_SERVER['HTTP_ORIGIN'] / getallheaders()['origin']
     let reads_origin = (lower.contains("header(") && lower.contains("origin"))
@@ -89,7 +92,7 @@ fn rhs_is_request_origin(rhs: &str) -> bool {
     reads_origin && lower.contains("origin")
 }
 
-/// 在给定 (文件, 行区间) 内找到「读取请求 origin」的 `header('origin')` 调用点节点。
+/// Find, within a given (file, line range), the `header('origin')` call-site node that "reads the request origin".
 fn find_origin_read_node(
     ctx: &PipelineContext,
     file: &str,
@@ -109,7 +112,7 @@ fn find_origin_read_node(
     }).map(|c| c.node)
 }
 
-/// 首个实参是否为「含变量的 Access-Control-Allow-Origin 头串」（反射型）。
+/// Whether the first argument is an "Access-Control-Allow-Origin header string containing a variable" (reflective).
 fn arg_is_reflective_cors_header(fv: &FactValue) -> bool {
     let t = match fv {
         FactValue::String(s) => s.as_str(),
@@ -137,7 +140,7 @@ fn annotate(ctx: &mut PipelineContext, node: NodeId, file: &str, line: u32, evid
     });
 }
 
-/// 参数文本里是否含有变量引用（`$var` / `{$var}`），用于识别「头由变量拼接」。
+/// Whether the argument text contains a variable reference (`$var` / `{$var}`), used to recognise "the header is concatenated from a variable".
 fn text_has_var(t: &str) -> bool {
     let bytes = t.as_bytes();
     let mut i = 0;

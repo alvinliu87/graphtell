@@ -1,9 +1,9 @@
-//! 视图用例：把图**按视角切片**成"当前这一个对象"的链路子图。
+//! View use cases: slice the graph **by perspective** into the link subgraph of "this one object".
 //!
-//! 核心诚实性约束：
-//! * 对象类视角**只画中心对象的链路**；其它对象的链路边直接不画（不是变暗）
-//! * 被省略的部分以 [`HiddenInfo`] 计数 + [`UnresolvedInfo`] 记账呈现
-//! * 合成节点的位置**永远是多位置列表**，绝不编造单一位置
+//! Core honesty constraints:
+//! * An object-kind perspective **only draws the center object's links**; links of other objects aren't drawn at all (not dimmed)
+//! * Omitted parts are surfaced as [`HiddenInfo`] counts + [`UnresolvedInfo`] accounting
+//! * A synthesized node's location is **always a multi-location list**, never a fabricated single location
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -18,55 +18,54 @@ use gt_domain::model::{
 use gt_domain::port::{EdgeDirection, NodeFilter, Persistence, ViewRegistryProvider};
 use serde_json::{json, Value};
 
-/// 视角服务。
+/// Perspective service.
 pub struct ViewService {
     store: Arc<dyn Persistence>,
     views: Arc<dyn ViewRegistryProvider>,
 }
 
-/// 折叠视图的**发现结果**：以中心为起点的分层 BFS 产物（环 / 父指针 / 类型名缓存 /
-/// 边缓存）以及发现途中记录的"访问方式"标签。
+/// A folded view's **discovery result**: the layered-BFS product rooted at the center (rings / parent pointers / kind-name cache /
+/// edge cache) plus the "access mode" labels recorded along discovery.
 ///
-/// 之所以单独成结构：`object_view` 原本在一个函数体里持有十余个相互引用的 HashMap，
-/// 只能靠 `{ }` 作用域与 `pending` 暂存来绕过借用检查 —— 这正是那段近千行逻辑
-/// 拆不动、也读不懂的根因。抽出来之后：
-/// * `discover()` 一次性把状态建好并返回；
-/// * 后续阶段整体**不可变**借用 `&Discovery`，`chain_to` / `via_from_ids` /
-///   `push_edge` 等闭包不再与"补齐 kind / name"之类的写操作打架（NLL 即可处理）。
-/// 折叠提拉阶段的产物。
+/// Why it's a separate struct: `object_view` used to hold a dozen cross-referencing HashMaps inside one function body,
+/// dodging the borrow checker only via `{ }` scopes and a `pending` staging buffer — that's exactly why that near-thousand-line logic
+/// couldn't be split or read. Extracted:
+/// * `discover()` builds the state once and returns it;
+/// * later stages immutably borrow `&Discovery`; closures like `chain_to` / `via_from_ids` /
+///   `push_edge` no longer fight "fill in kind / name" writes (NLL handles it).
 struct FoldResult {
-    /// 画出来的边（已折叠、已提拉、已内联 via）。
+    /// Edges drawn (folded, lifted, with via inlined).
     edges: Vec<EdgeView>,
-    /// 被折叠 / 被上限截断而未画出的条目数（诚实记账）。
+    /// Count of entries folded / truncated by the cap and not drawn (honest accounting).
     hidden_total: usize,
     hidden_by_kind: BTreeMap<String, usize>,
-    /// 无语义入口的直接访问（孤儿）：不占画布，单列记账。
+    /// Direct accesses (orphans) with no semantic entry: off the canvas, listed separately.
     orphans: Vec<OrphanAccess>,
 }
 
 struct Discovery {
-    /// 环号（跳数）。
+    /// Ring number (hop count).
     ring_of: HashMap<i64, u32>,
-    /// 发现树上的父节点，供 `chain_to` 回溯被折叠掉的中间跳。
+    /// Parent node on the discovery tree, for `chain_to` to walk back the folded intermediate hops.
     parent_of: HashMap<i64, i64>,
     kind_of: HashMap<i64, String>,
     name_of: HashMap<i64, String>,
     semantic_of: HashMap<i64, bool>,
-    /// 反向视角（资源类中心）沿入边回溯用的边缓存。
+    /// Edge cache for the reverse perspective (resource-kind center) walking back along in-edges.
     in_edges: HashMap<i64, Vec<gt_domain::model::Edge>>,
-    /// 正向视角（路由）沿出边下钻用的边缓存。
+    /// Edge cache for the forward perspective (route) drilling down along out-edges.
     out_edges: HashMap<i64, Vec<gt_domain::model::Edge>>,
-    /// 事件 / 队列等中介视角下"必须画出来"的直接生产 / 消费方。
+    /// The direct producer / consumer that "must be drawn" under broker perspectives (event / queue).
     force_visible: HashSet<i64>,
-    /// 走到某节点途中遇到的语义边种类（"资源被怎样访问"）。
+    /// Semantic-edge kinds encountered reaching a node ("how the resource is accessed").
     path_kind: HashMap<i64, String>,
-    /// 与 `path_kind` 平行：该语义边是否由 P8 传播得来。
+    /// Parallel to `path_kind`: whether this edge came from P8 propagation.
     path_indirect: HashMap<i64, bool>,
-    /// 与 `path_kind` 平行：该原始边是**中心 → 该节点**（中心为出边的一侧）。
-    /// 反向模式默认画「使用者 --语义边--> 中心」，但 `HandledBy` 的主语是中心自己，
-    /// 必须按原始边方向画成「中心 --由…处理--> 监听器」。
+    /// Parallel to `path_kind`: whether the original edge is **center → node** (center on the out-edge side).
+/// The reverse mode draws "user --semantic edge--> center" by default, but `HandledBy`'s subject is the center itself,
+/// so it must be drawn by the original edge direction as "center --handled by…--> listener".
     path_from_center: HashSet<i64>,
-    /// 是否反向（资源类中心沿入边回溯）。
+    /// Whether reversed (resource-kind center walking back along in-edges).
     reverse: bool,
 }
 
@@ -79,14 +78,14 @@ impl ViewService {
         self.views.registry()
     }
 
-    /// 一级筛选器：各视角及其可用候选数量。
+    /// First-level filter: each perspective and its available candidate count.
     pub fn perspectives(&self, project_id: ProjectId) -> Result<Vec<Value>> {
         let stats = self.store.stats(project_id)?;
         let mut out = Vec::new();
         for spec in &self.views.registry().perspectives {
             let available = match (&spec.mode, &spec.node_kind) {
                 (gt_domain::model::ViewMode::Object, Some(kind)) => {
-                    // 带 `side` 的视角：按「kind + side」精确计数（前后端缓存拆分）。
+                    // Perspectives with `side`: count precisely by `kind + side` (frontend/backend cache split).
                     if let Some(side) = &spec.side {
                         self.store
                             .count_nodes(
@@ -96,7 +95,7 @@ impl ViewService {
                             )
                             .unwrap_or(0)
                     } else {
-                        // 先按 kind 数；为 0 时回退到 category（兼容以 category 分组的视角）。
+                        // Count by kind first; fall back to category when 0 (for category-grouped perspectives).
                         let n = stats.by_kind.get(kind).copied().unwrap_or(0);
                         if n > 0 {
                             n
@@ -120,7 +119,7 @@ impl ViewService {
         Ok(out)
     }
 
-    /// 二级筛选器：某视角下的候选对象。
+    /// Second-level filter: candidate objects under a perspective.
     pub fn candidates(
         &self,
         project_id: ProjectId,
@@ -141,14 +140,14 @@ impl ViewService {
             project_id,
             kind: Some(gt_domain::model::NodeKind(kind.clone())),
             name_contains: name_contains.map(|s| s.to_string()),
-            // 无搜索词时多取一些参与"价值排序"（要选出全局最高价值的对象）；
-            // 有搜索词时只按名称过滤、不做昂贵打分。
+            // With no search term, fetch more to participate in "value ranking" (pick the globally highest-value object);
+            // with a term, filter by name only, no expensive scoring.
             limit: Some(if name_contains.is_none() { 5000 } else { limit }),
             offset: Some(0),
         })?;
 
-        // 按子工程收敛候选：选中单一子工程时，下拉只列出该子工程内的对象，
-        // 让「子项目作为上层维度」切到该子项目后，默认对象也落在它内部。
+        // Converge candidates by sub-project: selecting one sub-project lists only its objects in the dropdown,
+        // so when "sub-project as top dimension" switches to it, the default object also lands inside it.
         if let Some(sid) = sub_project_id {
             nodes.retain(|n| n.sub_project_id == Some(sid));
         }
@@ -178,10 +177,6 @@ impl ViewService {
                 .collect());
         }
 
-        // 无搜索词：按"语义依赖价值"降序，选出默认打开的对象。
-        // 一次性预加载整图概要 + 链边邻接（`chain_adjacency` 只取整数邻接、不含 `properties`），
-        // 全部 BFS 在内存里跑，避免逐节点查库、也避开拉取整张边表的沉重传输
-        // （原先是 5000 节点 × 每节点多次 `edges_of` / `get_node` 往返，很慢）。
         let summary = self.store.nodes_summary(project_id)?;
         let (out, inc, sem_inc) = self.store.chain_adjacency(project_id)?;
 
@@ -205,9 +200,6 @@ impl ViewService {
         let mut scored: Vec<(usize, Candidate)> = nodes
             .into_iter()
             .map(|n| {
-                // "入边"只数**语义**边上的访问者：语法调用边（Calls / HasCallSite …）不是依赖事实，
-                // 数进来会让徽标与"只画语义边"的画布对不上（曾经的 `入边 309` 里大半是这类边
-                // 与 P8 传播的复刻）。同一访问者可能同时读 + 写，按**去重后的访问者数**计。
                 let fan = sem_inc
                     .get(&n.id.get())
                     .map(|v| v.iter().copied().collect::<HashSet<i64>>().len())
@@ -311,31 +303,12 @@ impl ViewService {
             .map(|s| s.id.get())
             .collect();
 
-        // ---- 发现阶段（环 = 跳数）----
-        // 非折叠：双向 BFS（要展示完整语法链路）。
-        // 折叠：**沿调用链正向发现** —— HttpContract →HandledBy→ handler →Calls→ 服务方法
-        //       →Reads*/MapsTo/Triggers…→ 语义节点；并先把"中心的入向链邻居"作为第 1 环，
-        //       让"表 / 外部系统"这类视角能看到"谁在读写它"。
-        //       **语义节点是终点**：展示但不再向外穿透——否则会经由事件 / 监听器 / 共享配置
-        //       把整库都拉进来（实测可把一个路由的可达集从 ~350 膨胀到 ~2 万）。
-        // **资源类中心**（Table / ConfigKey / Cache / Event…）的关系方向是反向的：
-        // 语义边由"使用者"指向资源（`X --ReadsDb/WritesDb--> 表`、`X --ReadsConfig--> 配置键`），
-        // 所以要回答"谁在用它"必须沿**入边回溯调用链**；路由（HttpContract）才是正向展开依赖。
-        //
-        // **入口类中心**（HttpContract = HTTP 入口、Schedule = 定时任务入口）与资源相反：
-        // 它们**没有入边**，依赖全在出边（`Schedule --HandledBy--> handler →Calls→ …→ ReadsCache`）。
-        // 曾把 Schedule 归进"资源类"沿入边回溯 → 一条边也走不到，画布上只剩孤零零一个中心节点
-        // （环全空、`hidden.total = 0`），而候选列表的徽标却按 3 跳评分显示"语义依赖 1" —— 自相矛盾。
-        // 判定"往哪走"的依据不是"是不是语义节点"，而是**依赖在出边还是入边**：入口在出边，资源在入边。
         let reverse = !matches!(
             center_node.kind.as_str(),
             NodeKind::HTTP_CONTRACT | NodeKind::SCHEDULE
         );
         let chain_depth = depth;
 
-        // 一次性预加载全工程节点概要 + 链边邻接，供整段视图复用：
-        // BFS 的语义性判定、链路回溯都用这一份，不再重复加载
-        // （此前每次请求加载了 3 遍节点概要 + 2 遍链边邻接，是 ~3.5s 卡顿主因）。
         let summary = self.store.nodes_summary(project_id)?;
         // `inc` / `sem_inc` 只服务于候选打分（已移出对象视图，见 `ObjectView` 注释），这里不再需要。
         let (out, _inc, _sem_inc) = self.store.chain_adjacency(project_id)?;
@@ -401,12 +374,6 @@ impl ViewService {
         let center_view = self
             .build_node_view(center_id, 0, &d.in_edges, &d.out_edges)?
             .ok_or_else(|| DomainError::NotFound(format!("node {center_id}")))?;
-        // 事件 / 队列视角语义化（仅视图层重标，不改 DB、免重建图）：
-        //   · 消费方（沿 `HandledBy` / `PublishesTo` 连接的 `Class` 端点 —— 监听器 /
-        //     消费者类）重标为 `EventHandler`，与画布其它语义节点（Event / Table …）同族；
-        //   · 触发方（沿 `Triggers` 连入的 `Method` 起点）名显示「所属类::方法」，
-        //     否则裸方法名脱离类不可寻址（早期注释已记此坑）。
-        // 这两类边只出现在事件 / 队列视角，其它视角下集合为空，故无需显式加视角守卫。
         let trigger_methods: HashSet<i64> = shown_edges
             .iter()
             .filter(|e| e.kind == "Triggers")
@@ -473,9 +440,6 @@ impl ViewService {
             &center_view,
             shown_edges.len(),
         );
-        // 「其它直连访问」= 无法归因到任何语义入口的直接访问（孤儿）。
-        // 单独成一行结论：它是"这处访问没有业务入口"这种判断的载体（死代码 / 影响面分析
-        // 恰恰关心它），不能因为不占画布就消失。
         if !orphans.is_empty() {
             if let Some(obj) = conclusions.as_object_mut() {
                 obj.insert("other_direct_access".into(), json!(orphans.len()));
@@ -521,22 +485,12 @@ impl ViewService {
         let mut out_edges: HashMap<i64, Vec<gt_domain::model::Edge>> = HashMap::new();
         let mut in_edges: HashMap<i64, Vec<gt_domain::model::Edge>> = HashMap::new();
 
-        // 事件 / 队列 / 缓存等中介节点：其直接生产方（`Triggers` 入边）与消费方
-        // （`HandledBy` / `PublishesTo` 出边）通常不是第一类语义节点（而是
-        // `event('x')` 调用点或被 `listener` 标注的类）。
-        // 画布恒为语义节点（语法节点默认折叠、在抽屉 / Inspector 展开查看），
-        // 所以这里**只**把它们种入第 1 环用于发现遍历与资源边提拉，并**不再强制可见**——
-        // 它们会作为「直连访问」降级进 `orphans` 记账（带接触点位置），而非画成画布节点。
         let force_visible: HashSet<i64> = HashSet::new();
         // 反向模式：从中心走到该节点途中遇到的**语义边种类**（即"资源被怎样访问"）。
         let mut path_kind: HashMap<i64, String> = HashMap::new();
         // 与 `path_kind` 平行：走到该节点途中遇到的语义边**是否为传播得来的间接边**。
         // 资源视角（"谁在读这个配置"）同样要能区分直接读者与"上游读过"的间接入口。
         let mut path_indirect: HashMap<i64, bool> = HashMap::new();
-        // 与 `path_kind` 平行：这条原始边是**中心 → 该节点**（中心为出边的一侧）。
-        // 反向模式默认画「使用者 --语义边--> 中心」，这对主语在使用者的边（Triggers /
-        // ReadsDb …）是对的；但 `HandledBy` 的主语是**中心自己**（`事件 --由…处理--> 监听器`、
-        // `契约 --由…处理--> handler`），它是中心的出边，照默认方向画就颠倒了谓语。
         let mut path_from_center: HashSet<i64> = HashSet::new();
         // 每个节点在本层择优时胜出的**边 id**：用于「边 id 小者优先」的确定性兜底比较。
         let mut best_edge_id_of: HashMap<i64, i64> = HashMap::new();
@@ -584,12 +538,6 @@ impl ViewService {
                 if other == center_id.get() {
                     continue;
                 }
-                // 消费者提升：`HandledBy` / `PublishesTo` 的对端可能是监听器类，也可能是其
-                // `handle` 方法（建图时边直接指向方法）。画布要显示的是**稳定的命名角色** ——
-                // 类。因此对端是方法时，沿 `Declares` 入边找到声明类，提升**类**为可见语义节点，
-                // 方法本身留在环内（ring 2、不点亮）仅作发现锚点。
-                // 触发者（`Triggers` 的 dispatch 调用点）不在此处升节点 —— 由折叠段的
-                // `collapsed` 循环统一处理：升为可见节点并画出富化的触发边。
                 let is_consumer =
                     e.kind.as_str() == "HandledBy" || e.kind.as_str() == "PublishesTo";
                 let mut node = other;
@@ -709,11 +657,6 @@ impl ViewService {
                     } else {
                         e.from_id.get()
                     };
-                    // 同一节点 `other` 可能被本层多条边（不同父、不同 kind、直接或传播边）
-                    // 同时发现。以前用 `or_insert`（先到先得），而"先到"取决于 `HashMap` / 边查询
-                    // 的遍历顺序，导致每次运行给同一节点打上不同的「访问方式」标签，甚至把**直接读者
-                    // 误判为间接**（影响前端虚线渲染）。改为按「直接优先 → 高 rank 优先 → 边 id
-                    // 小者优先」的确定顺序择优，结果不再依赖任何非确定遍历顺序。
                     let already = ring_of.get(&other).copied();
                     if let Some(r) = already {
                         if r != ring + 1 {
@@ -830,22 +773,6 @@ impl ViewService {
         d: &Discovery,
         summary: &HashMap<i64, NodeSummary>,
     ) {
-        // ---- 补回 P8 传播边漏掉的"真实接触点" ----
-        //
-        // 折叠出的语义边，其 `via` 末端必须是**真实接触点**：自己持有指向该资源的直接语义边
-        // （P5 命中、带 `evidence`）。反向（资源视角）会沿 P8 **传播边**这条"捷径"回溯，
-        // 于是 `via` 停在上游调用者（如 `SystemGroupData::set_status`），漏掉真正访问资源的
-        // `CacheService::clear`；随后填 `to_call_site` 时接触点无 `evidence` 可依，就退到
-        // 环路里**任取一个同资源读者** —— 表现为"本链路访问缓存的位置"指向无关文件
-        // （实测 `PUT /setting/seckill_data/set_status` 的缓存边被标到
-        // `DataMigrationServices.php:53` 的 `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)`，
-        // 而该路由其实经 `CacheService::clear()` → `Cache::tag('crmeb')->clear()` 触达缓存）。
-        //
-        // 传播边的 `seed_source(s)` 正是那条原始直接边的起点（见 `propagate.rs`）：现在传播边
-        // 记录升序、确定的 `seed_sources` 数组（兼容 `seed_source = 最小 seed`），把它补回
-        // `via` 末端：既补齐缺的一跳，也让接触点重新锚定到有证据的直接边上，且不再随建图
-        // 遍历顺序而变（修掉同一路由画出边数在 29/30 间跳的非确定问题）。
-        // 只对**接触点是传播边**的情形生效 —— 直接边已有 `evidence`，不受影响。
         for e in shown_edges.iter_mut() {
             let contact = e.via.last().map(|v| v.id.get()).unwrap_or(e.from.get());
             let Some(ins) = d.in_edges.get(&e.to.get()) else {
@@ -860,10 +787,6 @@ impl ViewService {
             if raw.properties.get("evidence").is_some() {
                 continue;
             }
-            // 接触点是传播边：没有 `evidence`，真实接触点在 `seed_source(s)`（原始直接边起点）。
-            // 取 `seed_sources` 数组（升序、确定）；优先选其中**确实持有指向本资源、带 evidence
-            // 直接边**的那个，否则按 id 升序取第一个 —— 即便同一条传播边由多个根因汇聚，
-            // 也始终是同一个接触点，不再随建图遍历顺序而变。
             let seeds = match raw
                 .properties
                 .get("seed_sources")
@@ -924,11 +847,6 @@ impl ViewService {
             e.hops = Some(e.via.len() as u32);
         }
 
-        // ---- 内联链路节点的位置 ----
-        // 折叠视图的"链路"是**临时提拉**的结果，中间跳只存在于当次响应里，
-        // 按边 id 重查拿不到 —— 以往前端只能对每个节点单独请求
-        // `/nodes/{id}/locations`（N+1 次），且那些位置与"这条边"不同源。
-        // 这里一次性查好、按链路顺序（起点 → 各跳 → 终点）内联进 EdgeView。
         {
             // 同一终点会被多条 shown 边反复问到（平行路径），入边缓存住，别每次都查库。
             let ins_cache =
@@ -945,9 +863,6 @@ impl ViewService {
             need.dedup();
             let mut locs: HashMap<i64, Vec<SourceLocation>> = HashMap::new();
             let mut synth: HashMap<i64, bool> = HashMap::new();
-            // 一次取回链路上全部节点（`id IN (...)` 分块）：原先逐个 `node_locations`
-            // 是 N+1 往返（每个节点还要额外算 `reference_count`），一条 29 边的图要
-            // 几百次查询，实测 420ms —— 占对象视图的大头。
             let nids: Vec<NodeId> = need.iter().map(|i| NodeId(*i)).collect();
             let nodes = self.store.get_nodes(&nids).unwrap_or_default();
             let loc_cache = NodeCache::default();
@@ -974,21 +889,6 @@ impl ViewService {
                     })
                     .collect();
 
-                // 终点那跳的"调用处"：语义边（`ReadsConfig` / `ReadsDb` …）在
-                // `properties.evidence.location` 里记着"这条边是在哪读到的"，
-                // 那正是**本链路访问该资源的位置**。
-                //
-                // 必须在这里补：`call_site_between` 对它无能为力 —— 其回退逻辑按
-                // **被调函数名**匹配（`sys_config`），而终点的名字是**资源名**
-                // （`offline_pay_status`），永远对不上，导致终点只剩"全部出处"列表，
-                // 看起来像链路串到了无关文件。
-                //
-                // **不能靠提拉边的 `e.id` 反查**：折叠时多条 raw 边（P5 直接边 +
-                // P8 传播边）会提拉到同一个 (from, to)，`push_edge` 留下哪条的 id
-                // 取决于 `HashMap` 遍历顺序（非确定），而传播边**没有** `evidence`
-                // —— 那样会时有时无。改为从**链路节点**（起点 + 各跳）出发，
-                // 找指向终点的、带 `evidence` 的直接语义边。
-                // 这条链的**接触点**：`via` 末端（未经折叠时就是起点自己）。
                 let contact_id = e.via.last().map(|v| v.id.get()).unwrap_or(e.from.get());
                 // 优先命中 BFS 阶段已批量预取的入边缓存；缓存未覆盖（极少数漏预取的节点）
                 // 时再回退到单点查询。避免对每条 shown 边各发一次 DB 往返（N+1）。
@@ -1026,20 +926,12 @@ impl ViewService {
                     e.also_kinds = others;
                 }
                 if e.to_call_site.is_none() {
-                    // 在**终点的入边**里找：同 kind、带 `evidence`、且**起点在本视图环内**
-                    // （即属于这条链路）的那条。取 from 最小者，保证结果确定。
-                    //
-                    // 不依赖提拉边的 id / via：二者会随 `HashMap` 遍历顺序变化
-                    // （同一 (from,to) 上 P5 直接边与 P8 传播边竞争，而传播边无 evidence）。
                     let mut best: Option<(bool, i64, SourceLocation)> = None;
                     if let Some(ins) = cached_ins.as_ref().or(store_ins.as_ref()) {
                         for raw in ins {
                             if raw.kind.as_str() != e.kind {
                                 continue;
                             }
-                            // "属于这条链路" = 在本视图环内，或是这条 `via` 上的一跳。
-                            // 后者正是传播边回溯出的接触点：它不在发现深度内（不在 `d.ring_of`），
-                            // 但却是这条链真正访问资源的地方，它的 `evidence` 必须被采纳。
                             if !d.ring_of.contains_key(&raw.from_id.get())
                                 && !e.via.iter().any(|v| v.id.get() == raw.from_id.get())
                             {
@@ -1062,9 +954,6 @@ impl ViewService {
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string()),
                             };
-                            // **接触点的证据优先**：`via` 末端才是这条链真正访问资源的地方。
-                            // 只按"from 最小者"选，会挑中链路**上游**某处的同名读取
-                            // （如 `detail` 与 `getQRCodePath` 都读 `site_url`，却总是显示 `detail` 的行号）。
                             let new = (raw.from_id.get() == contact_id, raw.from_id.get(), cand);
                             let better = match &best {
                                 None => true,
@@ -1082,9 +971,6 @@ impl ViewService {
             }
         }
 
-        // 合成边（反向汇总产生，无真实行）的 id 仍是 0：统一改成**唯一负数 id**。
-        // 否则前端 `<g key={id}>` 会撞 key，按 id 查找 EdgeView 也永远只命中第一条
-        // （表现为"所有边都显示成同一种类"、悬浮一条高亮全部）。负号同时保留"合成边"语义。
         {
             let mut next: i64 = -1;
             for e in shown_edges.iter_mut() {
@@ -1117,16 +1003,6 @@ impl ViewService {
                 .map(|m| NodeKind(m.kind.clone()).is_semantic())
                 .unwrap_or(false)
         };
-        // **入口类中心的入向语义边**（前端 `Function --CallsHttp--> HttpContract`、
-        // 后端 `Method --HandledBy--> 契约`）不再点亮。
-        //
-        // 这里曾是"塌缩兜底"：谓语的主语是那个语法节点，照常规提拉会把边挂到中心自己身上
-        // （`a == to`），整条边被丢弃、"前端调用了契约"彻底消失，而徽标仍写着「入边 N」
-        // ——于是把调用方本身 force_visible 点亮，画出 `调用方 --CallsHttp--> 中心`。
-        //
-        // 现在改为**与资源视角的孤儿同构的降级**：画布恒为语义节点，这类直接调用方
-        // 收进 `orphans`（名字 + 关系 + 接触点位置），信息一条不少，只是不再占画布。
-        // 对应的边也在提拉阶段被剔除（见下方 `groups` 的可见性过滤），不会留下悬空边。
 
         let is_visible = |id: i64| -> bool {
             if id == center_id.get() {
@@ -1137,9 +1013,6 @@ impl ViewService {
 
         // 语义边优先级（用于折叠路径上的边提拉）：见 `Self::agg_rank`。
         let mut shown_edges: Vec<EdgeView> = Vec::new();
-        // 去重键带上**路径**（via 的节点序列）：同一对端点的不同路径要都保留。
-        // 只按 (kind, from, to) 去重时，多条路径只剩一条代表 —— 分叉/汇聚信息就丢了，
-        // 而"展开语法"正是靠画出分叉才显得有用；现在折叠视图必须自己给出全部路径。
         let mut shown_keys: HashSet<(String, i64, i64, Vec<i64>)> = HashSet::new();
         let mut hidden_by_kind: BTreeMap<String, usize> = BTreeMap::new();
         let mut hidden_total = 0usize;
@@ -1170,25 +1043,11 @@ impl ViewService {
             path
         };
 
-        // 去重 + 按环定向后加入一条提拉边
-        // `src`：该边的**真实来源边 id**（提拉时带上，点击可查到原始证据）；反向汇总出的
-        // 合成边没有来源，传 0，随后统一改成唯一负数 id。
-        // `via`：被折叠掉的中间节点 —— 让"看起来直连"的边如实说明自己跨了几跳。
-        // 调用处定位：优先用已缓存的出边（BFS 阶段已批量取过）做精确 `Calls` 命中，
-        // 仅在精确边缺失时回退到原 `call_site_between`（含 HasCallSite 启发式）。
-        // 折叠链上每个"调用处"都要查节点 / 文件 / 符号表，同一批节点被反复查 —— 请求级缓存。
         let cs_cache = NodeCache::default();
         let outs_cache =
             std::cell::RefCell::new(HashMap::<i64, Vec<gt_domain::model::Edge>>::new());
-        // 与 `outs_cache` 对称：上溯「谁调用了这个方法」时的入边缓存。
-        // `d.in_edges` 只覆盖 BFS 发现深度内的节点（见 `discover` 的分层取边），
-        // 而候选方法的调用者常常在深度之外 —— 不补这一层，上溯会在断头处误判为
-        // "没有语义上游"，把本该归因到路由的方法点亮成语法节点（见下方闭包）。
         let ins_cache = std::cell::RefCell::new(HashMap::<i64, Vec<gt_domain::model::Edge>>::new());
         let call_site = |from: i64, to: i64| -> Option<SourceLocation> {
-            // 优先用已缓存的出边（BFS 阶段已批量取过）做精确 `Calls` 命中。
-            // 传播边回溯出的完整链路会经过**发现深度之外**的方法节点，缓存里没有它们
-            // —— 这里补一次单点查询，否则抽屉里这些跳全部没有调用处，看起来仍像断链。
             let outs = match d.out_edges.get(&from) {
                 Some(v) => v.clone(),
                 None => outs_cache
@@ -1219,11 +1078,6 @@ impl ViewService {
             }
             self.call_site_between(from, to, &d.out_edges, &cs_cache)
         };
-        // 把节点 id 序列还原成 `ViaNode` 链。
-        //
-        // `chain_to` 只能沿**发现树的父链**回溯，而传播边回溯出的完整链路会经过发现深度
-        // 之外的节点 —— 它们既不在 `d.ring_of` 也不在 `d.kind_of` / `d.name_of` 里，所以要退回
-        // 全工程节点概要 `summary`（本次请求已整份预加载，无额外 IO）。
         let via_from_ids = |ids: Vec<i64>| -> Vec<ViaNode> {
             ids.into_iter()
                 .map(|id| ViaNode {
@@ -1256,18 +1110,7 @@ impl ViewService {
             if from == to {
                 return;
             }
-            // 边的方向**恒为语义方向**：`from --kind--> to`。
-            //
-            // 语义边的种类是**谓语**，主语就是 `from`（`X --ReadsDb/ReadsCache/ReadsConfig--> 资源`、
-            // `Model --MapsTo--> Table`）。曾按"由内向外"归一化（`d.ring_of[from] > d.ring_of[to]` 就把
-            // 两端对调），路由视角看不出问题（中心就是发起方，天然由内向外）；但**资源视角的每一条边
-            // 都会被翻过来**：反向模式收的就是 `(使用者, 中心资源)`，而使用者必在环 ≥1、资源在环 0，
-            // 于是 `表·cache --读库--> GET /verify_code` —— 箭头、hover 卡的 `from → to`、
-            // Inspector 的「起点 / 终点」全都与挂在边上的谓语（`读库` 的主语应是那个使用者）相反。
             let (f, t) = (from, to);
-            // 修正浮动/汇总边的标签：`MapsTo` 的语义是「Model → Table」的**结构映射**，
-            // 不应充当"路由访问表"的标签。反向（资源视角）下 `src == 0` 的浮动边是把调用链
-            // 回溯合成的"谁在访问这张表"，其真实语义是读/写库 —— 按 HTTP 动词启发区分读/写。
             let mut kind = kind.to_string();
             if kind == "MapsTo" && src == 0 {
                 let table_at_to = d.kind_of.get(&t).map(|s| s.as_str()) == Some("Table");
@@ -1282,11 +1125,6 @@ impl ViewService {
                     };
                 }
             }
-            // `via`（`chain_to` 的产物）在**祖先**一侧收尾：正向模式锚在 `from`（如路由），
-            // 反向模式锚在 `to`（= 资源中心，因为链是"从中心沿入边回溯到使用者"长出来的）。
-            // 锚在 `to` 时链路顺序与 `from → … → to` 恰好相反，必须翻一次；
-            // 翻错了不只是顺序难看 —— 后面按 `via` 顺序逐跳取"调用处"，会整体错位成
-            // "中心调用使用者"这种不存在的调用关系，每跳 call_site 全落空。
             if d.reverse {
                 via.reverse();
             }
@@ -1312,9 +1150,6 @@ impl ViewService {
                 kind: kind.clone(),
                 from: NodeId(f),
                 to: NodeId(t),
-                // `resolved` 与置信度只反映"是否为可追溯的真实语义依赖"，
-                // 与"直接/间接（经调用链提拉）"无关——间接边同样可以有实打实的调用链与接触点证据。
-                // 直接性仅通过 `indirect`（画布虚线 + 金色「间接」标签）表达，不再降权为"待验证假设"。
                 resolved: Self::agg_rank(kind.as_str()) > 0,
                 confidence: if Self::agg_rank(kind.as_str()) > 0 {
                     0.8
@@ -1332,10 +1167,6 @@ impl ViewService {
         };
 
         {
-            // ---- 折叠：只保留"语义节点之间的语义边"；语法节点作为透传 ----
-            // lift[x] = 沿"从中心出发的发现树"回退到最早的语义祖先，从而把挂在
-            // Method / CallSite 上的语义边（ReadsConfig → ConfigKey、MapsTo → Table…）
-            // 提拉到"发起它的语义节点"（如路由）上。
             let mut nodes_by_dist: Vec<(u32, i64)> =
                 d.ring_of.iter().map(|(&id, &r)| (r, id)).collect();
             nodes_by_dist.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1355,15 +1186,7 @@ impl ViewService {
             }
 
             if d.reverse {
-                // 反向：把"谁在用这个资源"直接画成 `使用者 --语义边--> 资源`。
-                // 语义边种类取回溯途中记录的访问方式标签（优先 ReadsDb/WritesDb，其次 ReadsConfig/ReadsCache，MapsTo 仅作结构兜底）。
-                //
-                // 共享资源（如 Cache）可能有上千个使用者：按环序取前 N 个画出来，
-                // 其余计入 `hidden` —— 保证图可读，同时诚实记账。
                 const MAX_USERS: usize = 80;
-                // 触发侧画布节点登记暂存：富化边的起点（最远调用方）可能落在发现树之外，
-                // 而 `chain_to` 闭包此刻还捕获着 `d.ring_of` / `d.parent_of` —— 这里只暂存 id，
-                // 待 users 循环用完 `chain_to` 后再补登记进第 1 环并点亮。
                 let mut pending_trigger_vis: Vec<i64> = Vec::new();
                 let mut users: Vec<i64> = d
                     .ring_of
@@ -1373,24 +1196,6 @@ impl ViewService {
                         *id != center_id.get() && d.semantic_of.get(id).copied().unwrap_or(false)
                     })
                     .collect();
-                // 画布以语义节点为主：事件 / 队列 / 缓存等中介节点的一般直连访问方
-                // （语法节点）不强制可见，而是作为「直连访问」降级进 `orphans` 记账
-                // （见 `upstream_reaches_semantic` 与 `collapsed` 分支）。
-                // **唯一例外是触发者**（`Triggers`）：它是事件视角的核心事实，
-                // 在下方 `collapsed` 循环里升为可见节点并画出富化的语义边。
-                // 孤儿访问：资源的**直接**访问方（第 1 环、父即中心）是语法节点、且沿调用链
-                // 上溯不存在任何语义用户（上游没有路由 / 契约等语义发起者 —— Seeder / 迁移
-                // 脚本 / Console 命令 / 事件处理器是常态）时，它既画不成语义用户，也永远不会
-                // 出现在任何提拉边的 via 链里。
-                //
-                // 曾把它**点亮成语法节点**直接画在画布上（via 为空 = 直连），理由是"不画就
-                // 只剩孤零零的中心节点、与徽标自相矛盾"。代价是资源视角被降解成调用图：
-                // 语法节点名字不可寻址（`Run` / `Pay` 脱离类之后无从定位）、不回答"谁触发了
-                // 它"，还会吃掉 `MAX_USERS` 这点本该留给语义节点的画布额度。
-                //
-                // 现在改为**降级而非省略，也非点亮**：画布恒为语义节点，孤儿单列进
-                // `ObjectView.orphans`（含接触点位置），由前端以"其它直连 N 处"记账 ——
-                // 既守住"只画语义节点"，也守住"绝不静默省略"。
                 {
                     let mut covered: HashSet<i64> = HashSet::new();
                     let mut sem_ids: Vec<i64> = users.clone();
@@ -1407,32 +1212,13 @@ impl ViewService {
                             }
                         }
                     }
-                    // 上游可达语义用户判定：从候选方法沿「调用方(Calls) / 被路由处理(HandledBy)
-                    // / 声明类(Declares)」等上游链边上溯，若途中经过语义用户（路由）或已覆盖节点，
-                    // 则该方法的资源访问应归因于那个语义用户、折叠进其 `via`，而非作为独立直连
-                    // 读者被 `collapsed` 点亮。
-                    //
-                    // 背景：P8 沿调用链把 `ReadsDb/WritesDb` 复刻到了每个中间调用方
-                    // （controller / service / mapper），使它们都成了表的直连读者；但语义归属
-                    // 应落在最上游的路由上（见 `propagate.rs` 与 `inline_chain_locations` 的
-                    // seed_source 补回）。否则资源视角会画出一堆方法节点、而非其上游语义入口。
                     let upstream_reaches_semantic = |start: i64| -> bool {
-                        // 多分支 BFS：从候选方法沿「调用方(Calls) / 被路由处理(HandledBy) /
-                        // 声明类(Declares)」等上游链边上溯，任一分支途中遇到语义用户（路由）或
-                        // 已覆盖节点即命中。必须穷举所有上游分支——只跟第一条会漏掉并行分支
-                        // （如 controller 类同时被 `HandledBy→路由` 与 `Declares→文件` 连接，
-                        // 或 mapper 同时被 `Calls→service` 与 `Declares→接口` 连接）。
                         let mut frontier: Vec<i64> = vec![start];
                         let mut seen: HashSet<i64> = HashSet::new();
                         for _ in 0..64 {
                             if frontier.is_empty() {
                                 break;
                             }
-                            // 本层**缺缓存**的节点一次性批量取入边（分块 `IN` 查询，不是逐节点往返）。
-                            // 不做这一步会怎样：`d.in_edges` 只覆盖发现深度内的环节点，上游调用者
-                            // 一旦在深度之外就查不到 ⇒ 上溯在断头处直接结束 ⇒ 返回 `false` ⇒
-                            // 明明挂在某条路由之下的方法被误判成"无语义上游"而点亮成语法节点
-                            // （资源视角因此画出一堆函数，而非它们的上游语义入口）。
                             {
                                 let mut miss: Vec<i64> = frontier
                                     .iter()
@@ -1505,9 +1291,6 @@ impl ViewService {
                                 && d.parent_of.get(id) == Some(&center_id.get())
                                 && !d.semantic_of.get(id).copied().unwrap_or(false)
                                 && d.path_kind.get(id).map_or(false, |k| !k.is_empty())
-                                // 触发者必须记账：即使它上游有语义入口（路由经服务方法
-                                // dispatch）——「谁触发事件」是事件视角的核心事实，不能被
-                                // 上游归因吞掉；其余直连访问仍按原规则降级。
                                 && (is_producer
                                     || (!covered.contains(id)
                                         && !upstream_reaches_semantic(*id)))
@@ -1517,31 +1300,19 @@ impl ViewService {
                     for id in collapsed {
                         let ek = d.path_kind.get(&id).cloned().unwrap_or_default();
                         if ek == "Triggers" {
-                            // 触发者直接画上画布：`触发点 --Triggers--> 事件`。事件视角的
-                            // 核心事实就是「谁触发 / 谁消费」——消费侧的监听器类已提升为
-                            // 可见节点，触发侧若只留在记账里，画布就残缺一半。触发点是
-                            // dispatch 调用处（每事件通常 1~3 个），不会淹没画布。
-                            // 边用 `triggers_edge_view` 富化（起点 = 调用链上游 / 语义入口、
-                            // `via` = 中间调用方 … 触发点、`to_call_site` = dispatch 调用处），
-                            // 点击可像路由视角的语义边一样逐跳展开。
                             if let Some(ev) =
                                 self.triggers_edge_view(id, center_id.get(), d, &summary, &cs_cache)
                             {
                                 let path: Vec<i64> = ev.via.iter().map(|v| v.id.get()).collect();
                                 let key = (ev.kind.clone(), ev.from.get(), ev.to.get(), path);
                                 if shown_keys.insert(key) {
-                                    // 画布上要出现的是**边的起点**（最远调用方 / 语义入口），
-                                    // 不是 dispatch 点 —— dispatch 点已作为 via 末跳进抽屉，
-                                    // 而它不是边的端点，点亮也会被 `touched` 过滤掉。
-                                    // 起点可能被 depth 截在发现树之外：先暂存，等 users 循环
-                                    // 用完 `chain_to`（捕获 ring_of/parent_of）后再补登记进第 1 环。
                                     pending_trigger_vis.push(ev.from.get());
                                     shown_edges.push(ev);
                                 }
-                                // 重复（同起点同链路已画过）即已可见，无需记账。
+                                // Already visible (drawn before with same start and same chain): no need to account.
                                 continue;
                             }
-                            // 富化失败（原始边证据缺失等）：退回 orphans 记账，绝不静默省略。
+                            // Enrichment failed (original-edge evidence missing, etc.): downgrade to orphans accounting, never silently omit.
                         }
                         orphans.push(OrphanAccess {
                             id: NodeId(id),
@@ -1562,21 +1333,12 @@ impl ViewService {
                         .filter(|k| !k.is_empty())
                         .unwrap_or_else(|| "Reads".to_string());
                     let mut via = chain_to(*id, center_id.get());
-                    // d.reverse 模式下 *id 本身是语义节点，最终会成为提拉边的端点
-                    // （端点已由 EdgeView.from/.to 渲染）；但 chain_to 会把 *id 一并收进
-                    // via 的末节点，导致抽屉里的折叠链出现「端点既在 via 又在首尾」的闭环
-                    // （如 GET /products 同时出现在首尾、store_category 反而被埋进中间）。
-                    // 去掉末节点即可让端点只由 from/to 表达。
                     if via.last().map(|v| v.id.get()) == Some(*id) {
                         via.pop();
                     }
-                    // 边的方向**必须跟着原始边**：这里默认画「使用者 --语义边--> 中心」，
-                    // 对主语在使用者的边（Triggers / ReadsDb / PublishesTo …）是对的；
-                    // 但 `HandledBy` 是「中心 --由…处理--> 监听器 / handler」，主语是中心
-                    // （它是播种时中心的**出边**），照默认方向画会读成"监听器由…处理事件"。
                     let from_center = d.path_from_center.contains(id);
-                    // 端点对调后，链路顺序也要跟着翻一次：`push_edge` 在 reverse 下还会再翻，
-                    // 两次翻转正好还原为「中心 → … → 对方」的阅读顺序。
+                    // After swapping endpoints, the chain order must flip once too: `push_edge` flips again under reverse,
+                    // the two flips restore the "center → … → other" reading order.
                     if from_center {
                         via.reverse();
                     }
@@ -1597,9 +1359,6 @@ impl ViewService {
                         *hidden_by_kind.entry(k.clone()).or_insert(0) += 1;
                     }
                 }
-                // 触发侧画布节点：users 循环已用完 `chain_to`，此处补登记并点亮。
-                // 起点本就在发现树里的（如多级调用链的末跳在环内）仍按原环号，只差点亮；
-                // 被 depth 截在树外的补进第 1 环、父即中心，使 `visible_rings` 有环可放。
                 for from in pending_trigger_vis {
                     d.force_visible.insert(from);
                     let ring = d.ring_of.get(&from).copied().unwrap_or(1);
@@ -1607,42 +1366,28 @@ impl ViewService {
                     d.parent_of.entry(from).or_insert(center_id.get());
                 }
             } else {
-                // 环外语义目标先暂存，等 `push_edge`/`chain_to`（捕获了这些 map）用完后
-                // 再写回 `d.ring_of`/`d.parent_of`，避免与它们的不可变借用冲突。
+                // Off-ring semantic targets staged first; after `push_edge`/`chain_to` (which capture these maps) finish,
+                // write back to `d.ring_of`/`d.parent_of`, avoiding borrow conflicts with their immutable borrows.
                 let mut pending: Vec<(i64, i64, u32)> = Vec::new();
-                // 按「(kind, 提拉祖先 a, 目标 to)」分组，每组取**边 id 最小**的原始边作为代表。
-                // 否则同一视图边可能由不同原始边「先到先得」地决定 `indirect` / `via` / 证据，
-                // 而原始边的选取依赖 HashMap / 边查询的遍历顺序 → 每次运行结果不同。
                 let mut groups: HashMap<(String, i64, i64), Vec<gt_domain::model::Edge>> =
                     HashMap::new();
-                // 主语是语法节点、提拉后祖先就是终点自己的边（`a == to`）：不画，
-                // 降级进 `orphans`。用 `BTreeMap` 保证顺序确定。
+                // Subject is a syntax node, and after lifting its ancestor is the end itself (`a == to`): don't draw, downgrade to `orphans`. Use `BTreeMap` for deterministic order.
                 let mut collapsed_from: BTreeMap<i64, String> = BTreeMap::new();
-                // **必须排序**：`d.ring_of` 是 HashMap，直接取 keys 会让 `groups` 的插入顺序
-                // 与 `pending` 的登记顺序随运行变化 —— 而 `pending` 用 `or_insert` 决定
-                // 环外语义目标的 `d.ring_of` / `d.parent_of`，进而改变 `chain_to` 回溯出的 via，
-                // 最终让**画出的边数都逐次不同**（实测同一路由 29 / 30 条来回跳）。
                 let mut all_nodes: Vec<i64> = d.ring_of.keys().copied().collect();
                 all_nodes.sort_unstable();
                 for node in &all_nodes {
                     let outs = d.out_edges.get(node).into_iter().flatten().cloned();
                     for e in outs {
-                        // 只画语义边，且目标必须是语义节点（ReadsConfig→ConfigKey、MapsTo→Table…）。
-                        // 桥边（`HandledBy` / `CallsHttp`）在此也被放行，但因其语法端点不可见，
-                        // 会在下方 `a == to` 分支降级进 `orphans` 记账，而非画成画布边。
                         if !is_semantic_edge(e.kind.as_str()) && !is_bridge_edge(e.kind.as_str()) {
                             continue;
                         }
                         let to = e.to_id.get();
-                        // 目标可以是"被语法链挡在环外的语义节点"：把它登记进环，
-                        // 这样即便 depth 较小，折叠视图仍能把语义目标渲染出来。
+                        // The target may be a "semantic node blocked off-ring by the syntax chain": register it into the ring,
+                        // so even with a small depth, the folded view still renders the semantic target.
                         let to_is_sem = summary
                             .get(&to)
                             .map(|m| NodeKind(m.kind.clone()).is_semantic())
                             .unwrap_or(false)
-                            // 事件 / 队列 / 缓存视角里被提升为可见节点的消费者（监听器 / 消费者类）
-                            // 其 kind 仍是 `Class`（未改动建图流水线），靠 `semantic_of` 显式登记为可见；
-                            // 这里一并放行，使 `中心 --HandledBy/PublishesTo--> 消费者` 成为可绘制的语义边。
                             || d.semantic_of.get(&to).copied().unwrap_or(false);
                         if !to_is_sem {
                             continue;
@@ -1653,10 +1398,6 @@ impl ViewService {
                         }
                         let a = *lift.get(&e.from_id.get()).unwrap_or(&e.from_id.get());
                         if a == to {
-                            // 提拉祖先就是**终点自己**：这条语义边的主语是语法节点
-                            // （前端 `Function --CallsHttp--> 契约`、后端 `Method --HandledBy--> 契约`）。
-                            // 曾在此把它 force_visible 点亮成画布节点（塌缩兜底），
-                            // 现在一律降级记账：不画语法药丸，也不留悬空边。
                             if !is_visible(e.from_id.get()) {
                                 collapsed_from
                                     .entry(e.from_id.get())
@@ -1670,10 +1411,6 @@ impl ViewService {
                             .push(e);
                     }
                 }
-                // 同一「提拉祖先 → 表」若同时被 `WritesDb` / `ReadsDb` 命中，则把 `MapsTo`
-                // （模型类的结构映射，不是"如何访问"）压掉 —— 否则路由视图里同一张表既画
-                // 「写库 / 读库」又画「映射」，后者纯属噪声（CRMEB / yoshop 的残留「映射」多源于此）。
-                // 仅当该表没有任何读 / 写动作时才保留 `MapsTo`（如实反映"只映射、没动作"）。
                 {
                     let mut action_pairs: HashSet<(i64, i64)> = HashSet::new();
                     for (k, a, to) in groups.keys() {
@@ -1685,12 +1422,6 @@ impl ViewService {
                         !(k.as_str() == "MapsTo" && action_pairs.contains(&(*a, *to)))
                     });
                 }
-                // ---- 画布只画语义端点 ----
-                //
-                // 提拉后的祖先 `a` 仍是语法节点（它没有任何语义发起者可归因 —— 前端
-                // `Function --CallsHttp--> 契约` 正是此类）时，这条边降级进 `orphans` 记账：
-                // 既不画成节点，也不留一条指向不可见端点的悬空边。
-                // 信息没丢：名字 + 关系（调用 HTTP / 读写库…）+ 接触点位置都在列表里。
                 {
                     let mut keys: Vec<(String, i64, i64)> = groups.keys().cloned().collect();
                     keys.sort_unstable();
@@ -1710,12 +1441,8 @@ impl ViewService {
                     }
                     groups.retain(|(_k, a, _to), _| is_visible(*a));
                 }
-                // `a == to` 那批（主语是语法节点的直接语义边）同样进记账。
+                // The `a == to` batch (syntax-node-subject direct semantic edges) also goes to accounting.
                 for (id, kind) in collapsed_from {
-                    // 事件视角的 `Triggers` 触发点：除记账外，再附一条**可点击展开的语义边**
-                    // （与路由视角点语义边展开抽屉同构）——起点 = 触发它的方法、终点 = 中心事件、
-                    // `via` = 该方法的调用链（上层调用方…接触点）、`to_call_site` = 触发调用处。
-                    // 这样"每一处触发"既看得到、也点得开调用过程，而不只是孤零零一个位置。
                     let edge = if kind == "Triggers" {
                         self.triggers_edge_view(id, center_id.get(), d, &summary, &cs_cache)
                     } else {
@@ -1730,38 +1457,29 @@ impl ViewService {
                         edge,
                     });
                 }
-                // 同一对 `(kind, a, to)` 上最多画几条**不同路径**：再多会糊成一片，
-                // 超出部分计入 `hidden` 诚实记账。
+                // At most a few **different paths** on the same `(kind, a, to)` pair: more would blur together,
+                // the overflow counts into `hidden` honest accounting.
                 const MAX_PATHS: usize = 4;
-                // 传播边回溯到接触点时允许的最大跳数。`seed_source` 通常在发现深度之外，
-                // 但离中心并不远（CRMEB 实测 4~5 跳）；超过即放弃回溯、退回原行为。
+                // Max hops when walking a propagation edge back to the touch point. `seed_source` is usually beyond discovery depth,
+                // but not far from the center (CRMEB measured 4~5 hops); beyond that, give up backtracking, fall back to original behavior.
                 const MAX_SEED_HOPS: usize = 8;
                 for ((kind, a, to), mut es) in groups {
                     es.sort_by_key(|e| e.id.get());
-                    // **路径起点必须是真实接触点**。
-                    //
-                    // P5 直接边带 `evidence`，是"动作在此发生"的证据；P8 传播边只陈述
-                    // "上游可达该资源"，是**摘要而不是路径**。若拿它当起点，`via` 就只能
-                    // 走到发现深度为止，画出"路由自己读了缓存"这种断尾伪路径 ——
-                    // 与边的种类（读库 / 读缓存 / 投递）无关，一律适用。
                     let mut by_origin: BTreeMap<i64, &gt_domain::model::Edge> = BTreeMap::new();
                     for e in &es {
                         if !is_indirect_edge(e) {
                             by_origin.entry(e.from_id.get()).or_insert(e);
                         }
                     }
-                    // 候选路径：(接触点, 完整 via 的节点 id 序列, 证据边 id, 是否间接)
+                    // Candidate path: (touch point, full via node-id sequence, evidence-edge id, is-indirect)
                     let mut drawn: Vec<(i64, Vec<i64>, i64, bool)> = Vec::new();
-                    // ① 接触点边：`via` 由发现树回溯，末端就是发出动作的那个方法。
+                    // ① touch-point edge: `via` back-tracked from the discovery tree, the end is the method that emits the action.
                     for (o, e) in &by_origin {
-                        // `indirect` 同时考虑两点：① 原始边本身就是传播边；② 该边是从子孙
-                        // 节点**提拉**到祖先 `a` 的——祖先并不直接执行该动作。任一成立即间接。
+                        // `indirect` considers two points: ① the original edge is itself a propagation edge; ② the edge was lifted from a descendant
+                        // node to ancestor `a` — the ancestor doesn't directly perform the action. Either makes it indirect.
                         let ids: Vec<i64> = chain_to(*o, a).iter().map(|v| v.id.get()).collect();
                         drawn.push((*o, ids, e.id.get(), a != *o || is_indirect_edge(e)));
                     }
-                    // ② 传播边：按 `seed_source` 回溯到接触点，补全**完整**到达路径。
-                    //    同一 seed 的多条传播边（沿途每个栈帧各一条）在这里并成同一批路径，
-                    //    无需任何"前缀剔除"之类的启发式——它们本来就是同一事实的投影。
                     let mut seen_seeds: HashSet<i64> = HashSet::new();
                     for e in &es {
                         let Some(seed) = seed_source_of(e) else {
@@ -1773,8 +1491,8 @@ impl ViewService {
                         let paths =
                             enumerate_chain_paths(&out, a, seed, MAX_SEED_HOPS, MAX_PATHS, &sem_of);
                         if paths.is_empty() {
-                            // 接触点在本视图的链边邻接里不可达（跨子工程 / `Calls` 缺失）。
-                            // 退回"传播边自身"的 via：宁可截断，也不能把这条依赖整个弄丢。
+                            // Touch point unreachable in this view's chain-edge adjacency (cross-sub-project / `Calls` missing).
+                            // Fall back to the propagation edge's own via: rather truncate than lose this dependency entirely.
                             let ids: Vec<i64> = chain_to(e.from_id.get(), a)
                                 .iter()
                                 .map(|v| v.id.get())
@@ -1786,8 +1504,8 @@ impl ViewService {
                             if p.len() < 2 {
                                 continue;
                             }
-                            // 证据边优先取接触点**自己**的直接边（带 `evidence`）：
-                            // 传播边没有证据，点开"边详情"会一片空白。
+                            // Evidence edge prefers the touch point's **own** direct edge (with `evidence`):
+                            // a propagation edge has no evidence, opening "edge details" would be blank.
                             let ev_id = d
                                 .in_edges
                                 .get(&to)
@@ -1800,11 +1518,11 @@ impl ViewService {
                                 })
                                 .map(|r| r.id.get())
                                 .unwrap_or_else(|| e.id.get());
-                            // `p` = [a, …, seed]；`via` 去掉首端的中心、保留末端的接触点。
+                            // `p` = [a, …, seed]; `via` drops the leading center, keeps the trailing touch point.
                             drawn.push((seed, p[1..].to_vec(), ev_id, true));
                         }
                     }
-                    // ③ 同一 (接触点, 路径) 只画一条，超出 `MAX_PATHS` 计入 hidden 诚实记账。
+                    // ③ same (touch point, path) draws only one; beyond `MAX_PATHS` counts into hidden honest accounting.
                     let mut seen_path: HashSet<(i64, Vec<i64>)> = HashSet::new();
                     for (origin, via, id, indirect) in drawn {
                         if !seen_path.insert((origin, via.clone())) {
@@ -1832,9 +1550,6 @@ impl ViewService {
                 }
             }
 
-            // 提拉阶段可能把环外的语义目标登记进了 `d.ring_of`，这里补齐它们的
-            // kind / name / 语义性（直接读预加载的节点概要，不查库）。必须在 `chain_to` 等
-            // 捕获了这些 map 的闭包使用完毕后再做，避免借用冲突。
             for &id in d.ring_of.keys() {
                 if !d.kind_of.contains_key(&id) {
                     if let Some(m) = summary.get(&id) {
@@ -1846,7 +1561,7 @@ impl ViewService {
                 }
             }
 
-            // 被折叠的语法节点按 kind 记账
+            // Folded syntax nodes accounted by kind
             for (id, k) in &d.kind_of {
                 if !d.semantic_of.get(id).copied().unwrap_or(false) {
                     *hidden_by_kind.entry(k.clone()).or_insert(0) += 1;
@@ -1863,7 +1578,7 @@ impl ViewService {
         })
     }
 
-    /// 聚合类视角：聚类框 / 矩阵（**不是单链路**）。
+    /// Aggregate-kind perspective: cluster boxes / matrix (**not a single chain**).
     pub fn aggregate_view(
         &self,
         project_id: ProjectId,
@@ -1887,7 +1602,7 @@ impl ViewService {
             limit: Some(2000),
             offset: Some(0),
         })?;
-        // 按「端」过滤（前后端缓存拆分）。
+        // Filter by "side" (frontend/backend cache split).
         if let Some(side) = &spec.side {
             nodes.retain(|n| {
                 n.properties
@@ -1902,7 +1617,7 @@ impl ViewService {
             return Ok(self.matrix_view(project_id, spec, nodes, sample_limit));
         }
 
-        // Compound / ER：按 group_by 分组
+        // Compound / ER: group by `group_by`
         let mut groups: BTreeMap<String, Vec<gt_domain::model::Node>> = BTreeMap::new();
         for n in nodes {
             let key = self.group_key(spec, &n);
@@ -2076,7 +1791,7 @@ impl ViewService {
         }
     }
 
-    /// 节点的定义位置（合成节点返回**多位置列表**）。
+    /// A node's definition location (a synthesized node returns a **multi-location list**).
     pub fn node_locations(&self, node_id: NodeId) -> Result<NodeLocations> {
         let node = self
             .store
@@ -2099,10 +1814,10 @@ impl ViewService {
         })
     }
 
-    /// 从**已在内存里的**节点算出位置列表（不再查库取节点）。
-    ///
-    /// `files` 是文件路径缓存：一条链路上的多个节点常落在同一批文件里，
-    /// 逐个 `file_path()` 会重复往返。
+    /// Compute the location list from the **in-memory** nodes (no more DB round trips for nodes).
+///
+/// `files` is a file-path cache: many nodes on one chain often fall in the same batch of files;
+/// per-node `file_path()` would repeat the round trip.
     fn locations_of_node(
         &self,
         node: &gt_domain::model::Node,
@@ -2111,7 +1826,7 @@ impl ViewService {
         let synthetic = node.identity.is_some();
         let mut locations: Vec<SourceLocation> = Vec::new();
 
-        // ① 语法节点：文件 + 行号 + 符号
+        // ① syntax node: file + line + symbol
         if let Some(file_id) = node.file_id {
             if let Some(path) = self.cached_file(c, file_id) {
                 locations.push(SourceLocation {
@@ -2128,7 +1843,7 @@ impl ViewService {
             }
         }
 
-        // ② 合成节点：各处共现位置
+        // ② synthesized node: co-occurrence locations everywhere
         if let Some(Value::Array(arr)) = node.properties.get("locations") {
             for item in arr {
                 if let Ok(loc) = serde_json::from_value::<SourceLocation>(item.clone()) {
@@ -2137,7 +1852,7 @@ impl ViewService {
             }
         }
 
-        // ③ 权威符号表里的出处（如 schema 的 SQL 文件、route_list 的路由文件）
+        // ③ origin from the authoritative symbol table (e.g. the SQL file for schema, the route file for route_list)
         if let Some(name) = node
             .identity
             .as_ref()
@@ -2184,7 +1899,7 @@ impl ViewService {
         Ok((synthetic, locations))
     }
 
-    /// 边的证据链：实边单点跳，虚线边展开途经的 CallSite 位置。
+    /// An edge's evidence chain: a real edge is a single hop, a dashed edge expands the CallSite locations it passes through.
     pub fn edge_evidence(&self, edge_id: i64) -> Result<Option<EdgeEvidence>> {
         let Some(edge) = self.find_edge(edge_id)? else {
             return Ok(None);
@@ -2194,7 +1909,7 @@ impl ViewService {
         let mut via: Vec<String> = Vec::new();
         let mut reason: Option<String> = None;
 
-        // 证据一：边上自带的 evidence
+        // Evidence 1: the evidence carried on the edge itself
         if let Some(Value::Object(ev)) = edge.properties.get("evidence") {
             if let Some(loc) = ev.get("location").and_then(|v| v.as_str()) {
                 let (file, line) = split_file_line(loc);
@@ -2203,7 +1918,7 @@ impl ViewService {
                     line,
                     symbol: None,
                     note: Some("evidence location recorded when the edge was created".into()),
-                    // P5 建边时一并存入的调用语句原文。
+                    // The call-statement source text stored together when P5 built the edge.
                     snippet: ev
                         .get("snippet")
                         .and_then(|v| v.as_str())
@@ -2215,7 +1930,7 @@ impl ViewService {
             }
         }
 
-        // 证据二：起点方法内的 CallSite（虚线边要能逐跳验证）
+        // Evidence 2: the CallSite inside the start method (a dashed edge must be verifiable hop by hop)
         if let Some(from) = self.store.get_node(edge.from_id)? {
             if let Some(file_id) = from.file_id {
                 if let Some(path) = self.file_path(file_id) {
@@ -2251,7 +1966,7 @@ impl ViewService {
             }
         }
 
-        // 仅在「未解析且无任何可定位证据」时提示：有真实调用点/证据位置的边不应被冤枉为"推断边"。
+        // Only hint when "unresolved and no locatable evidence": an edge with a real call site / evidence location shouldn't be wrongly called an "inferred edge".
         if !view.resolved && locations.is_empty() {
             reason = Some(format!(
                 "This edge ({}) has no locatable evidence position; it may come from rule completion, so treat it with care.",
@@ -2267,10 +1982,10 @@ impl ViewService {
         }))
     }
 
-    // ---------------------------------------------------------------- 内部
+    // ---------------------------------------------------------------- internals
 
-    /// 语义边优先级：用于折叠路径上的边提拉，以及 `to_edge_view` 判定是否"已解析"。
-    /// 返回 >0 即视为已解析的语义边（来自真实调用点/FKB 规则合成，而非无证据的推断）。
+    /// Semantic-edge priority: for folding-path edge lifting, and `to_edge_view` judging "resolved".
+/// Returns >0 to be treated as a resolved semantic edge (from a real call site / FKB-rule synthesis, not an evidence-less inference).
     fn agg_rank(kind: &str) -> u8 {
         match kind {
             "ReadsDb" | "WritesDb" => 9,
@@ -2287,15 +2002,15 @@ impl ViewService {
     }
 
     fn to_edge_view(&self, e: gt_domain::model::Edge) -> EdgeView {
-        // 实边判定：来自权威解析（P7 解析结果）或语法确定的继承/实现/声明
+        // Real-edge judgment: from authoritative resolution (P7 result) or syntactically-determined inheritance/implementation/declaration
         let authoritative = matches!(
             e.kind.as_str(),
             "Extends" | "Implements" | "UsesTrait" | "Declares" | "Contains" | "HasCallSite"
         );
         let has_tier = e.properties.get("tier").is_some();
-        // `indirect`（P8 沿调用链传播）只决定画布虚线与「间接」标签，不再降权为"待验证"。
+        // `indirect` (P8 propagation along the call chain) only decides dashed styling and the "indirect" label, no longer down-weights as "to-verify".
         let indirect = is_indirect_edge(&e);
-        // 已解析 = 语法/结构边（authoritative）或 权威解析边（has_tier）或 语义边（agg_rank>0）。
+        // Resolved = syntax/structural edge (authoritative) or authoritative-resolution edge (has_tier) or semantic edge (agg_rank>0).
         let resolved = (authoritative || has_tier) || Self::agg_rank(e.kind.as_str()) > 0;
         let hops = e
             .properties
@@ -2318,7 +2033,7 @@ impl ViewService {
         }
     }
 
-    /// 单个节点的"定义位置"（无 file/span 时返回 None）。
+    /// A single node's "definition location" (None when no file/span).
     fn node_source_location_cached(&self, id: NodeId, c: &NodeCache) -> Option<SourceLocation> {
         let node = self.cached_node(c, id.get())?;
         let file_id = node.file_id?;
@@ -2328,7 +2043,7 @@ impl ViewService {
             line: node.span.start_line,
             symbol: node.fqn.clone(),
             note: None,
-            // CallSite 节点带"调用语句"原文，显示在链路的每一跳下便于核验。
+            // CallSite nodes carry the call-statement source text, shown under each hop of the chain for verification.
             snippet: node
                 .properties
                 .get("snippet")
@@ -2337,12 +2052,12 @@ impl ViewService {
         })
     }
 
-    /// 为事件视角的 `Triggers` 触发点构造一条**可点击展开的语义边**视图（与路由视角
-    /// 点语义边展开抽屉同构）：起点 = 触发它的方法、终点 = 中心事件、`via` = 该方法的
-    /// 调用链（上层调用方 … 接触点）、`to_call_site` = 触发调用处。
-    ///
-    /// 触发点是任意业务方法（fan-in 高），不升为画布节点、只作为"直连访问"记账；但附上
-    /// 这条边后，前端孤儿列表点开即可逐跳核对"谁 dispatch 了这个事件、处在哪条调用链上"。
+    /// Build a **clickable-expandable semantic-edge** view for an event perspective's `Triggers` trigger point (isomorphic to the route perspective's click-to-expand drawer):
+/// start = the method that triggered it, end = the center event, `via` = that method's call chain (upstream callers … touch point),
+/// `to_call_site` = the dispatch call site.
+///
+/// The trigger is any business method (high fan-in); it's not promoted to a canvas node, only accounted as a "direct access"; but with this edge attached,
+/// clicking the frontend orphan list lets you verify hop-by-hop "who dispatched this event, on which call chain".
     fn triggers_edge_view(
         &self,
         producer: i64,
@@ -2351,7 +2066,7 @@ impl ViewService {
         summary: &HashMap<i64, NodeSummary>,
         c: &NodeCache,
     ) -> Option<EdgeView> {
-        // 找到 `producer --Triggers--> center` 的原始边，取其证据（触发调用处）与 id。
+        // Find the original `producer --Triggers--> center` edge, take its evidence (dispatch call site) and id.
         let trig = d
             .out_edges
             .get(&producer)
@@ -2383,10 +2098,6 @@ impl ViewService {
             None => (0, self.node_source_location_cached(NodeId(producer), c)),
         };
 
-        // 沿 `Calls` 入边向上回溯调用链（由近及远）：producer 的直接调用方 → … →
-        // 语义入口（路由 / 契约等）即停。事件视角是反向 BFS，producer 的上层调用方
-        // 大多不在发现树里（它的 parent 直接就是中心），必须按需查库补全 —— 否则抽屉
-        // 里的「调用过程」永远只有两跳，与路由视角点开语义边的体验不一致。
         let sem = |id: i64| -> bool {
             summary
                 .get(&id)
@@ -2423,8 +2134,8 @@ impl ViewService {
                 None => break,
             }
         }
-        // 起点 = 最远调用方（通常是语义入口）；via = [中间调用方…, producer（接触点）]。
-        // 无任何调用方时：起点 = producer、via 为空（仅 起点↔终点 两跳）。
+        // start = the farthest caller (usually the semantic entry); via = [intermediate callers…, producer (touch point)].
+        // When no caller exists: start = producer, via empty (only start↔end, two hops).
         let (from, via_ids): (i64, Vec<i64>) = if callers.is_empty() {
             (producer, Vec::new())
         } else {
@@ -2469,9 +2180,8 @@ impl ViewService {
         })
     }
 
-    /// 方法的「可寻址全名」：`所属类::方法`。裸方法名脱离类后无法定位（早期注释已记此坑），
-    /// 事件视角把触发方方法画上画布时，套上所属类才可读、可点。所属类由 `Declares`
-    /// 入边回溯（监听器 / 服务方法都挂在某个 `Class` 上）。
+    /// A method's "addressable full name": `owning class::method`. A bare method name can't be located once detached from its class (an early comment logged this pitfall),
+/// so when the event perspective draws the trigger method on the canvas, wrapping it in its owning class makes it readable and clickable. The owning class is traced back via `Declares` in-edges (listener / service methods hang on some `Class`).
     fn method_qualified_name(
         &self,
         method: i64,
@@ -2507,8 +2217,8 @@ impl ViewService {
         }
     }
 
-    /// 请求级缓存取节点：同一节点在折叠 / 内联链路里会被查很多次，
-    /// 缓存让它最多查一次库（见 [`NodeCache`]）。
+    /// Request-level cached node lookup: the same node is queried many times in folding / inline chains;
+/// caching makes it hit the DB at most once (see [`NodeCache`]).
     fn cached_node(&self, c: &NodeCache, id: i64) -> Option<gt_domain::model::Node> {
         if let Some(hit) = c.nodes.borrow().get(&id) {
             return hit.clone();
@@ -2543,12 +2253,11 @@ impl ViewService {
         v
     }
 
-    /// 两个节点之间"调用处"的位置。
-    ///
-    /// **精确路径**：`from --Calls--> to` 这条边在解析阶段就显式记录了对应的 `CallSite` 节点 id
-    /// （见 `resolve_calls`），直接取它即可，无需任何启发式。仅当这条精确边不存在（例如
-    /// `route → handler`、`method → table` 这类语义边，而非 `Calls` 边）时，才回退到
-    /// `HasCallSite` 调用点按被调名匹配。
+    /// The "call site" location between two nodes.
+///
+/// **Precise path**: the `from --Calls--> to` edge explicitly records the corresponding `CallSite` node id during resolution (see `resolve_calls`),
+/// just take it, no heuristic needed. Only when this precise edge is absent (e.g. `route → handler`, `method → table`, which are semantic edges, not `Calls` edges)
+/// fall back to matching `HasCallSite` call sites by callee name.
     fn call_site_between(
         &self,
         from: i64,
@@ -2556,14 +2265,14 @@ impl ViewService {
         out_cache: &HashMap<i64, Vec<gt_domain::model::Edge>>,
         c: &NodeCache,
     ) -> Option<SourceLocation> {
-        // 复用 BFS 阶段批量预取的出边缓存，避免对每条折叠边各发一次 DB 往返（N+1）。
-        // 缓存未覆盖（极少数漏预取的节点）时回退到单点查询。
+        // Reuse the out-edge cache batch-prefetched in the BFS phase, avoid one DB round trip per folded edge (N+1).
+        // When the cache misses (a few nodes not prefetched), fall back to a single query.
         let outs = out_cache.get(&from).cloned().or_else(|| {
             self.store
                 .edges_of(NodeId(from), EdgeDirection::Outgoing)
                 .ok()
         });
-        // 1) 精确：直接读 `from → to` 的 Calls 边上记录的 CallSite 节点 id
+        // 1) precise: directly read the CallSite node id recorded on the `from → to` Calls edge
         if let Some(outs) = outs.as_ref() {
             for e in outs {
                 if e.kind.as_str() != "Calls" || e.to_id.get() != to {
@@ -2576,10 +2285,6 @@ impl ViewService {
                 }
             }
         }
-        // 3) route → handler（HttpContract ─HandledBy→ handler）不是 Calls 边，没有 CallSite；
-        //    但它的「调用处」就是路由注册处。HttpContract 是合成节点（无 file_id/span），
-        //    `node_source_location` 会返回 None，故改用 `node_locations` 取它汇聚的路由文件+行号
-        //    （来自 properties.locations 或 route_list 符号表），避免折叠链在起点这一跳莫名缺「调用语句」。
         let from_node = self.cached_node(c, from);
         let from_kind = from_node
             .as_ref()
@@ -2594,7 +2299,7 @@ impl ViewService {
                 }
             }
         }
-        // 2) 回退：from 的 HasCallSite 调用点里，被调名与 to 匹配的那一个
+        // 2) fallback: among from's HasCallSite call sites, the one whose callee name matches to
         let to_name = self
             .cached_node(c, to)
             .map(|n| self.short_name_of(&n))
@@ -2617,13 +2322,6 @@ impl ViewService {
             }
             if let Some(cs_node) = self.cached_node(c, cs) {
                 if let Some(fqn) = &cs_node.fqn {
-                    // fqn 形如 "<owner>#<callee_text>:<line>"（见 cf_ast.rs）：
-                    //   "Owner::callee:line" / "Owner->callee:line" / "new Klass:line"
-                    // 取 '#' 之后、末尾 ":line" 之前的部分作为被调标识，再交给 `short_name_str`
-                    // 取末段方法名，与 `to` 的短名比较。
-                    // 旧实现 `split([':', '-', '>']).next()` 在第一个 ':' 就切断 ——
-                    // "Class::method" 被切成 "Class"、"this->method" 切成 "this"，永远对不上方法名，
-                    // 导致所有变量接收者调用（`resolve_calls` 故意不为它们建 Calls 边）的回退全部失效。
                     if let Some(callee_full) = fqn.split('#').nth(1) {
                         let callee = callee_full
                             .trim_end_matches(|c: char| c.is_ascii_digit())
@@ -2642,7 +2340,7 @@ impl ViewService {
         None
     }
 
-    /// 取节点名（方法名 / 类名）的"短名"：去掉命名空间与前缀，仅保留最后一段。
+    /// A node name's (method name / class name) "short name": drop namespace and prefix, keep only the last segment.
     fn short_name_of(&self, n: &gt_domain::model::Node) -> String {
         let raw = n
             .fqn
@@ -2652,7 +2350,7 @@ impl ViewService {
         self.short_name_str(raw)
     }
 
-    /// 从 "App\X\Foo::bar" / "obj->bar" / "new Foo" 中提取 "bar" / "Foo"。
+    /// Extract "bar" / "Foo" from "App\X\Foo::bar" / "obj->bar" / "new Foo".
     fn short_name_str(&self, s: &str) -> String {
         let s = s.rsplit("::").next().unwrap_or(s);
         let s = s.rsplitn(2, "->").next().unwrap_or(s);
@@ -2669,8 +2367,8 @@ impl ViewService {
         let Some(n) = self.store.get_node(id)? else {
             return Ok(None);
         };
-        // 节点所属「端」：FKB 在语义节点上标注的 `side`（`frontend` / `backend`）。
-        // 透传给前端，并用于「点击即切」时按端选对视角（前后端缓存拆分）。
+        // A node's "side": the `side` (`frontend` / `backend`) annotated by FKB on semantic nodes.
+        // Passed through to the frontend, and used to pick the right perspective by side when "click to switch".
         let side = n
             .properties
             .get("side")
@@ -2690,12 +2388,6 @@ impl ViewService {
                 None => a.kind,
             })
             .collect();
-        // 优先命中 BFS 已批量预取的边缓存，避免对每个节点各发 2 次 DB 往返（N+1）。
-        //
-        // 入边 / 出边**只数语义边**（与候选徽标「语义入边」同口径）：`Calls` / `HasCallSite`
-        // / `Declares` 这类语法边不是依赖事实，数进来会得到「入边 309」这种数字 ——
-        // 既不与"只画语义边"的画布对得上，也不承载任何业务含义。
-        // 同一对端点可能同时有读 + 写两条语义边，按**去重后的对端节点数**计。
         let fan_in = in_cache
             .get(&id.get())
             .cloned()
@@ -2751,13 +2443,13 @@ impl ViewService {
         }))
     }
 
-    /// 取节点的表列（**裸列名**，列身份里的 `表名.列名` 前缀在此剥掉）。
-    ///
-    /// 列不作为独立节点画进折叠视图，但"点开一张表看看有哪些字段"是刚需，
-    /// 故在这里作为节点属性带出。两条来源路径：
-    /// * **PHP**：`Table --HasColumn--> Column`（列直接挂在表下，来自权威 schema）；
-    /// * **Node / TypeORM**：`Table <--MapsTo-- 实体类 --HasColumn--> Column`
-    ///   （`@Column` 挂在实体类上，表要经 `MapsTo` 反向绕一跳）。
+    /// A node's columns (**bare column name**, the `table.column` prefix in column identity is stripped here).
+///
+/// Columns aren't drawn as independent nodes in the folded view, but "open a table to see its fields" is a must-have,
+/// so they're carried out here as node properties. Two source paths:
+/// * **PHP**: `Table --HasColumn--> Column` (columns hang directly under the table, from authoritative schema);
+/// * **Node / TypeORM**: `Table <--MapsTo-- entity class --HasColumn--> Column`
+///   (`@Column` hangs on the entity class, the table must reverse-route one hop via `MapsTo`).
     fn columns_of(
         &self,
         id: NodeId,
@@ -2766,14 +2458,14 @@ impl ViewService {
     ) -> Vec<String> {
         let mut cols: Vec<String> = Vec::new();
         let push = |raw: &str, cols: &mut Vec<String>| {
-            // 列身份是 `表名.列名`（带作用域防跨表撞名），展示只留列名
+            // Column identity is `table.column` (scoped to avoid same-name collisions across tables), show only the column name
             let bare = raw.rsplit('.').next().unwrap_or(raw).to_string();
             if !bare.is_empty() && !cols.iter().any(|c| c == &bare) {
                 cols.push(bare);
             }
         };
 
-        // ① 列直接挂在本节点下（PHP 的表）
+        // ① columns hang directly under this node (PHP's table)
         if let Some(es) = out_cache.get(&id.get()) {
             for e in es.iter().filter(|e| e.kind.as_str() == "HasColumn") {
                 if let Ok(Some(n)) = self.store.get_node(e.to_id) {
@@ -2786,7 +2478,7 @@ impl ViewService {
             return cols;
         }
 
-        // ② 经 `MapsTo` 反向找到实体类，再取它挂的列（TypeORM：列在实体类上）
+        // ② via `MapsTo` reverse-find the entity class, then take its columns (TypeORM: columns on the entity class)
         if let Some(es) = in_cache.get(&id.get()) {
             for e in es.iter().filter(|e| e.kind.as_str() == "MapsTo") {
                 let Ok(outs) = self.store.edges_of(e.from_id, EdgeDirection::Outgoing) else {
@@ -2825,7 +2517,7 @@ impl ViewService {
         if !center.annotations.is_empty() {
             out.insert("annotations".into(), json!(center.annotations));
         }
-        // 权威源补充（能补就补，补不了就不写，绝不编造）
+        // Supplement from authoritative sources (when possible; never fabricate when not)
         if let Ok(Some(entry)) = self.store.get_symbol(project_id, "schema", name) {
             let cols = entry
                 .get("columns")
@@ -2839,9 +2531,6 @@ impl ViewService {
                 "route_registered".into(),
                 entry.get("handler").cloned().unwrap_or(json!(null)),
             );
-            // 经过的中间件：这是看单个端点时最先想确认的事（要不要登录 / 限流）。
-            // 刻意只列**路由 / 路由组级**挂载 —— 全局中间件对每个端点都成立，
-            // 写在这里等于每份图都重复同一句废话（那改用「平台级前提」表达，不占结论区）。
             if let Some(guards) = entry.get("guards").and_then(|g| g.as_array()) {
                 if !guards.is_empty() {
                     let list: Vec<String> = guards
@@ -2861,9 +2550,6 @@ impl ViewService {
                 }
             }
         }
-        // 入口类视角（路由 / 定时任务）若一条语义边都没画出来，画布会只剩孤零零一个中心节点，
-        // 容易被误以为"视图坏了"。多半是真实情况（crontab 路由没解析到 handler，
-        // 或 handler 没接触任何语义资源）。给一行提示，避免与二级候选徽标自相矛盾。
         if drawn_edges == 0
             && matches!(
                 center.kind.as_str(),
@@ -2908,8 +2594,8 @@ impl ViewService {
     }
 
     fn find_edge(&self, edge_id: i64) -> Result<Option<gt_domain::model::Edge>> {
-        // `edges_of` 只能按节点查；这里借助 nodes 表反查代价过高，
-        // 因此直接从图统计遍历是不现实的 —— 用 SQL 侧提供的查询端口替代。
+        // `edges_of` can only query by node; reverse-lookup via the nodes table here is too costly,
+        // so a SQL-side query port replaces it.
         let _ = edge_id;
         Ok(self.store.find_edge(gt_domain::model::EdgeId(edge_id))?)
     }
@@ -2926,42 +2612,42 @@ fn split_file_line(s: &str) -> (String, u32) {
     }
 }
 
-// ---------------------------------------------------------------- 语义 / 调用链判定
+// ---------------------------------------------------------------- semantic / call-chain judgment
 
-/// 调用链边：折叠视图沿这些边做"正向发现"，把语法节点当透传。
-/// 权威定义在 `gt_domain::model::kinds::is_chain_edge`。
+/// Call-chain edge: the folded view does "forward discovery" along these edges, treating syntax nodes as transparent.
+/// Authoritative definition in `gt_domain::model::kinds::is_chain_edge`.
 fn is_chain_edge(kind: &str) -> bool {
     gt_domain::model::kinds::is_chain_edge(kind)
 }
 
-/// 语义节点判定：第一类语义 kind（`kinds.rs` 的 `SYNTHESIZED`：`Table` / `HttpContract` /
-/// `ConfigKey` / `I18nKey` / `Event` / `Queue` / `Cache` / `Topic`…）。
-/// `Event` / `Queue` / `Cache` / `Topic` 现在是具体种类，不再依赖 `category` 伞。
-/// 分类权威来自 `kinds.rs`。
+/// Semantic-node judgment: first-class semantic kind (`SYNTHESIZED` in `kinds.rs`: `Table` / `HttpContract` /
+/// `ConfigKey` / `I18nKey` / `Event` / `Queue` / `Cache` / `Topic`…).
+/// `Event` / `Queue` / `Cache` / `Topic` are concrete kinds now, no longer relying on the `category` umbrella.
+/// Classification authority is `kinds.rs`.
 fn node_is_semantic(n: &gt_domain::model::Node) -> bool {
     NodeKind(n.kind.to_string()).is_semantic()
 }
 
-/// 语义边判定（权威来源：`kinds.rs` 的语义边集合）。
+/// Semantic-edge judgment (authoritative source: the semantic-edge set in `kinds.rs`).
 fn is_semantic_edge(kind: &str) -> bool {
     gt_domain::model::kinds::is_semantic_edge(kind)
 }
 
-/// 桥边判定（语义 ↔ 语法之间的发现连接器，权威来源：`kinds.rs::is_bridge_edge`）。
+/// Bridge-edge judgment (discovery connector between semantic and syntax, authoritative source: `kinds.rs::is_bridge_edge`).
 ///
-/// 折叠逻辑用它与 [`is_semantic_edge`] 共同决定：桥边可被绘制闸门放行、但其语法端点
-/// 最终降级进 `orphans` 记账（不画成语法节点）。
+/// The fold logic uses it with [`is_semantic_edge`] to decide: a bridge edge is let through by the draw gate, but its syntax endpoint
+/// ultimately downgrades into `orphans` accounting (not drawn as a syntax node).
 fn is_bridge_edge(kind: &str) -> bool {
     gt_domain::model::kinds::is_bridge_edge(kind)
 }
 
-/// 是否为**传播得来**的间接边（P8 沿 `Calls` 调用链复刻，见 `propagate.rs`）。
+/// Whether it's an **indirect edge from propagation** (P8 replicates along the `Calls` chain, see `propagate.rs`).
 ///
-/// 直接由 FKB 规则命中的边只带 `evidence`；传播边带 `via: "propagate"`，
-/// 其中环境读取类（`ReadsConfig` / `ReadsCache`）还会额外带 `indirect: true`。
+/// Edges directly hit by FKB rules only carry `evidence`; propagation edges carry `via: "propagate"`,
+/// and environment-read kinds (`ReadsConfig` / `ReadsCache`) additionally carry `indirect: true`.
 ///
-/// 必须区分二者：否则任何读了某配置的共享方法，都会让所有途经它的入口
-/// 在图上显示为"直接读取该配置"，看起来像是真实依赖。
+/// The two must be distinguished: otherwise any shared method that read some config would make every entry passing through it
+/// appear on the graph as "directly reading that config", looking like a real dependency.
 fn is_indirect_edge(e: &gt_domain::model::Edge) -> bool {
     e.properties
         .get("indirect")
@@ -2970,21 +2656,20 @@ fn is_indirect_edge(e: &gt_domain::model::Edge) -> bool {
         || e.properties.get("via").and_then(|v| v.as_str()) == Some("propagate")
 }
 
-/// 传播边的**根因接触点**：P8 记录的 `seed_source`，即真正执行该动作的方法节点。
+/// The **root-cause touch point** of a propagation edge: `seed_source` recorded by P8, the method node that really performs the action.
 ///
-/// 注意 `is_indirect_edge` 与"是传播边"等价：直接边只带 `evidence`，传播边必带
-/// `via: "propagate"`（环境读取类还额外带 `indirect: true`）。
+/// Note `is_indirect_edge` equals "is a propagation edge": direct edges only carry `evidence`, propagation edges always carry
+/// `via: "propagate"` (environment-read kinds also carry `indirect: true`).
 fn seed_source_of(e: &gt_domain::model::Edge) -> Option<i64> {
     e.properties.get("seed_source").and_then(|v| v.as_i64())
 }
 
-/// 一次视图请求内的节点缓存。
+/// A node cache within one view request.
 ///
-/// 折叠与内联链路会对**同一批节点反复查库**：`get_node` / `file_path` / `get_symbol`
-/// 各自一次往返，一条 29 边的图要几百次查询 —— 实测"调用处定位"一项就占
-/// 对象视图 ~670ms（占 2/3）。缓存让每个节点 / 文件 / 符号表项最多查一次。
+/// Folding and inline chains query **the same batch of nodes repeatedly**: `get_node` / `file_path` / `get_symbol` each a round trip,
+/// a 29-edge graph takes hundreds of queries — measured "call-site location" alone takes ~670ms (2/3 of the object view). Caching makes each node / file / symbol-table entry queried at most once.
 ///
-/// 请求级而非全局：图会被重建，缓存跨请求会读到陈旧数据。
+/// Request-scoped not global: the graph gets rebuilt, a cross-request cache would read stale data.
 #[derive(Default)]
 pub(crate) struct NodeCache {
     nodes: std::cell::RefCell<HashMap<i64, Option<gt_domain::model::Node>>>,
@@ -2992,15 +2677,14 @@ pub(crate) struct NodeCache {
     symbols: std::cell::RefCell<HashMap<(i64, String, String), Option<serde_json::Value>>>,
 }
 
-/// 在链边邻接上枚举 `from → to` 的完整**简单路径**（DFS，最多 `limit` 条，深度上限 `max_hops`）。
+/// Enumerate the complete **simple paths** of `from → to` on the chain-edge adjacency (DFS, at most `limit` paths, depth cap `max_hops`).
 ///
-/// 为什么需要它：传播边只陈述"上游可达该资源"，它自己**不是路径**。若直接拿它当 `via`
-/// 的末端，`via` 就断在发现深度上，画出"路由自己读了缓存"这种伪路径（实际接触点在几跳之外）。
-/// 这里从中心一路走到 `seed_source` 接触点，把被折叠掉的整条链补全 —— 折叠视图的 `via`
-/// 必须一直落到接触点，否则前端抽屉里看到的是断链。
+/// Why it's needed: a propagation edge only states "upstream reaches this resource", it itself **is not a path**. If used directly as the end of `via`,
+/// `via` breaks at the discovery depth, drawing fake paths like "the route itself read the cache" (the real touch point is several hops away). Here we walk from the center all the way to the `seed_source` touch point,
+/// completing the whole folded chain — the folded view's `via` must always land on the touch point, otherwise the frontend drawer shows a broken chain.
 ///
-/// * `avoid`：中间跳的排除谓词（传"是否语义节点"；语义节点是终点，不该被穿过）;
-/// * 探索节点数有硬预算，防御稠密子图上的组合爆炸。
+/// * `avoid`: the mid-hop exclusion predicate (pass "is a semantic node"; a semantic node is an endpoint, shouldn't be passed through);
+/// * node exploration has a hard budget, guarding against combinatorial explosion on dense subgraphs.
 fn enumerate_chain_paths(
     out: &HashMap<i64, Vec<i64>>,
     from: i64,
@@ -3043,7 +2727,7 @@ fn enumerate_chain_paths(
                 }
                 continue;
             }
-            // 简单路径：不回到起点、不走重复节点；不穿过被排除的节点（语义节点是终点）。
+            // Simple path: don't return to start, don't repeat nodes; don't pass through excluded nodes (semantic nodes are endpoints).
             if n == from || on_path.contains(&n) || avoid(n) {
                 continue;
             }
@@ -3081,26 +2765,24 @@ fn enumerate_chain_paths(
     acc
 }
 
-/// 访问方式标签优先级：读写动作(3) > 其它语义访问(2) > MapsTo(1) > 结构边(0)。
+/// Access-mode label priority: read/write action (3) > other semantic access (2) > MapsTo (1) > structural edge (0).
 ///
-/// `MapsTo` 是结构映射（Model→Table），不是"如何访问"，必须被真正的读/写访问压过；
-/// `HandledBy` / `Calls` / `ResolvesTo` 这类**结构边**留 0，好让反向视角沿调用链
-/// 向语义祖先继承真正的访问方式（详见下方 **为何必须列举全部访问动作**）。
+/// `MapsTo` is a structural mapping (Model→Table), not "how to access", must be over-ridden by a real read/write access;
+/// `HandledBy` / `Calls` / `ResolvesTo` structural edges stay 0, so the reverse perspective inherits the real access mode along the call chain toward the semantic ancestor (see **why every access action must be enumerated** below).
 ///
-/// # 为何必须列举**全部**访问动作
+/// # Why every access action must be enumerated
 ///
-/// 反向视角（谁在读 / 写这个资源）里，真正的接触点往往是**语法节点**（方法），
-/// 画出来的边要"提拉"到它的语义祖先（路由 / 计划任务 / 契约）上。标签沿发现树继承：
-/// 祖先沿用子孙的访问方式（`pk` 的 `inherited_rank` 分支）。**一旦某个访问动作没被
-/// 列进来（rank 退化成 0），继承链就断在它身上**，祖先会改挂途经的最后一条结构边 ——
-/// 于是「计划任务 → 方法 → 缓存」被标成 `HandledBy`（读作"缓存由该任务处理"），
-/// 而真相是该方法 `Cache::set('crontabCache')`，应是 `WritesCache`。
-/// 实测 CRMEB 的 `crontabCache` 一度给出 6 条这样的错标边。
+/// In the reverse perspective (who is reading / writing this resource), the real touch point is often a **syntax node** (method),
+/// the drawn edge must be "lifted" to its semantic ancestor (route / schedule / contract). The label inherits along the discovery tree:
+/// the ancestor reuses the descendant's access mode (`pk`'s `inherited_rank` branch). **Once an access action is missed (rank degrades to 0), the inheritance chain breaks at it**,
+/// and the ancestor re-hangs on the last structural edge passed through — so "schedule → method → cache" gets labeled `HandledBy` (read as "cache handled by this task"),
+/// while the truth is the method's `Cache::set('crontabCache')`, which should be `WritesCache`.
+/// Measured CRMEB's `crontabCache` once gave 6 such mislabeled edges.
 pub fn access_rank(kind: &str) -> u8 {
     match kind {
-        // 读写动作：**最高优先级**，必须压过结构边与 MapTo。
+        // Read/write action: **highest priority**, must override structural edges and MapTo.
         "WritesDb" | "ReadsDb" | "WritesCache" | "ReadsCache" => 3,
-        // 其它语义访问：读配置 / 投递 / 触发 / 前端状态变更 / 事件总线 / 页面跳转 / 前端调用。
+        // Other semantic accesses: read config / publish / trigger / frontend state change / event bus / page jump / frontend call.
         "ReadsConfig" | "PublishesTo" | "Triggers" | "Mutates" | "Emits" | "ListensTo"
         | "CallsHttp" | "NavigatesTo" => 2,
         "MapsTo" => 1,
@@ -3108,17 +2790,16 @@ pub fn access_rank(kind: &str) -> u8 {
     }
 }
 
-/// 同一 `access_rank` 内的**动作强弱**：写 > 读。
+/// **Action strength** within the same `access_rank`: write > read.
 ///
-/// 背景：一个方法常常既读又写同一张表（`Db::name('Goods')->find()` 与
-/// `Db::name('Goods')->update($data)` 写在同一个方法里），P7 于是对同一对
-/// 「方法 → 表」**同时**落 `ReadsDb` 与 `WritesDb` —— 两条都是事实，但视图只画一条边，
-/// 必须挑信息量更强的那条，一律取"写"。
+/// Background: a method often both reads and writes the same table (`Db::name('Goods')->find()` and
+/// `Db::name('Goods')->update($data)` written in the same method), so P7 **simultaneously** lays `ReadsDb` and `WritesDb` for the same "method → table" pair —
+/// both are facts, but the view draws only one edge, must pick the more informative one, always "write".
 ///
-/// 缓存同理：`Cache::get($k)` 与 `Cache::set($k)` 并存时标成写。
+/// Same for cache: when `Cache::get($k)` and `Cache::set($k)` coexist, label as write.
 ///
-/// 若退化成"边 id 小者胜"，显示结果就等于取决于建图阶段的先后（P5 早于 P7），
-/// 而阶段顺序与语义无关：实测 shopxo 里写操作被这样压成「读库」的共 1825 处，无一例外。
+/// If it degrades to "smaller edge id wins", the displayed result depends on build phase order (P5 before P7),
+/// but phase order is unrelated to semantics: measured shopxo had 1825 write operations thus crushed into "read DB", without exception.
 pub fn action_strength(kind: &str) -> u8 {
     match kind {
         "WritesDb" | "WritesCache" => 2,
@@ -3127,11 +2808,11 @@ pub fn action_strength(kind: &str) -> u8 {
     }
 }
 
-/// 与 `kind` 作用在同一个资源上、互为"另一半"的访问方式（读 ↔ 写）。
+/// The access mode on the same resource, the "other half" of a given edge (read ↔ write).
 ///
-/// 同一方法对同一张表常常两条边并存（先 `find()` 再 `update()`）；折叠视图只画一条，
-/// 被压掉的那条必须记回 `EdgeView::also_kinds`，前端才不会把「读+写」说成单边。
-/// 库与缓存各成一对，互不交叉（一条边的终点只可能是其中一种资源）。
+/// The same method often has two edges on the same table (first `find()` then `update()`); the folded view draws only one,
+/// the suppressed one must be recorded back onto `EdgeView::also_kinds`, or the frontend would say "read+write" as a single edge.
+/// DB and cache form their own pairs, never crossing (one edge's end is only one kind of resource).
 pub fn counterpart_kinds(kind: &str) -> &'static [&'static str] {
     match kind {
         "WritesDb" | "ReadsDb" => &["WritesDb", "ReadsDb"],
@@ -3140,13 +2821,13 @@ pub fn counterpart_kinds(kind: &str) -> &'static [&'static str] {
     }
 }
 
-/// 比较两个「节点访问方式」候选，返回 `new` 是否优于 `old`。
+/// Compare two "node access mode" candidates, return whether `new` beats `old`.
 ///
-/// 优先级：① 直接(`false`) 优于 间接(`true`)；② 访问 rank 高者优；③ 同一 rank 内
-/// 动作更强者优（**写 > 读**，见 [`action_strength`]）；④ 边 id 小者优（确定性兜底）。
+/// Priority: ① direct(`false`) beats indirect(`true`); ② higher access rank wins; ③ within the same rank,
+/// stronger action wins (write > read, see [`action_strength`]); ④ smaller edge id wins (deterministic tiebreak).
 ///
-/// 边 id 全图唯一，故同一 BFS 层内给定节点的所有候选里**优胜者唯一**——
-/// 无论 `HashMap` / 边查询以何种顺序遍历，最终选中的边都相同，结果确定。
+/// Edge ids are globally unique, so among all candidates of a given node within the same BFS layer the **winner is unique** —
+/// regardless of `HashMap` / edge-query traversal order, the final edge selected is the same, result is deterministic.
 fn better_path(
     new_indirect: bool,
     new_kind: &str,
@@ -3171,16 +2852,15 @@ fn better_path(
     new_eid < old_eid
 }
 
-/// 按 HTTP 契约名（如 `POST /product`、`GET /products`）判定读/写，
-/// 作为"路由访问表"是读库还是写库的启发式。
+/// Judge read/write by HTTP contract name (e.g. `POST /product`, `GET /products`), as a heuristic for whether the
+/// "route access table" is a read-DB or write-DB.
 ///
-/// 判定优先级：
-/// 1. **具体动词**：写类动词（`POST`/`PUT`/`DELETE`/`PATCH`）判为写库（`WritesDb`），
-///    其余（含 `GET`/`HEAD`/`OPTIONS`）判为读库（`ReadsDb`）。
-/// 2. **通配方法**（`ANY` / `RULE`，不限方法，源自 ThinkPHP 自动路由 / `Route::rule`）：
-///    没有绑定具体动词，按 path 末段（PATH_INFO 约定里即控制器方法名，如
-///    `submit` / `delete` / `get`）做二级推断；命中已知动作词根才下结论，
-///    否则回退到"未知→读"兜底。
+/// Judgment priority:
+/// 1. **Concrete verb**: write verbs (`POST`/`PUT`/`DELETE`/`PATCH`) → write DB (`WritesDb`),
+///    others (incl. `GET`/`HEAD`/`OPTIONS`) → read DB (`ReadsDb`).
+/// 2. **Wildcard method** (`ANY` / `RULE`, method-unrestricted, from ThinkPHP auto-routing / `Route::rule`):
+///    no bound verb, do a second-level inference by the path's last segment (the controller method name under the PATH_INFO convention, e.g.
+///    `submit` / `delete` / `get`); only conclude when hitting a known action root, otherwise fall back to "unknown → read".
 fn is_write_http_method(route_name: &str) -> bool {
     let mut parts = route_name.splitn(2, ' ');
     let verb = parts.next().unwrap_or("").to_ascii_uppercase();
@@ -3188,18 +2868,17 @@ fn is_write_http_method(route_name: &str) -> bool {
     if !gt_domain::model::is_wildcard_http_method(&verb) {
         return matches!(verb.as_str(), "POST" | "PUT" | "DELETE" | "PATCH");
     }
-    // 通配端点：按控制器方法名（path 末段）二级推断读/写。
+    // Wildcard endpoint: second-level read/write inference by controller method name (path last segment).
     if let Some(write) = infer_write_by_action(path) {
         return write;
     }
     false
 }
 
-/// 通配（不限方法）的自动路由端点，按 path 末段（ThinkPHP 约定里即控制器方法名）
-/// 推断读/写。命中已知动作词根返回 `Some(读/写)`，否则 `None`（交回"未知→读"兜底）。
+/// A wildcard (method-unrestricted) auto-route endpoint infers read/write by the path's last segment (under ThinkPHP convention, the controller method name).
+/// Hitting a known action root returns `Some(read/write)`, otherwise `None` (hand back to "unknown → read" fallback).
 ///
-/// 末段可能带前后缀（`rechargeSubmit` / `getQRCodePath`），故按非字母数字切词后
-/// 逐词匹配（不区分大小写）。
+/// The last segment may carry prefixes/suffixes (`rechargeSubmit` / `getQRCodePath`), so split by non-alphanumeric + camelCase boundary and match word by word (case-insensitive).
 fn infer_write_by_action(path: &str) -> Option<bool> {
     let action = path.rsplit('/').next()?;
     let write = [
@@ -3221,7 +2900,7 @@ fn infer_write_by_action(path: &str) -> Option<bool> {
     None
 }
 
-/// 把控制器方法名切成小写词（按非字母数字 + 驼峰边界），如
+/// Split a controller method name into lowercase words (by non-alphanumeric + camelCase boundary), e.g.
 /// `rechargeSave` → `["recharge","save"]`，`getQRCodePath` → `["get","qrcode","path"]`。
 fn action_words(s: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -3234,7 +2913,7 @@ fn action_words(s: &str) -> Vec<String> {
             }
             prev_lower = false;
         } else if c.is_uppercase() && prev_lower {
-            // 驼峰边界：上一词结束，当前大写字母开启新词
+            // CamelCase boundary: previous word ends, a capital letter starts a new word
             if !cur.is_empty() {
                 words.push(std::mem::take(&mut cur));
             }
@@ -3265,7 +2944,7 @@ mod tests {
 
     #[test]
     fn wildcard_falls_back_to_action_name() {
-        // 自动路由（不限方法）：按控制器方法名末段推断
+        // Auto-route (method-unrestricted): infer by controller method name last segment
         assert!(is_write_http_method("ANY /api/recharge/submit"));
         assert!(is_write_http_method("RULE /api/recharge/delete"));
         assert!(is_write_http_method("ANY /user/rechargeSave")); // 驼峰带前后缀
@@ -3275,7 +2954,7 @@ mod tests {
 
     #[test]
     fn wildcard_unknown_action_stays_read() {
-        // 命中不了已知动作词根时回退"未知→读"，不误判
+        // When no known action root is hit, fall back to "unknown → read", no misjudgment
         assert!(!is_write_http_method("ANY /api/recharge/config"));
     }
 }

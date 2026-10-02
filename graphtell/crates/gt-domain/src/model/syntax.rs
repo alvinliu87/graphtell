@@ -1,122 +1,125 @@
-//! 语言无关的「语法事实」——解析器适配器的输出契约。
+//! Language-agnostic "syntax facts" — the output contract of a parser adapter.
 //!
-//! # 为什么需要这一层
+//! # Why this layer exists
 //!
-//! `tree-sitter` 的具体语法树每种语言都不同。如果让流水线直接消费
-//! `tree_sitter::Node`，那么「兼容所有主流技术栈」就无从谈起。
+//! The concrete syntax tree differs for every language. If the pipeline consumed `tree_sitter::Node`
+//! directly, "supporting every mainstream tech stack" would be out of the question.
 //!
-//! 因此定义一个**稳定的中间表示**：任何语言的解析器适配器都只需把自己的
-//! 语法树翻译成 [`SyntaxFacts`]，之后的 CfAst / Synthesize / Resolve 阶段
-//! 完全语言无关。这也正是六边形架构中「端口隔离」的体现。
+//! So a **stable intermediate representation** is defined: a parser adapter for any language only has to
+//! translate its own syntax tree into [`SyntaxFacts`], after which the CfAst / Synthesize / Resolve phases are
+//! completely language-independent. That is exactly what "port isolation" means in a hexagonal architecture.
 
 use serde::{Deserialize, Serialize};
 
 use super::graph::Span;
 use super::kinds::{EdgeKind, NodeKind};
 
-/// 一个源文件解析出的全部语法事实。
+/// All syntax facts parsed out of one source file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyntaxFacts {
-    /// 命名空间（PHP `namespace app\services\order;`）。
+    /// Namespace (PHP `namespace app\services\order;`).
     pub namespace: Option<String>,
-    /// 声明：类 / 接口 / trait / 枚举 / 方法 / 函数 / 属性 / 常量。
+    /// Declarations: class / interface / trait / enum / method / function / property / constant.
     pub declarations: Vec<Declaration>,
-    /// 导入：`use app\dao\order\StoreOrderDao;`。
+    /// Imports: `use app\dao\order\StoreOrderDao;`.
     pub imports: Vec<ImportFact>,
-    /// 继承 / 实现 / trait。
+    /// Inheritance / implementation / trait.
     pub inheritances: Vec<InheritanceFact>,
-    /// 方法体内的一次调用点。
+    /// One call site inside a method body.
     pub call_sites: Vec<CallSiteFact>,
-    /// 字段声明与类型（Java `@Autowired` 字段注入等）：`class -> field -> type`，
-    /// 供 P7 按字段声明类型解析 `field.method()` 实例调用（service→mapper 链路）。
+    /// Field declarations and their types (Java `@Autowired` field injection, etc.): `class -> field -> type`,
+    /// so P7 can resolve `field.method()` instance calls by declared field type (the service -> mapper chain).
     pub field_types: Vec<FieldTypeFact>,
-    /// 配置文件条目（如 `app/event.php` 的 `listen.*`）。
+    /// Config-file entries (e.g. `listen.*` from `app/event.php`).
     pub config_entries: Vec<ConfigEntryFact>,
-    /// 响应头赋值（如 `$header['Access-Control-Allow-Origin'] = ...`），供 CORS 反射检测。
+    /// Response-header assignments (e.g. `$header['Access-Control-Allow-Origin'] = ...`), for reflected-CORS detection.
     pub header_assignments: Vec<HeaderAssignFact>,
-    /// 签名值的**相等性比较**（`$sign == $calc` / `$params['sign'] != ...`），
-    /// 供验签质量判定（松散比较 / 非恒定时间）使用。
+    /// **Equality comparisons** of a signature value (`$sign == $calc` / `$params['sign'] != ...`),
+    /// used by the signature-quality judgement (loose comparison / non-constant time).
     ///
-    /// 只收 `==` / `!=`（`===` / `!==` 是严格比较，不是这里要找的问题），
-    /// 且只有**至少一侧像签名值**时才收 —— 否则一个工程里几万条比较全进来，
-    /// 事实集体积爆炸（CORS 那条只收 Allow-Origin 一个头，同理）。
+    /// Only `==` / `!=` are collected (`===` / `!==` are strict comparisons and not the problem being looked for),
+    /// and only when **at least one side looks like a signature value** — otherwise tens of thousands of
+    /// comparisons across a project would come in and explode the fact set (the CORS fact likewise collects only
+    /// the single Allow-Origin header).
     pub sign_compares: Vec<SignCompareFact>,
-    /// 方法体内的**局部变量赋值**（`$sql = ...;` / `$sql .= ...;`）。
+    /// **Local variable assignments** inside a method body (`$sql = ...;` / `$sql .= ...;`).
     ///
-    /// 供 P9 Taint 做**同函数内**的反向追踪：判断一个被拼进 SQL 的变量到底
-    /// 是不是来自请求。没有它，Taint 只能看调用点参数文本里"有没有 `$var`" ——
-    /// 于是 `Db::execute($execSql)` 这种整段变量传入的写法一律判高危，
-    /// 而该变量其实来自随版本包发布的本地文件（实测 CRMEB 40 条里有 34 条是这类）。
+    /// Lets P9 Taint do backward tracking **within one function**: to decide whether a variable concatenated into
+    /// SQL really comes from the request. Without it, Taint can only look at "is there a `$var`" in the call site's
+    /// argument text — so a whole-variable form like `Db::execute($execSql)` is always judged high-risk, even
+    /// though that variable comes from a local file shipped with the release package (measured on CRMEB: 34 of
+    /// 40 entries were exactly that).
     #[serde(default)]
     pub variable_assignments: Vec<VariableAssignFact>,
 }
 
-/// 一次局部变量赋值。
+/// One local variable assignment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariableAssignFact {
-    /// 变量名（不含 `$`），如 `execSql`。
+    /// Variable name (without `$`), e.g. `execSql`.
     pub var: String,
-    /// 赋值右侧的源码原文，如 `str_replace('@table', $table, $sql)`。
+    /// Raw source text of the right-hand side, e.g. `str_replace('@table', $table, $sql)`.
     pub rhs: String,
-    /// 所在方法 / 函数的 FQN（反向追踪的作用域边界）。
+    /// FQN of the enclosing method / function (the scope boundary for backward tracking).
     pub owner_fqn: String,
-    /// 文件（在 `cf_ast` 阶段由 `file.path` 填充，与 `SignCompareFact` 同）。
+    /// File (filled in from `file.path` during the `cf_ast` phase, same as `SignCompareFact`).
     pub file: String,
     pub span: Span,
 }
 
-/// 声明。
+/// A declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Declaration {
     pub kind: NodeKind,
-    /// 短名。
+    /// Short name.
     pub name: String,
-    /// 完全限定名（由命名空间 + 父级声明 + 短名推导）。
+    /// Fully qualified name (derived from namespace + parent declaration + short name).
     pub fqn: String,
-    /// 父级声明的 FQN（方法的所属类、常量的所属类等）。
+    /// FQN of the parent declaration (the method's owning class, the constant's owning class, etc.).
     pub parent_fqn: Option<String>,
     pub span: Span,
-    /// 语言特有字段：可见性、`static`、默认值、`abstract` 等。
+    /// Language-specific fields: visibility, `static`, default value, `abstract`, etc.
     pub extra: serde_json::Value,
 }
 
-/// 导入事实。用于建立 `by_name` 索引与短名 → FQN 映射。
+/// An import fact. Used to build the `by_name` index and the short name -> FQN mapping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportFact {
-    /// `use app\dao\order\StoreOrderDao as Dao;` 中的 `Dao`；无别名为 `None`。
+    /// The `Dao` in `use app\dao\order\StoreOrderDao as Dao;`; `None` when there is no alias.
     pub alias: Option<String>,
-    /// 被导入的名字（可能是相对命名空间的）。
+    /// The imported name (possibly relative to a namespace).
     pub name: String,
     pub span: Span,
 }
 
-/// 继承 / 实现 / trait 使用。
+/// Inheritance / implementation / trait use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InheritanceFact {
-    /// 子类 / 实现类的 FQN。
+    /// FQN of the subclass / implementing class.
     pub child_fqn: String,
-    /// 基类 / 接口 / trait 的名字（原文，可能是短名或导入别名）。
+    /// Name of the base class / interface / trait (verbatim; may be a short name or an import alias).
     pub base_name: String,
     pub kind: EdgeKind,
     pub span: Span,
 }
 
-/// 调用点。
+/// A call site.
 ///
-/// 记录一次调用"怎么写出来"的完整信息，供后续规则匹配与 P7 解析：
-/// * `callee_text` —— 原文，如 `Db::name`
-/// * `receiver` —— `$this->dao`、`Cache`、或 `None`（自由函数）
-/// * `method` —— `name`
-/// * `args` —— 字面量参数（能静态求值的部分）
+/// Records the complete information of "how a call was written", for later rule matching and P7 resolution:
+/// * `callee_text` — verbatim, e.g. `Db::name`
+/// * `receiver` — `$this->dao`, `Cache`, or `None` (a free function)
+/// * `method` — `name`
+/// * `args` — literal arguments (whatever can be evaluated statically)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallSiteFact {
-    /// 所在方法/函数的 FQN（自由函数时为自身 FQN）。
+    /// FQN of the enclosing method / function (its own FQN for a free function).
     pub owner_fqn: String,
-    /// 该调用点所在的**类** FQN，由 parser 显式记录。
-    /// 与 `owner_fqn` 分离：方法级注解的 `owner_fqn` 是 `Class.method`，
-    /// 而类级注解的 `owner_fqn` 已是 `Class`。供 `owner_class` 绑定直接取用，
-    /// 避免在 Java 里按 `.` 切分时把类级注解误切成包名。PHP 侧暂未填充，
-    /// 内核退回字符串切分（兼容旧行为）。
+    /// The **class** FQN this call site sits in, recorded explicitly by the parser.
+    /// Kept separate from `owner_fqn`: a method-level annotation's `owner_fqn` is `Class.method`, while a
+    /// class-level annotation's `owner_fqn` is already `Class`. This is what `owner_class` binding reads
+    /// directly, avoiding the case where Java splits a class-level annotation on `.` and mistakes it for a
+    /// package name. The PHP side does not fill it yet and the kernel falls back to string splitting
+    /// (legacy behaviour preserved).
     #[serde(default)]
     pub owner_class: Option<String>,
     pub callee_text: String,
@@ -124,118 +127,122 @@ pub struct CallSiteFact {
     pub method: Option<String>,
     pub args: Vec<FactValue>,
     pub span: Span,
-    /// 该调用点所在行的源码文本（由 parser 从 `span` 提取，供 UI 直接显示语句）。
+    /// Source text of the line this call site sits on (extracted by the parser from `span`, so the UI can show the statement directly).
     #[serde(default)]
     pub snippet: Option<String>,
-    /// 链式调用里透传下来的「目标表名」：`Db::name('goods')->insert()` 里末端动词
-    /// `insert` 落在未标注类型的 Query 上，变量类型解析推不出表，但链内的
-    /// `name('goods')` / `table('goods')` 已给出表名。由 parser 在收集调用点时
-    /// 沿对象链回溯取得，供 P7 把这类门面链式动词落成 `WritesDb` / `ReadsDb`。
+    /// The "target table name" passed down a chained call: in `Db::name('goods')->insert()` the terminal verb
+    /// `insert` lands on an untyped Query, so variable-type resolution cannot infer the table — but the chain's
+    /// `name('goods')` / `table('goods')` already gave it. The parser walks back along the object chain when
+    /// collecting the call site, so P7 can turn such facade chained verbs into `WritesDb` / `ReadsDb`.
     #[serde(default)]
     pub db_table: Option<String>,
-    /// 该调用点是否位于 `for` / `foreach` / `while` / `do-while` 的**循环体内**。
+    /// Whether this call site sits inside the **body** of a `for` / `foreach` / `while` / `do-while`.
     ///
-    /// 由 parser 在下降时记录（只有循环 `body` 内的调用计为 `true`，条件 / 初始化
-    /// 表达式不算）。它是 N+1 检测的事实基础：图的其余部分完全没有「循环」概念 ——
-    /// `CallSite` 只记"谁调了谁"，不记"调了几次"，没有这个字段就无法区分
-    /// 「一次查一堆」与「循环里一条条查」。
+    /// Recorded by the parser as it descends (only calls inside the loop `body` count as `true`; the condition /
+    /// initialisation expressions do not). It is the factual basis of N+1 detection: no other part of the graph
+    /// has any concept of a loop — `CallSite` only records "who called whom", not "how many times", and without
+    /// this field "fetch a batch in one query" cannot be told apart from "fetch row by row in a loop".
     #[serde(default)]
     pub in_loop: bool,
-    /// 该调用点关切的「主领域类型」（语义身份的来源之一）。
+    /// The "primary domain type" this call site is about (one source of semantic identity).
     ///
-    /// 由 parser 按调用种类填入：
-    /// * `@EventListener` 处理方法的**首个形参类型**（`onOrder(OrderPlacedEvent e)` → `OrderPlacedEvent`）
-    /// * `publisher.publishEvent(new OrderPlacedEvent())` 里 `new` 出来的**事件类型**
+    /// Filled in by the parser according to the kind of call:
+    /// * the **first parameter type** of an `@EventListener` handler method (`onOrder(OrderPlacedEvent e)` -> `OrderPlacedEvent`)
+    /// * the **event type** produced by `new` in `publisher.publishEvent(new OrderPlacedEvent())`
     ///
-    /// FKB 据此把「同一事件类型」的发布方与订阅方归并到同一个 `Event` 节点
-    /// （而非各自以方法名命名），形成真正的发布 / 订阅闭环。取值为 `Option`
-    /// —— 取不到（如 `publishEvent(var)`）时由规则的 `value_fallback` 兜底。
+    /// From this, FKB merges the publisher and the subscriber of "the same event type" onto one `Event` node
+    /// (rather than naming each after its method), forming a real publish / subscribe loop. It is an `Option`
+    /// — when it cannot be obtained (e.g. `publishEvent(var)`) the rule's `value_fallback` covers the gap.
     #[serde(default)]
     pub entity: Option<String>,
 }
 
-/// 字段声明与类型：`class -> field -> type`。
+/// A field declaration and its type: `class -> field -> type`.
 ///
-/// 用于 P7 按字段声明类型解析 `field.method()` 实例调用（如 Java `@Autowired`
-/// 字段注入的 `service.mapper.findX()` 链路）。`type_name` 为声明处的原始类型
-/// 名（含可能的泛型），P2 会剔除泛型后按 `import` 还原成 FQN。
+/// Used by P7 to resolve `field.method()` instance calls from the declared field type (e.g. the
+/// `service.mapper.findX()` chain built by Java `@Autowired` field injection). `type_name` is the raw type
+/// name as declared (possibly generic); P2 strips the generics and restores it into an FQN via `import`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldTypeFact {
-    /// 声明该字段的类的 FQN。
+    /// FQN of the class declaring this field.
     pub class_fqn: String,
-    /// 字段名。
+    /// Field name.
     pub field: String,
-    /// 字段的原始类型名（可能含泛型）。
+    /// Raw declared type name of the field (possibly generic).
     pub type_name: String,
     pub span: Span,
 }
 
-/// 配置条目。
+/// A config entry.
 ///
-/// 例如 `app/event.php`：`key_path = "listen.order.pay_success"`，
+/// For example in `app/event.php`: `key_path = "listen.order.pay_success"`,
 /// `value = Array([ClassConst("app\\listener\\order\\OrderPaySuccessListener"), ...])`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigEntryFact {
-    /// 点分路径，如 `listen.order.pay_success`。
+
+    /// Dotted path, e.g. `listen.order.pay_success`.
     pub key_path: String,
     pub value: FactValue,
     pub span: Span,
 }
 
-/// 响应头赋值事实：用于检测「CORS 反射源站」。
+/// A response-header assignment fact: used to detect "CORS reflected origin".
 ///
-/// 解析期只捕获「左侧是 `Access-Control-Allow-Origin` 这类响应头下标键」的赋值
-/// （如 `$header['Access-Control-Allow-Origin'] = app()->request->header('origin')`），
-/// 真正的反射判定放在 `phase::cors` —— 需结合右侧是否读取了请求 Origin。
+/// Parsing only captures assignments **whose left side is a response-header subscript key** such as
+/// `Access-Control-Allow-Origin` (e.g.
+/// `$header['Access-Control-Allow-Origin'] = app()->request->header('origin')`); whether it is really reflected
+/// is decided in `phase::cors` — that needs to combine it with whether the right side reads the request Origin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderAssignFact {
-    /// 响应头名（数组键原文去引号、转小写），如 `access-control-allow-origin`。
+    /// Response header name (the array key verbatim, unquoted and lower-cased), e.g. `access-control-allow-origin`.
     pub key: String,
-    /// 赋值右侧源码片段（用于判断是否来自请求 Origin）。
+    /// Source fragment of the right-hand side (used to decide whether it comes from the request Origin).
     pub rhs_snippet: String,
-    /// 文件（在 `cf_ast` 阶段由 `file.path` 填充）。
+    /// File (filled in from `file.path` during the `cf_ast` phase).
     pub file: String,
     pub span: Span,
 }
 
-/// 签名值的相等性比较：`$this->CreatedSign($params) != $params['sign']`。
+/// An equality comparison of a signature value: `$this->CreatedSign($params) != $params['sign']`.
 ///
-/// 为什么需要单独一类事实：**比较不是调用点**，`CallSite` 里永远看不到 `==`。
-/// 而"验签是否做对"恰恰取决于这一步 —— 用 `==` / `!=` 比签名会引入 PHP 松散比较
-/// 的类型混淆（`0e...` 摘要互判相等）与非恒定时间（可计时侧信道）。
+/// Why this needs its own class of fact: **a comparison is not a call site**, and `CallSite` can never show
+/// `==`. Yet "whether signature verification is done right" depends exactly on this step — comparing
+/// signatures with `==` / `!=` brings in PHP's loose-comparison type confusion (digests of the `0e...` form
+/// judge each other equal) and non-constant time (a timing side channel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignCompareFact {
-    /// 比较左侧源码文本。
+    /// Source text of the left-hand side.
     pub left: String,
-    /// 比较右侧源码文本。
+    /// Source text of the right-hand side.
     pub right: String,
-    /// 运算符原文（只可能是 `==` / `!=`）。
+    /// The operator verbatim (it can only be `==` / `!=`).
     pub operator: String,
-    /// 所在方法 / 函数的 FQN：判定时要把它与"同函数内的签名计算调用"对齐
-    /// （`$sign == $ipay_signature` 这种两边都是变量的写法，签名计算在别处）。
+    /// FQN of the enclosing method / function: the judgement has to align it with "the signature computation
+    /// call inside the same function" (`$sign == $ipay_signature` has variables on both sides, so the
+    /// signature is computed elsewhere).
     pub owner_fqn: String,
-    /// 文件（在 `cf_ast` 阶段由 `file.path` 填充）。
+    /// File (filled in from `file.path` during the `cf_ast` phase).
     pub file: String,
     pub span: Span,
 }
 
-/// 语言的命名空间 / 成员书写规则。
+/// A language's namespace / member notation rules.
 ///
-/// 从 [`crate::port::LanguageParser`] 抽取后随流水线传递 —— 内核多数位置拿不到
-/// 解析器注册表，但都拿得到流水线上下文。这些信息此前以 `\\` 与 `::` 字面量
-/// 散落在内核各处，换一门语言就要全量改动。
+/// Extracted from [`crate::port::LanguageParser`] and carried along the pipeline — most places in the kernel
+/// cannot reach the parser registry, but they all have the pipeline context. This information used to be
+/// scattered through the kernel as `\` and `::` literals, so adding a language meant changing all of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespacePolicy {
-    /// 首选命名空间分隔符（用于**拼接**）。
+    /// The preferred namespace separator (used for **joining**).
     pub ns_separator: char,
-    /// 全部可能的命名空间分隔符（用于归一化与**匹配容错**）。
+    /// Every possible namespace separator (for normalisation and **matching tolerance**).
     pub ns_separators: Vec<char>,
-    /// 类与成员之间的分隔符：PHP/C++ 是 `::`，Java/JS/Python 是 `.`。
+    /// The separator between a class and its member: PHP/C++ use `::`, Java/JS/Python use `.`.
     pub member_separator: String,
 }
 
 impl NamespacePolicy {
-    /// 从解析器抽取该语言的书写规则。
+    /// Extract this language's notation rules from a parser.
     pub fn from_parser(p: &dyn crate::port::LanguageParser) -> Self {
         let seps = p.namespace_separator();
         Self {
@@ -245,15 +252,16 @@ impl NamespacePolicy {
         }
     }
 
-    /// 类 + 成员 → 成员的完全限定名。
+    /// class + member -> the member's fully qualified name.
     pub fn join_member(&self, class_fqn: &str, member: &str) -> String {
         format!("{}{}{}", class_fqn, self.member_separator, member)
     }
 
-    /// PHP 风格（`\` 与 `::`）。
+    /// PHP style (`\` and `::`).
     ///
-    /// **未装配语言策略时的兜底**，与改造前内核的硬编码等价。
-    /// 全量接入 `LanguageParser` 后，正常路径都应走 [`Self::from_parser`]。
+    /// **The fallback when no language strategy is wired up**, equivalent to what the kernel hard-coded before
+    /// the refactor. Once `LanguageParser` is fully wired in, the normal path should go through
+    /// [`Self::from_parser`].
     pub fn php() -> Self {
         Self {
             ns_separator: '\\',
@@ -269,20 +277,21 @@ impl Default for NamespacePolicy {
     }
 }
 
-/// 可静态求值的字面量值。
+/// A statically evaluable literal value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", content = "v")]
 pub enum FactValue {
     String(String),
-    /// `Foo::class` —— 解析为完全限定类名。
+    /// `Foo::class` — resolves to a fully qualified class name.
     ClassConst(String),
     Int(i64),
     Float(f64),
     Bool(bool),
     Null,
-    /// 关联数组 / 列表。
+    /// An associative array / list.
+
     Array(Vec<(String, FactValue)>),
-    /// 变量等无法静态求值的值；`Option<String>` 为变量名。
+    /// A variable or other value that cannot be evaluated statically; `Option<String>` holds the variable name.
     Unknown(Option<String>),
 }
 
@@ -294,7 +303,7 @@ impl FactValue {
         }
     }
 
-    /// 数组的值列表（忽略键）。
+    /// The array's value list (keys ignored).
     pub fn array_values(&self) -> Vec<&FactValue> {
         match self {
             FactValue::Array(items) => items.iter().map(|(_, v)| v).collect(),
@@ -309,7 +318,7 @@ impl FactValue {
         }
     }
 
-    /// 按字符串键取值。
+    /// Look up by string key.
     pub fn get(&self, key: &str) -> Option<&FactValue> {
         match self {
             FactValue::Array(items) => items

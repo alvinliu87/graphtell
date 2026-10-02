@@ -1,11 +1,11 @@
-//! 集成测试公共装置。
+//! Shared fixtures for the integration tests.
 //!
-//! # 样本从哪来
+//! # Where the samples come from
 //!
-//! 测试以 `samples/thinkphp-projects/CRMEB-master` 为材料。为了在没带样本的机器上也能跑 CI，
-//! 样本缺失时测试**跳过**而不是失败：
-//! * 环境变量 `GRAPHTELL_SAMPLE_DIR` 显式指定，或
-//! * 仓库内的相对路径 `samples/thinkphp-projects/CRMEB-master`
+//! The tests use `samples/thinkphp-projects/CRMEB-master` as their material. So that CI can run on a machine
+//! without samples, a missing sample makes the test **skip** rather than fail:
+//! * the environment variable `GRAPHTELL_SAMPLE_DIR` points at it explicitly, or
+//! * the in-repo relative path `samples/thinkphp-projects/CRMEB-master`
 
 #![allow(dead_code)]
 
@@ -24,15 +24,16 @@ use gt_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
 pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
-/// 在 `dir/samples` 下定位 CRMEB 样本。
+/// Locate the CRMEB sample under `dir/samples`.
 ///
-/// 样本实际布局是**按技术栈多层分类**的（如 `samples/php-projects/thinkphp/CRMEB`），
-/// 且目录名可能带或不带 `-master` 后缀。早期只匹配 `samples/*/CRMEB-master`（一层 + 后缀），
-/// 与真实布局不符 → 样本明明在磁盘上却匹配不到 → 测试静默跳过、CI 全绿但零覆盖。
-/// 这里改为在 `samples/` 下**有限深度**递归查找名为 `CRMEB` / `CRMEB-master` 的目录，
-/// 不再依赖具体的层级与命名。
+/// The real layout is **classified by tech stack over several levels** (e.g.
+/// `samples/php-projects/thinkphp/CRMEB`), and the directory name may or may not carry a `-master` suffix. An early
+/// version only matched `samples/*/CRMEB-master` (one level + suffix), which did not fit the real layout — the
+/// sample was on disk yet never matched, so the tests silently skipped and CI was all green with zero coverage.
+/// This now does a **bounded-depth** recursive search under `samples/` for a directory named `CRMEB` /
+/// `CRMEB-master`, no longer depending on a specific depth or naming.
 fn under_samples(dir: &Path) -> Option<PathBuf> {
-    /// 在 `dir` 内最多找 `depth` 层；返回字典序第一个命中（保证结果稳定）。
+    /// Search at most `depth` levels under `dir`; return the lexicographically first hit (for a stable result).
     fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
         if depth == 0 {
             return None;
@@ -56,10 +57,10 @@ fn under_samples(dir: &Path) -> Option<PathBuf> {
     search(&dir.join("samples"), 3)
 }
 
-/// 定位 CRMEB 样本根目录。
+/// Locate the CRMEB sample root directory.
 ///
-/// 从 `CARGO_MANIFEST_DIR` 向上逐层查找 `samples/**/CRMEB-master`，
-/// 兼容「仓库根即工作区」与「工作区嵌套在子目录」两种布局。
+/// Walks upward from `CARGO_MANIFEST_DIR` looking for `samples/**/CRMEB-master`, supporting both layouts —
+/// "the repo root is the workspace" and "the workspace is nested in a subdirectory".
 pub fn sample_root() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -90,8 +91,8 @@ pub struct TestInfra {
 impl TestInfra {
     pub fn new(store: Arc<SqliteStore>) -> Self {
         let kb = YamlKnowledgeBase::load_dir(Path::new(FKB_DIR))
-            .expect("FKB 目录必须可加载，否则测试环境有问题");
-        assert!(!kb.is_empty(), "FKB 至少要装载 1 份框架知识");
+            .expect("the FKB directory must load, otherwise the test environment is broken");
+        assert!(!kb.is_empty(), "FKB must load at least 1 framework knowledge base");
         Self {
             fs: StdFileSystem::new(),
             scanner: WalkDirScanner::new(Vec::new()),
@@ -129,7 +130,7 @@ pub struct Built {
     pub outcome: PipelineOutcome,
 }
 
-/// 对样本执行一次完整建图（结果在进程内缓存，避免每个用例都跑一遍）。
+/// Run one complete graph build on the sample (the result is cached in-process so each case need not re-run it).
 pub fn graph() -> Option<Arc<Built>> {
     static CACHE: OnceLock<Option<Arc<Built>>> = OnceLock::new();
     CACHE
@@ -141,10 +142,6 @@ pub fn graph() -> Option<Arc<Built>> {
                     name: "CRMEB".into(),
                     root_path: root,
                     description: None,
-                    // CRMEB 的表前缀为 `eb_`，在此显式声明（不再依赖通用默认值）。
-                    // 通用层 `ProjectConfig::default()` 已不再内置任何前缀，
-                    // 前缀改由 P3 从 `config/database.php` 自动探测，
-                    // 或像这里一样由工程配置给出。
                     config: Some(ProjectConfig {
                         table_prefixes: vec!["eb_".into()],
                         ..Default::default()
@@ -154,18 +151,18 @@ pub fn graph() -> Option<Arc<Built>> {
             let infra = TestInfra::new(Arc::clone(&store));
             let outcome =
                 gt_pipeline::runner::run(&project, &infra, &gt_domain::port::NoopObserver)
-                    .expect("建图不应失败");
+                    .expect("the graph build should not fail");
             Some(Arc::new(Built { store, project, outcome }))
         })
         .clone()
 }
 
-/// 取某阶段的报告。
+/// Take the report of one phase.
 pub fn phase_report(built: &Built, phase: &str) -> Option<gt_domain::model::PhaseReport> {
     built.outcome.reports.iter().find(|r| r.phase == phase).cloned()
 }
 
-/// 对**任意**工程根目录执行一次完整建图（用于合成样本的自检，无需外部 CRMEB 样本）。
+/// Run one complete graph build against **any** project root (for self-checks on synthetic samples, no external CRMEB sample needed).
 pub fn graph_with_root(root: &Path, config: ProjectConfig) -> Option<Arc<Built>> {
     let store = Arc::new(SqliteStore::in_memory().ok()?);
     let project = store
@@ -179,11 +176,11 @@ pub fn graph_with_root(root: &Path, config: ProjectConfig) -> Option<Arc<Built>>
     let infra = TestInfra::new(Arc::clone(&store));
     let outcome =
         gt_pipeline::runner::run(&project, &infra, &gt_domain::port::NoopObserver)
-            .expect("建图不应失败");
+            .expect("the graph build should not fail");
     Some(Arc::new(Built { store, project, outcome }))
 }
 
-/// 样本缺失时的标准跳过提示。
+/// The standard skip message when the sample is missing.
 pub fn skip_reason() -> &'static str {
-    "跳过：未找到 CRMEB 样本（可用 GRAPHTELL_SAMPLE_DIR 指定）"
+    "skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
 }

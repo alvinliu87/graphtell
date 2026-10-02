@@ -1,29 +1,30 @@
-# 架构类规则：**只依赖图拓扑**，因此跨语言通用。
+# Architecture rules: they **depend only on graph topology**, so they are language-agnostic.
 #
-# 这里能放进来的前提是判据里没有语言特有的边或标注 ——
-# 扇入（fan_in）是归一化的：PHP 和 Java 都产出语义入边，口径一致。
-# 一旦某条规则用到了某个 FKB 才产出的标注（如 pii / sink），
-# 它就必须搬到 rules/<language>/ 下并声明 languages。
+# The precondition for living here is that the criteria use no language-specific edge or annotation —
+# fan-in is normalised: both PHP and Java produce semantic in-edges on the same basis.
+# As soon as a rule uses an annotation that only some FKB produces (e.g. pii / sink),
+# it must move to rules/<language>/ and declare `languages`.
 
 rules:
   - id: hot-table
-    title: 热点表（高扇入）
+    title: Hot table (high fan-in)
     description: >-
-      一张表被图上 50 处以上引用。它通常是性能瓶颈与改不动的耦合点：
-      改一个字段要评估几十处调用。阈值可按工程调节：小库的"热点"门槛更低。
+      A table referenced by 50 or more places on the graph. It is usually a performance bottleneck
+      and a coupling point that cannot be changed: touching one field means evaluating dozens of call
+      sites. The threshold is tunable per project: a small database has a lower bar for "hot".
     severity: info
     category: architecture
     params:
       - key: min_fan_in
-        label: 扇入阈值
-        description: 语义入边数 ≥ 该值才报热点；调低更敏感，调高只报真正的中心表。
+        label: Fan-in threshold
+        description: Semantic in-edge count must be >= this value to report a hotspot; lower is more sensitive, higher reports only true central tables.
         kind: number
         default: 50
         min: 1
         max: 100000
       - key: max_nodes
-        label: 候选表上限
-        description: 参与检查的表节点数量上限，防止超大库把一次检查拖垮。
+        label: Candidate table cap
+        description: Cap on the number of table nodes checked, so a very large database cannot drag one check down.
         kind: number
         default: 20000
         min: 100
@@ -33,23 +34,24 @@ rules:
       limit: "$max_nodes"
     when:
       - fan_in_gte: "$min_fan_in"
-    message: "表 {name} 是热点表（语义入边 ≥ {param:min_fan_in}），建议评估缓存 / 读写分离 / 拆分"
-    remediation: "用表视角看它的扇入来源，判断是否需要收敛访问入口"
+    message: "Table {name} is a hotspot (semantic in-edges >= {param:min_fan_in}); consider caching / read-write splitting / sharding"
+    remediation: "Use the table perspective to see where the fan-in comes from and decide whether to converge the access entries"
 
-  # 为什么这条用**正向**判据（fan_in_gte）而不是"没人读/没人写"：
-  # 实测 8 个工程里"配置键没有任何读取方"的命中数为 0（后端侧 250 个键全部有读取方），
-  # 反向判据在图上只会得到静默 0 命中 —— 那是最没用的结果。
+  # Why this one uses a **positive** criterion (fan_in_gte) instead of "nobody reads / nobody writes":
+  # measured across 8 projects, "a config key with no reader at all" matched 0 times (all 250 backend
+  # keys had readers), so the inverted criterion only yields a silent zero — the least useful result.
   - id: config-read-hotspot
-    title: 配置键被到处直接读取
+    title: Config key read directly everywhere
     description: >-
-      一个配置键被图上 50 处以上直接读取。它不是 bug，是**改动成本的信号**：
-      改这个键名要同步改几十上百处调用，且任何一处漏改都要到运行时才发现。
+      A config key read directly by 50 or more places on the graph. This is not a bug, it is a
+      **signal of change cost**: renaming the key means editing dozens or hundreds of call sites, and
+      any one missed is only discovered at runtime.
     severity: info
     category: architecture
     params:
       - key: min_reads
-        label: 读取处阈值
-        description: 读取该键的调用点数量 ≥ 该值才报；调低更敏感，调高只看真正散落的键。
+        label: Read-site threshold
+        description: The number of call sites reading the key must be >= this value; lower is more sensitive, higher shows only genuinely scattered keys.
         kind: number
         default: 50
         min: 1
@@ -58,28 +60,30 @@ rules:
       kinds: [ConfigKey]
     when:
       - fan_in_gte: "$min_reads"
-      # 排除 `$` 开头的键：那是 FKB 把 PHP 变量（如 `config('$name')` 的动态键）
-      # 当成字面键名建出来的节点，不是配置键。留着它只会产出一条看不懂的违规，
-      # 掩盖真正该看的键。
+      # Exclude keys starting with `$`: those are nodes FKB built from a PHP variable (a dynamic key
+      # such as `config('$name')`) treated as a literal key name — they are not config keys. Keeping
+      # them only produces one unreadable violation that hides the keys worth looking at.
       - not: { name_starts_with: "$" }
-    message: "配置项 {name} 被 {param:min_reads} 处以上直接读取（共散布在多处调用点），改键名要同步改这么多处"
-    remediation: "收敛到一个配置服务 / 常量，业务代码不要直接散读配置键"
+    message: "Config item {name} is read directly by {param:min_reads} or more places (spread across many call sites), so renaming it means editing all of them"
+    remediation: "Converge on one config service / constant; business code should not read config keys directly all over the place"
 
-  # 与 write-only-table 是镜像关系，但性质更"软"：只读表在很多工程里是**合法的**
-  # 维表 / 种子表 / 外部系统写入的表。所以这里只作提示，文案也写成"确认写入方是谁"
-  # 而不是"这是 bug"。同样用 `no_incoming: WritesDb` 把写入边排除后，`fan_in` 就只剩读取。
+  # The mirror image of write-only-table, but softer in nature: a read-only table is **legitimate**
+  # in many projects — a dimension table, a seed table, or one written by an external system. So this
+  # is only a hint, and the wording is "confirm who the writer is" rather than "this is a bug".
+  # Likewise, `no_incoming: WritesDb` removes write edges so `fan_in` only counts reads.
   - id: read-only-table
-    title: 只读不写的表
+    title: Table that is read but never written
     description: >-
-      表被读取（ReadsDb 入边）但图上没有任何写入（WritesDb 入边）。
-      应用从不写它：数据可能来自外部系统 / ETL / 种子脚本，也可能写路径用了 FKB 没识别的链路。
-      多数情况是合法的只读维表，重点在于"确认写入方是谁"。
+      The table is read (ReadsDb in-edges) but nothing on the graph writes it (no WritesDb in-edges).
+      The application never writes it: the data may come from an external system / ETL / a seed script,
+      or the write path uses a chain FKB did not recognise.
+      Usually this is a legitimate read-only dimension table; the point is to "confirm who writes it".
     severity: info
     category: architecture
     params:
       - key: min_reads
-        label: 最少读取处数
-        description: 读取该表的调用点数量 ≥ 该值才报；调高可只看"被大量读取"的只读表，过滤掉偶发查询。
+        label: Minimum read sites
+        description: The number of call sites reading the table must be >= this value; raise it to see only heavily-read read-only tables and filter out occasional queries.
         kind: number
         default: 1
         min: 1
@@ -90,24 +94,27 @@ rules:
       - no_incoming: WritesDb
       - has_incoming: ReadsDb
       - fan_in_gte: "$min_reads"
-    message: "表 {name} 被读取（≥ {param:min_reads} 处）但从不被应用写入 —— 确认写入方（外部 / ETL / 种子）或写路径未被识别"
-    remediation: "确认数据来源；若写入其实发生在应用内，补 FKB 的写表动词识别"
+    message: "Table {name} is read (>= {param:min_reads} places) but never written by the application — confirm the writer (external / ETL / seed) or an unrecognised write path"
+    remediation: "Confirm where the data comes from; if the write really happens inside the application, extend FKB's write-table verb recognition"
 
-  # 语义扇出 = 方法直接读写的资源（表 / 配置 / 缓存）数。注意 `Calls` 不是语义边，
-  # 不计入这里 —— 所以"扇出高"指的是"搅动大量资源"，不是"调用很多子方法"。
-  # 一个方法同时读写几十个资源，通常是"上帝方法"：难测试、难改、易出回归。
+  # Semantic fan-out = the number of resources (table / config / cache) a method reads and writes
+  # directly. Note that `Calls` is not a semantic edge and is not counted here — so "high fan-out"
+  # means "churning a lot of resources", not "calling many sub-methods".
+  # A method reading and writing dozens of resources at once is usually a "god method": hard to test,
+  # hard to change, easy to regress.
   - id: hotspot-method
-    title: 高扇出方法（资源耦合热点）
+    title: High fan-out method (resource coupling hotspot)
     description: >-
-      方法的语义扇出（它直接读写的表 / 配置 / 缓存等资源数）很高。
-      一个方法同时搅动大量资源，通常是"上帝方法"：难测试、难改、易出回归。
-      阈值可按工程调节：小库门槛更低。
+      A method's semantic fan-out (the number of tables / configs / caches it reads and writes
+      directly) is very high. A method churning a large number of resources at once is usually a
+      "god method": hard to test, hard to change, prone to regressions.
+      The threshold is tunable per project: a small codebase has a lower bar.
     severity: info
     category: architecture
     params:
       - key: min_fan_out
-        label: 语义扇出阈值
-        description: 方法直接触碰的资源（表 / 配置 / 缓存）数 ≥ 该值才报热点；调高只报真正失控的方法。
+        label: Semantic fan-out threshold
+        description: The number of resources (table / config / cache) the method touches directly must be >= this value; raise it to report only genuinely out-of-control methods.
         kind: number
         default: 20
         min: 1
@@ -116,5 +123,5 @@ rules:
       kinds: [Method]
     when:
       - fan_out_gte: "$min_fan_out"
-    message: "方法 {name} 直接读写 {param:min_fan_out} 个以上资源（语义扇出 ≥ 阈值），属于高耦合热点"
-    remediation: "看它是否能按职责拆成多个方法；高扇出往往意味着一个方法包揽了多个用例"
+    message: "Method {name} reads and writes {param:min_fan_out} or more resources directly (semantic fan-out >= threshold); a high-coupling hotspot"
+    remediation: "See whether it can be split into several methods by responsibility; high fan-out usually means one method has swallowed several use cases"

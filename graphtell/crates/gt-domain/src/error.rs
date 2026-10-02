@@ -1,40 +1,39 @@
-//! 领域错误类型。
+//! Domain error types.
 //!
-//! 遵循 SOLID 中的「依赖倒置」：错误在内核定义，适配器只负责把自身错误
-//! 转换成 [`DomainError::Infrastructure`]，绝不把 `rusqlite::Error` 之类的
-//! 具体类型泄漏到上层。
+//! Following dependency inversion in SOLID: errors are defined in the kernel, and an adapter only converts its own
+//! errors into [`DomainError::Infrastructure`], never leaking a concrete type such as `rusqlite::Error` upwards.
 
 use std::path::PathBuf;
 
-/// 领域层统一结果类型。
+/// The unified result type of the domain layer.
 pub type Result<T> = std::result::Result<T, DomainError>;
 
-/// 领域错误。
+/// A domain error.
 #[derive(Debug, thiserror::Error)]
 pub enum DomainError {
-    #[error("资源不存在: {0}")]
+    #[error("resource not found: {0}")]
     NotFound(String),
 
-    #[error("参数非法: {0}")]
+    #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
-    #[error("配置/知识库损坏: {0}")]
+    #[error("config / knowledge base corrupted: {0}")]
     InvalidKnowledge(String),
 
-    #[error("解析失败: {file}: {reason}")]
+    #[error("parse failed: {file}: {reason}")]
     Parse { file: PathBuf, reason: String },
 
-    #[error("路径越界: {0}")]
+    #[error("path out of bounds: {0}")]
     PathEscape(PathBuf),
 
-    #[error("冲突: {0}")]
+    #[error("conflict: {0}")]
     Conflict(String),
 
-    #[error("未支持的能力: {0}")]
+    #[error("unsupported capability: {0}")]
     Unsupported(String),
 
-    /// 适配器把具体技术错误装箱后透传，保留 `Display` 信息但不泄漏类型。
-    #[error("基础设施错误: {0}")]
+    /// An adapter boxes a concrete technical error and passes it through, keeping the `Display` text but leaking no type.
+    #[error("infrastructure error: {0}")]
     Infrastructure(String),
 
     #[error(transparent)]
@@ -42,7 +41,7 @@ pub enum DomainError {
 }
 
 impl DomainError {
-    /// 适配器专用：把任意 `Display` 错误包装为领域错误。
+    /// For adapters: wrap any `Display` error as a domain error.
     pub fn infra<E: std::fmt::Display>(e: E) -> Self {
         DomainError::Infrastructure(e.to_string())
     }

@@ -108,12 +108,6 @@ fn has_maps_to(id: i64, outgoing: &HashMap<i64, Vec<gt_domain::model::Edge>>) ->
         .unwrap_or(false)
 }
 
-// ---------------------------------------------------------------------------
-// 开发者的三类「噪声 / 锚点」信号
-// ---------------------------------------------------------------------------
-// 这三条都来自同一类真实踩坑（见各自注释里的场景），共同点：**单靠词面 / 向量相似度
-// 会把样板代码和用户点名的符号混在一起**，必须用「路径 / 形态」这类廉价且可靠的信号
-// 在打分阶段就区分开，而不是等排序之后再补救。
 
 /// **点名符号**（`(For Test::Result`) 的加权：提示词里写了完整标识符
 /// （`StoreOrderCreateServices` / `createOrder` / `store_order`）时，用户已经明确
@@ -178,10 +172,6 @@ fn is_test_path(path: &str) -> bool {
 fn is_generated_path(path: &str) -> bool {
     let norm = path.replace('\\', "/").to_lowercase();
     norm.split('/').any(|seg| {
-        // MyBatis Generator 的产物模块（mall-mbg / xxx-mbg）、Maven / Gradle / Protobuf 的
-        // generated-sources、以及 protoc 生成的 `*_pb2` 模块。
-        // 注意别用 `starts_with("gen")` 之类的宽松前缀 —— 业务代码里的 invoice generator /
-        // genesis 目录会被误伤。
         seg.contains("mbg") || seg.contains("generated") || seg.contains("_pb2")
     })
 }
@@ -352,9 +342,6 @@ const CONCEPT_CLUSTERS: &[(&[&str], &[&str])] = &[
         &["stock", "inventory", "warehouse"],
         &["stock", "inventory", "warehouse", "goods", "deduct", "decrement", "oversell"],
     ),
-    // 密码 / 密文概念（password/pwd 字面太泛，如 passwordless 也含 password；
-    // 故仅「加密实现」bcrypt/encoder/encrypt/cipher 作核心加权，password 字面留 all，
-    // 仅当与加密实现同现时才聚合加成，避免单 password 节点误抬）
     (
         &["encrypt", "cipher", "bcrypt", "encoder"],
         &[
@@ -541,12 +528,6 @@ const GENERIC_NOUNS: &[&str] = &[
     "log", "cache", "task", "job", "message", "session", "property", "attribute", "field", "page",
     "event", "queue", "topic", "schedule", "eventbus", "dict", "dictionary", "workbench",
     "dashboard", "third", "party",
-    // 实体"容器"名词：user / member / admin 等几乎每个系统都有，且常作为类名前缀
-    // （UserAddressServices / MemberServices / AdminController）。i18n 桥会把「user coupon」
-    // 这类文案的英文 key 拆出 `user` 灌进 match_terms，若不把它们当通用名词，任何 `User*`
-    // 类里的 `create`/`update` 都会因 fqn 含 `user` 被判「命中内容词」，从而绕过泛 CRUD
-    // 抑制、霸占无关查询的顶部（实测「怎么创建优惠券」被 UserAddressServices::create 夺冠）。
-    // 排除它们不影响真正的领域词（coupon/order/point/level…）作为内容判定。
     "user", "member", "admin", "agent", "common", "base",
 ];
 
@@ -684,9 +665,6 @@ fn collect_event_seeds<'a>(
         if !(is_event_handler(node) || node.kind.as_str() == "Event") {
             continue;
         }
-        // 事件处理器名字往往很泛（统一叫 `handle`），靠名字命中不了查询词；但**类名 /
-        // fqn 通常带业务概念**（`OrderCreateAfterListener` 含 `order`、`NotifyListener`
-        // 含 `notify`），统计它命中了哪些查询词。
         let low = node.name.to_lowercase();
         let fqn_low = node.fqn.as_deref().map(|f| f.to_lowercase()).unwrap_or_default();
         let matched: Vec<&String> = match_terms
@@ -699,10 +677,6 @@ fn collect_event_seeds<'a>(
         if matched.is_empty() {
             continue;
         }
-        // 稀有度加权：命中词越稀有（idf 越大），该监听器越可能是「真正被触发的那条」。
-        // 分值 = 词面相对基线 + idf 微调度，且整体夹在 [基线, 基线+200] 内 —— 这样事件种子
-        // 只用于在「词面强种子之下」做**兄弟监听器间的排序微调**（notify 压过 order、refund
-        // 压过 order），而不会整体压过 `create` / `notifyConfirm` 等强词面命中。
         let rarity: f64 = matched
             .iter()
             .map(|t| {
@@ -897,9 +871,6 @@ const PACK_GENERIC: &[(&str, &[&str])] = &[
     ("订单", &["order"]),
     ("商品", &["product", "goods", "item"]),
     ("库存", &["stock", "inventory"]),
-    // ---- 通用「可配置值」语汇：任意系统都有取消 / 时限 / 阈值 / 预警 ----
-    // 缺了它们，「订单自动取消时间」这类提问只能命中宽泛的 order，
-    // 而真正的配置键 `order_cancel_time` 因匹配不到 cancel / time 而落榜。
     ("取消", &["cancel"]),
     ("时间", &["time"]),
     ("时限", &["time", "timeout", "expire"]),
@@ -917,13 +888,6 @@ const PACK_GENERIC: &[(&str, &[&str])] = &[
     ("品牌", &["brand"]),
     ("分类", &["category"]),
     ("标签", &["tag"]),
-    // 「类型 / 方式」是跨领域通用名词，且常直接对应代码里的 `*_type` / `*Method`：
-    // 缺了它们，「新增一种优惠券类型」「加一个新的配送方式」这类提问只剩泛化 add/coupon，
-    // 接不上真正的券种配置 / 配送方式实现面。
-    //
-    // 刻意**不收 category**：那是 `分类` 的地盘，挂到 `类型` 上会把 `*Category`
-    // （ArticleCategory / WechatNewsCategory …）当噪音带进「优惠券类型」这类查询，
-    // 实测挤掉了真正相关的 coupon 节点。
     ("类型", &["type", "kind"]),
     ("方式", &["method", "way", "mode"]),
     ("令牌", &["token"]),
@@ -995,18 +959,6 @@ const PACK_ECOMMERCE: &[(&str, &[&str])] = &[
     ("售后", &["aftersale", "refund", "service"]),
     ("团购", &["groupon", "group"]),
     ("拼团", &["groupon", "group"]),
-    // ---- 审批流（`审核` / `通过` / `同意`）刻意**不收**，原因记录在 `docs` 之外，留此备查 ----
-    //
-    // 曾为 CRMEB「退款审核通过后钱怎么退回」补过 `通过 → agree`，实测结论是**净负、已撤销**：
-    //  * 语义路救不了：全部 refund* 节点余弦挤在 0.64~0.67（agreeRefund 0.6493，与头名
-    //    仅差 0.018），区分度太低；
-    //  * 词面桥会误伤：词面匹配是**子串**匹配，`agree` 会命中 `agreement`（用户协议）。
-    //    评测集那条含"用户"→`user`，于是 `GET /user/member/agreement` 双重命中霸占前排，
-    //    top5 从 refund 相关被整体换成协议相关；
-    //  * 48 条同口径对照：逐条 hit 差异 0（提升 0、回退 0），但退款那条结果质量明显变差。
-    // 结论：要修这条得先解决"子串误伤"（让 `agree` 走 token 精确匹配，使
-    // `agreement ≠ agree`），在那之前别再给审批语义加 `agree` 落点。
-    // ---- 社交 / 信息流通用词（无 i18n 的工程也能靠这些命中 feed / follow）----
     ("动态流", &["feed", "activity"]),
     ("关注", &["follow"]),
     ("收藏", &["favorite", "bookmark"]),
@@ -1242,12 +1194,6 @@ fn select_seeds<'a>(
             .then_with(|| a.1.cmp(&b.1))
     });
 
-    // 文案 / 页面类节点只做上下文，不当种子。
-    //
-    // 中文查询的词面命中大量落在这两类上（中文 i18n 文案、`/pages/...` 路径），
-    // 它们会把种子名额占满，而 BFS 从它们出发只通向前端文件 —— 实测中文查询的
-    // 向量信号（余弦 0.47~0.53，远超阈值）就是这样被挤掉的。
-    // i18n 桥的价值在于它提供的**英文 token**，不依赖这些节点本身当种子。
     const SEED_SKIP_KINDS: &[&str] = &["I18nKey", "Page"];
     let seedable = |id: &i64| {
         index
@@ -1285,10 +1231,6 @@ fn node_embed_text(node: &Node, enrich: &EnrichIndex) -> String {
     s.push_str(node.kind.as_str());
     s.push(' ');
     s.push_str(&node.name);
-    // 再补一份「切分后」的写法：多语言语义模型很难把整串粘连标识符
-    // （`decProductAttrStock`）与中文查询（「库存扣减」）在同一空间里对齐，
-    // 切成 `dec product attr stock` 后才能被语义匹配到。
-    // 这是纯通用的处理 —— 不依赖任何领域词表，对任何语言/命名风格都成立。
     let toks = key_tokens(&node.name);
     if !toks.is_empty() {
         s.push(' ');
@@ -1307,12 +1249,6 @@ fn node_embed_text(node: &Node, enrich: &EnrichIndex) -> String {
         s.push(' ');
         s.push_str(&i.value);
     }
-    // 节点文本富化：用工程自身 i18n 桥「反向」命中本节点的 token，把中文短语 + 同义词补进
-    // 嵌入文本。例：`storeCoupon` 的 token `coupon` 命中桥上「优惠券 → coupon…」，于是节点
-    // 文本带上「优惠券」，中文查询「优惠」就能在向量空间里直接对齐，而不必靠跨语言硬对齐。
-    // 纯数据驱动、零配置：工程自带 i18n / 源码中文片段即可，电商 / 金融 / 游戏一视同仁。
-    // 取名字与 fqn 的全部 token 去查桥；中文短语优先（直接对齐中文查询），其次英文同义词；
-    // 总量封顶，避免节点文本被无关短语撑爆。
     let mut consider: Vec<String> = toks.clone();
     if let Some(f) = &node.fqn {
         consider.extend(key_tokens(f));
@@ -2370,12 +2306,6 @@ fn persist_vectors(
             }
         }
 
-        // 1) 特征**概念**（而非词）：查询里出现的中文意图词（下单 / 优惠 / 通知 …）。
-        //
-        // 按"概念"而不是"词"算覆盖率是必须的：
-        // * 中文词本身匹配不到英文标识符，若逐词统计会把覆盖率无谓拉低（实测四条查询全被判 Low）；
-        // * 一个概念只要命中它的**任一**英文展开即算覆盖（优惠 → coupon 或 discount 都行），
-        //   否则同义展开会再次拉低。
         let concepts: Vec<(&str, &[String])> = aliases
             .iter()
             .filter(|(zh, _)| {
@@ -2396,10 +2326,6 @@ fn persist_vectors(
             1.0 - (missing_concepts.len() as f32 / concepts.len() as f32)
         };
 
-        // 对外输出的**可检索关键词**：中文概念 + 它的英文展开。
-        //
-        // 只给中文字面是不够的：代码库里的标识符是英文，让 AI IDE 拿「回调」去 grep
-        // 一个 PHP 工程什么都搜不到 —— 实测这条退路建议形同虚设。两者都给才真能搜到。
         let mut missing: Vec<String> = Vec::new();
         for (zh, ens) in &missing_concepts {
             missing.push((*zh).to_string());
@@ -2429,13 +2355,6 @@ fn persist_vectors(
 
         let confidence = (0.65 * coverage + 0.35 * gap).clamp(0.0, 1.0);
 
-        // 4) **概念内聚度**：有没有同一条命中同时覆盖 ≥2 个概念。
-        //
-        // 这是覆盖率看不出来的失败模式：复合查询（"下单后发通知"）的每个概念
-        // 可能**分别**被互不相关的节点命中（下单→某个 create、通知→某个 notify），
-        // 于是覆盖率 = 1.0 被判 High —— 但它说明的恰恰是"泛词各自撞名字"，
-        // 召回根本没落到真正的业务代码上。实测该查询就栽在这里（假信心）。
-        // 正解必然同时关联多个概念，因此内聚度 < 2 就是强烈的噪声信号。
         let mut best_cohesion = 0usize;
         for h in hits.iter().filter(|h| !boilerplate.contains(&h.node_id.get())) {
             let tl: HashSet<String> =
@@ -2448,10 +2367,6 @@ fn persist_vectors(
         }
         let fragmented = concepts.len() >= 2 && best_cohesion < 2;
 
-        // **没有任何可评估概念时绝不允许判 High**。
-        // 查询越生僻、越超出词表，可算的概念越少 —— 极端情况下 concepts 为空，
-        // coverage 取默认值 1.0，于是"越生僻越说没问题"，恰好在最需要提醒时失灵。
-        // 这违背"宁可报低"原则：没有概念 = 无法确认质量，至少报 Medium 并说明。
         let unevaluable = concepts.is_empty();
 
         let quality = if coverage < 0.5 || (concepts.len() >= 3 && best_cohesion < 2) {
@@ -2516,9 +2431,6 @@ fn persist_vectors(
                 missing.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join("、")
             ));
         }
-        // 事件驱动查询的额外退路：正解多为命名极泛的事件监听器（`*Listener` /
-        // `*Subscriber`，方法统一叫 `handle`），词面召回几乎命中不了。直接点明该去
-        // 读哪类文件，比笼统的"头部区分度不足"更有操作性。
         if event {
             s.push_str(
                 ">\n> This query looks event / flow driven (\"what happens after X\"). On the graph the right answer is usually an event listener \
@@ -2550,10 +2462,6 @@ fn persist_vectors(
         let mut quality = RecallQuality::High;
         let mut confidence = 1.0f32;
         let mut reasons: Vec<String> = Vec::new();
-        // 多意图**并行**跑：每个子意图都要跑一次 bge 前向（~0.8s），串行时总时延随
-        // 子意图数线性增长（实测 2 段 5.3s → 优化后 1.79s，其中大头就是两次前向）。
-        // 子意图之间只读共享状态（快照 / 向量缓存各自带锁），因此可以安全并发。
-        // 单意图不走线程，避免无谓的调度开销。
         let sub_results: Vec<Result<RecallResult>> = if parts.len() > 1 {
             std::thread::scope(|s| {
                 let handles: Vec<_> = parts
@@ -2636,12 +2544,6 @@ fn persist_vectors(
     /// 单意图召回的完整流程（多意图时由 [`RecallService::recall`] 分派多次）。
     fn recall_single(&self, project_id: ProjectId, q: &RecallQuery) -> Result<RecallResult> {
         let (terms, kind_hints) = parse_query(&q.query);
-        // 动作意图（找实现代码）会反转种类偏好：方法 / 类优先于 HTTP 路由与基础设施。
-        //
-        // 但查询若已**点名配置项**（阈值 / 参数 / 开关 / 配置 …），用户要找的是
-        // **那个配置值**而不是实现代码，此时绝不能再反转偏好 —— 否则 Method 被抬到
-        // 1.5×，而 ConfigKey(1.2×) / Queue(0.7×) 被压低，实测正好把 `order_cancel_time`
-        // 与 `product_stock_job` 挤出结果。点名了语义节点就以该节点为准。
         let wants_config = wants_config_value(&q.query);
         let action = action_intent(&q.query) && !wants_config;
         // 流程意图（还原调用链）：结果改按图拓扑排序（见 [`reorder_for_flow`]）。
@@ -2650,13 +2552,6 @@ fn persist_vectors(
         // （监听器 / 订阅者）补成种子并上浮，见 [`collect_event_seeds`] / [`is_event_handler`]。
         let event = event_intent(&q.query);
 
-        // 中文意图词展开：构造一份「用于匹配」的词表（不污染对外返回的 terms）。
-        // 两路来源：
-        //  1) 内置通用别名表（少量通用词，**叠加**项目级 `.graphtell/aliases.json`
-        //     里各自的领域黑话，见 [`merged_aliases`]）；
-        //  2) **工程自身**的 i18n 桥：i18n 中文文案 → 该文案 key 里的英文 token。
-        //     第 2 路是通用的 —— 只要工程带 i18n，中文查询就能落到本项目符号，
-        //     不需要为电商 / 金融 / 游戏各维护一张领域词表。
         let aliases = merged_aliases(
             self.store
                 .get_project(project_id)?
@@ -2674,12 +2569,6 @@ fn persist_vectors(
         // 触发的概念簇（如「邮件」→ 通知簇）：用于排序侧概念加权，见 [`concept_multiplier`]。
         let triggered = triggered_concepts(&alias_terms);
 
-        // 查询编码与候选装载 / 落盘载入相互独立：查询编码是单次 bge 前向（CPU ~800ms），
-        // 是冷启动最大的串行项。这里提前算好查询文本与"语义空间"判定，把编码丢进独立线程，
-        // 与下方的候选装载 / 落盘载入并行 —— 重启后首问从 ~2.5s 降到 ~1.5s。
-        // 热路径不受影响：同句重复走查询向量缓存（编码 ~0ms）；新查询本就被 bge 单句前向主导。
-        // `early_semantic` 必须与下方 `use_semantic` 最终判定一致（语义空间必须匹配），
-        // 这里用同样的"已预热 或 落盘文件存在"条件提前决定，二者等价。
         let qtext = query_embed_text(&q.query, &alias_terms);
         let early_semantic = self.semantic_embedder.is_some()
             && (self
@@ -2737,10 +2626,6 @@ fn persist_vectors(
             .get_project(project_id)?
             .map(|p| std::path::PathBuf::from(p.root_path));
 
-        // ---- 3) 打分：种子（词面路 + 向量路，合并）
-        // 3a) 词面路：标识符 / fqn / identity 的子串匹配（沿用既有 score_node）。
-        //     命中多个「意图类别」（如同时命中 订单 + 优惠）给予短语聚合加成，
-        //     使「订单优惠」这类组合意图优先于孤立的「订单」。
         let mut group_map = alias_group_map(&aliases);
         // 命中的 i18n 文案各自成组，使「命中多个业务概念 → 聚合加成」在任意领域都成立，
         // 而不只是对内置电商词表生效。
@@ -2767,10 +2652,6 @@ fn persist_vectors(
             if DEFAULT_EXCLUDED_KINDS.contains(&node.kind.as_str()) {
                 continue;
             }
-            // 纯动词且无内容词的方法**不当种子**：它只是动作词的同名词（「修改」→
-            // save/update/edit 会命中全工程同名方法），不含任何主题信息，让它当种子
-            // 只会把 BFS 引向无关的通用 CRUD。与 score_node 里的折扣是同一条原则。
-            // 例外：它是提示词**点名的符号** —— 用户问 `createOrder` 就别再把它当噪音筛掉。
             let anchored = anchor_multiplier(node, &anchors) > 1.0;
             let verb_only = action
                 && is_generic_crud_method(&node.name.to_lowercase())
@@ -2792,30 +2673,11 @@ fn persist_vectors(
             }
         }
 
-        // 3b) 向量路：离线编码器对节点文本做软匹配，补足词面漏掉的跨语言种子。
-        //     查询文本已带入展开出的英文意图词，使中文意图能靠近英文符号。
-        // ---- 向量路（按工程选择生效空间，永不阻塞建图 / UI）----
-        // 语义空间 = 语义编码器可用 **且** 该工程向量已就绪（已预热 或 有落盘文件）。
-        //
-        // 必须先尝试载入落盘文件再做判定：原实现把载入写在 `if use_semantic` 内，
-        // 而 `use_semantic` 又要求 `warmed_projects` 已置位 —— 死锁：
-        // 重启后缓存为空 → 判为未预热 → 永不载入 → 每次重启都全量重算 bge
-        // （CRMEB 实测 56 分钟），落盘文件形同废纸。
         let t_load = std::time::Instant::now();
         let mut use_semantic = self.semantic_embedder.is_some()
             && self.warmed_projects.lock().unwrap().contains(&project_id.get());
         if !use_semantic && self.semantic_embedder.is_some() {
             if let Some(dir) = &self.embed_persist_dir {
-                // **只有真的载入成功才切语义空间**（版本 / 维度必须匹配）。
-                //
-                // 曾无条件置 `use_semantic = true`：版本升级后落盘文件被判失效、
-                // 一个向量都没载入，却仍走语义路 → 请求线程里同步对全库做 bge 编码
-                // （CRMEB 十几分钟不返回），且因"已判为语义路"永不启动后台预热，
-                // 预热进度永远显示未开始。改为按实际结果判定：载入失败就走快速路
-                // 立即返回，让后台预热接管重算。
-                //
-                // 落盘如今优先 rmp（v4 起，解析比旧 JSON 153MB / ~5s 快一个数量级），
-                // 首查同步载入也仅亚秒级；旧 v3 JSON 仍被兼容（内部回退且自动重写 rmp）。
                 let path = dir.join(format!("{}.rmp", project_id.get()));
                 use_semantic = self.load_persisted(&path, project_id);
             }
@@ -2864,9 +2726,6 @@ fn persist_vectors(
             }
         }
 
-        // 后台异步预热：语义编码器存在、本工程未预热、且入口开启了异步预热时，
-        // 上面已用快速空间立即返回，这里 spawn 线程把 bge 向量算好落盘；
-        // 完成后 `warmed_projects` 标记置位，之后该工程的召回自动切到语义空间。
         if !use_semantic
             && self.enable_async_warmup
             && self.semantic_embedder.is_some()
@@ -2886,10 +2745,6 @@ fn persist_vectors(
             });
         }
 
-        // 2) 逐节点取缓存向量打分。
-        //    必须读上面选定的 `cache`（= 当前生效的向量空间）：冷路径把向量编码进
-        //    `fast_cache`，若此处写死读 `node_embed_cache`（此时为空），向量分永远不贡献，
-        //    召回就退化成纯词面 + BFS，白算一遍编码。
         let mut vector: HashMap<i64, f64> = HashMap::new();
         for node in nodes {
             if !is_vector_kind(node) {
@@ -2908,14 +2763,7 @@ fn persist_vectors(
             };
             let c = cosine(&qvec, &nvec);
             if c >= VECTOR_THRESHOLD {
-                // 语义分默认不乘种类权重（避免把 Method/Function 挤出向量种子）。
-                // 仅当查询是「找实现代码」的动作意图时，才按 [`rank_weight`] 给方法 / 类
-                // 加权、压低 HTTP 路由与基础设施 —— 否则这类查询会被字面同词的路由压过
-                // 真正的服务方法（storeCoupon / paymentOrder）。
                 let kw = if action {
-                    // 纯 CRUD 动词方法，仅当它**未命中内容词**（coupon/order…，来自 fqn）
-                    // 时才取消动作加权 —— 与词面路 [`score_node`] 保持一致：发货的 save/update
-                    // 沉底，而优惠券 / 订单的 edit 因 fqn 带 Coupon/Order 仍保住加权。
                     let nlow = node.name.to_lowercase();
                     if is_generic_crud_method(&nlow) {
                         let has_content =
@@ -2923,9 +2771,6 @@ fn persist_vectors(
                         if has_content {
                             rank_weight(node.kind.as_str(), true)
                         } else {
-                            // 与词面路 `score_node` 保持一致：纯动词且无内容词的方法，不仅在
-                            // 动作意图下取消加权（退回 `kind_weight`），基础分也乘 0.5 折扣，
-                            // 否则它会靠向量同名匹配霸榜（见 [`GENERIC_CRUD_VERB_ONLY_DISCOUNT`]）。
                             kind_weight(node.kind.as_str()) * GENERIC_CRUD_VERB_ONLY_DISCOUNT
                         }
                     } else {
@@ -2947,22 +2792,9 @@ fn persist_vectors(
             }
         }
 
-        // 合并：词面分 + 向量分「相加」（不再是取大），让纯语义命中也能参与排序；
-        // 种子取「词面 top-k ∪ 向量 top-k」的并集 —— 否则跨语言节点（优惠→Coupon）
-        // 永远挤不进仅按总分排序的前 5，被 Order* 泛洪淹没。
         let mut seed_tuples = select_seeds(&lexical, &vector, &index);
-        // 事件驱动查询：把被命名约定淹没的事件处理器（监听器 / 订阅者 / Event 节点）
-        // 补成种子，否则「下单后怎么发通知」「退款成功后怎么回退」这类问题只能召回泛词。
-        // 种子分值由命中词的稀有度（idf）决定，让命中 notify/coupon/refund 这类稀有概念的
-        // 监听器压过只命中 order/user 等泛词的兄弟监听器（见 [`collect_event_seeds`]）。
         if event {
-            // 事件种子基线取「最强词面种子 × 0.55」：低于词面强命中，保证 `create` /
-            // `notifyConfirm` 等仍排在前排、且质量评估不会因特征词被淹没而掉到「低」；
-            // idf 微调只在该基线之上区分兄弟监听器（见 [`collect_event_seeds`]）。
             let top_lex = lexical.values().map(|(s, _)| *s).fold(0.0_f64, f64::max);
-            // 提示词**点名了标识符**时（`StoreOrderCreateServices 里 createOrder …`），
-            // 用户已经知道该看哪个符号，此时事件种子不再享受 `EVENT_SEED_MIN` 兜底 ——
-            // 否则成批的 `*Listener`（各命中一个泛词）会被抬到用户点名的符号之上。
             let event_base = if anchors.is_empty() {
                 (top_lex * 0.55).max(EVENT_SEED_MIN)
             } else {
@@ -3031,24 +2863,13 @@ fn persist_vectors(
 
         // ---- 5) 排序 + 截断 + 补位置
         let mut hits: Vec<RecallHit> = best.into_values().collect();
-        // 枢纽抑制（**所有查询**生效，不只流程查询）：被全工程到处引用的通用底座
-        // （中间件被 800~1200 条路由穿过、Request / Cache 之类）对任何查询都不是答案，
-        // 但它们常作为种子的**一跳邻居**被带进来（此时分数 = 父种子 × 衰减，
-        // 在 score_node 里抑制没用，必须作用在最终得分上）。按总入度平滑衰减，
-        // 下限 0.4 —— 永不为 0，仍可被召到，只是不再占位。
         for h in hits.iter_mut() {
             let fan_in = incoming.get(&h.node_id.get()).map(|es| es.len()).unwrap_or(0);
             h.score *= hub_penalty(fan_in);
-            // 测试文件 / 生成器样板：也要在**最终得分**上生效。
-            // 它们常常不是种子本身，而是种子的邻居（被 BFS 带进来的 test helper），
-            // 命中分继承自种子 —— 只在种子打分阶段压不住它们，必须在最终得分上再打一次折。
             if let Some(n) = index.get(&h.node_id.get()) {
                 h.score *= node_noise_discount(n, &files, &boilerplate);
             }
         }
-        // 事件驱动查询：把「事件处理器 → 直接被调者」与「沿事件语义边相连的节点」上浮，
-        // 让「监听器 → 业务处理器」链路相对普通的「种子 → 一跳邻居」更靠前。
-        // 否则监听器虽被补成种子，它调用的正解仍会被通用 CRUD 淹没。
         if event {
             let event_seed_ids: HashSet<i64> = seed_tuples
                 .iter()
@@ -3072,18 +2893,12 @@ fn persist_vectors(
                 }
             }
         }
-        // 同分时按节点 id 稳定排序：HashMap 迭代顺序会让同分命中的先后随机变化，
-        // 导致同一查询两次召回结果不同 —— 评测因此无法复现（实测同一构建两次跑
-        // hit@10 会差 1 条）。排序必须完全确定。
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.node_id.get().cmp(&b.node_id.get()))
         });
-        // 同名上限：通用动词（find / update / create …）会把各处的同名方法一并拉进来，
-        // 挤满整个命中列表（实测出现过前 5 条全是 `findAll`）。同名最多保留 2 条，
-        // 保证结果的多样性。
         const MAX_SAME_NAME: usize = 2;
         let mut same: HashMap<String, usize> = HashMap::new();
         let mut kept: Vec<RecallHit> = Vec::with_capacity(hits.len());
@@ -3096,11 +2911,6 @@ fn persist_vectors(
         }
         hits = kept;
         hits.truncate(q.limit.max(1));
-        // 流程查询：把**已按相关性选出的**结果改排成链路顺序（入口 → … → 落库）。
-        // 必须放在截断**之后**：否则无关的浅层兄弟节点（每个路由 / 控制器方法都是
-        // 深度 0）会被提前、挤掉真正相关的深层节点（实测 `del_level` / `appleLogin`
-        // 挤走了 `LoginServices::register`）。这里只改顺序、不改入选集合。
-        // 非流程查询不进入此分支，排序与改动前完全一致。
         if flow {
             reorder_for_flow(&mut hits, &incoming);
         }
@@ -3225,9 +3035,6 @@ fn load_persisted_into(
     if env.version < 3 || env.version > EMBED_TEXT_VERSION {
         return false;
     }
-    // 仅当落盘维度明确写出且与当前编码器不符时才失效（换更小模型如 bge-m3→e5 时 1024≠768）。
-    // 旧的「无 dim 字段」文件（dim=0）视为合法：其向量维度本就与同维度编码器（如 bge-m3）一致，
-    // 不强制重编码，避免无谓的全量大工程重算。
     if env.dim != 0 && env.dim != expected_dim {
         return false;
     }
@@ -3608,12 +3415,6 @@ fn score_node(
     let fqn = node.fqn.as_deref().unwrap_or("").to_lowercase();
     let identity = node.identity.as_ref().map(|i| i.value.to_lowercase()).unwrap_or_default();
 
-    // HTTP 路由的路径里 `save` / `update` / `edit` / `create` 是**写接口的命名约定** ——
-    // 几乎每个写接口都带，对主题毫无区分度。实测「怎么修改商品库存预警阈值」被
-    // `POST /product/crawl/save`、`PUT /user/save_give_level_time` 这类路由灌满前排，
-    // 它们只靠「修改→save」+ 宽泛的「商品/订单」凑数，与该意图的特征词毫无关系。
-    // 因此路由节点的路径里，通用 CRUD 动词**不计入命中**（与方法侧的
-    // "纯动词无内容词打折"是同一条原则）。路由仍可靠路径里的业务词命中。
     let is_contract = node.kind.as_str().eq_ignore_ascii_case("HttpContract");
 
     let mut score = 0.0f64;
@@ -3626,11 +3427,6 @@ fn score_node(
         let mut best = 0.0f64;
         if name == t {
             best = 100.0;
-        // 曾尝试把「完整 token 命中」（`agreeRefund` 的 `agree`）与「单词内前缀」
-        // （`agreement` 的 `agree`）分开计分，以修 #1 退款案例 —— 48 条 A/B 实测
-        // **回退**（@5 39→38、@10 43→41、@20 45→43），已撤销：给首 token 提分会
-        // 连带改变大量既有排序，收益不足以抵。若日后要再试，必须先解决
-        // "整体排序对分值过于敏感"这一点，而不是单点加分。
         } else if name.starts_with(&t) {
             best = 70.0;
         } else if name.contains(&t) {
@@ -3655,19 +3451,9 @@ fn score_node(
         return (0.0, matched);
     }
 
-    // 种类权重：语义节点（表 / 契约 / 事件…）是"主题级"答案，优先于方法；
-    // 动作意图（找实现代码）时反转偏好（见 [`rank_weight`]）。
-    // 纯 CRUD 动词方法（edit/save/update…）**只有在同时命中内容词（coupon/order…）时**
-    // 才享受动作加权；否则（如发货的 save/update，只靠「修改」被加权）退回默认 1.0，
-    // 避免无关域 CRUD 顶到顶部（见 [`GENERIC_CRUD_METHODS`]）。
     let has_content_term = has_content_word(node, terms);
     let verb_only = action && is_generic_crud_method(&name) && !has_content_term;
     if verb_only {
-        // 只靠动词命中、无任何内容词时，**连基础匹配分也打折**：
-        // 「修改」会展开成 save/update/edit/modify，而全工程到处都有叫 save / update
-        // 的方法，它们仅凭同名就拿到 100 分精确匹配 —— 实测「怎么修改订单自动取消时间」
-        // 被这批同名方法霸榜，真正的答案（ConfigKey order_cancel_time）反而进不了前 12。
-        // 这与上面取消动作加权是同一条原则：纯动词且无内容词，不该占高位。
         score *= GENERIC_CRUD_VERB_ONLY_DISCOUNT;
     }
     let kw = if verb_only {
@@ -3897,13 +3683,6 @@ fn reorder_for_flow(
             }
         }
     }
-    // 只有「含至少一个直接命中（种子）」的连通分量才算链路。
-    // 否则彼此无关、只是恰好没有上游的兄弟节点（mobile / postMore / 各控制器方法）
-    // 全都拿到深度 0，反而浮到真正链路的前面。
-    //
-    // 注：试过更细的「主链路 = 入口 ∪ 种子祖先 ∪ 种子后代」三档方案，实测
-    // **无法**把同类兄弟方法（mobile）降下去（它在图里确实与种子有可达关系），
-    // 却会把页面挤到链路之后，属于净损失，故不采用。
     let on_chain = anchored_components(hits, &adj);
 
     let mut memo: HashMap<i64, i64> = HashMap::new();
@@ -3969,15 +3748,7 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         ("页面", "Page"),
         ("国际化", "I18nKey"),
         ("多语言", "I18nKey"),
-        // 「阈值 / 参数 / 开关 / 上限 …」在任意系统里都是**一个可配置的值**，
-        // 其落点是配置项（ConfigKey）而非某段代码 —— 复用上面同一套提示机制，
-        // 让「怎么修改订单自动取消时间」收敛到 `order_cancel_time` 这类配置键，
-        // 而不是被 1.5× 加权的方法（save / update …）淹没。
     ];
-    // 注意：**不要**往 hint_map 里加「阈值 / 下限 / 时长 …」这类词。
-    // `strip_hint_chars` 会把提示词里的**每个字**从所有查询词里剔除 ——
-    // 加入"下限"会让 `下单` 被削成 `单`（"如何修改下单优惠" → "如何修改单优惠"）。
-    // 「要找配置项」的判定改由 [`wants_config_value`] 独立承担，不碰 hint_map。
 
     for (word, kind) in hint_map {
         if query.contains(word) && !hints.iter().any(|h| h == kind) {
@@ -3985,16 +3756,6 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         }
     }
 
-    // 英文/数字 token：按非字母数字切分，再拆 camelCase / snake_case。
-    //
-    // `_` 必须**留在 buffer 里**交给 `push_token` 处理：若在这里就当分隔符，
-    // `store_order` 会被拆成 `store` + `order`，再也拿不到"完整标识符"这个词 ——
-    // 而完整标识符恰恰是最有价值的召回词（精确匹配得分最高）。
-    //
-    // 注意：`is_cjk(ch)` 必须在这里**当分隔符处理**。中文字符对 Rust 来说也是
-    // `is_alphanumeric()`，若不排除，整段中文会被当成一个 ASCII token 直接入列，
-    // 于是"表"/"接口"这类**只该作种类加成**的词会残留成文本匹配词，把召回带偏。
-    // 中文统一交给下面的 CJK 分支处理。
     let mut buf = String::new();
     for ch in query.chars() {
         if (ch.is_alphanumeric() && !is_cjk(ch)) || ch == '_' {
@@ -4006,19 +3767,6 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
     }
     push_token(&mut terms, &buf);
 
-    // 中文：连续的 CJK 串。
-    //
-    // 关键设计：**光靠"整段作为一个 token"在长句上必死**。中文没有词边界，
-    // "订单创建涉及哪些表和接口" 作为一个整体永远匹配不到任何节点名字，
-    // 召回结果直接是空的 —— 而提示词恰恰经常是这种整句。
-    //
-    // 因此除整段外，再切出全部**相邻二字组（bigram）**：中文里有意义的最小
-    // 词大多就是两个字（订单 / 创建 / 接口 / 缓存 …），bigram 能以近乎零的
-    // 成本覆盖它们。噪音 bigram（单创 / 建涉）匹配不到任何节点，会被打分
-    // 自然淘汰 —— 所以不需要词典、不需要分词库，也就没有新依赖。
-    // 已知中文词（内置别名表里的词条）：用于过滤 CJK bigram 里跨越词边界的
-    // 无意义组合（何修 / 改下 / 单优 …）。仅当整段命中了已知词时才启用过滤 ——
-    // 否则（OOV 中文）仍退化为全 bigram 兜底，保留对未知词的覆盖。
     let known_alias_words: HashSet<String> = builtin_alias_keys();
 
     for run in cjk_runs(query) {
@@ -4027,17 +3775,6 @@ fn parse_query(query: &str) -> (Vec<String>, Vec<String>) {
         if keep.chars().count() >= 2 && !terms.iter().any(|t| t == &keep) {
             terms.push(keep.clone());
         }
-        // 二字组：只保留**同一词内部**的组合。
-        //
-        // 旧实现是「全有或全无」：整段只要命中过任一已知词，就只保留已知词本身的 bigram，
-        // 其余全部丢弃。代价是像「退款审核通过后钱怎么退回」这种「已知词 + 未知业务词」
-        // 混排的正常句子里，`审核` / `退回` 这类**关键业务词**会被连带丢掉，
-        // 于是只能召回宽泛的 `refund`、够不到真正负责的 `agreeRefund`。
-        //
-        // 改成「已知词优先的最大匹配切段」（[`segment_cjk`]）：已知词整段保留；
-        // 落在已知词之外的**连续未知字**仍按 bigram 兜底；跨越已知词边界的组合
-        // （何修 / 改下 / 单优）不再产生。它丢的正是当初想丢的那一类，
-        // 不再牵连同句里没收录的业务词。
         let segs = segment_cjk(&keep, &known_alias_words);
         for (seg, known) in &segs {
             if *known && seg.chars().count() >= 2 && !terms.iter().any(|t| t == seg) {
@@ -4308,12 +4045,6 @@ fn render_markdown(
     s
 }
 
-// ---------------------------------------------------------------- 单元测试
-//
-// 召回的"打分 / 查询解析 / 关系摘要"等纯逻辑此前没有任何针对性断言：
-// 集成测试只验证"名字是否出现"，从不断言 score / matched_terms 数值，
-// 因此一旦打分公式回归（如权重算错、跳数衰减失效）很难被发现。这里把
-// 这些纯函数直接单测锁住。
 
 #[cfg(test)]
 mod tests {
@@ -4493,9 +4224,6 @@ mod tests {
 
     #[test]
     fn cjk_segmentation_keeps_unknown_words_beside_known_ones() {
-        // 旧规则是「全有或全无」：整段只要命中过任一已知词，就只保留已知词本身的 bigram。
-        // 「退款审核通过后钱怎么退回」里 `退款` 已知 → `审核` / `退回` 这两个**真正的
-        // 业务词**被一起丢掉，于是只能召回宽泛的 refund、够不到负责退款的 agreeRefund。
         let (terms, _) = parse_query("退款审核通过后钱怎么退回");
         assert!(terms.iter().any(|t| t == "退款"), "已知词保留：{terms:?}");
         assert!(terms.iter().any(|t| t == "审核"), "未收录业务词应保留：{terms:?}");
@@ -4610,11 +4338,6 @@ mod tests {
 
     #[test]
     fn score_node_agreement_prefix_is_weaker_than_full_token_semantically() {
-        // 现状记录（**不是**理想行为，改这里前先看 `score_node` 里的撤销说明）：
-        // `agree` 在 `agreeRefund` 里是完整 token，在 `agreement` 里只是单词内前缀，
-        // 但两者目前**同分**（都走整串 starts_with = 70）。曾尝试分开计分，
-        // 48 条 A/B 实测回退，故保持现状 —— 此断言用于锁住"两者同分"这一事实，
-        // 将来若有人改了分值，这里会失败从而提醒他去跑 A/B。
         let a = tnode(106, "Method", "agreeRefund", None, None);
         let b = tnode(107, "Method", "agreement", None, None);
         let (sa, _) = score_node(&a, &["agree".to_string()], &[], &HashMap::new(), false);
@@ -4722,9 +4445,6 @@ mod tests {
         // 100（精确匹配）× 0.5（纯动词无内容词折扣）× 1.0（退回默认权重）= 50
         assert!((s_gen - 50.0).abs() < 1e-9, "纯 CRUD 方法无内容词应打折并退回 1.0 权重，实际 {s_gen}");
 
-        // 同一纯动词方法若类标识符命中内容词（如优惠券的 edit，类 StoreCouponIssue 含 Coupon），
-        // 应保留 1.5× 加权。注意：目录路径里的 order 不应算内容词 —— 即便 fqn 路径含 order
-        // （如 v1/order/DeliveryService），只要类标识符不含内容词仍应被惩罚。
         let coupon_edit = tnode(
             302,
             "Method",
@@ -4777,11 +4497,6 @@ mod tests {
 
     #[test]
     fn entity_container_nouns_do_not_count_as_content() {
-        // i18n 桥会把「user coupon」这类文案的英文 key 拆出 `user` 灌进 match_terms。
-        // 若实体容器名词（user / member / admin …）被当成内容词，任何 `User*` 类里的
-        // `create` 都会因 fqn 含 `user` 被判「命中内容词」，从而绕过泛 CRUD 抑制、霸占
-        // 无关查询顶部（实测「怎么创建优惠券」被 UserAddressServices::create 夺冠）。
-        // 修复：这类词进 [`GENERIC_NOUNS`]，不得作为内容词豁免折扣 / 动作加权。
         let user_create = tnode(
             401,
             "Method",
@@ -4819,9 +4534,6 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
 
-        // 纯动词方法 `create`，类标识符 token 为 [user, address, services]：
-        // add / create / insert / new 全是通用 CRUD 动词，本来就不具备「内容词」资格；
-        // 其余词（新增 / 优惠 / coupon / discount）都不匹配任何 token → 无内容词。
         let address_create = tnode(
             305,
             "Method",
@@ -5181,9 +4893,6 @@ mod tests {
 
     #[test]
     fn has_content_word_rejects_midword_but_keeps_compound() {
-        // 词中片段不应算命中：`RecorderService` 的 token 是 [recorder, service]，
-        // `order` 只是 `recorder` 的**词中子串**（旧实现拼成 recorderservice 后
-        // contains("order") 会误判），按 token 前缀匹配后不再命中。
         let recorder_save = tnode(
             307,
             "Method",
@@ -5553,9 +5262,6 @@ mod tests {
 
     #[test]
     fn assess_quality_ignores_boilerplate_hits() {
-        // 「优惠」只被 ORM 关联样板命中 → 不算覆盖（样板不含业务信息）。
-        // 三个领域概念（下单 / 优惠 / 支付）中，样板只覆盖「优惠」、真实命中只覆盖「下单」，
-        // 于是「优惠」不算数、覆盖率 1/3 → Low。
         let mut boilerplate = HashSet::new();
         boilerplate.insert(9);
         let hits = vec![qhit(1, 500.0, &["order"]), qhit(9, 480.0, &["coupon"])];
@@ -5587,9 +5293,6 @@ mod tests {
 
     #[test]
     fn assess_quality_without_concepts_cannot_be_high() {
-        // 查询不含任何已知意图概念（领域专有词 / 生僻说法）时，可算概念为空、
-        // 覆盖率取默认 1.0 —— 若不拦住就会出现"越生僻越说没问题"。
-        // 这里用纯 ASCII 无意义串保证必然 OOV（等价于任何生僻领域查询）。
         let hits = vec![qhit(1, 500.0, &["express"]), qhit(2, 100.0, &["delivery"])];
         let (q, _conf, reason, _missing) =
             RecallService::assess_quality("zzzqqx", &hits, &HashSet::new(), &builtin_aliases());
@@ -5599,10 +5302,6 @@ mod tests {
 
     #[test]
     fn action_verbs_excluded_from_quality_concepts() {
-        // 「生成 / 上传 / 修改」是纯动作动词，只表达意图、不含业务语义，不应作为
-        // 质量覆盖率的领域概念。即便其英文展开（generate）没被任何命中覆盖，也不应
-        // 触发「特征词未命中（生成）」的告警，否则「怎么生成商品二维码」会被误判。
-        // 真正决定召回好坏的是「二维码」这类领域概念。
         let aliases = vec![
             ("生成".to_string(), vec!["generate".to_string()]),
             ("二维码".to_string(), vec!["qrcode".to_string()]),
@@ -5620,9 +5319,6 @@ mod tests {
 
     #[test]
     fn recall_quality_serializes_lowercase() {
-        // 必须序列化成小写：UI 按 'high'/'medium'/'low' 判断档位配色，
-        // MCP 的 with_quality_guidance 也按小写匹配后追加"下一步该做什么"。
-        // 默认 derive 会输出 "Medium"（大写）→ 两处同时失灵，且 UI 会**静默显示"高"**。
         assert_eq!(serde_json::to_string(&RecallQuality::High).unwrap(), "\"high\"");
         assert_eq!(serde_json::to_string(&RecallQuality::Medium).unwrap(), "\"medium\"");
         assert_eq!(serde_json::to_string(&RecallQuality::Low).unwrap(), "\"low\"");

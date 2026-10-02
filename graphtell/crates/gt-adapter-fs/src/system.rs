@@ -1,4 +1,4 @@
-//! 基于 `std::fs` 的文件系统实现。
+//! A `std::fs`-based filesystem implementation.
 
 use std::path::{Path, PathBuf};
 
@@ -39,7 +39,7 @@ impl FileSystem for StdFileSystem {
     }
 }
 
-/// 规范化路径（解析 `.` / `..`，不做符号链接解析）。
+/// Normalise a path (resolving `.` / `..`; no symlink resolution).
 pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in path.components() {

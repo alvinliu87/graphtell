@@ -1,42 +1,48 @@
-# PHP 专属的安全类规则。
+# PHP-only security rules.
 #
-# 刻意不做"污点可达性分析"（source 是否真的流到 sink）—— 那需要路径可达计算，
-# 代价与误报率都高。MVP 只报**已确认的事实**：图上识别到了 sink、写端点没识别到鉴权。
-# 措辞也因此一律写成"未识别到 / 需确认"，而不是"存在漏洞"。
+# Deliberately no "taint reachability analysis" (whether a source really flows into a sink) — that
+# needs path-reachability computation and carries a high cost and false-positive rate. The MVP only
+# reports **confirmed facts**: a sink was recognised on the graph, a write endpoint has no recognised
+# auth. The wording is therefore always "not recognised / needs confirmation", never "there is a vulnerability".
 
 rules:
-  # ⚠️ 已停用（enabled: false）—— 不要轻易打开。
+  # ⚠️ Disabled (enabled: false) — do not turn it on lightly.
   #
-  # 停用原因：这条规则的判据是**反向证据**（`no_capability` + `no_annotation`），
-  # 而反向证据只在"正面证据确实存在过"时才成立。实测 8 个工程的 `Capability`
-  # 通道**全为空**（连一个能力标注都没有），且工程 5 的 RouteGroup 节点数为 0，
-  # 于是 FKB 的 `crmeb-public-endpoint` 把 1603 个契约里的 1529 个标成了
-  # `auth.public`（`none_of_capability` 恒真 = 恒等真命题）。
-  # 结果：这条规则永远报 0 条 —— 不是"代码没问题"，而是"规则瞎了"。
-  # 一条**永远报干净**的安全规则比没有这条规则更危险（制造虚假安全感），
-  # 因此在能力推断真正跑通之前必须停用。恢复条件见 remediation。
+  # Why disabled: this rule's criterion is **negative evidence** (`no_capability` + `no_annotation`),
+  # and negative evidence only holds when positive evidence actually existed at some point. Measured
+  # across 8 projects, the `Capability` channel was **entirely empty** (not a single capability
+  # annotation), and project 5 had 0 RouteGroup nodes, so FKB's `crmeb-public-endpoint` marked 1529 of
+  # 1603 contracts as `auth.public` (`none_of_capability` always true = a tautology).
+  # Result: this rule always reports 0 — not "the code is fine", but "the rule went blind".
+  # A security rule that **always reports clean** is more dangerous than having no rule at all (it
+  # manufactures false reassurance), so it must stay disabled until capability inference really works.
+  # See remediation for the conditions to restore it.
   #
-  # 注：现在即使打开也会被 `rules_unavailable` 自动拦下（Capability 通道为空），
-  # 停用是双保险 —— 不为"能跑"留任何侥幸空间。
+  # Note: even if enabled now it would be blocked automatically by `rules_unavailable` (the Capability
+  # channel is empty); disabling is a second lock — leaving no room for "it can run" wishful thinking.
   #
-  # ⚠️ 2026-09 状态更新（Capability 通道在 PHP 上已通之后重测）：
-  # 本条**不再**被 `rules_unavailable` 拦下（CRMEB 上已能跑），但 1603 个候选 **0 命中** ——
-  # 原因是它被 `fkb/php/crmeb.yaml` 的 `crmeb-public-endpoint` **结构架空**：后者用
-  # `none_of_capability` 判"公开端点"，恰好是本规则 `no_capability` 的补集，两者在
-  # **同一个证据源**上互斥且穷尽 —— 写端点要么有鉴权能力、要么已被判为公开，永不相交。
-  # 实测：585 个写端点里 80 个必需鉴权（有能力标注）、5 个可选鉴权、**500 个压根没挂
-  # 鉴权中间件** —— 本规则想报的正是第三类，而它们已被 `auth.public` 排除在外。
-  # 要让它重新有意义，二选一（都需要动代码，勿擅自打开本条）：
-  #   ① 收紧 `crmeb-public-endpoint`：只有彻底没挂鉴权类中间件的才判公开；
-  #     需要一个能读 `route_list.guards` 的新谓词（引擎侧）。
-  #   ② 改成正向规则 —— **已落地为下面的 `write-endpoint-with-optional-auth`**：
-  #     只报「挂了鉴权中间件但实参显式为 false（可选）」的写端点，量小且每条可验证。
+  # ⚠️ 2026-09 status update (re-tested after the Capability channel started working on PHP):
+  # this rule is **no longer** blocked by `rules_unavailable` (it now runs on CRMEB), but gets **0 hits
+  # out of 1603 candidates** — because it is structurally hollowed out by `crmeb-public-endpoint` in
+  # `fkb/php/crmeb.yaml`: the latter uses `none_of_capability` to judge "public endpoint", which is
+  # exactly the complement of this rule's `no_capability`; on the **same evidence source** the two are
+  # mutually exclusive and exhaustive — a write endpoint either has an auth capability or has already
+  # been judged public, so they never intersect.
+  # Measured: of 585 write endpoints 80 require auth (they have capability annotations), 5 have optional
+  # auth, and **500 have no auth middleware at all** — the third group is exactly what this rule wants to
+  # report, and `auth.public` has already excluded them.
+  # To make it meaningful again, pick one (both need code changes; do not enable this entry on your own):
+  #   ① Tighten `crmeb-public-endpoint`: only judge public those with no auth middleware attached at all;
+  #     this needs a new predicate that can read `route_list.guards` (engine side).
+  #   ② Turn it into a positive rule — **already delivered as `write-endpoint-with-optional-auth` below**:
+  #     only report write endpoints "with an auth middleware whose argument is explicitly false (optional)";
+  #     small in number and each one verifiable.
   - id: write-endpoint-without-auth
-    title: 写端点未识别到鉴权能力
+    title: Write endpoint has no auth capability recognised
     description: >-
-      POST / PUT / PATCH / DELETE 这类会改变状态的端点，图上既没有
-      Authentication 能力标注，也没有被标为公开端点。
-      （当前停用：Capability 通道尚无产出，判据不成立。）
+      An endpoint that changes state (POST / PUT / PATCH / DELETE) has neither an Authentication
+      capability annotation on the graph nor an explicit public-endpoint annotation.
+      (Currently disabled: the Capability channel produces nothing yet, so the criterion does not hold.)
     severity: warning
     category: security
     enabled: false
@@ -51,22 +57,27 @@ rules:
           - identity_contains: "delete "
       - no_capability: [Authentication]
       - no_annotation: auth.public
-    message: "写端点 {name} 未识别到鉴权能力（可能确实没做，也可能是图没解析出中间件）"
-    remediation: "确认该端点是否应当鉴权；若中间件已在 FKB 支持范围内仍未被识别，补一条 capability 规则"
+    message: "Write endpoint {name} has no auth capability recognised (it may genuinely have none, or the graph did not resolve the middleware)"
+    remediation: "Confirm whether this endpoint should require auth; if the middleware is within FKB's supported range but still unrecognised, add a capability rule"
 
-  # ⚠️ 上面那条的正向替代品。二者的差别是**判据性质**：
-  #   `write-endpoint-without-auth` 用反向判据（"没有鉴权证据"）—— 证据不存在时恒真，
-  #   实测被 `crmeb-public-endpoint` 结构架空（互补且穷尽 → 永远 0 命中）；
-  #   这条用**正向判据**（"图上确实看到了：挂了鉴权中间件、且实参显式写着 false"），
-  #   只在有确凿事实时才成立，故不受"图没解析出来"的影响。
-  # 报的是"这个写端点未登录也能进"，而不是"它可能没鉴权" —— 措辞与证据强度对齐。
+  # ⚠️ The positive replacement for the rule above. The difference is the **nature of the criterion**:
+  #   `write-endpoint-without-auth` uses a negative criterion ("no auth evidence") — always true when the
+  #   evidence does not exist, and in practice hollowed out by `crmeb-public-endpoint`
+  #   (complementary and exhaustive → always 0 hits);
+  #   this one uses a **positive criterion** ("the graph really saw: an auth middleware is attached and
+  #   its argument explicitly says false"), which only holds on hard evidence and is therefore unaffected
+  #   by "the graph did not resolve it".
+  # It reports "this write endpoint is reachable without login", not "it may lack auth" — wording matched
+  # to evidence strength.
   - id: write-endpoint-with-optional-auth
-    title: 写端点的鉴权是可选的（未登录也能进）
+    title: Write endpoint auth is optional (reachable without login)
     description: >-
-      端点挂了鉴权中间件，但挂载实参显式写着可选（CRMEB 的
-      `AuthTokenMiddleware::class, false`）：登录了就带上身份，没登录也照样放行。
-      「可选」不等于「没有」，所以本条只在图上真看到这个实参时才报 ——
-      没看到就不说话（那属于图没解析出来，不是代码没做）。
+      The endpoint has an auth middleware attached, but the attached argument explicitly says optional
+      (CRMEB's `AuthTokenMiddleware::class, false`): if you are logged in the identity is attached, if
+      not you are let through anyway.
+      "Optional" is not the same as "absent", so this is only reported when the graph actually saw that
+      argument — if it did not see it, it stays silent (that is the graph failing to resolve, not the code
+      failing to do it).
     severity: warning
     category: security
     applies_to:
@@ -79,22 +90,23 @@ rules:
           - identity_contains: "patch "
           - identity_contains: "delete "
       - has_annotation: auth.optional
-    message: "写端点 {name} 挂了鉴权中间件但实参为可选（未登录也能进）—— 请确认这是刻意设计"
+    message: "Write endpoint {name} has an auth middleware but the argument makes it optional (reachable without login) — confirm this is deliberate"
     remediation: >-
-      若该端点必须先登录才能操作（改状态却放行游客通常是漏洞），把挂载实参改成 true；
-      若确实是"登录了带身份、不登录也提供基础功能"的设计，保留即可。
+      If the endpoint must be logged in to operate (letting guests through while changing state is
+      usually a vulnerability), change the attached argument to true;
+      if the design really is "attach identity when logged in, still offer basic features when not", keep it.
 
   - id: raw-sql-sink
-    title: 存在原始 SQL 执行点
+    title: Raw SQL execution site present
     description: >-
-      图上被 Taint 通道标为 sink 的调用点（whereRaw / query / execute / Db::raw …）。
-      只报事实，不判断入参是否来自用户。
+      A call site marked as a sink by the Taint channel (whereRaw / query / execute / Db::raw …).
+      Only the fact is reported; no judgement is made on whether the arguments come from the user.
     severity: warning
     category: security
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 数量上限；超大库可调低以避免一次检查过慢。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases so one check does not get slow.
         kind: number
         default: 5000
         min: 100
@@ -102,22 +114,22 @@ rules:
     applies_to:
       kinds: [CallSite]
       limit: 9000000
-      # Taint 标注目前只有 PHP 的 FKB 产出（Java 工程实测 0 条 Taint 标注），
-      # 不声明语言的话会在 Java 工程上被 `rules_unavailable` 拦下——
-      # 声明出来更能表达"这条规则属于 PHP 生态"这个先验事实。
+      # Taint annotations are currently only produced by the PHP FKB (Java projects measured 0 Taint
+      # annotations); without declaring the language the rule would be blocked by `rules_unavailable` on
+      # Java projects — declaring it also states the prior fact that "this rule belongs to the PHP ecosystem".
       languages: [php]
     when:
       - has_annotation: sink
-    message: "原始 SQL 执行点 {name}（位于 {file}:{line}）—— 需确认入参是否被参数化"
-    remediation: "改用参数化查询；若入参来自用户输入，这是 SQL 注入风险"
+    message: "Raw SQL execution site {name} (at {file}:{line}) — confirm whether the arguments are parameterised"
+    remediation: "Switch to parameterised queries; if arguments come from user input this is an SQL injection risk"
 
   - id: pii-table-needs-review
-    title: 含 PII 的表需复核
+    title: Table containing PII needs review
     description: >-
-      表被标注为含个人信息（手机号 / 身份证等）。MVP 只提示复核，
-      不判断加密与脱敏是否做到位。
-      （注：`pii` 标注由 fkb/php/crmeb.yaml 产出，其余工程暂无此标注，
-      届时会被 `rules_unavailable` 拦下而不是硬报 0 条。）
+      The table is annotated as containing personal information (phone number / national ID, etc.).
+      The MVP only asks for a review; it does not judge whether encryption and masking are adequate.
+      (Note: the `pii` annotation is produced by fkb/php/crmeb.yaml; other projects have no such
+      annotation yet and will then be blocked by `rules_unavailable` rather than hard-reporting 0 hits.)
     severity: warning
     category: security
     applies_to:
@@ -125,17 +137,20 @@ rules:
       languages: [php]
     when:
       - has_annotation: pii
-    message: "表 {name} 被识别为含 PII 字段，需确认加密 / 脱敏 / 访问审计是否到位"
-    remediation: "核对列的存储方式与导出路径；必要时加脱敏中间件"
+    message: "Table {name} was recognised as containing PII fields; confirm that encryption / masking / access auditing are in place"
+    remediation: "Check how the columns are stored and where they are exported; add a masking middleware if needed"
 
-  # ⚠️ 由 P9 Taint 阶段产出 `tainted_raw` 标注（原始 SQL 执行点的 SQL 字符串里直接拼了变量）。
-  # 与 `raw-sql-sink`（只报 sink、warning）互补：这条是"用户数据真的流进去了"的确证，故 critical。
+  # ⚠️ The `tainted_raw` annotation is produced by the P9 Taint phase (a variable is concatenated directly
+  # into the SQL string of a raw SQL execution site).
+  # Complements `raw-sql-sink` (which only reports the sink, at warning): this one is confirmation that
+  # "user data really flowed in", hence critical.
   - id: sql-injection-raw
-    title: 原始 SQL 中拼接了用户数据（SQL 注入）
+    title: User data concatenated into raw SQL (SQL injection)
     description: >-
-      调用点执行原始 SQL（Db::query / Db::execute / Db::raw / whereRaw / whereExp），
-      且 SQL 字符串里直接拼接了变量（来自请求或外部）。无论变量是插值进字符串，
-      还是整段 SQL 由变量传入，都属于高危 SQL 注入。由 P9 Taint 阶段判出。
+      A call site executes raw SQL (Db::query / Db::execute / Db::raw / whereRaw / whereExp) and a
+      variable is concatenated directly into the SQL string (coming from a request or outside). Whether
+      the variable is interpolated into the string or the whole SQL statement is passed in as a variable,
+      both count as high-risk SQL injection. Judged by the P9 Taint phase.
     severity: critical
     category: security
     applies_to:
@@ -144,19 +159,22 @@ rules:
       languages: [php]
     when:
       - has_annotation: tainted_raw
-    message: "原始 SQL 执行点 {name} 的 SQL 直接拼接了变量（位于 {file}:{line}）—— 高危 SQL 注入"
+    message: "The SQL at raw execution site {name} concatenates a variable directly (at {file}:{line}) — high-risk SQL injection"
     remediation: >-
-      改用参数化查询（? / :name 占位符，或 ->where('col = ?', [$var])），
-      不要将用户输入拼进 SQL 字符串；若必须拼表名/列名，走白名单校验。
+      Switch to parameterised queries (? / :name placeholders, or ->where('col = ?', [$var])),
+      never concatenate user input into an SQL string; if a table / column name must be concatenated,
+      validate it against an allowlist.
 
-  # ⚠️ 由 P9 Taint 阶段产出 `tainted_where` 标注（where 条件字符串里直接拼了变量）。
-  # 区别于参数化的 ->where('col = ?', [$var])：这里变量被塞进了条件字符串本身。
+  # ⚠️ The `tainted_where` annotation is produced by the P9 Taint phase (a variable is concatenated
+  # directly into the where-condition string).
+  # Distinct from the parameterised ->where('col = ?', [$var]) form: here the variable is pushed into the
+  # condition string itself.
   - id: sql-injection-where-interp
-    title: where 条件字符串中拼接了用户数据（SQL 注入）
+    title: User data concatenated into the where-condition string (SQL injection)
     description: >-
-      where / whereOr 的条件字符串里直接拼接了变量（如
-      ->where("CONCAT(',',roles,',') LIKE '%,$roles,%'")）。这属于 SQL 注入，
-      与参数化写法（占位符 + 绑定数组）有本质区别。由 P9 Taint 阶段判出。
+      A variable is concatenated directly into the condition string of where / whereOr (e.g.
+      ->where("CONCAT(',',roles,',') LIKE '%,$roles,%'")). This is SQL injection, fundamentally different
+      from the parameterised form (placeholder + bound array). Judged by the P9 Taint phase.
     severity: critical
     category: security
     applies_to:
@@ -165,23 +183,27 @@ rules:
       languages: [php]
     when:
       - has_annotation: tainted_where
-    message: "where 条件 {name} 直接拼接了变量（位于 {file}:{line}）—— SQL 注入风险"
-    remediation: "改用 ->where('col = ?', [$var]) 参数化写法；绝不要把变量写进 SQL 字符串。"
+    message: "where condition {name} concatenates a variable directly (at {file}:{line}) — SQL injection risk"
+    remediation: "Use the parameterised form ->where('col = ?', [$var]); never write a variable into the SQL string."
 
-  # ⚠️ 由 P9 Taint 产出 `tainted_raw_unknown`：变量被拼进原始 SQL，但在本函数内
-  # 追不到请求源（典型是形参，如 `executeSqlItem(array $sqlItem)` 里的 `$sqlItem['sql']`）。
+  # ⚠️ `tainted_raw_unknown` is produced by the P9 Taint phase: a variable is concatenated into raw SQL,
+  # but no request source can be traced inside this function (typically a parameter, e.g. `$sqlItem['sql']`
+  # in `executeSqlItem(array $sqlItem)`).
   #
-  # 为什么单独降级而不是丢弃：真实注入与误报在这个视角下**同形** ——
-  # `SystemAdmin::searchRolesAttr($query, $roles)` 里被拼进 LIKE 的 `$roles` 也是形参。
-  # 一律丢弃会静默漏报，而 `rules_silent` 兜不住（上面那条规则仍有命中）。
-  # 降到 warning 并写清"需确认"，既不冒充高危，也不让问题消失。
+  # Why demote it instead of discarding it: a real injection and a false positive look **identical** from
+  # this angle — the `$roles` concatenated into LIKE inside `SystemAdmin::searchRolesAttr($query, $roles)`
+  # is also a parameter. Discarding everything would silently under-report, and `rules_silent` cannot cover
+  # it (the rule above still has hits). Demoting to warning with clear "needs confirmation" wording neither
+  # pretends to be critical nor lets the problem disappear.
   - id: raw-sql-unknown-source
-    title: 原始 SQL 由变量传入，来源待确认
+    title: Raw SQL passed in as a variable, source to be confirmed
     description: >-
-      调用点执行原始 SQL，但拼进 SQL 的变量在本函数内追不到请求源
-      （多见于是函数参数、或由本函数之外的逻辑拼好传入）。
-      可能是升级脚本/配置文件这类可信来源，也可能是上游把请求数据带了进来 ——
-      本阶段不做跨过程追踪，无法在调用点判定，故只提示不阻断。
+      The call site executes raw SQL, but the variable concatenated into the SQL cannot be traced to a
+      request source inside this function (often a function parameter, or assembled by logic outside this
+      function and passed in).
+      It may be a trusted source such as an upgrade script / config file, or an upstream caller may have
+      brought request data in — this phase does no cross-procedure tracking and cannot decide at the call
+      site, so it only hints and never blocks.
     severity: warning
     category: security
     applies_to:
@@ -190,18 +212,19 @@ rules:
       languages: [php]
     when:
       - has_annotation: tainted_raw_unknown
-    message: "原始 SQL 执行点 {name} 的 SQL 来自变量（位于 {file}:{line}）—— 本函数内未见请求源，需确认上游是否含用户输入"
+    message: "The SQL at raw execution site {name} comes from a variable (at {file}:{line}) — no request source visible inside this function; confirm whether upstream contains user input"
     remediation: >-
-      若该 SQL 最终可能含用户输入，改用参数化查询；若确定来自随包发布的脚本/配置，
-      可在本工程停用本条规则（规则集页支持按工程覆盖）。
+      If that SQL may ultimately contain user input, switch to parameterised queries; if it definitely
+      comes from a script / config shipped with the package, disable this rule for the project
+      (the rule-set page supports per-project overrides).
 
   - id: where-sql-unknown-source
-    title: where 条件由变量传入，来源待确认
+    title: where condition passed in as a variable, source to be confirmed
     description: >-
-      where / whereOr 的条件字符串里含有变量，但本函数内追不到请求源
-      （典型是形参，如 `searchRolesAttr($query, $roles)` 里的 `$roles`）。
-      与 `sql-injection-where-interp` 的区别只是**证据强度**：那条已证实来自请求，
-      这条需人工确认调用方。
+      The condition string of where / whereOr contains a variable, but no request source can be traced
+      inside this function (typically a parameter, e.g. `$roles` in `searchRolesAttr($query, $roles)`).
+      The only difference from `sql-injection-where-interp` is **evidence strength**: that one is proven to
+      come from the request, this one needs a human to confirm the caller.
     severity: warning
     category: security
     applies_to:
@@ -210,19 +233,20 @@ rules:
       languages: [php]
     when:
       - has_annotation: tainted_where_unknown
-    message: "where 条件 {name} 含变量（位于 {file}:{line}）—— 本函数内未见请求源，需确认调用方是否传入用户输入"
-    remediation: "追一层调用方；确认来自请求就改参数化，确认是内部常量/配置则可停用本条规则。"
+    message: "where condition {name} contains a variable (at {file}:{line}) — no request source visible inside this function; confirm whether the caller passes user input"
+    remediation: "Trace one level up to the caller; if it comes from the request, parameterise it; if it is an internal constant / config, disable this rule for the project."
 
-  # ⚠️ 由 P10 Cors 阶段产出 `cors_origin_reflect` 标注（Access-Control-Allow-Origin 被设为
-  # 请求 Origin，反射源站）。再配合 `Access-Control-Allow-Credentials: true` 即泄露用户凭证，
-  # 属高危跨域配置。所有 PHP 工程通用的代码坏味。
+  # ⚠️ The `cors_origin_reflect` annotation is produced by the P10 Cors phase (Access-Control-Allow-Origin
+  # is set to the request Origin — a reflected origin). Combined with
+  # `Access-Control-Allow-Credentials: true` it leaks user credentials; a high-risk CORS configuration and
+  # a code smell common to all PHP projects.
   - id: cors-reflect-origin
-    title: CORS 反射源站（Access-Control-Allow-Origin 设为请求 Origin）
+    title: CORS reflected origin (Access-Control-Allow-Origin set to the request Origin)
     description: >-
-      响应头 Access-Control-Allow-Origin 被直接设为请求的 Origin（或整段
-      Access-Control-Allow-Origin 头由变量拼接）。这会把任意站点的请求都当同源、
-      并（常配合 Access-Control-Allow-Credentials: true）泄露用户凭证，属高危跨域配置。
-      由 P10 Cors 阶段判出。
+      The response header Access-Control-Allow-Origin is set directly to the request's Origin (or the whole
+      Access-Control-Allow-Origin header is assembled from a variable). That treats requests from any site as
+      same-origin and (often together with `Access-Control-Allow-Credentials: true`) leaks user credentials —
+      a high-risk CORS configuration. Judged by the P10 Cors phase.
     severity: error
     category: security
     applies_to:
@@ -231,29 +255,31 @@ rules:
       languages: [php]
     when:
       - has_annotation: cors_origin_reflect
-    message: "Access-Control-Allow-Origin 被设为请求 Origin（位于 {file}:{line}）—— 反射源站，凭证级跨域泄露"
+    message: "Access-Control-Allow-Origin is set to the request Origin (at {file}:{line}) — reflected origin, credential-level cross-origin leak"
     remediation: >-
-      使用固定白名单来源，或按请求 Origin 做「白名单比对后回写」；绝不可把
-      request->header('origin') / $_SERVER['HTTP_ORIGIN'] 原样反射回去。
+      Use a fixed allowlist of origins, or do "compare against the allowlist and echo back" per request;
+      never reflect request->header('origin') / $_SERVER['HTTP_ORIGIN'] back verbatim.
 
-  # ⚠️ 由 P11 Sign 阶段产出 `weak_sign_compare` 标注。
+  # ⚠️ The `weak_sign_compare` annotation is produced by the P11 Sign phase.
   #
-  # 判的是「验签做得对不对」而不是「有没有验签」—— 后者判不了：PHP 排除了 vendor、
-  # Java 不扫 Maven 依赖，EasyWeChat / yansongda-pay / 官方 SDK 的 verify() 不在图里，
-  # 任何"链路上没有验签"的判据都会对每个回调成立（100% 误报）。
+  # This judges "is signature verification done correctly" rather than "is it done at all" — the latter is
+  # undecidable: PHP excludes vendor and Java does not scan Maven dependencies, so the verify() of
+  # EasyWeChat / yansongda-pay / official SDKs is not on the graph, and any "no verification on the chain"
+  # criterion would hold for every callback (100% false positives).
   - id: sign-compare-loose
-    title: 签名用松散比较（== / !=）
+    title: Signature compared with a loose operator (== / !=)
     description: >-
-      外部回调的签名值被 `==` / `!=` 比较。PHP 的松散比较会让 `0e...` 形式的摘要
-      互判相等（`md5('240610708') == md5('QNKCDZO')`），且逐字节短路退出构成
-      计时侧信道。由 P11 Sign 阶段判出：同一函数内存在签名计算（md5 / sha1 /
-      hash_hmac / *Sign()），且签名值被松散比较。
+      A signature value from an external callback is compared with `==` / `!=`. PHP's loose comparison makes
+      digests of the `0e...` form judge each other equal (`md5('240610708') == md5('QNKCDZO')`), and the
+      byte-by-byte early exit creates a timing side channel. Judged by the P11 Sign phase: a signature
+      computation exists in the same function (md5 / sha1 / hash_hmac / *Sign()) and the signature value is
+      compared loosely.
     severity: warning
     category: security
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 数量上限；超大库可调低以避免一次检查过慢。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases so one check does not get slow.
         kind: number
         default: 5000
         min: 100
@@ -264,28 +290,30 @@ rules:
       languages: [php]
     when:
       - has_annotation: weak_sign_compare
-    message: "签名计算 {name} 的结果被用 == / != 比较（位于 {file}:{line}）—— 松散比较 + 非恒定时间"
+    message: "The result of signature computation {name} is compared with == / != (at {file}:{line}) — loose comparison + non-constant time"
     remediation: >-
-      改用 hash_equals($expected, $actual) 做恒定时间比较；先用字符串比较会引入
-      `0e...` 类型混淆与计时侧信道。注意：`===` / `!==` 虽是严格比较，仍非恒定时间，
-      也建议换成 hash_equals。
+      Use hash_equals($expected, $actual) for a constant-time comparison; comparing as strings first
+      introduces `0e...` type confusion and a timing side channel. Note: `===` / `!==` are strict but still
+      not constant time, so hash_equals is recommended there too.
 
-  # ⚠️ 由 P11 Sign 阶段产出 `weak_sign_hash` 标注。
+  # ⚠️ The `weak_sign_hash` annotation is produced by the P11 Sign phase.
   #
-  # 只发 info：微信支付 V2、支付宝旧版、快递鸟等网关**官方就要求 MD5** ——
-  # 报成"漏洞"就是误报，文案必须写成"需确认是否为网关要求"。
+  # Info level only: gateways such as WeChat Pay V2, the legacy Alipay API and Kuaidi100 **officially
+  # require MD5** — reporting that as a "vulnerability" would be a false positive, so the wording must be
+  # "confirm whether the gateway requires it".
   - id: sign-weak-hash
-    title: 签名使用 md5 / sha1
+    title: Signature uses md5 / sha1
     description: >-
-      签名计算用了 md5 或 sha1。多数情况是网关官方要求的（微信支付 V2 的 MD5 签名、
-      支付宝旧版、部分快递 / 打印网关），此时无需改动；需要警惕的是**自研网关**
-      选了弱算法 —— 那意味着签名可被碰撞与伪造。
+      A signature computation uses md5 or sha1. Most of the time the gateway officially requires it
+      (MD5 signatures in WeChat Pay V2, the legacy Alipay API, some shipping / printing gateways), and then
+      nothing needs to change; what deserves attention is a **self-built gateway** choosing a weak algorithm
+      — that means the signature can be collided and forged.
     severity: info
     category: security
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 数量上限；超大库可调低以避免一次检查过慢。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases so one check does not get slow.
         kind: number
         default: 5000
         min: 100
@@ -296,7 +324,7 @@ rules:
       languages: [php]
     when:
       - has_annotation: weak_sign_hash
-    message: "签名使用弱哈希 {name}（位于 {file}:{line}）—— 若为网关官方要求可忽略，自研网关建议升级"
+    message: "Signature uses the weak hash {name} (at {file}:{line}) — ignore if the gateway officially requires it; a self-built gateway should upgrade"
     remediation: >-
-      确认网关文档要求的摘要算法；若是自研 / 可选，升级到 HMAC-SHA256 或 RSA-SHA256，
-      并确保密钥不参与明文拼接。
+      Confirm the digest algorithm the gateway documentation requires; if it is self-built / optional,
+      upgrade to HMAC-SHA256 or RSA-SHA256 and make sure the secret never takes part in plaintext concatenation.

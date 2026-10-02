@@ -1,7 +1,7 @@
-//! 解析器注册中心：语言 → 解析器的映射。
+//! Parser registry: the language -> parser mapping.
 //!
-//! 新增语言只需在此注册一个 [`LanguageParser`] 实现，无需改动上层任何代码
-//! （开闭原则）。
+//! Adding a language only means registering one [`LanguageParser`] implementation here; no upper-layer code
+//! changes (open-closed principle).
 
 use std::collections::HashMap;
 
@@ -15,7 +15,7 @@ use crate::json::JsonParser;
 use crate::php::PhpParser;
 use crate::python::PythonParser;
 
-/// 默认注册中心。
+/// The default registry.
 pub struct DefaultParserRegistry {
     parsers: HashMap<String, Box<dyn LanguageParser>>,
 }
@@ -23,37 +23,28 @@ pub struct DefaultParserRegistry {
 impl DefaultParserRegistry {
     pub fn new() -> Self {
         let mut parsers: HashMap<String, Box<dyn LanguageParser>> = HashMap::new();
-        // 目标：兼容所有主流技术栈。新增语言 = 在这里注册一个 `LanguageParser` 实现，
-        // 上层流水线（P0~P8）无需任何改动。
         if let Ok(p) = PhpParser::new() {
             parsers.insert(Language::PHP.to_string(), Box::new(p));
         }
         if let Ok(p) = JavaParser::new() {
             parsers.insert(Language::JAVA.to_string(), Box::new(p));
         }
-        // Python（第三语言）：装饰器被建模为调用点，与 Java 注解同机制，
-        // 因此 FastAPI 这类框架的语义完全由 FKB 声明（见 fkb/python/fastapi.yaml）。
         if let Ok(p) = PythonParser::new() {
             parsers.insert(Language::PYTHON.to_string(), Box::new(p));
         }
-        // 前端（JS/TS/Vue…）：轻量 HTTP 调用提取器，把「前端→后端」的调用翻成
-        // CallSite，使 P5 能按 FKB 合成 HttpContract 并挂 CallsHttp（与后端 HandledBy
-        // 在同一 ContractId 节点汇聚）。同一实现服务 javascript / typescript。
         if let Ok(p) = JsFrontendParser::new() {
             parsers.insert(Language::JAVASCRIPT.to_string(), Box::new(p));
         }
         if let Ok(p) = JsFrontendParser::new() {
             parsers.insert(Language::TYPESCRIPT.to_string(), Box::new(p));
         }
-        // JSON：解析 uni-app 的 `pages.json` 等路由声明（仅 pages.json 产出事实，
-        // 其余 JSON 不污染语义节点）。新增语言 = 在此注册一个实现，上层无改动。
         if let Ok(p) = JsonParser::new() {
             parsers.insert(Language::new("json").to_string(), Box::new(p));
         }
         Self { parsers }
     }
 
-    /// 注册一个新语言解析器（供扩展/测试使用）。
+    /// Register a new language parser (for extensions / tests).
     pub fn register(&mut self, parser: Box<dyn LanguageParser>) {
         self.parsers.insert(parser.language().to_string(), parser);
     }
@@ -81,7 +72,7 @@ impl ParserRegistry for DefaultParserRegistry {
     }
 }
 
-/// 便捷构造：按语言名取解析器，未知语言返回明确错误。
+/// Convenience constructor: get a parser by language name, returning a clear error for unknown languages.
 pub fn require_parser<'a>(
     registry: &'a dyn ParserRegistry,
     language: &Language,

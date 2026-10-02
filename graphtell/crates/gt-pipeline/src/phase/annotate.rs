@@ -1,8 +1,8 @@
-//! P4 Annotate-Pre / P6 Annotate-Post。
+//! P4 Annotate-Pre / P6 Annotate-Post.
 //!
-//! * **Pre** 的选择器作用在**源码**上（调用点 / 配置条目 / 继承）
-//! * **Post** 的选择器作用在**图节点**上 —— 这是 P6 独有的能力：
-//!   fan_in、`texts` 覆盖率这类"汇聚结果"只有到 P6 才算得准。
+//! * **Pre** selectors act on **source code** (call sites / config entries / inheritance)
+//! * **Post** selectors act on **graph nodes** — a capability unique to P6: aggregates like fan_in or `texts`
+//!   coverage are only accurate by P6.
 
 use std::collections::HashMap;
 
@@ -12,18 +12,18 @@ use crate::context::PipelineContext;
 use crate::engine::{exec_binding, matches_call, matches_config, matches_node, path_matches};
 use crate::eval::MatchCtx;
 
-/// P4：对源码匹配项执行规则（含规则里内嵌的 Synthesize / Link）。
+/// P4: run rules against source-code matches (including Synthesize / Link nested inside the rule).
 pub fn run_pre(ctx: &mut PipelineContext) {
     apply_source_rules(ctx, &Phase(Phase::ANNOTATE_PRE.to_string()));
 }
 
-/// P5：合成阶段。
+/// P5: the synthesis phase.
 pub fn run_synthesize(ctx: &mut PipelineContext) {
     apply_source_rules(ctx, &Phase(Phase::SYNTHESIZE.to_string()));
     apply_inherit_rules(ctx, &Phase(Phase::SYNTHESIZE.to_string()));
 }
 
-/// P6：对图节点执行规则。
+/// P6: run rules against graph nodes.
 pub fn run_post(ctx: &mut PipelineContext) {
     let phase = Phase(Phase::ANNOTATE_POST.to_string());
     let rules_by_sub = collect_rules(ctx, &phase);
@@ -43,7 +43,7 @@ pub fn run_post(ctx: &mut PipelineContext) {
         })
         .collect();
 
-    // 按 node_kind 分组，避免全图遍历
+    // Group by node_kind to avoid walking the whole graph
     let mut by_kind: HashMap<String, Vec<Rule>> = HashMap::new();
     let mut wild: Vec<Rule> = Vec::new();
     for (_sub, rules) in rules_by_sub.iter() {
@@ -82,7 +82,7 @@ pub fn run_post(ctx: &mut PipelineContext) {
     for (id, sub, rules) in targets {
         let app_root = sub.map(|s| app_root_by_sub.get(&s.get()).cloned().unwrap_or_default());
         for rule in &rules {
-            // 配置文件选择器在 Post 阶段按 app_root 展开后再匹配
+            // A config-file selector is expanded by app_root before matching in the Post phase
             if let Selector::ConfigEntry { file: Some(f), .. } = &rule.selector {
                 let _ = (f, &app_root);
                 continue;
@@ -95,8 +95,8 @@ pub fn run_post(ctx: &mut PipelineContext) {
         }
     }
 
-    // 规则跑完后，把权威 schema 的列沉淀成 `Column` 节点（`Table --HasColumn--> Column`）。
-    // 放在最后：它是"读图 + 补图"，不参与规则匹配，也不应被规则再命中一次。
+    // After the rules run, settle the authoritative schema's columns into `Column` nodes (`Table --HasColumn--> Column`).
+    // Last, because it is "read the graph + supplement the graph": it takes no part in rule matching and should not be matched by a rule again.
     crate::phase::columns::materialize(ctx);
 }
 
@@ -104,10 +104,10 @@ fn sub_of(ctx: &PipelineContext, id: gt_domain::model::NodeId) -> Option<SubProj
     ctx.ws.node(id).and_then(|n| n.sub_project_id)
 }
 
-/// 把工程内相对路径转换成「子工程内相对路径」。
+/// Convert an in-project relative path into a "relative to the sub-project" path.
 ///
-/// FKB 里写的 `app/event.php` 是相对**子工程根**的，
-/// 而文件路径是相对**工程根**的（如 `crmeb/app/event.php`）。
+/// FKB writes `app/event.php` relative to the **sub-project root**, while file paths are relative to the
+/// **project root** (e.g. `crmeb/app/event.php`).
 fn sub_relative(ctx: &PipelineContext, sub: Option<SubProjectId>, file: &str) -> String {
     let Some(sub) = sub else { return file.to_string() };
     let Some(s) = ctx.sub_projects.iter().find(|x| x.id == sub) else {
@@ -123,7 +123,7 @@ fn sub_relative(ctx: &PipelineContext, sub: Option<SubProjectId>, file: &str) ->
     file.strip_prefix(&prefix).unwrap_or(file).to_string()
 }
 
-/// 对调用点与配置条目执行某阶段的规则。
+/// Run one phase's rules against call sites and config entries.
 fn apply_source_rules(ctx: &mut PipelineContext, phase: &Phase) {
     let rules_by_sub = collect_rules(ctx, phase);
     let app_root_by_sub: HashMap<i64, String> = ctx
@@ -189,7 +189,7 @@ fn apply_source_rules(ctx: &mut PipelineContext, phase: &Phase) {
     ctx.ws.configs = configs;
 }
 
-/// 配置条目没有节点，借用其所属文件节点作为标注落点。
+/// A config entry has no node, so the file node it belongs to is borrowed as the annotation's landing point.
 fn cfg_node(ctx: &PipelineContext, cfg: &crate::workspace::ConfigRecord) -> gt_domain::model::NodeId {
     ctx.ws.file_node(&cfg.file).unwrap_or_else(|| gt_domain::model::NodeId(1))
 }
@@ -251,7 +251,7 @@ fn dedup(rules: Vec<Rule>) -> Vec<Rule> {
     out
 }
 
-/// 借用规则切片：避免在每次匹配时克隆整份规则集（这是原来的性能瓶颈）。
+/// Borrow the rule slice: avoids cloning the whole rule set on every match (that was the previous performance bottleneck).
 fn rules_for<'a>(map: &'a HashMap<Option<i64>, Vec<Rule>>, sub: Option<SubProjectId>) -> &'a [Rule] {
     match map.get(&sub.map(|s| s.get())) {
         Some(v) => v.as_slice(),

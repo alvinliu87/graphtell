@@ -1,8 +1,8 @@
-//! 以 `samples/thinkphp-projects/CRMEB-master` 为材料的建图集成测试。
+//! A graph-building integration test using `samples/thinkphp-projects/CRMEB-master` as material.
 //!
-//! 这些用例验证的是**端到端结论**，而不是某个函数的返回值：
-//! 子工程是否被正确识别、依赖目录是否被排除、`AppRoot` 是否按 FKB 解析、
-//! 语义节点是否幂等合并、路由链是否真的连上了控制器。
+//! These cases verify **end-to-end conclusions**, not the return value of some function:
+//! whether sub-projects are recognised correctly, dependency directories are excluded, `AppRoot` is resolved by FKB,
+//! semantic nodes merge idempotently, and the route chain really connects to the controller.
 
 mod common;
 
@@ -18,7 +18,7 @@ fn built() -> Option<std::sync::Arc<common::Built>> {
     common::graph()
 }
 
-/// 语义节点判定（与视图一致）：第一类语义 kind（`kinds.rs` 的 `SYNTHESIZED`）。
+/// Semantic-node judgement (consistent with the view): the first-class semantic kind (`SYNTHESIZED` in `kinds.rs`).
 fn is_semantic_node(n: &gt_domain::model::Node) -> bool {
     NodeKind(n.kind.to_string()).is_semantic()
 }
@@ -34,7 +34,7 @@ fn ingest_detects_three_sub_projects() {
     let subs = b.store.list_sub_projects(b.project.id).expect("子工程可读");
     let names: Vec<&str> = subs.iter().map(|s| s.name.as_str()).collect();
 
-    // CRMEB 是一个多技术栈仓库：ThinkPHP 后端 + 两个前端工程
+    // CRMEB is a multi-stack repo: a ThinkPHP backend + two frontend projects
     assert!(
         names.iter().any(|n| n.contains("crmeb")),
         "应识别出后端子工程，实际：{names:?}"
@@ -92,7 +92,7 @@ fn ingest_excludes_dependency_and_asset_dirs() {
         );
     }
 
-    // 静态资源与二进制产物同样不该出现
+    // Static assets and binary artifacts must not appear either
     for ext in [".png", ".jpg", ".woff2", ".zip"] {
         let leaked: Vec<&str> = files
             .iter()
@@ -103,7 +103,7 @@ fn ingest_excludes_dependency_and_asset_dirs() {
         assert!(leaked.is_empty(), "静态资源 {ext} 不应进入待分析集合：{leaked:?}");
     }
 
-    // 但业务源码必须在
+    // But business source must be present
     assert!(
         files.iter().any(|f| f.path.ends_with("crmeb/app/event.php")),
         "业务文件 crmeb/app/event.php 必须在待分析集合里"
@@ -170,8 +170,8 @@ fn cf_ast_follows_model_inheritance_chain() {
         eprintln!("{}", common::skip_reason());
         return;
     };
-    // StoreOrder extends BaseModel extends think\Model —— 末端在 vendor（被排除），
-    // 但继承关系本身必须被记录，否则表推导会全丢
+    // StoreOrder extends BaseModel extends think\Model — the leaf is in vendor (excluded),
+    // but the inheritance relation itself must be recorded, otherwise table inference loses everything
     let store_order = b
         .store
         .query_nodes(&NodeFilter {
@@ -249,7 +249,7 @@ fn prepare_loads_authoritative_symbol_tables() {
         let rows = b.store.list_symbols(pid, table).expect("符号表可读");
         assert!(!rows.is_empty(), "权威表 {table} 不应为空");
     }
-    // schema 来自安装 SQL + 代码中的表名
+    // schema comes from the install SQL + table names in code
     let schema = b.store.list_symbols(pid, "schema").expect("schema 可读");
     assert!(schema.len() > 50, "schema 应装载到大量表，实际 {}", schema.len());
     let user = b
@@ -267,7 +267,7 @@ fn prepare_parses_sql_columns_without_being_cut_by_parentheses() {
         eprintln!("{}", common::skip_reason());
         return;
     };
-    // `int(11)` 里的右括号曾经让列解析提前结束，只剩 `id` 一列
+    // The closing paren in `int(11)` once made column parsing end early, leaving only the `id` column
     let user = b
         .store
         .get_symbol(b.project.id, "schema", "user")
@@ -314,9 +314,6 @@ fn synthesize_creates_http_contract_including_apple_login() {
     );
 }
 
-// 曾因 `tp6-model-table-convention` 的 identity 缺 `side`（合并键含由此推导的 scope），
-// 与 `tp6-db-name-table` 建出的同名表 scope 不一致 → 同一张表出现 2 个节点。
-// 已在 FKB 补齐 `side: backend`，此用例恢复运行并守住该幂等性。
 #[test]
 fn synthesize_merges_table_identity_idempotently() {
     let Some(b) = built() else {
@@ -344,7 +341,7 @@ fn synthesize_merges_table_identity_idempotently() {
         same.len()
     );
 
-    // 多来源汇聚：既有 Db::name 调用处，也有 Model 约定推导
+    // Multi-source convergence: both the Db::name call site and the Model-convention inference
     let props = &same[0].properties;
     let sources = props
         .get("sources")
@@ -403,7 +400,7 @@ fn synthesize_creates_event_mediator_nodes() {
         })
         .expect("查询可读");
     assert!(!events.is_empty(), "应从 app/event.php 合成事件中介节点");
-    // 事件节点的种类直接是 `Event`（不再笼统叫 `ExternalSystem`）；`category` 仅等于 kind。
+    // The event node's kind is directly `Event` (no longer loosely `ExternalSystem`); `category` equals kind only.
     assert!(
         events.iter().all(|n| n.kind.as_str() == "Event"),
         "事件中介节点的种类应为 `Event`（子类型已提升为种类）"
@@ -424,7 +421,7 @@ fn annotate_post_tags_pii_on_tables_with_phone_columns() {
         eprintln!("{}", common::skip_reason());
         return;
     };
-    // store_order 通过 user_phone 变体列名识别出来 —— 只靠 "phone" 硬匹配会漏
+    // store_order is recognised via the user_phone variant column name — a hard match on "phone" alone would miss it
     for table in ["user", "store_order"] {
         let nodes = b
             .store
@@ -524,11 +521,6 @@ fn resolve_links_routes_to_controllers() {
 
 #[test]
 fn fkb_resolves_apple_login_chain_to_semantics() {
-    // 端到端验证「FKB 语义解析」把整条链路连起来：
-    //   ① 类型化参数 → 实例方法调用（`$services->appAuth()`）
-    //   ② 构造器注入的属性类型（`$this->dao`）
-    //   ③ `Dao::setModel() → Model → Table`（`WechatUserDao → WechatUser → wechat_user`）
-    // 断言：从 apple_login 正向能走到 Cache / Table(wechat_user) / ConfigKey。
     let Some(b) = built() else {
         eprintln!("{}", common::skip_reason());
         return;
@@ -564,8 +556,8 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
         "ResolvesTo",
     ];
 
-    // 遍历规则与视图一致：语义节点是**终点**；方法节点额外跳到"声明类"，
-    // 让类级语义边（Dao→Model、Model→Table）浮现。
+    // Traversal rules align with the view: semantic nodes are the **endpoints**; method nodes additionally jump to the "declaring class",
+    // so class-level semantic edges (Dao->Model, Model->Table) surface.
     let mut seen = std::collections::HashSet::new();
     let mut queue = std::collections::VecDeque::new();
     seen.insert(center.id.get());
@@ -637,7 +629,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
          --MapsTo--> wechat_user），实际 {semantic:?}"
     );
 
-    // ① 类型化参数：handler 应有一条 Calls 边指向 `WechatServices::appAuth`。
+    // ① Typed parameter: the handler should have a Calls edge to `WechatServices::appAuth`.
     let handler = b
         .store
         .edges_of(center.id, EdgeDirection::Outgoing)
@@ -659,7 +651,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
         "handler 应调用 WechatServices::appAuth（类型化参数 `WechatServices $services` 解析）"
     );
 
-    // ③ Dao → Model：`WechatUserDao::setModel()` 返回 `WechatUser::class` → ResolvesTo 边。
+    // ③ Dao -> Model: `WechatUserDao::setModel()` returns `WechatUser::class` -> ResolvesTo edge.
     let daos = b
         .store
         .query_nodes(&NodeFilter {
@@ -688,19 +680,19 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
     }
 }
 
-/// 专门验证 `samples/thinkphp-projects/CRMEB-master/crmeb/app/api/route/v1.php` 里的这条路由：
+/// Specifically verify this route in `samples/thinkphp-projects/CRMEB-master/crmeb/app/api/route/v1.php`:
 ///
 /// ```php
 /// Route::post('apple_login', 'v1.LoginController/appleLogin')->name('appleLogin');
 /// ```
 ///
-/// 链路应为：
-/// `POST /apple_login`(HttpContract)
-///   ─HandledBy→ `LoginController::appleLogin`
-///   ─Calls→ `WechatServices::appAuth`            （类型化参数 `WechatServices $services`）
-///   ─Calls→ `CacheService::get` ─ReadsCache→ `Cache`（种类 `Cache`）
-///   ─Calls→ `WechatUserDao` ─ResolvesTo→ `WechatUser` ─MapsTo→ `wechat_user`(Table)
-/// 并读到 `ConfigKey`（sys_config）。
+/// The chain should be:
+/// `POST /apple_login` (HttpContract)
+///   -HandledBy-> `LoginController::appleLogin`
+///   -Calls-> `WechatServices::appAuth`            (typed parameter `WechatServices $services`)
+///   -Calls-> `CacheService::get` -ReadsCache-> `Cache` (kind `Cache`)
+///   -Calls-> `WechatUserDao` -ResolvesTo-> `WechatUser` -MapsTo-> `wechat_user` (Table)
+/// and read `ConfigKey` (sys_config).
 #[test]
 fn apple_login_route_chain_from_v1_php() {
     let Some(b) = built() else {
@@ -729,7 +721,7 @@ fn apple_login_route_chain_from_v1_php() {
             .unwrap_or_default()
     };
 
-    // ---- 1) 契约节点：必须来自 route/v1.php 的第 31 行 ----
+    // ---- 1) Contract node: must come from line 31 of route/v1.php ----
     let contracts = find_nodes(NodeKind::HTTP_CONTRACT, "apple_login");
     let contract = contracts
         .iter()
@@ -773,7 +765,7 @@ fn apple_login_route_chain_from_v1_php() {
         "应解析到 v1\\LoginController::appleLogin"
     );
 
-    // ---- 3) 类型化参数：handler ─Calls→ WechatServices::appAuth ----
+    // ---- 3) Typed parameter: handler -Calls-> WechatServices::appAuth ----
     let calls_app_auth = out_edges(handler)
         .into_iter()
         .filter(|e| e.kind.as_str() == "Calls")
@@ -789,7 +781,7 @@ fn apple_login_route_chain_from_v1_php() {
         "appleLogin 应调用 WechatServices::appAuth（参数 `WechatServices $services` 的类型解析）"
     );
 
-    // ---- 4) 正向链路到达语义节点（语义节点为终点）----
+    // ---- 4) The forward chain reaches semantic nodes (semantic nodes are endpoints) ----
     let chain = [
         "HandledBy",
         "Calls",
@@ -855,7 +847,7 @@ fn apple_login_route_chain_from_v1_php() {
         "链路应到达 ConfigKey（sys_config），实际 {semantic:?}"
     );
 
-    // ---- 5) 关键语义边：Dao → Model → Table ----
+    // ---- 5) Key semantic edges: Dao -> Model -> Table ----
     let dao = find_nodes(NodeKind::CLASS, "WechatUserDao")
         .into_iter()
         .find(|n| n.name == "WechatUserDao")
@@ -873,7 +865,7 @@ fn apple_login_route_chain_from_v1_php() {
         .find(|n| n.name == "wechat_user" && n.kind.as_str() == NodeKind::TABLE)
         .expect("WechatUser --MapsTo--> wechat_user（Table）");
 
-    // ---- 6) 关键语义边：CacheService 读到 Cache（FKB facade 规则）----
+    // ---- 6) Key semantic edge: CacheService reads Cache (FKB facade rule) ----
     let cache_read = find_nodes(NodeKind::CLASS, "CacheService")
         .into_iter()
         .flat_map(|svc| {
@@ -912,7 +904,7 @@ fn calls_edge_records_call_site_node() {
             .unwrap_or_default()
     };
 
-    // 找一条带 call_site 的 Calls 边，验证"调用处"被精确记录在边上（而非靠名字猜）
+    // Find a Calls edge carrying a call_site, verifying the "call site" is recorded precisely on the edge (not guessed by name)
     let mut found: Option<gt_domain::model::Edge> = None;
     for n in b
         .store
@@ -979,7 +971,7 @@ fn resolve_creates_event_trigger_edges() {
     assert!(triggers, "event('x') 应解析出 Triggers 边");
 }
 
-// ---------------------------------------------------------------- 诚实性
+// ---------------------------------------------------------------- Honesty
 
 #[test]
 fn synthesized_nodes_keep_multiple_source_locations() {
@@ -1049,9 +1041,9 @@ fn project_and_sub_project_ids_are_consistent() {
     assert!(subs.iter().any(|s| s.id == SubProjectId(1)));
 }
 
-// ---------------------------------------------------------------- v1.php 专项
+// ---------------------------------------------------------------- v1.php special
 
-/// v1.php 的路由是否进了图：文件被扫描 + 其贡献的 HttpContract 节点存在。
+/// Whether v1.php's routes entered the graph: the file was scanned + its contributed HttpContract nodes exist.
 #[test]
 fn v1_php_routes_are_in_graph() {
     let Some(b) = built() else {
@@ -1059,7 +1051,7 @@ fn v1_php_routes_are_in_graph() {
         return;
     };
 
-    // 1) v1.php 是否被扫描进图
+    // 1) Was v1.php scanned into the graph
     let files = b.store.list_files(b.project.id, None).expect("可读");
     assert!(
         files
@@ -1068,7 +1060,7 @@ fn v1_php_routes_are_in_graph() {
         "v1.php 应被扫描进图"
     );
 
-    // 2) 哪些 HttpContract 节点来自 v1.php
+    // 2) Which HttpContract nodes come from v1.php
     let contracts = b
         .store
         .query_nodes(&NodeFilter {
@@ -1115,12 +1107,12 @@ fn v1_php_routes_are_in_graph() {
     }
 }
 
-/// 直接看 v1.php 的解析产物（原始调用点），不经过整张图。
-/// 队列语义节点应被**框架级** FKB 探测出来（无需任何项目级 FKB）。
+/// Look directly at v1.php's parse product (raw call sites), without going through the whole graph.
+/// Queue semantic nodes should be detected by the **framework-level** FKB (no project-level FKB needed).
 ///
-/// CRMEB 经 `QueueTrait::dispatch` / `crmeb\utils\Queue` 包装使用 `think\facade\Queue`，
-/// 框架规则 `tp6-queue-topic` 通过 `arg:0`（Job 类）+ `owner_class` 兜底（产生调用的类）
-/// 把队列 topic 合成出来；再由传播把 `PublishesTo` 边上溯到各 Service。
+/// CRMEB uses `think\facade\Queue` via `QueueTrait::dispatch` / `crmeb\utils\Queue`; the framework rule `tp6-queue-topic`
+/// synthesises the queue topic through `arg:0` (the Job class) + `owner_class` fallback (the class that produces the call);
+/// propagation then walks the `PublishesTo` edge up to each Service.
 #[test]
 fn synthesize_detects_queues_from_framework_fkb() {
     let Some(b) = built() else {
@@ -1142,7 +1134,7 @@ fn synthesize_detects_queues_from_framework_fkb() {
         !queues.is_empty(),
         "框架级 FKB 应探测出队列节点（CRMEB 经门面/包装/trait 使用 think\\facade\\Queue）"
     );
-    // 每个 Queue 节点都应有至少一条 PublishesTo 入边（谁投递）。
+    // Every Queue node should have at least one PublishesTo in-edge (who publishes).
     let with_publisher = queues
         .iter()
         .filter(|q| {
@@ -1158,8 +1150,8 @@ fn synthesize_detects_queues_from_framework_fkb() {
         "至少部分 Queue 节点应有 PublishesTo 入边，实际 {with_publisher}/{}",
         queues.len()
     );
-    // 队列还应有消费方（HandledBy）：`arg:0` 解析不出时退回 `receiver_class`（被投递的
-    // Job 类），其 `doJob`/`handle` 即为消费入口，使「队列视角」与事件一样看得到消费者。
+    // A queue should also have a consumer (HandledBy): when `arg:0` cannot resolve, fall back to `receiver_class` (the delivered
+    // Job class), whose `doJob`/`handle` is the consumer entry, so the "queue view" sees consumers like events do.
     let with_consumer = queues
         .iter()
         .filter(|q| {
@@ -1177,9 +1169,6 @@ fn synthesize_detects_queues_from_framework_fkb() {
     );
 }
 
-// 曾因「项目级 FKB 的 id 与框架级重名被 by_id 遮蔽」而合成不出 Schedule
-// （fkb/projects/crmeb.yaml 与 fkb/php/crmeb.yaml 都叫 `crmeb`）。项目级那份已改名
-// 为 `crmeb-project` 后规则生效，此用例恢复运行 —— 它也顺带守住这个 id 唯一性。
 #[test]
 fn synthesize_detects_schedules_from_project_fkb() {
     let Some(b) = built() else {
@@ -1201,7 +1190,7 @@ fn synthesize_detects_schedules_from_project_fkb() {
         !schedules.is_empty(),
         "项目级 FKB（crmeb.yaml）应把 crontab/* 路由合成为 Schedule 节点"
     );
-    // 每个 Schedule 节点都应 HandledBy 到对应 CrontabController 方法。
+    // Every Schedule node should HandledBy to its corresponding CrontabController method.
     let with_handler = schedules
         .iter()
         .filter(|s| {
@@ -1219,11 +1208,11 @@ fn synthesize_detects_schedules_from_project_fkb() {
     );
 }
 
-/// Cache 节点必须**按字面量 key 区分**，而不是全库聚成一个 blob；
-/// 且变量 / 表达式实参**绝不能**被当成身份（否则会造出 `$name`、`self::X . $y` 垃圾节点）。
+/// Cache nodes must be distinguished **by literal key**, not collapsed into one global blob;
+/// and variable / expression arguments must **never** be used as identity (otherwise junk nodes like `$name`, `self::X . $y` would be created).
 ///
-/// 曾把 identity 写死为 `literal: "Cache"`：346 条调用边汇到同一节点、`key` 字段被反复
-/// 覆盖只剩最后一个值 —— 既答不了「谁读写了同一缓存键」，也污染了诚信度。
+/// Identity was once hard-coded as `literal: "Cache"`: 346 call edges converged on one node, and the `key` field was overwritten repeatedly leaving only the last value —
+/// neither answering "who read/wrote the same cache key" nor keeping integrity clean.
 #[test]
 fn cache_nodes_split_by_literal_key() {
     let Some(b) = built() else {
@@ -1246,19 +1235,19 @@ fn cache_nodes_split_by_literal_key() {
         caches.iter().map(|n| n.name.as_str()).collect::<Vec<_>>()
     );
 
-    // ① 动态键（`Cache::get($name)` 等）必须回退到统一的 `Cache` 节点。
+    // ① Dynamic keys (`Cache::get($name)` etc.) must fall back to the unified `Cache` node.
     assert!(
         caches.iter().any(|n| n.name == "Cache"),
         "应有动态键兜底节点 `Cache`，实际 {:?}",
         caches.iter().map(|n| n.name.as_str()).collect::<Vec<_>>()
     );
-    // ② 至少出现一个字面量键节点（如 `crontabCache`）。
+    // ② At least one literal-key node (e.g. `crontabCache`) should appear.
     assert!(
         caches.iter().any(|n| n.name != "Cache"),
         "应按字面量 key 拆分出节点（如 crontabCache），实际 {:?}",
         caches.iter().map(|n| n.name.as_str()).collect::<Vec<_>>()
     );
-    // ③ 绝不能把变量 / 表达式文本当成身份（合法字面量键不含 `$` 与 `::`）。
+    // ③ A variable / expression text must never be used as identity (a valid literal key contains neither `$` nor `::`).
     for n in &caches {
         assert!(
             !n.name.starts_with('$'),
@@ -1321,23 +1310,22 @@ fn v1_php_parse_result() {
     assert!(!route_calls.is_empty(), "v1.php 应解析出 Route 调用点");
 }
 
-/// 门面短名必须按**文件自己的 `use`** 解析，不能退回全局短名索引去猜。
+/// Facade short names must be resolved by **the file's own `use`**, not fall back to the global short-name index to guess.
 ///
-/// `crmeb/crmeb/services/CacheService.php` 里写的是 `use think\facade\Cache;`，
-/// 而项目里恰好有一个 Model 叫 `app\model\other\Cache`（`protected $name = 'cache'`）。
-/// 若用全局短名索引解析，`Cache::tag($tag)->remember(...)` 就会被当成那个 Model，
-/// 于是每一次缓存调用都凭空多出一条 `Calls` 边，并把
-/// `Model --MapsTo--> Table(cache)` 这条**类级**语义边沿调用链拖到每个路由上。
+/// `crmeb/crmeb/services/CacheService.php` writes `use think\facade\Cache;`, while the project happens to have a Model named
+/// `app\model\other\Cache` (`protected $name = 'cache'`). With global short-name-index resolution, `Cache::tag($tag)->remember(...)`
+/// would be treated as that Model, so every cache call would spuriously gain a `Calls` edge and drag the
+/// `Model --MapsTo--> Table(cache)` class-level semantic edge onto every route along the call chain.
 ///
-/// 这是 PHP 的名字解析规则（按文件），与框架无关；`Request` / `Route` / `Response`
-/// 等同样有同名项目类，受同一条规则保护。
+/// This is PHP's name-resolution rule (per file), framework-agnostic; `Request` / `Route` / `Response` etc. have same-named project
+/// classes too, protected by the same rule.
 #[test]
 fn facade_short_name_resolves_per_file_import() {
     let Some(b) = built() else {
         eprintln!("{}", common::skip_reason());
         return;
     };
-    // `name_contains` 匹配的是节点的 `name`，所以先按短名粗筛、再按 fqn 精确定位。
+    // `name_contains` matches the node's `name`, so coarse-filter by short name first, then locate precisely by fqn.
     let by_fqn = |fqn: &str| -> Option<gt_domain::model::Node> {
         let short = fqn.rsplit(['\\', ':']).next().unwrap_or(fqn);
         b.store
@@ -1363,8 +1351,8 @@ fn facade_short_name_resolves_per_file_import() {
         return;
     };
 
-    // `Cache::...` 在这个文件里是 `think\facade\Cache`（图外，vendor 已排除），
-    // 因此**不该**解析到项目里的同名 Model。
+    // `Cache::...` in this file is `think\facade\Cache` (outside the graph, vendor excluded),
+    // so it should **not** resolve to the same-named project Model.
     let bogus = b
         .store
         .edges_of(remember.id, EdgeDirection::Outgoing)
@@ -1378,7 +1366,7 @@ fn facade_short_name_resolves_per_file_import() {
          `use think\\facade\\Cache;` 是图外的框架类，短名解析不能退回全局同名类"
     );
 
-    // 该 Model 自身的类级语义边必须完好（修的是"猜错调用"，不是"删掉这个类"）。
+    // That Model's own class-level semantic edges must be intact (the fix is "guessed the wrong call", not "deleted the class").
     let maps_to = b
         .store
         .edges_of(model.id, EdgeDirection::Outgoing)

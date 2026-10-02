@@ -1,7 +1,7 @@
-//! 端口（Port）：内核对外界能力的**抽象需求**。
+//! Ports: the kernel's **abstract requirements** for capabilities from the outside world.
 //!
-//! 六边形架构中，端口由内核定义、由适配器实现（依赖倒置）。
-//! 内核与所有具体技术（SQLite / tree-sitter / 文件系统 / YAML）解耦。
+//! In a hexagonal architecture ports are defined by the kernel and implemented by adapters (dependency inversion).
+//! The kernel is decoupled from every concrete technology (SQLite / tree-sitter / filesystem / YAML).
 
 pub mod filesystem;
 pub mod knowledge;

@@ -1,16 +1,16 @@
-//! gt-app 视角层集成测试（组装根 → 建图 → 视角切片）。
+//! gt-app view-layer integration tests (composition root → build graph → view slicing).
 //!
-//! 以真实的 `samples/CRMEB-master`（3 个子工程、2178 个源文件）为原料，经由 `Container`
-//! 装配全部适配器，跑一遍完整建图，再用 `ViewService` 验证一/二级筛选器与各视角切片。
+//! Uses the real `samples/CRMEB-master` (3 sub-projects, 2178 source files) as material, assembles all adapters via `Container`,
+//! runs a full build, then uses `ViewService` to verify the first/second-level filters and each view slice.
 //!
-//! **依赖体积过大的真实样本（不入库，见 `samples/` 的 .gitignore 规则）**：
-//! 样本存在时正常执行；不存在时每个用例走 `built()` 的软跳过分支（打印"跳过"后
-//! return），**不会**把缺失伪装成通过。
+//! **Depends on an oversized real sample (not in repo, see `samples/`'s .gitignore rules):**
+//! when the sample exists, run normally; when absent, each case takes `built()`'s soft-skip branch (prints "skip" then
+//! return), and will **not** disguise absence as passing.
 //!
-//! 例外两条仍标 `#[ignore]`（各自写明原因）：
-//!   * `object_view_characterization_invoice_detail` —— 特征化快照需按参考样本重新校准；
-//!   * `eval_recall_scenarios`（在 `eval_recall.rs`）—— 需要 bge-m3 模型权重。
-//! 想强制跑被 ignore 的用例：`cargo test -p gt-app -- --ignored`。
+//! Two exceptions still marked `#[ignore]` (each states why):
+//!   * `object_view_characterization_invoice_detail` — characterization snapshot needs recalibration against the reference sample;
+//!   * `eval_recall_scenarios` (in `eval_recall.rs`) — needs bge-m3 model weights.
+//! To force ignored cases: `cargo test -p gt-app -- --ignored`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -22,15 +22,15 @@ use gt_domain::port::{
     EdgeDirection, GraphQuery, NodeFilter, NoopObserver, Persistence, RuleProvider, SystemClock,
 };
 
-/// 在 `dir/samples` 下定位 CRMEB 样本。
+/// Locate the CRMEB sample under `dir/samples`.
 ///
-/// 样本实际按技术栈**多层分类**放置（如 `samples/php-projects/thinkphp/CRMEB`），
-/// 且目录名可能带或不带 `-master` 后缀。早期只匹配 `samples/*/CRMEB-master`
-/// （一层 + 后缀），与真实布局不符 → 样本明明在磁盘上却匹配不到 → 整组用例
-/// 走 `built()` 的软跳过分支，仍被计为 passed，实则**零覆盖**。
-/// 这里改为在 `samples/` 下有限深度递归查找，不再依赖具体层级与命名。
+/// The sample is actually placed in a **multi-level taxonomy** by tech stack (e.g. `samples/php-projects/thinkphp/CRMEB`),
+/// and the dir name may or may not carry a `-master` suffix. Earlier we only matched `samples/*/CRMEB-master`
+/// (one level + suffix), mismatching the real layout → the sample is clearly on disk but not matched → the whole group
+/// takes `built()`'s soft-skip branch, still counted as passed, but in fact **zero coverage**.
+/// Here we switch to a bounded-depth recursive search under `samples/`, no longer depending on concrete level or naming.
 fn under_samples(dir: &Path) -> Option<PathBuf> {
-    /// 在 `dir` 内最多找 `depth` 层；返回字典序第一个命中（结果稳定）。
+    /// Search at most `depth` levels within `dir`; return the lexicographically first hit (stable result).
     fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
         if depth == 0 {
             return None;
@@ -54,7 +54,7 @@ fn under_samples(dir: &Path) -> Option<PathBuf> {
     search(&dir.join("samples"), 3)
 }
 
-/// 在 `CARGO_MANIFEST_DIR` 向上查找 `samples/**/CRMEB-master`。
+/// Search upward from `CARGO_MANIFEST_DIR` for `samples/**/CRMEB-master`.
 fn find_sample() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -83,7 +83,7 @@ struct Built {
     project_id: gt_domain::model::ProjectId,
 }
 
-/// 跑一次完整建图并缓存（同一测试二进制内只跑一遍）。
+/// Run a full build once and cache it (only once per test binary).
 fn built() -> Option<Arc<Built>> {
     static CACHE: OnceLock<Option<Arc<Built>>> = OnceLock::new();
     CACHE
@@ -143,7 +143,7 @@ fn skip() -> &'static str {
     "跳过：未找到 CRMEB 样本（可用 GRAPHTELL_SAMPLE_DIR 指定）"
 }
 
-/// 该视角是否在 `views/perspectives.yaml` 里注册（未注册的聚合视角无从断言）。
+/// Whether this perspective is registered in `views/perspectives.yaml` (unregistered aggregate perspectives can't be asserted).
 fn registered(views: &ViewService, pid: gt_domain::model::ProjectId, id: &str) -> bool {
     views
         .perspectives(pid)
@@ -152,7 +152,7 @@ fn registered(views: &ViewService, pid: gt_domain::model::ProjectId, id: &str) -
         .any(|p| p["id"].as_str() == Some(id))
 }
 
-/// 返回一个确有候选的对象类视角 (perspective_id, center_node_id)。
+/// Return an object-kind perspective that really has candidates (perspective_id, center_node_id).
 fn first_object_target(
     views: &ViewService,
     pid: gt_domain::model::ProjectId,
@@ -194,7 +194,7 @@ fn container_assembles_adapters() {
         ids.iter().any(|i| *i == "route" || *i == "table"),
         "视角应至少含 route/table"
     );
-    // HTTP 路由能正常装配（冒烟，不启动服务）。
+    // HTTP routing assembles normally (smoke, no service started).
     let _router = b.container.router();
 }
 
@@ -220,9 +220,6 @@ fn aggregate_deploy_unit_clusters() {
         return;
     };
     let views = view_svc(&b);
-    // `deploy_unit` / `platform` 两个聚合视角在 `views/perspectives.yaml` 里尚未启用
-    // （注释标着"MVP 暂不实现"）。没启用时 `aggregate_view` 只会返回 NotFound，
-    // 这条用例无处可施力 —— 明确跳过，而不是把"视角不存在"当成视角实现有问题。
     if !registered(&views, b.project_id, "deploy_unit") {
         eprintln!("跳过：deploy_unit 视角未在 views/perspectives.yaml 中启用");
         return;
@@ -281,19 +278,19 @@ fn object_view_chain_and_hidden() {
     assert!(!ov.center.name.is_empty());
     assert_eq!(ov.center.ring, 0, "中心节点应在 0 环");
     assert!(!ov.hidden.note.is_empty(), "必须给出省略说明（诚实性）");
-    // 候选**不再**由对象视图回带：前端下拉按需请求 `/view/{p}/candidates`，
-    // 在每次对象视图里重算「5000 个候选逐个 BFS 打分」纯属浪费（见 `ObjectView` 注释）。
+    // Candidates are **no longer** brought back by the object view: the frontend dropdown requests `/view/{p}/candidates` on demand,
+    // recomputing "score 5000 candidates one-by-one BFS" inside every object view is pure waste (see `ObjectView` comment).
 }
 
-/// 折叠视图允许出现的节点：**只能是语义节点**，一个例外都不留。
+/// Nodes allowed in the folded view: **only semantic nodes**, no exceptions.
 ///
-/// 两类"塌缩兜底"曾让语法节点上网开一面：
-/// * 资源视角：与中心直连、上游无语义发起者的访问方（Seeder / 迁移脚本 / Console 命令…）
-///   —— 把资源视角降解成了调用图（名字不可寻址、不回答"谁触发"、吃掉画布额度）；
-/// * 入口视角：前端 `Function --CallsHttp--> 契约` 的调用方。
+/// Two kinds of "collapse fallback" once let syntax nodes slip through:
+/// * resource perspective: accessors directly connected to the center with no semantic emitter upstream (Seeder / migration scripts / Console commands…)
+///   — degraded the resource perspective into a call graph (names unaddressable, doesn't answer "who triggers", eats canvas quota);
+/// * entry perspective: the caller of a frontend `Function --CallsHttp--> contract`.
 ///
-/// 二者现在一律降级为 `ObjectView.orphans` 记账：不占画布，但带名字、关系与接触点
-/// 位置，绝不静默省略。画布因此严格等于"语义节点 + 语义边"。
+/// Both are now downgraded to `ObjectView.orphans` accounting: not on the canvas, but carry name, relation, and touch-point
+/// location, never silently omitted. The canvas thus strictly equals "semantic nodes + semantic edges".
 fn assert_visible_node_ok(_ov: &gt_domain::model::ObjectView, n: &gt_domain::model::NodeView) {
     let semantic = gt_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some();
     assert!(
@@ -305,16 +302,6 @@ fn assert_visible_node_ok(_ov: &gt_domain::model::ObjectView, n: &gt_domain::mod
 
 #[test]
 fn object_view_default_is_semantic_only() {
-    // 折叠（默认）视图必须「只显示对人类有意义的语义节点 / 语义边」：
-    // * 不出现 Method / CallSite / Class 等语法节点与 Calls / HasCallSite 等语法边；
-    //   上游找不到语义发起者的直接访问方（Seeder / 迁移脚本 / Console 命令…）
-    //   **也不再点亮**：它们降级进 `orphans` 记账（带接触点位置），不占画布。
-    //   曾把它们画成直连的语法节点，理由是"不画就空图、与徽标矛盾"——
-    //   代价是资源视角降解成调用图；现在矛盾由 orphans 这一行记账消解。
-    //   入口视角的前端 HTTP 调用方（`Function --CallsHttp--> 契约`）同样降级记账，
-    //   于是画布**严格**只剩语义节点 + 语义边。
-    // * 不出现指向不可见节点的悬空边；
-    // * 二级候选按"价值"降序（前端默认打开价值最高的那个）。
     let Some(b) = built() else {
         eprintln!("{}", skip());
         return;
@@ -324,7 +311,7 @@ fn object_view_default_is_semantic_only() {
         eprintln!("没有可用的对象类视角候选，跳过");
         return;
     };
-    // 取价值最高的候选（`candidates` 已按语义依赖价值降序）。
+    // Take the highest-value candidate (`candidates` already sorted by semantic-dependency value descending).
     let cands = views
         .candidates(b.project_id, &pid, 5, None, None)
         .expect("candidates");
@@ -342,7 +329,7 @@ fn object_view_default_is_semantic_only() {
         .object_view(b.project_id, &pid, top.id, Some(2))
         .expect("object_view");
 
-    // 语义节点 = 第一类语义 kind，或带 `category`（外部系统子类型 Cache / Event / Queue…）。
+    // Semantic node = first-class semantic kind, or carries `category` (external-system subtype Cache / Event / Queue…).
     let is_semantic = |n: &gt_domain::model::NodeView| {
         gt_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some()
     };
@@ -375,8 +362,8 @@ fn object_view_default_is_semantic_only() {
 
 #[test]
 fn object_view_resource_center_shows_its_users() {
-    // 资源类中心（Table / ConfigKey / Cache…）的关系方向是**反向**的：
-    // 语义边由使用者指向资源，所以视图必须回答"谁在用它"，而不是给出一张空图。
+    // Resource-kind centers (Table / ConfigKey / Cache…) have **reversed** relation direction:
+    // semantic edges point from the user to the resource, so the view must answer "who is using it", not show an empty graph.
     let Some(b) = built() else {
         eprintln!("{}", skip());
         return;
@@ -422,10 +409,6 @@ fn object_view_resource_center_shows_its_users() {
             e.from.get(),
             e.to.get()
         );
-        // **方向**必须保持「使用者 --语义边--> 资源」：`ReadsDb` / `ReadsCache` / `WritesDb`
-        // 这些谓语的主语是使用者，`to` 才是资源。曾按"由内向外"把两端对调，
-        // 于是每条边都成了「资源 → 使用者」（表现为 `表·cache --读库--> GET /verify_code`），
-        // 箭头、hover 卡的 `from → to`、Inspector 的「起点 / 终点」全部与谓语语义相反。
         assert_eq!(
             e.to.get(),
             ov.center.id.get(),
@@ -441,10 +424,9 @@ fn object_view_resource_center_shows_its_users() {
     }
 }
 
-/// 孤儿访问（上游找不到任何语义入口的直接访问方）必须**降级记账而非点亮**：
-/// * 不出现在画布上（既不进 `rings`，也不是任何边的端点）；
-/// * 但必须出现在 `orphans` 里，且带名字与"它对资源做了什么"——
-///   否则"徽标说有访问、图里查无此人"的静默省略又回来了。
+/// Orphan access (direct accessors with no semantic entry upstream) must be **downgraded to accounting, not lit up**:
+/// * not appear on the canvas (neither in `rings` nor as any edge endpoint);
+/// * but must appear in `orphans`, carrying name and "what it did to the resource" —
 #[test]
 fn orphan_access_is_accounted_not_drawn() {
     let Some(b) = built() else {
@@ -486,18 +468,17 @@ fn orphan_access_is_accounted_not_drawn() {
     eprintln!("校验孤儿记账 {checked} 条（数量取决于工程，为 0 亦合法）");
 }
 
-/// 事件视角：画布 = 中心事件 + **产消两侧的稳定角色**。
+/// Event perspective: canvas = center event + **stable roles on both producer and consumer sides**.
 ///
-/// * 消费侧：`HandledBy`（`事件 --由…处理--> 监听器`）的语法端点沿 `Declares` 提升为
-///   监听器**类**节点，边随之成为可点击展开的画布边。
-/// * 触发侧：`Triggers`（`触发点 --触发--> 事件`）的触发方直接升为可见节点并画出
-///   **富化的画布边**（起点 = 调用链上游 / 语义入口、`via` = 中间调用方 … 触发点、
-///   `to_call_site` = dispatch 调用处）——「谁触发事件」是事件视角的核心事实，
-///   不能只留在 orphans 记账里（否则画布残缺一半）。
-/// * 其余一般直连访问方仍降级进 `ObjectView.orphans` 记账（带接触点位置）。
+/// * consumer side: the syntax endpoint of `HandledBy` (`event --handled by…--> listener`) is promoted via `Declares` to the listener
+///   **class** node, the edge becomes a clickable-expandable canvas edge.
+/// * trigger side: the trigger of `Triggers` (`trigger point --triggers--> event`) is directly promoted to a visible node and drawn as an
+///   **enriched canvas edge** (start = upstream of the call chain / semantic entry, `via` = intermediate callers … trigger point,
+///   `to_call_site` = dispatch call site) — "who triggers the event" is the event perspective's core fact,
+///   can't stay only in orphans accounting (otherwise the canvas is half-missing).
+/// * other general direct accessors still downgrade into `ObjectView.orphans` accounting (with touch-point location).
 ///
-/// 本条验证：① 画布上的 `Triggers` 边（若有触发方）其触发端点是可见节点、且带
-/// dispatch 调用处；② `HandledBy` 边的监听器端点可见；③ 视图不空。
+/// This case verifies: ① the `Triggers` edge on the canvas (if a trigger exists) has its trigger endpoint as a visible node and carries the dispatch call site; ② the `HandledBy` edge's listener endpoint is visible; ③ the view isn't empty.
 #[test]
 fn event_view_syntactic_accessors_collapse_to_orphans() {
     let Some(b) = built() else {
@@ -520,7 +501,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
     let visible: std::collections::HashSet<i64> =
         ov.rings.iter().flatten().map(|n| n.id.get()).collect();
 
-    // ① 触发方升为可见节点：`Triggers` 边应画出，触发端点在画布上、并带 dispatch 调用处。
+    // ① trigger promoted to visible node: the `Triggers` edge should be drawn, the trigger endpoint on canvas, carrying dispatch call site.
     let trigger_edges: Vec<_> = ov.edges.iter().filter(|e| e.kind == "Triggers").collect();
     for e in &trigger_edges {
         assert!(
@@ -534,7 +515,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
             (e.from, e.to)
         );
     }
-    // 孤儿记账里不应再出现已画成边的触发方（降级只留给富化失败的情形）。
+    // Orphans accounting should no longer contain a trigger already drawn as an edge (downgrade only for enrichment-failed cases).
     let trigger_orphans = ov
         .orphans
         .iter()
@@ -547,7 +528,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
         trigger_orphans
     );
 
-    // ② 消费者（监听器）升为可见节点：`HandledBy` 边应出现，且其另一端在画布上可见。
+    // ② consumer (listener) promoted to visible node: the `HandledBy` edge should appear, and its other end is visible on canvas.
     let handled_edges: Vec<_> = ov.edges.iter().filter(|e| e.kind == "HandledBy").collect();
     for e in &handled_edges {
         assert!(
@@ -557,7 +538,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
         );
     }
 
-    // ③ 视图不空：产/消两侧的画布边 或 直连记账，至少其一。
+    // ③ view not empty: canvas edges on producer/consumer side, or direct accounting, at least one.
     assert!(
         !ov.edges.is_empty() || !ov.orphans.is_empty(),
         "事件视角不应是一张空图"
@@ -591,9 +572,6 @@ fn edge_evidence_verifies_chain() {
         eprintln!("无对象节点，跳过 edge 断言");
         return;
     };
-    // `edge_evidence` 验证的是**真实链路边**的证据，所以要直接用库里的真实边 id：
-    // 视图里的边在折叠后经过"提拉"（一条真实边可能对应多条视图边），
-    // 反向视角（资源类中心）的边更是合成出来的（id 为负），都不能当证据 id 用。
     let store = &b.container.store;
     let edges = store
         .edges_of(nid, EdgeDirection::Both)
@@ -613,12 +591,12 @@ fn edge_evidence_verifies_chain() {
     );
 }
 
-/// 折叠视图里**经过折叠**的语义边，其 `via` 末端必须落在**真实接触点**上：
-/// 该接触点自己持有一条指向该资源的**直接**语义边（P5 命中，带 `evidence`）。
+/// A folded semantic edge in the folded view must have its `via` end land on a **real touch point**:
+/// that touch point itself holds a **direct** semantic edge to the resource (hit at P5, with `evidence`).
 ///
-/// 反例：P8 传播边只陈述"上游可达该资源"，它**不是路径**。若拿它当 `via` 末端，
-/// 链路就断在发现深度上，画出"路由自己读了缓存"这种伪路径（真实接触点在几跳之外）。
-/// 这条不变量与边的种类（读库 / 读缓存 / 投递…）无关，对任何仓库都应成立。
+/// Counterexample: a P8 propagation edge only states "upstream reachable to this resource", it **is not a path**. If used as the `via` end,
+/// the chain breaks at discovery depth, drawing fake paths like "the route itself read the cache" (the real touch point is several hops away).
+/// This invariant is independent of edge kind (read DB / read cache / publish…), should hold for any repo.
 #[test]
 fn folded_semantic_edges_end_at_real_contact() {
     let Some(b) = built() else {
@@ -643,7 +621,7 @@ fn folded_semantic_edges_end_at_real_contact() {
             continue;
         };
         for e in &ov.edges {
-            // 只看经过折叠的（`via` 非空的）语义边；直连边由起点自己负责。
+            // Only look at folded (`via` non-empty) semantic edges; direct edges are the start's own responsibility.
             let Some(contact) = e.via.last() else {
                 continue;
             };
@@ -672,17 +650,16 @@ fn folded_semantic_edges_end_at_real_contact() {
     );
 }
 
-/// **资源视角**下的同一条不变式（上面那条只测了 `route` 视角，于是漏掉了这个方向）。
+/// The **same invariant** under the resource perspective (the above only tested the `route` perspective, thus missed this direction).
 ///
-/// `Cache` 这类共享资源被反向展开时，折叠入边的 `via` 末端也必须是**真实接触点**
-/// （自己持有一条带 `evidence` 的直接语义边），不能停在 P8 传播边这条"捷径"回溯出的
-/// 上游调用者上 —— 否则填 `to_call_site` 时无证据可依，就会在环路里任取一个同资源读者。
+/// When a shared resource like `Cache` is expanded in reverse, the folded in-edge's `via` end must also be a **real touch point**
+/// (holding a `evidence`-bearing direct semantic edge), not stop on the upstream caller back-tracked via P8's propagation edge "shortcut" —
+/// otherwise when filling `to_call_site` there's no evidence to rely on, and it would pick any same-resource reader in the loop.
 ///
-/// 实测反例：`PUT /setting/seckill_data/set_status/:id/:status` 经
+/// Measured counterexample: `PUT /setting/seckill_data/set_status/:id/:status` via
 /// `SystemGroupData::set_status` → `CacheService::clear()` → `Cache::tag('crmeb')->clear()`
-/// （`CacheService.php:98`）触达缓存；但缓存视角把 `via` 停在 `set_status`，再把
-/// `DataMigrationServices.php:53` 的 `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)`
-/// 当作"本链路访问缓存的位置" —— 该路由根本没碰那个键。
+/// (`CacheService.php:98`) reaches the cache; but the cache perspective stops `via` at `set_status`, then treats
+/// `DataMigrationServices.php:53`'s `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)` as "where this chain accesses the cache" — that route never touched that key.
 #[test]
 fn cache_view_folded_edges_end_at_real_contact() {
     let Some(b) = built() else {
@@ -703,7 +680,7 @@ fn cache_view_folded_edges_end_at_real_contact() {
             continue;
         };
         for e in &ov.edges {
-            // 只看经过折叠的（`via` 非空的）语义边；直连边由起点自己负责。
+            // Only look at folded (`via` non-empty) semantic edges; direct edges are the start's own responsibility.
             let Some(contact) = e.via.last() else {
                 continue;
             };
@@ -735,11 +712,6 @@ fn cache_view_folded_edges_end_at_real_contact() {
         violations.join("\n")
     );
 
-    // 具体回归：`PUT /setting/seckill_data/set_status/:id/:status` 若出现在缓存视角，
-    // 其"访问缓存的位置"必须落在 `CacheService.php`（它经 `CacheService::clear()` →
-    // `Cache::tag('crmeb')->clear()` 触达缓存），**不得**是别的同资源读者
-    // （曾错标为 `DataMigrationServices.php:53` 的 `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)`，
-    // 而该路由根本没碰那个键）。
     let center = cands.iter().find(|c| c.name == "Cache");
     let route = store
         .query_nodes(&NodeFilter {
@@ -776,10 +748,10 @@ fn cache_view_folded_edges_end_at_real_contact() {
     }
 }
 
-/// 具体回归：`GET /v2/order/invoice_detail/:uni` 到 `Cache` 曾画出 3 条 `ReadsCache`，
-/// 且每条的 `via` 都是截断的（有一条甚至只有 `[detail]`，等于断言 `detail` 自己读缓存）。
+/// Concrete regression: `GET /v2/order/invoice_detail/:uni` to `Cache` once drew 3 `ReadsCache` edges,
+/// and each `via` was truncated (one had only `[detail]`, equal to asserting `detail` itself read the cache).
 ///
-/// 真实情况只有**两条完整到达路径**，且都汇到同一个接触点 `CacheService::remember`：
+/// The real situation has only **two complete arrival paths**, both converging on the same touch point `CacheService::remember`:
 ///   detail → tidyOrder → SystemConfigService::more → CacheService::remember
 ///   detail → getQRCodePath → UploadService::init → SystemConfigService::more → CacheService::remember
 #[test]
@@ -838,21 +810,21 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
             "应给出本链路访问缓存的位置（CacheService.php 的 Cache::tag()->remember()）"
         );
     }
-    // 曾经的伪路径形态：via 只有一跳，等于说 handler 自己读了缓存。
+    // Former fake-path shape: via only one hop, equal to saying the handler itself read the cache.
     assert!(
         !cache_edges.iter().any(|e| e.via.len() <= 1),
         "不应再出现单跳的断尾伪路径：{desc:?}"
     );
 }
 
-/// 回归：路由契约 → handler（`detail`）这一跳必须给出「调用处」（路由注册行），
-/// 而不是在折叠链第一跳就显示「未解析到调用语句」。
+/// Regression: the route contract → handler (`detail`) hop must give a "call site" (route registration line),
+/// not show "no call statement resolved" at the first hop of the folded chain.
 ///
-/// 折叠链里每一跳的 `via[i].call_site` 是「上一跳调用本跳的语句」：
-/// `tidyOrder` 的调用处是 `StoreOrderInvoiceController.php:120`（在 `detail` 体内），
-/// 那么 `detail` 自己的调用处就应该是**路由注册处**（`Route::get('invoice_detail', …)`）。
-/// `HttpContract` 是合成节点（无 `file_id`），`node_source_location` 返回 `None`，
-/// 故 `call_site_between` 改用 `node_locations` 取它汇聚的路由文件+行号。
+/// Each hop's `via[i].call_site` in the folded chain is "the statement that called this hop":
+/// `tidyOrder`'s call site is `StoreOrderInvoiceController.php:120` (inside `detail`'s body),
+/// so `detail`'s own call site should be the **route registration** (`Route::get('invoice_detail', …)`).
+/// `HttpContract` is a synthesized node (no `file_id`), `node_source_location` returns `None`,
+/// so `call_site_between` uses `node_locations` to get the route file+line it converges on.
 #[test]
 fn invoice_detail_route_first_hop_has_call_site() {
     let Some(b) = built() else {
@@ -894,21 +866,21 @@ fn invoice_detail_route_first_hop_has_call_site() {
     assert!(checked > 0, "应检查到至少一条经由 detail 的折叠边");
 }
 
-/// **特征测试（characterization test）**：钉住 `object_view` 对一个固定路由的完整输出形状。
+/// **Characterization test**: pin the full output shape of `object_view` for a fixed route.
 ///
-/// 存在的唯一目的：`object_view` 是个近千行的折叠流程，将来拆分 / 优化时，
-/// 任何"顺手改坏"都必须在这里立刻暴露 —— 边数、按种类的分布、via 长度分布、
-/// 间接边与证据覆盖率、可见环分布，任一项变了都说明行为变了。
+/// Its only purpose: `object_view` is a near-thousand-line fold flow; when split / optimized later,
+/// any "casual breakage" must surface here immediately — edge count, distribution by kind, via-length distribution,
+/// indirect-edge and evidence coverage, visible-ring distribution; any change means behavior changed.
 ///
-/// 它不是"正确性"断言（正确性是下面两个用例的事），而是**行为不变**的护栏。
-// 特征化（characterization）护栏：断言 invoice_detail 对象视图的**边分布快照**。
-// 它守的不是"正确性"，而是"行为不变" —— 数字一旦变化必须**显式**接受并写明原因，
-// 绝不能悄悄放过。
+/// It is not a "correctness" assertion (correctness is the two cases below), but a **behavior-unchanged** guard rail.
+// characterization guard rail: assert the **edge-distribution snapshot** of the invoice_detail object view.
+// It guards "behavior unchanged", not "correctness" — once numbers change, they must be **explicitly** accepted and the reason written,
+// never silently passed.
 //
-// 本快照已按当前参考样本（CRMEB v6.0.0）重新校准：边总数 31 → 35，多出 4 条为
-// `{ForeignKey: 1, PassesThrough: 3}` —— 分别来自后加的 P6 表外键与 P14 中间件晋升，
-// 二者属**直连结构边**，因此 `indirect`（31）不再等于边总数（35）。
-// 核心指标未变：ReadsCache 2、ReadsConfig 28、最长 via 链 5 跳。
+// This snapshot was recalibrated against the current reference sample (CRMEB v6.0.0): edge total 31 → 35, the extra 4 are
+// `{ForeignKey: 1, PassesThrough: 3}` — from the later-added P6 table foreign keys and P14 middleware promotion, both being
+// **direct structural edges**, so `indirect` (31) no longer equals the edge total (35).
+// Core metrics unchanged: ReadsCache 2, ReadsConfig 28, longest via chain 5 hops.
 #[test]
 fn object_view_characterization_invoice_detail() {
     let Some(b) = built() else {
@@ -949,7 +921,7 @@ fn object_view_characterization_invoice_detail() {
         }
     }
     via_len.sort_unstable();
-    // 校准用诊断：快照漂移时直接照这里打印的实际值更新下方断言，不必再猜。
+    // Calibration diagnostic: when the snapshot drifts, update the assertions below directly from the actual values printed here, no need to guess.
     eprintln!(
         "[characterize] total={} by_kind={:?} indirect={} with_loc={} max_via={} via1={} orphans_calls_http={}",
         ov.edges.len(),
@@ -961,14 +933,7 @@ fn object_view_characterization_invoice_detail() {
         ov.orphans.iter().filter(|o| o.edge_kind == "CallsHttp").count(),
     );
 
-    // 31 → 35：多出的 4 条是 `{ForeignKey: 1, PassesThrough: 3}`（P6 表外键 + P14
-    // 中间件晋升，均为后加能力）。前端 `Function --CallsHttp--> 契约` 这条直连边仍
-    // 撤在画布外、降级进 `orphans` 记账（画布严格只留语义节点）—— 事实没丢，
-    // 换了呈现位置（见下方 orphans 断言）。
     assert_eq!(ov.edges.len(), 35, "边总数变了：{:?}", by_kind);
-    // 前端契约桥：uni-app 的 `` request.get(`v2/order/invoice_detail/${id}`) ``
-    // （模板串 URL）已能与该后端路由按**参数形状**汇聚，这条 `CallsHttp` 改记在
-    // `orphans` 里（画布不再出现前端函数这个语法节点）。
     assert_eq!(
         ov.orphans
             .iter()
@@ -987,21 +952,17 @@ fn object_view_characterization_invoice_detail() {
         28,
         "ReadsConfig 边数变了"
     );
-    // 画布 35 条边里**31 条**是沿后端调用链提拉/传播得来的间接资源读写；
-    // 另 4 条（ForeignKey 1 + PassesThrough 3）是 P6 / P14 落下的**直连结构边**，
-    // 它们本来就不是"沿链推导"出来的，故 indirect 不再等于边总数 —— 这是新增能力
-    // 带来的预期差异，不是 indirect 判定被改坏。
     assert_eq!(
         indirect, 31,
         "间接（提拉/传播）边数变了，说明 indirect 判定被改坏"
     );
-    // 34 条能给出资源访问位置；缺的那 1 条是结构边（无调用点可引），属预期。
+    // 34 can give a resource-access location; the missing 1 is a structural edge (no call site to cite), expected.
     assert_eq!(
         with_loc, 34,
         "能给出访问位置的边数变了，说明证据选取被改坏"
     );
-    // 关键：**最长链必须到 5 跳**（detail → getQRCodePath → init → more → remember），
-    // 若折叠/回溯被改坏，最长链会退回 2~3 跳。
+    // Key: **the longest chain must reach 5 hops** (detail → getQRCodePath → init → more → remember),
+    // if folding/back-tracking is broken, the longest chain falls back to 2~3 hops.
     assert_eq!(
         via_len.last().copied().unwrap_or(0),
         5,
@@ -1013,11 +974,14 @@ fn object_view_characterization_invoice_detail() {
     );
 }
 
-/// 计划任务视角：`Schedule` 是**入口类**节点（CRMEB 的项目级 FKB 把 `crontab/...` 路由合成
-/// Schedule 节点），它的依赖全在**出边**：`Schedule --HandledBy--> handler →Calls→ … → ReadsCache`，
-/// 入边恒为 0。曾把它当作"资源类中心"沿入边回溯 ⇒ 一条边也走不到：环全空、`hidden.total = 0`，
-/// 画布上只剩一个孤零零的中心节点（外加一圈空的"1 跳"参考环）；而二级候选的徽标按 3 跳评分
-/// 却写着"语义依赖 1" —— 列表说有、图里没有，两处自相矛盾。
+/// Schedule perspective: `Schedule` is an **entry-kind** node (CRMEB's project-level FKB synthesizes `crontab/...` routes into
+/// Schedule nodes), its dependencies are all in **out-edges**: `Schedule --HandledBy--> handler →Calls→ … → ReadsCache`,
+/// in-edges always 0. Once treated as a "resource-kind center" and walked back along in-edges ⇒ not a single edge reachable: rings all empty, `hidden.total = 0`,
+/// the canvas only has a lone center node (plus a ring of empty "1-hop" references); yet the second-level candidate badge scores by 3 hops
+/// but says "semantic dependency 1" — the list says yes, the graph says no, the two contradict.
+///
+/// Concretely: `crontab/set_open/:id/:is_open` via `SystemCrontab::setTimerStatus`
+/// → `SystemCrontabServices::setTimerStatus` reads cache, the view must show this dependency.
 #[test]
 fn schedule_view_follows_outgoing_chain() {
     let Some(b) = built() else {
@@ -1033,8 +997,8 @@ fn schedule_view_follows_outgoing_chain() {
         "计划任务视角应有候选（CRMEB 的 crontab 路由）"
     );
 
-    // 具体回归：`crontab/set_open/:id/:is_open` 经 `SystemCrontab::setTimerStatus`
-    // → `SystemCrontabServices::setTimerStatus` 读缓存，视图里必须看得见这条依赖。
+    // Concrete regression: `crontab/set_open/:id/:is_open` via `SystemCrontab::setTimerStatus`
+    // → `SystemCrontabServices::setTimerStatus` reads cache, the view must show this dependency.
     if let Some(c) = cands
         .iter()
         .find(|c| c.name.starts_with("crontab/set_open"))
@@ -1068,13 +1032,6 @@ fn schedule_view_follows_outgoing_chain() {
                 e.to.get()
             );
         }
-        // 这条计划任务的依赖与"路由视角"对同一个 handler 的结论必须一致：
-        // `SystemCrontabServices::setTimerStatus` 实际做的是
-        //   `Cache::delete('crontabCache')` + `Cache::set(...)`（147 / 148 行）
-        // 外加 `$this->dao->update(...)`（145 行）—— 即**写**库 + **写**缓存，
-        // 全工程没有任何一处 `Cache::get('crontabCache')` 落在这条链上
-        // （唯一的读在 `SystemCrontabServices::crontabCommandRun`，与本任务无关）。
-        // 中间两跳（控制器方法 → 服务方法）以 `via` 链给出，并能给出写缓存的那一行。
         let cache = ov
             .edges
             .iter()
@@ -1104,8 +1061,8 @@ fn schedule_view_follows_outgoing_chain() {
         eprintln!("图里没有 crontab/set_open 计划任务，跳过具体断言");
     }
 
-    // 通用不变量：徽标里的"语义依赖 N"是 3 跳内可达的语义节点数（`semantic_value`）。
-    // N > 0 ⇒ 同一对象在视图里**必须**画得出边，否则列表与画布互相打脸。
+    // General invariant: the badge's "semantic dependency N" is the count of semantic nodes reachable within 3 hops (`semantic_value`).
+    // N > 0 ⇒ the same object must **draw** an edge in the view, otherwise the list and canvas contradict each other.
     let mut checked = 0usize;
     let mut dead: Vec<String> = Vec::new();
     for c in cands.iter() {
@@ -1119,7 +1076,7 @@ fn schedule_view_follows_outgoing_chain() {
         if value == 0 {
             continue;
         }
-        // 用打分一致的 3 跳取视图，避免把"深度不够"误判成"方向错了"。
+        // Use the score-consistent 3-hop view, to avoid misjudging "insufficient depth" as "wrong direction".
         let ov = views
             .object_view(b.project_id, "schedule", c.id, Some(3))
             .expect("object_view");
@@ -1136,11 +1093,11 @@ fn schedule_view_follows_outgoing_chain() {
     );
 }
 
-/// 空依赖的计划任务（或路由）视角：画布只剩一个中心节点时，必须给出一条"提示"结论，
-/// 把"画面空了 = 视图坏了"的错觉消除掉，同时说明这通常就是真实情况。
+/// Empty-dependency Schedule (or route) perspective: when the canvas only has a center node, must give a "hint" conclusion,
+/// dispelling the illusion "empty canvas = broken view", while explaining this is usually the real situation.
 ///
-/// 不变量：**空图 ⇔ 带提示**，二者必须同时出现 / 同时消失 ——
-/// 否则要么空图没解释（看着像坏了），要么有链路还硬塞提示（误导）。
+/// Invariant: **empty graph ⇔ with hint**, the two must appear / disappear together —
+/// otherwise either an empty graph has no explanation (looks broken), or a real chain still gets a forced hint (misleading).
 #[test]
 fn empty_entry_view_carries_hint() {
     let Some(b) = built() else {
@@ -1190,14 +1147,14 @@ fn empty_entry_view_carries_hint() {
     }
 }
 
-/// 「读 + 写」必须一起报，不能只报一边。
+/// "Read + write" must be reported together, not just one side.
 ///
-/// 折叠视图里一个使用者对同一资源只画**一条**边（按 `action_strength` 择优，写 > 读）。
-/// 于是一个既读又写的接触点（`Db::name('store_bargain')->find()` 与 `->update()` 常
-/// 同在一个方法里）只会显示成读库**或**写库 —— 单边都是失真。
+/// In the folded view, one user draws only **one** edge to the same resource (pick by `action_strength`, write > read).
+/// So a touch point that both reads and writes (`Db::name('store_bargain')->find()` and `->update()` often
+/// in the same method) would only show as read-DB **or** write-DB — either side is distortion.
 ///
-/// 契约：被压掉的另一半必须记在 `EdgeView::also_kinds` 上，且**只能**是同一资源的
-/// 另一半（库 ↔ 库、缓存 ↔ 缓存），不许跨资源混搭（那说明标签张冠李戴）。
+/// Contract: the suppressed other half must be recorded on `EdgeView::also_kinds`, and **only** the other half of the same resource
+/// (DB ↔ DB, cache ↔ cache), no cross-resource mixing (that would mean mislabeled).
 #[test]
 fn read_write_at_same_contact_is_reported_together() {
     let Some(b) = built() else {
@@ -1235,7 +1192,7 @@ fn read_write_at_same_contact_is_reported_together() {
                     e.kind,
                     e.also_kinds
                 );
-                // 库 ↔ 库、缓存 ↔ 缓存；不许库与缓存混在一处。
+                // DB ↔ DB, cache ↔ cache; no DB and cache mixed in one place.
                 let db = all.iter().all(|k| k.ends_with("Db"));
                 let cache = all.iter().all(|k| k.ends_with("Cache"));
                 assert!(

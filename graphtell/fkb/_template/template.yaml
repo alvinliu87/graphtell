@@ -1,18 +1,18 @@
 # ============================================================================
-# GraphTell FKB 模板 —— 复制本文件，改名为 <framework>.yaml，放到 fkb/<语言>/ 下。
-# 详细规则见 docs/fkb-authoring.md。
+# GraphTell FKB template — copy this file, rename it to <framework>.yaml, and put it under fkb/<language>/.
+# See docs/fkb-authoring.md for the detailed rules.
 #
-# 最小可运行：id / display_name / language / rules 四项是骨架；
-# detectors 决定「对谁生效」；semantic_kinds 决定「新节点会不会被看见」。
-# 写完后跑 `graphtell validate --fkb-dir fkb` 校验。
+# Minimum to run: id / display_name / language / rules are the skeleton;
+# detectors decide "who it applies to"; semantic_kinds decide "whether the new nodes are visible".
+# When done, run `graphtell validate --fkb-dir fkb` to check.
 # ============================================================================
 
-id: my-framework            # 全局唯一；同名外部目录会覆盖内置
+id: my-framework            # globally unique; an external directory with the same name overrides the built-in
 display_name: My Framework
-language: php               # 开放字符串：php / java / javascript / … 决定应用到哪些子工程
-version_hint: "*"           # 仅展示
+language: php               # open string: php / java / javascript / … decides which sub-projects it applies to
+version_hint: "*"           # display only
 
-# --- 如何识别本框架（命中后才生效；语言通用层才打开 apply_without_detection）---
+# --- how to detect this framework (only takes effect after a hit; open apply_without_detection only for a language-common layer) ---
 detectors:
   - kind: manifest_dependency
     manifest: composer.json
@@ -21,47 +21,47 @@ detectors:
   # - kind: file_exists
   #   path: some-marker-file.php
 
-# --- 本 FKB 引入的「新语义节点种类」（不在内核清单时必须声明，否则折叠视图隐藏它）---
+# --- "new semantic node kinds" introduced by this FKB (must be declared when absent from the kernel list, otherwise the folded view hides them) ---
 # semantic_kinds: [MyKind]
 
-# --- 本 FKB 引入的「新边种类」（与 semantic_kinds 同构，无需改 kinds.rs）---
-# 大多数情况应复用内置边种类（ReadsDb/WritesCache/HandledBy…）；确实要新边才声明：
-# semantic_edge_kinds: [SendsWebhook]   # 新语义边
-# bridge_edge_kinds:   [MyBridge]       # 新桥边
+# --- "new edge kinds" introduced by this FKB (isomorphic to semantic_kinds; no kinds.rs change needed) ---
+# Most of the time you should reuse the built-in edge kinds (ReadsDb/WritesCache/HandledBy…); declare a new edge only when you really need one:
+# semantic_edge_kinds: [SendsWebhook]   # a new semantic edge
+# bridge_edge_kinds:   [MyBridge]       # a new bridge edge
 
-# --- 对同语言所有子工程生效（仅当本文件不含强框架假设时打开）---
+# --- applies to every sub-project of the same language (open only when this file carries no strong framework assumption) ---
 # apply_without_detection: true
 
-# --- 排除目录（叠加默认规则）---
+# --- excluded directories (layered on top of the default rules) ---
 exclude_globs:
   - "vendor/**"
   - "node_modules/**"
 
 rules:
-  # 例：抽出「缓存读取」语义节点（记得 side，进程外中介必写）
+  # e.g. extract a "cache read" semantic node (remember `side`; out-of-process mediators must have it)
   - id: my-cache-read
     phase: Synthesize
     selector:
       kind: call
-      callee: "Cache::get|*Cache::get"      # `|`=或；`*`=通配（按语言分隔符）
+      callee: "Cache::get|*Cache::get"      # `|` = or; `*` = wildcard (per the language separator)
     binding:
       - Synthesize:
-          node: Cache                       # 直接用具体种类（不要再写 ExternalSystem+subtype）
+          node: Cache                       # use the concrete kind directly (do not write ExternalSystem+subtype)
           identity:
             kind: Named                     # Fqn | Named | ContractId
-            value: { arg: 0, require_literal: true }   # 取第 0 实参且须为字面量
+            value: { arg: 0, require_literal: true }   # take argument 0 and require it to be a literal
             value_fallback: { literal: "Cache" }
           fields:
             - name: key
               value: { arg: 0, require_literal: true }
-            - name: side                    # ★ 进程外中介/资产类节点必写 side
+            - name: side                    # * out-of-process mediator / asset nodes must set side
               value: { literal: "backend" } #   backend | frontend
           link:
-            kind: ReadsCache                # 内置语义边（见指南 §5.4）
+            kind: ReadsCache                # built-in semantic edge (see the guide, section 5.4)
             direction: incoming             # incoming | outgoing | to_target
           confidence: 0.85
 
-  # 例：只建一条边（不造节点）
+  # e.g. build one edge only (no node created)
   # - id: my-link
   #   phase: Synthesize
   #   selector:

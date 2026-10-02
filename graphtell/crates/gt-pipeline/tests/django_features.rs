@@ -1,20 +1,21 @@
-//! Django ORM 端到端自检（合成工程，无需外部样本）。
+//! Django ORM end-to-end self-check (synthetic project, no external sample needed).
 //!
-//! 覆盖「模型字段声明 → `Column`（`HasColumn`）」「模型关联 → `References` →
-//! `Project` 投影成 `ForeignKey`（表 → 表）」这条链 —— 与 TypeORM / Laravel / ThinkPHP
-//! 同一套边与 `Project` 动作，区别只在 Python 解析器把 `name = models.CharField(...)`
-//! 字段声明翻成「类.字段」调用点（见 `gt-adapter-parser/src/python/mod.rs`）。
+//! Covers the chain "model field declaration -> `Column` (`HasColumn`)" and "model relation -> `References` ->
+//! `Project` projected into `ForeignKey` (table -> table)" — the same edges and `Project` action as TypeORM /
+//! Laravel / ThinkPHP, differing only in that the Python parser turns a `name = models.CharField(...)` field
+//! declaration into a `class.field` call site (see `gt-adapter-parser/src/python/mod.rs`).
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter};
 
 mod common;
 
-/// 合成 Django 工程：User（两个标量字段）+ Post（一个标量字段 + FK + M2M）。
+/// Synthetic Django project: User (two scalar fields) + Post (one scalar field + FK + M2M).
 ///
-/// User / Post 写在**同一文件** `myapp/models.py`：关系字段 `ForeignKey(User, ...)`
-/// 的首个位置实参 `User` 是类名标识符，解析器在「未被 import」时退回 `{module}.User`
-/// (= `myapp.models.User`)，恰好等于真实类 FQN，故 `References` 能连上，无需额外 import。
+/// User / Post are written in the **same file** `myapp/models.py`: the relation field `ForeignKey(User, ...)`'s
+/// first positional argument `User` is a class-name identifier; when "not imported", the parser falls back to
+/// `{module}.User` (= `myapp.models.User`), which happens to equal the real class FQN, so `References` connects
+/// without an extra import.
 fn synthetic_django_root() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "graphtell-django-orm-{}-{}",
@@ -58,7 +59,7 @@ fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<Node> {
         .expect("query")
 }
 
-/// 名为 `from` 的节点是否有指定种类的出边连到名为 `target` 的节点。
+/// Whether the node named `from` has an out-edge of a given kind reaching the node named `target`.
 fn links_to_named(b: &common::Built, kind: &str, from: &str, edge: &str, target: &str) -> bool {
     let Some(src) = nodes_of_kind(b, kind).into_iter().find(|n| n.name == from) else {
         return false;
@@ -72,8 +73,8 @@ fn links_to_named(b: &common::Built, kind: &str, from: &str, edge: &str, target:
         .any(|n| n.name == target)
 }
 
-/// 名为 `from` 的节点指定种类出边连到的目标里，是否有某个种类 == `target_kind` 的节点。
-/// 用于「模型类 → 列」这类目标身份含完整 FQN、不便按短名匹配的断言。
+/// Among the targets reached by `from`'s out-edge of a given kind, whether any node has kind == `target_kind`.
+/// Used for assertions like "model class -> column" where the target identity carries the full FQN and is awkward to match by short name.
 fn links_to_kind(b: &common::Built, kind: &str, from: &str, edge: &str, target_kind: &str) -> bool {
     let Some(src) = nodes_of_kind(b, kind).into_iter().find(|n| n.name == from) else {
         return false;
@@ -87,7 +88,7 @@ fn links_to_kind(b: &common::Built, kind: &str, from: &str, edge: &str, target_k
         .any(|n| n.kind.as_str() == target_kind)
 }
 
-/// 名为 `from` 的节点指定种类出边连到的、且目标种类为 `target_kind` 的边数。
+/// The number of `from`'s out-edges of a given kind whose target kind is `target_kind`.
 fn out_edge_count_to_kind(b: &common::Built, kind: &str, from: &str, edge: &str, target_kind: &str) -> usize {
     let Some(src) = nodes_of_kind(b, kind).into_iter().find(|n| n.name == from) else {
         return 0;
@@ -109,20 +110,20 @@ fn django_model_fields_become_columns_and_relations_become_foreign_keys() {
         panic!("合成 Django 工程建图应成功");
     };
 
-    // 模型 → 表（snake_plural + strip_namespace + singularize）：User → user，Post → post
+    // Model -> table (snake_plural + strip_namespace + singularize): User -> user, Post -> post
     let tables: Vec<String> = nodes_of_kind(&b, "Table").iter().map(|n| n.name.clone()).collect();
     assert!(
         tables.iter().any(|t| t == "user") && tables.iter().any(|t| t == "post"),
         "应产出 user / post 两张表，实际：{tables:?}"
     );
 
-    // 标量字段 → Column：`User.name` / `User.email` / `Post.title`
+    // Scalar field -> Column: `User.name` / `User.email` / `Post.title`
     let cols: Vec<String> = nodes_of_kind(&b, "Column").iter().map(|n| n.name.clone()).collect();
     assert!(cols.iter().any(|c| c.contains("User.name")), "User.name 应成为列，实际：{cols:?}");
     assert!(cols.iter().any(|c| c.contains("User.email")), "User.email 应成为列，实际：{cols:?}");
     assert!(cols.iter().any(|c| c.contains("Post.title")), "Post.title 应成为列，实际：{cols:?}");
 
-    // 关系字段**不是**普通列：外键 / 多对多字段不该进 Column
+    // A relation field is **not** an ordinary column: FK / M2M fields must not enter Column
     assert!(
         !cols.iter().any(|c| c.contains("Post.author")),
         "ForeignKey 字段不该是普通列，实际：{cols:?}"
@@ -132,7 +133,7 @@ fn django_model_fields_become_columns_and_relations_become_foreign_keys() {
         "ManyToManyField 字段不该是普通列，实际：{cols:?}"
     );
 
-    // HasColumn：模型类 → 列（字段级影响面可下钻）
+    // HasColumn: model class -> column (field-level impact is drillable)
     assert!(
         links_to_kind(&b, "Class", "Post", "HasColumn", "Column"),
         "Post 模型应经 HasColumn 连到列"
@@ -142,27 +143,27 @@ fn django_model_fields_become_columns_and_relations_become_foreign_keys() {
         "User 模型应经 HasColumn 连到列"
     );
 
-    // References：模型 → 模型（Post.author → User）
+    // References: model -> model (Post.author -> User)
     assert!(
         links_to_named(&b, "Class", "Post", "References", "User"),
         "Post 应经 References 连到 User（ForeignKey 持有方）"
     );
-    // Post 只有一条 References 边（author → User）；tags 是字符串引用、无类常量实参 → 不建边
+    // Post has only one References edge (author -> User); tags is a string reference with no class-constant argument -> no edge
     assert_eq!(
         out_edge_count_to_kind(&b, "Class", "Post", "References", "Class"),
         1,
         "Post 应只有 1 条 References 边（author→User），字符串引用的 tags 不该建边"
     );
 
-    // 表级外键：`References` 经 `Project` 投影，两端各沿 `MapsTo` 落到表
+    // Table-level foreign key: `References` projected via `Project`, each end landing on a table along `MapsTo`
     assert!(
         links_to_named(&b, "Table", "post", "ForeignKey", "user"),
         "post 表应经 ForeignKey 连到 user 表"
     );
 }
 
-/// `models.ManyToManyField("Tag")` 的实参是**字符串**（非类常量），取不到目标类，
-/// 应根据 `require_class` 跳过、不建悬空 `References` 边（与 PHP 的 `morphTo()` 同处理）。
+/// The argument of `models.ManyToManyField("Tag")` is a **string** (not a class constant), so the target class cannot
+/// be resolved and, per `require_class`, it should be skipped without building a dangling `References` edge (same handling as PHP's `morphTo()`).
 #[test]
 fn django_relation_with_string_target_is_skipped() {
     let dir = std::env::temp_dir().join(format!(
@@ -193,8 +194,8 @@ class Post(models.Model):
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
         panic!("建图应成功");
     };
-    // 没有任何 References 边（目标 "Tag" 是字符串、且此处 Tag 已声明但仍是字符串引用，
-    // 解析器不解析字符串里的类名）—— 不应编造悬空边。
+    // No References edge at all (the target "Tag" is a string, and here Tag is declared but still a string reference,
+    // the parser does not parse class names inside strings) — no fabricated dangling edge.
     let refs = nodes_of_kind(&b, "Class")
         .iter()
         .filter(|n| n.name == "Post")
@@ -204,8 +205,8 @@ class Post(models.Model):
     assert_eq!(refs, 0, "字符串引用的关系不应建 References 边");
 }
 
-/// `urls.py` 的 `path(route, view)` → `HttpContract`（`ANY` 方法 + route 路径）+ `HandledBy`
-/// 连到视图函数。Django 不编码 HTTP method，故契约方法用通配 `ANY`（匹配任意前端调用方法）。
+/// `path(route, view)` in `urls.py` -> `HttpContract` (`ANY` method + route path) + `HandledBy`
+/// connecting to the view function. Django does not encode the HTTP method, so the contract method uses the wildcard `ANY` (matches any frontend call method).
 #[test]
 fn django_url_routes_become_http_contracts() {
     let dir = std::env::temp_dir().join(format!(
@@ -248,7 +249,7 @@ urlpatterns = [
         panic!("建图应成功");
     };
 
-    // 每个 path() 一条 HttpContract，方法通配 ANY
+    // One HttpContract per path(), method wildcard ANY
     let contracts: Vec<Node> = nodes_of_kind(&b, "HttpContract");
     let names: Vec<&str> = contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
@@ -261,7 +262,7 @@ urlpatterns = [
     );
     assert_eq!(contracts.len(), 2, "应恰好 2 条契约（两个 path()），实际：{names:?}");
 
-    // HandledBy：契约 → 视图函数（裸名引用经解析器解析成全 FQN 连上）
+    // HandledBy: contract -> view function (a bare-name reference is resolved by the parser into the full FQN and connects)
     let users_contract = contracts
         .iter()
         .find(|n| n.name == "ANY /users/")
@@ -281,9 +282,9 @@ urlpatterns = [
     );
 }
 
-/// 覆盖三种视图引用写法，验证 `HandledBy` 都能连上：
-/// ① 裸名 `from .views import user_list` → `path("users/", user_list)`
-/// ② 模块属性 `from . import views` 后 `path("articles/", views.article_list)`
+/// Cover three view-reference styles, verifying `HandledBy` connects in each:
+/// ① bare name `from .views import user_list` -> `path("users/", user_list)`
+/// ② module attribute `from . import views` then `path("articles/", views.article_list)`
 /// ③ CBV `path("detail/", ArticleListView.as_view())`
 #[test]
 fn django_route_view_reference_variants() {
@@ -334,7 +335,7 @@ urlpatterns = [
     assert_eq!(contracts.len(), 3, "应恰好 3 条契约，实际：{:?}",
         contracts.iter().map(|n| &n.name).collect::<Vec<_>>());
 
-    // 辅助：取某契约经 HandledBy 连到的目标节点名
+    // Helper: take the target node name a contract connects to via HandledBy
     let handler_of = |name: &str| -> String {
         let c = contracts.iter().find(|n| n.name == name).expect("契约");
         let hs: Vec<Node> = b
@@ -349,10 +350,10 @@ urlpatterns = [
         hs[0].name.clone()
     };
 
-    // ① 裸名 → user_list 函数
+    // ① bare name -> user_list function
     assert_eq!(handler_of("ANY /users/"), "user_list");
-    // ② 模块属性 `views.article_list` → 还原成 myapp.views.article_list 函数
+    // ② module attribute `views.article_list` -> restored to the myapp.views.article_list function
     assert_eq!(handler_of("ANY /articles/"), "article_list");
-    // ③ CBV `.as_view()` → ArticleListView 类
+    // ③ CBV `.as_view()` -> ArticleListView class
     assert_eq!(handler_of("ANY /detail/"), "ArticleListView");
 }

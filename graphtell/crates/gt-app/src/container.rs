@@ -1,4 +1,4 @@
-//! 依赖装配容器。
+//! Dependency assembly container.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,21 +21,21 @@ use tracing::info;
 
 use crate::config::AppConfig;
 
-/// 应用容器：持有全部适配器实例并对外暴露组装好的服务。
+/// The application container: holds every adapter instance and exposes the assembled services.
 pub struct Container {
     pub config: AppConfig,
     pub store: Arc<SqliteStore>,
     pub deps: Arc<PipelineDeps>,
     pub views: Arc<YamlViewRegistry>,
     pub rules: Arc<YamlRuleSet>,
-    /// 共享语义编码器（进程内懒加载一次：编译并配置了 bge-m3 时为 `Some`，否则 `None`）。
+    /// Shared semantic encoder (loaded lazily once per process: `Some` when bge-m3 is compiled in and configured, `None` otherwise).
     semantic_embedder: OnceLock<Option<Arc<dyn gt_application::Embedder>>>,
-    /// 共享节点向量缓存：首次召回预热后，后续召回只编码查询一次。
+    /// Shared node-vector cache: after the first recall warms it up, later recalls only encode the query once.
     node_embed_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
 }
 
 impl Container {
-    /// 依据配置构建容器。
+    /// Build the container from the configuration.
     pub fn new(config: AppConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir).ok();
         let store = Arc::new(SqliteStore::open(config.database_path())?);
@@ -67,7 +67,7 @@ impl Container {
         })
     }
 
-    /// 支持的编程语言。
+    /// Supported programming languages.
     pub fn languages(&self) -> Vec<String> {
         self.deps
             .parsers
@@ -77,17 +77,17 @@ impl Container {
             .collect()
     }
 
-    /// 视角注册表（供 Tauri / CLI 直接使用）。
+    /// The perspective registry (for direct use by Tauri / the CLI).
     pub fn views(&self) -> Arc<dyn ViewRegistryProvider> {
         Arc::clone(&self.views) as Arc<dyn ViewRegistryProvider>
     }
 
-    /// 已装载的框架数量。
+    /// Number of frameworks loaded.
     pub fn framework_count(&self) -> usize {
         self.deps.kb.all().len()
     }
 
-    /// 构建 HTTP 路由。
+    /// Build the HTTP router.
     pub fn router(&self) -> axum::Router {
         let state = gt_adapter_http::router::state(
             self.store.clone() as Arc<dyn Persistence>,
@@ -99,7 +99,7 @@ impl Container {
         build_router(state, self.config.resolve_ui_dir())
     }
 
-    /// 合规检查服务（供 Tauri / CLI 直接使用）。
+    /// The compliance-check service (for direct use by Tauri / the CLI).
     pub fn rule_service(&self) -> gt_application::RuleService {
         gt_application::RuleService::new(
             self.store.clone() as Arc<dyn Persistence>,
@@ -107,15 +107,17 @@ impl Container {
         )
     }
 
-    /// 提示词增强服务（代码召回 + 提示词合成；供 Tauri / CLI 直接使用）。
+    /// The prompt-augmentation service (code recall + prompt composition; for direct use by Tauri / the CLI).
     ///
-    /// 编码器由 [`gt_application::resolve_recall_embedder`] 解析：编译了 `model-candle`
-    /// 且 `GT_BGE_MODEL`（默认 `models/bge-m3-safetensors`）权重可用时走真实 bge-m3，
-    /// 否则安全退回默认本地哈希编码器。节点向量缓存跨多次召回复用 —— 首次召回预热
-    /// （对全图编码一次），之后每次只对查询编码一次 + 全图点积，亚秒级返回。
+    /// The encoder is resolved by [`gt_application::resolve_recall_embedder`]: when `model-candle` is compiled in
+    /// and the `GT_BGE_MODEL` weights (default `models/bge-m3-safetensors`) are available it uses the real bge-m3,
+    /// otherwise it safely falls back to the default local hash encoder. The node-vector cache is reused across
+    /// recalls — the first recall warms it up (encoding the whole graph once), after which each recall only encodes
+    /// the query once plus a dot product over the whole graph, returning in sub-second time.
     pub fn recall_service(&self) -> gt_application::RecallService {
-        // CLI 召回：优先真实 bge-m3（权重可用时），缺权重则无语义编码器（退回词面 / 快速路）。
-        // 这里**不**开启后台异步预热（避免 CLI 进程提前退出杀掉线程）；持久化走手动 `embed` 命令。
+        // CLI recall: prefer the real bge-m3 (when weights are available); without weights there is no semantic
+        // encoder (falling back to the lexical / fast path). Background async warm-up is deliberately **not**
+        // enabled here (so the CLI process cannot exit early and kill the thread); persistence goes through the manual `embed` command.
         let semantic = self
             .semantic_embedder
             .get_or_init(gt_application::try_real_recall_embedder)
@@ -131,7 +133,7 @@ impl Container {
         )
     }
 
-    /// 各端口的只读引用（供 Tauri / CLI 直接使用）。
+    /// Read-only references to each port (for direct use by Tauri / the CLI).
     pub fn filesystem(&self) -> Arc<dyn FileSystem> {
         Arc::clone(&self.deps.fs)
     }

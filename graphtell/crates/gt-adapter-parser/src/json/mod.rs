@@ -1,20 +1,21 @@
-//! 极简 JSON 解析器：专门把 uni-app 的 `pages.json` 翻成 `配置条目` 事实。
+//! A minimal JSON parser: it turns uni-app's `pages.json` into `config entry` facts and nothing else.
 //!
-//! 之所以单开一个 JSON 语言而不是让 JS 解析器硬吞 `.json`：
-//! * tree-sitter-typescript 解析不了 JSON（会吐半截垃圾事实）；
-//! * 我们只关心**路由声明**这一种 JSON——其余 `.json`（`package.json` / `tsconfig.json`）
-//!   若是逐条采成配置条目，会把语义节点节点污染掉。于是本解析器**只在顶层出现
-//!   `pages` 数组时才产出事实**，其它 JSON 一律返回空，从而零负担接入现有
-//!   `kind: config_entry` 选择器与 `frontend-page` 规则。
+//! Why JSON is its own language instead of letting the JS parser swallow `.json`:
+//! * tree-sitter-typescript cannot parse JSON (it emits half-broken junk facts);
+//! * we only care about **route declarations** — collecting every other `.json` (`package.json` /
+//!   `tsconfig.json`) entry by entry would pollute the semantic nodes. So this parser **only produces facts
+//!   when a `pages` array appears at the top level** and returns empty for all other JSON, which lets it plug
+//!   into the existing `kind: config_entry` selector and the `frontend-page` rule at zero cost.
 //!
-//! 产出与后端 `config/*.php` 的 `return [...]` 同构，因此前端 `Page` 语义节点
-//! 与后端 `Route` 走同一套 Synthesize 机制，路由视角里前后端「页面 ↔ 接口」直接对看。
+//! Its output is isomorphic to `return [...]` in the backend's `config/*.php`, so the front-end `Page` semantic
+//! node and the backend `Route` go through the same Synthesize mechanism, and the route perspective can compare
+//! front-end "page <-> endpoint" directly.
 
 use gt_domain::error::Result;
 use gt_domain::model::{ConfigEntryFact, FactValue, Language, Span, SyntaxFacts};
 use gt_domain::port::LanguageParser;
 
-/// JSON 前端配置解析器（服务 `json` 语言，扩展名 `.json`）。
+/// The JSON front-end config parser (serves the `json` language, extension `.json`).
 pub struct JsonParser;
 
 impl JsonParser {
@@ -51,19 +52,16 @@ impl LanguageParser for JsonParser {
         };
         let mut facts = SyntaxFacts::default();
 
-        // 只处理 uni-app 的 pages.json：顶层带 `pages` 数组。
+        // Only uni-app's pages.json is handled: a top-level `pages` array.
         let Some(obj) = value.as_object() else {
             return Ok(facts);
         };
 
-        // 主包页面：`pages: ["pages/index/index", ...]`
+        // Main-package pages: `pages: ["pages/index/index", ...]`
         if let Some(pages) = obj.get("pages").and_then(|v| v.as_array()) {
             collect_pages(&mut facts, path, source, pages, None);
         }
 
-        // 分包页面：`subPackages: [{ root: "pagesA", pages: ["list/list"] }]`
-        // root 前缀要拼到每个子页面身份上，否则 `pagesA/list/list` 与
-        // `pages.json` 声明对不上、跳转边也连不到节点。
         if let Some(subs) = obj.get("subPackages").and_then(|v| v.as_array()) {
             for (i, sub) in subs.iter().enumerate() {
                 let Some(sub_obj) = sub.as_object() else {
@@ -81,7 +79,7 @@ impl LanguageParser for JsonParser {
     }
 }
 
-/// 把一组页面路由翻成配置条目；`sub` 为 `Some((i, root))` 时按子包处理。
+/// Turn a group of page routes into config entries; `sub` = `Some((i, root))` means sub-package handling.
 fn collect_pages(
     facts: &mut SyntaxFacts,
     path: &str,
@@ -121,8 +119,8 @@ fn collect_pages(
     }
 }
 
-/// 路由身份统一以 `/` 开头，与导航调用归一化后的身份对齐（保证 `pages.json`
-/// 与 `uni.navigateTo({ url })` 汇聚到同一个 `Page` 节点）。
+/// Route identities always start with `/`, aligned with the normalised identity of navigation calls (so
+/// `pages.json` and `uni.navigateTo({ url })` converge on the same `Page` node).
 fn ensure_leading_slash(s: &str) -> String {
     if s.starts_with('/') {
         s.to_string()
@@ -131,7 +129,7 @@ fn ensure_leading_slash(s: &str) -> String {
     }
 }
 
-/// 在源文本里定位某页面串首次出现的行号（供节点给出可点击的出处）。
+/// Locate the first line where a page string occurs in the source text (so a node can cite a clickable source).
 fn line_of(source: &str, needle: &str) -> u32 {
     let mut line = 1u32;
     for (i, ch) in source.char_indices() {
@@ -153,7 +151,7 @@ mod tests {
         JsonParser::new()
             .unwrap()
             .parse("pages.json", src)
-            .expect("解析应成功")
+            .expect("parsing should succeed")
     }
 
     #[test]
@@ -177,23 +175,23 @@ mod tests {
         let facts = parse_src(
             r#"{ "pages": ["pages/home/home"], "subPackages": [ { "root": "pagesA", "pages": ["list/list"] } ] }"#,
         );
-        // 主包 1 条 + 子包 1 条
+        // 1 main package + 1 sub-package
         assert_eq!(facts.config_entries.len(), 2);
         let sub = facts
             .config_entries
             .iter()
             .find(|e| e.key_path == "subPackages.0.pages.0")
-            .expect("应产出子包页面条目");
+            .expect("should produce sub-package page entries");
         assert_eq!(sub.value, FactValue::String("/pagesA/list/list".into()));
     }
 
     #[test]
     fn non_pages_json_is_ignored() {
-        // package.json 之类不应污染语义节点
+        // Files like package.json must not pollute semantic nodes
         let facts = parse_src(r#"{ "name": "x", "dependencies": { "axios": "^1" } }"#);
         assert!(
             facts.config_entries.is_empty(),
-            "非 pages.json 应不产出配置条目，实际：{:?}",
+            "a non-pages.json file should produce no config entries, got: {:?}",
             facts.config_entries
         );
     }

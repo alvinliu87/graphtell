@@ -1,24 +1,28 @@
-# 运行时坏味：循环内远程调用、多写无事务。
+# Runtime smells: remote calls inside a loop, multiple writes without a transaction.
 #
-# 这两条的判据都**不依赖"有没有漏洞"这种判断**，只报确凿事实：
-# 循环里发生了远程调用、同一方法里写了多次且没看到事务边界。
-# 改法留给人判断 —— 图上看不到"是否有批量接口"、"事务是否在更外层"。
+# Neither of these criteria **depends on a judgement such as "is there a vulnerability"** — they only
+# report hard facts: a remote call happens inside a loop; a method writes several times with no visible
+# transaction boundary. The fix is left to human judgement — the graph cannot see whether a batch API
+# exists or whether the transaction lives further out.
 
 rules:
-  # ⚠️ 由 P12 External 阶段产出 `ext-call-in-loop` 标注。
+  # ⚠️ The `ext-call-in-loop` annotation is produced by the P12 External phase.
   - id: ext-call-in-loop
-    title: 循环内发起外部系统调用
+    title: External system call inside a loop
     description: >-
-      循环体内调用了 HTTP / 短信 / 邮件 / RPC 客户端（名单来自 FKB `external_calls`）。
-      一次网络往返比一次数据库查询贵一个量级，串行放大 N 倍是接口超时的典型成因。
-      典型现场：循环给每个用户发短信、循环查物流轨迹、循环拉取远程图片。
-      例外：循环内本就是"失败重试 / 幂等补偿"的场景（N 很小且有退避）可不改。
+      A loop body calls an HTTP / SMS / email / RPC client (the list comes from FKB `external_calls`).
+      One network round trip costs an order of magnitude more than one database query, and amplifying it
+      N times serially is the classic cause of endpoint timeouts.
+      Typical scenes: sending an SMS per user in a loop, querying shipping tracking in a loop, pulling
+      remote images in a loop.
+      Exception: when the loop is itself a "retry on failure / idempotent compensation" scenario
+      (N is small and there is backoff), no change is needed.
     severity: warning
     category: performance
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 数量上限；超大库可调低以避免一次检查过慢。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases so one check does not get slow.
         kind: number
         default: 5000
         min: 100
@@ -29,30 +33,34 @@ rules:
       languages: [php]
     when:
       - has_annotation: ext-call-in-loop
-    message: "循环内发起外部调用 {name}（位于 {file}:{line}）—— N 条记录 = N 次串行网络往返"
+    message: "External call {name} inside a loop (at {file}:{line}) — N records = N serial network round trips"
     remediation: >-
-      优先找第三方提供的批量接口（一次传多个 id）；没有批量接口时把循环内的调用
-      丢进队列异步处理，或至少并发发起并设超时，不要让 N 次往返串行阻塞请求。
+      Prefer a batch API from the third party (pass several ids at once); when no batch API exists, push
+      the in-loop calls onto a queue for async processing, or at least issue them concurrently with a
+      timeout — do not let N round trips block the request serially.
 
-  # ⚠️ 由 P13 Tx 阶段产出 `multi-write-without-tx` 标注（落在**方法**节点上）。
+  # ⚠️ The `multi-write-without-tx` annotation is produced by the P13 Tx phase (landing on a **method** node).
   #
-  # 措辞刻意写成"未识别到"：事务可能开在更外层的调用方，图上判不到 ——
-  # 宁可漏报，也不要把包了事务的方法报成"没包"（那会让人不再相信这条规则）。
+  # The wording deliberately says "not recognised": the transaction may be opened by an outer caller,
+  # which the graph cannot judge — better to under-report than to flag a method that is wrapped as
+  # "not wrapped" (that would make people stop trusting this rule).
   - id: multi-write-without-tx
-    title: 多次写库但未识别到事务边界
+    title: Multiple database writes with no transaction boundary recognised
     description: >-
-      同一方法对 2 张以上不同的表有直接写操作（P7 动词分类落下的 `WritesDb` 边，
-      不含调用链传播来的间接边），且方法内没有任何事务标记
-      （`transaction` / `startTrans` / `commit` …）。
-      中间任何一步失败都会留下**部分成功**的脏数据（订单改了、库存没扣）。
-      注意两点：事务可能开在更外层的调用方，图上无法跨过程确认；
-      同一张表的 `if/else` 两分支各写一次**不算**（互斥分支，不存在部分成功）。
+      One method writes directly to 2 or more different tables (the `WritesDb` edges left by P7 verb
+      classification, excluding indirect edges propagated along the call chain), and the method has no
+      transaction marker at all (`transaction` / `startTrans` / `commit` …).
+      If any step in the middle fails, **partially successful** dirty data is left behind (the order was
+      updated, the stock was not deducted).
+      Two caveats: the transaction may be opened by an outer caller, which the graph cannot confirm
+      across procedures; and `if/else` branches that each write the *same* table once **do not count**
+      (mutually exclusive branches, so partial success is impossible).
     severity: info
     category: architecture
     params:
       - key: max_nodes
-        label: 候选方法上限
-        description: 参与检查的 Method 数量上限；超大库可调低以避免一次检查过慢。
+        label: Candidate method cap
+        description: Cap on the number of Method nodes checked; lower it on very large codebases so one check does not get slow.
         kind: number
         default: 200000
         min: 1000
@@ -63,7 +71,8 @@ rules:
       languages: [php]
     when:
       - has_annotation: multi-write-without-tx
-    message: "方法 {name} 内有多次写库但未识别到事务边界（位于 {file}:{line}）—— 部分失败会留下脏数据"
+    message: "Method {name} writes to the database several times but no transaction boundary was recognised (at {file}:{line}) — a partial failure leaves dirty data"
     remediation: >-
-      确认这些写是否必须原子：是就把它们包进一个事务（注意事务里不要放远程调用）；
-      若事务已在更外层，可忽略本条并把入口方法纳入识别范围。
+      Confirm whether these writes must be atomic: if so, wrap them in one transaction (and do not put
+      remote calls inside it); if the transaction already lives further out, ignore this entry and bring
+      the entry method into the recognised scope.

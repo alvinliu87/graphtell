@@ -1,21 +1,21 @@
-# spatie/laravel-permission —— **库**级 FKB（不是框架）
+# spatie/laravel-permission — a **library**-level FKB (not a framework)
 #
-# 为什么库也需要 FKB：FKB 的设计本意就是"预定义框架与常用库的语义知识"。
-# 这个包的中间件类住在 `vendor/`（不进图），但它们的语义是确凿的：
-# `PermissionMiddleware` 就是"按权限鉴权"。声明出来后，工程只要在
-# `Kernel.php` 里注册 `'permission' => PermissionMiddleware::class`，
-# 建图时就能把它落成 `Middleware` 节点并连到路由 —— 无需其源码进图。
+# Why a library needs an FKB too: FKB is by design "predefined semantic knowledge about frameworks and common
+# libraries". This package's middleware classes live in `vendor/` (not ingested), yet their semantics are certain:
+# `PermissionMiddleware` means "authorise by permission". Once declared, a project only needs to register
+# `'permission' => PermissionMiddleware::class` in `Kernel.php`, and graph building can materialise it as a
+# `Middleware` node attached to routes — without its source ever entering the graph.
 #
-# 本文件只声明"已知中间件"，不含任何规则：库的知识可以只贡献语义清单。
-# 新增同类库 = 再加一份这样的 YAML，不改内核。
+# This file only declares "known middleware" and contains no rules: a library's knowledge may contribute just a
+# semantic list. Adding a similar library = adding one more YAML file, no kernel change.
 
 id: spatie-permission
 display_name: spatie/laravel-permission
 language: php
 version_hint: "5.x / 6.x"
 scope: framework
-# 库的知识同样**只在被识别到时才生效**（composer.json 里真装了这个包），
-# 不会串味到没用它的工程。
+# A library's knowledge likewise **only takes effect when it is detected** (the package is really installed per
+# composer.json) and never leaks into projects that do not use it.
 detectors:
   - kind: manifest_dependency
     manifest: composer.json
@@ -23,7 +23,7 @@ detectors:
     confidence: 0.95
 
 loaders:
-  # 写入 `middleware_classes` 表：P14 解析不到节点时按此表落成 Middleware 节点。
+  # Written into the `middleware_classes` table: when P14 cannot resolve a node it materialises a Middleware node from this table.
   - id: spatie-permission-middleware
     table: middleware_classes
     from:

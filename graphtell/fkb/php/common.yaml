@@ -1,37 +1,40 @@
-# PHP 语言通用知识（跨框架，不绑定某一框架）
+# PHP language-common knowledge (cross-framework, not tied to one framework)
 #
-# 设计：本 FKB 声明 `apply_without_detection: true`，于是**无论工程被识别为
-# ThinkPHP / Laravel / 其它 PHP 框架，其规则都对同语言子工程生效** —— 跨框架相同的
-# 语义（缓存、配置读取）只写一份，新增框架无需再抄一遍（这正是 `laravel.yaml` 注释里
-# 提到的「`config()` / `Cache::get()` 属于 PHP 生态通用层，应抽到语言级 FKB」）。
+# Design: this FKB declares `apply_without_detection: true`, so **its rules apply to sub-projects of the same
+# language whether the project is detected as ThinkPHP / Laravel / another PHP framework** — semantics shared across
+# frameworks (cache, config reads) are written once, and adding a framework needs no copy-paste (exactly the
+# "`config()` / `Cache::get()` belong to the PHP-ecosystem common layer and should be factored into a language-level
+# FKB" note in `laravel.yaml`).
 #
-# 注意：本文件只放「各 PHP 框架写法相同」的规则；带强框架假设的规则
-# （表访问 `Db::name` vs `DB::table`、路由 handler 形态、事件注册方式…）仍留在各
-# 框架专属 FKB 里，避免用 A 框架知识解释 B 框架代码。
+# Note: this file only holds rules whose "spelling is identical across PHP frameworks"; rules carrying strong
+# framework assumptions (table access `Db::name` vs `DB::table`, route handler shape, event registration style…)
+# stay in each framework's own FKB, so framework A's knowledge is never used to explain framework B's code.
 #
-# 重要（装载器陷阱）：本文件**只贡献 `rules` 与 `external_calls` / `tx_calls`**，
-# 不跑 `loaders`。原因是 `apply_without_detection` 的 FKB 永不被「识别」，而管线
-# （`prepare.rs` 的装配阶段）只对「被识别到的框架 / 项目」调用 `run_loaders`。
-# 因此 `builtin` 装载器（如 `php_db_schema` / `php_config_keys` / `php_migration_schema`）
-# **必须写在各框架专属 YAML 里**，不能抽到本文件 —— 否则该装载器静默永不执行，
-# 其符号表（schema / config_keys / migration 列）整张落空，相关规则静默 0 命中。
-# 若要「去重」它们的 `params`，只能各框架 YAML 各声明一份（值相同但相互独立），
-# 不要试图挪到本文件。
+# Important (loader trap): this file **only contributes `rules` plus `external_calls` / `tx_calls`**; it runs no
+# `loaders`. The reason is that an `apply_without_detection` FKB is never "detected", and the pipeline (the assembly
+# stage in `prepare.rs`) only calls `run_loaders` for "detected frameworks / projects".
+# So `builtin` loaders (such as `php_db_schema` / `php_config_keys` / `php_migration_schema`) **must be written in
+# each framework-specific YAML** and cannot be factored into this file — otherwise the loader silently never runs and
+# its symbol table (schema / config_keys / migration columns) comes up entirely empty, with the related rules
+# silently reporting 0 hits.
+# If you want to "de-duplicate" their `params`, each framework YAML declares its own copy (identical values but
+# independent); do not try to move them here.
 
 id: php-common
-display_name: PHP 通用
+display_name: PHP common
 language: php
 version_hint: "*"
-# 不声明 detectors：本文件不是「被识别的框架」，只是对所有 PHP 工程生效的通用层。
+# No detectors declared: this file is not "a detected framework", just a common layer effective for every PHP project.
 apply_without_detection: true
 
-# 外部系统调用名单（供「循环内外部调用」判定）。
+# External-system call list (used by the "external call inside a loop" judgement).
 #
-# 一次网络往返比一次数据库查询贵一个量级，把它放进循环里是比 N+1 更容易拖垮接口
-# 的写法（循环发短信 / 循环查物流 / 循环取远程图片）。
-# 只列**确实会发起网络请求**的 callee：`curl_*` 是 PHP 内置；
-# `Http::*` 是两家框架都有的 HTTP 客户端门面；`GuzzleHttp\Client` 是 composer 生态通用。
-# 匹配口径：调用点的完整 callee（`Http::get`）或方法名（`curl_exec`）命中任一即可。
+# One network round trip costs an order of magnitude more than one database query, so putting it inside a loop is an
+# even more reliable way to drag an endpoint down than N+1 (sending SMS in a loop / querying shipping in a loop /
+# fetching remote images in a loop).
+# Only callees that **really issue a network request** are listed: `curl_*` is built into PHP;
+# `Http::*` is the HTTP client facade both frameworks have; `GuzzleHttp\Client` is common across the composer ecosystem.
+# Matching basis: a call site matches if its full callee (`Http::get`) or its method name (`curl_exec`) hits any entry.
 external_calls:
   - "curl_exec"
   - "curl_multi_exec"
@@ -54,10 +57,11 @@ external_calls:
   - "Mail::to"
   - "Notification::send"
 
-# 事务边界标记（供「多次写库但未识别到事务」判定）。
+# Transaction-boundary markers (used by the "multiple database writes with no transaction recognised" judgement).
 #
-# 命中其中任意一个即认为「该方法内出现了事务边界」，不再报 —— 保守方向：
-# 宁可漏报（事务可能在更外层），也不要把包了事务的方法报成"没包"。
+# Hitting any one of them means "a transaction boundary appears inside this method" and it is not reported — the
+# conservative direction: better to under-report (the transaction may live further out) than to report a wrapped
+# method as "not wrapped".
 tx_calls:
   - "transaction"
   - "startTrans"
@@ -70,9 +74,9 @@ tx_calls:
   - "Db::transaction"
 
 rules:
-  # ===== P5 Synthesize：ConfigKey（跨框架通用：config() / Config::get / env）=====
-  # 与 `Cache::get` 同理，两框架写法相同，抽到通用层避免重复。
-  # CRMEB 特有的 `sys_config` 仍留在 `thinkphp6.yaml`（业务约定，非通用）。
+  # ===== P5 Synthesize: ConfigKey (cross-framework common: config() / Config::get / env) =====
+  # Same reasoning as `Cache::get`: the spelling is identical in both frameworks, so it is factored out to avoid duplication.
+  # CRMEB's own `sys_config` stays in `thinkphp6.yaml` (a business convention, not a generic one).
   - id: php-common-config
     phase: Synthesize
     selector:
@@ -90,15 +94,16 @@ rules:
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.9
 
-# ===== 缓存 / Redis：用「能力接口声明」表达（识别机制在跨语言能力模板）=====
-# 跨语言通用命名约定（`Cache` / `Redis` / `*CacheService` / `*RedisClient` …）已写在
-# 核心能力模板 `cache` 里（装载器 `DEFAULT_CAPABILITIES_YAML`），对所有语言生效一次，
-# 按 `Wrapper` 模式摊平成 `*Type::method`。这里只补**词根不合通用约定、必须精确声明**
-# 的 PHP 库类型 —— 例如 `Predis\Client`（`*Client` 太泛会误伤 `HttpClient`/`DbClient`，
-# 故不能进通用集合）。引擎把两者取并集。框架门面 `Cache::get` / 模型 `app\model\other\Cache`
-# 经模板 `*Cache::get` 命中；封装层 `*CacheService` 也由模板兜底、不在此重复声明。
+# ===== Cache / Redis: expressed via a "capability interface declaration" (the recognition mechanism lives in the cross-language capability template) =====
+# The cross-language common naming conventions (`Cache` / `Redis` / `*CacheService` / `*RedisClient` …) are already
+# written in the core capability template `cache` (loader `DEFAULT_CAPABILITIES_YAML`), applied once for every
+# language and flattened as `*Type::method` under the `Wrapper` mode. This only adds PHP library types whose **word
+# root does not fit the common convention and must be declared precisely** — e.g. `Predis\Client` (`*Client` is too
+# generic and would misfire on `HttpClient`/`DbClient`, so it cannot go into the common set). The engine takes the
+# union of both. Framework facades `Cache::get` and the model `app\model\other\Cache` are hit by the template
+# `*Cache::get`; the wrapper layer `*CacheService` is also covered by the template and not repeated here.
 capability_interfaces:
-  # PHP 专用 Redis 客户端：Predis（词根 `Client` 不合通用约定，精确声明为 Backend）。
+  # PHP-specific Redis client: Predis (the `Client` root does not fit the common convention, so it is declared precisely as Backend).
   - capability: cache
     types: ["Predis\\Client"]
     read: [get, hGet, mGet]

@@ -1,11 +1,11 @@
-//! [`ValueSource`] 求值：把 YAML 里声明的"值从哪来"变成实际字符串/字面量。
+//! Evaluation of [`ValueSource`]: turning the YAML declaration of "where a value comes from" into an actual string / literal.
 
 use gt_domain::model::{ExpandVariant, FactValue, NodeId, ResolveAs, ValueSource};
 
 use crate::normalize::{apply_normalize, apply_table_prefix_steps, apply_transform};
 use crate::workspace::{CallRecord, ConfigRecord, GraphWorkspace, InheritRecord};
 
-/// 规则匹配时的上下文。
+/// The context in which a rule matches.
 #[derive(Debug, Clone, Copy)]
 pub enum MatchCtx<'a> {
     Call(&'a CallRecord),
@@ -14,7 +14,7 @@ pub enum MatchCtx<'a> {
     Node(NodeId),
 }
 
-/// 求值结果。
+/// The evaluation result.
 #[derive(Debug, Clone)]
 pub enum EvalValue {
     Str(String),
@@ -45,12 +45,12 @@ impl EvalValue {
     }
 }
 
-/// 求值器。
+/// The evaluator.
 pub struct Evaluator<'a> {
     ws: &'a GraphWorkspace,
     ctx: MatchCtx<'a>,
-    /// 当前展开变体（`Synthesize.expand`）：非空时 `{ expand_method: true }` /
-    /// `{ expand_entry: true }` 才有值。
+    /// The current expansion variant (`Synthesize.expand`): when non-empty, `{ expand_method: true }` /
+    /// `{ expand_entry: true }` have values.
     variant: Option<ExpandVariant>,
 }
 
@@ -59,7 +59,7 @@ impl<'a> Evaluator<'a> {
         Self { ws, ctx, variant: None }
     }
 
-    /// 绑定当前展开变体（展开表逐条执行时设置）。
+    /// Bind the current expansion variant (set as the expansion table is executed row by row).
     pub fn with_variant(mut self, v: Option<ExpandVariant>) -> Self {
         self.variant = v;
         self
@@ -69,19 +69,15 @@ impl<'a> Evaluator<'a> {
         self.ws
     }
 
-    /// 当前匹配上下文（供 identity 计算读取「调用点所在文件 / 行号」等环境信息，
-    /// 例如补齐 `Route::group` 的路由组前缀）。
+    /// The current match context (so identity computation can read environment information such as "the file / line
+    /// the call site is on", e.g. to complete the `Route::group` route-group prefix).
     pub fn ctx(&self) -> MatchCtx<'a> {
         self.ctx
     }
 
-    /// 求值后取字符串（依次应用 resolve → transform → normalize）。
+    /// Evaluate and take a string (applying resolve -> transform -> normalize in order).
     pub fn string(&self, src: &ValueSource) -> Option<String> {
         let raw = self.raw(src)?;
-        // `require_literal`：值必须来自**字面量**实参，不能是变量或表达式文本。
-        // 非字面量（`Cache::get($name)`、`Cache::get(A . $b)`）被 `raw` 记成
-        // `FactValue::Unknown(Some(原文))`，若直接采信就会造出 `$name` 这类垃圾身份；
-        // 判否 → 返回 None → 触发 `value_fallback`（与 `require_class` 同一套语义）。
         if src.require_literal == Some(true) {
             let is_literal = matches!(raw, EvalValue::Str(_))
                 || matches!(
@@ -109,8 +105,9 @@ impl<'a> Evaluator<'a> {
             s = match resolve {
                 ResolveAs::ClassConst => {
                     let resolved = self.resolve_name(&s);
-                    // `require_class`：解析结果必须是代码库中真实存在的类，否则整体视为
-                    // 取不到（触发 `value_fallback`）。避免 `$action` 之类变量名被当类用。
+                    // `require_class`: the resolved result must be a class that really exists in the codebase,
+                    // otherwise the whole thing counts as unavailable (triggering `value_fallback`). Stops a
+                    // variable name like `$action` from being used as a class.
                     if src.require_class == Some(true)
                         && self.ws.find_by_name(&resolved).is_none()
                         && self.ws.resolve_short_name(&resolved).is_none()
@@ -133,7 +130,7 @@ impl<'a> Evaluator<'a> {
         Some(s)
     }
 
-    /// 求值后取一组值（`array_values` —— 一对多，如事件监听器）。
+    /// Evaluate and take a set of values (`array_values` — one-to-many, e.g. event listeners).
     pub fn list(&self, src: &ValueSource) -> Vec<FactValue> {
         match self.raw(src) {
             Some(EvalValue::List(items)) => items,
@@ -142,7 +139,7 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    /// 把短名/别名解析成完全限定名（能查到就用查到的，查不到就原样返回）。
+    /// Resolve a short name / alias into a fully qualified name (use the lookup result when found, otherwise return it as-is).
     pub fn resolve_name(&self, name: &str) -> String {
         let trimmed = name.trim_start_matches('\\');
         if self.ws.find_by_name(trimmed).is_some() {
@@ -154,7 +151,7 @@ impl<'a> Evaluator<'a> {
     }
 
     fn raw(&self, src: &ValueSource) -> Option<EvalValue> {
-        // 展开变体的注入值：一条调用 → N 个语义节点时，method / 入口方法随变体而变。
+        // The expansion variant's injected values: when one call becomes N semantic nodes, the method / entry method vary per variant.
         if src.expand_method == Some(true) {
             return self
                 .variant
@@ -215,7 +212,7 @@ impl<'a> Evaluator<'a> {
                         }
                         return None;
                     }
-                    // 按下标取数组元素：`[Ctrl::class, 'method']` → 第 0 / 1 项。
+                    // Take an array element by index: `[Ctrl::class, 'method']` -> items 0 / 1.
                     if let Some(idx) = src.element {
                         if let FactValue::Array(items) = a {
                             return items.get(idx).map(|(_, v)| EvalValue::Fact(v.clone()));
@@ -225,9 +222,6 @@ impl<'a> Evaluator<'a> {
                     return Some(EvalValue::Fact(a.clone()));
                 }
                 if src.owner_class == Some(true) {
-                    // 优先用 parser 显式记录的所属类：方法级注解的 `owner_fqn` 是
-                    // `Class.method`、类级注解的 `owner_fqn` 已是 `Class`，靠分隔符切分
-                    // 会把类级注解误切成包名。PHP 侧未填此字段，退回字符串切分。
                     if let Some(cls) = &c.owner_class {
                         if !cls.is_empty() {
                             return Some(EvalValue::Str(cls.clone()));
@@ -236,8 +230,8 @@ impl<'a> Evaluator<'a> {
                     if c.owner_fqn.is_empty() {
                         return None;
                     }
-                    // 去掉末尾的成员部分，保留类 FQN。
-                    // 成员分隔符随语言而变：PHP `::`、Java `.`
+                    // Drop the trailing member part, keeping the class FQN.
+                    // The member separator varies by language: PHP `::`, Java `.`
                     // （`com.example.Ctrl.list` → `com.example.Ctrl`）。
                     let class = c
                         .owner_fqn
@@ -248,10 +242,6 @@ impl<'a> Evaluator<'a> {
                     return Some(EvalValue::Str(class.to_string()));
                 }
                 if src.owner_member == Some(true) {
-                    // 取 owner_fqn 末尾的成员名（方法 / 字段）：Java 方法级注解的
-                    // `owner_fqn` 是 `com.example.Ctrl.list` → `list`；类级注解
-                    // `owner_fqn` 已是类 FQN → 取到类短名，find_target_node 按方法
-                    // 查不到时自然回退到类节点，语义安全。
                     if c.owner_fqn.is_empty() {
                         return None;
                     }
@@ -268,7 +258,7 @@ impl<'a> Evaluator<'a> {
                 }
                 if src.receiver_class == Some(true) {
                     let recv = c.receiver.as_ref()?;
-                    // 经 import 别名还原（如 `QueueThink` → `think\facade\Queue`）。
+                    // Restore via the import alias (e.g. `QueueThink` -> `think\facade\Queue`).
                     let fqn = self
                         .ws
                         .resolve_import_alias(recv)
@@ -276,8 +266,8 @@ impl<'a> Evaluator<'a> {
                     return Some(EvalValue::Str(fqn));
                 }
                 if src.entity == Some(true) {
-                    // 事件 / 领域主类型（如 `OrderPlacedEvent`）：发布方与订阅方据此
-                    // 归并到同一语义节点。取不到时返回 None，触发 `value_fallback`。
+                    // The event / primary domain type (e.g. `OrderPlacedEvent`): publisher and subscriber merge
+                    // onto the same semantic node from this. Returns None when unavailable, triggering `value_fallback`.
                     let e = c.entity.as_ref()?;
                     if e.is_empty() {
                         return None;

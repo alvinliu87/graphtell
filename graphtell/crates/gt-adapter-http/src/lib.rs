@@ -1,7 +1,7 @@
-//! `gt-adapter-http` —— axum 入站适配器。
+//! `gt-adapter-http` — the axum inbound adapter.
 //!
-//! 把应用层的用例暴露成 REST API，供 Web UI 与 Tauri 前端共用同一套接口
-//! （Tauri 走 `fetch` 访问本机 HTTP 服务，从而前后端只有一份契约）。
+//! Exposes the application layer's use cases as a REST API, so the Web UI and the Tauri front end share one
+//! interface (Tauri reaches the local HTTP service via `fetch`, so there is only one contract for both ends).
 
 pub mod dto;
 pub mod router;

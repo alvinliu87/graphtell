@@ -1,10 +1,10 @@
-//! Java 解析器 —— **第二语言**，用于验证语言层抽象是否真的可插拔。
+//! Java parser — the **second language**, used to verify that the language-layer abstraction is really pluggable.
 //!
-//! 只做语法层（P2）该做的事：把 Java 语法树翻译成语言无关的 [`SyntaxFacts`]。
-//! 语义层（Spring 的 `@GetMapping` / MyBatis Mapper / JPA 实体）应由 FKB 声明，
-//! 与 ThinkPHP / Laravel 走同一套机制。
+//! It only does what the syntax layer (P2) should: translate the Java syntax tree into the language-agnostic
+//! [`SyntaxFacts`]. The semantic layer (Spring's `@GetMapping` / MyBatis Mapper / JPA entities) is declared by
+//! FKB, through the same mechanism as ThinkPHP / Laravel.
 //!
-//! 注册进 `DefaultParserRegistry` 后，流水线无需任何改动即可处理 Java 工程。
+//! Once registered in `DefaultParserRegistry`, the pipeline handles Java projects with no changes at all.
 
 use std::cell::RefCell;
 
@@ -45,7 +45,7 @@ impl LanguageParser for JavaParser {
             let mut borrow = cell.borrow_mut();
             let parser = borrow.get_or_insert_with(|| {
                 let mut p = Parser::new();
-                // 语言在构造时已校验，这里失败属于编程错误
+                // The language was validated at construction; failing here is a programming error
                 p.set_language(&self.language).expect("java language");
                 p
             });
@@ -71,12 +71,12 @@ impl LanguageParser for JavaParser {
         Ok(out)
     }
 
-    /// Java 的命名空间分隔符是 `.`（PHP 是 `\`）。
+    /// Java's namespace separator is `.` (PHP uses `\`).
     fn namespace_separator(&self) -> &'static [char] {
         &['.']
     }
 
-    /// Java 的成员分隔符是 `.`（PHP 是 `::`）。
+    /// Java's member separator is `.` (PHP uses `::`).
     fn member_separator(&self) -> &'static str {
         "."
     }
@@ -98,9 +98,6 @@ fn walk(
     stack: &mut Vec<String>,
     loop_depth: &mut u32,
 ) {
-    // 循环语句：只有 **body** 子树算「循环内」（与 PHP 侧一致 —— 条件 / 更新表达式
-    // 不算逐条执行的部分）。`in_loop` 是图里唯一表达「这段代码会被执行 N 次」的标记，
-    // N+1 规则依赖它。
     if is_loop(node) {
         let body_id = node.child_by_field_name("body").map(|b| b.id());
         let mut cursor = node.walk();
@@ -135,8 +132,6 @@ fn walk(
         | "record_declaration" => {
             if let Some(fqn) = declare_type(node, src, package, out, stack) {
                 collect_supertypes(node, src, &fqn, out);
-                // 类级注解（如 `@RequestMapping("/api")` 作为路径前缀）
-                // owner_class 即类本身（类级注解的 owner_fqn 已是类，无需再切）。
                 collect_annotations(node, src, &fqn, &fqn, out);
                 stack.push(fqn);
                 recurse(node, src, package, out, stack, loop_depth);
@@ -156,8 +151,6 @@ fn walk(
             collect_call(node, src, out, stack, loop_depth);
         }
         "field_declaration" => {
-            // 字段级注解（`@Value` / `@Autowired` / `@TableField` …）归属所属类：
-            // owner_fqn 用类 FQN（字段属于类而非方法），owner_class 同为该类的 FQN。
             if let Some(class_fqn) = stack.last().cloned() {
                 collect_annotations(node, src, &class_fqn, &class_fqn, out);
                 collect_field_type(node, src, &class_fqn, out);
@@ -182,7 +175,7 @@ fn recurse(
     }
 }
 
-/// Java 的循环语句（`for` / 增强 `for` / `while` / `do-while`）。
+/// Java loop statements (`for` / enhanced `for` / `while` / `do-while`).
 fn is_loop(node: Node) -> bool {
     matches!(
         node.kind(),
@@ -190,7 +183,7 @@ fn is_loop(node: Node) -> bool {
     )
 }
 
-/// 登记类 / 接口 / 枚举 / record，返回其 FQN。
+/// Register a class / interface / enum / record and return its FQN.
 fn declare_type(
     node: Node,
     src: &[u8],
@@ -200,7 +193,7 @@ fn declare_type(
 ) -> Option<String> {
     let name = text(node.child_by_field_name("name")?, src)?;
     let fqn = match stack.last() {
-        // 内部类：`Outer.Inner`
+        // Inner class: `Outer.Inner`
         Some(outer) => format!("{}.{}", outer, name),
         None => match package {
             Some(p) => format!("{}.{}", p, name),
@@ -223,19 +216,14 @@ fn declare_type(
     Some(fqn)
 }
 
-/// `extends` / `implements` → 继承事实。
+/// `extends` / `implements` -> inheritance facts.
 ///
-/// 附带：JPA Repository / MyBatis Mapper 的**泛型实参**就是它操作的实体
-/// （`interface UserRepository extends JpaRepository<User, Long>` → `User`）。
-/// 这是「哪个 DAO 操作哪张表」的唯一静态线索，记成合成调用点交给 FKB 判定
-/// （哪些基类算 DAO、实体怎么映射到表，都是框架知识）。
+/// Also: the **generic argument** of a JPA Repository / MyBatis Mapper is the entity it operates on
+/// (`interface UserRepository extends JpaRepository<User, Long>` -> `User`).
+/// This is the only static clue to "which DAO touches which table", and is recorded as a synthetic call site
+/// for FKB to judge (which base classes count as DAOs, and how entities map to tables, are both framework knowledge).
 fn collect_supertypes(node: Node, src: &[u8], fqn: &str, out: &mut SyntaxFacts) {
-    // 整棵声明子树里第一组 `type_arguments`（`<User, Long>` → `User`）；
-    // 类自身的类型参数用的是 `type_parameters`，不会与此处混淆。
     let entity = first_generic_arg(node, src);
-    // 一律按 **kind** 遍历，不用 `child_by_field_name`：接口的 `extends` 是
-    // `extends_interfaces` 节点且**不带字段名**，按字段取永远取不到 —— 这正是
-    // 「接口继承接口」（JPA Repository / MyBatis Mapper 的写法）此前整条丢失的原因。
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
@@ -277,8 +265,8 @@ fn collect_supertypes(node: Node, src: &[u8], fqn: &str, out: &mut SyntaxFacts) 
     }
 }
 
-/// 取一个类型节点的**裸名**：`generic_type`（`BaseMapper<Order>`）取其中的
-/// `type_identifier`（`BaseMapper`），避免把泛型实参混进基类名。
+/// Take the **bare name** of a type node: from `generic_type` (`BaseMapper<Order>`) take the inner
+/// `type_identifier` (`BaseMapper`), so generic arguments do not leak into the base class name.
 fn type_name_of(node: Node, src: &[u8]) -> Option<String> {
     if node.kind() == "generic_type" {
         let mut c = node.walk();
@@ -290,15 +278,15 @@ fn type_name_of(node: Node, src: &[u8]) -> Option<String> {
     text(node, src)
 }
 
-/// 把源码里的**裸类型名**还原成 FQN。
+/// Resolve a **bare type name** from the source back into an FQN.
 ///
-/// 顺序：① 带点号 → 原样；② 本文件的 `import`（含别名）→ 被导入的 FQN；
-/// ③ 同包（同包引用没有 import）→ `{所在类的包}.{名字}`。
+/// Order: ① contains a dot -> as-is; ② an `import` of this file (including aliases) -> the imported FQN;
+/// ③ same package (same-package references have no import) -> `{package of the enclosing class}.{name}`.
 ///
-/// 为什么必须在 parser 做：P7 的读 / 写动词分类拿接收者类型查 `MapsTo`，而 `MapsTo`
-/// 挂着的是 **FQN**；短名查不到 ⇒ `mapper.insert()` 落不出 `WritesDb`。
-/// 只按同包补会在「service 与 mapper 不同包」时拼出错误的 FQN（宁可缺不可猜，
-/// 但能靠 import 精确还原时就应该精确）。
+/// Why this must happen in the parser: P7's read / write verb classification looks up `MapsTo` by the receiver
+/// type, and `MapsTo` hangs off an **FQN**; a short name finds nothing, so `mapper.insert()` produces no
+/// `WritesDb`. Completing by same-package alone would build a wrong FQN when "the service and the mapper are in
+/// different packages" (better missing than guessed — but when an import can restore it exactly, it should).
 fn resolve_java_type(name: &str, out: &SyntaxFacts, class_fqn: &str) -> String {
     if name.contains('.') {
         return name.to_string();
@@ -320,7 +308,7 @@ fn resolve_java_type(name: &str, out: &SyntaxFacts, class_fqn: &str) -> String {
     }
 }
 
-/// 取子树里第一组 `type_arguments` 的首个类型标识符（`<User, Long>` → `User`）。
+/// Take the first type identifier of the first `type_arguments` group in the subtree (`<User, Long>` -> `User`).
 fn first_generic_arg(node: Node, src: &[u8]) -> Option<String> {
     if node.kind() == "type_arguments" {
         let mut c = node.walk();
@@ -338,11 +326,11 @@ fn first_generic_arg(node: Node, src: &[u8]) -> Option<String> {
     None
 }
 
-/// 把「DAO 泛型实参 = 实体」记成合成调用点。
+/// Record "a DAO's generic argument = its entity" as a synthetic call site.
 ///
-/// `callee_text` 用 `generic.` 前缀（**不带冒号** —— FKB 的 callee 里单冒号会被
-/// 解释成 `receiver:method`），`entity` 存实体**短名**，由 FKB 的
-/// `resolve: class_const` 经 import 短名索引还原成 FQN。
+/// `callee_text` uses the `generic.` prefix (**no colon** — in FKB's callee a single colon is read as
+/// `receiver:method`), and `entity` holds the entity's **short name**, resolved back into an FQN by FKB's
+/// `resolve: class_const` through the import short-name index.
 fn push_generic_entity(
     base: &str,
     entity: &Option<String>,
@@ -352,16 +340,13 @@ fn push_generic_entity(
     out: &mut SyntaxFacts,
 ) {
     let Some(entity) = entity else { return };
-    // 裸名（最常见：实体与 DAO **同包**，故没有 import）必须补成 FQN ——
-    // 图里只有 FQN 能命中，而短名索引只收 import，同包引用根本不在里面
-    // （这正是此前 `find_by_name` 落空、Link 不产边的原因）。
     let entity = resolve_java_type(entity, out, fqn);
     out.call_sites.push(CallSiteFact {
         owner_fqn: fqn.to_string(),
         owner_class: Some(fqn.to_string()),
         callee_text: format!("generic.{}", base),
         receiver: None,
-        // 刻意留空：FKB 的裸 callee 模式会**按方法名**匹配，留空才不会误命中
+        // Deliberately left empty: FKB's bare-callee patterns match **by method name**, so leaving it empty avoids misfires
         method: None,
         args: Vec::new(),
         span: span_of(node),
@@ -373,10 +358,10 @@ fn push_generic_entity(
     let _ = src;
 }
 
-/// 字段声明 `Type name;` / `Type a, b;` → 记录每条字段与其声明类型。
+/// Field declarations `Type name;` / `Type a, b;` -> record each field with its declared type.
 ///
-/// 仅取**裸类型名**（剔除泛型 `<...>` 与数组 `[]`），泛型参数在 P2 按
-/// `import` 还原时通常无法定位到工程内类，留待需要时再扩展。
+/// Only the **bare type name** is taken (generics `<...>` and arrays `[]` stripped); generic parameters usually
+/// cannot be resolved to an in-project class when restored by `import` in P2, so that is left for later.
 fn collect_field_type(node: Node, src: &[u8], class_fqn: &str, out: &mut SyntaxFacts) {
     let Some(type_node) = node.child_by_field_name("type") else {
         return;
@@ -410,8 +395,8 @@ fn collect_field_type(node: Node, src: &[u8], class_fqn: &str, out: &mut SyntaxF
     }
 }
 
-/// 方法 / 构造器 → 成员声明。返回方法 FQN（供调用者把方法压栈，使方法体内的
-/// 调用点 `owner_fqn` 精确到 `类.方法` 而非仅类）。
+/// Methods / constructors -> member declarations. Returns the method FQN (so the caller can push the method on a
+/// stack, making the `owner_fqn` of call sites inside the body precise to `class.method` rather than just the class).
 fn declare_member(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String]) -> Option<String> {
     let name = opt_text(node.child_by_field_name("name"), src)?;
     let class_fqn = stack.last().cloned()?;
@@ -419,26 +404,25 @@ fn declare_member(node: Node, src: &[u8], out: &mut SyntaxFacts, stack: &[String
     out.declarations.push(Declaration {
         kind: NodeKind(NodeKind::METHOD.to_string()),
         name: name.clone(),
-        // 成员分隔符由 `member_separator()` 决定（Java `.` / PHP `::`）
+        // The member separator comes from `member_separator()` (Java `.` / PHP `::`)
         fqn: fqn.clone(),
         parent_fqn: Some(class_fqn.clone()),
         span: span_of(node),
         extra: serde_json::Value::Null,
     });
-    // 方法级注解（`@GetMapping("/list")` / `@Value("${x}")` …）
-    // owner_class 是所属类（target_fqn 即 `类.方法`，故单独传入 class_fqn）。
     collect_annotations(node, src, &fqn, &class_fqn, out);
     Some(fqn)
 }
 
-/// 注解 → **调用点**。
+/// Annotations -> **call sites**.
 ///
-/// Java 的注解、Python 的装饰器、C# 的 Attribute 是同一个概念：**声明式的框架调用**
-/// （注册路由、注入依赖、映射表）。建模成 `CallSiteFact` 后，现有 FKB DSL
-/// （`kind: call` + `callee`）无需扩展即可匹配它们。
+/// A Java annotation, a Python decorator and a C# attribute are the same concept: a **declarative framework
+/// call** (registering a route, injecting a dependency, mapping a table). Modelled as `CallSiteFact`, they can be
+/// matched by the existing FKB DSL (`kind: call` + `callee`) with no extension.
 ///
-/// `owner_class_fqn` 是注解所在类的 FQN（类级注解 = `类`，方法级注解 = `类`），
-/// 显式记录到 `CallSiteFact.owner_class`，避免内核按 `.` 切分时把类级注解误切成包名。
+/// `owner_class_fqn` is the FQN of the class the annotation sits on (class-level annotation = `class`,
+/// method-level = `class`); it is recorded explicitly in `CallSiteFact.owner_class` so the kernel does not split
+/// a class-level annotation into a package name when splitting on `.`.
 fn collect_annotations(
     node: Node,
     src: &[u8],
@@ -446,7 +430,7 @@ fn collect_annotations(
     owner_class_fqn: &str,
     out: &mut SyntaxFacts,
 ) {
-    // `modifiers` 在 tree-sitter-java 里**不是具名字段**，需按 kind 遍历子节点。
+    // In tree-sitter-java `modifiers` is **not a named field**, so children must be walked by kind.
     let mut cursor = node.walk();
     for mods in node.named_children(&mut cursor) {
         if mods.kind() != "modifiers" {
@@ -470,13 +454,13 @@ fn collect_one_annotation(
     if !matches!(child.kind(), "annotation" | "marker_annotation") {
         return;
     }
-    // 注解名：优先具名字段，取不到退回第一个子节点（`@GetMapping` / `@java.lang.X`）
+    // Annotation name: prefer the named field, fall back to the first child (`@GetMapping` / `@java.lang.X`)
     let name = opt_text(child.child_by_field_name("name"), src)
         .or_else(|| opt_text(child.named_child(0), src));
     let Some(name) = name else {
         return;
     };
-    // 参数列表：`@X("/a")` 或 `@X(value = "/a", method = GET)`
+    // Argument list: `@X("/a")` or `@X(value = "/a", method = GET)`
     let args_node = match child.child_by_field_name("arguments") {
         Some(a) => Some(a),
         None => (0..child.named_child_count())
@@ -484,8 +468,6 @@ fn collect_one_annotation(
             .find(|n| n.kind() == "annotation_argument_list"),
     };
     let args = args_node.map(|a| literal_args(a, src)).unwrap_or_default();
-    // `@EventListener` 处理方法的**首个形参类型**即事件类型（如 `OrderPlacedEvent`），
-    // 供 FKB 把同类事件的发布 / 订阅归并到同一 `Event` 节点（见 `first_param_type`）。
     let entity = if name == "EventListener" {
         first_param_type(parent, src)
     } else {
@@ -501,25 +483,23 @@ fn collect_one_annotation(
         span: span_of(child),
         snippet: None,
         db_table: None,
-        // Java 侧暂不识别循环语句（且 FKB 尚无 Java 的 `db_verbs`，
-        // N+1 规则本就只在 PHP 上跑）。
         in_loop: false,
         entity,
     });
 }
 
-/// 注解参数里的字面量（去引号），供 `ValueSource.arg` 取用。
+/// Literals in annotation arguments (quotes stripped), for `ValueSource.arg`.
 ///
-/// 递归下钻：`@Table(name = "x")` 的字面量藏在 `element_value_pair` 里。
+/// Recurses downward: the literal of `@Table(name = "x")` is hidden inside `element_value_pair`.
 fn literal_args(node: Node, src: &[u8]) -> Vec<FactValue> {
     let mut out = Vec::new();
     collect_literals(node, src, &mut out);
     out
 }
 
-/// 类型名脱去泛型 / 数组外壳，只留裸类型名。
+/// Strip generics / array shells from a type name, keeping only the bare type name.
 ///
-/// `List<Order>` → `List`；`Order[]` → `Order`。用于实参 / 形参的类型归并。
+/// `List<Order>` -> `List`; `Order[]` -> `Order`. Used when normalising argument / parameter types.
 fn bare_type_name(raw: String) -> String {
     raw.split(['<', '['])
         .next()
@@ -528,10 +508,11 @@ fn bare_type_name(raw: String) -> String {
         .to_string()
 }
 
-/// 方法 / 构造器的首个形参类型（去泛型），供 `@EventListener` 取事件类型。
+/// The first parameter type (generics stripped) of a method / constructor, used by `@EventListener` to derive
+/// the event type.
 ///
-/// `onOrderPlaced(OrderPlacedEvent e)` → `OrderPlacedEvent`。非方法声明（类级 /
-/// 字段级注解）返回 `None`。
+/// `onOrderPlaced(OrderPlacedEvent e)` -> `OrderPlacedEvent`. Returns `None` for non-method declarations
+/// (class-level / field-level annotations).
 fn first_param_type(node: Node, src: &[u8]) -> Option<String> {
     if !matches!(node.kind(), "method_declaration" | "constructor_declaration") {
         return None;
@@ -544,8 +525,8 @@ fn first_param_type(node: Node, src: &[u8]) -> Option<String> {
     text(type_node, src).map(bare_type_name)
 }
 
-/// 实参列表里首个 `new X(...)` 构造表达式的类型名（去泛型），供
-/// `publishEvent(new X())` 取事件类型 X，使发布方与订阅方归并到同一 `Event` 节点。
+/// The type name (generics stripped) of the first `new X(...)` expression in the argument list, so that
+/// `publishEvent(new X())` can derive the event type X and merge publishers and subscribers onto one `Event` node.
 fn constructed_entity_type(args_node: Node, src: &[u8]) -> Option<String> {
     let mut cursor = args_node.walk();
     for child in args_node.named_children(&mut cursor) {
@@ -558,14 +539,14 @@ fn constructed_entity_type(args_node: Node, src: &[u8]) -> Option<String> {
     None
 }
 
-/// 方法调用的**直接实参**按位置捕获字面量。
+/// Capture literals from a method call's **direct arguments** by position.
 ///
-/// 与注解用的 `literal_args`（递归、不保序）不同，这里保证位置语义：
-/// 第 i 个实参若是字符串 / 整数字面量取其值，否则占位 `Unknown`。这样
-/// `arg:0` 始终对应「第 1 个实参」，不会因前面有变量参数而错位。
+/// Unlike `literal_args` for annotations (recursive, unordered), this preserves positional semantics: the i-th
+/// argument yields its value when it is a string / integer literal, otherwise the placeholder `Unknown`. So
+/// `arg:0` always means "the first argument" and never shifts because an earlier argument was a variable.
 ///
-/// 例：`rabbitTemplate.convertAndSend("orders.queue", msg)` → `["orders.queue", Unknown]`，
-/// FKB 即可据此把消息生产端落成 Queue 节点的 `PublishesTo` 边。
+/// Example: `rabbitTemplate.convertAndSend("orders.queue", msg)` -> `["orders.queue", Unknown]`, which FKB uses
+/// to materialise the producer side as a `PublishesTo` edge on the Queue node.
 fn positional_args(node: Node, src: &[u8]) -> Vec<FactValue> {
     let mut out = Vec::new();
     let mut cursor = node.walk();
@@ -609,7 +590,7 @@ fn collect_literals(node: Node, src: &[u8], out: &mut Vec<FactValue>) {
     }
 }
 
-/// `obj.method(args)` → 调用点。
+/// `obj.method(args)` -> a call site.
 fn collect_call(
     node: Node,
     src: &[u8],
@@ -627,16 +608,12 @@ fn collect_call(
         Some(r) => format!("{}.{}", r, method),
         None => method.clone(),
     };
-    // 方法压栈后：`stack.last()` 是方法 FQN，`stack[len-2]` 是所属类；
-    // 类级调用（不在方法体内）时两者相同。
     let owner_fqn = stack.last().cloned().unwrap_or_default();
     let owner_class = if stack.len() >= 2 {
         stack.get(stack.len() - 2).cloned()
     } else {
         stack.last().cloned()
     };
-    // 实参字面量**按位置**捕获（见 `positional_args`）：首个实参若是字符串 /
-    // 整数字面量则取其值，否则占位 Unknown——保证 `arg:0` 对应「第 1 个实参」。
     let args_node = match node.child_by_field_name("arguments") {
         Some(a) => Some(a),
         None => (0..node.named_child_count())
@@ -644,8 +621,6 @@ fn collect_call(
             .find(|n| n.kind() == "argument_list"),
     };
     let args = args_node.map(|a| positional_args(a, src)).unwrap_or_default();
-    // 事件发布：`publishEvent(new X())` 取 `new` 出来的事件类型 X，使发布方与
-    // 订阅方按事件类型归并到同一 `Event` 节点（见 `constructed_entity_type`）。
     let entity = if method == "publishEvent" {
         args_node.and_then(|a| constructed_entity_type(a, src))
     } else {
@@ -661,7 +636,7 @@ fn collect_call(
         span: span_of(node),
         snippet: None,
         db_table: None,
-        // 循环体内（含嵌套）的调用：N+1 规则靠它判定「这段会被执行 N 次」。
+        // Calls inside a loop body (including nested ones): the N+1 rule uses this to judge "this runs N times".
         in_loop: *loop_depth > 0,
         entity,
     });
@@ -693,8 +668,8 @@ fn span_of(node: Node) -> Span {
 mod tests {
     use super::*;
 
-    /// 循环体内的调用要打上 `in_loop`（N+1 规则唯一能看出「这段代码会被执行 N 次」的地方）。
-    /// 与 PHP 侧一致：**只有 body 算循环内**，条件 / 更新表达式不算。
+    /// Calls inside a loop body must be marked `in_loop` (the only place the N+1 rule can see "this code runs N times").
+    /// Consistent with the PHP side: **only the body counts as inside the loop**, the condition / update expressions do not.
     #[test]
     fn marks_calls_in_loop_bodies() {
         let src = r#"package com.demo;
@@ -705,11 +680,11 @@ class Svc {
     private Repo repo;
 
     void run(List<Long> ids) {
-        // ① 传统 for：body 内算、条件内不算
+        // ① classic for: inside the body counts, inside the condition does not
         for (int i = 0; i < ids.size(); i++) {
             repo.findById(ids.get(i));
         }
-        // ② 增强 for
+        // ② enhanced for
         for (Long id : ids) {
             repo.findById(id);
         }
@@ -721,9 +696,9 @@ class Svc {
         do {
             repo.findById(2L);
         } while (repo.hasNext());
-        // ⑤ 循环外
+        // ⑤ outside the loop
         repo.findAll();
-        // ⑥ 嵌套循环
+        // ⑥ nested loop
         for (Long a : ids) {
             for (Long b : ids) {
                 repo.findById(a);
@@ -740,25 +715,23 @@ class Svc {
             .filter(|c| c.in_loop)
             .map(|c| c.callee_text.as_str())
             .collect();
-        // ① ~ ④ 各 1 条 + ⑥ 1 条 = 5 条 findById；另有 ① 实参里嵌套的 `ids.get(i)`
-        // 也算循环内（它同样被执行 N 次）。
-        assert_eq!(in_loop.len(), 6, "循环内调用应 6 条，实际：{in_loop:?}");
+        assert_eq!(in_loop.len(), 6, "expected 6 in-loop calls, got: {in_loop:?}");
         assert_eq!(
             in_loop.iter().filter(|c| c.contains("findById")).count(),
             5,
-            "findById 应 5 条，实际：{in_loop:?}"
+            "expected 5 findById calls, got: {in_loop:?}"
         );
         assert!(
             in_loop.iter().any(|c| c.contains("ids.get")),
-            "实参里嵌套的调用也算循环内，实际：{in_loop:?}"
+            "calls nested inside an argument also count as in-loop, got: {in_loop:?}"
         );
-        // 循环外的 findAll 未被标记
+        // findAll outside the loop is not marked
         assert!(!in_loop.iter().any(|c| c.contains("findAll")));
-        // 循环条件里的 hasNext 不算循环内
+        // hasNext in the loop condition does not count as inside the loop
         assert!(!in_loop.iter().any(|c| c.contains("hasNext")));
     }
 
-    /// Repository / Mapper 的泛型实参 = 它操作的实体（JPA / MyBatis-Plus 的 DAO 约定）。
+    /// A Repository / Mapper's generic argument is the entity it operates on (the JPA / MyBatis-Plus DAO convention).
     #[test]
     fn captures_dao_generic_entity() {
         let src = r#"package com.demo;
@@ -777,14 +750,14 @@ interface OrderMapper extends BaseMapper<Order> {
             .filter(|c| c.callee_text.starts_with("generic."))
             .map(|c| (c.callee_text.as_str(), c.entity.as_deref()))
             .collect();
-        // 同包裸名会按 DAO 所在包补成 FQN（短名在图里命中不了节点）
+        // A same-package bare name is completed into an FQN using the DAO's package (a short name hits no node on the graph)
         assert!(
             generic.contains(&("generic.JpaRepository", Some("com.demo.User"))),
-            "应捕获 JpaRepository<User> → com.demo.User，实际：{generic:?}"
+            "expected to capture JpaRepository<User> -> com.demo.User, got: {generic:?}"
         );
         assert!(
             generic.contains(&("generic.BaseMapper", Some("com.demo.Order"))),
-            "应捕获 BaseMapper<Order> → com.demo.Order，实际：{generic:?}"
+            "expected to capture BaseMapper<Order> -> com.demo.Order, got: {generic:?}"
         );
     }
 }

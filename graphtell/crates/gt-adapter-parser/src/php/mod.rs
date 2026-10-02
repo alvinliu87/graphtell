@@ -1,4 +1,4 @@
-//! PHP 解析器：把 tree-sitter PHP 语法树翻译成语言无关的 [`SyntaxFacts`]。
+//! PHP parser: translate a tree-sitter PHP syntax tree into the language-agnostic [`SyntaxFacts`].
 
 pub mod value;
 
@@ -17,7 +17,7 @@ use value::{eval_expr, span_of, text};
 
 use gt_domain::port::LanguageParser;
 
-/// PHP 解析器适配器。
+/// The PHP parser adapter.
 pub struct PhpParser {
     language: TsLanguage,
 }
@@ -63,14 +63,14 @@ impl LanguageParser for PhpParser {
             let mut borrow = cell.borrow_mut();
             let parser = borrow.get_or_insert_with(|| {
                 let mut p = Parser::new();
-                // 语言在构造时已校验，这里失败属于编程错误
+                // The language was validated at construction; failing here is a programming error
                 p.set_language(&self.language).expect("php language");
                 p
             });
             parser.parse(source, None)
         });
         let tree = tree.ok_or_else(|| {
-            DomainError::Parse { file: path.into(), reason: "tree-sitter 返回 None".into() }
+            DomainError::Parse { file: path.into(), reason: "tree-sitter returned None".into() }
         })?;
 
         let mut facts = SyntaxFacts::default();
@@ -83,7 +83,7 @@ impl LanguageParser for PhpParser {
             loop_depth: 0,
         };
 
-        // 命名空间（取第一个 namespace_definition）
+        // Namespace (take the first namespace_definition)
         if let Some(ns) = find_child_kind(root, "namespace_definition") {
             let name_node = ns
                 .child_by_field_name("name")
@@ -114,19 +114,19 @@ struct Ctx<'a> {
     src: &'a str,
     facts: &'a mut SyntaxFacts,
     ns: Option<String>,
-    /// 当前所处的类/接口/trait 的 FQN 栈。
+    /// The FQN stack of the class / interface / trait currently being entered.
     class_stack: Vec<String>,
-    /// 当前嵌套在几层 `for` / `foreach` / `while` / `do-while` 的**循环体内**。
-    /// 收集调用点时写入 [`CallSiteFact::in_loop`] —— 循环是图里唯一没有建模的
-    /// 控制流概念，而 N+1 检测全靠它。用深度而非布尔：嵌套循环体内层退出后，
-    /// 外层剩余的语句仍要算「在循环内」。
+    /// How many levels of `for` / `foreach` / `while` / `do-while` **loop body** we are currently nested in.
+    /// Written into [`CallSiteFact::in_loop`] when collecting call sites — a loop is the only control-flow concept
+    /// the graph does not model, and N+1 detection depends entirely on this. A depth rather than a boolean: after an
+    /// inner loop body exits, the remaining statements of the outer one still count as "inside a loop".
     loop_depth: u32,
 }
 
-/// 链式调用的根对象：`a()->b()->c()` 返回 `a`。
+/// The root object of a chained call: `a()->b()->c()` returns `a`.
 ///
-/// 只穿透**调用**表达式，不穿透普通属性访问
-/// （`$this->dao->getList` 的根是 `$this->dao` 而不是 `$this`）。
+/// Only **call** expressions are pierced, not ordinary property access
+/// (the root of `$this->dao->getList` is `$this->dao`, not `$this`).
 fn chain_root<'a>(mut node: Node<'a>, src: &str) -> String {
     loop {
         let next = match node.kind() {
@@ -148,12 +148,13 @@ fn trim_leading(s: String) -> String {
     s.trim_start_matches('\\').to_string()
 }
 
-/// 沿对象链回溯，取出「目标表名」：`Db::name('goods')->where()->insert()` 里，
-/// 对象的对象…是 `Db::name('goods')` —— 这是个 `name('goods')` 调用，其首个实参是
-/// 字符串字面量 `goods`。命中即返回它，供 P7 把末端动词落成 `WritesDb` / `ReadsDb`。
+/// Walk back along the object chain to find the "target table name": in `Db::name('goods')->where()->insert()`,
+/// the object's object … is `Db::name('goods')` — a `name('goods')` call whose first argument is the string
+/// literal `goods`. On a hit it is returned so P7 can turn the terminal verb into `WritesDb` / `ReadsDb`.
 ///
-/// 只认 `name` / `table` 两个表名动词（其它如 `Route::name` 是路由命名，不在此列，
-/// 但因我们只在「方法本身是读 / 写动词」时才使用这个值，所以不会误用）。
+/// Only the two table-name verbs `name` / `table` are recognised (things like `Route::name` are route naming and
+/// not in this list, but since we only use the value when "the method itself is a read / write verb", it cannot be
+/// misapplied).
 fn db_table_of(node: Node, ctx: &Ctx) -> Option<String> {
     let object = node.child_by_field_name("object")?;
     match object.kind() {
@@ -167,7 +168,7 @@ fn db_table_of(node: Node, ctx: &Ctx) -> Option<String> {
             }
             None
         }
-        // 继续往链上游回溯（`$q->name('x')->find()` 这类写法）
+        // Keep walking upstream along the chain (spellings like `$q->name('x')->find()`)
         "member_call_expression" | "nullsafe_member_call_expression" | "function_call_expression" => {
             db_table_of(object, ctx)
         }
@@ -179,9 +180,9 @@ fn find_child_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     node.named_children(&mut node.walk()).find(|c| c.kind() == kind)
 }
 
-/// 取带指定**字段名**的子节点（`for` 的 `body` 在语法里可以出现多次）。
+/// Take the children carrying a given **field name** (the `body` of a `for` can appear several times in the grammar).
 ///
-/// `child_by_field_name` 只返回第一个，这里用游标遍历取全部。
+/// `child_by_field_name` returns only the first, so a cursor is used here to take all of them.
 fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
     let mut out = Vec::new();
     let mut cursor = node.walk();
@@ -199,13 +200,13 @@ fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
     }
 }
 
-/// 当前收集位置是否在循环体内（供 [`CallSiteFact::in_loop`] 使用）。
+/// Whether the current collection position is inside a loop body (for [`CallSiteFact::in_loop`]).
 fn in_loop_of(ctx: &Ctx) -> bool {
     ctx.loop_depth > 0
 }
 
 fn walk_program(root: Node, ctx: &mut Ctx) {
-    // 命名空间有 body 时，真正的声明在 body 内部
+    // When a namespace has a body, the real declarations live inside that body
     let entry = if let Some(ns) = find_child_kind(root, "namespace_definition") {
         ns.child_by_field_name("body").unwrap_or(root)
     } else {
@@ -215,7 +216,7 @@ fn walk_program(root: Node, ctx: &mut Ctx) {
 }
 
 fn walk_scope(node: Node, ctx: &mut Ctx, owner_fqn: Option<&str>) {
-    // 顶层/命名空间层语句的归属：没有方法时挂到 "<file>"（最终落到 File 节点）
+    // Ownership of top-level / namespace-level statements: with no method they attach to "<file>" (landing on the File node)
     let top = owner_fqn.unwrap_or("<file>").to_string();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -227,20 +228,20 @@ fn walk_scope(node: Node, ctx: &mut Ctx, owner_fqn: Option<&str>) {
             | "enum_declaration" => collect_type(child, ctx),
             "function_definition" => collect_function(child, ctx),
             "const_declaration" => collect_const(child, ctx, owner_fqn),
-            // 配置文件：`return [...];`
+            // Config file: `return [...];`
             "return_statement" => {
                 collect_config_return(child, ctx);
                 collect_call_sites(child, ctx, &top);
             }
             "namespace_definition" => walk_scope(child, ctx, owner_fqn),
-            // 其余语句（路由文件里的 `Route::get(...)` 等）统一收集调用点
+            // Every other statement (`Route::get(...)` in a route file, etc.) collects call sites uniformly
             _ => collect_call_sites(child, ctx, &top),
         }
     }
 }
 
 fn collect_imports(node: Node, ctx: &mut Ctx) {
-    // body 可能是 namespace_use_group（use A\{B, C};）
+    // The body may be a namespace_use_group (use A\{B, C};)
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
@@ -296,10 +297,6 @@ fn collect_type(node: Node, ctx: &mut Ctx) {
         .map(|n| text(n, ctx.src))
         .unwrap_or_else(|| "<anonymous>".into());
     let fqn = qualify(ctx.ns.as_deref(), &name);
-    // `@method` 注解：类用 phpdoc 声明了一批**由 `__call` 转发**的方法
-    // （CRMEB `BaseServices` 的 `get` / `getList` / `delete` … 全靠它）。
-    // 这些方法没有方法体、没有节点，但在调用点上是真实方法名 —— 不记下来，
-    // `$this->services->getList()` 就只能退回"类级命中"，链到服务这一跳就断了。
     let magic_methods = docblock_method_names(node, ctx.src);
 
     ctx.facts.declarations.push(Declaration {
@@ -315,7 +312,7 @@ fn collect_type(node: Node, ctx: &mut Ctx) {
         }),
     });
 
-    // 继承 / 实现
+    // Inheritance / implementation
     if let Some(base) = find_child_kind(node, "base_clause") {
         let mut c = base.walk();
         for b in base.named_children(&mut c) {
@@ -356,14 +353,15 @@ fn collect_type(node: Node, ctx: &mut Ctx) {
     ctx.class_stack.pop();
 }
 
-/// 从类声明**前面**的 phpdoc 里抽出 `@method <name>(...)` 的方法名。
+/// Extract method names from `@method <name>(...)` in the phpdoc **preceding** a class declaration.
 ///
-/// 只取名字：返回类型与形参对解析无用（真正要做的是把调用转发给 FKB 声明的委派属性），
-/// 且返回类型里可能带 `|` `?` `\` 等符号，贪心匹配容易把 `array|Model|null` 当方法名。
+/// Only the name is taken: the return type and parameters are useless for parsing (what really matters is
+/// forwarding the call to the delegation property declared by FKB), and a return type may contain `|` `?` `\`,
+/// so greedy matching would easily mistake `array|Model|null` for a method name.
 fn docblock_method_names(node: Node, src: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = node.prev_sibling();
-    // 只向前看紧邻的几个注释 / 空白节点（`use_trait` 之类不会夹在中间）。
+    // Only look back at the immediately adjacent comment / whitespace nodes (things like `use_trait` are never in between).
     for _ in 0..4 {
         let Some(n) = cur else { break };
         if n.kind() == "comment" {
@@ -372,7 +370,7 @@ fn docblock_method_names(node: Node, src: &str) -> Vec<String> {
                 let Some(rest) = line.strip_prefix("@method ") else {
                     continue;
                 };
-                // `array|Model|null get($id, ...)` → 取 `(` 之前的最后一个标识符
+                // `array|Model|null get($id, ...)` -> take the last identifier before `(`
                 let before_paren = rest.split('(').next().unwrap_or(rest);
                 let name = before_paren
                     .split([' ', '\t'])
@@ -425,19 +423,20 @@ fn push_trait(ctx: &mut Ctx, owner: &str, base: &str, span: gt_domain::model::Sp
     });
 }
 
-/// Symfony 路由属性（`#[Route]` / `#[Get]` …）抽取。
+/// Symfony route attribute (`#[Route]` / `#[Get]` …) extraction.
 ///
-/// 现代 Symfony 用 PHP 8 属性声明路由：
+/// Modern Symfony declares routes with PHP 8 attributes:
 /// ```php
 /// #[Route('/api/users', methods: ['GET'])]
 /// #[Get('/api/users')]
 /// public function list() {}
 /// ```
-/// 返回每个路由的 `(属性名, 路径, 方法列表)`；`Route` 未写 `methods` 时方法列表为空
-/// （视为不限制 → 由调用方降为通配 `ANY`）。非路由属性（如 `#[ORM\Entity]`）直接忽略。
+/// Returns `(attribute name, path, method list)` for each route; when `Route` declares no `methods` the list is
+/// empty (treated as unrestricted -> the caller degrades it to the wildcard `ANY`). Non-route attributes
+/// (e.g. `#[ORM\Entity]`) are ignored outright.
 fn route_attributes_of(method: Node, src: &str) -> Vec<(String, String, Vec<String>)> {
     let mut out = Vec::new();
-    // 方法节点上的 attribute_list / attribute_group / attribute（可能嵌套一层）
+    // attribute_list / attribute_group / attribute on the method node (possibly nested one level)
     let mut attr_nodes: Vec<Node> = Vec::new();
     let mut stack: Vec<Node> = method.named_children(&mut method.walk()).collect();
     while let Some(node) = stack.pop() {
@@ -451,7 +450,7 @@ fn route_attributes_of(method: Node, src: &str) -> Vec<(String, String, Vec<Stri
         }
     }
     for attr in attr_nodes {
-        // 按 **kind** 找名字（`attribute` 的 `name` 不是具名字段，`child_by_field_name` 取不到）
+        // Find the name by **kind** (an `attribute`'s `name` is not a named field, so `child_by_field_name` cannot get it)
         let name = attr
             .named_children(&mut attr.walk())
             .find(|c| c.kind() == "name")
@@ -480,7 +479,7 @@ fn route_attributes_of(method: Node, src: &str) -> Vec<(String, String, Vec<Stri
                     .find(|c| c.kind() == "name")
                     .map(|n| text(n, src));
                 if named.is_none() {
-                    // 位置实参 = 路径
+                    // Positional argument = the path
                     if path.is_empty() {
                         path = find_string_content(arg, src).unwrap_or_default();
                     }
@@ -489,7 +488,7 @@ fn route_attributes_of(method: Node, src: &str) -> Vec<(String, String, Vec<Stri
                 }
             }
         }
-        // 快捷属性（Get/Post…）隐含方法；`Route` 无 methods 时留给调用方当 `ANY`
+        // Shortcut attributes (Get/Post…) imply the method; `Route` without methods is left to the caller as `ANY`
         let methods = if name != "Route" && methods.is_empty() {
             vec![name.to_uppercase()]
         } else {
@@ -500,7 +499,7 @@ fn route_attributes_of(method: Node, src: &str) -> Vec<(String, String, Vec<Stri
     out
 }
 
-/// 取节点子树里首个 `string_content` 文本（用于路径字符串）。
+/// Take the text of the first `string_content` in the node subtree (used for path strings).
 fn find_string_content(node: Node, src: &str) -> Option<String> {
     if node.kind() == "string_content" {
         return Some(text(node, src));
@@ -514,7 +513,7 @@ fn find_string_content(node: Node, src: &str) -> Option<String> {
     None
 }
 
-/// 取数组字面量（`['GET', 'POST']`）里所有字符串元素（递归找 `array_element_initializer`）。
+/// Take every string element of an array literal (`['GET', 'POST']`) (recursively finding `array_element_initializer`).
 fn collect_array_strings(node: Node, src: &str) -> Vec<String> {
     let mut out = Vec::new();
     if node.kind() == "array_element_initializer" {
@@ -535,7 +534,7 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
         .map(|n| text(n, ctx.src))
         .unwrap_or_default();
     let fqn = format!("{}::{}", class_fqn, name);
-    // 参数：记录「名称 + 类型」，供 P7 按"变量类型"解析实例调用（`$services->appAuth()`）。
+    // Parameters: record "name + type" so P7 can resolve instance calls by "variable type" (`$services->appAuth()`).
     let params = node
         .child_by_field_name("parameters")
         .map(|p| {
@@ -553,13 +552,13 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
         })
         .unwrap_or_default();
 
-    // 构造器注入：`$this->services = $services;` → 属性 services 的类型 = 参数 services 的类型。
+    // Constructor injection: `$this->services = $services;` -> the type of property services = the type of parameter services.
     let mut this_assigns: Vec<serde_json::Value> = Vec::new();
-    // 右侧自带类型的赋值：`$this->x = new Y` / `Y::make()` / `app(Y::class)`。
+    // Assignment whose right side carries a type: `$this->x = new Y` / `Y::make()` / `app(Y::class)`.
     let mut this_assign_types: Vec<serde_json::Value> = Vec::new();
-    // 方法内局部变量：`$x = new Y(...)` → `$x->m()` 可解析。
+    // Local variables inside a method: `$x = new Y(...)` -> `$x->m()` can be resolved.
     let mut local_assign_types: Vec<serde_json::Value> = Vec::new();
-    // `return X::class;` → 供给 P7 建「所属类 → X」的声明式联系（如 Dao::setModel() → Model）。
+    // `return X::class;` -> lets P7 build a declarative link "owning class -> X" (e.g. Dao::setModel() -> Model).
     let mut returns_class: Vec<serde_json::Value> = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
         collect_assigns(
@@ -590,10 +589,6 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
         }),
     });
 
-    // Symfony 路由属性（`#[Route]` / `#[Get]` …）→ 合成调用点，交给 FKB 合成
-    // `HttpContract` + `HandledBy`。callee 用 `attr.` 前缀：既避开 Laravel 等
-    // `Route::get(...)` 真实调用，也避开 `$cache->Get()` 这类方法名（FKB 的 callee
-    // 模式是「裸名按方法名匹配」，用裸 `Get` 会误命中）；`entity` 指向控制器方法自身。
     for (attr_name, path, methods) in route_attributes_of(node, ctx.src) {
         let methods = if methods.is_empty() {
             vec!["ANY".to_string()]
@@ -623,14 +618,16 @@ fn collect_method(node: Node, ctx: &mut Ctx, class_fqn: &str) {
     }
 }
 
-/// 收集方法体内的赋值，一次遍历服务三条类型推断来源（避免对每个方法体重复递归）：
+/// Collect assignments inside a method body; one traversal serves three type-inference sources (avoiding repeated
+/// recursion over each method body):
 ///
-/// 1. `$this->prop = $var;` —— 构造器注入，类型来自**参数类型提示**（`this_out` 的
-///    `{prop, var}`）。ThinkPHP 的控制器/服务常写成
-///    `__construct(LoginServices $services) { $this->services = $services; }`。
-/// 2. `$this->prop = <可静态确定类型的表达式>` —— `new Y` / `Y::make()` / `app(Y::class)`（
-///    `type_out` 的 `{prop, class}`）。
-/// 3. `$x = <同上>` —— 方法内局部变量（`local_out` 的 `{var, class}`），供 `$x->m()` 解析。
+/// 1. `$this->prop = $var;` — constructor injection, the type comes from the **parameter type hint**
+///    (`this_out`'s `{prop, var}`). ThinkPHP controllers / services are often written as
+///    `__construct(LoginServices $services) { $this->services = $services; }`.
+/// 2. `$this->prop = <an expression whose type is statically determinable>` — `new Y` / `Y::make()` /
+///    `app(Y::class)` (`type_out`'s `{prop, class}`).
+/// 3. `$x = <same as above>` — a local variable inside the method (`local_out`'s `{var, class}`), so `$x->m()`
+///    can be resolved.
 fn collect_assigns(
     node: Node,
     ctx: &Ctx,
@@ -647,7 +644,7 @@ fn collect_assigns(
             ) {
                 let lt = text(l, ctx.src).trim().to_string();
                 if lt.starts_with("$this->") {
-                    // ① 参数类型提示（更权威，先记；P2 侧遇到已推断的类型会跳过 ②）
+                    // ① Parameter type hint (more authoritative, recorded first; P2 skips ② when a type was already inferred)
                     let rt = text(r, ctx.src).trim().to_string();
                     if rt.starts_with('$') && !rt.contains("->") && !rt.contains('[') {
                         let prop = lt.trim_start_matches("$this->").to_string();
@@ -675,9 +672,10 @@ fn collect_assigns(
     }
 }
 
-/// 从赋值右侧文本里读出**可静态确定的类名**（`new` / 静态工厂 / 容器取实例）。
+/// Read a **statically determinable class name** out of the text on the right side of an assignment (`new` /
+/// static factory / container lookup).
 ///
-/// 只接受一眼可见的形状，其它一律 `None` —— 宁可缺边，不可错边。
+/// Only shapes obvious at a glance are accepted; everything else is `None` — better a missing edge than a wrong one.
 fn rhs_class_of(node: Node, src: &str) -> Option<String> {
     let raw = text(node, src).trim().to_string();
     match node.kind() {
@@ -686,7 +684,7 @@ fn rhs_class_of(node: Node, src: &str) -> Option<String> {
             .named_children(&mut node.walk())
             .find(|c| matches!(c.kind(), "name" | "qualified_name"))
             .map(|c| trim_leading(text(c, src))),
-        // `Foo::getDetail(...)` / `Foo::getInstance()` —— 返回同类的静态工厂
+        // `Foo::getDetail(...)` / `Foo::getInstance()` — static factories returning the same class
         "scoped_call_expression" => node
             .child_by_field_name("scope")
             .map(|s| trim_leading(text(s, src)))
@@ -694,7 +692,7 @@ fn rhs_class_of(node: Node, src: &str) -> Option<String> {
         // `app(Foo::class)` / `app()->make(Foo::class, [...])`
         _ => {
             let cls = raw
-                .split([',', '(']) // 取 `Foo::class` 所在的片段
+                .split([',', '(']) // take the fragment containing `Foo::class`
                 .find(|seg| seg.contains("::class"))?
                 .trim();
             let cls = cls
@@ -713,7 +711,7 @@ fn rhs_class_of(node: Node, src: &str) -> Option<String> {
     }
 }
 
-/// 收集 `return X::class;` 中引用的类名（原文，可能带命名空间前缀）。
+/// Collect the class names referenced by `return X::class;` (raw text, possibly with a namespace prefix).
 fn collect_return_classes(node: Node, ctx: &Ctx, out: &mut Vec<serde_json::Value>) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -753,12 +751,6 @@ fn collect_function(node: Node, ctx: &mut Ctx) {
 }
 
 fn collect_property(node: Node, ctx: &mut Ctx, class_fqn: &str) {
-    // 类型化属性（PHP 7.4+）：`private OrderModel $orderInfo;`
-    //
-    // 这是**静态可确定**的属性类型来源，必须记进 `field_types` → `prop_types`：
-    // yoshop 这类工程几乎全靠它注入依赖（`protected UserModel $user;` 而**不写**
-    // 构造器参数类型提示），漏掉它，`$this->user->xxx()` 就永远推不出类型，
-    // 「路由 → 服务 → 表」的整条调用链在服务这一跳断掉。
     let declared_type = node
         .child_by_field_name("type")
         .map(|t| text(t, ctx.src).trim().trim_start_matches('?').to_string())
@@ -845,7 +837,7 @@ fn collect_enum_case(node: Node, ctx: &mut Ctx, owner: &str) {
     });
 }
 
-/// 配置文件：把 `return [...]` 展平成 `config_entries`。
+/// Config files: flatten `return [...]` into `config_entries`.
 fn collect_config_return(node: Node, ctx: &mut Ctx) {
     let Some(expr) = node.named_child(0) else { return };
     let value = eval_expr(expr, ctx.src);
@@ -862,7 +854,7 @@ fn flatten_config(value: &FactValue, prefix: String, span: gt_domain::model::Spa
                     format!("{}.{}", prefix, k)
                 };
                 if matches!(v, FactValue::Array(_)) {
-                    // 数组本身也是一条条目（value 为整个数组），再递归展开子键
+                    // The array itself is also an entry (value = the whole array); then recurse to expand the sub-keys
                     ctx.facts.config_entries.push(ConfigEntryFact {
                         key_path: key_path.clone(),
                         value: v.clone(),
@@ -888,7 +880,7 @@ fn flatten_config(value: &FactValue, prefix: String, span: gt_domain::model::Spa
     }
 }
 
-/// 收集方法体内的调用点。
+/// Collect the call sites inside a method body.
 fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -986,10 +978,6 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                 }
                 recurse_calls(child, ctx, owner_fqn);
             }
-            // 循环语句：**只有 body 内的调用算「循环体内」**。
-            // 条件 / 初始化表达式（`while ($this->hasNext())`、`for ($i=0; $i<count($x); $i++)`）
-            // 不是每条记录都执行一次，标成 `in_loop` 会把「循环前查一次」误报成 N+1。
-            // 用深度而不是布尔：嵌套循环退出内层后，外层的后续语句仍在循环内。
             "for_statement" | "foreach_statement" | "while_statement" | "do_statement" => {
                 let bodies: HashSet<usize> =
                     field_children(child, "body").iter().map(|n| n.id()).collect();
@@ -1004,19 +992,12 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                     }
                 }
             }
-            // CORS 反射源站：`$header['Access-Control-Allow-Origin'] = <请求 Origin>`。
-            // 仅捕获左侧是 Allow-Origin 下标键的赋值，反射判定留给 `phase::cors`。
-            // 签名值的相等性比较：`$sign == $ipay_signature` /
-            // `$this->CreatedSign($params) != $params['sign']`。
-            // 只收**松散**比较（== / !=）且至少一侧像签名值 —— 见 SignCompareFact 的文档。
             "binary_expression" => {
                 if let Some(fact) = sign_compare_of(child, ctx, owner_fqn) {
                     ctx.facts.sign_compares.push(fact);
                 }
                 recurse_calls(child, ctx, owner_fqn);
             }
-            // CORS 反射源站：`$header['Access-Control-Allow-Origin'] = <请求 Origin>`。
-            // 仅捕获左侧是 Allow-Origin 下标键的赋值，反射判定留给 `phase::cors`。
             "assignment_expression" => {
                 if let (Some(l), Some(r)) = (
                     child.child_by_field_name("left"),
@@ -1030,10 +1011,6 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
                             span: span_of(child),
                         });
                     }
-                    // 局部变量赋值（供 P9 Taint 反向追踪变量来源）。
-                    //
-                    // 只收**裸变量**左侧：`$this->x` / `$a['k']` 不是局部变量，
-                    // 追不到"是不是来自请求"，收进来只会让索引失真。
                     if let Some(var) = plain_var_name(l, ctx.src) {
                         ctx.facts.variable_assignments.push(VariableAssignFact {
                             var,
@@ -1052,28 +1029,31 @@ fn collect_call_sites(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
 }
 
 fn recurse_calls(node: Node, ctx: &mut Ctx, owner_fqn: &str) {
-    // 闭包/匿名函数内部的调用归属外层方法
+    // Calls inside a closure / anonymous function belong to the enclosing method
     collect_call_sites(node, ctx, owner_fqn);
 }
 
-/// 若赋值左侧是 `['Access-Control-Allow-Origin']` 这类下标访问，返回归一化头名；否则 `None`。
+/// If the left side of an assignment is a subscript access such as `['Access-Control-Allow-Origin']`, return the
+/// normalised header name; otherwise `None`.
 ///
-/// 只关心会触发反射型 CORS 的 `Access-Control-Allow-Origin` 头（大小写不敏感、忽略引号）。
-/// 赋值左侧是**裸变量**时返回变量名（不含 `$`）；`$this->x` / `$a['k']` 返回 `None`。
+/// Only the `Access-Control-Allow-Origin` header that triggers reflected CORS is of interest (case-insensitive,
+/// quotes ignored). When the left side is a **bare variable** the variable name is returned (without `$`);
+/// `$this->x` / `$a['k']` return `None`.
 ///
-/// 只认形如 `$sql` 的写法：`$this->` 是属性、`$a['k']` 是下标，两者都不是局部变量，
-/// 收进来会让 P9 Taint 的反向追踪把属性/数组读写误当成局部赋值链的一环。
+/// Only the `$sql` shape is recognised: `$this->` is a property and `$a['k']` is a subscript, neither is a local
+/// variable, and collecting them would make P9 Taint's backward tracking mistake property / array reads and writes
+/// for a link in a local-assignment chain.
 fn plain_var_name(node: Node, src: &str) -> Option<String> {
     let raw = text(node, src).trim().to_string();
     let body = raw.strip_prefix('$')?;
     if body.is_empty() || !body.contains(|c: char| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
-    // 只留标识符：`->`、`[`、空格等都说明不是裸变量。
+    // Keep only identifiers: `->`, `[`, spaces and so on all mean it is not a bare variable.
     if !body.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
-    // 首字符必须是字母或 `_`（`$1` 之类不是合法 PHP 变量）。
+    // The first character must be a letter or `_` (`$1` is not a legal PHP variable).
     let first = body.chars().next()?;
     if !first.is_ascii_alphabetic() && first != '_' {
         return None;
@@ -1085,7 +1065,7 @@ fn cors_header_key(node: Node, src: &str) -> Option<String> {
     if node.kind() != "subscript_expression" {
         return None;
     }
-    // 取下标键：优先按字段名 `index`，回退到第二个命名子节点（兼容不同 tree-sitter-php 版本）。
+    // Take the subscript key: prefer the `index` field name, fall back to the second named child (compatibility across tree-sitter-php versions).
     let idx = node
         .child_by_field_name("index")
         .or_else(|| node.named_children(&mut node.walk()).nth(1))?;
@@ -1112,13 +1092,13 @@ Route::miss(function () {
 });";
         let parser = PhpParser::new().unwrap();
         let facts = parser.parse("route/route.php", src).unwrap();
-        // 只捕获 Allow-Origin，不捕获 Allow-Credentials（非反射型头）。
+        // Only Allow-Origin is captured, not Allow-Credentials (a non-reflected header).
         assert_eq!(facts.header_assignments.len(), 1);
         let ha = &facts.header_assignments[0];
         assert_eq!(ha.key, "access-control-allow-origin");
         let lower = ha.rhs_snippet.to_ascii_lowercase();
         assert!(lower.contains("header(") && lower.contains("origin"));
-        // 同行应存在一个读取请求 origin 的调用点（CORS 阶段据此定位标注落点）。
+        // On the same line there should be a call site reading the request origin (the Cors phase locates the annotation from it).
         let origin_call = facts.call_sites.iter().any(|c| {
             c.method.as_deref() == Some("header")
                 && c.args
@@ -1127,7 +1107,7 @@ Route::miss(function () {
                     .map(|s| s.eq_ignore_ascii_case("origin"))
                     .unwrap_or(false)
         });
-        assert!(origin_call, "应捕获同行的 ->header('origin') 调用点");
+        assert!(origin_call, "expected to capture the ->header('origin') call site on the same line");
     }
 
     #[test]
@@ -1148,14 +1128,14 @@ class M {
             .iter()
             .map(|a| a.var.as_str())
             .collect();
-        // 只收裸变量左侧：`$this->conf` / `$list['k']` 不是局部变量。
+        // Only bare-variable left sides are collected: `$this->conf` / `$list['k']` are not local variables.
         assert_eq!(vars, vec!["sql", "exec"]);
         let exec = &facts.variable_assignments[1];
-        assert!(exec.rhs.contains("$sql"), "右侧原文应保留变量引用: {}", exec.rhs);
+        assert!(exec.rhs.contains("$sql"), "the verbatim right-hand side should keep the variable reference: {}", exec.rhs);
         assert!(exec.owner_fqn.ends_with("run"), "owner_fqn={}", exec.owner_fqn);
     }
 
-    /// 按调用点原文片段取它的 `in_loop` 标记（同一段源码里动词会重名，只能按行区分）。
+    /// Look up a call site's `in_loop` mark by its raw source fragment (verbs repeat in the same source, so only the line can tell them apart).
     fn in_loop_of<'a>(facts: &'a SyntaxFacts, needle: &str) -> Option<&'a CallSiteFact> {
         facts
             .call_sites
@@ -1183,15 +1163,15 @@ class S {
 }";
         let parser = PhpParser::new().unwrap();
         let facts = parser.parse("app/S.php", src).unwrap();
-        // 循环外：只执行一次
+        // Outside the loop: executes once
         assert_eq!(in_loop_of(&facts, "'config'").unwrap().in_loop, false);
-        // foreach 体内：每条记录一次（这才是 N+1）
+        // Inside the foreach body: once per record (this is the real N+1)
         assert_eq!(in_loop_of(&facts, "'user'").unwrap().in_loop, true);
-        // 嵌套循环体内
+        // Inside a nested loop body
         assert_eq!(in_loop_of(&facts, "Tag::get").unwrap().in_loop, true);
-        // 循环**条件**里的调用每次进入前求值，不算循环体内
+        // A call in the loop **condition** is evaluated before each entry, so it is not inside the loop body
         assert_eq!(in_loop_of(&facts, "fetch()").unwrap().in_loop, false);
-        // while 体内
+        // Inside the while body
         assert_eq!(in_loop_of(&facts, "save(").unwrap().in_loop, true);
     }
 
@@ -1211,7 +1191,7 @@ class P {
 }";
         let parser = PhpParser::new().unwrap();
         let facts = parser.parse("extend/payment/P.php", src).unwrap();
-        // 只收松散比较：`===` 不算问题，不该进来。
+        // Only loose comparisons are collected: `===` is not the problem we are looking for and must not come in.
         assert_eq!(facts.sign_compares.len(), 1);
         let c = &facts.sign_compares[0];
         assert_eq!(c.operator, "!=");
@@ -1220,7 +1200,7 @@ class P {
         assert_eq!(c.owner_fqn, "P::respond");
     }
 
-    /// 电商代码里 `sign` 绝大多数是**签到** —— 这是整条规则最大的噪声源，必须挡在解析期。
+    /// In e-commerce code `sign` almost always means **check-in** — the biggest noise source of this whole rule, and it must be blocked at parse time.
     #[test]
     fn ignores_checkin_comparison() {
         let src = "<?php
@@ -1239,7 +1219,7 @@ class S {
         let facts = parser.parse("app/service/Sign.php", src).unwrap();
         assert!(
             facts.sign_compares.is_empty(),
-            "签到类比较不应被收进签名比较事实，实际 {:?}",
+            "a check-in style comparison should not be collected as a signature-comparison fact, got {:?}",
             facts.sign_compares.iter().map(|c| &c.left).collect::<Vec<_>>()
         );
     }
@@ -1281,20 +1261,20 @@ class UserController
             .iter()
             .filter(|c| c.callee_text.starts_with("attr."))
             .collect();
-        // Route 无 methods → 1 条(ANY)；Route 带 methods[GET,POST] → 2 条；Get → 1 条
-        assert_eq!(route_calls.len(), 4, "应为 4 条路由合成调用点，实际：{:?}",
+        // Route without methods -> 1 (ANY); Route with methods[GET,POST] -> 2; Get -> 1
+        assert_eq!(route_calls.len(), 4, "expected 4 synthetic route call sites, got: {:?}",
             facts.call_sites.iter().map(|c| &c.callee_text).collect::<Vec<_>>());
-        // entity 指向控制器方法
+        // entity points at the controller method
         assert!(route_calls.iter().all(|c| c.entity.as_deref() == Some("App\\Controller\\UserController::listUsers") || c.entity.as_deref() == Some("App\\Controller\\UserController::show") || c.entity.as_deref() == Some("App\\Controller\\UserController::ping")));
     }
 }
 
-/// 抽取「签名值的相等性比较」：`$sign == $ipay_signature` /
-/// `$this->CreatedSign($params) != $params['sign']`。
+/// Extract "equality comparisons of a signature value": `$sign == $ipay_signature` /
+/// `$this->CreatedSign($params) != $params['sign']`.
 ///
-/// 只收 `==` / `!=`：`===` / `!==` 是严格比较，不是这里要找的问题。
-/// 且至少一侧要像"一个签名值" —— 一个工程里有几万条 `==`，全收会撑爆事实集
-/// （与 CORS 只收 Allow-Origin 一个头同理）。
+/// Only `==` / `!=` are collected: `===` / `!==` are strict comparisons and are not the problem being looked for.
+/// At least one side has to look like "a signature value" — a project has tens of thousands of `==`, and collecting
+/// them all would blow up the fact set (same reasoning as Cors collecting only the Allow-Origin header).
 fn sign_compare_of(node: Node, ctx: &Ctx, owner_fqn: &str) -> Option<SignCompareFact> {
     let op = node.child_by_field_name("operator").map(|o| text(o, ctx.src))?;
     if op != "==" && op != "!=" {
@@ -1305,9 +1285,6 @@ fn sign_compare_of(node: Node, ctx: &Ctx, owner_fqn: &str) -> Option<SignCompare
     if !looks_like_signature(&left) && !looks_like_signature(&right) {
         return None;
     }
-    // 一侧是**字符串字面量**时不是验签：那是在比对算法名之类的常量
-    // （实测误报：`$ssl[$i]['signatureTypeLN'] == "sha1WithRSAEncryption"`）。
-    // 验签比较的两侧都应当是变量 / 计算表达式。
     if is_string_literal(&left) || is_string_literal(&right) {
         return None;
     }
@@ -1321,15 +1298,13 @@ fn sign_compare_of(node: Node, ctx: &Ctx, owner_fqn: &str) -> Option<SignCompare
     })
 }
 
-/// 文本是否像**一个签名值**（而不是签到 / 赋值之类的同形词）。
+/// Whether the text looks like **a signature value** (rather than a same-shaped word such as check-in).
 ///
-/// 这是整条规则唯一的噪声闸口：电商代码里 `sign` 绝大多数是**签到**
-/// （`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`），
-/// 实测 32 处"含 sign 的 == 比较"里 24 处是签到。不排掉它们，规则就刷屏。
+/// This is the only noise gate of the whole rule: in e-commerce code `sign` almost always means **check-in**
+/// (`$sign_mode` / `$sign_last_date` / `$sign_total_days` / `$points_sign_enabled`), and of 32 measured
+/// "`==` comparisons containing sign", 24 were check-in. Without filtering them out the rule floods the report.
 fn looks_like_signature(s: &str) -> bool {
     let t = s.trim();
-    // 必须引用变量：`$sign`、`$params['sign']`、`$ipay_signature`，
-    // 也包括被函数包起来的 `strtolower($sign)`（CRMEB 的 allinpay 验签就是这么写的）。
     if !t.contains('$') {
         return false;
     }
@@ -1337,32 +1312,34 @@ fn looks_like_signature(s: &str) -> bool {
     if !lower.contains("sign") {
         return false;
     }
-    // `assign` / `design` / `resign` 里同样含 `sign` —— 先排除同形词。
+    // `assign` / `design` / `resign` also contain `sign` — exclude same-shaped words first.
     if lower.contains("assign") || lower.contains("design") || lower.contains("resign") {
         return false;
     }
-    // 去下划线后比对，一次覆盖 `$sign_mode` 与 `$signMode` 两种写法。
+    // Compare after stripping underscores, covering both `$sign_mode` and `$signMode`.
     let flat: String = lower.chars().filter(|c| !matches!(c, '_' | '-')).collect();
     const NOISE: &[&str] = &[
         "signtype", "signmode", "signlast", "signtotal", "signdays", "signnum", "signcount",
         "signdate", "signenabled", "signstatus", "signrule", "signconfig", "signset", "signin",
         "signup", "pointsign", "usersign", "signrecord", "signlog", "signremind", "signpoints",
-        // 证书里也有 `signatureTypeLN` / 签名算法名，那是元数据不是待验的签名值
+        // Certificates also contain `signatureTypeLN` / signature algorithm names — those are metadata, not a signature value to verify
         "signaturetype", "signalg", "signmethod",
     ];
     !NOISE.iter().any(|n| flat.contains(n))
 }
 
-/// 是否是裸字符串字面量（`'x'` / `"x"`）。
+/// Whether this is a bare string literal (`'x'` / `"x"`).
 fn is_string_literal(s: &str) -> bool {
     let t = s.trim();
     (t.starts_with('\'') && t.ends_with('\'')) || (t.starts_with('"') && t.ends_with('"'))
 }
 
-/// 取调用点所在**行**的源码文本，供 UI 直接显示"调用语句"，便于人工核验。
+/// Take the source text of the **line** a call site sits on, so the UI can show the "call statement" for human
+/// verification.
 ///
-/// 只取单行：`span` 可能覆盖跨行的长表达式，多行片段对"一眼判断"并无帮助，
-/// 只会撑大存储与视图响应。超长则截断（避开 UTF-8 边界），避免异常长的行污染视图。
+/// A single line only: `span` may cover a multi-line expression, and a multi-line fragment does not help "judge at
+/// a glance" — it only inflates storage and view responses. Over-long lines are truncated (avoiding UTF-8
+/// boundaries) so an abnormal line cannot pollute the view.
 fn snippet_of(node: Node, src: &str) -> Option<String> {
     const MAX: usize = 160;
     let start = node.start_byte().min(src.len());

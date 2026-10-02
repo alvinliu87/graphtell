@@ -1,10 +1,11 @@
-//! Java（Spring Boot）**DAO → 表** 与 **读 / 写动词分类**的端到端自检。
+//! End-to-end self-check of Java (Spring Boot) **DAO -> table** and **read / write verb classification**.
 //!
-//! 覆盖这条链：`interface UserRepository extends JpaRepository<User, Long>`
-//!   → 泛型实参 `User`（DAO 操作的实体，parser 记成 `generic.JpaRepository` 合成调用点）
-//!   → `References`（DAO → 实体，FKB `Link`）
-//!   → `Project` 沿实体的 `MapsTo` 投影成 `MapsTo`（DAO → 表）
-//!   → P7 据此把 `repo.save()` / `repo.findById()` 落成 `WritesDb` / `ReadsDb`。
+//! Covers this chain: `interface UserRepository extends JpaRepository<User, Long>`
+//!   -> the generic argument `User` (the entity the DAO operates on; the parser records it as a `generic.JpaRepository`
+//!   synthetic call site)
+//!   -> `References` (DAO -> entity, an FKB `Link`)
+//!   -> `Project` projects along the entity's `MapsTo` into `MapsTo` (DAO -> table)
+//!   -> P7 then turns `repo.save()` / `repo.findById()` into `WritesDb` / `ReadsDb`.
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter};
@@ -106,13 +107,13 @@ fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<Node> {
 fn jpa_repository_maps_to_table_and_db_verbs_are_classified() {
     let dir = synthetic_spring_root();
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("the graph build should succeed");
     };
 
     let tables = nodes_of_kind(&b, "Table");
     assert!(
         tables.iter().any(|t| t.name.contains("user")),
-        "应合成出 user 表，实际：{:?}",
+        "expected a user table to be synthesised, got: {:?}",
         tables.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
@@ -120,7 +121,7 @@ fn jpa_repository_maps_to_table_and_db_verbs_are_classified() {
         .into_iter()
         .find(|n| n.name == "UserRepository")
     else {
-        panic!("应有 UserRepository 接口节点");
+        panic!("expected a UserRepository interface node");
     };
     let maps_to: Vec<String> = b
         .store
@@ -133,14 +134,14 @@ fn jpa_repository_maps_to_table_and_db_verbs_are_classified() {
         .collect();
     assert!(
         !maps_to.is_empty(),
-        "UserRepository 应经 References + Project 拿到 MapsTo（DAO → 表）"
+        "UserRepository should get MapsTo (DAO -> table) via References + Project"
     );
-    // ③ 读 / 写动词分类：`findById` → ReadsDb、`save` → WritesDb。
-    // 动作边落在**方法**节点上（`emit_db_edge` 以 loc.owner 为起点）。
+    // (3) Read / write verb classification: `findById` -> ReadsDb, `save` -> WritesDb.
+    // The action edge lands on the **method** node (`emit_db_edge` starts from loc.owner).
     let svc = nodes_of_kind(&b, "Method")
         .into_iter()
         .find(|n| n.name == "run")
-        .expect("应有 run 方法");
+        .expect("expected a run method");
     let actions: Vec<String> = b
         .store
         .edges_of(svc.id, EdgeDirection::Outgoing)
@@ -150,10 +151,10 @@ fn jpa_repository_maps_to_table_and_db_verbs_are_classified() {
         .collect();
     assert!(
         actions.iter().any(|k| k == "ReadsDb"),
-        "findById 应落成 ReadsDb，实际动作边：{actions:?}"
+        "findById should become ReadsDb, actual action edges: {actions:?}"
     );
     assert!(
         actions.iter().any(|k| k == "WritesDb"),
-        "save 应落成 WritesDb，实际动作边：{actions:?}"
+        "save should become WritesDb, actual action edges: {actions:?}"
     );
 }

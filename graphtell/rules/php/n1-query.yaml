@@ -1,33 +1,37 @@
-# N+1：循环体内逐条访问数据库。
+# N+1: per-row database access inside a loop.
 #
-# 判据是两个**跨阶段拼起来的事实**：
-#   1. `CallSite.properties.in_loop` —— PHP parser 在 `for` / `foreach` / `while` /
-#      `do-while` 的 `body` 内收集到该调用时打上的标记（图里唯一表达"这段代码会被
-#      执行 N 次"的地方）；
-#   2. `db-query` / `db-write` 标注 —— P7 把这次调用落成 `ReadsDb` / `WritesDb` 边时，
-#      顺带打在该调用点上的投影。复用 P7 的动词分类结果（FKB `db_verbs`），
-#      不在规则里另写动词名单。
+# The criterion is one fact **assembled across two phases**:
+#   1. `CallSite.properties.in_loop` — a mark the PHP parser sets when the call is collected inside the
+#      `body` of a `for` / `foreach` / `while` / `do-while` (the only place on the graph that expresses
+#      "this code runs N times");
+#   2. the `db-query` / `db-write` annotation — a projection P7 leaves on the call site while turning
+#      that call into a `ReadsDb` / `WritesDb` edge. It reuses P7's verb classification result (FKB
+#      `db_verbs`) instead of writing its own verb list inside the rule.
 #
-# 为什么必须挂在 `CallSite` 而不是 `Method`：`ReadsDb` 边挂在方法上，且 P8 会沿调用
-# 链向上传播 —— 方法粒度只能得到"这个方法的调用链上读过库"，分不清"循环里查 N 次"
-# 与"循环外查一次"，噪声会比已否决的"上帝方法（方法读写 N 张表）"那条还大。
+# Why it must hang off `CallSite` rather than `Method`: `ReadsDb` edges hang off methods, and P8
+# propagates them upwards along the call chain — method granularity only yields "somewhere on this
+# method's call chain the database was read", which cannot distinguish "query N times inside the loop"
+# from "query once outside it"; the noise would be worse than the already-rejected "god method
+# (a method reads and writes N tables)" rule.
 #
-# 读与写分成两条：改法不同（批量读 / 批量写），文案也不同。
+# Read and write are split into two rules: the fixes differ (batch read / batch write) and so does the wording.
 
 rules:
   - id: n1-query-in-loop
-    title: 循环内逐条查库（N+1）
+    title: Per-row database read inside a loop (N+1)
     description: >-
-      一次数据库**读**发生在循环体内：N 条记录就是 N 次往返，数据量一大就退化成
-      N+1 查询。修法是循环外一次批量取回（whereIn / 预加载关联）再在内存里配对。
-      两类例外要先排除：循环的是配置 / 字典这类**常数长度**的集合（N 很小，不必改），
-      以及按天 / 按枚举分桶的统计循环（N 有上界，属于可接受写法）。
+      A database **read** happens inside a loop body: N records means N round trips, which degrades into
+      an N+1 query as the data grows. The fix is one batch fetch outside the loop (whereIn /
+      eager-loading the association) and pairing in memory.
+      Two kinds of exceptions to exclude first: looping over a **constant-length** collection such as
+      config or a dictionary (N is small, no change needed), and per-day / per-enum bucketed
+      aggregation loops (N is bounded, an acceptable pattern).
     severity: info
     category: performance
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 节点数量上限；超大库调低可加速（但会漏检靠后的调用点）。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases to speed up (at the cost of missing later call sites).
         kind: number
         default: 200000
         min: 1000
@@ -39,30 +43,31 @@ rules:
     when:
       - property_is: { name: in_loop, value: "true" }
       - has_annotation: db-query
-      # 排除迁移 / 种子脚本：那里循环写库是**一次性的安装行为**，不是线上热路径。
-      # 不排的话 bagisto 实测 11 条命中里 9 条来自 `Database/Migrations` 与
-      # `Database/Seeders` —— 噪声会把真正的运行时 N+1 淹没。
+      # Exclude migrations / seed scripts: looping writes there are a **one-off installation action**,
+      # not a production hot path. Without this, 9 of the 11 hits measured on bagisto came from
+      # `Database/Migrations` and `Database/Seeders` — noise that buries the real runtime N+1.
       - not:
           any_of:
             - fqn_contains: migration
             - fqn_contains: seeder
-    message: "循环体内逐条查库（{name}）—— N 条记录 = N 次查询，建议改为循环外批量查询"
-    remediation: "把循环内的单条查询提到循环外一次性取回（whereIn / 预加载关联），再在内存里按 key 配对"
+    message: "Per-row database read inside a loop ({name}) — N records = N queries; fetch in one batch outside the loop instead"
+    remediation: "Hoist the per-row query out of the loop into one batch fetch (whereIn / eager-load the association), then pair by key in memory"
 
   - id: n1-write-in-loop
-    title: 循环内逐条写库
+    title: Per-row database write inside a loop
     description: >-
-      一次数据库**写**发生在循环体内：N 条记录就是 N 次 INSERT / UPDATE 往返。
-      与 N+1 读同源，但改法不同 —— 批量写（saveAll / insertAll / 一次 whereIn update）
-      或把多次更新合并成一次条件更新。
-      注意：循环体里带业务校验（每条要单独判断是否可写）时，逐条写是**合理**的，
-      此时应改的是事务边界（整体包一个事务）而不是强行批量。
+      A database **write** happens inside a loop body: N records means N INSERT / UPDATE round trips.
+      Same root cause as the N+1 read, but a different fix — batch writes (saveAll / insertAll / a
+      single whereIn update) or merging several updates into one conditional update.
+      Note: when the loop body carries business validation (each row must be checked individually
+      before writing), per-row writes are **reasonable**; what should change then is the transaction
+      boundary (wrap the whole thing in one transaction), not forcing a batch.
     severity: info
     category: performance
     params:
       - key: max_nodes
-        label: 候选调用点上限
-        description: 参与检查的 CallSite 节点数量上限；超大库调低可加速（但会漏检靠后的调用点）。
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases to speed up (at the cost of missing later call sites).
         kind: number
         default: 200000
         min: 1000
@@ -74,10 +79,10 @@ rules:
     when:
       - property_is: { name: in_loop, value: "true" }
       - has_annotation: db-write
-      # 同 `n1-query-in-loop`：迁移 / 种子脚本里的循环写是一次性安装行为。
+      # Same as `n1-query-in-loop`: looped writes in migrations / seed scripts are a one-off install action.
       - not:
           any_of:
             - fqn_contains: migration
             - fqn_contains: seeder
-    message: "循环体内逐条写库（{name}）—— N 条记录 = N 次写入，建议改为批量写或把更新合并成一次"
-    remediation: "改用批量写入（saveAll / insertAll / whereIn 一次更新）；若每条都需单独校验，则把整个循环包进一个事务"
+    message: "Per-row database write inside a loop ({name}) — N records = N writes; batch the writes or merge the updates into one"
+    remediation: "Switch to batch writes (saveAll / insertAll / a single whereIn update); if each row needs its own validation, wrap the whole loop in one transaction"

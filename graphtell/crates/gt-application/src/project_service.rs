@@ -1,4 +1,4 @@
-//! 工程 CRUD 用例。
+//! Project CRUD use cases.
 
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
@@ -9,7 +9,7 @@ use gt_domain::port::{Clock, Persistence, PipelineObserver, ProjectReader, Proje
 use std::sync::Arc;
 use tracing::info;
 
-/// 工程用例服务。
+/// Project use-case service.
 pub struct ProjectService {
     store: Arc<dyn Persistence>,
     clock: Arc<dyn Clock>,
@@ -22,15 +22,15 @@ impl ProjectService {
 
     pub fn create(&self, new: NewProject) -> Result<Project> {
         if new.name.trim().is_empty() {
-            return Err(DomainError::InvalidArgument("工程名不能为空".into()));
+            return Err(DomainError::InvalidArgument("project name must not be empty".into()));
         }
         if !new.root_path.exists() || !new.root_path.is_dir() {
             return Err(DomainError::InvalidArgument(format!(
-                "工程根目录无效: {}",
+                "invalid project root directory: {}",
                 new.root_path.display()
             )));
         }
-        // 同名工程视为重建：先删除旧工程（含其图数据），再创建，避免重复累积。
+        // A project with the same name counts as a rebuild: delete the old project (with its graph data) first, then create it, so nothing accumulates twice.
         if let Some(existing) = self
             .store
             .list_projects()?
@@ -40,7 +40,7 @@ impl ProjectService {
             self.store.delete_project(existing.id)?;
         }
         let project = self.store.create_project(new)?;
-        info!("创建工程 {} ({})", project.name, project.id);
+        info!("created project {} ({})", project.name, project.id);
         Ok(project)
     }
 
@@ -54,12 +54,12 @@ impl ProjectService {
         self.store.list_projects()
     }
 
-    /// 某工程下的子工程。
+    /// The sub-projects of a project.
     pub fn sub_projects(&self, id: ProjectId) -> Result<Vec<SubProject>> {
         self.store.list_sub_projects(id)
     }
 
-    /// 某工程下的已摄取源文件（可返回数量以控制响应体大小）。
+    /// The ingested source files of a project (a count may be returned instead, to control response size).
     pub fn files(&self, id: ProjectId, sub: Option<SubProjectId>) -> Result<Vec<SourceFile>> {
         self.store.list_files(id, sub)
     }
@@ -68,7 +68,7 @@ impl ProjectService {
         if let Some(path) = &patch.root_path {
             if !path.exists() {
                 return Err(DomainError::InvalidArgument(format!(
-                    "路径不存在: {}",
+                    "path does not exist: {}",
                     path.display()
                 )));
             }
@@ -80,7 +80,7 @@ impl ProjectService {
         self.store.delete_project(id)
     }
 
-    /// 同步触发建图（由流水线服务调用；这里只负责状态流转）。
+    /// Trigger a graph build synchronously (called by the pipeline service; this only handles the state transition).
     pub fn mark(&self, id: ProjectId, status: ProjectStatus) -> Result<()> {
         self.store.set_project_status(id, status)
     }
@@ -90,7 +90,7 @@ impl ProjectService {
     }
 }
 
-/// 建图进度的内存记录（供 UI 轮询）。
+/// An in-memory record of graph-build progress (for the UI to poll).
 #[derive(Debug, Clone, Default)]
 pub struct RunProgress {
     pub project_id: ProjectId,
@@ -105,7 +105,7 @@ impl RunProgress {
     }
 }
 
-/// 把进度广播给 UI 的观察者实现。
+/// Observer implementation that broadcasts progress to the UI.
 pub struct ProgressObserver {
     progress: std::sync::Mutex<RunProgress>,
 }
@@ -132,12 +132,12 @@ impl PipelineObserver for ProgressObserver {
     }
 }
 
-/// 供 Reader 端口单独注入时使用。
+/// For injecting the Reader port on its own.
 pub fn reader_of(store: &Arc<dyn Persistence>) -> &dyn ProjectReader {
     store.as_ref()
 }
 
-/// 供 Writer 端口单独注入时使用。
+/// For injecting the Writer port on its own.
 pub fn writer_of(store: &Arc<dyn Persistence>) -> &dyn ProjectWriter {
     store.as_ref()
 }

@@ -1,19 +1,19 @@
-# FastAPI 框架知识（Python）
+# FastAPI framework knowledge (Python)
 #
-# **完全通过 YAML 声明补齐 Python 侧的框架语义 —— 未改动任何内核代码。**
-# 这是继 Java 之后**第三个语言**：只要实现 `LanguageParser` 并注册进来，
-# 上层流水线（P0~P8）无需任何改动即可处理 Python 工程。
+# **Python-side framework semantics are filled in purely through YAML declarations — no kernel code was changed.**
+# This is the **third language** after Java: as long as `LanguageParser` is implemented and registered, the upper
+# pipeline (P0~P8) handles Python projects with no changes at all.
 #
-# 同一个概念，三种表达：
-#   | 概念       | ThinkPHP          | Spring Boot         | FastAPI              |
-#   |------------|-------------------|---------------------|----------------------|
-#   | HTTP 契约  | `Route::get(...)` | `@GetMapping("/x")` | `@app.get("/x")`     |
-#   | 配置读取   | `sys_config()`    | `@Value("${x}")`    | `os.environ.get(x)`  |
-#   | 缓存       | `Cache::get()`    | `@Cacheable("x")`   | `redis.get("x")`     |
+# One concept, three expressions:
+#   | concept       | ThinkPHP          | Spring Boot         | FastAPI              |
+#   |---------------|-------------------|---------------------|----------------------|
+#   | HTTP contract | `Route::get(...)` | `@GetMapping("/x")` | `@app.get("/x")`     |
+#   | config read   | `sys_config()`    | `@Value("${x}")`    | `os.environ.get(x)`  |
+#   | cache         | `Cache::get()`    | `@Cacheable("x")`   | `redis.get("x")`     |
 #
-# 关键是**装饰器在解析器里被建模成调用点**（`CallSiteFact`），与 Java 注解同机制：
-# Python 装饰器 / Java 注解 / C# Attribute 本就是同一个概念 —— 声明式的框架调用。
-# 因此这里不需要任何新的 DSL 能力，`kind: call` 选择器即可匹配装饰器。
+# The key is that **decorators are modelled as call sites in the parser** (`CallSiteFact`), the same mechanism as
+# Java annotations: a Python decorator / Java annotation / C# attribute are all the same concept — a declarative
+# framework call. So no new DSL capability is needed here; a `kind: call` selector can match decorators.
 
 id: fastapi
 display_name: FastAPI
@@ -22,8 +22,8 @@ version_hint: "0.100+"
 scope: framework
 
 detectors:
-  # requirements.txt / pyproject.toml 里出现 fastapi（`manifest_has` 对非 JSON
-  # 文件做文本包含匹配，纯文本清单同样适用）。
+  # fastapi appears in requirements.txt / pyproject.toml (`manifest_has` does a textual containment match on
+  # non-JSON files, so plain-text manifests work too).
   - kind: manifest_dependency
     manifest: requirements.txt
     dependency: fastapi
@@ -33,12 +33,13 @@ detectors:
     dependency: fastapi
     confidence: 0.9
 
-# 本 FKB 引入的**桥边**种类（`DependsOn`）—— 无需改内核 `kinds.rs` 的 BRIDGE 清单。
+# The **bridge edge** kind introduced by this FKB (`DependsOn`) — no change to the BRIDGE list in the kernel's `kinds.rs`.
 #
-# 为什么归为桥边而不是语义边：语义边要求「两端都是语义节点」（读库 / 读配置这类
-# 业务资源依赖），而依赖注入的两端都是**语法节点**（处理函数 → 依赖函数）。桥边
-# 的语义是「发现连接器」：可沿调用链遍历，但不计入「语义入边 N」的业务指标 ——
-# 否则注入多少个依赖就会虚增多少条业务依赖。
+# Why a bridge edge and not a semantic edge: a semantic edge requires "both ends are semantic nodes" (a business
+# resource dependency such as reading the DB or reading config), while dependency injection has **syntax nodes** at
+# both ends (handler function -> dependency function). A bridge edge means "a discovered connector": it can be
+# walked along the call chain but does not count towards the "N semantic in-edges" business metric — otherwise
+# injecting N dependencies would inflate the business-dependency count by N.
 bridge_edge_kinds:
   - DependsOn
 
@@ -59,9 +60,9 @@ root_rules:
       - app
       - src
 
-# ---------------------------------------------------------------- P3 装载
+# ---------------------------------------------------------------- P3 loading
 loaders:
-  # 路由表 + 守卫：识别逻辑由下方 `route_guards` 声明。
+  # Route table + guards: the recognition logic is declared by `route_guards` below.
   - id: fastapi-route-list
     table: route_list
     from:
@@ -69,11 +70,12 @@ loaders:
       name: routes
       params: {}
 
-# ---------------------------------------------------------------- 路由守卫识别
-# FastAPI：路由是 `@router.get("/x")`（动词即方法名），守卫形态有两种：
-#   * 装饰器（`@app.middleware` 之外自定义的 `@requires_auth` 等）—— 本声明覆盖；
-#   * **函数签名里的 `Depends(...)`**（`def read(x: User = Depends(get_current_user))`）——
-#     依赖不在装饰器里，**本声明不覆盖**（需在解析器侧收集形参依赖，属后续工作）。
+# ---------------------------------------------------------------- route-guard recognition
+# FastAPI: a route is `@router.get("/x")` (the verb is the method name), and guards come in two shapes:
+#   * a decorator (a custom `@requires_auth` etc. beyond `@app.middleware`) — covered by this declaration;
+#   * **`Depends(...)` in the function signature** (`def read(x: User = Depends(get_current_user))`) —
+#     the dependency is not in a decorator and is **not covered here** (collecting parameter dependencies
+#     belongs to the parser side and is follow-up work).
 route_guards:
   route_calls:
     - receiver: "app"
@@ -91,44 +93,46 @@ route_guards:
   guard_attach:
     kind: decorator
     route_decorators: []
-    # `Depends(...)` —— FastAPI 的依赖写在**函数签名**里（`user=Depends(get_current_user)`），
-    # 解析器把它记成 owner 为该视图函数的调用点，故与装饰器同一套 owner 关联逻辑即可命中。
+    # `Depends(...)` — a FastAPI dependency is written in the **function signature** (`user=Depends(get_current_user)`),
+    # and the parser records it as a call site owned by that view function, so the same owner-correlation logic as for
+    # decorators hits it.
     guard_decorators: ["login_required", "jwt_required", "auth_required", "requires_auth",
                        "permission_required", "roles_required", "admin_required", "Depends"]
-    # JS / Python 的守卫常是项目自写的装饰器，穷举名字是打地鼠 ——
-    # 按"什么样的名字算守卫"声明（大小写不敏感正则）：
+    # JS / Python guards are often project-written decorators, so enumerating names is whack-a-mole —
+    # declare instead "what kind of name counts as a guard" (a case-insensitive regex):
     guard_name_patterns:
       - "(login|logout|auth|jwt|token|session)"
       - "(permission|role|admin|staff|owner|superuser)"
       - "(guard|secure|required|only|protect|verify|check)"
-    # deny 优先：文档装饰器与参数装饰器**不是**守卫（实测误伤来源）
+    # deny wins: documentation decorators and parameter decorators are **not** guards (a measured source of misfires)
     guard_exclude_patterns:
-      # Swagger / OpenAPI 文档装饰器：@ApiBearerAuth() / @ApiOperation() …
+      # Swagger / OpenAPI documentation decorators: @ApiBearerAuth() / @ApiOperation() …
       - "^@?api"
       - "(swagger|openapi)"
-      # NestJS 参数装饰器（只取值不做鉴权）：@User() / @Body() / @Param() / @Req() …
+      # NestJS parameter decorators (they only read values, they do not authenticate): @User() / @Body() / @Param() / @Req() …
       - "^@?(req|request|res|response|next|session|param|params|body|query|headers|header|ip|uploadedfile|uploadedfiles|currentuser|user)$"
-      # 局部变量 / 内部名（`_user`）不是中间件
+      # Local variables / internal names (`_user`) are not middleware
       - "^_"
     name_from_args: true
     include_class_level: true
-    # 守卫装饰器是裸名（`@login_required`）；`self.check_x()` 这类成员调用不是装饰器
+    # Guard decorators are bare names (`@login_required`); member calls like `self.check_x()` are not decorators
     require_no_receiver: true
   synthesize_unresolved: true
 
 rules:
-  # ===== P5 Synthesize：HTTP 契约 =====
-  # `@router.get("/users")` —— 装饰器被建模为调用点：
-  #   callee = `router.get`（receiver=router / method=get），
-  #   owner  = 被装饰的**处理函数**（`app.api.users.list_users`）。
+  # ===== P5 Synthesize: HTTP contract =====
+  # `@router.get("/users")` — a decorator is modelled as a call site:
+  #   callee = `router.get` (receiver=router / method=get),
+  #   owner  = the decorated **handler function** (`app.api.users.list_users`).
   #
-  # 为什么不裸写 `callee: get|post|...`：Python 的方法名太通用，
-  # `requests.get("/api")` / `dict.get(...)` / `redis.get(...)` 都会误命中，
-  # 凭空造出数百条假的 HttpContract。故按「接收者变量名」收窄作用域 —— 与 Java
-  # 侧 `kafkaTemplate::send` 收窄 `send` 是同一套办法（见 spring-boot.yaml）。
-  # 项目若用了别的变量名（如 `v1_router`），把它加进下面的备选即可。
+  # Why not write `callee: get|post|...` bare: Python method names are too generic, and `requests.get("/api")` /
+  # `dict.get(...)` / `redis.get(...)` would all misfire, fabricating hundreds of fake HttpContracts. So the scope is
+  # narrowed by "receiver variable name" — the same approach as narrowing `send` with `kafkaTemplate::send` on the
+  # Java side (see spring-boot.yaml).
+  # If a project uses another variable name (e.g. `v1_router`), just add it to the alternatives below.
   #
-  # 方法由装饰器名直接推导（`get` → `GET`），路径取自第 1 个实参（arg0）。
+  # The method is derived directly from the decorator name (`get` -> `GET`), and the path comes from the first
+  # argument (arg0).
   - id: fastapi-route-contract
     phase: Synthesize
     selector:
@@ -154,17 +158,17 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            # Python 的处理函数常常直接写在模块里（不在类里）。解析器的
-            # `owner_class` 在模块级会回填为**模块点分名**，而模块已登记为
-            # Namespace 节点 —— 于是这里先定位模块、再按成员名落到函数本身。
+            # Python handler functions are often written directly at module level (not inside a class). The parser
+            # back-fills `owner_class` at module level with the **dotted module name**, and the module is registered as
+            # a Namespace node — so here we locate the module first and then drop onto the function itself by member name.
             to: { owner_class: true, resolve: class_const }
             to_method: { owner_member: true }
           confidence: 0.9
 
-  # ===== P5 Synthesize：ConfigKey =====
-  # `os.environ.get("SECRET_KEY")` / `os.getenv("SECRET_KEY")`。
-  # 解析器保留了完整的属性链（`os.environ.get` 的 receiver 是 `os.environ`），
-  # 因此可以用 `os.environ::get` 精确命中，不会误伤 `self.config.get(...)`。
+  # ===== P5 Synthesize: ConfigKey =====
+  # `os.environ.get("SECRET_KEY")` / `os.getenv("SECRET_KEY")`.
+  # The parser keeps the full attribute chain (the receiver of `os.environ.get` is `os.environ`), so `os.environ::get`
+  # matches precisely and never misfires on `self.config.get(...)`.
   - id: fastapi-env-config
     phase: Synthesize
     selector:
@@ -183,14 +187,15 @@ rules:
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：依赖注入（Depends）=====
-  # `def handler(db: Session = Depends(get_db))` —— 依赖写在**形参默认值**里，
-  # 不在方法体内，普通遍历抓不到。解析器把它记成了调用点，并把 `get_db` 按本文件
-  # import 解析成 FQN（`app.dependencies.get_db`）放进 `entity`；解析器并不知道
-  # `Depends` 是什么 —— 这个判断只存在于本条规则。
+  # ===== P5 Synthesize: dependency injection (Depends) =====
+  # `def handler(db: Session = Depends(get_db))` — the dependency is written in a **parameter default**, not inside
+  # the method body, so ordinary traversal cannot catch it. The parser records it as a call site and resolves `get_db`
+  # into an FQN (`app.dependencies.get_db`) from this file's imports, stored in `entity`; the parser itself does not
+  # know what `Depends` is — that judgement lives only in this rule.
   #
-  # 用 `Link`（仅建边，不造节点）：依赖本身就是图里的函数节点，不需要再合成语义节点。
-  # 注意 `Link` 要求两端都能按 **FQN** 解析（解析不到就静默跳过，不建悬空边）。
+  # It uses `Link` (build the edge only, create no node): the dependency is already a function node on the graph, so
+  # there is nothing to synthesize. Note that `Link` requires both ends to resolve by **FQN** (if not, it is skipped
+  # silently and no dangling edge is created).
   - id: fastapi-depends-injection
     phase: Synthesize
     selector:
@@ -199,22 +204,22 @@ rules:
     binding:
       - Link:
           kind: DependsOn
-          # 起点：处理函数（owner_fqn = 模块.函数，这里按需拼出来）
+          # Start: the handler function (owner_fqn = module.function, assembled here as needed)
           from:
             path: [{ owner_class: true }, { owner_member: true }]
             join: "."
-          # 终点：被注入的依赖函数（解析器解析出的 FQN）
+          # End: the injected dependency function (the FQN resolved by the parser)
           to: { entity: true, resolve: class_const }
           confidence: 0.85
 
-  # ===== P6 AnnotatePost：Table（SQLAlchemy 声明式映射）=====
-  # `class UserModel(Base): __tablename__ = "users"` —— 表映射写在**类属性**里，
-  # 没有任何调用点可依，所以走 P6 的**图节点选择器**（而不是前面的 `kind: call`）：
-  #   1. 解析器把类体内的字面量赋值登记成 Property 声明（语言中性的建模，
-  #      与 PHP 的类属性同机制 —— 它并不知道 __tablename__ 是什么）；
-  #   2. P3 把属性值记录到**类节点**上（`property_of(类, "__tablename__")`）；
-  #   3. 这里用 `HasProperty` 命中、用 `property` 取值 —— SQLAlchemy 的知识
-  #      只存在于本 YAML，不在解析器和内核里。
+  # ===== P6 AnnotatePost: Table (SQLAlchemy declarative mapping) =====
+  # `class UserModel(Base): __tablename__ = "users"` — the table mapping is written in a **class attribute** with no
+  # call site to go on, so this goes through P6's **graph-node selector** (rather than the `kind: call` selector above):
+  #   1. the parser registers a literal assignment inside a class body as a Property declaration (language-neutral
+  #      modelling, the same mechanism as PHP class properties — it does not know what __tablename__ is);
+  #   2. P3 records the property value on the **class node** (`property_of(class, "__tablename__")`);
+  #   3. here `HasProperty` matches it and `property` reads the value — the SQLAlchemy knowledge lives only in this
+  #      YAML, not in the parser or the kernel.
   - id: fastapi-sqlalchemy-table
     phase: AnnotatePost
     selector:
@@ -233,12 +238,12 @@ rules:
               normalize:
                 - singularize
                 - trim
-          # 模型类 ——> 表（与 Spring 的 `@TableName` 同为 MapsTo）
+          # Model class -> table (MapsTo, same as Spring's `@TableName`)
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：Cache（Redis）=====
-  # 同样按接收者变量名收窄：裸 `get` / `set` 会命中一切对象的同名方法。
+  # ===== P5 Synthesize: Cache (Redis) =====
+  # Narrowed by receiver variable name as well: a bare `get` / `set` would hit the same-named method on every object.
   - id: fastapi-cache-read
     phase: Synthesize
     selector:

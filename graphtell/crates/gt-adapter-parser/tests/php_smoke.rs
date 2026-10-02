@@ -1,4 +1,4 @@
-//! PHP 解析冒烟测试：验证语法事实提取的正确性。
+//! PHP parsing smoke test: verify that syntax fact extraction is correct.
 
 use gt_adapter_parser::DefaultParserRegistry;
 use gt_domain::model::{FactValue, Language, NodeKind};
@@ -58,12 +58,12 @@ class StoreOrderServices extends BaseServices implements ShouldQueue
         Some(FactValue::String("store_order".into()))
     );
 
-    // 导入：带别名
+    // Import: with an alias
     let import = facts.imports.first().expect("import");
     assert_eq!(import.name, "app\\dao\\order\\StoreOrderDao");
     assert_eq!(import.alias.as_deref(), Some("Dao"));
 
-    // 继承与实现
+    // Inheritance and implementation
     assert!(facts
         .inheritances
         .iter()
@@ -73,7 +73,7 @@ class StoreOrderServices extends BaseServices implements ShouldQueue
         .iter()
         .any(|i| i.base_name == "ShouldQueue" && i.kind.as_str() == "Implements"));
 
-    // 调用点
+    // Call site
     let call = facts.call_sites.first().expect("call site");
     assert_eq!(call.callee_text, "$this->dao->getList");
     assert_eq!(call.method.as_deref(), Some("getList"));

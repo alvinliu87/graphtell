@@ -1,4 +1,4 @@
-//! 路由与处理器。
+//! Routes and handlers.
 
 use std::collections::HashMap;
 use std::fs;
@@ -31,7 +31,7 @@ use crate::dto::{
     RunStatusDto, SubProjectDto, UpdateProjectRequest,
 };
 
-/// 所有处理器共享的状态（组装根注入）。
+/// State shared by all handlers (injected by the composition root).
 pub struct AppState {
     pub projects: Arc<ProjectService>,
     pub pipeline: Arc<PipelineService>,
@@ -41,15 +41,15 @@ pub struct AppState {
     pub recall: Arc<RecallService>,
     pub parsers: Arc<dyn ParserRegistry>,
     pub frameworks: usize,
-    /// 最近一次建图进度（工程 id → 观察者）。
+    /// The most recent graph-build progress (project id -> observer).
     pub progress: Mutex<HashMap<i64, Arc<ProgressObserver>>>,
-    /// 共享节点向量缓存（与 `recall` 内的编码器共用）；建图重建时清空。
+    /// Shared node-vector cache (shared with the encoder inside `recall`); cleared when the graph is rebuilt.
     pub node_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
 }
 
 pub type Shared = Arc<AppState>;
 
-/// 便捷构造：由各服务组装 HTTP 状态。
+/// Convenience constructor: assemble HTTP state from the services.
 pub fn state(
     store: Arc<dyn Persistence>,
     deps: Arc<PipelineDeps>,
@@ -61,7 +61,7 @@ pub fn state(
         Arc::clone(&store),
         Arc::new(gt_domain::port::SystemClock),
     ));
-    // 建图完成后会自动跑合规检查，因此流水线也要拿到规则集。
+    // A compliance check runs automatically after the build, so the pipeline also needs the rule set.
     let pipeline = Arc::new(PipelineService::new(
         Arc::clone(&store),
         Arc::clone(&deps),
@@ -70,7 +70,7 @@ pub fn state(
     let graphs = Arc::new(GraphQueryService::new(Arc::clone(&store)));
     let views = Arc::new(ViewService::new(Arc::clone(&store), view_registry));
     let checks = Arc::new(RuleService::new(Arc::clone(&store), rules));
-    // 召回：优先真实 bge-m3（权重可用时），否则退回默认哈希编码器；节点向量缓存跨召回复用。
+    // Recall: prefer the real bge-m3 (when weights are available), otherwise fall back to the default hash encoder; the node-vector cache is reused across recalls.
     let node_cache = Arc::new(Mutex::new(HashMap::<u64, Vec<f32>>::new()));
     let recall = Arc::new(
         RecallService::with_embedder_and_cache(
@@ -82,8 +82,9 @@ pub fn state(
             Some(std::path::PathBuf::from("data/embeddings")),
             Some(std::path::PathBuf::from("data/snapshots")),
         )
-        // 生产 HTTP 入口开启后台异步预热：首个召回立即用快速编码器返回（不阻塞 UI），
-        // 同时 spawn 线程把 bge 向量算好落盘；完成后该工程自动切到语义路。
+        // The production HTTP entry starts a background async warm-up: the first recall returns immediately with the
+        // fast encoder (never blocking the UI) while a thread computes the bge vectors and persists them; once done
+        // the project switches to the semantic path automatically.
         .with_async_warmup(),
     );
     let state = Arc::new(AppState {
@@ -98,8 +99,8 @@ pub fn state(
         progress: Mutex::new(HashMap::new()),
         node_cache,
     });
-    // 启动源码变更监听（P2 v1）：轮询+防抖 → 整库安全重建 + 自动合规 + 清空召回缓存。
-    // 仅对已有工程启动；新建工程在 create_project 处理器里单独启动。
+    // Start source-change watching (P2 v1): poll + debounce -> safe whole-database rebuild + automatic compliance + clear the recall cache.
+    // Started only for existing projects; a newly created project starts it separately in the create_project handler.
     if let Ok(list) = state.projects.list() {
         for p in list {
             let root = std::path::PathBuf::from(&p.root_path);
@@ -116,17 +117,17 @@ pub fn state(
     state
 }
 
-/// 组装所有路由。
+/// Assemble every route.
 ///
-/// `ui_dir` 为 `Some` 且指向含 `index.html` 的目录时，后端会**顺带托管构建好的 React SPA**：
-/// 用 `tower_http::ServeDir` 做兜底（命中静态文件直接返回，如 `/assets/*`；未命中回退到
-/// `index.html` 以支持前端路由），并把根路径 `/` 让给 SPA。此时 `/compose` 仍是内嵌的独立
-/// 「提示词增强」页。`ui_dir` 为 `None`（开发态默认）时不托管前端，根路径回退到 `/compose`，
-/// 与历史行为一致。
+/// When `ui_dir` is `Some` and points at a directory containing `index.html`, the backend also **hosts the built
+/// React SPA**: `tower_http::ServeDir` acts as the fallback (a static hit returns the file directly, e.g.
+/// `/assets/*`; a miss falls back to `index.html` to support front-end routing), and the root path `/` is given to
+/// the SPA. `/compose` then remains the embedded standalone "prompt augmentation" page. With `ui_dir` = `None`
+/// (the development default) no front end is hosted and the root falls back to `/compose`, as it always has.
 pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router {
     let router = Router::new()
         .route("/api/health", get(health))
-        // 服务器状态（含当前 embedding 后端，供 UI 只读展示）
+        // Server status (including the active embedding backend, shown read-only in the UI)
         .route("/api/server/status", get(server_status))
         // Project CRUD
         .route("/api/projects", get(list_projects).post(create_project))
@@ -134,16 +135,16 @@ pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router
             "/api/projects/{id}",
             get(get_project).put(update_project).delete(delete_project),
         )
-        // 建图
+        // Graph building
         .route("/api/projects/{id}/run", post(run_pipeline))
         .route("/api/projects/{id}/run/status", get(run_status))
-        // 图查询
+        // Graph queries
         .route("/api/projects/{id}/sub-projects", get(list_sub_projects))
         .route("/api/projects/{id}/stats", get(stats))
         .route("/api/projects/{id}/nodes", get(query_nodes))
         .route("/api/projects/{id}/diagnostics", get(diagnostics))
         .route("/api/projects/{id}/diagnostics/summary", get(diagnostics_summary))
-        // 文件系统浏览（供目录选择器使用，WSL 下可访问 /mnt/c 等挂载路径）
+        // Filesystem browsing (for the directory picker; under WSL it can reach mount paths such as /mnt/c)
         .route("/api/fs/browse", get(browse_fs))
         .route("/api/nodes/{id}", get(get_node))
         .route("/api/nodes/{id}/annotations", get(node_annotations))
@@ -156,12 +157,12 @@ pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router
         .route("/api/projects/{id}/aggregate/{perspective}", get(aggregate_view))
         .route("/api/nodes/{id}/locations", get(node_locations))
         .route("/api/edges/{id}/evidence", get(edge_evidence))
-        // 合规检查（规则 → 违规）
+        // Compliance check (rules -> violations)
         .route("/api/rules", get(list_rules))
         .route("/api/projects/{id}/check", post(run_check))
         .route("/api/projects/{id}/violations", get(list_violations))
         .route("/api/projects/{id}/check/summary", get(check_summary))
-        // 工程级规则配置（按工程覆盖启用态与参数）
+        // Project-level rule config (per-project override of enabled state and parameters)
         .route("/api/projects/{id}/rules/config", get(list_rule_configs))
         .route("/api/projects/{id}/rules/config", put(put_rule_config))
         .route("/api/projects/{id}/rules/config/batch", post(batch_rule_config))
@@ -169,25 +170,26 @@ pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router
             "/api/projects/{id}/rules/config/{rule_id}",
             delete(reset_rule_config),
         )
-        // 提示词增强 · 召回（提示词 → 相关代码）
+        // Prompt augmentation · recall (prompt -> related code)
         .route("/api/projects/{id}/recall", get(recall_get).post(recall_post))
-        // 后台预热进度（语义向量 bge 计算）：让 IDE / MCP 知道召回是否还在走冷路径。
+        // Background warm-up progress (bge semantic vectors): lets the IDE / MCP know whether recall is still on the cold path.
         .route("/api/projects/{id}/warmup", get(project_warmup))
-        // 提示词增强 · 合成：召回上下文 + 用户意图 → 可直接粘给 LLM 的完整提示词
+        // Prompt augmentation · compose: recall context + user intent -> a complete prompt to paste into an LLM
         .route("/api/projects/{id}/prompt", post(compose_prompt))
-        // 提示词增强页（自包含静态页，内嵌进二进制，无需额外静态托管）
+        // The prompt augmentation page (a self-contained static page, embedded in the binary, no extra static hosting)
         .route("/compose", get(compose_page));
 
-    // 生产部署可让后端顺带托管构建好的 React SPA：当 `ui_dir` 指向含 index.html 的目录时，
-    // 用 ServeDir 兜底（命中文件直接返回、未命中回退 index.html 做前端路由），并把根 `/`
-    // 让给 SPA；否则根仍回退到内嵌 compose 页。开发态不传 ui_dir，行为不变。
+    // A production deployment can have the backend host the built React SPA: when `ui_dir` points at a directory
+    // containing index.html, ServeDir acts as the fallback (a file hit returns it directly, a miss falls back to
+    // index.html for front-end routing) and the root `/` goes to the SPA; otherwise the root still falls back to
+    // the embedded compose page. Development passes no ui_dir, so behaviour is unchanged.
     let router = if let Some(ui_dir) = ui_dir {
         if ui_dir.join("index.html").is_file() {
             router.fallback_service(
                 ServeDir::new(ui_dir.clone()).fallback(ServeFile::new(ui_dir.join("index.html"))),
             )
         } else {
-            // 目录存在但没有构建产物：根仍回退到内嵌 compose 页，不崩。
+            // The directory exists but has no build output: the root still falls back to the embedded compose page instead of crashing.
             router.route("/", get(compose_page))
         }
     } else {
@@ -197,13 +199,14 @@ pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router
     router.with_state(state)
 }
 
-// ---------------------------------------------------------------- 处理器
+// ---------------------------------------------------------------- handlers
 
-/// 探测后端进程是否运行在 WSL 中。
+/// Detect whether the backend process runs inside WSL.
 ///
-/// WSL 的内核发行信息（`/proc/sys/kernel/osrelease` 与 `/proc/version`）会包含
-/// "microsoft" 字样，裸 Linux / Docker / 远程 VM 不会。发行版名难以从内核信息取得，
-/// 默认返回 `Ubuntu`（绝大多数默认发行版即此名），前端仍可手动覆盖。
+/// WSL kernel release information (`/proc/sys/kernel/osrelease` and `/proc/version`) contains the string
+/// "microsoft", which bare Linux / Docker / remote VMs never do. The distro name is hard to derive from kernel
+/// information, so it defaults to `Ubuntu` (the name of the overwhelming majority of default distros); the front
+/// end can still override it manually.
 fn detect_wsl() -> (bool, String) {
     let check = |path: &str| {
         fs::read_to_string(path)
@@ -253,9 +256,9 @@ async fn create_project(
     });
     match result {
         Ok(p) => {
-            // 创建后自动开始建图
+            // Start graph building automatically after creation
             let _ = trigger_run(&state, p.id);
-            // 新工程也启动变更监听
+            // A new project also starts change watching
             let root = std::path::PathBuf::from(&p.root_path);
             if root.is_dir() {
                 gt_application::watch::watch_project(
@@ -312,7 +315,7 @@ async fn run_pipeline(
     }
 }
 
-/// 触发后台建图。
+/// Trigger a background graph build.
 fn trigger_run(state: &Shared, id: ProjectId) -> Result<(), DomainError> {
     let observer = Arc::new(ProgressObserver::new(id));
     state
@@ -320,7 +323,7 @@ fn trigger_run(state: &Shared, id: ProjectId) -> Result<(), DomainError> {
         .lock()
         .unwrap()
         .insert(id.get(), Arc::clone(&observer));
-    // 图将被重建，旧节点向量可能失效，先清空召回缓存（下次召回重新预热）。
+    // The graph is about to be rebuilt and old node vectors may be stale, so clear the recall cache first (the next recall warms up again).
     state.node_cache.lock().unwrap().clear();
     state.pipeline.spawn(id, observer)
 }
@@ -482,14 +485,16 @@ async fn symbols(
     }
 }
 
-/// 诊断列表的读取上限。
+/// Read cap for the diagnostics list.
 ///
-/// 不能写小：诊断页要**按问题类型分组**（每类的条数、样例位置、展开清单），
-/// 而分组必须看到全量才能算对。曾经写 200，而 CRMEB 一个工程就有 445 条建图诊断 ——
-/// 于是页面只列最近写入的 200 条（`ORDER BY id DESC`），用户看到的是"写入顺序"，
-/// 不是"有多少问题"，分类计数也跟着错。
+/// It must not be small: the diagnostics page **groups by problem type** (per-type counts, sample locations,
+/// expandable lists), and grouping is only correct when it sees the full set. It used to be 200, while CRMEB
+/// alone has 445 build diagnostics for one project — so the page listed only the 200 most recently written rows
+/// (`ORDER BY id DESC`), showing the user "write order" rather than "how many problems", and the per-type counts
+/// were wrong too.
 ///
-/// 与合规检查页的 `STORED_LIMIT`（5000）同量级：这是"分页前的全量拉取"，页面自己分页。
+/// Same order of magnitude as the compliance page's `STORED_LIMIT` (5000): this is the "full fetch before
+/// pagination"; the page paginates itself.
 const DIAGNOSTIC_LIMIT: u32 = 5000;
 
 async fn diagnostics(
@@ -502,7 +507,7 @@ async fn diagnostics(
     }
 }
 
-/// 非规则诊断的严重度汇总（菜单角标用，排除 `rule:` 前缀避免与合规检查重复计数）。
+/// Severity rollup for non-rule diagnostics (menu badge; excludes the `rule:` prefix so compliance checks are not double-counted).
 async fn diagnostics_summary(
     State(state): State<Shared>,
     Path(id): Path<i64>,
@@ -604,14 +609,14 @@ async fn edge_evidence(
     }
 }
 
-// ---------------------------------------------------------------- 合规检查
+// ---------------------------------------------------------------- compliance check
 
-/// 列出全部已装载规则（供 UI 展示"能检查什么"）。
+/// List every loaded rule (so the UI can show "what can be checked").
 async fn list_rules(State(state): State<Shared>) -> Json<ApiResponse<Vec<CheckRule>>> {
     Json(ApiResponse::success(state.checks.rules()))
 }
 
-/// 检查请求体；`rule_ids` 为空表示跑全部启用规则。
+/// Check request body; an empty `rule_ids` means run every enabled rule.
 #[derive(Debug, Deserialize, Default)]
 pub struct CheckRequest {
     pub rule_ids: Option<Vec<String>>,
@@ -632,11 +637,11 @@ async fn run_check(
 #[derive(Debug, Deserialize)]
 pub struct ViolationQuery {
     pub limit: Option<u32>,
-    /// 逗号分隔的子工程 id；为空表示不过滤（返回全部子工程）。
+    /// Comma-separated sub-project ids; empty means no filtering (return every sub-project).
     pub sub_project_id: Option<String>,
 }
 
-/// 把 `?sub_project_id=1,2` 解析成 `Option<Vec<SubProjectId>>`；空串视为不过滤。
+/// Parse `?sub_project_id=1,2` into `Option<Vec<SubProjectId>>`; an empty string means no filtering.
 fn parse_sub_project_ids(raw: &Option<String>) -> Option<Vec<SubProjectId>> {
     raw.as_deref()
         .filter(|s| !s.is_empty())
@@ -648,13 +653,14 @@ fn parse_sub_project_ids(raw: &Option<String>) -> Option<Vec<SubProjectId>> {
         })
 }
 
-/// 读取上一次检查落库的违规（不重跑规则）。
-/// 读取落库违规的**默认条数**。
+/// Read the violations persisted by the previous check (without re-running rules).
+/// The **default count** for reading persisted violations.
 ///
-/// 曾经是 500，实测 likeshop 一次检查 996 条 —— 于是"刚跑完看到 996 / 严重 59"
-/// 与"刷新页面看到 500 / 严重 0"对不上，被读成"没持久化 / 回到老数据"。
-/// 违规表的读取是分页前的全量拉取（UI 自己按 20 条一页翻），这里只做**上限保护**，
-/// 不是分页参数，所以取一个明显够用的值；真超过它时，排序已保证淘汰的是最不严重的。
+/// It used to be 500, while one measured likeshop check produced 996 — so "just ran, see 996 / 59 critical" and
+/// "refresh, see 500 / 0 critical" disagreed, and were read as "nothing was persisted / back to old data".
+/// Reading the violation table is a full fetch before pagination (the UI pages 20 at a time itself), so this is
+/// only an **upper-bound guard**, not a pagination parameter; hence an obviously generous value. When it really is
+/// exceeded, the ordering already guarantees the least severe are the ones evicted.
 const DEFAULT_VIOLATION_LIMIT: u32 = 5_000;
 
 async fn list_violations(
@@ -672,7 +678,7 @@ async fn list_violations(
     }
 }
 
-/// 合规检查严重度汇总（菜单角标用，不重跑规则）。
+/// Compliance-check severity rollup (menu badge; does not re-run rules).
 async fn check_summary(
     State(state): State<Shared>,
     Path(id): Path<i64>,
@@ -685,13 +691,13 @@ async fn check_summary(
     }
 }
 
-/// 工程级规则配置批量写入请求体。
+/// Batch-write request body for project-level rule config.
 #[derive(Debug, Deserialize)]
 pub struct RuleConfigBatch {
     pub items: Vec<RuleConfigPatch>,
 }
 
-/// 列出某工程全部规则配置覆盖。
+/// List every rule config override for a project.
 async fn list_rule_configs(
     State(state): State<Shared>,
     Path(id): Path<i64>,
@@ -702,21 +708,21 @@ async fn list_rule_configs(
     }
 }
 
-/// 写入单条规则配置（部分字段可省 = 不改该项）。
+/// Write config for a single rule (fields may be omitted = leave that item unchanged).
 async fn put_rule_config(
     State(state): State<Shared>,
     Path(id): Path<i64>,
     Json(patch): Json<RuleConfigPatch>,
 ) -> Json<ApiResponse<bool>> {
-    // 返回 `bool` 而不是 `()`：`()` 序列化成 `null`，前端统一响应解析会把
-    // `data: null` 当成失败（它无法区分"无数据"和"出错了"）。
+    // Returns `bool` rather than `()`: `()` serializes to `null`, and the front end's unified response parsing treats
+    // `data: null` as a failure (it cannot distinguish "no data" from "an error happened").
     match state.checks.apply_rule_config(ProjectId(id), patch) {
         Ok(_) => Json(ApiResponse::success(true)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }
 }
 
-/// 重置某条规则的工程覆盖（回归 YAML 全局默认）。
+/// Reset a rule's project override (falling back to the YAML global default).
 async fn reset_rule_config(
     State(state): State<Shared>,
     Path((id, rule_id)): Path<(i64, String)>,
@@ -727,7 +733,7 @@ async fn reset_rule_config(
     }
 }
 
-/// 批量写入规则配置（启用/停用整组、整分类时用）。
+/// Batch-write rule config (used when enabling / disabling a whole group or category).
 async fn batch_rule_config(
     State(state): State<Shared>,
     Path(id): Path<i64>,
@@ -739,18 +745,18 @@ async fn batch_rule_config(
     }
 }
 
-// ---------------------------------------------------------- 提示词增强 · 召回
+// ---------------------------------------------------------- prompt augmentation · recall
 
-/// GET 形式的召回参数（供 UI 简单调用）。
+/// Recall parameters in GET form (for simple UI calls).
 #[derive(Debug, Deserialize)]
 pub struct RecallGetQuery {
     pub q: String,
     pub limit: Option<usize>,
     pub hops: Option<u32>,
-    /// 逗号分隔的节点种类，如 `Table,HttpContract`。
+    /// Comma-separated node kinds, e.g. `Table,HttpContract`.
     pub kinds: Option<String>,
     pub snippets: Option<bool>,
-    /// 是否把命中文件的完整源码一并附上（见 `RecallQuery::include_body`）。
+    /// Whether to also append the full source of the hit files (see `RecallQuery::include_body`).
     pub include_body: Option<bool>,
 }
 
@@ -792,14 +798,14 @@ async fn recall_post(
     }
 }
 
-// ---------------------------------------------------------- 提示词增强 · 合成
+// ---------------------------------------------------------- prompt augmentation · compose
 
-/// 提示词增强请求：召回参数 + 用户任务意图。
+/// Prompt-augmentation request: recall parameters + the user's task intent.
 #[derive(Debug, Deserialize)]
 pub struct ComposePromptRequest {
-    /// 用于召回代码的检索词（自然语言 + 标识符混写皆可）。
+    /// Search terms used to recall code (natural language mixed with identifiers is fine).
     pub query: String,
-    /// 用户的任务意图 / 补充说明；缺省时提示词会要求 LLM 依据上下文推断。
+    /// The user's task intent / extra context; when omitted the prompt asks the LLM to infer it from the context.
     #[serde(default)]
     pub intent: Option<String>,
     #[serde(default)]
@@ -810,30 +816,32 @@ pub struct ComposePromptRequest {
     pub with_snippets: Option<bool>,
 }
 
-/// 提示词增强结果。
+/// Prompt-augmentation result.
 #[derive(Debug, Serialize)]
 pub struct ComposePromptResult {
-    /// 可直接粘给 LLM 的完整提示词。
+    /// The complete prompt, ready to paste into an LLM.
     pub prompt: String,
-    /// 原始召回上下文（markdown），便于用户自行裁剪。
+    /// The raw recall context (markdown), so the user can trim it.
     pub markdown: String,
     pub seed_count: usize,
     pub hit_count: usize,
-    /// 提示词 token 粗估（中英文按不同系数）。
+    /// Rough token estimate for the prompt (different factors for Chinese and English).
     pub approx_tokens: usize,
-    /// **完整召回结果**（种子 / 命中 / 解析出的查询词 / 质量档位）。
+    /// The **complete recall result** (seeds / hits / parsed query terms / quality tier).
     ///
-    /// 为什么要把整份召回结果带上：Web 端"提示词增强"页要同时展示
-    /// 「合成的提示词」和「命中列表（可核对召回质量、点特征词重跑）」。
-    /// 不带的话前端只能再调一次 `/recall` —— 而召回正是这里最贵的一步，
-    /// 一次生成跑两遍纯属浪费，且两次结果可能不一致（图在两次之间被重建）。
+    /// Why the whole recall result is carried along: the Web "prompt augmentation" page shows both the
+    /// "composed prompt" and the "hit list" (to check recall quality and click a feature term to re-run).
+    /// Without it the front end would have to call `/recall` again — and recall is the most expensive step here,
+    /// so running it twice for one generation is pure waste, and the two results may disagree (the graph can be
+    /// rebuilt in between).
     pub recall: gt_application::RecallResult,
 }
 
-/// 合成提示词：图谱召回上下文 + 用户意图 → 一段可直接投喂 LLM 的提示词。
+/// Compose a prompt: graph recall context + user intent -> a prompt to feed straight to an LLM.
 ///
-/// 设计要点：召回只提供"地图"（路径/行号/片段），提示词明确要求 LLM 按需按路径精准
-/// 读取文件全文 —— 既省掉 discovery 的 token，又不丢实现完整性。
+/// Design point: recall only supplies the "map" (paths / line numbers / snippets), and the prompt explicitly asks
+/// the LLM to read the full file by path when needed — saving the discovery tokens without losing implementation
+/// completeness.
 async fn compose_prompt(
     State(state): State<Shared>,
     Path(id): Path<i64>,
@@ -894,7 +902,7 @@ the most relevant files, symbols and call / data relations have been selected by
     )
 }
 
-/// 粗估 token 数：ASCII（代码/英文）约 4 字符 1 token，中文约 1.5 字符 1 token。
+/// Rough token count: ASCII (code / English) is about 4 characters per token, Chinese about 1.5 characters per token.
 fn estimate_tokens(s: &str) -> usize {
     let mut ascii = 0usize;
     let mut cjk = 0usize;
@@ -908,12 +916,12 @@ fn estimate_tokens(s: &str) -> usize {
     (ascii as f64 / 4.0 + cjk as f64 / 1.5).ceil() as usize
 }
 
-/// 提示词增强页：内嵌静态页，避免额外静态资源托管与前端构建。
+/// The prompt augmentation page: an embedded static page, so no extra static hosting or front-end build is needed.
 async fn compose_page() -> Html<&'static str> {
     Html(include_str!("compose.html"))
 }
 
-/// 服务器状态：暴露当前生效的 embedding 后端与维度，供 UI 只读展示。
+/// Server status: exposes the active embedding backend and dimension for read-only display in the UI.
 #[derive(Serialize)]
 pub struct ServerStatusDto {
     pub version: String,
@@ -929,20 +937,20 @@ async fn server_status() -> Json<ApiResponse<ServerStatusDto>> {
     }))
 }
 
-/// 后台预热进度：语义向量 bge 是否就绪 / 预热中进度。
+/// Background warm-up progress: whether the bge semantic vectors are ready / how far warm-up has got.
 #[derive(Debug, Clone, Serialize)]
 pub struct WarmupStatusDto {
-    /// 该工程语义向量是否已全部就绪（召回走完整语义路）。
+    /// Whether this project's semantic vectors are all ready (recall uses the full semantic path).
     pub warmed: bool,
-    /// 是否正在后台预热中（召回暂走冷路径）。
+    /// Whether a background warm-up is running (recall is temporarily on the cold path).
     pub warming: bool,
-    /// 已编码节点数（仅 `warming` 时有意义）。
+    /// Number of nodes already encoded (meaningful only while `warming`).
     pub done: usize,
-    /// 待编码节点总数（仅 `warming` 时有意义）。
+    /// Total number of nodes to encode (meaningful only while `warming`).
     pub total: usize,
 }
 
-/// 查询某工程的后台预热进度。
+/// Query the background warm-up progress of a project.
 async fn project_warmup(
     State(state): State<Shared>,
     Path(id): Path<i64>,
@@ -961,10 +969,10 @@ pub struct BrowseQuery {
     pub path: Option<String>,
 }
 
-/// 浏览目录：返回该路径下的子目录列表（供前端目录选择器）。
+/// Browse a directory: return the list of sub-directories under that path (for the front-end directory picker).
 ///
-/// 后端进程运行在宿主系统（含 WSL），因此天然支持 `/mnt/c` 等挂载路径。
-/// 路径为空时回退到 `/home`（若存在）或 `/`。
+/// The backend process runs on the host system (including WSL), so mount paths such as `/mnt/c` work naturally.
+/// An empty path falls back to `/home` (if it exists) or `/`.
 async fn browse_fs(State(_state): State<Shared>, Query(q): Query<BrowseQuery>) -> Json<ApiResponse<Vec<DirEntryDto>>> {
     let raw = q.path.filter(|s| !s.trim().is_empty());
     let candidate = raw.unwrap_or_else(|| {
@@ -1007,7 +1015,7 @@ async fn browse_fs(State(_state): State<Shared>, Query(q): Query<BrowseQuery>) -
     }
 }
 
-/// 预留：按子工程过滤文件。
+/// Reserved: filter files by sub-project.
 #[allow(dead_code)]
 fn _sub(id: SubProjectId) -> SubProjectId {
     id

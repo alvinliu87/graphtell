@@ -1,16 +1,16 @@
-//! PHP ORM（Laravel / ThinkPHP）**模型关联与表级外键**的端到端自检。
+//! End-to-end self-check of PHP ORM (Laravel / ThinkPHP) **model relations and table-level foreign keys**.
 //!
-//! 覆盖「关系方法 → `References`（模型 → 模型）→ `Project` 投影成 `ForeignKey`（表 → 表）」
-//! 这条链。用的是合成工程（无需外部样本），且与 Node 侧策略刻意不同：
-//! TypeORM 的 `@ManyToOne` / `@OneToMany` 通常成对写，故 Node 侧只建外键持有方；
-//! Laravel / ThinkPHP **常只声明一侧**，故这里两侧都建（宁可冗余也不漏）。
+//! Covers the chain "relation method -> `References` (model -> model) -> `Project` projected into `ForeignKey` (table -> table)".
+//! Uses a synthetic project (no external sample needed), and deliberately differs from the Node-side strategy:
+//! TypeORM's `@ManyToOne` / `@OneToMany` are usually written in pairs, so the Node side builds only the FK owner;
+//! Laravel / ThinkPHP **often declare only one side**, so here both sides are built (redundant rather than missing).
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter};
 
 mod common;
 
-/// 合成 Laravel 工程：`User hasMany Post` + `Post belongsTo User`（两侧都声明）。
+/// Synthetic Laravel project: `User hasMany Post` + `Post belongsTo User` (both sides declared).
 fn synthetic_laravel_root() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "graphtell-php-orm-{}-{}",
@@ -84,7 +84,7 @@ fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<Node> {
         .expect("query")
 }
 
-/// 名为 `from` 的节点是否有指定种类的出边连到名为 `target` 的节点。
+/// Whether the node named `from` has an out-edge of a given kind reaching the node named `target`.
 fn links_to_named(b: &common::Built, kind: &str, from: &str, edge: &str, target: &str) -> bool {
     let Some(src) = nodes_of_kind(b, kind).into_iter().find(|n| n.name == from) else {
         return false;
@@ -102,45 +102,45 @@ fn links_to_named(b: &common::Built, kind: &str, from: &str, edge: &str, target:
 fn laravel_relations_produce_references_and_table_foreign_keys() {
     let root = synthetic_laravel_root();
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("合成 Laravel 工程建图应成功");
+        panic!("the synthetic Laravel project graph build should succeed");
     };
 
-    // 模型 → 表（既有能力）：`User` / `Post` 经 snake_plural + singularize 落成 user / post
+    // Model -> table (existing capability): `User` / `Post` land on user / post via snake_plural + singularize
     let tables: Vec<String> = nodes_of_kind(&b, "Table")
         .iter()
         .map(|n| n.name.clone())
         .collect();
     assert!(
         tables.iter().any(|t| t == "user") && tables.iter().any(|t| t == "post"),
-        "应产出 user / post 两张表，实际：{tables:?}"
+        "expected user / post tables, got: {tables:?}"
     );
 
-    // 模型关联：两侧都建（`hasMany` 与反向 `belongsTo`）
+    // Model relation: both sides are built (`hasMany` and its inverse `belongsTo`)
     assert!(
         links_to_named(&b, "Class", "User", "References", "Post"),
-        "User 应经 References 连到 Post（hasMany）"
+        "User should connect to Post via References (hasMany)"
     );
     assert!(
         links_to_named(&b, "Class", "Post", "References", "User"),
-        "Post 应经 References 连到 User（belongsTo）"
+        "Post should connect to User via References (belongsTo)"
     );
 
-    // 表级外键：`References` 经 `Project` 投影，两端各沿 `MapsTo` 落到表
+    // Table-level foreign key: `References` projected via `Project`, each end landing on a table along `MapsTo`
     assert!(
         links_to_named(&b, "Table", "user", "ForeignKey", "post"),
-        "user 表应经 ForeignKey 连到 post 表"
+        "user table should connect to post table via ForeignKey"
     );
     assert!(
         links_to_named(&b, "Table", "post", "ForeignKey", "user"),
-        "post 表应经 ForeignKey 连到 user 表"
+        "post table should connect to user table via ForeignKey"
     );
 }
 
-/// 权威 schema（SQL 安装脚本）的列应沉淀成 `Column` 图节点：
-/// `Table(users) --HasColumn--> Column(users.email)`。
+/// Columns of the authoritative schema (SQL install script) should settle into `Column` graph nodes:
+/// `Table(users) --HasColumn--> Column(users.email)`.
 ///
-/// 覆盖的是**另一条列来源**：不是 PHP 模型的字段声明（PHP ORM 通常不声明字段），
-/// 而是 DDL 这份权威结构 —— 影响面因此能下到字段级，而不只是止于表。
+/// This covers **a different column source**: not the PHP model's field declarations (PHP ORMs usually declare no fields),
+/// but the DDL authoritative structure — so impact analysis can drill down to field level, not just stop at the table.
 #[test]
 fn schema_columns_become_column_nodes_on_tables() {
     let dir = std::env::temp_dir().join(format!(
@@ -158,7 +158,7 @@ fn schema_columns_become_column_nodes_on_tables() {
         r#"{ "require": { "laravel/framework": "^11.0" } }"#,
     )
     .expect("write composer.json");
-    // DDL 用**复数**表名 `users`（Laravel 惯例），而表节点名经 singularize 是 `user`
+    // DDL uses the **plural** table name `users` (Laravel convention), while the table node name is `user` after singularize
     std::fs::write(
         dir.join("install.sql"),
         r#"CREATE TABLE `users` (
@@ -170,7 +170,7 @@ fn schema_columns_become_column_nodes_on_tables() {
 "#,
     )
     .expect("write install.sql");
-    // 模型类：让 `extends Model` 约定先落出 Table 节点（名为 user）
+    // Model class: let the `extends Model` convention first produce a Table node (named user)
     std::fs::create_dir_all(dir.join("app/Models")).expect("mkdir");
     std::fs::write(
         dir.join("app/Models/User.php"),
@@ -187,29 +187,29 @@ class User extends Model
     .expect("write User");
 
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("the graph build should succeed");
     };
 
     let cols: Vec<String> = nodes_of_kind(&b, "Column").iter().map(|n| n.name.clone()).collect();
     assert!(
         cols.iter().any(|c| c == "user.email"),
-        "应把 DDL 的列沉淀成 Column 节点（user.email），实际：{cols:?}"
+        "DDL columns should settle into Column nodes (user.email), got: {cols:?}"
     );
-    // 列挂在表下（`Table --HasColumn--> Column`），而不是散着
+    // Columns hang under the table (`Table --HasColumn--> Column`), not scattered
     let owned = nodes_of_kind(&b, "Table")
         .iter()
         .flat_map(|t| b.store.edges_of(t.id, EdgeDirection::Outgoing).expect("edges"))
         .filter(|e| e.kind.as_str() == "HasColumn")
         .count();
-    assert!(owned > 0, "表应经 HasColumn 指向其列");
+    assert!(owned > 0, "the table should point at its columns via HasColumn");
 }
 
-/// Laravel migration 的列应进 `schema` 符号表、并沉淀成 `Column` 节点。
+/// Columns of a Laravel migration should enter the `schema` symbol table and settle into `Column` nodes.
 ///
-/// 两个刻意锁定的行为：
-/// * **修饰符不能当列**：`->comment('说明')` / `->after('slug')` 也带字符串实参，
-///   若"取第一个字符串实参"就会被误当列名（这正是解析走**方法白名单**的原因）。
-/// * **无参声明按约定补列名**：`$table->id()` → `id`、`->timestamps()` → `created_at` / `updated_at`。
+/// Two behaviours deliberately pinned:
+/// * **A modifier must not be taken as a column**: `->comment('note')` / `->after('slug')` also carry a string argument,
+///   and would be mistaken for a column name if we "take the first string argument" (that is exactly why parsing goes by a **method whitelist**).
+/// * **A parameterless declaration completes the column name by convention**: `$table->id()` -> `id`, `->timestamps()` -> `created_at` / `updated_at`.
 #[test]
 fn migration_columns_become_column_nodes() {
     let dir = std::env::temp_dir().join(format!(
@@ -228,7 +228,7 @@ fn migration_columns_become_column_nodes() {
         r#"{ "require": { "laravel/framework": "^11.0" } }"#,
     )
     .expect("write composer.json");
-    // 模型类：`extends Model` 约定先落出 Table 节点（名为 post）
+    // Model class: the `extends Model` convention first produces a Table node (named post)
     std::fs::write(
         dir.join("app/Models/Post.php"),
         r#"<?php
@@ -267,7 +267,7 @@ return new class extends Migration
 "#,
     )
     .expect("write migration");
-    // 变更迁移：`dropColumn` 的实参是**要删的列**，绝不能当成列声明
+    // A change migration: the argument of `dropColumn` is **the column to delete** — must never be treated as a column declaration
     std::fs::write(
         dir.join("database/migrations/2024_02_01_000000_drop_legacy_from_posts_table.php"),
         r#"<?php
@@ -290,25 +290,25 @@ return new class extends Migration
     .expect("write drop migration");
 
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("the graph build should succeed");
     };
 
     let cols: Vec<String> = nodes_of_kind(&b, "Column").iter().map(|n| n.name.clone()).collect();
-    // 声明的列（含无参约定补出的 id / created_at / updated_at）
+    // The declared columns (including id / created_at / updated_at completed by the parameterless convention)
     for want in ["post.title", "post.body", "post.slug", "post.user_id", "post.id", "post.created_at"] {
         assert!(
             cols.iter().any(|c| c == want),
-            "应产出列 {want}，实际：{cols:?}"
+            "expected column {want}, got: {cols:?}"
         );
     }
-    // 非列声明的字符串实参绝不能被当成列（`dropColumn` 是"要删的列"）
+    // A string argument that is not a column declaration must never be treated as a column (`dropColumn` is "the column to delete")
     assert!(
         !cols.iter().any(|c| c == "post.legacy"),
-        "`dropColumn('legacy')` 不该产出列，实际：{cols:?}"
+        "`dropColumn('legacy')` should not produce a column, got: {cols:?}"
     );
 }
 
-/// `morphTo()` 这类**没有类常量实参**的关系不该建悬空边（取不到就跳过）。
+/// A relation like `morphTo()` with **no class-constant argument** should not build a dangling edge (skip when it cannot be resolved).
 #[test]
 fn relation_without_class_argument_is_skipped() {
     let dir = std::env::temp_dir().join(format!(
@@ -345,7 +345,7 @@ class Image extends Model
     .expect("write Image");
 
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("the graph build should succeed");
     };
     let dangling = nodes_of_kind(&b, "Class")
         .iter()
@@ -355,6 +355,6 @@ class Image extends Model
         .count();
     assert_eq!(
         dangling, 0,
-        "`morphTo()` 取不到目标类，不应建 References 边"
+        "`morphTo()` cannot resolve the target class, should not build a References edge"
     );
 }

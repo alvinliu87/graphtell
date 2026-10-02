@@ -1,16 +1,17 @@
-//! 把**权威 schema 的列**沉淀成 `Column` 图节点。
+//! Settle the **authoritative schema's columns** into `Column` graph nodes.
 //!
-//! 列信息此前只活在符号表里（`schema` 表，P3 从 SQL 安装脚本 / 表名调用点装载），
-//! 只能被 `ColumnsMatch` 谓词"问一句"（如 CRMEB 给含手机号的表打 PII），
-//! 在图上**既不可见也不可遍历** —— 影响面分析走到表就断了，下不到字段级。
+//! Column information used to live only in the symbol table (the `schema` table, loaded by P3 from SQL install
+//! scripts / table-name call sites) and could only be "asked a question" by the `ColumnsMatch` predicate (e.g. CRMEB
+//! tagging tables that contain phone numbers with PII); on the graph it was **neither visible nor traversable** —
+//! impact analysis stopped at the table and could not drill down to field level.
 //!
-//! 这里把它物化到图上：`Table --HasColumn--> Column`。
-//! 与 TypeORM `@Column` 建的列**同形**（`Column` 节点 + `HasColumn` 边），只是来源不同：
-//! 那边来自 ORM 的字段声明，这边来自 DDL 这份权威结构。
+//! Here it is materialised onto the graph: `Table --HasColumn--> Column`.
+//! It is **the same shape** as the columns built from TypeORM's `@Column` (a `Column` node + a `HasColumn` edge);
+//! only the source differs: there it is the ORM's field declaration, here it is the authoritative DDL structure.
 //!
-//! 语言 / 框架无关：只看「`Table` 节点 + schema 符号表里有没有它的列」，
-//! 因此任何有 SQL 安装脚本的工程（PHP / 其它）都自动获得字段级图节点。
-//! 没有 schema 的表（如只有 ORM 声明、无 DDL）不产出列 —— 宁可缺不可猜。
+//! Language / framework agnostic: it only looks at "a `Table` node plus whether the schema symbol table has columns
+//! for it", so any project with an SQL install script (PHP or otherwise) gets field-level graph nodes automatically.
+//! A table without a schema (e.g. only an ORM declaration, no DDL) produces no columns — better missing than guessed.
 
 use gt_domain::model::{
     EdgeKind, IdentityKey, Language, NewEdge, NodeId, NodeKind, Phase, Span, SubProjectId,
@@ -21,12 +22,12 @@ use crate::context::PipelineContext;
 use crate::engine::schema_columns;
 use crate::workspace::synthesized_node;
 
-/// 沉淀列的阶段归属：挂在 P6（此时 P5 的 `Table` 节点与 P3 的 schema 都已就位）。
+/// The phase that settling columns belongs to: attached to P6 (by then P5's `Table` nodes and P3's schema are both in place).
 pub fn materialize(ctx: &mut PipelineContext) {
     let phase = Phase(Phase::ANNOTATE_POST.to_string());
 
-    // 先收集「表 → 列」再落图：`add_edge` / `get_or_create_synthesized` 都要 &mut ws，
-    // 不能一边遍历节点一边改图。
+    // Collect "table -> columns" first and only then touch the graph: both `add_edge` and
+    // `get_or_create_synthesized` need &mut ws, so the graph cannot be mutated while iterating its nodes.
     let mut plan: Vec<(NodeId, String, Vec<String>, Option<SubProjectId>, Language)> = Vec::new();
     for id in ctx.ws.node_ids() {
         let Some(node) = ctx.ws.node(id) else {
@@ -35,7 +36,7 @@ pub fn materialize(ctx: &mut PipelineContext) {
         if node.kind.as_str() != NodeKind::TABLE {
             continue;
         }
-        // `identity.value` 是归一化后的表名（与 schema 符号表的键同源），优先用它。
+        // `identity.value` is the normalised table name (the same source as the schema symbol table's keys), so prefer it.
         let name = node
             .identity
             .as_ref()
@@ -44,8 +45,8 @@ pub fn materialize(ctx: &mut PipelineContext) {
         if name.is_empty() {
             continue;
         }
-        // 表名口径可能是**复数**：Laravel 的 DDL 写 `CREATE TABLE users`，
-        // 而表节点名经 `singularize` 后是 `user` —— 直接查会落空，故试一次复数形式。
+        // The table name may be **plural**: Laravel's DDL writes `CREATE TABLE users`, while the table node's name
+        // is `user` after `singularize` — a direct lookup misses, so the plural form is tried as well.
         let cols = schema_columns(&ctx.ws, "schema", &name)
             .or_else(|| schema_columns(&ctx.ws, "schema", &format!("{name}s")))
             .unwrap_or_default();
@@ -63,11 +64,12 @@ pub fn materialize(ctx: &mut PipelineContext) {
 
     for (table_id, tname, cols, sub, language) in plan {
         for col in cols {
-            // 列身份带表名作用域：同名列（`id` / `created`）在不同表必须各算各的，
-            // 否则会幂等合并成一个错节点，把两张表的影响面串起来。
+            // A column's identity is scoped by table name: same-named columns (`id` / `created`) in different tables
+            // must each count separately, otherwise they merge idempotently into one wrong node and link two tables'
+            // impact surfaces together.
             let identity = IdentityKey::named(format!("{tname}.{col}"));
-            // `Column` 是由 FKB 声明的语义种类（见 `fkb/js/typeorm.yaml` 的 `semantic_kinds`），
-            // 内核常量里没有它，故直接写种类字符串。
+            // `Column` is a semantic kind declared by FKB (see `semantic_kinds` in `fkb/js/typeorm.yaml`);
+            // it is not among the kernel constants, so the kind string is written directly.
             let mut new_node = synthesized_node(
                 ctx.project.id,
                 "Column",

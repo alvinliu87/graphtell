@@ -1,13 +1,13 @@
-//! identity 归一化与值变换。
+//! Identity normalisation and value transformation.
 //!
-//! **归一化是 Synthesize 阶段幂等合并的关键**：
-//! `store_order` / `eb_store_order` / `store_orders` 三条不同来源的写法
-//! 必须归一化成同一个 `identity`，否则会建出三个 Table 节点，
-//! 导致 fan_in 从 200 变成 67+66+67，影响面分析失真、死表检测误判。
+//! **Normalisation is the key to idempotent merging in the Synthesize phase**: the three spellings
+//! `store_order` / `eb_store_order` / `store_orders`, coming from three different sources, must normalise into the
+//! same `identity`; otherwise three Table nodes get built, fan_in turns from 200 into 67+66+67, impact analysis is
+//! distorted and dead-table detection misjudges.
 
 use gt_domain::model::{NormalizeStep, TransformSpec};
 
-/// 依次应用归一化步骤。
+/// Apply the normalisation steps in order.
 pub fn apply_normalize(input: &str, steps: &[NormalizeStep]) -> String {
     let mut s = input.trim().to_string();
     for step in steps {
@@ -52,10 +52,11 @@ pub fn apply_transform(input: &str, t: &TransformSpec) -> String {
     s
 }
 
-/// 规则里写空的 `strip_prefix: []` 表示「使用当前工程探测到的表前缀」。
+/// An empty `strip_prefix: []` in a rule means "use the table prefix detected for the current project".
 ///
-/// 这样通用框架 FKB 不写死具体前缀（如 CRMEB 的 `eb_`），前缀由 P3 从
-/// `config/database.php` 自动探测后填入 `workspace.table_prefixes`，再回退到这里。
+/// That way a generic framework FKB does not hard-code a concrete prefix (e.g. CRMEB's `eb_`); the prefix is
+/// detected automatically by P3 from `config/database.php`, filled into `workspace.table_prefixes`, and falls back
+/// to here.
 pub fn apply_table_prefix_steps(
     steps: &[NormalizeStep],
     table_prefixes: &[String],
@@ -71,7 +72,7 @@ pub fn apply_table_prefix_steps(
         .collect()
 }
 
-/// 反复剥离前缀（应对 `eb_eb_store_order` 这类二次前缀）。
+/// Strip prefixes repeatedly (to handle a doubled prefix like `eb_eb_store_order`).
 pub fn strip_prefixes(s: &str, prefixes: &[String]) -> String {
     let mut s = s.to_string();
     let mut changed = true;
@@ -95,7 +96,7 @@ pub fn leading_slash(s: &str) -> String {
     }
 }
 
-/// 去掉 `?` 起的查询串，只保留路径部分（页面跳转 URL 的 `?id=1` 不影响路由身份）。
+/// Drop the query string starting at `?`, keeping only the path (a `?id=1` on a page-navigation URL does not affect the route identity).
 pub fn strip_query(s: &str) -> String {
     match s.split_once('?') {
         Some((path, _)) => path.to_string(),
@@ -103,7 +104,7 @@ pub fn strip_query(s: &str) -> String {
     }
 }
 
-/// 路径参数段折成 `:*`：`/v2/invoice/detail/:id` ≡ `/v2/invoice/detail/:param`。
+/// Fold path-parameter segments into `:*`: `/v2/invoice/detail/:id` is equivalent to `/v2/invoice/detail/:param`.
 pub fn param_wildcard(s: &str) -> String {
     s.split('/')
         .map(|seg| if seg.starts_with(':') { ":*" } else { seg })
@@ -115,19 +116,19 @@ pub fn strip_namespace(s: &str) -> String {
     s.rsplit(['\\', '/', ':']).next().unwrap_or(s).to_string()
 }
 
-/// 取点分路径的最后一段（比 [`strip_namespace`] 多认一个 `.`）。
+/// Take the last segment of a dot-separated path (recognising one more separator, `.`, than [`strip_namespace`]).
 ///
-/// `app.tasks.send_email` → `send_email`；短名本身不变（`send_email`）。
-/// 用于把「同一实体」的完全限定名与短名归并成同一个 identity。
+/// `app.tasks.send_email` -> `send_email`; a short name is unchanged (`send_email`).
+/// Used to merge the fully qualified name and the short name of "the same entity" into one identity.
 pub fn short_name(s: &str) -> String {
     s.rsplit(['\\', '/', ':', '.']).next().unwrap_or(s).to_string()
 }
 
-/// `CamelCase` → `snake_case`。
+/// `CamelCase` -> `snake_case`.
 ///
-/// 按**字母数字段**处理：分隔符（`\` / `/` / `:`）之后的大写字母**不补下划线** ——
-/// `app\admin\Store` 是 `app\admin\store` 而不是 `app\admin\_store`。
-/// 这条不成立时，自动路由的 URL 推导会凭空多出 `_` 前缀段（`RULE /admin/_store/index`）。
+/// Handled per **alphanumeric segment**: an upper-case letter right after a separator (`\` / `/` / `:`) gets **no
+/// extra underscore** — `app\admin\Store` becomes `app\admin\store`, not `app\admin\_store`.
+/// Without that, URL derivation for auto-routes sprouts a spurious `_`-prefixed segment (`RULE /admin/_store/index`).
 pub fn to_snake(s: &str) -> String {
     let mut out = String::new();
     let chars: Vec<char> = s.chars().collect();
@@ -147,7 +148,7 @@ pub fn to_snake(s: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-/// `StoreOrder` → `store_orders`（TP6 Model 的默认表名约定）。
+/// `StoreOrder` -> `store_orders` (the TP6 Model default table-name convention).
 pub fn snake_plural(s: &str) -> String {
     let base = strip_namespace(s);
     pluralize(&to_snake(&base))
@@ -180,7 +181,7 @@ pub fn pluralize(s: &str) -> String {
     }
 }
 
-/// `app\job\OrderJob` → `order_job`（队列 topic 约定）。
+/// `app\job\OrderJob` -> `order_job` (the queue topic convention).
 pub fn class_to_topic(s: &str) -> String {
     to_snake(&strip_namespace(s))
 }
@@ -191,10 +192,10 @@ mod tests {
 
     #[test]
     fn short_name_takes_last_dotted_segment() {
-        // Python 的任务名：`import` 还原出的完全限定名要能与注册时的短名归并
+        // Python task names: the fully qualified name restored via `import` must merge with the short name used at registration time
         assert_eq!(short_name("app.tasks.send_email"), "send_email");
         assert_eq!(short_name("send_email"), "send_email");
-        // 已有的分隔符形态同样适用
+        // The same applies to already-separated forms
         assert_eq!(short_name("app\\service\\OrderService"), "OrderService");
     }
 
@@ -218,7 +219,7 @@ mod tests {
 
     #[test]
     fn snake_keeps_segments() {
-        // 分隔符之后的大写字母不补 `_`：否则自动路由会推导出 `/admin/_store/index`
+        // No `_` before an upper-case letter after a separator: otherwise auto-routes derive `/admin/_store/index`
         assert_eq!(to_snake("app\\admin\\controller\\Store"), "app\\admin\\controller\\store");
         assert_eq!(to_snake("AgentLevel::delete"), "agent_level::delete");
         assert_eq!(to_snake("SaveInfo"), "save_info");

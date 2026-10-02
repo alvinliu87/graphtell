@@ -1,4 +1,4 @@
-//! 建图用例：编排流水线并处理状态流转与后台执行。
+//! Graph-build use cases: orchestrate the pipeline and handle state transitions and background execution.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex};
@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 
 use crate::RuleService;
 
-/// 流水线所需基础设施的聚合（在组装根注入，实现依赖倒置）。
+/// Aggregate of the infrastructure the pipeline needs (injected at the composition root, dependency inversion).
 pub struct PipelineDeps {
     pub fs: Arc<dyn FileSystem>,
     pub scanner: Arc<dyn FileScanner>,
@@ -25,7 +25,7 @@ pub struct PipelineDeps {
     pub kb: Arc<dyn KnowledgeProvider>,
 }
 
-/// 把 [`PipelineDeps`] 与持久化适配成 `gt-pipeline` 需要的 [`PipelineInfrastructure`]。
+/// Adapt [`PipelineDeps`] and persistence into the [`PipelineInfrastructure`] that `gt-pipeline` needs.
 struct Infra<'a> {
     deps: &'a PipelineDeps,
     store: &'a dyn Persistence,
@@ -52,22 +52,22 @@ impl<'a> gt_pipeline::runner::PipelineInfrastructure for Infra<'a> {
     }
 }
 
-/// 同时进行的建图任务上限。
+/// Cap on concurrently running graph-build tasks.
 ///
-/// 每条流水线都要把整个工程的节点驻留在内存工作区里（大工程十万级节点），
-/// 并且写操作最终都挤在同一条 SQLite 连接上。并发本身在号段分配修好之后
-/// 已经安全，这里只是给资源上界：超出的工程排队等待，而不是一拥而上。
+/// Each pipeline must keep the whole project's nodes resident in the in-memory workspace (large projects have 100k-level nodes),
+/// and all writes ultimately funnel onto the same single SQLite connection. Concurrency itself is safe after the segment allocation was fixed,
+/// this only sets a resource ceiling: extra projects queue instead of all storming in at once.
 const MAX_CONCURRENT_BUILDS: usize = 2;
 
-/// 建图用例服务。
+/// Graph-build use-case service.
 pub struct PipelineService {
     store: Arc<dyn Persistence>,
     deps: Arc<PipelineDeps>,
-    /// 建图完成后自动跑合规检查（见 [`Self::run_check`]）。
+    /// Auto-run a compliance check after graph build (see [`Self::run_check`]).
     checks: RuleService,
-    /// 同一工程同时只允许一个建图任务。
+    /// Only one graph-build task per project at a time.
     running: Arc<Mutex<std::collections::HashSet<i64>>>,
-    /// 跨工程的并发名额（计数 + 条件变量）。
+    /// Cross-project concurrency slots (counter + condition variable).
     slots: Arc<(Mutex<usize>, Condvar)>,
 }
 
@@ -87,10 +87,10 @@ impl PipelineService {
         }
     }
 
-    /// 占一个建图名额；满则等待。
+    /// Take a graph-build slot; wait if full.
     ///
-    /// 用 `unwrap_or_else(poisoned.into_inner())`：持锁线程 panic 后锁会中毒，
-    /// 若继续 `unwrap()`，后续每一次建图都会连带 panic，故障会一直扩散下去。
+    /// Use `unwrap_or_else(poisoned.into_inner())`: after the lock-holder thread panics the lock is poisoned,
+    /// if we kept `unwrap()`-ing, every later build would panic too, and the failure would keep spreading.
     fn acquire_slot(&self) {
         let (lock, cv) = &*self.slots;
         let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -107,7 +107,7 @@ impl PipelineService {
         cv.notify_one();
     }
 
-    /// 同步执行建图。
+    /// Run the graph build synchronously.
     pub fn run(
         &self,
         project_id: ProjectId,
@@ -166,25 +166,25 @@ impl PipelineService {
         }
     }
 
-    /// 建图完成后**自动**跑一遍合规检查。
+    /// **Automatically** run a compliance check after graph build.
     ///
-    /// # 为什么自动
+    /// # Why automatic
     ///
-    /// 规则是图唯一的验收装置。要手动触发，用户建完图看到"0 条违规"时无法区分
-    /// "真的没违规"和"根本没跑" —— 而后者正是本项目已经踩过的坑（静默归零）。
-    /// 自动跑之后，`rules_unavailable` / `rules_silent` 这些告警才会真的被看到。
+    /// Rules are the graph's only acceptance device. If triggered manually, when the user builds and sees "0 violations"
+    /// they can't tell "really no violation" from "never ran" — and the latter is exactly the pitfall this project already hit (silent zeroing).
+    /// Running automatically is what makes warnings like `rules_unavailable` / `rules_silent` actually visible.
     ///
-    /// # 为什么是"建图之后"而不是"流水线的一个阶段"
+    /// # Why "after build" and not "a pipeline stage"
     ///
-    /// 三条，第二条是决定性的：
-    /// 1. 规则必须读**完整的图** —— P6 才产出 `auth.public` 这类标注，P8 才折叠完；
-    ///    作为阶段塞进流水线会暗示它与 P0–P8 同级、可乱序。
-    /// 2. **改一条规则不该触发重新解析整个仓库**。规则是 YAML，若检查属于建图，
-    ///    改一行 YAML 就要重跑几十秒到几分钟的解析；放在建图后，重跑检查只要 1 秒。
-    /// 3. **失败隔离**：规则引擎出错应当只让"结论"缺失，不能让"图"建不出来 ——
-    ///    图是贵得多的资产。
+    /// Three reasons; the second is decisive:
+    /// 1. Rules must read the **complete graph** — annotations like `auth.public` only appear at P6, folding only finishes at P8;
+    ///    squeezing it into a stage would imply it's on par with P0–P8 and reorderable.
+    /// 2. **Editing one rule shouldn't trigger re-parsing the whole repo**. Rules are YAML; if checks belonged to build,
+    ///    editing one YAML line would re-run tens of seconds to minutes of parsing; after build, re-running the check takes just 1 second.
+    /// 3. **Failure isolation**: a rule-engine error should only make the "conclusion" missing, not make the "graph" fail to build —
+    ///    the graph is the far more expensive asset.
     ///
-    /// 因此这里刻意**吞掉检查失败**：记一条 warn，建图照样算成功。
+    /// So here we deliberately **swallow check failures**: log a warn, but the build still counts as success.
     fn run_check(&self, project_id: ProjectId, project_name: &str) {
         match self.checks.check(project_id, None, true) {
             Ok(report) => {
@@ -203,25 +203,25 @@ impl PipelineService {
                 }
             }
             Err(e) => {
-                // 不向上传播：图已经建好了，不能因为"结论"算不出来就判定建图失败。
+                // Don't propagate upward: the graph is already built; a failed "conclusion" must not mark the build as failed.
                 warn!("工程 {} 自动合规检查失败（图仍可用）：{}", project_name, e);
             }
         }
     }
 
-    /// 建图完成、规则合成完 HttpContract 节点后，把「声明式中间件」挂成 `PassesThrough` 边。
+    /// After build and rule synthesis of HttpContract nodes, hang "declarative middleware" as `PassesThrough` edges.
     ///
-    /// # 为什么是建图之后、而不是 P14
+    /// # Why after build, not P14
     ///
-    /// likeadmin 这类自动路由项目的绝大多数 HttpContract 由 `frontend-http-contract` 规则在
-    /// `run_check` 阶段才合成；P14 跑时它们还不存在，挂链会整段落空。这里读 prepare 阶段写入
-    /// `declared_middleware` 符号表的声明（文件名 / 键 / 作用域全在 FKB，内核零框架字符串），
-    /// 对**全量**契约节点按作用域挂边，并把对应的 `Class` 节点晋升为 `Middleware`。
+    /// In auto-routing projects like likeadmin, most HttpContracts are synthesized by the `frontend-http-contract` rule only at
+    /// the `run_check` stage; when P14 runs they don't exist yet, so hanging the chain would fall through entirely. Here we read the declarations
+    /// written into the `declared_middleware` symbol table during prepare (file name / key / scope all live in FKB, kernel has zero framework strings),
+    /// hang edges onto **all** contract nodes by scope, and promote the corresponding `Class` nodes to `Middleware`.
     ///
-    /// * `global`：挂到全部契约节点；
-    /// * `per_app`：只挂到名字含 `prefix`（如 `/adminapi`）的契约节点。
+    /// * `global`: hang onto all contract nodes;
+    /// * `per_app`: only onto contract nodes whose name contains `prefix` (e.g. `/adminapi`).
     ///
-    /// 节点查找按类名（FQN / 短名）；图里没有该类（如 vendor 里的类）则跳过，不建悬空边。
+    /// Node lookup is by class name (FQN / short name); if the class isn't in the graph (e.g. a vendor class) skip, no dangling edge.
     fn attach_declared_middleware(&self, project_id: ProjectId) {
         let Ok(declared) = self.store.list_symbols(project_id, "declared_middleware") else {
             return;
@@ -257,7 +257,7 @@ impl PipelineService {
             return;
         };
 
-        // 类名（FQN / 短名）→ 节点 id，优先复用已有的 Middleware 节点。
+        // class name (FQN / short name) → node id, preferring to reuse an existing Middleware node.
         let mut by_name: HashMap<String, NodeId> = HashMap::new();
         for n in mws.iter().chain(classes.iter()) {
             by_name.entry(n.name.clone()).or_insert(n.id);
@@ -268,7 +268,7 @@ impl PipelineService {
             by_name.entry(short).or_insert(n.id);
         }
 
-        // 预读已有 PassesThrough 边去重。
+        // Pre-read existing PassesThrough edges for deduplication.
         let mut existing: HashSet<(NodeId, NodeId)> = HashSet::new();
         for c in &contracts {
             if let Ok(es) = self.store.edges_of(c.id, EdgeDirection::Outgoing) {
@@ -348,7 +348,7 @@ impl PipelineService {
         }
     }
 
-    /// 在后台线程执行建图（HTTP / Tauri 调用方使用）。
+    /// Run the graph build on a background thread (used by HTTP / Tauri callers).
     pub fn spawn(
         self: &Arc<Self>,
         project_id: ProjectId,
@@ -364,7 +364,7 @@ impl PipelineService {
     }
 
     pub fn reports(&self, project_id: ProjectId) -> Vec<PhaseReport> {
-        // 最近一次运行的阶段报告由调用方缓存；这里从运行记录表读取概要
+        // The latest run's stage report is cached by the caller; here we read a summary from the run-records table
         let _ = project_id;
         Vec::new()
     }

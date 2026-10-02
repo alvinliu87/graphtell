@@ -1,15 +1,17 @@
-//! 召回评测语料批量跑分。
+//! Batch scoring of the recall evaluation corpus.
 //!
-//! 把 `tests/eval/*.jsonl` 里的「查询 → 期望命中 → 最低质量档」当成回归语料，
-//! **对真实 CRMEB 样本**跑一遍召回并校验。用途：
+//! Treats `tests/eval/*.jsonl`'s "query -> expected hits -> minimum quality tier" as a regression corpus and runs
+//! recall **against the real CRMEB sample** to validate it. Purpose:
 //!
-//! 1. 锁定 6 类真实开发场景的召回基线（监听器浮出 / 业务方法命中 / 质量不崩）；
-//! 2. 将来改召回算法、接 bge 语义路径后，可批量对比「质量档 + 命中节点」是否回归。
+//! 1. Pin the recall baseline for 6 kinds of real development scenarios (listeners surfacing / business methods
+//!    matching / quality not collapsing);
+//! 2. Later, when the recall algorithm changes or a bge semantic path is added, batch-compare whether "quality tier
+//!    + hit nodes" has regressed.
 //!
-//! **依赖体积过大的真实样本（不入库）+ bge-m3 模型权重**：
-//! 无样本时优雅跳过（不是失败）；有样本但无模型权重时质量档会不达标，
-//! 故 `eval_recall_scenarios` 仍标 `#[ignore]`（原因写在它上方）。
-//! 想强制跑：`cargo test -p gt-app -- --ignored eval_recall`。
+//! **Depends on a real sample that is too large to commit (not in the repo) + the bge-m3 model weights**:
+//! with no sample it skips gracefully (rather than failing); with a sample but no model weights the quality tier
+//! will not be met, so `eval_recall_scenarios` stays `#[ignore]` (the reason is written above it).
+//! To force a run: `cargo test -p gt-app -- --ignored eval_recall`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -23,12 +25,13 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
 }
 
-/// 定位 CRMEB 样本根：优先 `GRAPHTELL_SAMPLE_DIR`，否则从 `CARGO_MANIFEST_DIR`
-/// **向上逐级**在 `samples/` 下递归查找。
+/// Locate the CRMEB sample root: prefer `GRAPHTELL_SAMPLE_DIR`, otherwise search recursively under `samples/`
+/// **level by level upward** from `CARGO_MANIFEST_DIR`.
 ///
-/// 原先只查 `workspace_root()/samples`（内层工作区）且匹配 `samples/*/CRMEB-master`
-/// （一层 + 后缀），与真实布局 `samples/php-projects/thinkphp/CRMEB`（两层、无后缀）
-/// 不符 → 找不到样本 → 用例走软跳过分支、仍计为 passed，实则零覆盖。
+/// It used to look only at `workspace_root()/samples` (the inner workspace) and match `samples/*/CRMEB-master`
+/// (one level + suffix), which does not fit the real layout `samples/php-projects/thinkphp/CRMEB` (two levels, no
+/// suffix) -> the sample was never found -> the case took the soft-skip branch and still counted as passed, with
+/// zero coverage in reality.
 fn find_sample() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -36,7 +39,7 @@ fn find_sample() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    /// 在 `dir` 内最多找 `depth` 层，命中 `CRMEB` / `CRMEB-master`。
+    /// Search at most `depth` levels under `dir`, matching `CRMEB` / `CRMEB-master`.
     fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
         if depth == 0 {
             return None;
@@ -74,7 +77,7 @@ struct Built {
     project_id: gt_domain::model::ProjectId,
 }
 
-/// 跑一次完整建图并缓存（同一测试二进制内只跑一遍）。
+/// Run one complete graph build and cache it (runs only once per test binary).
 fn built() -> Option<Arc<Built>> {
     static CACHE: OnceLock<Option<Arc<Built>>> = OnceLock::new();
     CACHE
@@ -93,7 +96,7 @@ fn built() -> Option<Arc<Built>> {
                 port: 0,
                 ui_dir: None,
                 };
-            let container = Container::new(config).expect("容器装配不应失败");
+            let container = Container::new(config).expect("container assembly should not fail");
 
             let projects =
                 ProjectService::new(container.store.clone() as Arc<dyn Persistence>, Arc::new(SystemClock));
@@ -110,11 +113,11 @@ fn built() -> Option<Arc<Built>> {
                     description: None,
                     config: None,
                 })
-                .expect("创建工程不应失败");
+                .expect("creating the project should not fail");
 
             pipeline
                 .run(project.id, &NoopObserver)
-                .expect("对 CRMEB 样本建图不应失败");
+                .expect("graph build on the CRMEB sample should not fail");
 
             Some(Arc::new(Built {
                 container,
@@ -125,10 +128,10 @@ fn built() -> Option<Arc<Built>> {
 }
 
 fn skip() -> &'static str {
-    "跳过：未找到 CRMEB 样本（可用 GRAPHTELL_SAMPLE_DIR 指定）"
+    "skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
 }
 
-/// 把质量档字符串解析成可比较的序数。
+/// Parse a quality-tier string into a comparable ordinal.
 fn quality_ord(q: &RecallQuality) -> u8 {
     match q {
         RecallQuality::Low => 0,
@@ -141,17 +144,18 @@ fn threshold_ord(s: &str) -> u8 {
     match s {
         "low" => 0,
         "high" => 2,
-        _ => 1, // 默认 medium
+        _ => 1, // default medium
     }
 }
 
-/// 跑 `tests/eval/recall_scenarios.jsonl` 整份语料，逐条校验「期望命中 + 最低质量档」。
-// 这条是**召回质量评测**：期望的「最低质量档 + 命中节点」是按 bge-m3 语义向量校准的。
-// `--no-default-features` 构建没有模型权重、走哈希兜底，实测 6 条语料有 2 条不达标
-// （如 `order_create_notify` 质量 Low、`login_log` 漏 loginSaveVisit）—— 这是编码器能力
-// 差异，不是召回逻辑坏了。因此它额外**依赖模型权重**（GT_BGE_MODEL），保留 ignore。
+/// Run the whole `tests/eval/recall_scenarios.jsonl` corpus, validating "expected hits + minimum quality tier" case by case.
+// This is a **recall quality evaluation**: the expected "minimum quality tier + hit nodes" is calibrated against
+// bge-m3 semantic vectors. A `--no-default-features` build has no model weights and takes the hash fallback, where
+// 2 of the 6 corpus cases measurably fail (e.g. `order_create_notify` at Low quality, `login_log` missing
+// loginSaveVisit) — that is a difference in encoder capability, not broken recall logic. So it additionally
+// **depends on the model weights** (GT_BGE_MODEL) and keeps the ignore.
 #[test]
-#[ignore = "需 bge-m3 模型权重（GT_BGE_MODEL）：哈希兜底下质量档不达标，非召回逻辑问题"]
+#[ignore = "needs bge-m3 model weights (GT_BGE_MODEL): under the hash fallback the quality tier is not met; an encoder issue, not a recall-logic bug"]
 fn eval_recall_scenarios() {
     let Some(b) = built() else {
         eprintln!("{}", skip());
@@ -163,7 +167,7 @@ fn eval_recall_scenarios() {
     let text = match std::fs::read_to_string(&corpus) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("跳过：语料文件 {corpus:?} 读取失败：{e}");
+            eprintln!("skip: corpus file {corpus:?} read failed: {e}");
             return;
         }
     };
@@ -181,7 +185,7 @@ fn eval_recall_scenarios() {
         let v: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                failures.push(format!("line {} 语料 JSON 解析失败：{e}", i + 1));
+                failures.push(format!("line {} corpus JSON parse failed: {e}", i + 1));
                 continue;
             }
         };
@@ -189,7 +193,7 @@ fn eval_recall_scenarios() {
         let query = match v["query"].as_str() {
             Some(q) => q.to_string(),
             None => {
-                failures.push(format!("[{id}] 缺少 query 字段"));
+                failures.push(format!("[{id}] missing the query field"));
                 continue;
             }
         };
@@ -213,13 +217,13 @@ fn eval_recall_scenarios() {
         ) {
             Ok(r) => r,
             Err(e) => {
-                failures.push(format!("[{id}] recall 失败：{e}"));
+                failures.push(format!("[{id}] recall failed: {e}"));
                 continue;
             }
         };
         ran += 1;
 
-        // 期望命中：名字或 fqn 子串命中即算（fqn 含命名空间与类名，匹配更稳）。
+        // Expected hit: a substring match on the name or the fqn counts (the fqn contains the namespace and class name, so it matches more reliably).
         let mut missing = Vec::new();
         for exp in &expect {
             let hit = result
@@ -231,10 +235,10 @@ fn eval_recall_scenarios() {
             }
         }
 
-        // 质量档：result.quality 序数必须 >= 期望阈值。
+        // Quality tier: the ordinal of result.quality must be >= the expected threshold.
         let quality_ok = quality_ord(&result.quality) >= threshold_ord(min_q);
 
-        // 可视化的单行摘要（跑 `--ignored` 时直接看到每条质量与缺失项）。
+        // A one-line visual summary (so a `--ignored` run shows each case's quality and what is missing).
         let top: Vec<&str> = result
             .hits
             .iter()
@@ -251,24 +255,24 @@ fn eval_recall_scenarios() {
 
         if !missing.is_empty() {
             failures.push(format!(
-                "[{id}] query=`{query}` 期望命中未出现：{:?}（实际 top：{:?}）",
+                "[{id}] query=`{query}` expected hit missing: {:?} (actual top: {:?})",
                 missing, top
             ));
         }
         if !quality_ok {
             failures.push(format!(
-                "[{id}] query=`{query}` 质量档 {:?} 低于期望 `{}`",
+                "[{id}] query=`{query}` quality tier {:?} below expected `{}`",
                 result.quality, min_q
             ));
         }
     }
 
     if ran == 0 {
-        eprintln!("warn: 语料未包含任何可执行的查询行");
+        eprintln!("warn: corpus contains no executable query lines");
     }
     if !failures.is_empty() {
         panic!(
-            "eval 语料有 {} 条未通过（共执行 {ran} 条）：\n{}",
+            "eval corpus has {} failures (of {ran} executed):\n{}",
             failures.len(),
             failures.join("\n")
         );

@@ -1,7 +1,7 @@
-//! `gt-application` —— 应用层：用例编排与事务边界。
+//! `gt-application` — the application layer: use-case orchestration and transaction boundaries.
 //!
-//! 只依赖 `gt-domain` 的端口 trait，不依赖任何具体技术。
-//! 每个用例是一个独立的服务，遵循单一职责原则（SRP）。
+//! It depends only on the port traits of `gt-domain`, never on any concrete technology.
+//! Each use case is an independent service, following the single-responsibility principle (SRP).
 
 pub mod graph_query;
 pub mod location;
@@ -12,9 +12,9 @@ pub mod rule_service;
 pub mod recall_service;
 pub mod embedding;
 pub mod embed_remote;
-/// 源码变更监听（轮询 + 防抖 → 整库安全重建 + 自动合规）。
+/// Source-change watching (polling + debounce -> safe whole-database rebuild + automatic compliance).
 pub mod watch;
-// 真实神经网络嵌入适配器：仅在特定 `model-*` feature 开启时编译，离线构建不受影响。
+// Real neural-network embedding adapter: compiled only when a specific `model-*` feature is on; offline builds are unaffected.
 #[cfg(feature = "model-candle")]
 pub mod embed_model;
 #[cfg(feature = "model-ort")]

@@ -1,10 +1,10 @@
-//! 用**真实开源样本**验证 NestJS / Express 的建图效果。
+//! Validate NestJS / Express graph build with **real open-source samples**.
 //!
-//! 样本从哪来：本目录 `samples/nestjs-realworld-example-app` 与 `samples/hackathon-starter`
-//! （由开发者下载，git 忽略，不入库）。样本缺失时测试**跳过**而非失败，以便 CI 无样本也能跑。
+//! Where samples come from: `samples/nestjs-realworld-example-app` and `samples/hackathon-starter` in this directory
+//! (downloaded by developers, git-ignored, not in the repo). When a sample is missing the test **skips** rather than fails, so CI runs without samples.
 //!
-//! 这些用例验证的是端到端结论：真实 NestJS 控制器的 `@Get/@Post` 是否落成 HttpContract
-//! 且 HandledBy 连到方法节点；真实 Express 的 `app.get` 是否落成 HttpContract。
+//! These cases verify end-to-end conclusions: whether a real NestJS controller's `@Get/@Post` becomes an HttpContract
+//! with HandledBy to a method node; whether a real Express `app.get` becomes an HttpContract.
 
 mod common;
 
@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use gt_domain::model::{NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery};
 
-/// 定位真实 Node 样本根目录：先试环境变量 `GRAPHTELL_NODE_SAMPLE_DIR`，
-/// 再回退到仓库内相对路径。返回 (nestjs 根, express 根) 的 Option 元组。
+/// Locate the real Node sample root: try env var `GRAPHTELL_NODE_SAMPLE_DIR` first,
+/// then fall back to the in-repo relative path. Returns an Option tuple of (nestjs root, express root).
 fn node_samples() -> Option<(PathBuf, PathBuf)> {
     if let Ok(dir) = std::env::var("GRAPHTELL_NODE_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -51,7 +51,7 @@ fn nodes_of_kind<'a>(
         .collect()
 }
 
-/// 某语义节点的某类**出边**是否存在（如 HttpContract → Method 的 HandledBy）。
+/// Whether a given kind of **out-edge** exists on a semantic node (e.g. HttpContract → Method's HandledBy).
 fn has_outgoing_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
     nodes_of_kind(b, kind).iter().any(|n| {
         b.store
@@ -62,15 +62,15 @@ fn has_outgoing_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
     })
 }
 
-/// 合成工程自检（自洽、无需外部样本）：同时覆盖 NestJS 装饰器路由与 Express 成员式路由，
-/// 验证 JS 解析器 + FKB 在合成代码上即可产出 HttpContract + HandledBy，使 CI 无样本也能守护。
+/// Synthetic-project self-check (self-consistent, no external sample needed): covers both NestJS decorator routes and Express member-style routes,
+/// verifying the JS parser + FKB produce HttpContract + HandledBy on synthetic code, so CI guards without samples.
 #[test]
 fn synthetic_nestjs_and_express_graph() {
     let dir = std::env::temp_dir().join("gt_synth_node");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    // NestJS 子工程
+    // NestJS sub-project
     std::fs::write(
         dir.join("package.json"),
         r#"{
@@ -80,7 +80,7 @@ fn synthetic_nestjs_and_express_graph() {
 "#,
     )
     .unwrap();
-    // 被注入的 provider（@Injectable）
+    // the injected provider (@Injectable)
     std::fs::write(
         dir.join("src/user.service.ts"),
         r#"import { Injectable } from '@nestjs/common';
@@ -92,7 +92,7 @@ export class UserService {
 "#,
     )
     .unwrap();
-    // ORM 实体（@Entity('user') → Table，@Column 字段 → 列）
+    // ORM entity (@Entity('user') → Table, @Column fields → columns)
     std::fs::write(
         dir.join("src/user.entity.ts"),
         r#"import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
@@ -111,7 +111,7 @@ export class UserEntity {
 "#,
     )
     .unwrap();
-    // 第二个实体：带 `@ManyToOne` 关联，供 References 边断言（外键持有方 → 被引用实体）
+    // second entity: with `@ManyToOne` relation, for the References-edge assertion (foreign-key holder → referenced entity)
     std::fs::write(
         dir.join("src/article.entity.ts"),
         r#"import { Entity, Column, PrimaryGeneratedColumn, ManyToOne } from 'typeorm';
@@ -146,7 +146,7 @@ export class UserController {
 "#,
     )
     .unwrap();
-    // Express 子工程（与 nestjs 同根，靠 package.json 的 `express` 依赖区分框架）
+    // Express sub-project (same root as nestjs, distinguished by the `express` dependency in package.json)
     std::fs::write(
         dir.join("app.js"),
         r#"const express = require('express');
@@ -162,7 +162,7 @@ app.post('/login', (req, res) => { res.send('ok'); });
         panic!("合成工程建图应成功");
     };
 
-    // NestJS：装饰器 → HttpContract，且 HandledBy 指出到方法节点
+    // NestJS: decorator → HttpContract, and HandledBy points to a method node
     let nest_contracts = nodes_of_kind(&b, "HttpContract");
     let nest_names: Vec<&str> = nest_contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
@@ -174,10 +174,10 @@ app.post('/login', (req, res) => { res.send('ok'); });
         "NestJS HttpContract 应有 HandledBy 出边（连到处理方法），实际：{nest_names:?}"
     );
 
-    // Express：成员式 `app.get` → HttpContract（路径从 arg0 取，方法从成员名取）
+    // Express: member-style `app.get` → HttpContract (path from arg0, method from member name)
     let express_root = dir.join("app.js");
     let _ = express_root;
-    // 用全量节点里找 /login 契约
+    // find the /login contract among all nodes
     let all = b
         .store
         .query_nodes(&gt_domain::port::NodeFilter {
@@ -196,14 +196,14 @@ app.post('/login', (req, res) => { res.send('ok'); });
         "Express 应产出 /login 契约，实际：{login:?}"
     );
 
-    // NestJS 依赖注入：`constructor(private readonly userService: UserService)`
+    // NestJS DI: `constructor(private readonly userService: UserService)`
     // → `UserController --DependsOn--> UserService`
     assert!(
         class_links_to_named(&b, "UserController", "DependsOn", "UserService"),
         "UserController 应 DependsOn 到 UserService"
     );
 
-    // TypeORM：`@Entity('user')` → Table 节点 "user"，且模型类经 MapsTo 连到表
+    // TypeORM: `@Entity('user')` → Table node "user", and the model class connects to the table via MapsTo
     let tables: Vec<&str> = all
         .iter()
         .filter(|n| n.kind.as_str() == "Table")
@@ -218,7 +218,7 @@ app.post('/login', (req, res) => { res.send('ok'); });
         "UserEntity 应经 MapsTo 连到表 user"
     );
 
-    // 实体字段 → 列：`@Column() username` 落成 `Column` 节点，并由实体经 HasColumn 指向
+    // entity field → column: `@Column() username` becomes a `Column` node, pointed at by the entity via HasColumn
     let cols: Vec<String> = nodes_of_kind(&b, "Column")
         .iter()
         .map(|n| n.name.clone())
@@ -232,24 +232,24 @@ app.post('/login', (req, res) => { res.send('ok'); });
         "UserEntity 应经 HasColumn 指向其字段列"
     );
 
-    // 实体关联（外键持有方）：`@ManyToOne(…) author: UserEntity`
+    // entity relation (foreign-key holder): `@ManyToOne(…) author: UserEntity`
     // → `ArticleEntity --References--> UserEntity`
     assert!(
         class_links_to_named(&b, "ArticleEntity", "References", "UserEntity"),
         "ArticleEntity 应经 References 连到 UserEntity"
     );
 
-    // 表级外键：实体关联经 `Project` 投影到表 → 表（两个实体都有 @Entity('x')，故两端齐备）
+    // table-level foreign key: entity relation projects via `Project` to table → table (both entities have @Entity('x'), so both ends exist)
     assert!(
         node_links_to_named(&b, "Table", "article", "ForeignKey", "user"),
         "article 表应经 ForeignKey 连到 user 表"
     );
 }
 
-/// 某节点（按 `kind` 定位）是否有指定种类的**出边**连到名为 `target` 的节点。
+/// Whether a node (located by `kind`) has an out-edge of the given kind to a node named `target`.
 ///
-/// 三类关系边都走这里：NestJS 构造器注入 `DependsOn`、TypeORM 实体关联 `References`
-/// （外键持有方 → 被引用实体）、表级外键 `ForeignKey`（表 → 表）。
+/// All three relation-edge kinds go through here: NestJS constructor injection `DependsOn`, TypeORM entity relation `References`
+/// (foreign-key holder → referenced entity), table-level foreign key `ForeignKey` (table → table).
 fn node_links_to_named(
     b: &common::Built,
     kind: &str,
@@ -269,12 +269,12 @@ fn node_links_to_named(
         .any(|n| n.name == target)
 }
 
-/// 某**类**节点是否有指定种类的出边连到 `target`（[`node_links_to_named`] 的类特化）。
+/// Whether a **class** node has an out-edge of the given kind to `target` (class specialization of [`node_links_to_named`]).
 fn class_links_to_named(b: &common::Built, from: &str, edge: &str, target: &str) -> bool {
     node_links_to_named(b, "Class", from, edge, target)
 }
 
-/// 某**类**节点是否有指定种类的**出边**（如 UserEntity → Table 的 MapsTo）。
+/// Whether a **class** node has an out-edge of the given kind (e.g. UserEntity → Table's MapsTo).
 fn class_links_to(b: &common::Built, class: &str, edge: &str) -> bool {
     let Some(node) = nodes_of_kind(b, "Class")
         .into_iter()
@@ -304,24 +304,24 @@ fn nestjs_real_sample_produces_route_contracts() {
         !names.is_empty(),
         "真实 NestJS 样本应产出 HttpContract，实际节点为空"
     );
-    // `user.controller.ts` 里 `@Get('user')` / `@Post('users')` 等应落成
+    // `@Get('user')` / `@Post('users')` etc. in `user.controller.ts` should become
     assert!(
         names.iter().any(|n| n.contains("user")),
         "应包含 user 相关契约，实际：{names:?}"
     );
-    // HandledBy 应从 HttpContract 指出、连到方法节点（证明 owner 精确到了 `Class.method`）。
-    // 注意 link 方向是 `to_target`：边由契约节点**指出**，故查 HttpContract 的**出边**。
+    // HandledBy should leave the HttpContract, pointing to a method node (proves owner resolved precisely to `Class.method`).
+    // Note the link direction is `to_target`: the edge is **emitted** by the contract node, so look at the HttpContract's **out-edges**.
     assert!(
         has_outgoing_edge(&b, "HttpContract", "HandledBy"),
         "HttpContract 应有 HandledBy 出边（连到处理方法），实际契约：{names:?}"
     );
-    // 依赖注入：`user.controller.ts` 里 `constructor(private readonly userService: UserService)`
+    // DI: `constructor(private readonly userService: UserService)` in `user.controller.ts`
     // → `UserController --DependsOn--> UserService`
     assert!(
         class_links_to_named(&b, "UserController", "DependsOn", "UserService"),
         "UserController 应 DependsOn 到 UserService"
     );
-    // TypeORM：`@Entity('user')` → Table 节点 "user"
+    // TypeORM: `@Entity('user')` → Table node "user"
     let tables: Vec<String> = nodes_of_kind(&b, "Table")
         .iter()
         .map(|n| n.name.clone())
@@ -335,8 +335,8 @@ fn nestjs_real_sample_produces_route_contracts() {
         "UserEntity 应经 MapsTo 连到表 user"
     );
 
-    // 实体字段 → 列：各实体都有 `@PrimaryGeneratedColumn() id`，列身份带实体作用域，
-    // 同名列必须各算各的（若按裸字段名合并成一个 id 节点，影响面会把两个表串起来）。
+    // entity field → column: each entity has `@PrimaryGeneratedColumn() id`, the column identity carries entity scope,
+    // same-named columns must each count separately (if merged into one id node by bare field name, the blast radius would link the two tables together).
     let cols: Vec<String> = nodes_of_kind(&b, "Column")
         .iter()
         .map(|n| n.name.clone())
@@ -351,9 +351,6 @@ fn nestjs_real_sample_produces_route_contracts() {
         "UserEntity 应经 HasColumn 指向其字段列"
     );
 
-    // 实体关联：只建**外键持有方**的 `@ManyToOne` / `@ManyToMany`
-    // （`Comment.article → ArticleEntity`、`ArticleEntity.author → UserEntity`、
-    // `UserEntity.favorites → ArticleEntity`），`@OneToMany` 是反向声明、不重复建边。
     assert!(
         class_links_to_named(&b, "Comment", "References", "ArticleEntity"),
         "Comment 应经 References 连到 ArticleEntity"
@@ -367,8 +364,8 @@ fn nestjs_real_sample_produces_route_contracts() {
         "UserEntity 应经 ManyToMany(favorites) 连到 ArticleEntity"
     );
 
-    // 表级外键：`References`（实体 → 实体）经 `Project` 投影成 `ForeignKey`（表 → 表）。
-    // `Comment` 是 `@Entity()` 无实参 → 没有 Table，它的外键不入图（宁可缺不可猜）。
+    // table-level foreign key: `References` (entity → entity) projects via `Project` into `ForeignKey` (table → table).
+    // `Comment` is `@Entity()` with no arg → no Table, its foreign key doesn't enter the graph (better missing than guessed).
     assert!(
         node_links_to_named(&b, "Table", "article", "ForeignKey", "user"),
         "article 表应经 ForeignKey 连到 user 表"
@@ -386,9 +383,9 @@ fn nestjs_real_sample_produces_route_contracts() {
     );
 }
 
-/// 模块级 `MiddlewareConsumer`：`consumer.apply(AuthMiddleware).forRoutes({path, method})`
-/// 必须把 `AuthMiddleware` 落成 `Middleware` 语义节点，并让受它保护的路由经 `PassesThrough`
-/// 指向它（复现此前"对象字面量实参 0 命中"的回归）。
+/// Module-level `MiddlewareConsumer`: `consumer.apply(AuthMiddleware).forRoutes({path, method})`
+/// must turn `AuthMiddleware` into a `Middleware` semantic node, and let the protected routes point to it via `PassesThrough`
+/// (reproducing the earlier "object-literal arg-0 misses" regression).
 #[test]
 fn nestjs_real_sample_consumer_middleware() {
     let Some((nest_root, _)) = node_samples() else {
@@ -406,7 +403,7 @@ fn nestjs_real_sample_consumer_middleware() {
         mws.iter().any(|n| n == "AuthMiddleware"),
         "应产出 Middleware 节点 AuthMiddleware，实际：{mws:?}"
     );
-    // 至少一条契约经 `PassesThrough` 连到 AuthMiddleware（输入边）。
+    // at least one contract connects to AuthMiddleware via `PassesThrough` (in-edge).
     let linked = nodes_of_kind(&b, "Middleware")
         .into_iter()
         .filter(|m| m.name == "AuthMiddleware")
@@ -445,7 +442,7 @@ fn express_real_sample_produces_route_contracts() {
         !names.is_empty(),
         "真实 Express 样本应产出 HttpContract，实际节点为空"
     );
-    // `app.get('/login', ...)` 应落成
+    // `app.get('/login', ...)` should become
     assert!(
         names.iter().any(|n| n.contains("login")),
         "应包含 /login 契约，实际：{names:?}"

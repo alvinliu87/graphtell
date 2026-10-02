@@ -1,20 +1,22 @@
-# Laravel 框架知识
+# Laravel framework knowledge
 #
-# **由 samples/laravel-projects 下的真实项目驱动**（aimeos-laravel / bagisto / beikeshop，
-# 涵盖 Laravel 10 ~ 12），而不是照框架文档罗列 API —— 只写这三个项目里**实际出现**的写法。
+# **Driven by the real projects under samples/laravel-projects** (aimeos-laravel / bagisto / beikeshop,
+# covering Laravel 10 ~ 12), rather than listing APIs from the framework docs — only spellings that
+# **actually occur** in those three projects are written here.
 #
-# 与 ThinkPHP 的形态差异（同一门语言、同一套 DSL，纯数据差异）：
-#   | 概念         | ThinkPHP 6              | Laravel                                  |
-#   |--------------|-------------------------|------------------------------------------|
-#   | 表访问       | `Db::name('x')`         | `DB::table('x')`（注意大小写）           |
-#   | 路由 handler | `'Ctrl/method'` 字符串  | `[Ctrl::class, 'method']` 数组（主形式） |
-#   | 事件注册     | `app/event.php` 配置文件| `EventServiceProvider::boot()` 里运行时  |
-#   |              |                         | `Event::listen('evt', 'Listener@handle')`|
-#   | 门面命名空间 | `think\facade\*`        | `Illuminate\Support\Facades\*`           |
-#   | 队列投递     | `Queue::push`           | `dispatch(new Job)` / `Job::dispatch()`  |
+# Shape differences from ThinkPHP (same language, same DSL, pure data differences):
+#   | concept         | ThinkPHP 6              | Laravel                                   |
+#   |-----------------|-------------------------|-------------------------------------------|
+#   | table access    | `Db::name('x')`         | `DB::table('x')` (note the casing)        |
+#   | route handler   | `'Ctrl/method'` string  | `[Ctrl::class, 'method']` array (main form)|
+#   | event registry  | `app/event.php` config  | runtime, in `EventServiceProvider::boot()`|
+#   |                 |                         | `Event::listen('evt', 'Listener@handle')` |
+#   | facade namespace| `think\facade\*`        | `Illuminate\Support\Facades\*`            |
+#   | queue dispatch  | `Queue::push`           | `dispatch(new Job)` / `Job::dispatch()`   |
 #
-# 注意：`config()` / `Cache::get()` 两个框架写法**相同**，这类规则属于 PHP 生态通用层，
-# 将来应抽到语言级 FKB（详见 `apply_without_detection` 的说明）。
+# Note: `config()` / `Cache::get()` are spelled **identically** in both frameworks; such rules belong to
+# the PHP-ecosystem common layer and should later be factored into a language-level FKB (see the notes on
+# `apply_without_detection`).
 
 id: laravel
 display_name: Laravel
@@ -37,9 +39,11 @@ exclude_globs:
   - "storage/framework/**"
   - "storage/logs/**"
 
-# `References`（模型 → 模型）两端都是**代码节点**，按桥边声明：能沿链遍历做影响面，
-# 但不计入「语义入边 N」、不当画布边（与 FastAPI 的 `DependsOn` 同一处理）。
-# `ForeignKey`（表 → 表）两端都是 `Table`（语义节点），是真正的业务资源依赖 → 语义边。
+# `References` (model -> model) has **code nodes** at both ends and is declared as a bridge edge: it can be
+# walked along the chain for impact analysis, but is not counted in "N semantic in-edges" and is not a canvas
+# edge (same treatment as FastAPI's `DependsOn`).
+# `ForeignKey` (table -> table) has `Table` (semantic nodes) at both ends and is a real business-resource
+# dependency, hence a semantic edge.
 semantic_edge_kinds: [ForeignKey]
 bridge_edge_kinds: [References]
 
@@ -55,7 +59,7 @@ root_rules:
     fallbacks:
       - app
       - src
-  # 表前缀：Laravel 与 ThinkPHP 一样写在 `config/database.php`，结构相同，可直接复用探测。
+  # Table prefix: Laravel, like ThinkPHP, writes it in `config/database.php`; the structure is the same, so the detection can be reused directly.
   - id: laravel-db-prefix
     key: db_prefix
     source:
@@ -64,17 +68,17 @@ root_rules:
       pointer: connections.mysql.prefix
     confidence: 1.0
 
-# ---------------------------------------------------------------- 路由 handler
+# ---------------------------------------------------------------- route handler
 #
-# Laravel 的 handler 有四种形态（三个项目实测）：
-#   ① `[WebMcpController::class, 'product']` —— 数组，**主形式**
-#   ② `'LoginController@login'` —— @ 分隔方法
-#   ③ `Route::resource('addresses', AddressController::class)` —— 直接给类
-#   ④ `Route::get('install', 'index')` —— 仅方法名，controller 由外层 group 决定
+# Laravel handlers come in four shapes (measured on the three projects):
+#   ① `[WebMcpController::class, 'product']` — array, the **main form**
+#   ② `'LoginController@login'` — `@` separates the method
+#   ③ `Route::resource('addresses', AddressController::class)` — the class given directly
+#   ④ `Route::get('install', 'index')` — method name only; the controller comes from the outer group
 #
-# 与 ThinkPHP 的关键差别：Laravel 控制器通常**已是全限定名**（经 `use` 导入或
-# `::class`），不需要 `app\{app}\controller\{C}` 那套拼装；因此模板里直接放
-# `{controller}`，命中不了时由「短名 + 路由文件 import」兜底。
+# The key difference from ThinkPHP: Laravel controllers are usually **already fully qualified** (imported via
+# `use` or `::class`), so the `app\{app}\controller\{C}` assembly is unnecessary; the template therefore puts
+# `{controller}` directly, and when that misses it falls back to "short name + route-file import".
 handler:
   method_separators: ["@", "::", "/"]
   hierarchy_separators: []
@@ -85,21 +89,22 @@ handler:
   app_anchor_dir: "routes"
   app_fallback: ""
 
-# 消费入口方法名：`handle` 是 Laravel 的 Job / Listener 约定，
-# `__invoke` 是单动作控制器（Single Action Controller）。
+# Consumer entry method names: `handle` is Laravel's Job / Listener convention,
+# `__invoke` is the single-action controller.
 entry_methods: ["handle", "__invoke"]
 
-# Eloquent / Query Builder 的 CRUD 动词 → 读 / 写分类（与 `MapsTo` 配合，见 P7 动词分类）。
+# Eloquent / Query Builder CRUD verbs -> read / write classification (pairs with `MapsTo`; see P7 verb classification).
 #
-# 为什么 Laravel 必须有这一份：之前只有 `thinkphp6` 声明了 `db_verbs`，于是
-# 三个 Laravel 工程（aimeos / bagisto / beikeshop）**一条 `WritesDb` 边都没有** ——
-# `n1-query-in-loop` / `n1-write-in-loop` / `read-only-table` / `write-only-table`
-# 全部被判 `rules_unavailable`（bagisto 实测：28 条规则里 11 条不可用）。
+# Why Laravel needs this copy: previously only `thinkphp6` declared `db_verbs`, so the three Laravel projects
+# (aimeos / bagisto / beikeshop) had **not a single `WritesDb` edge** — and `n1-query-in-loop` /
+# `n1-write-in-loop` / `read-only-table` / `write-only-table` were all judged `rules_unavailable`
+# (measured on bagisto: 11 of 28 rules unavailable).
 #
-# 只列**会真正落库**的动词，且刻意不列 `where` / `select` / `orderBy` 这类
-# 只构造查询、不执行的中间方法 —— 否则同一个链式调用会被重复落成多条动作边。
-# 判据与 ThinkPHP 侧一致：接收者类型有 `MapsTo`，或门面链里已经拿到了表名
-# （`DB::table('x')->...->get()`），所以 `Collection::get()` 这类同名方法不会被误判。
+# Only verbs that **really hit the database** are listed, and intermediate methods that merely build a query
+# without executing it (`where` / `select` / `orderBy`) are deliberately excluded — otherwise one chained call
+# would be turned into several duplicate action edges. The criterion matches the ThinkPHP side: the receiver
+# type has a `MapsTo`, or the facade chain has already obtained a table name (`DB::table('x')->...->get()`),
+# so `Cache::get()` and similar can never be misjudged as database reads.
 db_verbs:
   write: ["save", "saveQuietly", "saveMany", "create", "createMany", "firstOrCreate",
           "updateOrCreate", "updateOrInsert", "upsert", "update", "increment", "decrement",
@@ -112,7 +117,7 @@ db_verbs:
          "chunkById"]
 
 loaders:
-  # FacadeMap：Laravel 的门面（真实类名取自 Illuminate 组件）。
+  # FacadeMap: Laravel's facades (real class names taken from the Illuminate components).
   - id: laravel-facade-map
     table: facade_map
     from:
@@ -126,33 +131,34 @@ loaders:
         - { facade: "Illuminate\\Support\\Facades\\Route", target: "Illuminate\\Routing\\Router" }
         - { facade: "Illuminate\\Support\\Facades\\Event", target: "Illuminate\\Events\\Dispatcher" }
         - { facade: "Illuminate\\Support\\Facades\\Storage", target: "Illuminate\\Filesystem\\FilesystemManager" }
-  # 数据库 schema（SQL 安装脚本里的 `CREATE TABLE` 列 + 源码中的表名调用点）。
-  # 与 ThinkPHP 的 `tp6-db-schema` 是同一个内置装载器（读 `.sql`、与框架无关），
-  # 只是**声明**要在每个框架 FKB 里各写一份（装载器按框架装载，不共享声明）。
-  # 没有它，Laravel 工程就没有权威列信息 —— `ColumnsMatch` 谓词与
-  # P6 的「schema 列 → `Column` 图节点」沉淀都会落空。
-  # 中间件别名表（`app/Http/Kernel.php` 的 `$routeMiddleware`）。
-  # **必须声明在 `php_routes` 之前**：路由表里要按别名还原成类名，
-  # 装载顺序颠倒就会整条守卫丢掉（宁可缺不可猜）。
+  # Database schema (the `CREATE TABLE` columns in SQL install scripts + table-name call sites in the source).
+  # Same built-in loader as ThinkPHP's `tp6-db-schema` (reads `.sql`, framework-agnostic), but the
+  # **declaration** has to be written once per framework FKB (loaders load per framework and do not share declarations).
+  # Without it a Laravel project has no authoritative column information — the `ColumnsMatch` predicate and P6's
+  # "schema column -> `Column` graph node" sedimentation both come up empty.
+  # Middleware alias table (`$routeMiddleware` in `app/Http/Kernel.php`).
+  # **Must be declared before `php_routes`**: the route table resolves aliases back into class names, and if the
+  # load order is reversed the whole guard set is lost (better missing than guessed).
   - id: laravel-middleware-aliases
     table: middleware_aliases
     from:
       kind: builtin
       name: middleware_aliases
-      # 全部由框架知识声明，内核不认识其中任何一个字符串：
-      # * `markers` 两个都列 —— Laravel ≤9 叫 `$routeMiddleware`，**10.x 改名
-      #   `$middlewareAliases`**（实测 10.x 骨架就是后者，只认前者会整表落空）；
-      # * 只取该块：同文件里 `$middlewareGroups` 的 `web` / `api` 是**组名**不是中间件名。
+      # All declared by framework knowledge; the kernel knows none of these strings:
+      # * both `markers` are listed — Laravel <=9 calls it `$routeMiddleware`, **10.x renamed it to
+      #   `$middlewareAliases`** (the 10.x skeleton measured is the latter; recognising only the former loses the whole table);
+      # * only that block is taken: in the same file, `web` / `api` under `$middlewareGroups` are **group names**, not middleware names.
       params:
         paths: ["app/Http/Kernel.php", "Http/Kernel.php"]
         markers: ["$middlewareAliases", "$routeMiddleware"]
         end: "];"
         separator: "=>"
         extensions: ["php"]
-  # Laravel 11 的 `bootstrap/app.php`：`->withMiddleware(fn ($m) => $m->alias([...]))`
-  # 注册的**应用级自定义别名**（框架默认别名见下方 `laravel-default-aliases`）。
-  # 与上面 `laravel-middleware-aliases` 同写 `middleware_aliases` 表、装载顺序无关，
-  # 但都必须在 `laravel-routes` 之前（别名要先于路由装载，否则按别名还原类名时表还空）。
+  # Laravel 11's `bootstrap/app.php`: `->withMiddleware(fn ($m) => $m->alias([...]))` registers
+  # **application-level custom aliases** (framework defaults are in `laravel-default-aliases` below).
+  # Writes to the same `middleware_aliases` table as `laravel-middleware-aliases` above, so load order between
+  # them does not matter, but both must come before `laravel-routes` (aliases must load before routes, otherwise
+  # the table is still empty when aliases are resolved back to class names).
   - id: laravel-bootstrap-aliases
     table: middleware_aliases
     from:
@@ -164,10 +170,12 @@ loaders:
         end: "];"
         separator: "=>"
         extensions: ["php"]
-  # 框架默认中间件别名（Laravel 11 由 `Illuminate\Foundation\Configuration\Middleware::defaultAliases()`
-  # 注册，源码在 `vendor/` 不进图）。这是**框架事实**（取自框架 11.x 源码，置信度 1.0），
-  # 让 `auth` / `throttle` / `guest` / `verified` / `can` / `signed` 等路由里常用的别名能静态
-  # 还原成类 —— Laravel 11 不再有 `app/Http/Kernel.php`，否则这些别名整表落空。
+  # Framework default middleware aliases (in Laravel 11 registered by
+  # `Illuminate\Foundation\Configuration\Middleware::defaultAliases()`, whose source lives in `vendor/` and is not
+  # ingested). This is a **framework fact** (taken from the framework's 11.x source, confidence 1.0) and lets
+  # aliases commonly used in routes — `auth` / `throttle` / `guest` / `verified` / `can` / `signed` — be resolved
+  # statically back into classes; Laravel 11 no longer has `app/Http/Kernel.php`, so without this the whole
+  # alias table would come up empty.
   - id: laravel-default-aliases
     table: middleware_aliases
     from:
@@ -185,14 +193,15 @@ loaders:
         - { key: "throttle", class: "Illuminate\\Routing\\Middleware\\ThrottleRequests" }
         - { key: "verified", class: "Illuminate\\Auth\\Middleware\\EnsureEmailIsVerified" }
   # ---------------------------------------------------------------------------
-  # **已知中间件**（框架 / 库自带，源码在 `vendor/` 不进图）
+  # **Known middleware** (shipped with the framework / libraries; source lives in `vendor/` and is not ingested)
   #
-  # FKB 的设计本意就是"预定义框架与库的语义知识"：一个类在图里**没有节点**
-  # （`vendor/` 被排除）不等于它**没有语义**。故这里把 Laravel 自带的中间件显式声明出来，
-  # P14 解析不到节点时会查这张表并按声明落成 `Middleware` 节点 ——
-  # 与"按名字猜"是两回事：这是 FKB 声明的事实，置信度 1.0。
+  # FKB is by design "predefined semantic knowledge about frameworks and libraries": a class having **no node**
+  # on the graph (`vendor/` is excluded) does not mean it has **no semantics**. So Laravel's own middleware is
+  # declared explicitly here; when P14 cannot resolve a node it looks up this table and materialises a
+  # `Middleware` node from the declaration — which is different from "guessing by name": this is a fact declared
+  # by FKB, at confidence 1.0.
   #
-  # 声明方式复用已有的 `inline` 装载器（与 `facade_map` 同款），不需要改解析器。
+  # The declaration reuses the existing `inline` loader (same kind as `facade_map`), so no parser change is needed.
   - id: laravel-known-middleware
     table: middleware_classes
     from:
@@ -218,7 +227,7 @@ loaders:
         - { class: "Illuminate\\Foundation\\Http\\Middleware\\PreventRequestsDuringMaintenance", capability: "Maintenance" }
         - { class: "Illuminate\\Auth\\Middleware\\EnsureEmailIsVerified", capability: "Authentication" }
         - { class: "Illuminate\\Auth\\Middleware\\RequirePassword", capability: "Authentication" }
-  # 路由表（`routes/*.php` 的 `Route::get/post/...`）—— 识别逻辑由下方 `route_guards` 声明。
+  # Route table (`Route::get/post/...` in `routes/*.php`) — the recognition logic is declared by `route_guards` below.
   - id: laravel-routes
     table: route_list
     from:
@@ -233,10 +242,11 @@ loaders:
       params:
         table_receivers: ["Db", "\\Db", "Query", "Model"]
         table_methods: ["name", "table"]
-  # 数据库 migration（`database/migrations/*.php`）—— **Laravel 的列主要来源**。
-  # PHP ORM 的模型不声明字段，列只写在 migration 里；而 `$table->string('email')`
-  # 在闭包内、owner 是闭包，FKB 拿不到它属于哪张表，故只能由装载器直接解析。
-  # 与上面 `php_db_schema` 写同一张 `schema` 表，装载器内部做**并集**，装载顺序无关。
+  # Database migrations (`database/migrations/*.php`) — **the main source of Laravel columns**.
+  # PHP ORM models do not declare fields; columns only exist in migrations. And `$table->string('email')` sits
+  # inside a closure whose owner is the closure, so FKB cannot tell which table it belongs to — only the loader
+  # can parse it directly.
+  # Writes to the same `schema` table as `php_db_schema` above; the loader takes a **union** internally, so load order does not matter.
   - id: laravel-migration-schema
     table: schema
     from:
@@ -246,9 +256,9 @@ loaders:
         paths: ["database/migrations"]
         extensions: ["php"]
 
-# ---------------------------------------------------------------- 中间件能力
-# 「中间件类 → 能力」同样是框架知识：内核不认识任何一个中间件名字。
-# 命中后给契约打 `Capability` 标注（路由视角结论区的「标注」一行）。
+# ---------------------------------------------------------------- middleware capability
+# "Middleware class -> capability" is likewise framework knowledge: the kernel knows no middleware name.
+# On a hit the contract gets a `Capability` annotation (the "annotations" row in the route perspective's conclusions).
 middleware_capabilities:
   - { matches: "Authenticate", capability: "Authentication" }
   - { matches: "Authorize", capability: "Authorization" }
@@ -257,10 +267,10 @@ middleware_capabilities:
   - { matches: "ValidateSignature", capability: "SignedRequest" }
   - { matches: "RequirePassword", capability: "Authentication" }
 
-# ---------------------------------------------------------------- 路由守卫识别
-# 与 ThinkPHP 同构：链式 `Route::get(path)->middleware(X)`。Laravel 的 `Route::middleware('auth')`
-# 写在前面（`->group` 在后）也认——通用提取器优先把 `group` 当根。别名（`auth` / `web`）
-# 经 `middleware_aliases` 表还原成真实类。
+# ---------------------------------------------------------------- route-guard recognition
+# Isomorphic to ThinkPHP: chained `Route::get(path)->middleware(X)`. Laravel's `Route::middleware('auth')`
+# written before (with `->group` after) is also recognised — the generic extractor prefers `group` as the root.
+# Aliases (`auth` / `web`) are resolved back to real classes via the `middleware_aliases` table.
 route_guards:
   route_calls:
     - receiver: "Route"
@@ -284,8 +294,8 @@ route_guards:
   alias_table: middleware_aliases
 
 rules:
-  # ===== P5 Synthesize：Table =====
-  # `DB::table('product_flat')` —— bagisto 实测 200+ 处。
+  # ===== P5 Synthesize: Table =====
+  # `DB::table('product_flat')` — measured 200+ places in bagisto.
   - id: laravel-db-table
     phase: Synthesize
     selector:
@@ -308,8 +318,8 @@ rules:
           link: { kind: ReadsDb, direction: incoming }
           confidence: 0.9
 
-  # Eloquent 约定：`class ProductGroupedProduct extends Model` → `product_grouped_products`。
-  # 与 ThinkPHP 的 Model 约定同一套算法（snake_plural），只是基类不同。
+  # Eloquent convention: `class ProductGroupedProduct extends Model` -> `product_grouped_products`.
+  # Same algorithm as ThinkPHP's Model convention (snake_plural), only the base class differs.
   - id: laravel-model-table
     phase: Synthesize
     selector:
@@ -332,22 +342,25 @@ rules:
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
 
-  # ===== P5 Synthesize：模型关联 =====
+  # ===== P5 Synthesize: model relations =====
   # `public function posts() { return $this->hasMany(Post::class); }`
   #
-  # 与 Node 侧 TypeORM 的策略**刻意不同**：TypeORM 的 `@ManyToOne` / `@OneToMany`
-  # 通常**成对**写，故那边只建外键持有方以免反向冗余；Laravel / ThinkPHP
-  # **常只声明一侧**（最常见就是 `User hasMany Post`，不写反向 `belongsTo`），
-  # 只建一侧会大面积漏边 —— 故这里两侧都建，宁可冗余也不漏。
+  # The strategy is **deliberately different** from TypeORM on the Node side: TypeORM's `@ManyToOne` /
+  # `@OneToMany` are usually written **in pairs**, so there only the foreign-key holder is built to avoid a
+  # reverse duplicate; Laravel / ThinkPHP **often declare only one side** (the most common case being
+  # `User hasMany Post` with no reverse `belongsTo`), so building one side would lose a lot of edges —
+  # hence both sides are built here; better redundant than missing.
   #
-  # 目标模型取 arg0 的 `Post::class`；取不到就静默跳过（`morphTo()` 无实参即如此）。
-  # 关系方法定义在**方法体内**，owner_fqn 是 `App\Models\User::posts`，
-  # 故 `owner_class` 取到的是模型类而非关系方法。
+  # The target model comes from arg0's `Post::class`; if unavailable it is skipped silently (`morphTo()` with no
+  # argument is exactly that case).
+  # Relation methods are defined **inside the method body**, and owner_fqn is `App\Models\User::posts`,
+  # so `owner_class` resolves to the model class rather than the relation method.
   - id: laravel-model-relation
     phase: Synthesize
     selector:
       kind: call
-      # 只认 `$this->` 接收者：关系定义恒在模型实例方法里，裸方法名会误伤同名普通方法。
+      # Only `$this->` receivers are recognised: relations are always defined in model instance methods, and a bare
+      # method name would misfire on ordinary methods of the same name.
       callee: "$this->hasOne|$this->hasMany|$this->belongsTo|$this->belongsToMany|$this->hasOneThrough|$this->hasManyThrough|$this->morphOne|$this->morphMany|$this->morphToMany|$this->morphedByMany|$this->morphTo"
     binding:
       - Link:
@@ -356,9 +369,9 @@ rules:
           to: { arg: 0, resolve: class_const, require_class: true }
           confidence: 0.75
 
-  # ===== P6 AnnotatePost：模型关联 → 表级外键 =====
-  # 把「模型 → 模型」投影成「表 → 表」：两端各沿 `MapsTo` 走一跳落到自己的表。
-  # 一对多（一个模型有几条关系就产出几条外键边）；某端没有 `Table` 就跳过这条。
+  # ===== P6 AnnotatePost: model relation -> table-level foreign key =====
+  # Project "model -> model" down to "table -> table": each end walks one `MapsTo` hop to its own table.
+  # One-to-many (a model with N relations produces N foreign-key edges); if one end has no `Table`, that entry is skipped.
   - id: laravel-table-foreign-key
     phase: AnnotatePost
     selector:
@@ -372,13 +385,13 @@ rules:
           to: [MapsTo]
           confidence: 0.7
 
-  # ===== P5 Synthesize：ConfigKey / Cache =====
-  # 已抽到语言通用层 `fkb/php/common.yaml`（`php-common-config` / `php-common-cache-*`），
-  # 对所有 PHP 框架生效，避免每个框架 FKB 重复一份相同的缓存 / 配置识别逻辑。
+  # ===== P5 Synthesize: ConfigKey / Cache =====
+  # Factored into the language-common layer `fkb/php/common.yaml` (`php-common-config` / `php-common-cache-*`),
+  # effective for every PHP framework, so each framework FKB does not repeat the same cache / config recognition logic.
 
-  # ===== P5 Synthesize：Queue =====
-  # `dispatch(new OrderCreatedJob($x))` / `OrderCreatedJob::dispatch($x)`。
-  # 与 ThinkPHP 的 `Queue::push` 同：优先 arg:0 的真实类，取不到退回「发起调用的类」。
+  # ===== P5 Synthesize: Queue =====
+  # `dispatch(new OrderCreatedJob($x))` / `OrderCreatedJob::dispatch($x)`.
+  # Same as ThinkPHP's `Queue::push`: prefer the real class in arg:0, fall back to "the class that issued the call".
   - id: laravel-queue-dispatch
     phase: Synthesize
     selector:
@@ -404,17 +417,17 @@ rules:
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：事件（**运行时注册**）=====
+  # ===== P5 Synthesize: events (**runtime registration**) =====
   #
-  # Laravel 没有 ThinkPHP 的 `app/event.php` 那样的配置文件 —— 事件在 ServiceProvider
-  # 的 `boot()` 里用 `Event::listen('evt', 'Listener@handle')` 注册。
-  # 因此这里**由调用点合成事件节点**，而不是从配置装载。
+  # Laravel has no config file like ThinkPHP's `app/event.php` — events are registered with
+  # `Event::listen('evt', 'Listener@handle')` in a ServiceProvider's `boot()`.
+  # So the event node is **synthesized from the call site** here, rather than loaded from a config file.
   #
-  # 三种实测形态：
-  #   ① `'Listener@handle'` 字符串 → 交给 P7，用本文件 `handler` 声明的 `@` 拆成类 + 方法
-  #   ② `function ($x) {...}` 闭包 → 无法静态解析，只建事件节点、不建 `HandledBy` 边
-  #   ③ `protected $listen = ['evt' => [[Product::class, 'beforeUpdate']]]` 类属性
-  #      → **当前 DSL 无法表达**（属性数组值不是 `config_entry`），留作后续
+  # Three shapes measured:
+  #   ① `'Listener@handle'` string -> handed to P7, split into class + method by the `@` declared in this file's `handler`
+  #   ② `function ($x) {...}` closure -> cannot be resolved statically; only the event node is built, no `HandledBy` edge
+  #   ③ `protected $listen = ['evt' => [[Product::class, 'beforeUpdate']]]` class property
+  #      -> **the current DSL cannot express this** (a property array value is not a `config_entry`); left for later
   - id: laravel-event-registration
     phase: Synthesize
     selector:
@@ -439,19 +452,19 @@ rules:
             namespace: event_name
             key: { arg: 0, require_literal: true }
 
-  # ===== P5 Synthesize：HTTP 契约 =====
+  # ===== P5 Synthesize: HTTP contract =====
   #
-  # Laravel 的 handler 有三种形态（bagisto / beikeshop 实测）：
-  #   ① `[WebMcpController::class, 'product']` 数组 —— **主形式**，需要"取数组第 0 项的类
-  #      + 第 1 项的方法名"，现有 `ValueSource` 表达不了（只有 `arg` / `field`），
-  #      故此处 `to` 解析会失败并降级为 PendingLink；
-  #   ② `Route::resource('addresses', AddressController::class)` —— arg1 直接是类；
-  #   ③ `Route::get('install', 'index')` —— 单方法名，controller 由外层 group 决定。
+  # Laravel handlers come in three shapes (measured on bagisto / beikeshop):
+  #   ① `[WebMcpController::class, 'product']` array — the **main form**; it needs "the class at array index 0
+  #      + the method name at index 1", which the existing `ValueSource` cannot express (it only has `arg` /
+  #      `field`), so `to` resolution fails here and degrades to a PendingLink;
+  #   ② `Route::resource('addresses', AddressController::class)` — arg1 is the class directly;
+  #   ③ `Route::get('install', 'index')` — method name only; the controller comes from the outer group.
   #
-  # 现在 DSL 已支持数组式 handler：
-  #   `to: { arg: 1, element: 0 }` 取类名、`to_method: { arg: 1, element: 1 }` 取方法名；
-  #   arg1 不是数组时（`Route::resource` 直接给类）`element` 取不到，
-  #   由 `to_fallback` 退回「整个 arg1」按类解析。
+  # The DSL now supports array-form handlers:
+  #   `to: { arg: 1, element: 0 }` takes the class name, `to_method: { arg: 1, element: 1 }` takes the method name;
+  #   when arg1 is not an array (`Route::resource` gives the class directly) `element` gets nothing,
+  #   and `to_fallback` falls back to "the whole arg1" resolved as a class.
   - id: laravel-route-http-contract
     phase: Synthesize
     selector:
@@ -476,10 +489,10 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            # 形态 ①：`[Ctrl::class, 'method']` —— 类名在 arg1[0]，方法名在 arg1[1]
+            # Shape ①: `[Ctrl::class, 'method']` — class name in arg1[0], method name in arg1[1]
             to: { arg: 1, element: 0, resolve: class_const }
             to_method: { arg: 1, element: 1 }
-            # 形态 ③：`Route::resource('x', Ctrl::class)` —— arg1 不是数组，取整个值
+            # Shape ③: `Route::resource('x', Ctrl::class)` — arg1 is not an array, take the whole value
             to_fallback: { arg: 1, resolve: class_const }
           confidence: 0.9
 

@@ -1,19 +1,20 @@
-# Spring Boot 框架知识
+# Spring Boot framework knowledge
 #
-# **由 samples/ 下的真实 Java 项目驱动**（mall / crmeb_java-3.0 / snowy-master 等），
-# 只写这些项目里**实际出现**的注解。实测分布：
+# **Driven by the real Java projects under samples/** (mall / crmeb_java-3.0 / snowy-master, etc.);
+# only annotations that **actually occur** in those projects are written here. Measured distribution:
 #   @RequestMapping 890+ · @GetMapping 219 · @PostMapping 213
 #   @Table 330 · @TableName 143 · @Value 58 · @Mapper 7
 #
-# 与 PHP 侧的对照 —— 同一个概念，不同表达：
-#   | 概念       | ThinkPHP            | Laravel                    | Spring Boot        |
-#   |------------|---------------------|----------------------------|--------------------|
-#   | HTTP 契约  | `Route::get(...)`   | `Route::get(...)`          | `@GetMapping("/x")`|
-#   | 表映射     | `$table` 属性       | Eloquent 约定              | `@TableName("x")`  |
-#   | 配置读取   | `sys_config()`      | `config()`                 | `@Value("${x}")`   |
+# Compared with the PHP side — the same concept, a different expression:
+#   | concept       | ThinkPHP            | Laravel                    | Spring Boot        |
+#   |---------------|---------------------|----------------------------|--------------------|
+#   | HTTP contract | `Route::get(...)`   | `Route::get(...)`          | `@GetMapping("/x")`|
+#   | table mapping | `$table` property   | Eloquent convention        | `@TableName("x")`  |
+#   | config read   | `sys_config()`      | `config()`                 | `@Value("${x}")`   |
 #
-# 注解在内核里被建模为**调用点**（`CallSiteFact`）—— Java 注解 / Python 装饰器 /
-# C# Attribute 是同一概念：声明式的框架调用。因此这里不需要任何新的 DSL 能力。
+# Annotations are modelled in the kernel as **call sites** (`CallSiteFact`) — Java annotations / Python
+# decorators / C# attributes are the same concept: a declarative framework call. So no new DSL capability
+# is needed here.
 
 id: spring-boot
 display_name: Spring Boot
@@ -22,7 +23,7 @@ version_hint: "2.x / 3.x"
 scope: framework
 
 detectors:
-  # pom.xml 里出现 spring-boot（`manifest_has` 对非 JSON 文件做文本包含匹配）
+  # spring-boot appears in pom.xml (`manifest_has` does a textual containment match on non-JSON files)
   - kind: manifest_dependency
     manifest: pom.xml
     dependency: spring-boot
@@ -47,9 +48,9 @@ root_rules:
       - src/main/java
       - src
 
-# ---------------------------------------------------------------- P3 装载
+# ---------------------------------------------------------------- P3 loading
 loaders:
-  # 路由表 + 守卫：识别逻辑由下方 `route_guards` 声明（注解模型）。
+  # Route table + guards: the recognition logic is declared by `route_guards` below (annotation model).
   - id: spring-route-list
     table: route_list
     from:
@@ -57,14 +58,14 @@ loaders:
       name: routes
       params: {}
 
-# ---------------------------------------------------------------- 路由守卫识别
-# Spring 的路由是**注解**（`@GetMapping("/page")`），与之同处一个方法的
-# `@PreAuthorize("@pms.hasPermission('sys:schedule:log')")` 就是守卫。
-# Java 解析器输出的注解 callee **不带 `@`**（与 TS 装饰器不同），故这里写裸名。
+# ---------------------------------------------------------------- route-guard recognition
+# A Spring route is an **annotation** (`@GetMapping("/page")`), and the guard is the
+# `@PreAuthorize("@pms.hasPermission('sys:schedule:log')")` sitting on the same method.
+# The Java parser emits annotation callees **without `@`** (unlike TS decorators), so bare names are used here.
 #
-# `name_from_args: false` —— Spring 的实参是 SpEL 权限表达式，不是中间件类；
-# 真正的守卫是**注解本身**（`PreAuthorize` / `Secured` / `RolesAllowed`）。
-# `include_class_level: true` —— 打在控制器类上的 `@PreAuthorize` 作用于该类所有方法。
+# `name_from_args: false` — Spring's argument is a SpEL permission expression, not a middleware class;
+# the real guard is **the annotation itself** (`PreAuthorize` / `Secured` / `RolesAllowed`).
+# `include_class_level: true` — an `@PreAuthorize` on a controller class applies to every method of that class.
 route_guards:
   route_calls:
     - receiver: "GetMapping"
@@ -97,14 +98,14 @@ route_guards:
     guard_decorators: ["PreAuthorize", "Secured", "RolesAllowed", "PreFilter", "PostAuthorize"]
     name_from_args: false
     include_class_level: true
-    # 注解是裸名（`@PreAuthorize`）；`this.checkAuth()` 这类成员调用不是注解
+    # Annotations are bare names (`@PreAuthorize`); member calls like `this.checkAuth()` are not annotations
     require_no_receiver: true
-  # 权限注解没有对应的类节点（真正的拦截器在框架里），故授权按注解名建成 Middleware 节点。
+  # Permission annotations have no corresponding class node (the real interceptor lives in the framework), so authorization is materialised as a Middleware node keyed by annotation name.
   synthesize_unresolved: true
 
 rules:
-  # ===== P5 Synthesize：HTTP 契约 =====
-  # `@GetMapping("/list")` —— 方法从注解名推导（去 `Mapping` 后缀再大写）。
+  # ===== P5 Synthesize: HTTP contract =====
+  # `@GetMapping("/list")` — the method is derived from the annotation name (strip the `Mapping` suffix, then upper-case).
   - id: spring-mapping-http-contract
     phase: Synthesize
     selector:
@@ -131,15 +132,16 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            # 优先精确连到**处理方法**节点（`to_method` 从注解所在方法的 FQN 取成员名），
-            # 视角才能沿方法调用链继续下钻；查不到方法时回退控制器类。
+            # Prefer linking precisely to the **handler method** node (`to_method` takes the member name from the FQN of
+            # the method carrying the annotation), so the perspective can keep drilling down along the method's call
+            # chain; fall back to the controller class when the method cannot be found.
             to: { owner_class: true, resolve: class_const }
             to_method: { owner_member: true }
           confidence: 0.9
 
-  # `@RequestMapping("/api/x")` —— 未声明 HTTP 方法，记为 ANY。
-  # 常见写法还有 `@RequestMapping(value = "/x", method = RequestMethod.GET)`，
-  # 其字面量参数同样落在 arg:0，方法信息取不到故保守记为 ANY。
+  # `@RequestMapping("/api/x")` — no HTTP method declared, recorded as ANY.
+  # Another common spelling is `@RequestMapping(value = "/x", method = RequestMethod.GET)`, whose literal
+  # argument also lands in arg:0; the method cannot be extracted, so it is conservatively recorded as ANY.
   - id: spring-request-mapping-contract
     phase: Synthesize
     selector:
@@ -162,13 +164,13 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            # 同 spring-mapping-http-contract：优先方法节点，回退控制器类。
+            # Same as spring-mapping-http-contract: prefer the method node, fall back to the controller class.
             to: { owner_class: true, resolve: class_const }
             to_method: { owner_member: true }
           confidence: 0.8
 
-  # ===== P5 Synthesize：Table =====
-  # MyBatis-Plus `@TableName("eb_user")` 与 JPA `@Table(name = "eb_user")`。
+  # ===== P5 Synthesize: Table =====
+  # MyBatis-Plus `@TableName("eb_user")` and JPA `@Table(name = "eb_user")`.
   - id: spring-table-name
     phase: Synthesize
     selector:
@@ -188,11 +190,11 @@ rules:
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：MyBatis mapper XML（原生 MyBatis，无注解可依）=====
-  # newbee-mall / litemall / mall 的表访问全在 `resources/mapper/*.xml` 里。
-  # 流水线（gt-pipeline::mybatis）把每条语句 × 每张表注入为伪调用点：
-  # `mybatis::select|insert|update|delete(表名)`，owner = Mapper 接口方法（namespace.id）。
-  # `<select>` 是读，`<insert|update|delete>` 是写。
+  # ===== P5 Synthesize: MyBatis mapper XML (plain MyBatis, no annotation to go on) =====
+  # In newbee-mall / litemall / mall, all table access lives in `resources/mapper/*.xml`.
+  # The pipeline (gt-pipeline::mybatis) injects each statement x table as a pseudo call site:
+  # `mybatis::select|insert|update|delete(table-name)`, owner = the Mapper interface method (namespace.id).
+  # `<select>` is a read, `<insert|update|delete>` are writes.
   - id: mybatis-select-table
     phase: Synthesize
     selector:
@@ -231,16 +233,18 @@ rules:
           link: { kind: WritesDb, direction: incoming }
           confidence: 0.85
 
-  # **Mapper 接口 → 表**：上面两条只把动作边挂在「Mapper 接口**方法**」上，
-  # 而 P7 的读 / 写动词分类是拿**接收者类型**查 `MapsTo` 的
-  # （`umsAdminMapper.insert(x)` 的接收者类型是 `...mapper.UmsAdminMapper` 接口）。
-  # 接口自己没有 `MapsTo` ⇒ 这类调用落不出 `WritesDb` ⇒ Java 的 N+1 规则因
-  # 「图上没有任何 db-write 标注」被停用。这里补上接口 → 表这一跳。
+  # **Mapper interface -> table**: the two rules above only hang action edges off the Mapper interface's
+  # **method**, while P7's read / write verb classification looks up `MapsTo` by **receiver type**
+  # (the receiver type of `umsAdminMapper.insert(x)` is the `...mapper.UmsAdminMapper` interface).
+  # The interface itself has no `MapsTo`, so such calls produce no `WritesDb`, and Java's N+1 rules get
+  # disabled because "the graph has no db-write annotation at all". This rule supplies the interface -> table hop.
   #
-  # 用 `Project` 而不是 `Link`：`Link` 两端是 `find_by_name`，而 Table 节点的 **fqn 为
-  # NULL**（只有 name），按名字查必然落空。Project 沿边走，不受此限：
-  #   接口 --Declares--> 接口方法 --ReadsDb/WritesDb--> 表
-  #  ⇒ 接口 --MapsTo--> 表。只有真正挂了动作边的 Mapper 接口会产出，服务类接口无副作用。
+  # It uses `Project` rather than `Link`: `Link` resolves both ends with `find_by_name`, while a Table node's
+  # **fqn is NULL** (only a name), so a lookup by name always misses. `Project` walks edges and is not subject
+  # to that limit:
+  #   interface --Declares--> interface method --ReadsDb/WritesDb--> table
+  #   => interface --MapsTo--> table. Only Mapper interfaces that really carry action edges produce anything,
+  #   so service interfaces see no side effect.
   - id: mybatis-mapper-maps-to-table
     phase: AnnotatePost
     selector:
@@ -260,8 +264,8 @@ rules:
           to: [WritesDb]
           confidence: 0.8
 
-  # ===== P5 Synthesize：ConfigKey =====
-  # `@Value("${app.name}")` —— 去掉 `${` 与 `}` 得到配置键。
+  # ===== P5 Synthesize: ConfigKey =====
+  # `@Value("${app.name}")` — strip `${` and `}` to get the config key.
   - id: spring-value-config
     phase: Synthesize
     selector:
@@ -282,10 +286,11 @@ rules:
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：Cache（Spring Cache 抽象）=====
-  # `@Cacheable` 读缓存 / `@CachePut` `@CacheEvict` 写 / 失效缓存。
-  # 注解在内核里被建模为调用点（callee = 注解名），缓存名取自 value/value 实参（arg0）。
-  # 引擎对「全新」边种类无需改码：`ReadsCache` / `WritesCache` 已是内置语义边。
+  # ===== P5 Synthesize: Cache (the Spring Cache abstraction) =====
+  # `@Cacheable` reads the cache; `@CachePut` / `@CacheEvict` write / invalidate it.
+  # Annotations are modelled as call sites in the kernel (callee = annotation name), and the cache name comes
+  # from the value/value argument (arg0).
+  # The engine needs no code change for a "brand new" edge kind: `ReadsCache` / `WritesCache` are already built-in semantic edges.
   - id: spring-cacheable
     phase: Synthesize
     selector:
@@ -340,14 +345,14 @@ rules:
           link: { kind: WritesCache, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：Event（Spring ApplicationEvent）=====
-  # 消费：`@EventListener`（方法级注解，callee = EventListener）—— 事件类型取自
-  #   处理方法的**首个形参类型**（`onOrder(OrderPlacedEvent e)` → `OrderPlacedEvent`）。
-  # 发布：`X.publishEvent(new OrderPlacedEvent())`（callee = publishEvent）—— 事件类型
-  #   取自 `new` 出来的类型。两者身份都用 `entity`（事件类型），故同一事件类型的
-  # 发布方与订阅方**归并到同一个 Event 节点**，形成真正的发布 / 订阅闭环。
-  # `entity` 取不到（如 `publishEvent(var)`，或解析器未识别形参）时退回 `owner_member`
-  # （收发方法名），语义安全不丢边。
+  # ===== P5 Synthesize: Event (Spring ApplicationEvent) =====
+  # Consume: `@EventListener` (a method-level annotation, callee = EventListener) — the event type comes from
+  #   the **first parameter type** of the handler method (`onOrder(OrderPlacedEvent e)` -> `OrderPlacedEvent`).
+  # Publish: `X.publishEvent(new OrderPlacedEvent())` (callee = publishEvent) — the event type comes from the
+  #   `new`-ed type. Both identities use `entity` (the event type), so publishers and subscribers of the same
+  #   event type **merge into one Event node**, forming a real publish / subscribe loop.
+  # When `entity` is unavailable (e.g. `publishEvent(var)`, or the parser did not recognise the parameter) it
+  #   falls back to `owner_member` (the sending / receiving method name) — semantically safe, no edge is lost.
   - id: spring-event-listener
     phase: Synthesize
     selector:
@@ -382,11 +387,12 @@ rules:
           link: { kind: Emits, direction: incoming }
           confidence: 0.8
 
-  # ===== P5 Synthesize：Queue / Topic（Spring AMQP / Kafka，消费 + 生产端）=====
-  # 消费端：`@RabbitListener(queues = "q")` / `@KafkaListener(topics = "t")`：callee = 注解名，
-  # 目标名取自注解实参 arg0（队列名 / topic 名）。
-  # 生产端：`RabbitTemplate.convertAndSend("q", ...)`（见下）与 `KafkaTemplate.send("t", ...)`，
-  # destination 取自方法调用第 1 个实参（arg0，依赖解析器对方法调用实参的位置级捕获）。
+  # ===== P5 Synthesize: Queue / Topic (Spring AMQP / Kafka, consumer + producer side) =====
+  # Consumer side: `@RabbitListener(queues = "q")` / `@KafkaListener(topics = "t")`: callee = the annotation name,
+  # and the target name comes from annotation argument arg0 (queue name / topic name).
+  # Producer side: `RabbitTemplate.convertAndSend("q", ...)` (below) and `KafkaTemplate.send("t", ...)`,
+  # where the destination comes from the first argument (arg0; depends on the parser capturing method-call
+  # arguments positionally).
   - id: spring-rabbit-listener
     phase: Synthesize
     selector:
@@ -423,12 +429,12 @@ rules:
           link: { kind: ListensTo, direction: incoming }
           confidence: 0.85
 
-  # ===== P5 Synthesize：Queue 生产端（消费端见上）=====
-  # `rabbitTemplate.convertAndSend("q", ...)`：callee = convertAndSend（匹配方法名，
-  # receiver 无关），目标名取自第 1 个实参（arg0）。本规则依赖解析器对「方法调用
-  # 实参字面量」的位置级捕获（否则 arg0 恒为 Unknown）。
-  # 注：`convertAndSend` 同样来自 RedisTemplate / JmsTemplate，故节点仍统一落成
-  # Queue；若需区分可后续按 receiver 伞名细化。
+  # ===== P5 Synthesize: Queue producer side (consumer side above) =====
+  # `rabbitTemplate.convertAndSend("q", ...)`: callee = convertAndSend (matches the method name, receiver
+  # agnostic), target name from the first argument (arg0). This rule depends on the parser's positional capture
+  # of "literal arguments of a method call" (otherwise arg0 is always Unknown).
+  # Note: `convertAndSend` also comes from RedisTemplate / JmsTemplate, so the node still materialises as a
+  # Queue; if they need to be distinguished, it can later be refined by receiver umbrella name.
   - id: spring-rabbit-produce
     phase: Synthesize
     selector:
@@ -447,13 +453,15 @@ rules:
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.8
 
-  # 生产端（Kafka）：`kafkaTemplate.send("t", ...)`。
-  # 直接用裸方法名 `send` 会过度匹配（`response.sendError` / `email.send` 等都会误伤），
-  # 故按「接收者变量名约定」收窄：Spring 里 Kafka 生产者几乎都注入为 `kafkaTemplate` /
-  # `kafkaProducer` / `producer` 这类字段，用 `receiver::method` 形式精确命中其 `.send`。
-  # 另外 `KafkaTemplate.sendDefault(...)` 的 `sendDefault` 是 Kafka 专属方法名，用 `*::`
-  # 兜底任意接收者——误伤面极小。topic 名取自 arg0（第 1 个实参，需字面量）。
-  # 若项目用了别的字段名（如 `kt`），把变量名加进下面的备选即可。
+  # Producer side (Kafka): `kafkaTemplate.send("t", ...)`.
+  # Matching the bare method name `send` would over-match (`response.sendError` / `email.send` would all misfire),
+  # so it is narrowed by "receiver variable-name convention": in Spring a Kafka producer is almost always injected
+  # as a field named `kafkaTemplate` / `kafkaProducer` / `producer`, and the `receiver::method` form hits their
+  # `.send` precisely.
+  # In addition, `KafkaTemplate.sendDefault(...)`'s `sendDefault` is a Kafka-specific method name, so `*::` covers
+  # any receiver as a fallback — with a very small misfire surface. The topic name comes from arg0 (the first
+  # argument, which must be a literal).
+  # If a project uses a different field name (e.g. `kt`), just add that variable name to the alternatives below.
   - id: spring-kafka-produce
     phase: Synthesize
     selector:
@@ -472,9 +480,9 @@ rules:
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.8
 
-  # ===== P5 Synthesize：Schedule（@Scheduled）=====
-  # 方法级注解，callee = Scheduled；cron/fixedRate 等取自注解实参 arg0。
-  # 调度器「触发」该方法：`Triggers` 出边（Schedule 节点 ——> 方法节点）。
+  # ===== P5 Synthesize: Schedule (@Scheduled) =====
+  # A method-level annotation, callee = Scheduled; cron / fixedRate etc. come from annotation argument arg0.
+  # The scheduler "triggers" that method: a `Triggers` out-edge (Schedule node -> method node).
   - id: spring-scheduled
     phase: Synthesize
     selector:
@@ -493,13 +501,14 @@ rules:
           link: { kind: Triggers, direction: outgoing }
           confidence: 0.85
 
-  # ===== P5：DAO 的泛型实参 → 实体 → 表 =====
-  # `interface UserRepository extends JpaRepository<User, Long>` 的泛型实参 `User` 就是
-  # 它操作的实体 —— parser 把它记成 `generic.JpaRepository` 合成调用点（`entity` = 实体名）。
-  # 这里先建 `References`（DAO → 实体），再由下一条沿实体的 `MapsTo` 投影成「DAO → 表」。
-  # 为什么要绕这一圈：P7 的读 / 写动词分类要求**接收者类型有 `MapsTo` 边**，而
-  # `@TableName` 只给了实体类这条边；不给 DAO 补上，`userRepository.save()` 就落不出
-  # `WritesDb`（Java 的 N+1、只读 / 只写表等规则全靠这一步）。
+  # ===== P5: a DAO's generic argument -> entity -> table =====
+  # In `interface UserRepository extends JpaRepository<User, Long>`, the generic argument `User` is the entity it
+  # operates on — the parser records it as a `generic.JpaRepository` synthetic call site (`entity` = entity name).
+  # This rule first builds `References` (DAO -> entity), and the next one projects along the entity's `MapsTo`
+  # into "DAO -> table".
+  # Why take this detour: P7's read / write verb classification requires **the receiver type to have a `MapsTo`
+  # edge**, and `@TableName` only gives that edge to the entity class; without supplying it to the DAO,
+  # `userRepository.save()` produces no `WritesDb` (Java's N+1, read-only / write-only table rules all depend on this step).
   - id: spring-dao-references-entity
     phase: Synthesize
     selector:
@@ -508,16 +517,16 @@ rules:
     binding:
       - Link:
           kind: References
-          # `resolve` 必须写在**每个 ValueSource 上**：`Action::Link` 是
-          # `ev.string(src)` 之后直接 `find_by_name`，顶层 `resolve` 不参与（写了无效）。
-          # 两端取到的都是名字：起点是 DAO 的 FQN，终点是实体**短名**（经短名索引还原）。
+          # `resolve` must be written on **every ValueSource**: `Action::Link` runs `ev.string(src)` and then
+          # `find_by_name` directly, so a top-level `resolve` does not participate (writing one has no effect).
+          # Both ends yield names: the start is the DAO's FQN, the end is the entity's **short name** (resolved via the short-name index).
           from: { owner_class: true, resolve: class_const }
           to: { entity: true, resolve: class_const }
           confidence: 0.8
 
-  # 把「DAO → 实体」投影成「DAO → 表」：终点那一端沿 `MapsTo` 走一跳。
-  # 只对 `Interface` 节点生效 —— 否则 PHP / TypeORM 的 `References`（模型 → 模型）
-  # 会被误投影成「模型 → 另一张表」的 `MapsTo`，污染已有图。
+  # Project "DAO -> entity" down to "DAO -> table": the end point walks one `MapsTo` hop.
+  # Applies only to `Interface` nodes — otherwise PHP / TypeORM's `References` (model -> model) would be
+  # mis-projected into a `MapsTo` of "model -> another table", polluting the existing graph.
   - id: spring-dao-maps-to-table
     phase: AnnotatePost
     selector:
@@ -532,19 +541,20 @@ rules:
           confidence: 0.7
 
 resolvers:
-  # `@Autowired` 字段注入：按字段声明类型解析实例调用。
+  # `@Autowired` field injection: resolve instance calls by the field's declared type.
   - id: spring-autowired-call
     call: "*->*"
     strategy: variable_type
 
-# JPA Repository / MyBatis-Plus 的 CRUD 动词 → 读 / 写分类（P7 用）。
+# JPA Repository / MyBatis-Plus CRUD verbs -> read / write classification (used by P7).
 #
-# 判据与 PHP 侧一致：接收者类型须有 `MapsTo`（由上面的 `spring-dao-maps-to-table`
-# 给 DAO 补上）。只列**会真正落库**的动词，不列 `where` / `orderBy` 这类只构造
-# 查询的中间方法 —— 否则同一个链式调用会被重复落成多条动作边。
+# The criterion matches the PHP side: the receiver type must have a `MapsTo` (supplied to the DAO by
+# `spring-dao-maps-to-table` above). Only verbs that **really hit the database** are listed; intermediate
+# methods that merely build a query (`where` / `orderBy`) are excluded — otherwise one chained call would be
+# turned into several duplicate action edges.
 #
-# 边界：JPA 的**派生查询**（`findByEmail` / `countByStatus`）名字不固定，无法枚举，
-# 故不在名单里 —— 这类调用不会落 `ReadsDb`，属于已知缺口。
+# Boundary: JPA's **derived queries** (`findByEmail` / `countByStatus`) have non-fixed names and cannot be
+# enumerated, so they are not in the list — such calls produce no `ReadsDb`, a known gap.
 db_verbs:
   write: ["save", "saveAll", "saveAndFlush", "insert", "updateById", "update",
           "updateBatchById", "deleteById", "delete", "deleteBatchIds", "deleteByIds",

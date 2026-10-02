@@ -1,31 +1,35 @@
-# 契约桥规则：前后端是否真的对上了。
+# Contract bridge rules: do the front end and the back end actually line up?
 #
-# 这三条是**最有价值也最容易验证**的规则：它们同时是产品价值（幽灵调用 / 死端点
-# 是真 bug）和图的验收装置（跑出 0 条，说明很可能是边没建出来）。
+# These are the **most valuable and the easiest to verify** rules: they are both product value
+# (phantom calls / dead endpoints are real bugs) and an acceptance harness for the graph
+# (0 hits very likely means an edge was not built).
 
-# 为什么这两条都不是 `error`：
+# Why these two are not `error`:
 #
-# CRMEB 上这条规则曾报出 128 条 error，逐条核验后**没有一条是真 bug** ——
-# 它们的 `handler` 属性都写着 `v1.marketing.liveGoods/setShow` 这类路由字符串
-# 或闭包，路由在 `route.php` 里真实存在、运行时可用，是 FKB 没把它解析成
-# Method 节点。图上无法区分"路由真的没有 handler"和"FKB 没解析出来"，
-# 而 `error` 是最强的信号：它一旦不可信，用户学会的就是忽略整份报告。
-# 因此在 FKB 补上路由字符串解析之前，这两条一律 `warning`。
+# On CRMEB this rule once reported 128 errors, and after checking them one by one **not a single one
+# was a real bug** — their `handler` property held a route string like `v1.marketing.liveGoods/setShow`
+# or a closure; the route really exists in `route.php` and works at runtime, FKB just did not resolve
+# it into a Method node. On the graph you cannot distinguish "the route really has no handler" from
+# "FKB did not resolve it", and `error` is the strongest signal there is: once it is untrustworthy,
+# what the user learns is to ignore the whole report.
+# So until FKB gains route-string resolution, both of these stay at `warning`.
 rules:
   - id: http-contract-handler-unresolved
-    title: 契约写了 handler 但没解析到方法
+    title: Contract declares a handler but it did not resolve to a method
     description: >-
-      契约节点带有 `handler` 属性（路由注册里写明了`控制器/方法`或闭包），
-      却没有 HandledBy 出边 —— 说明**路由是存在的，只是图没把它解析到方法节点**。
-      这首先是一条"图不完整"的信号：基于它做的下游结论都不能当定论。
+      The contract node carries a `handler` property (the route registration names a
+      `controller/method` or a closure) but has no HandledBy out-edge — meaning **the route exists,
+      the graph simply did not resolve it to a method node**.
+      This is first of all a signal that "the graph is incomplete": no downstream conclusion built on
+      it should be treated as final.
     severity: warning
     category: contract
     params:
       - key: name_filter
-        label: 只看匹配的契约
+        label: Only matching contracts
         description: >-
-          名称子串过滤（大小写不敏感）。留空 = 全部契约；
-          只想盯某批路由时填前缀（如 /adminapi），可大幅缩小范围。
+          Substring filter on the name (case-insensitive). Empty = all contracts;
+          fill in a prefix (e.g. /adminapi) to watch only one batch of routes, which narrows the scope a lot.
         kind: string
         default: ""
     applies_to:
@@ -34,25 +38,26 @@ rules:
     when:
       - no_outgoing: HandledBy
       - not: { property_missing: handler }
-    message: "契约 {name} 注册了 handler 但图没解析到方法（无 HandledBy 出边）—— 路由多半是好的，是图的解析有缺口"
-    remediation: "补 FKB 的路由字符串 / 闭包 handler 解析规则；在此之前不要把它当成'接口坏了'的结论"
+    message: "Contract {name} registers a handler but the graph did not resolve it to a method (no HandledBy out-edge) — the route is probably fine, the graph's resolution has a gap"
+    remediation: "Extend FKB's route-string / closure handler resolution rules; until then do not read this as \"the endpoint is broken\""
 
   - id: http-contract-without-handler
-    title: HTTP 契约没有 handler
+    title: HTTP contract has no handler
     description: >-
-      契约节点连 `handler` 属性都没有，也没有 HandledBy 出边 ——
-      来源不明（自动路由推断、前端拼出来的路径、或对端压根没注册）。
-      可能是真死链，也可能是图没识别出来，因此只作警告。
+      The contract node has no `handler` property at all and no HandledBy out-edge —
+      its origin is unknown (auto-inferred route, a path assembled by the front end, or the other side
+      never registered it at all).
+      It may be a genuinely dead link or something the graph failed to recognise, so it is only a warning.
 
-      只看**后端**契约：前端契约（`side=frontend`）命中它时，会和「幽灵调用」
-      那条规则**对同一批节点重复报一遍**（实测 p7/p8 上 123 / 162 条全部重叠），
-      等于把同一件事说两次、把警告数翻倍。
+      Only **backend** contracts are considered: when a front-end contract (`side=frontend`) matches,
+      this rule and the "phantom call" one **report the same batch of nodes twice** (measured on p7/p8
+      where all 123 / 162 entries overlapped) — saying the same thing twice and doubling the warnings.
     severity: warning
     category: contract
     params:
       - key: name_filter
-        label: 只看匹配的契约
-        description: 名称子串过滤（大小写不敏感），留空 = 全部契约。
+        label: Only matching contracts
+        description: Substring filter on the name (case-insensitive); empty = all contracts.
         kind: string
         default: ""
     applies_to:
@@ -62,22 +67,24 @@ rules:
       - no_outgoing: HandledBy
       - property_missing: handler
       - property_is: { name: side, value: backend }
-    message: "契约 {name} 既没有 handler 属性也没有 HandledBy 出边 —— 可能是真死链，也可能是图没识别出路由"
-    remediation: "确认该路径是否真的有服务端实现；前端侧调用还要同时看「幽灵调用」那条规则"
+    message: "Contract {name} has neither a handler property nor a HandledBy out-edge — possibly a real dead link, possibly an unrecognised route"
+    remediation: "Confirm whether the path really has a server-side implementation; for front-end callers also check the \"phantom call\" rule"
 
   - id: frontend-calls-missing-backend
-    title: 前端调用了后端不存在的接口（幽灵调用）
+    title: Front end calls an endpoint that does not exist on the back end (phantom call)
     description: >-
-      契约节点被前端 FKB 标记为 side=frontend，却没有 HandledBy 出边指向后端 handler。
-      **已知限制**：当前前端 axios/request 的 baseURL 前缀（如 `/adminapi/v1`）
-      尚未参与 identity 归一，因此大量命中其实来自"前缀没拼上"而非真幽灵调用 ——
-      故定为 warning 而非 error，文案里两种可能都写明。
+      A contract node is marked side=frontend by the front-end FKB but has no HandledBy out-edge to a
+      backend handler.
+      **Known limitation**: the baseURL prefix of front-end axios/request calls (e.g. `/adminapi/v1`)
+      does not yet take part in identity normalisation, so many hits actually come from "the prefix was
+      not joined" rather than a real phantom call — hence warning rather than error, and the wording
+      spells out both possibilities.
     severity: warning
     category: contract
     params:
       - key: name_filter
-        label: 只看匹配的契约
-        description: 名称子串过滤（大小写不敏感），留空 = 全部前端契约。
+        label: Only matching contracts
+        description: Substring filter on the name (case-insensitive); empty = all front-end contracts.
         kind: string
         default: ""
     applies_to:
@@ -86,20 +93,20 @@ rules:
     when:
       - property_is: { name: "side", value: "frontend" }
       - no_outgoing: HandledBy
-    message: "前端调用了 {name}，图上没有对应后端路由（可能是真幽灵调用，也可能是前端 baseURL 前缀未参与归一）"
-    remediation: "人工抽样核对；若确为前缀问题，需在前端 FKB 里补 baseURL 解析规则"
+    message: "The front end calls {name}, but the graph has no matching backend route (could be a real phantom call, or the front-end baseURL prefix was not normalised)"
+    remediation: "Sample and check by hand; if it is a prefix problem, add baseURL resolution rules to the front-end FKB"
 
   - id: backend-endpoint-never-called
-    title: 后端端点没有任何调用方（死端点）
+    title: Backend endpoint has no caller (dead endpoint)
     description: >-
-      后端有 handler，但图上没有任何前端 CallsHttp 指向它。注意：被外部系统 /
-      App / 第三方调用的端点也会命中，因此只作提示级别。
+      The backend has a handler, but nothing on the graph CallsHttp into it. Note that endpoints called
+      by external systems / apps / third parties also match, so this is info level only.
     severity: info
     category: contract
     params:
       - key: name_filter
-        label: 只看匹配的端点
-        description: 名称子串过滤（大小写不敏感），留空 = 全部后端端点。
+        label: Only matching endpoints
+        description: Substring filter on the name (case-insensitive); empty = all backend endpoints.
         kind: string
         default: ""
     applies_to:
@@ -109,5 +116,5 @@ rules:
       - has_outgoing: HandledBy
       - no_incoming: CallsHttp
       - not: { property_is: { name: "side", value: "frontend" } }
-    message: "端点 {name} 有 handler 但没有任何前端调用方，可能是死端点"
-    remediation: "确认是否仍有调用方（App / 第三方 / 定时任务）；确无则下线"
+    message: "Endpoint {name} has a handler but no front-end caller at all; it may be a dead endpoint"
+    remediation: "Confirm whether a caller still exists (app / third party / scheduled task); if not, retire it"

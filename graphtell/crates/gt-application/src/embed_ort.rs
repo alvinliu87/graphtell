@@ -1,39 +1,39 @@
-//! 真实神经网络嵌入适配器（**特性门控，默认不编译**）。
+//! Real neural-network embedding adapter (**feature-gated, not compiled by default**).
 //!
-//! 用纯 Rust 推理引擎 `tract` 加载导出的 `bge-m3` ONNX 权重，做真正的跨语言语义向量。
-//! 选 tract 是因其零系统依赖（不需要 onnxruntime 的 openssl），离线构建 / 测试照常 green。
+//! Uses the pure-Rust inference engine `tract` to load the exported `bge-m3` ONNX weights and produce genuinely cross-language semantic vectors.
+//! `tract` is chosen because it has zero system dependencies (no onnxruntime openssl), so offline builds / tests stay green.
 //!
-//! # 为什么 tract 只负责「查询」，批量编码仍走 candle
+//! # Why tract only handles "queries" while batch encoding still goes through candle
 //!
-//! 实测（本机 16 核 AMD，release）：
+//! Measured locally (16-core AMD, release):
 //!
-//! | 路径 | candle | tract |
+//! | path | candle | tract |
 //! |---|---|---|
-//! | 单条前向（查询，seq≈24） | ~770 ms | **~161 ms（快 ~5×）** |
-//! | 批量编码（节点，batch=256） | ~35 ms/条 | 307–632 ms/条（**慢 ~9×**） |
+//! | single forward (query, seq≈24) | ~770 ms | **~161 ms (~5× faster)** |
+//! | batch encoding (nodes, batch=256) | ~35 ms/item | 307–632 ms/item (**~9× slower**) |
 //!
-//! tract 的单条路径远快于 candle，但批量路径反而慢一个量级（candle 的分批 GEMM 更划算）。
-//! 因此 [`HybridBgeEmbedder`] 让**查询走 tract、节点批量编码走 candle**，两侧都取
-//! **0-based position_ids** 以保证落在同一向量空间（故切换无需重编码）。
+//! tract's single-item path is far faster than candle, but its batch path is an order of magnitude slower (candle's batched GEMM pays off more).
+//! So [`HybridBgeEmbedder`] routes **queries through tract, node batch encoding through candle**, and both take
+//! **0-based position_ids** to land in the same vector space (so switching needs no re-encoding).
 //!
-//! # position_ids 的口径（重要）
+//! # position_ids convention (important)
 //!
-//! bge-m3 主干是 XLM-RoBERTa（`padding_idx=1`），HF 参考实现用 **2-based**
-//! （`arange(2, seq+2)`），实测 `cos(2-based, HF) == 1.00000`；而 candle 的
-//! `BertEmbeddings` 写死 **0-based**，实测 `cos(0-based, HF) ≈ 0.96`。
-//! 即现役全部向量相对参考偏移 2 位（查询与节点一致，故检索仍可用）。
-//! 这里**刻意沿用 0-based 以与 candle 存量向量保持一致**；若要修正为 2-based，
-//! 见 [`Self::POSITION_BASE`] —— 但那会让全部存量向量失效，必须整库重编码。
+//! bge-m3's backbone is XLM-RoBERTa (`padding_idx=1`); the HF reference uses **2-based**
+//! (`arange(2, seq+2)`), measured `cos(2-based, HF) == 1.00000`; while candle's
+//! `BertEmbeddings` hard-codes **0-based**, measured `cos(0-based, HF) ≈ 0.96`.
+//! That is, all current vectors are offset 2 from the reference (queries and nodes agree, so retrieval still works).
+//! Here we **deliberately keep 0-based to stay consistent with candle's stored node vectors**; to switch to 2-based,
+//! see [`Self::POSITION_BASE`] — but that would invalidate all stored vectors and require re-encoding the whole DB.
 //!
-//! # 启用
+//! # Enabling
 //!
 //! ```bash
 //! cargo build --release -p gt-app --features model-candle,model-ort
-//! export GT_BGE_ONNX=models/bge-m3-onnx/model.onnx   # 缺省即此路径
+//! export GT_BGE_ONNX=models/bge-m3-onnx/model.onnx   # default is this path
 //! ```
 //!
-//! 权重导出见 `tools/export_bge_onnx.py`（ONNX 需带 `position_ids` 显式输入，
-//! 避免图内生成 `Range` 节点 —— tract 0.21 对其 int64 推断会失败，0.23 已修复）。
+//! Weight export: see `tools/export_bge_onnx.py` (the ONNX needs an explicit `position_ids` input
+//! to avoid generating a `Range` node in the graph — tract 0.21 fails its int64 inference, fixed in 0.23).
 
 #![cfg(feature = "model-ort")]
 
@@ -44,22 +44,22 @@ use tract_onnx::prelude::*;
 
 use crate::embedding::Embedder;
 
-/// bge 检索指令前缀：查询侧加，文档 / 代码侧不加。
+/// bge retrieval instruction prefix: added on the query side, not on the document / code side.
 const QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
 
-/// 序列上限：超长截断（与 candle 侧 `MAX_TOKENS` 一致，保证两侧口径相同）。
+/// Sequence cap: truncate when too long (consistent with candle's `MAX_TOKENS`, keeping both sides aligned).
 const MAX_TOKENS: usize = 256;
 
-/// tract 的 runnable 模型具体类型。批维固定为 1、序列维保持符号，
-/// 故同一份 plan 可接受任意长度（不必补齐到定长，省掉大量无用算力）。
+/// tract's concrete runnable model type. Batch dim fixed at 1, sequence dim kept symbolic,
+/// so the same plan accepts any length (no need to pad to a fixed length, saving lots of wasted compute).
 type BgeModel = tract_onnx::prelude::RunnableModel<
     tract_core::model::TypedFact,
     Box<dyn tract_core::ops::TypedOp>,
 >;
 
-/// 基于 `tract`（纯 Rust ONNX 推理，零系统依赖）的 bge-m3 编码器。
+/// bge-m3 encoder based on `tract` (pure-Rust ONNX inference, zero system dependencies).
 ///
-/// 只用于**单条**编码（查询 / 单文档）。批量编码请用 candle（见模块文档）。
+/// Used only for **single-item** encoding (query / single document). For batch encoding use candle (see module docs).
 pub struct OrtBgeEmbedder {
     model: Arc<BgeModel>,
     tokenizer: Tokenizer,
@@ -67,26 +67,26 @@ pub struct OrtBgeEmbedder {
 }
 
 impl OrtBgeEmbedder {
-    /// position_ids 起始值：**0 = 与 candle 存量节点向量同一空间（自洽检索、免重编码）**。
+    /// position_ids start value: **0 = same space as candle's stored node vectors (self-consistent retrieval, no re-encoding)**.
     ///
-    /// 背景：bge-m3 主干 XLM-RoBERTa（`padding_idx=1`）的 HF 参考实现用 **2-based**
-    /// （`arange(2, seq+2)`，`cos(2-based, HF) == 1.000000`）；而 candle 的 `BertEmbeddings`
-    /// 写死 **0-based**（`0..seq`，`cos(0-based, HF) ≈ 0.96`）。现役全部节点向量是 candle
-    /// 0-based 编码落盘的，因此这里**刻意沿用 0-based**，使「查询(tract)」与「文档(candle
-    /// 批量)」落在同一空间、检索自洽（当前 @5=37/48），且**无需重编码**。
-    /// 实测 `cos(candle 0-based, tract 0-based) == 1.000000`。
+    /// Background: bge-m3's backbone XLM-RoBERTa (`padding_idx=1`) has an HF reference using **2-based**
+    /// (`arange(2, seq+2)`, `cos(2-based, HF) == 1.000000`); while candle's `BertEmbeddings`
+    /// hard-codes **0-based** (`0..seq`, `cos(0-based, HF) ≈ 0.96`). All current node vectors are candle
+    /// 0-based encoded and persisted, so here we **deliberately keep 0-based**, making "query (tract)" and "document (candle
+    /// batch)" land in the same space with self-consistent retrieval (currently @5=37/48), and **no re-encoding**.
+    /// Measured `cos(candle 0-based, tract 0-based) == 1.000000`.
     ///
-    /// 若要升级到 HF 参考的 2-based 空间（对质量有约 +1/@5 的边际提升），需要给 candle 侧
-    /// 做「position_embeddings 权重前移 2 行」并整库重编码 —— 见项目记录，不在本路径内。
+    /// To upgrade to the HF reference 2-based space (~+1/@5 marginal quality gain) requires shifting candle's
+    /// `position_embeddings` weights up by 2 rows and re-encoding the whole DB — see project notes, out of scope here.
     const POSITION_BASE: i64 = 0;
 
-    /// 从本地 ONNX 权重 + tokenizer.json 加载。
+    /// Load from local ONNX weights + tokenizer.json.
     pub fn load(
         model_onnx: &str,
         tokenizer_json: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let m0 = tract_onnx::onnx().model_for_path(model_onnx)?;
-        // 批维定为 1（否则 `Flatten` 会算出符号平方而无法定型），序列维保持符号。
+        // Batch dim set to 1 (otherwise `Flatten` would compute a symbolic square and fail to fix the shape); sequence dim kept symbolic.
         let sym = m0.sym("seq");
         let shape: TVec<TDim> = tvec![TDim::Val(1), TDim::Sym(sym)];
         let mk = || InferenceFact::dt_shape(i64::datum_type(), shape.clone());
@@ -96,16 +96,13 @@ impl OrtBgeEmbedder {
             .with_input_fact(2, mk())?
             .with_input_fact(3, mk())?
             .into_optimized()?;
-        // 输出维度直接取输出 fact（[1, seq, hidden]），**不要**跑 dummy 前向：
-        // 极短序列会让注意力里的 `Where` 算子形状退化（实测 seq=2 时
-        // `expected 1,1,seq,seq got 1,1,1,2` 直接 panic，debug 构建必崩）。
         let dims = typed.output_fact(0)?.shape.dims().to_vec();
         let dim = dims
             .get(2)
             .and_then(|d| d.to_i64().ok())
             .map(|d| d as usize)
             .ok_or("无法从 ONNX 输出 fact 推断 hidden 维度")?;
-        // tract 0.23：`into_runnable()` 直接返回 `Arc<SimplePlan<…>>`。
+        // tract 0.23: `into_runnable()` returns `Arc<SimplePlan<…>>` directly.
         let model: Arc<BgeModel> = typed.into_runnable()?;
         let tokenizer = Tokenizer::from_file(tokenizer_json)?;
         Ok(Self {
@@ -115,7 +112,7 @@ impl OrtBgeEmbedder {
         })
     }
 
-    /// 编码一段文本：`is_query=true` 加 bge 检索前缀，否则按文档侧处理（不加）。
+    /// Encode a piece of text: `is_query=true` adds the bge retrieval prefix, otherwise treat as the document side (no prefix).
     fn encode(&self, text: &str, is_query: bool) -> Vec<f32> {
         let t = if is_query {
             format!("{QUERY_PREFIX}{text}")
@@ -129,13 +126,13 @@ impl OrtBgeEmbedder {
             ids.truncate(MAX_TOKENS);
             attn.truncate(MAX_TOKENS);
         }
-        // 序列维是符号的，无需补齐 —— 直接按真实长度前向。
+        // The sequence dim is symbolic, no padding needed — forward with the real length directly.
         let pos: Vec<i64> = (0..ids.len() as i64).map(|i| i + Self::POSITION_BASE).collect();
         run_session(&self.model, &ids, &attn, &pos)
     }
 }
 
-/// 跑一次前向（长度即 `ids.len()`，动态），返回 [CLS] 的 L2 归一化向量。
+/// Run one forward pass (length = `ids.len()`, dynamic), return the L2-normalized [CLS] vector.
 fn run_session(model: &Arc<BgeModel>, ids: &[i64], attn: &[i64], pos_ids: &[i64]) -> Vec<f32> {
     let n = ids.len();
     let input = Tensor::from_shape(&[1, n], ids).expect("input tensor");
@@ -148,13 +145,13 @@ fn run_session(model: &Arc<BgeModel>, ids: &[i64], attn: &[i64], pos_ids: &[i64]
         .expect("tract run");
     let out: &Tensor = &outputs[0];
     let view = out.to_plain_array_view::<f32>().expect("to_plain_array_view");
-    // view: [1, seq, hidden]；取 [CLS]（序列第 0 个 token）
+    // view: [1, seq, hidden]; take [CLS] (0th token in the sequence)
     let hidden = view.shape()[2];
     let mut vec = vec![0f32; hidden];
     for j in 0..hidden {
         vec[j] = view[[0, 0, j]];
     }
-    // L2 归一化（与 bge 官方用法一致）
+    // L2 normalize (consistent with bge official usage)
     let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
     vec.iter().map(|x| x / norm).collect()
 }
@@ -164,25 +161,26 @@ impl Embedder for OrtBgeEmbedder {
         self.dim
     }
 
-    /// 文档 / 代码侧：**不加**检索前缀。
+    /// Document / code side: **no** retrieval prefix.
     fn embed(&self, text: &str) -> Vec<f32> {
         self.encode(text, false)
     }
 
-    /// 查询侧：加 bge 检索前缀。
+    /// Query side: add the bge retrieval prefix.
     fn embed_query(&self, text: &str) -> Vec<f32> {
         self.encode(text, true)
     }
 
-    // `embed_batch` 不覆写：默认逐条走 `embed`（文档侧、无前缀），语义正确，
-    // 但 tract 批量很慢 —— 生产应由 [`HybridBgeEmbedder`] 把批量交给 candle。
+    // `embed_batch` doesn't override: by default it goes item-by-item through `embed` (document side, no prefix), semantically correct,
+    // but tract batch is very slow — in production [`HybridBgeEmbedder`] should hand batching to candle.
 }
 
-/// 混合编码器：**查询走 tract、节点批量编码走 candle**。
+/// Hybrid encoder: **queries through tract, node batch encoding through candle**.
 ///
-/// 取两家之长：查询单次前向 ~140 ms（candle ~813 ms），批量编码 ~35 ms/条
-/// （tract 307–632 ms/条）。两侧**共用 0-based position_ids**，与 candle 存量节点向量
-/// 同一空间、无需重编码；实测 `cos(candle 0-based, tract 0-based) == 1.000000`，检索自洽。
+/// Takes the best of both: a single query forward is ~140 ms (candle ~813 ms), batch encoding ~35 ms/item
+/// (tract 307–632 ms/item). Both sides **share 0-based position_ids**, landing in the same space as candle's stored node vectors
+/// with no re-encoding; measured `cos(candle 0-based, tract 0-based) == 1.000000`, retrieval self-consistent.
+
 #[cfg(feature = "model-candle")]
 pub struct HybridBgeEmbedder {
     candle: crate::embed_model::CandleBgeEmbedder,
@@ -191,8 +189,8 @@ pub struct HybridBgeEmbedder {
 
 #[cfg(feature = "model-candle")]
 impl HybridBgeEmbedder {
-    /// `safetensors_dir` 供 candle（含 config.json / tokenizer.json），
-    /// `model_onnx` 供 tract。
+    /// `safetensors_dir` for candle (config.json / tokenizer.json),
+    /// `model_onnx` for tract.
     pub fn load(
         safetensors_dir: &str,
         model_onnx: &str,
@@ -212,16 +210,16 @@ impl Embedder for HybridBgeEmbedder {
         self.candle.dim()
     }
 
-    /// 文档侧走 candle（批量快）。
+    /// Document side goes through candle (fast batch).
     fn embed(&self, text: &str) -> Vec<f32> {
         self.candle.embed(text)
     }
 
-    /// 查询侧走 tract（单条快）。
+    /// Query side goes through tract (fast single item).
     ///
-    /// 带降级：tract 在个别构建下可能因图优化差异 panic（实测 debug 构建的注意力
-    /// `Where` 算子会形状退化而崩，release 正常）。这里捕获并降级到 candle ——
-    /// 两者向量空间一致（cos==1.0），结果等价，只是慢一些，但请求不会被打挂。
+    /// With fallback: in some builds tract may panic due to graph-optimization differences (measured: a debug build's attention
+    /// `Where` op degrades shape and crashes, release is fine). Here we catch and fall back to candle —
+    /// their vector spaces agree (cos==1.0), results are equivalent, just slower, but the request won't be killed.
     fn embed_query(&self, text: &str) -> Vec<f32> {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.tract.embed_query(text)
@@ -234,7 +232,7 @@ impl Embedder for HybridBgeEmbedder {
         }
     }
 
-    /// 批量走 candle：tract 的批量路径比 candle 慢约 9 倍。
+    /// Batch goes through candle: tract's batch path is ~9× slower than candle's.
     fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
         self.candle.embed_batch(texts)
     }

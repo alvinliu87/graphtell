@@ -1,21 +1,22 @@
-# Koa（Node.js）框架知识 —— 路由契约
+# Koa (Node.js) framework knowledge — route contracts
 #
-# **解析器零改动**：`router.get('/users', handler)` 在 `JsFrontendParser` 眼里是普通的
-# 成员调用（receiver = `router`、method = `get`、arg0 = `/users`），与 Express 同形。
+# **Zero parser changes**: to `JsFrontendParser`, `router.get('/users', handler)` is an ordinary member call
+# (receiver = `router`, method = `get`, arg0 = `/users`), the same shape as Express.
 #
-# 与 Express 的差异（同一门语言、同一套 DSL，纯数据差异）：
-#   | 概念         | Express                  | Koa                          |
-#   |--------------|--------------------------|------------------------------|
-#   | 路由注册     | `app.get(path, handler)` | `router.get(path, handler)`  |
-#   | 路由对象来源 | `express()` 即 app        | `new Router()`（@koa/router） |
-#   | 通配方法     | `app.all(path, h)`       | `router.all(path, h)`        |
-#   | 挂载         | `app.use('/x', router)`  | `app.use(router.routes())`   |
+# Differences from Express (same language, same DSL, pure data differences):
+#   | concept         | Express                  | Koa                          |
+#   |-----------------|--------------------------|------------------------------|
+#   | route register  | `app.get(path, handler)` | `router.get(path, handler)`  |
+#   | route object    | `express()` is the app   | `new Router()` (@koa/router) |
+#   | wildcard method | `app.all(path, h)`       | `router.all(path, h)`        |
+#   | mounting        | `app.use('/x', router)`  | `app.use(router.routes())`   |
 #
-# 刻意**不含 `app`** 作接收者：Koa 的 `app` 是 Application、只用来 `app.use()`，
-# 路由一定挂在 Router（或它的具名实例）上。列进去只会多收噪声。
+# `app` is **deliberately not** a receiver: Koa's `app` is the Application and is only used for `app.use()`;
+# routes always hang off a Router (or a named instance of one). Listing it would only collect noise.
 #
-# 与 Express 一致：**不强行连 `HandledBy`** —— handler 常是另一个文件里的控制器方法
-# （或内联箭头函数），工程内没有可解析的节点，硬连会造出悬空 / 错误边。
+# Consistent with Express: **`HandledBy` is not forced** — the handler is often a controller method in another
+# file (or an inline arrow function) with no resolvable node inside the project, and forcing a link would create
+# dangling / wrong edges.
 
 id: koa
 display_name: Koa
@@ -39,10 +40,10 @@ exclude_globs:
   - "build/**"
 
 rules:
-  # ===== P5 Synthesize：HTTP 契约（路由）=====
-  # `router.get('/users', handler)` / `admin.post('/x', ...)`。
-  # 路径取第 1 个实参；方法由接收者属性名推导（`get` → GET）。
-  # `router.all(...)` 是 Koa 的通配写法，归一化成 ANY（与 Django 的 `ANY` 同一语义）。
+  # ===== P5 Synthesize: HTTP contract (route) =====
+  # `router.get('/users', handler)` / `admin.post('/x', ...)`.
+  # The path comes from the first argument; the method is derived from the receiver's property name (`get` -> GET).
+  # `router.all(...)` is Koa's wildcard spelling and normalises to ANY (the same semantics as Django's `ANY`).
   - id: koa-route-contract
     phase: Synthesize
     selector:

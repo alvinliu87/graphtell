@@ -1,20 +1,20 @@
-//! P8 Propagate：把合成阶段建立的「方法 → 语义节点」动作边，沿 `Calls` 调用链向上传播。
+//! P8 Propagate: propagate the "method → semantic node" action edges built at synthesis up the `Calls` call chain.
 //!
-//! # 动机
+//! # Motivation
 //!
-//! FKB 规则只在**字面调用点**命中（如 `Queue::push`）。如果一个高层方法经由若干封装层
-//! 最终调到该调用点，只有最里层方法会被连到语义节点，外层调用方全部丢失 —— 这正是
-//! `crmeb\utils\Queue::push → QueueThink::push` 这类「框架封装」被吞掉的根因。
+//! FKB rules only hit at **literal call sites** (e.g. `Queue::push`). If a high-level method ultimately calls that point through several wrapper layers,
+//! only the innermost method gets connected to the semantic node; all outer callers are lost — exactly the root cause of framework wrappers like
+//! `crmeb\utils\Queue::push → QueueThink::push` being swallowed.
 //!
-//! 这违背一条原则：**一个功能最终调用了 FKB 认得的东西，就该被正确解析，无论多深。**
+//! This violates a principle: **a feature that ultimately calls something the FKB recognizes should be resolved correctly, no matter how deep.**
 //!
-//! # 设计（通用，不绑定任何框架）
+//! # Design (generic, bound to no framework)
 //!
-//! * 只依赖已经建好的 `Calls` 边（P7 已解析方法→方法的调用，含别名 / 短名 / 接收者类型）。
-//! * 只搬运「动作发出方方法 → 语义节点」这一事实：当 `M --kind--> S` 存在，且 `C` 调用 `M`，
-//!   则复刻 `C --kind--> S`，并沿调用链递归到不动点（循环安全）。
-//! * 只沿「方法 / 函数」节点向上；类节点（如 `MapsTo` 的源）不参与，避免把语义边误挂到类上。
-//! * 与具体边种类无关：`PublishesTo` / `ReadsDb` / `ReadsCache` / `ReadsConfig` 等一律同等对待。
+//! * Depends only on the already-built `Calls` edges (P7 has resolved method→method calls, including aliases / short names / receiver types).
+//! * Only moves the fact "action-emitter method → semantic node": when `M --kind--> S` exists and `C` calls `M`,
+//!   replicate `C --kind--> S` and recurse along the call chain to a fixed point (cycle-safe).
+//! * Only go up along "method / function" nodes; class nodes (e.g. `MapsTo` sources) don't participate, avoiding mis-hanging semantic edges on classes.
+//! * Independent of concrete edge kinds: `PublishesTo` / `ReadsDb` / `ReadsCache` / `ReadsConfig` etc. are all treated equally.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -23,12 +23,12 @@ use serde_json::json;
 
 use crate::context::{PipelineContext, PropSeed};
 
-/// 执行传播。必须在 P7 之后运行（依赖其建好的 `Calls` 边；种子在 P5 收集，已暂存于 ctx）。
+/// Run propagation. Must run after P7 (depends on its `Calls` edges; seeds are collected at P5, staged in ctx).
 pub fn run(ctx: &mut PipelineContext) {
     let phase = Phase(Phase::PROPAGATE.to_string());
 
-    // 反向调用索引：被调方法 → 它的所有「方法 / 函数」调用方，连同该 `Calls` 边的
-    // 解析置信度（静态调用 1.0、变量类型推断较低）。传播时的衰减完全由这些置信度决定。
+    // Reverse call index: called method → all its "method / function" callers, along with that `Calls` edge's
+    // resolution confidence (static call 1.0, variable-type inference lower). All decay during propagation is decided by these confidences.
     let mut callers: HashMap<i64, Vec<(i64, f32)>> = HashMap::new();
     for e in ctx.ws.edges() {
         if e.kind.as_str() != EdgeKind::CALLS {
@@ -51,28 +51,16 @@ pub fn run(ctx: &mut PipelineContext) {
         return;
     }
 
-    // 按 source 分组：同一 source 的可达调用方集合只需算一次。
+    // Group by source: the reachable-caller set for the same source only needs computing once.
     let mut by_source: HashMap<i64, Vec<PropSeed>> = HashMap::new();
     for s in seeds {
         by_source.entry(s.source.get()).or_default().push(s);
     }
 
-    // **必须按 source 排序后遍历**，保证 `add_edge` 的提交顺序可复现。
-    //
-    // **确定性根因**：同一个 `(kind, from, to)` 往往能被多个 seed 传播到（如 `detail`
-    // 既经由 `getQRCodePath`、又经由 `getQRCodePath → init` 读到同一个配置键）。
-    // 之前「`add_edge` 按 (kind, from, to) 先到者胜出」让胜出者写下唯一 `seed_source`，
-    // 而 HashMap 遍历顺序随进程随机，于是同一条传播边每次建图拿到不同的 `seed_source`
-    // —— 视图据此回溯出的接触点与完整路径随之改变（实测同一路由画出的边数在 29/30 间跳）。
-    //
-    // 现在：按 `(kind, from, to)` 聚合**全部**根因进 `seed_sources` 数组（升序、确定），
-    // 并保留 `seed_source = 最小 seed` 作为兼容字段。视图即可确定性地选到真正接触点，
-    // 不再因遍历顺序而变。（"取 id 最小的 seed"仍是并列时的确定性打破方式，非语义选择；
-    // 要为每个根因各画一条路径是另一件事，与"一条路径一条边"同源。）
     let mut sources: Vec<i64> = by_source.keys().copied().collect();
     sources.sort_unstable();
 
-    // `(kind, from, to)` → 全部根因（直接边起点，升序）；及其置信度 / 间接标记。
+    // `(kind, from, to)` → all root causes (direct edge starts, ascending); plus confidence / indirect flag.
     let mut edge_seeds: HashMap<(EdgeKind, i64, i64), BTreeSet<i64>> = HashMap::new();
     let mut edge_meta: HashMap<(EdgeKind, i64, i64), (f32, bool)> = HashMap::new();
     for src in &sources {
@@ -80,10 +68,10 @@ pub fn run(ctx: &mut PipelineContext) {
         let reach = transitive_callers(*src, &callers, ctx);
         for s in src_seeds {
             for (c, path_conf) in &reach {
-                // 传播置信度 = 种子置信度 × 沿调用链的路径解析置信度连乘。
+                // Propagation confidence = seed confidence × product of path resolution confidences along the call chain.
                 let (confidence, indirect) = propagated(&s.kind, s.confidence, *path_conf);
-                // `from` 是沿调用链上行到达的调用方，`to` 是语义目标；
-                // `src` 才是真正执行该动作的方法节点（根因）。
+                // `from` is the caller reached going up the call chain, `to` is the semantic target;
+                // `src` is the method node that actually performs the action (the root cause).
                 let key = (EdgeKind(s.kind.clone()), *c, s.target.get());
                 edge_seeds.entry(key.clone()).or_default().insert(*src);
                 edge_meta.entry(key.clone()).or_insert((confidence, indirect));
@@ -93,13 +81,6 @@ pub fn run(ctx: &mut PipelineContext) {
     let mut keys: Vec<(EdgeKind, i64, i64)> = edge_seeds.keys().cloned().collect();
     keys.sort_by(|a, b| (a.0.as_str(), a.1, a.2).cmp(&(b.0.as_str(), b.1, b.2)));
 
-    // **「映射到」让位于真正的动作**：同一 `(from, to)` 上既有 `MapsTo` 又有
-    // `ReadsDb` / `WritesDb` 时，丢掉 `MapsTo`。
-    //
-    // 为什么：`MapsTo` 是模型类的**静态身份**（`GoodsModel` 映射到 `goods`），它本身
-    // 不是入口发生的动作。P7 的读 / 写动词分类（FKB `db_verbs`）已经把同一个事实标成
-    // 了更精确的 `WritesDb` / `ReadsDb` —— 两张边并排画，用户看到「映射到 goods」
-    // 自然要问"到底是读还是写"（这正是实测反馈）。丢掉弱信息，保留强信息。
     let action_pairs: HashSet<(i64, i64)> = keys
         .iter()
         .filter(|(k, _, _)| k.as_str() == EdgeKind::READS_DB || k.as_str() == EdgeKind::WRITES_DB)
@@ -138,11 +119,11 @@ pub fn run(ctx: &mut PipelineContext) {
     );
 }
 
-/// 从 `src` 出发，沿 `callers` 索引向上收集所有可达的「方法 / 函数」调用方（不含 src 自身），
-/// 并返回每个调用方沿路径累积的**解析置信度连乘**（`路径上每条 Calls` 边置信度之积）。
+/// From `src`, walk up the `callers` index to collect all reachable "method / function" callers (excluding src itself),
+/// and return each caller's accumulated **resolution-confidence product** along the path (product of every `Calls` edge's confidence on the path).
 ///
-/// 确定性调用链（边置信度 1.0）连乘仍为 1.0 → **不衰减**；推断 / 动态调用（<1.0）自然衰减。
-/// `best` 保证循环安全，且对同一节点只保留最高连乘置信度。
+/// A deterministic call chain (edge confidence 1.0) stays 1.0 on product → **no decay**; inferred / dynamic calls (<1.0) decay naturally.
+/// `best` guarantees cycle safety and keeps only the highest product for the same node.
 fn transitive_callers(
     src: i64,
     callers: &HashMap<i64, Vec<(i64, f32)>>,
@@ -158,14 +139,14 @@ fn transitive_callers(
         };
         for (c, econf) in next {
             let path_conf = cur_conf * *econf;
-            // 已访问且当前路径不更优则跳过；否则更新最优并继续向上。
+            // Skip if already visited and the current path isn't better; otherwise update the best and keep going up.
             if let Some(prev) = best.get(c) {
                 if *prev >= path_conf {
                     continue;
                 }
             }
             best.insert(*c, path_conf);
-            // 仅当调用方是方法 / 函数时才纳入并继续向上；其余节点（类 / 文件）不进入传播链。
+            // Only include and continue up when the caller is a method / function; other nodes (class / file) don't enter the propagation chain.
             let is_site = ctx
                 .ws
                 .node(NodeId(*c))
@@ -180,28 +161,28 @@ fn transitive_callers(
     out
 }
 
-/// 是否为「动作发出方」节点：只有方法 / 函数能作为语义动作的源头被传播。
+/// Whether a node is an "action emitter": only methods / functions can be propagated as the source of a semantic action.
 fn is_action_site(kind: &str) -> bool {
     kind == NODE_KIND_METHOD || kind == NODE_KIND_FUNCTION
 }
 
-/// 传播后标记为「间接」的语义边种类（环境读取）。
+/// Semantic-edge kinds marked "indirect" after propagation (environment reads).
 ///
-/// 与「真实发生的动作」（`ReadsDb` / `WritesDb` / `PublishesTo`：调用方调用了它，
-/// 该动作就确实发生了，传播不算失真）不同，`ReadsCache` / `ReadsConfig` 是**环境读取**，
-/// 传播后含义从「此处读取」弱化为「上游某处读过，本入口可能受影响」。下游据此把
-/// 这类边按「间接」降权，避免共享 helper 把所有途经入口都标成读过该配置 / 缓存。
+/// Unlike "actions that really happen" (`ReadsDb` / `WritesDb` / `PublishesTo`: when the caller calls it,
+/// the action really happened, propagation isn't distortion), `ReadsCache` / `ReadsConfig` are **environment reads**,
+/// whose meaning weakens after propagation from "read here" to "somewhere upstream was read, this entry may be affected". Downstream uses this to
+/// down-weight such edges as "indirect", avoiding a shared helper marking every entry it passes through as having read that config / cache.
 ///
-/// 注意：数值衰减**不再**用固定系数——确定性调用链（边置信度 1.0）连乘后仍不衰减，
-/// 只有推断 / 动态调用（边置信度 <1.0）才自然衰减。这里只负责打 `indirect` 标记。
+/// Note: numeric decay **no longer** uses a fixed coefficient — a deterministic call chain (edge confidence 1.0) stays un-decayed on product,
+/// only inferred / dynamic calls (edge confidence <1.0) decay naturally. Here we only set the `indirect` flag.
 const DECAYED_KINDS: &[&str] = &[EdgeKind::READS_CONFIG, "ReadsCache"];
 
-/// 计算传播边的置信度与「是否间接」标记。
+/// Compute a propagated edge's confidence and "is-indirect" flag.
 ///
-/// * `base`：种子（最里层动作发出方）的置信度。
-/// * `path_conf`：沿调用链上每条 `Calls` 边解析置信度的连乘（由 `transitive_callers` 给出）。
-///   确定性链 ≈ 1.0 → 不衰减；推断 / 动态链 < 1.0 → 自然衰减。
-/// * `indirect`：仅对环境读取类打标，供下游区分直连与间接。
+/// * `base`: the seed's (innermost action emitter's) confidence.
+/// * `path_conf`: the product of each `Calls` edge's resolution confidence along the call chain (given by `transitive_callers`).
+///   Deterministic chain ≈ 1.0 → no decay; inferred / dynamic chain < 1.0 → natural decay.
+/// * `indirect`: only flagged for environment-read kinds, so downstream can tell direct from indirect.
 fn propagated(kind: &str, base: f32, path_conf: f32) -> (f32, bool) {
     let indirect = DECAYED_KINDS.contains(&kind);
     (base * path_conf, indirect)
@@ -296,11 +277,11 @@ mod tests {
         let top = add_method(&mut ctx, "app\\Top::run");
         let queue = add_node(&mut ctx, "Queue", "Queue:default");
 
-        // 调用链：top → mid → leaf
+        // call chain: top → mid → leaf
         calls(&mut ctx, top, mid);
         calls(&mut ctx, mid, leaf);
 
-        // 种子：leaf 作为动作发出方，投递到队列。
+        // seed: leaf as the action emitter, posting to the queue.
         ctx.propagation_seeds.push(PropSeed {
             source: leaf,
             target: queue,
@@ -312,10 +293,10 @@ mod tests {
 
         super::run(&mut ctx);
 
-        // 调用方都应被识别为「投递到队列」的发出方，无论多深。
+        // All callers should be recognized as emitters "posting to the queue", no matter how deep.
         assert!(has_edge(&ctx, mid, queue, EdgeKind::PUBLISHES_TO));
         assert!(has_edge(&ctx, top, queue, EdgeKind::PUBLISHES_TO));
-        // 种子源自身在本测试里没有基边（基边由合成阶段另外建立），传播只针对调用方。
+        // The seed source itself has no base edge in this test (base edges are built separately at synthesis); propagation only targets callers.
     }
 
     #[test]
@@ -326,7 +307,7 @@ mod tests {
         let c = add_method(&mut ctx, "app\\C::run");
         let q = add_node(&mut ctx, "Queue", "Queue:default");
 
-        // 环：a ↔ b，且 c → a（c 经两条路径可达 a 的调用方 b）。
+        // cycle: a ↔ b, and c → a (c reaches a's caller b via two paths).
         calls(&mut ctx, b, a);
         calls(&mut ctx, a, b);
         calls(&mut ctx, c, a);
@@ -340,7 +321,7 @@ mod tests {
             phase: Phase("Synthesize".into()),
         });
 
-        // 不应死循环；且 b 只出现一次。
+        // No infinite loop; and b appears only once.
         super::run(&mut ctx);
         let b_count = ctx
             .ws
@@ -366,7 +347,7 @@ mod tests {
 
     #[test]
     fn static_chain_propagates_without_decay() {
-        // 确定性调用链（Calls 边置信度 1.0）：种子 0.85 应原样传到顶层，不衰减。
+        // Deterministic call chain (Calls edge confidence 1.0): seed 0.85 should pass to the top unchanged, no decay.
         let mut ctx = test_ctx();
         let leaf = add_method(&mut ctx, "app\\Leaf::run");
         let mid = add_method(&mut ctx, "app\\Mid::run");
@@ -397,14 +378,14 @@ mod tests {
             "确定性链不应衰减，期望 0.85，实际 {}",
             edge.confidence
         );
-        // 环境读取仍标记 indirect，供下游区分直连 / 间接。
+        // Environment reads are still flagged indirect, so downstream distinguishes direct from indirect.
         assert_eq!(edge.properties.get("indirect"), Some(&serde_json::json!(true)));
     }
 
     #[test]
     fn uncertain_chain_propagates_with_decay() {
-        // 推断 / 动态调用链（每段 Calls 边置信度 0.5）：两段连乘 0.25，种子 0.85 → 0.2125。
-        // 说明衰减随跳数累积（每段不确定调用各衰减一次）。
+        // Inferred / dynamic call chain (each Calls edge confidence 0.5): two segments product 0.25, seed 0.85 → 0.2125.
+        // shows decay accumulates with hop count (each uncertain call decays once).
         let mut ctx = test_ctx();
         let leaf = add_method(&mut ctx, "app\\Leaf::run");
         let mid = add_method(&mut ctx, "app\\Mid::run");

@@ -1,25 +1,28 @@
-# 性能 / 缓存使用规则。
+# Performance / cache-usage rules.
 #
-# 只依赖跨语言归一化的语义边 ReadsCache / WritesCache（PHP 与 JS 都产出），
-# 放在 global 层。判据是纯拓扑的「有读无写」，不依赖任何语言特有问题。
+# These only depend on the cross-language normalised semantic edges ReadsCache / WritesCache (produced
+# by both PHP and JS), so they live in the global layer. The criterion is the pure-topology
+# "read but never written" and does not rely on anything language-specific.
 
 rules:
-  # 为什么用 has_incoming ReadsCache + no_outgoing WritesCache 而不是另写
-  # 「写入处数」谓词：Cache 的入边 ReadsCache 表示「被读」、出边 WritesCache
-  # 表示「被写」。有读无写即「被读取但图上没有任何写入方」—— 引擎当前没有
-  # 「按某类边计数」的谓词，而这两条布尔谓词已能精确表达「孤儿读」。
+  # Why `has_incoming ReadsCache` + `no_outgoing WritesCache` instead of a separate "write count"
+  # predicate: a Cache's ReadsCache in-edge means "is read", its WritesCache out-edge means "is
+  # written". Read with no write means "it is read but nothing on the graph ever writes it" — the
+  # engine currently has no "count edges of a kind" predicate, and these two boolean predicates already
+  # express "orphan read" precisely.
   - id: cache-never-written
-    title: 缓存被读取但图上没有任何写入
+    title: Cache is read but nothing on the graph writes it
     description: >-
-      Cache 节点有 ReadsCache 入边（有代码在读它）但没有 WritesCache 出边
-      （图上没有任何代码在写它）。两种可能：读到的永远是空 / 旧的（真·死缓存读），
-      或写入路径用了图未识别的机制（如框架自动缓存、另一个进程填充）。
+      A Cache node has ReadsCache in-edges (some code reads it) but no WritesCache out-edges (nothing
+      on the graph writes it). Two possibilities: reads always get empty / stale data (a real dead cache
+      read), or the write path uses a mechanism the graph does not recognise (framework auto-caching,
+      or another process filling it).
     severity: info
     category: performance
     params:
       - key: name_filter
-        label: 只看匹配的缓存
-        description: 名称子串过滤（大小写不敏感），留空 = 全部缓存。
+        label: Only matching caches
+        description: Substring filter on the name (case-insensitive); empty = all caches.
         kind: string
         default: ""
     applies_to:
@@ -28,5 +31,5 @@ rules:
     when:
       - has_incoming: ReadsCache
       - no_outgoing: WritesCache
-    message: "缓存 {name} 被读取但图上没有任何写入 —— 读到的可能是空 / 旧的，或写路径未被图识别"
-    remediation: "确认缓存是否真的有写入方；若由框架 / 其他进程填充，需在 FKB 里补对应的写入边"
+    message: "Cache {name} is read but nothing on the graph writes it — reads may always be empty / stale, or the write path is unrecognised"
+    remediation: "Confirm the cache really has a writer; if a framework or another process fills it, add the corresponding write edge in FKB"

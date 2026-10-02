@@ -1,12 +1,13 @@
-//! 用**真实开源样本**验证 Laravel / ThinkPHP 的建图效果。
+//! Verify the graph-building result for Laravel / ThinkPHP against **real open-source samples**.
 //!
-//! 样本从哪来：本目录 `samples/php-projects/laravel-starter`（官方 `laravel/laravel`
-//! 骨架，`git` 忽略、不入库，由开发者下载）。样本缺失时测试**跳过**而非失败，以便 CI
-//! 无样本也能跑。
+//! Where the samples come from: this directory's `samples/php-projects/laravel-starter` (the official
+//! `laravel/laravel` skeleton; `git`-ignored, not committed, downloaded by the developer). When a sample is
+//! missing the test **skips** rather than fails, so CI can run without samples.
 //!
-//! 重点验证：Laravel 11 中间件别名能静态还原成类并挂到契约上——
-//! * 框架默认别名（`throttle` ……来自 `vendor/`，由 FKB `laravel-default-aliases` 声明）；
-//! * 应用级自定义别名（`logreq` ……来自 `bootstrap/app.php` 的 `$middleware->alias([...])`）。
+//! The focus: Laravel 11 middleware aliases can be resolved statically back into classes and attached to contracts
+//! —
+//! * framework default aliases (`throttle` … from `vendor/`, declared by the FKB `laravel-default-aliases`);
+//! * application-level custom aliases (`logreq` … from `$middleware->alias([...])` in `bootstrap/app.php`).
 
 mod common;
 
@@ -15,8 +16,8 @@ use std::path::PathBuf;
 use gt_domain::model::{NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery};
 
-/// 定位真实 Laravel 样本根目录：先试环境变量 `GRAPHTELL_PHP_SAMPLE_DIR`，
-/// 再回退到仓库内相对路径 `samples/php-projects/laravel-starter`。
+/// Locate the real Laravel sample root: try the environment variable `GRAPHTELL_PHP_SAMPLE_DIR` first,
+/// then fall back to the in-repo relative path `samples/php-projects/laravel-starter`.
 fn php_sample() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GRAPHTELL_PHP_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
@@ -49,7 +50,7 @@ fn nodes_of_kind<'a>(b: &'a common::Built, kind: &str) -> Vec<gt_domain::model::
         .collect()
 }
 
-/// 某语义节点的某类**入边**是否存在（如 HttpContract ← Middleware 的 PassesThrough）。
+/// Whether a semantic node has an in-edge of a given kind (e.g. HttpContract <- Middleware via PassesThrough).
 fn has_incoming_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
     nodes_of_kind(b, kind).iter().any(|n| {
         b.store
@@ -60,39 +61,40 @@ fn has_incoming_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
     })
 }
 
-/// Laravel 11 中间件别名：`throttle`（框架默认）与 `logreq`（应用自定义）都应被还原成类，
-/// 并让使用它们的路由经 `PassesThrough` 连到对应 `Middleware` 节点。
+/// Laravel 11 middleware aliases: both `throttle` (framework default) and `logreq` (application-defined) should be
+/// resolved back into classes, and the routes using them should connect to the corresponding `Middleware` node via
+/// `PassesThrough`.
 #[test]
 fn laravel_real_sample_middleware_alias() {
     let Some(root) = php_sample() else {
-        eprintln!("跳过：未找到 Laravel 样本（samples/php-projects/laravel-starter）");
+        eprintln!("skip: Laravel sample not found (samples/php-projects/laravel-starter)");
         return;
     };
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("Laravel 样本建图应成功");
+        panic!("the graph build of the Laravel sample should succeed");
     };
 
     let mws: Vec<String> = nodes_of_kind(&b, "Middleware")
         .iter()
         .map(|n| n.name.clone())
         .collect();
-    eprintln!("Laravel 样本 Middleware 节点：{:?}", mws);
+    eprintln!("Laravel sample Middleware nodes: {:?}", mws);
 
-    // 框架默认别名：`throttle` → Illuminate\Routing\Middleware\ThrottleRequests
+    // A framework default alias: `throttle` -> Illuminate\Routing\Middleware\ThrottleRequests
     assert!(
         mws.iter().any(|n| n.contains("ThrottleRequests")),
-        "框架默认别名 `throttle` 应还原成 ThrottleRequests，实际：{mws:?}"
+        "the framework default alias `throttle` should resolve to ThrottleRequests, got: {mws:?}"
     );
-    // 应用级自定义别名：`logreq` → App\Http\Middleware\LogRequest
+    // An application-level custom alias: `logreq` -> App\Http\Middleware\LogRequest
     assert!(
         mws.iter().any(|n| n.contains("LogRequest")),
-        "应用级别名 `logreq`（bootstrap/app.php）应还原成 LogRequest，实际：{mws:?}"
+        "the application-level alias `logreq` (bootstrap/app.php) should resolve to LogRequest, got: {mws:?}"
     );
 
-    // 端到端：用别名的路由应经 PassesThrough 连到 Middleware 节点。
+    // End to end: a route using an alias should connect to a Middleware node via PassesThrough.
     assert!(
         has_incoming_edge(&b, "Middleware", "PassesThrough"),
-        "至少一条契约应经 PassesThrough 连到 Middleware（别名已还原并挂载）"
+        "at least one contract should connect to a Middleware via PassesThrough (alias resolved and attached)"
     );
 
     let count = nodes_of_kind(&b, "Middleware")
@@ -100,5 +102,5 @@ fn laravel_real_sample_middleware_alias() {
         .flat_map(|n| b.store.edges_of(n.id, EdgeDirection::Incoming).expect("edges"))
         .filter(|e| e.kind.as_str() == "PassesThrough")
         .count();
-    eprintln!("Laravel 样本守卫（PassesThrough）边数 = {count}");
+    eprintln!("Laravel sample guard (PassesThrough) edge count = {count}");
 }

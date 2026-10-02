@@ -1,6 +1,6 @@
-//! SQLite 表结构。
+//! SQLite table structure.
 
-/// 全部建表语句（幂等）。
+/// All create-table statements (idempotent).
 pub const MIGRATIONS: &[&str] = &[
     r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -71,12 +71,13 @@ CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY,
     project_id  INTEGER NOT NULL,
     kind        TEXT NOT NULL,
-    -- 外键：指向 `nodes(id)`。
+    -- Foreign key: points at `nodes(id)`.
     --
-    -- 没有它时"节点没了、边还在"这种脏数据完全无法被发现 —— 曾经并发建图
-    -- 让 10 个工程的节点互相覆盖，UI 上却是"边 3.6 万 / 节点 0"，
-    -- 看起来像一次成功的建图（边的唯一键含 `project_id`、且无外键，插入一路畅通）。
-    -- 老库由 `SqliteStore::ensure_node_fks` 重建本表补上约束。
+    -- Without it, dirty data of the form "the node is gone but the edge remains" is completely undetectable —
+    -- a concurrent build once made 10 projects overwrite each other's nodes while the UI showed "36k edges /
+    -- 0 nodes", which looks like a successful build (the edge unique key includes `project_id` and there is no
+    -- foreign key, so inserts sail through).
+    -- Old databases get the constraint back via `SqliteStore::ensure_node_fks`, which rebuilds this table.
     from_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     to_id       INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     phase       TEXT NOT NULL DEFAULT '',
@@ -87,27 +88,29 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_project ON edges(project_id);
--- 复合索引：**批量取边的性能关键**，不要删。
+-- Composite index: **the key to batch edge-fetch performance** — do not delete.
 --
--- `edges_incoming` / `edges_outgoing` 的查询形如
---   WHERE to_id IN (<400 个 id>) AND project_id IN (?)
--- 只有单列索引时，SQLite 的规划器会选 `idx_edges_project` ——
--- 也就是**扫描该工程的全部边**再逐行过滤 `to_id IN (...)`，
--- 代价 = chunk 数 × 工程边数 = O(N²)：实测 16k 节点取入边 156ms，
--- 且随规模按约 N^1.5 增长（而 `query_nodes` 是线性）。
+-- `edges_incoming` / `edges_outgoing` queries look like
+--   WHERE to_id IN (<400 ids>) AND project_id IN (?)
+-- With single-column indexes only, SQLite's planner picks `idx_edges_project` —
+-- i.e. **scan every edge of the project** and then filter row by row on `to_id IN (...)`,
+-- cost = chunk count x project edge count = O(N^2): measured at 156ms to fetch in-edges for 16k nodes,
+-- growing about N^1.5 with size (while `query_nodes` is linear).
 --
--- 有了 (project_id, to_id) 后，规划器改为
+-- With (project_id, to_id) the planner switches to
 --   SEARCH edges USING INDEX idx_edges_proj_to (project_id=? AND to_id=?)
--- 两个条件都走索引 —— 同上实测 9.8ms，且规模 ×4 耗时 ×3.4（线性）。
+-- both conditions use an index — measured at 9.8ms, and 4x the size costs 3.4x the time (linear).
 CREATE INDEX IF NOT EXISTS idx_edges_proj_to ON edges(project_id, to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_proj_from ON edges(project_id, from_id);
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS node_annotations (
-    -- 冗余一份 `project_id`：注解天然属于某个工程，但表里原本只有 `node_id`，
-    -- 按工程清理/统计只能靠 `node_id IN (SELECT id FROM nodes WHERE project_id=?)`。
-    -- 一旦节点先被删掉（重跑建图就是先清节点），这个子查询就为空，
-    -- 注解再也删不掉 —— 历史库里因此堆了近万条永远清不掉的悬空注解。
+    -- A redundant copy of `project_id`: an annotation naturally belongs to a project, but the table used to have
+    -- only `node_id`, so cleanup / counting by project had to go through
+    -- `node_id IN (SELECT id FROM nodes WHERE project_id=?)`.
+    -- Once the nodes are deleted first (re-running a build clears nodes first), that subquery is empty and
+    -- the annotations can never be deleted again — historical databases accumulated nearly ten thousand
+    -- permanently undeletable dangling annotations because of this.
     project_id   INTEGER NOT NULL DEFAULT 0,
     id          INTEGER PRIMARY KEY,
     node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -120,9 +123,10 @@ CREATE TABLE IF NOT EXISTS node_annotations (
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_node ON node_annotations(node_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_kind ON node_annotations(kind);
--- `idx_annotations_project` 不在这里建：老库的 `node_annotations` 没有 `project_id` 列，
--- 而 `CREATE TABLE IF NOT EXISTS` 会安静跳过、索引语句却会直接报错（no such column），
--- 导致整个库打不开。该索引由 `SqliteStore::ensure_annotation_project` 补列后再建。
+-- `idx_annotations_project` is not created here: old databases' `node_annotations` has no `project_id` column,
+-- and while `CREATE TABLE IF NOT EXISTS` would quietly skip, the index statement errors out outright
+-- (no such column), making the whole database unopenable. That index is created by
+-- `SqliteStore::ensure_annotation_project` after the column is added.
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS aliases (

@@ -1,4 +1,4 @@
-//! FKB 装载：从 YAML 目录读取框架知识。
+//! FKB loading: read framework knowledge from a YAML directory.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -10,26 +10,27 @@ use gt_domain::model::{FrameworkKnowledge, Language};
 use gt_domain::port::KnowledgeProvider;
 use tracing::{info, warn};
 
-/// 基于文件目录的 FKB 供给实现。
+/// A file-directory-based FKB provider.
 ///
-/// 目录结构：`fkb/<任意子目录>/*.yaml`，每份 YAML 描述一个框架。
+/// Directory layout: `fkb/<any subdirectory>/*.yaml`, each YAML describing one framework.
 pub struct YamlKnowledgeBase {
     entries: Vec<FrameworkKnowledge>,
     sources: Vec<PathBuf>,
 }
 
 impl YamlKnowledgeBase {
-    /// 递归装载目录下的所有 `*.yaml` / `*.yml`。
+    /// Recursively load every `*.yaml` / `*.yml` under the directory.
     pub fn load_dir(root: &Path) -> Result<Self> {
         if !root.exists() {
-            warn!("FKB 目录不存在: {}", root.display());
+            warn!("FKB directory does not exist: {}", root.display());
             return Ok(Self { entries: Vec::new(), sources: Vec::new() });
         }
-        // 跨语言核心能力模板（带洞的 `Rule` 模板 + 数据字段，识别机制不属于 FKB），
-        // 与 `DEFAULT_ANNOTATIONS_YAML`（注解识别器）同构：内核提供参数化 `Rule` 模板，
-        // 各语言 FKB 只声明 `capability_interfaces` 的 `types` / `read` / `write`。
+        // The cross-language core capability template (a `Rule` template with holes + data fields; the
+        // recognition mechanism is not part of FKB), isomorphic to `DEFAULT_ANNOTATIONS_YAML` (the annotation
+        // recognizer): the kernel supplies a parameterised `Rule` template, and each language's FKB only declares
+        // `capability_interfaces`' `types` / `read` / `write`.
         let cap_templates = load_capability_rule_templates();
-        // 跨语言核心注解识别器（P6 标注标准，不属于 FKB），见 `DEFAULT_ANNOTATIONS_YAML`。
+        // Cross-language core annotation recognizers (the P6 annotation standard, not part of FKB); see `DEFAULT_ANNOTATIONS_YAML`.
         let ann_templates = load_annotation_templates();
         let mut entries = Vec::new();
         let mut sources = Vec::new();
@@ -52,17 +53,17 @@ impl YamlKnowledgeBase {
                 }
                 match Self::load_file(&path) {
                     Ok(mut fk) => {
-                        info!("装载 FKB: {} ({})", fk.id, path.display());
-                        // FKB 声明的**语义节点种类**在此登记：新增一种语义节点
-                        // （前端 `Store`、页面 `Page`…）无需再改内核清单。
+                        info!("loading FKB: {} ({})", fk.id, path.display());
+                        // **Semantic node kinds** declared by FKB are registered here: adding a semantic node
+                        // (a front-end `Store`, a page `Page`…) needs no change to the kernel list.
                         if !fk.semantic_kinds.is_empty() {
                             gt_domain::model::kinds::register_semantic_kinds(
                                 fk.semantic_kinds.iter().cloned(),
                             );
                         }
-                        // FKB 声明的**语义 / 桥边种类**在此登记：新增一种边种类
-                        // （如某框架的 `SendsWebhook`）无需再改 `kinds.rs` 的
-                        // `SEMANTIC` / `BRIDGE` 清单 —— 与节点的登记同构。
+                        // **Semantic / bridge edge kinds** declared by FKB are registered here: adding an edge kind
+                        // (such as some framework's `SendsWebhook`) needs no change to the `SEMANTIC` / `BRIDGE`
+                        // lists in `kinds.rs` — isomorphic to the node registration.
                         if !fk.semantic_edge_kinds.is_empty()
                             || !fk.bridge_edge_kinds.is_empty()
                         {
@@ -71,23 +72,24 @@ impl YamlKnowledgeBase {
                                 fk.bridge_edge_kinds.iter().cloned(),
                             );
                         }
-                        // FKB 声明的**业务特有标注种类**在此登记：新增一种业务标注语义
-                        // 无需改内核（与 `semantic_kinds` / `semantic_edge_kinds` 同构）。
-                        // 内核标准种类（pii / data.criticality / auth.public …）由 `annotation_templates`
-                        // 识别器产出，不在此列。
+                        // **Business-specific annotation kinds** declared by FKB are registered here: adding a
+                        // business annotation semantics needs no kernel change (isomorphic to `semantic_kinds` /
+                        // `semantic_edge_kinds`).
+                        // Kernel-standard kinds (pii / data.criticality / auth.public …) are produced by the
+                        // `annotation_templates` recognizer and are not in this list.
                         if !fk.annotation_kinds.is_empty() {
                             gt_domain::model::kinds::register_annotation_kinds(
                                 fk.annotation_kinds.iter().cloned(),
                             );
                         }
-                        // 把 `capability_interfaces` 声明摊平成合成规则（引擎原样消费，零改动）。
+                        // Flatten the `capability_interfaces` declarations into synthetic rules (consumed as-is by the engine, zero changes).
                         expand_capability_interfaces(&mut fk, &cap_templates);
-                        // 把 `annotation_interfaces` 声明摊平成 P6 标注规则（内核标准识别器 + 本栈参数）。
+                        // Flatten the `annotation_interfaces` declarations into P6 annotation rules (kernel-standard recognizer + this stack's parameters).
                         expand_annotation_interfaces(&mut fk, &ann_templates);
                         entries.push(fk);
                         sources.push(path);
                     }
-                    Err(e) => warn!("跳过损坏的 FKB {}: {e}", path.display()),
+                    Err(e) => warn!("skipping a corrupt FKB {}: {e}", path.display()),
                 }
             }
         }
@@ -100,21 +102,21 @@ impl YamlKnowledgeBase {
             .map_err(|e| DomainError::InvalidKnowledge(format!("{}: {e}", path.display())))?;
         if fk.id.is_empty() {
             return Err(DomainError::InvalidKnowledge(format!(
-                "{}: 缺少 id 字段",
+                "{}: missing the id field",
                 path.display()
             )));
         }
         Ok(fk)
     }
 
-    /// 从 YAML 文本反序列化（供测试与单文件装载使用）。
+    /// Deserialize from YAML text (for tests and single-file loading).
     pub fn from_str(text: &str) -> Result<FrameworkKnowledge> {
         deserialize_knowledge(text)
     }
 
-    /// 按多个目录顺序装载（后者覆盖同 id 的条目）。
+    /// Load from several directories in order (later ones override entries with the same id).
     ///
-    /// 每个目录由 `load_dir` 自行完成能力接口展开，这里只做合并，避免重复展开。
+    /// Each directory expands capability interfaces itself inside `load_dir`; this only merges, so nothing is expanded twice.
     pub fn load_dirs(dirs: &[PathBuf]) -> Result<Self> {
         let mut merged: Vec<FrameworkKnowledge> = Vec::new();
         let mut sources = Vec::new();
@@ -159,28 +161,30 @@ impl KnowledgeProvider for YamlKnowledgeBase {
     }
 }
 
-/// YAML → [`FrameworkKnowledge`]。
+/// YAML -> [`FrameworkKnowledge`].
 ///
-/// 先解析成 `serde_yaml::Value`，再转成 `serde_json::Value` 后反序列化：
-/// 因为 `serde_yaml` 0.9 对**外部标签枚举**（`- Annotate:` / `target: matched` /
-/// `- strip_prefix: [...]`）只接受 YAML 标签（`!Annotate`）写法，而 FKB 需要
-/// 更接近自然 YAML 的映射写法。
+/// Parse into `serde_yaml::Value` first, then convert to `serde_json::Value` before deserializing:
+/// because `serde_yaml` 0.9 only accepts the YAML-tag spelling (`!Annotate`) for **externally tagged enums**
+/// (`- Annotate:` / `target: matched` / `- strip_prefix: [...]`), while FKB needs a mapping spelling that stays
+/// closer to natural YAML.
 pub fn deserialize_knowledge(text: &str) -> Result<FrameworkKnowledge> {
     let yaml: serde_yaml::Value = serde_yaml::from_str(text).map_err(DomainError::infra)?;
     let json = serde_json::to_value(yaml).map_err(DomainError::infra)?;
     serde_json::from_value(json).map_err(DomainError::infra)
 }
 
-/// 跨语言核心能力定义（**带洞的 `Rule` 模板 + 读/写边种类 + 通用词根**，识别机制，**不属于任何 FKB**）。
+/// Cross-language core capability definitions (**a `Rule` template with holes + read/write edge kinds + common word roots**; the recognition mechanism, **not belonging to any FKB**).
 ///
-/// 与 `DEFAULT_ANNOTATIONS_YAML`（P6 注解识别器）完全同构，且现在**完全落在 YAML 里**：
-/// 每个能力 = 一条带 `{{callees}}` / `{{link}}` / `{{id}}` 占位符的 `Rule` 模板（键 `template`）
-/// + 数据字段 `read_link` / `write_link` / `confidence` / `universal_types` / `universal_read` /
-/// `universal_write`。装载器把「类型 × 方法 × 匹配模式」展开成调用匹配串填入 `{{callees}}`、
-/// 读 / 写边种类填入 `{{link}}`，经 `render_template` 摊平成具体 `Rule`。于是「能力识别」与
-/// 「注解识别」「手写 rules」共用同一套 `Selector` 匹配语言——内核只描述「合成什么节点 / 怎么取
-/// 身份 / 边方向 / 读写出什么边」，具体库名（如 `Predis\Client`）由每语言 FKB 在
-/// `capability_interfaces` 声明（接口实现）。**不再有任何 Rust 硬编码的能力数据。**
+/// Fully isomorphic to `DEFAULT_ANNOTATIONS_YAML` (the P6 annotation recognizer), and now **entirely expressed in YAML**:
+/// each capability = one `Rule` template (key `template`) with `{{callees}}` / `{{link}}` / `{{id}}` placeholders
+/// + the data fields `read_link` / `write_link` / `confidence` / `universal_types` / `universal_read` /
+/// `universal_write`. The loader expands "type x method x match mode" into a call-match string filled into
+/// `{{callees}}` and the read / write edge kinds into `{{link}}`, then flattens it into a concrete `Rule` via
+/// `render_template`. So "capability recognition", "annotation recognition" and "hand-written rules" all share one
+/// `Selector` match language — the kernel only describes "what node to synthesize / how to derive identity / edge
+/// direction / which read-write edges to emit", while concrete library names (e.g. `Predis\Client`) are declared by
+/// each language's FKB under `capability_interfaces` (the interface implementation).
+/// **No capability data is hard-coded in Rust any more.**
 const DEFAULT_CAPABILITIES_YAML: &str = r#"
 cache:
   template:
@@ -233,17 +237,19 @@ config:
   confidence: 0.9
 "#;
 
-/// 跨语言核心**注解识别器**（P6 标注的标准 / 接口，**不属于任何 FKB**）。
+/// Cross-language core **annotation recognizers** (the P6 annotation standard / interface, **not belonging to any FKB**).
 ///
-/// 每个识别器是一条带 `{{key}}` 占位符的 `Rule` 模板；各栈在 `annotation_interfaces`
-/// 里引用它并填 `params`，装载器把占位符替换为参数后摊平成具体 `Annotate` 规则。
+/// Each recognizer is a `Rule` template with `{{key}}` placeholders; each stack references it in
+/// `annotation_interfaces` and supplies `params`, and the loader substitutes the placeholders and flattens the
+/// result into a concrete `Annotate` rule.
 ///
-/// 这与 `DEFAULT_CAPABILITIES_YAML`（能力识别）完全同构：
-/// * 识别器只写一次在内核，产出的 `kind` 全部来自内核标准词汇
-///   （[`gt_domain::model::kinds::AnnotationKind`]）—— 栈**无法自己发明**注解种类；
-/// * 各栈只声明「本栈数据长什么样」（PII 列名 / 配置源表 / 重要度阈值 / 鉴权能力名单），
-///   即「接口的实现」。通用参数（如 `phone`/`email` 这类 PII 列名）已是跨应用约定，
-///   但源表名 / 业务域列名仍是栈特有，故留作参数。
+/// This is fully isomorphic to `DEFAULT_CAPABILITIES_YAML` (capability recognition):
+/// * the recognizer is written once in the kernel, and every `kind` it produces comes from the kernel's standard
+///   vocabulary ([`gt_domain::model::kinds::AnnotationKind`]) — a stack **cannot invent** annotation kinds;
+/// * each stack only declares "what this stack's data looks like" (PII column names / config source tables /
+///   criticality thresholds / auth capability lists), i.e. "the implementation of the interface". Generic parameters
+///   (PII column names such as `phone` / `email`) are already a cross-application convention, but source table names
+///   and business-domain column names remain stack-specific and are therefore kept as parameters.
 const DEFAULT_ANNOTATIONS_YAML: &str = r#"
 pii:
   id: "{{id}}-pii"
@@ -333,7 +339,7 @@ i18n_coverage:
         merge: MaxByKind
 "#;
 
-/// 从能力 YAML 定义（`HashMap<String, Value>`，每条含 `template` + 数据字段）读取辅助项。
+/// Read auxiliary items from a capability YAML definition (`HashMap<String, Value>`, one `template` + data fields per entry).
 fn cap_read_link(t: &serde_json::Value) -> String {
     t.get("read_link")
         .and_then(|v| v.as_str())
@@ -359,35 +365,35 @@ fn cap_strs(t: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 跨语言核心能力模板（内置默认，目前不接受目录扩展，与 `load_annotation_templates` 同构）。
+/// Cross-language core capability templates (built-in defaults; directory extension is not accepted yet, isomorphic to `load_annotation_templates`).
 ///
-/// 返回 `HashMap<String, serde_json::Value>`：每个能力 = 一条带洞 `Rule`（`template` 键）
-/// + 数据字段（`read_link` / `write_link` / `confidence` / `universal_types` /
-/// `universal_read` / `universal_write`）。**完全落在 YAML，无 Rust 硬编码能力数据**，
-/// 由 `expand_capability_interfaces` 经 `render_template` 摊平成具体 `Rule`。
+/// Returns `HashMap<String, serde_json::Value>`: each capability = one `Rule` with holes (the `template` key)
+/// + data fields (`read_link` / `write_link` / `confidence` / `universal_types` / `universal_read` /
+/// `universal_write`). **Entirely in YAML with no Rust hard-coded capability data**, flattened into concrete `Rule`s
+/// by `expand_capability_interfaces` via `render_template`.
 fn load_capability_rule_templates() -> HashMap<String, serde_json::Value> {
     let yaml: serde_yaml::Value = match serde_yaml::from_str(DEFAULT_CAPABILITIES_YAML) {
         Ok(y) => y,
         Err(e) => {
-            warn!("内置能力模板解析失败: {e}");
+            warn!("failed to parse the built-in capability template: {e}");
             return HashMap::new();
         }
     };
     let json = match serde_json::to_value(&yaml) {
         Ok(j) => j,
         Err(e) => {
-            warn!("内置能力模板转换失败: {e}");
+            warn!("failed to convert the built-in capability template: {e}");
             return HashMap::new();
         }
     };
     let map: HashMap<String, serde_json::Value> = match serde_json::from_value(json) {
         Ok(m) => m,
         Err(e) => {
-            warn!("内置能力模板结构错误: {e}");
+            warn!("the built-in capability template has a structural error: {e}");
             return HashMap::new();
         }
     };
-    // 注册能力引入的语义边种类（如 ReadsCache / WritesCache / ReadsConfig）。
+    // Register the semantic edge kinds introduced by capabilities (e.g. ReadsCache / WritesCache / ReadsConfig).
     let kinds: Vec<String> = map
         .values()
         .flat_map(|t| [cap_read_link(t), cap_write_link(t)])
@@ -397,20 +403,22 @@ fn load_capability_rule_templates() -> HashMap<String, serde_json::Value> {
     map
 }
 
-/// 把一份 FKB 里的 `capability_interfaces` 声明摊平成 `Rule`（匹配各库类型的合成规则）。
+/// Flatten a FKB's `capability_interfaces` declarations into `Rule`s (synthesis rules matching each library type).
 ///
-/// 与 `expand_annotation_interfaces` 完全同构：内核提供**带 `{{callees}}` / `{{link}}`
-/// 占位符的 `Rule` 模板**（见 `DEFAULT_CAPABILITIES_YAML` 的 `template` 键），本函数把
-/// 「类型 × 方法 × 匹配模式」展开成调用匹配串填入 `{{callees}}`、读 / 写边种类填入 `{{link}}`，
-/// 经 `render_template` 摊平成具体 `Rule`，引擎原样消费（共用同一套 `Selector` 匹配语言）。
-/// 读 / 写边种类与跨语言通用词根都来自能力 YAML 定义本身（无 Rust 硬编码）。
+/// Fully isomorphic to `expand_annotation_interfaces`: the kernel supplies a **`Rule` template with `{{callees}}` /
+/// `{{link}}` placeholders** (see the `template` key of `DEFAULT_CAPABILITIES_YAML`); this function expands
+/// "type x method x match mode" into a call-match string filled into `{{callees}}` and the read / write edge kinds
+/// into `{{link}}`, then flattens it into a concrete `Rule` via `render_template`, consumed as-is by the engine
+/// (sharing the same `Selector` match language). Both the read / write edge kinds and the cross-language common word
+/// roots come from the capability YAML definition itself (no Rust hard-coding).
 ///
-/// 合并两层约定后摊平：
-/// * **Group B（每语言 / 库特有）**：来自本 FKB `capability_interfaces` 的 `types` / `read` /
-///   `write`，按 `match_mode`（默认 `by_type`）展开，覆盖词根不合通用约定的具体库。
-/// * **Group A（跨语言通用）**：来自能力 YAML 的 `universal_types` / `universal_read` /
-///   `universal_write`（封装类命名约定，弱证据兜底），按 `by_name` 模式对所有引用该能力的
-///   FKB 各生成一次。
+/// Two layers of convention are merged before flattening:
+/// * **Group B (per language / library specific)**: `types` / `read` / `write` from this FKB's
+///   `capability_interfaces`, expanded by `match_mode` (default `by_type`), covering concrete libraries whose word
+///   root does not fit the common convention.
+/// * **Group A (cross-language common)**: `universal_types` / `universal_read` / `universal_write` from the
+///   capability YAML (wrapper-class naming conventions, a weak-evidence fallback), generated once per FKB that
+///   references the capability, in `by_name` mode.
 fn expand_capability_interfaces(
     fk: &mut FrameworkKnowledge,
     templates: &HashMap<String, serde_json::Value>,
@@ -419,15 +427,15 @@ fn expand_capability_interfaces(
         return;
     }
     let mut generated: Vec<Rule> = Vec::new();
-    // Group A 每种能力只生成一次（跨语言通用约定按能力名去重）。
+    // Group A is generated once per capability (the cross-language common convention is deduped by capability name).
     let mut universal_done: HashSet<String> = HashSet::new();
     for ci in &fk.capability_interfaces {
         let Some(tmpl) = templates.get(&ci.capability) else {
-            warn!("FKB {} 引用了未知能力 `{}`，已跳过", fk.id, ci.capability);
+            warn!("FKB {} references an unknown capability `{}`, skipping", fk.id, ci.capability);
             continue;
         };
         let Some(rule_tmpl) = tmpl.get("template") else {
-            warn!("能力 `{}` 模板缺少 `template` 字段，已跳过", ci.capability);
+            warn!("the template for capability `{}` lacks a `template` field, skipping", ci.capability);
             continue;
         };
         let read_link = cap_read_link(tmpl);
@@ -441,7 +449,7 @@ fn expand_capability_interfaces(
             MatchMode::ByType => "by_type",
             MatchMode::ByName => "by_name",
         };
-        // Group B：每语言 / 库特有类型（按 ci.match_mode）。
+        // Group B: per-language / library-specific types (by ci.match_mode).
         if !ci.read.is_empty() {
             generated.push(render_cap_rule(
                 fk.id.as_str(),
@@ -466,8 +474,8 @@ fn expand_capability_interfaces(
                 conf,
             ));
         }
-        // Group A：跨语言通用命名约定（by_name，名称弱证据），仅当声明了通用 types。
-        // 用 `-universal` 后缀区分于同能力的每语言声明，避免规则 id 重复。
+        // Group A: cross-language common naming conventions (by_name, weak name evidence), only when universal types are declared.
+        // A `-universal` suffix distinguishes it from the per-language declaration of the same capability, avoiding duplicate rule ids.
         if universal_done.insert(ci.capability.clone()) && !utypes.is_empty() {
             if !uread.is_empty() {
                 let mut rule = render_cap_rule(
@@ -502,18 +510,18 @@ fn expand_capability_interfaces(
     fk.rules.append(&mut generated);
 }
 
-/// 把「类型 × 方法」按匹配模式展开成 `callee` 匹配串（`Type::method` / `*Suffix::method` /
-/// `*Type::method`，以 `|` 连接）。
+/// Expand "type x method" into a `callee` match string by match mode (`Type::method` / `*Suffix::method` /
+/// `*Type::method`, joined with `|`).
 ///
-/// * `by_type`：对每个类型摊出 `Type::method` 与 `*Suffix::method`（接收者以 `\Suffix`
-///   结尾即命中）—— 精确类型 + 尾部片段兜底。
-/// * `by_name`：对每个类型摊出 `*Type::method`（按封装类命名约定）。
+/// * `by_type`: for each type emit `Type::method` and `*Suffix::method` (a receiver ending in `\Suffix` matches)
+///   — exact type plus a tail-fragment fallback.
+/// * `by_name`: for each type emit `*Type::method` (by wrapper-class naming convention).
 fn gen_callees(types: &[String], methods: &[String], mode: MatchMode) -> String {
     let mut callees: Vec<String> = Vec::new();
     match mode {
         MatchMode::ByType => {
             for t in types {
-                // 尾部片段用于 `*Suffix::method` 通配（接收者以 `\Suffix` 结尾即命中）。
+                // The tail fragment drives the `*Suffix::method` wildcard (a receiver ending in `\Suffix` matches).
                 let last = t
                     .rsplit(|c| matches!(c, '\\' | '.' | '/' | ':'))
                     .next()
@@ -526,7 +534,7 @@ fn gen_callees(types: &[String], methods: &[String], mode: MatchMode) -> String 
         }
         MatchMode::ByName => {
             for t in types {
-                // 按封装类命名约定：类后缀 + 方法名（如 `*CacheService::get`）。
+                // By wrapper-class naming convention: class suffix + method name (e.g. `*CacheService::get`).
                 let base = t.trim_start_matches('*');
                 for m in methods {
                     callees.push(format!("*{}::{m}", base));
@@ -537,7 +545,7 @@ fn gen_callees(types: &[String], methods: &[String], mode: MatchMode) -> String 
     callees.join("|")
 }
 
-/// 用 `{{callees}}` / `{{link}}` / `{{id}}` 占位符渲染一条能力 `Rule` 模板，并应用置信度覆盖。
+/// Render a capability `Rule` template with `{{callees}}` / `{{link}}` / `{{id}}` placeholders and apply the confidence override.
 fn render_cap_rule(
     fk_id: &str,
     cap: &str,
@@ -557,8 +565,8 @@ fn render_cap_rule(
     let mut rule: Rule = match serde_json::from_value(rendered) {
         Ok(r) => r,
         Err(e) => {
-            warn!("能力模板 `{cap}` 渲染失败: {e}");
-            // 兜底空规则（不应发生），避免整个装载中断。
+            warn!("failed to render the capability template `{cap}`: {e}");
+            // Fallback to an empty rule (should not happen) so the whole load does not abort.
             return Rule {
                 id,
                 phase: Phase("Synthesize".into()),
@@ -568,7 +576,7 @@ fn render_cap_rule(
             };
         }
     };
-    // 应用置信度覆盖（同时覆盖 Rule 与 Synthesize 动作 / 边）。
+    // Apply the confidence override (covering both the Rule and the Synthesize action / edge).
     rule.confidence = conf;
     for act in &mut rule.binding {
         if let Action::Synthesize(s) = act {
@@ -581,35 +589,35 @@ fn render_cap_rule(
     rule
 }
 
-/// 载入核心注解识别器模板（内置默认，目前不接受目录扩展）。
+/// Load the core annotation recognizer templates (built-in defaults; directory extension is not accepted yet).
 fn load_annotation_templates() -> HashMap<String, serde_json::Value> {
     let yaml: serde_yaml::Value = match serde_yaml::from_str(DEFAULT_ANNOTATIONS_YAML) {
         Ok(y) => y,
         Err(e) => {
-            warn!("内置注解识别器模板解析失败: {e}");
+            warn!("failed to parse the built-in annotation recogniser template: {e}");
             return HashMap::new();
         }
     };
     let json = match serde_json::to_value(&yaml) {
         Ok(j) => j,
         Err(e) => {
-            warn!("内置注解识别器模板转换失败: {e}");
+            warn!("failed to convert the built-in annotation recogniser template: {e}");
             return HashMap::new();
         }
     };
     match serde_json::from_value(json) {
         Ok(m) => m,
         Err(e) => {
-            warn!("内置注解识别器模板结构错误: {e}");
+            warn!("the built-in annotation recogniser template has a structural error: {e}");
             HashMap::new()
         }
     }
 }
 
-/// 把模板 JSON 里的 `{{key}}` 字符串占位符递归替换成 `params` 中的值。
+/// Recursively replace `{{key}}` string placeholders in the template JSON with the values from `params`.
 ///
-/// 任何等于 `{{key}}` 的 JSON 字符串整体被替换（包括列表 / 对象参数）：
-/// 例如 `names: "{{names}}"` 替换成 `[...]`、`thresholds: "{{thresholds}}"` 替换成对象。
+/// Any JSON string exactly equal to `{{key}}` is replaced wholesale (including list / object parameters):
+/// e.g. `names: "{{names}}"` becomes `[...]`, and `thresholds: "{{thresholds}}"` becomes an object.
 fn render_template(
     tmpl: &serde_json::Value,
     params: &HashMap<String, serde_json::Value>,
@@ -636,10 +644,11 @@ fn render_template(
     }
 }
 
-/// 把一份 FKB 里的 `annotation_interfaces` 声明摊平成 `Rule`（P6 标注规则）。
+/// Flatten a FKB's `annotation_interfaces` declarations into `Rule`s (P6 annotation rules).
 ///
-/// 查内核标准识别器 `annotation_templates`，把模板的 `{{key}}` 占位符替换成各栈
-/// `params` 后，反序列化为具体 `Rule` 追加进 `fk.rules`。纯数据变换，引擎原样消费。
+/// Look up the kernel-standard recognizer `annotation_templates`, replace the template's `{{key}}` placeholders with
+/// each stack's `params`, then deserialize into concrete `Rule`s appended to `fk.rules`. A pure data transform,
+/// consumed as-is by the engine.
 fn expand_annotation_interfaces(
     fk: &mut FrameworkKnowledge,
     templates: &HashMap<String, serde_json::Value>,
@@ -650,17 +659,17 @@ fn expand_annotation_interfaces(
     let mut generated: Vec<Rule> = Vec::new();
     for (i, ai) in fk.annotation_interfaces.iter().enumerate() {
         let Some(tmpl) = templates.get(&ai.annotation) else {
-            warn!("FKB {} 引用了未知注解识别器 `{}`，已跳过", fk.id, ai.annotation);
+            warn!("FKB {} references an unknown annotation recogniser `{}`, skipping", fk.id, ai.annotation);
             continue;
         };
-        // 合并参数：各栈 params ∪ 内置 id；interface.confidence 覆盖模板默认置信度。
+        // Merge parameters: each stack's params ∪ the built-in id; interface.confidence overrides the template's default confidence.
         let mut params: HashMap<String, serde_json::Value> = ai.params.clone();
         params.insert("id".to_string(), serde_json::json!(fk.id));
         let rendered = render_template(tmpl, &params);
         let mut rule: Rule = match serde_json::from_value(rendered) {
             Ok(r) => r,
             Err(e) => {
-                warn!("FKB {} 注解识别器 `{}` 渲染失败: {e}", fk.id, ai.annotation);
+                warn!("FKB {} annotation recogniser `{}` failed to render: {e}", fk.id, ai.annotation);
                 continue;
             }
         };
@@ -691,8 +700,8 @@ mod tests {
 
     #[test]
     fn expands_cache_interface_into_rules() {
-        // 合并两层：模板跨语言通用约定（by_name，`*CacheService::get` 等）
-        // + 每语言精确类型（by_type，`Predis\Client::get`）。
+        // Merge the two layers: the template's cross-language common conventions (by_name, `*CacheService::get`, etc.)
+        // + each language's precise types (by_type, `Predis\Client::get`).
         let tmpl = cap_templates();
         assert!(tmpl.contains_key("cache"));
         let mut fk = FrameworkKnowledge {
@@ -709,15 +718,15 @@ mod tests {
             ..Default::default()
         };
         expand_capability_interfaces(&mut fk, &tmpl);
-        // 4 条：Group B（Predis 后端）读/写 + Group A（模板通用）读/写。
+        // 4 rules: Group B (Predis backend) read/write + Group A (template common) read/write.
         assert_eq!(fk.rules.len(), 4);
         let find = |suffix: &str| {
             fk.rules
                 .iter()
                 .find(|r| r.id.ends_with(suffix))
-                .unwrap_or_else(|| panic!("缺少以 {suffix} 结尾的规则"))
+                .unwrap_or_else(|| panic!("missing a rule ending with {suffix}"))
         };
-        // Group B：每语言精确类型（by_type）。
+        // Group B: per-language precise types (by_type).
         match &find("-cap-cache-read-by_type").selector {
             Selector::Call { callee, .. } => assert_eq!(
                 callee.as_deref(),
@@ -725,22 +734,22 @@ mod tests {
             ),
             _ => panic!("expected Call selector"),
         }
-        // Group A：跨语言通用约定（by_name），不含具体库名。
+        // Group A: cross-language common conventions (by_name), with no concrete library names.
         let universal_read = match &find("-cap-cache-read-universal").selector {
             Selector::Call { callee, .. } => callee.as_deref().unwrap(),
             _ => panic!("expected Call selector"),
         };
         assert!(
             universal_read.contains("*CacheService::get"),
-            "通用 *CacheService::get 缺失: {universal_read}"
+            "the generic *CacheService::get is missing: {universal_read}"
         );
-        assert!(universal_read.contains("*Cache::get"), "通用 *Cache::get 缺失: {universal_read}");
-        assert!(universal_read.contains("*Redis::get"), "通用 *Redis::get 缺失: {universal_read}");
+        assert!(universal_read.contains("*Cache::get"), "the generic *Cache::get is missing: {universal_read}");
+        assert!(universal_read.contains("*Redis::get"), "the generic *Redis::get is missing: {universal_read}");
         assert!(
             !universal_read.contains("Predis"),
-            "通用约定不应含具体库名: {universal_read}"
+            "the generic convention must not contain a concrete library name: {universal_read}"
         );
-        // 合成节点形状正确（来自带洞的 `Rule` 模板）。
+        // The synthesized node has the right shape (it comes from the `Rule` template with holes).
         match &find("-cap-cache-read-by_type").binding[0] {
             Action::Synthesize(s) => {
                 assert_eq!(s.node.as_str(), "ExternalSystem");
@@ -773,8 +782,9 @@ mod tests {
 
     #[test]
     fn wrapper_mode_matches_by_class_suffix() {
-        // by_name 模式按封装类命名约定匹配（`*CacheAdapter::get`）：用于框架门面迷惑分发、
-        // P7 看不到内部真实调用的场景。模板还会附上跨语言通用约定（`*CacheService::get` 等）。
+        // by_name mode matches by wrapper-class naming convention (`*CacheAdapter::get`): for framework facades that
+        // dispatch opaquely, where P7 cannot see the real internal call. The template also attaches the cross-language
+        // common conventions (`*CacheService::get`, etc.).
         let tmpl = cap_templates();
         let mut fk = FrameworkKnowledge {
             id: "php-test".into(),
@@ -796,20 +806,21 @@ mod tests {
             }
             _ => false,
         });
-        assert!(adapter, "应生成 *CacheAdapter::get 规则");
+        assert!(adapter, "expected a *CacheAdapter::get rule to be generated");
         let universal = fk.rules.iter().any(|r| match &r.selector {
             Selector::Call { callee, .. } => {
                 callee.as_deref().unwrap_or("").contains("*CacheService::get")
             }
             _ => false,
         });
-        assert!(universal, "模板通用 *CacheService::get 应存在");
+        assert!(universal, "the template generic *CacheService::get should exist");
     }
 
     #[test]
     fn expands_annotation_interfaces_into_rules() {
-        // 内核标准识别器（pii / table_criticality …）+ 每栈参数，摊平成具体 Annotate 规则。
-        // 「哪些注解种类存在、怎么识别」是内核标准，栈只填本栈数据（列名 / 源表 / 阈值）。
+        // The kernel-standard recognizers (pii / table_criticality …) plus each stack's parameters are flattened into
+        // concrete Annotate rules. "Which annotation kinds exist and how they are recognised" is a kernel standard;
+        // a stack only fills in its own data (column names / source tables / thresholds).
         use gt_domain::model::fkb::{AnnotationInterface, Predicate};
         let ann = load_annotation_templates();
         assert!(ann.contains_key("pii"));
@@ -849,14 +860,14 @@ mod tests {
             ..Default::default()
         };
         expand_annotation_interfaces(&mut fk, &ann);
-        // 2 条：pii + table_criticality。
+        // 2 rules: pii + table_criticality.
         assert_eq!(fk.rules.len(), 2);
-        // pii 规则命中 schema 列名，产出内核标准种类 `pii`。
+        // The pii rule matches schema column names and produces the kernel-standard kind `pii`.
         let pii = fk
             .rules
             .iter()
             .find(|r| r.id == "php-crmeb-ann-pii-0")
-            .expect("pii 规则应存在");
+            .expect("the pii rule should exist");
         match &pii.selector {
             Selector::Node { node_kind, r#where } => {
                 assert!(node_kind.is_some());
@@ -874,12 +885,12 @@ mod tests {
             }
             _ => panic!("expected Annotate"),
         }
-        // table_criticality 规则产出内核标准种类 `data.criticality`，且 id 不冲突。
+        // The table_criticality rule produces the kernel-standard kind `data.criticality`, and its id does not clash.
         let crit = fk
             .rules
             .iter()
             .find(|r| r.id == "php-crmeb-ann-table_criticality-1")
-            .expect("criticality 规则应存在");
+            .expect("the criticality rule should exist");
         match &crit.binding[0] {
             Action::Annotate(a) => assert_eq!(a.annotations[0].kind, "data.criticality"),
             _ => panic!("expected Annotate"),
@@ -906,16 +917,17 @@ mod tests {
 
     #[test]
     fn php_common_migrated_cache_rules_present() {
-        // 规则迁移：common.yaml 用 `capability_interfaces` 只声明 PHP 特有类型（Predis\Client），
-        // 跨语言通用约定（`Cache` / `Redis` / `*CacheService` …）来自核心能力模板，
-        // 二者取并集摊平成合成规则。ConfigKey 手写规则仍在 `rules:` 下。
+        // Rule migration: common.yaml uses `capability_interfaces` to declare only PHP-specific types (Predis\Client);
+        // the cross-language common conventions (`Cache` / `Redis` / `*CacheService` …) come from the core capability
+        // template, and the two are unioned before being flattened into synthesis rules. The hand-written ConfigKey
+        // rules still live under `rules:`.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/php");
-        let kb = YamlKnowledgeBase::load_dir(&root).expect("fkb/php 可加载");
-        let fk = kb.by_id("php-common").expect("php-common 应成功加载");
-        // ConfigKey 手写规则在 rules: 下。
+        let kb = YamlKnowledgeBase::load_dir(&root).expect("fkb/php should load");
+        let fk = kb.by_id("php-common").expect("php-common should load successfully");
+        // The hand-written ConfigKey rules live under rules:.
         assert!(
             fk.rules.iter().any(|r| r.id == "php-common-config"),
-            "ConfigKey 规则应保留在 rules: 下"
+            "the ConfigKey rule should stay under rules:"
         );
         let joined: String = fk
             .rules
@@ -925,21 +937,21 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // 跨语言通用约定（来自模板，Wrapper）：覆盖后端词根 + 封装类约定。
+        // Cross-language common conventions (from the template, Wrapper): covers backend word roots + wrapper-class conventions.
         assert!(
             joined.contains("*CacheService::get"),
-            "模板通用 *CacheService::get 应存在: {joined}"
+            "the template generic *CacheService::get should exist: {joined}"
         );
-        assert!(joined.contains("*Cache::get"), "模板通用 *Cache::get 应存在: {joined}");
-        assert!(joined.contains("*Redis::get"), "模板通用 *Redis::get 应存在: {joined}");
-        // 每语言特有类型（来自 common.yaml，Backend）：精确声明不合通用约定的库。
+        assert!(joined.contains("*Cache::get"), "the template generic *Cache::get should exist: {joined}");
+        assert!(joined.contains("*Redis::get"), "the template generic *Redis::get should exist: {joined}");
+        // Per-language specific types (from common.yaml, Backend): libraries whose declaration does not fit the common convention.
         assert!(
             joined.contains("Predis\\Client::get"),
-            "PHP 特有 Predis\\Client::get 应存在: {joined}"
+            "the PHP-specific Predis\\Client::get should exist: {joined}"
         );
         assert!(
             joined.contains("*Client::get"),
-            "PHP 特有 *Client::get 应存在: {joined}"
+            "the PHP-specific *Client::get should exist: {joined}"
         );
     }
 }

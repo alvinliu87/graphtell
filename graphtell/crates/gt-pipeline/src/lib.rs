@@ -1,15 +1,15 @@
-//! `gt-pipeline` —— 建图流水线的阶段实现（领域服务层）。
+//! `gt-pipeline` — phase implementations of the graph-building pipeline (the domain service layer).
 //!
-//! 依赖倒置：本 crate 只依赖 `gt-domain` 的端口 trait，
-//! 不直接接触 SQLite / tree-sitter / 文件系统。
+//! Dependency inversion: this crate depends only on the port traits of `gt-domain` and never touches SQLite /
+//! tree-sitter / the filesystem directly.
 //!
-//! 阶段顺序（严格依赖，顺序不可颠倒）：
+//! Phase order (strict dependency, the order cannot be rearranged):
 //! ```text
-//! P0 Ingest → P2 CfAst → P3 Prepare → P4 AnnotatePre
-//!          → P5 Synthesize → P6 AnnotatePost → P7 Resolve
+//! P0 Ingest -> P2 CfAst -> P3 Prepare -> P4 AnnotatePre
+//!          -> P5 Synthesize -> P6 AnnotatePost -> P7 Resolve
 //! ```
-//! P5 必须在 P3 之后（要查权威符号表），P6 必须在 P5 之后（要查汇聚结果），
-//! P7 必须在 P6 之后（要查别名索引）。
+//! P5 must follow P3 (it queries the authoritative symbol tables), P6 must follow P5 (it queries the aggregated
+//! result), and P7 must follow P6 (it queries the alias index).
 
 pub mod context;
 pub mod engine;

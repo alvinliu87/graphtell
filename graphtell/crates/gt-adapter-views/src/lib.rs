@@ -1,10 +1,10 @@
-//! `gt-adapter-views` —— 视角注册表适配器。
+//! `gt-adapter-views` — the perspective-registry adapter.
 //!
-//! 装载 `views/*.yaml` 中声明的分析视角（路由视角 / 表视角 / 领域聚合 …），
-//! 并提供 [`ViewRegistryProvider`] 端口实现。
+//! Loads the analysis perspectives declared in `views/*.yaml` (route perspective / table perspective /
+//! domain aggregate …) and provides the [`ViewRegistryProvider`] port implementation.
 //!
-//! 视角是**分析范式**而非后端概念，因此用配置声明而不是写进 Rust：
-//! 新增视角 = 加一段 YAML（开闭原则）。
+//! A perspective is an **analysis paradigm**, not a backend concept, so it is declared by configuration rather
+//! than written into Rust: adding a perspective = adding a piece of YAML (open-closed principle).
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +12,7 @@ use gt_domain::error::{DomainError, Result};
 use gt_domain::model::ViewRegistry;
 use gt_domain::port::ViewRegistryProvider;
 
-/// 基于 YAML 目录的视角注册表。
+/// A YAML-directory-based perspective registry.
 pub struct YamlViewRegistry {
     registry: ViewRegistry,
     sources: Vec<PathBuf>,
@@ -21,7 +21,7 @@ pub struct YamlViewRegistry {
 impl YamlViewRegistry {
     pub fn load_dir(root: &Path) -> Result<Self> {
         if !root.exists() {
-            tracing::warn!("视角目录不存在: {}", root.display());
+            tracing::warn!("views directory does not exist: {}", root.display());
             return Ok(Self { registry: ViewRegistry::default(), sources: Vec::new() });
         }
         let mut merged = ViewRegistry::default();
@@ -29,8 +29,8 @@ impl YamlViewRegistry {
         for path in collect_yaml(root) {
             match Self::load_file(&path) {
                 Ok(reg) => {
-                    tracing::info!("装载视角声明: {}", path.display());
-                    // 后者覆盖同 id 的视角
+                    tracing::info!("loading a perspective declaration: {}", path.display());
+                    // Later files override perspectives with the same id
                     for spec in reg.perspectives {
                         if let Some(existing) =
                             merged.perspectives.iter_mut().find(|p| p.id == spec.id)
@@ -43,7 +43,7 @@ impl YamlViewRegistry {
                     merged.node_views.extend(reg.node_views);
                     sources.push(path);
                 }
-                Err(e) => tracing::warn!("跳过损坏的视角声明 {}: {e}", path.display()),
+                Err(e) => tracing::warn!("skipping a corrupt perspective declaration {}: {e}", path.display()),
             }
         }
         Ok(Self { registry: merged, sources })

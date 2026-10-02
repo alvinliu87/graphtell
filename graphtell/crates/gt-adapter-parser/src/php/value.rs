@@ -1,12 +1,12 @@
-//! PHP 表达式 → [`FactValue`] 的静态求值。
+//! Static evaluation of PHP expressions into [`FactValue`].
 //!
-//! 只求"能静态确定"的部分，其余记为 `Unknown(var)` —— 保留变量名，
-//! 供 P7 常量传播使用。
+//! Only what can be determined statically is evaluated; the rest is recorded as `Unknown(var)`, keeping the
+//! variable name for P7 constant propagation.
 
 use gt_domain::model::{FactValue, Span};
 use tree_sitter::Node;
 
-/// 把一个表达式节点求值为 `FactValue`。
+/// Evaluate an expression node into a `FactValue`.
 pub fn eval_expr(node: Node, src: &str) -> FactValue {
     match node.kind() {
         "string" | "nowdoc_string" | "heredoc" => FactValue::String(unwrap_string(node, src)),
@@ -14,7 +14,7 @@ pub fn eval_expr(node: Node, src: &str) -> FactValue {
         "integer" => FactValue::Int(text(node, src).replace('_', "").parse().unwrap_or(0)),
         "float" => FactValue::Float(text(node, src).replace('_', "").parse().unwrap_or(0.0)),
         "boolean" => {
-            // tree-sitter-php 里布尔常量是一个 `boolean` 节点，文本为 `true` / `false`
+            // In tree-sitter-php a boolean constant is a `boolean` node whose text is `true` / `false`
             FactValue::Bool(text(node, src).eq_ignore_ascii_case("true"))
         }
         "null" => FactValue::Null,
@@ -29,7 +29,7 @@ pub fn eval_expr(node: Node, src: &str) -> FactValue {
             .map(|c| eval_expr(c, src))
             .unwrap_or(FactValue::Null),
         "unary_op_expression" => {
-            // 处理 -1 之类
+            // Handles things like -1
             let t = text(node, src);
             if let Ok(v) = t.parse::<i64>() {
                 return FactValue::Int(v);
@@ -50,7 +50,7 @@ pub fn eval_expr(node: Node, src: &str) -> FactValue {
 }
 
 fn eval_class_const(node: Node, src: &str) -> FactValue {
-    // 形如 `Foo::class` / `self::class` / `static::class`
+    // Forms such as `Foo::class` / `self::class` / `static::class`
     let parts: Vec<String> = node
         .named_children(&mut node.walk())
         .map(|c| text(c, src).trim_start_matches('\\').to_string())
@@ -72,7 +72,7 @@ fn eval_array(node: Node, src: &str) -> FactValue {
     for child in node.named_children(&mut cursor) {
         match child.kind() {
             "array_element_initializer" => {
-                // 该节点没有具名字段：`[key => value, ...]` 时有两个表达式子节点。
+                // This node has no named field: `[key => value, ...]` has two expression children.
                 let parts: Vec<Node> = child.named_children(&mut child.walk()).collect();
                 let (key, value) = match parts.as_slice() {
                     [k, v] => (
@@ -88,7 +88,7 @@ fn eval_array(node: Node, src: &str) -> FactValue {
                 items.push((key, value));
             }
             "array_pair" => {
-                // 兼容旧语法
+                // Compatibility with the old syntax
                 let key = child.named_child(0).map(|k| text(k, src)).unwrap_or_default();
                 let value = child.named_child(1).map(|v| eval_expr(v, src));
                 items.push((key, value.unwrap_or(FactValue::Null)));
@@ -100,7 +100,7 @@ fn eval_array(node: Node, src: &str) -> FactValue {
 }
 
 fn eval_encapsed(node: Node, src: &str) -> FactValue {
-    // 带插值的字符串：若不含插值则作为普通字符串，否则记 Unknown
+    // Interpolated strings: treated as a plain string when there is no interpolation, otherwise Unknown
     let has_interp = node
         .named_children(&mut node.walk())
         .any(|c| matches!(c.kind(), "variable_name" | "member_access_expression" | "subscript_expression"));
@@ -111,16 +111,16 @@ fn eval_encapsed(node: Node, src: &str) -> FactValue {
     }
 }
 
-/// 去掉字符串字面量的引号。
+/// Strip the quotes from a string literal.
 pub fn unwrap_string(node: Node, src: &str) -> String {
     let t = text(node, src);
     let t = t.trim();
     if t.starts_with("<<<") {
-        // heredoc / nowdoc: 取第一行之后到结束标记之前
+        // heredoc / nowdoc: take everything after the first line up to the closing marker
         return t.lines().skip(1).collect::<Vec<_>>().join("\n");
     }
     let bytes = t.as_bytes();
-    // 首尾都必须是 ASCII 引号才可字节切片（防多字节字符边界 panic）。
+    // Both ends must be ASCII quotes before byte-slicing (avoids a panic on a multi-byte character boundary).
     if bytes.len() >= 2
         && (bytes[0] == b'\'' || bytes[0] == b'"')
         && (bytes[bytes.len() - 1] == b'\'' || bytes[bytes.len() - 1] == b'"')
@@ -156,7 +156,7 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-/// `FactValue` 的文本表示（`Unknown` 等场景兜底）。
+/// The textual representation of a `FactValue` (fallback for `Unknown` and similar cases).
 pub trait StringRepr {
     fn to_string_repr(&self) -> String;
 }

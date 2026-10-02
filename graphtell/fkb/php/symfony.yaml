@@ -1,17 +1,17 @@
-# Symfony 框架知识
+# Symfony framework knowledge
 #
-# 路由用 **PHP 8 属性**声明（`#[Route]` / `#[Get]` / `#[Post]` …），解析器在
-# `gt-adapter-parser/src/php/mod.rs` 的 `collect_method` 里把每个路由属性**合成成调用点**
-# （`callee_text` 带 `attr:` 前缀，避免与 Laravel 等 `Route::get()` 真实调用混淆），
-# 并把控制器方法 FQN 写进 `entity`。本文件据此合成 `HttpContract` + `HandledBy`。
+# Routes are declared with **PHP 8 attributes** (`#[Route]` / `#[Get]` / `#[Post]` …); the parser's `collect_method`
+# in `gt-adapter-parser/src/php/mod.rs` **synthesizes each route attribute into a call site** (`callee_text` carries
+# an `attr:` prefix so it is not confused with real calls such as Laravel's `Route::get()`), and writes the controller
+# method FQN into `entity`. This file synthesizes `HttpContract` + `HandledBy` on that basis.
 #
-# 与 Spring / FastAPI / Django 同属「后端路由 → HttpContract」语义族：
-#   | 框架     | 路由声明形式                         | 方法来源                |
-#   |----------|--------------------------------------|-------------------------|
-#   | Symfony  | `#[Route('/x', methods:['GET'])]`     | 属性 `methods` / 快捷名 |
-#   | Spring   | `@GetMapping("/x")`                   | 注解名                  |
-#   | FastAPI  | `@app.get("/x")`                      | 装饰器名                |
-#   | Django   | `path("x/", view)`                    | 无（通配 ANY）          |
+# Together with Spring / FastAPI / Django this belongs to the "backend route -> HttpContract" semantic family:
+#   | framework | route declaration form                   | source of the method        |
+#   |-----------|------------------------------------------|----------------------------|
+#   | Symfony   | `#[Route('/x', methods:['GET'])]`         | attribute `methods` / shortcut name |
+#   | Spring    | `@GetMapping("/x")`                       | annotation name            |
+#   | FastAPI   | `@app.get("/x")`                          | decorator name             |
+#   | Django    | `path("x/", view)`                        | none (wildcard ANY)        |
 
 id: symfony
 display_name: Symfony
@@ -39,9 +39,10 @@ exclude_globs:
   - "public/**"
 
 rules:
-  # ===== P5 Synthesize：路由（控制器方法上的 #[Route] / #[Get] …）=====
-  # 解析器已为每个路由属性合成调用点（含显式方法；`Route` 无 `methods` 时降为通配 ANY）。
-  # `entity` 指向控制器方法自身，经 `resolve: class_const` 连到方法节点。
+  # ===== P5 Synthesize: routes (#[Route] / #[Get] … on controller methods) =====
+  # The parser has already synthesized a call site for each route attribute (including an explicit method; `Route`
+  # without `methods` degrades to the wildcard ANY).
+  # `entity` points at the controller method itself and links to the method node via `resolve: class_const`.
   - id: symfony-route
     phase: Synthesize
     selector:

@@ -1,4 +1,4 @@
-//! HTTP 服务器启动。
+//! HTTP server startup.
 
 use std::net::{SocketAddr, TcpListener as StdListener};
 
@@ -6,24 +6,24 @@ use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
 
-/// 启动服务（阻塞直到收到停止信号）。
+/// Start the service (blocks until a stop signal arrives).
 pub async fn serve(router: Router, addr: SocketAddr) -> anyhow::Result<()> {
     let app = router
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("GraphTell API 监听 http://{addr}");
+    info!("GraphTell API listening on http://{addr}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
 }
 
-/// 在后台线程启动服务并返回实际端口。
+/// Start the service on a background thread and return the actual port.
 ///
-/// 供 Tauri 桌面端使用：不能假设某个端口一定空闲，
-/// 因此依次尝试 `preferred`（默认 5177–5187），失败则交给内核分配端口，
-/// 再把最终端口通过 `api_port` 命令告知前端。
+/// For the Tauri desktop build: no port can be assumed free, so `preferred` (5177-5187 by default) is tried in
+/// turn, and on failure the kernel assigns a port; the final port is then reported to the frontend through the
+/// `api_port` command.
 pub fn spawn_server(router: Router, preferred: Option<u16>) -> anyhow::Result<u16> {
     let candidates: Vec<u16> = match preferred {
         Some(p) => vec![p],
@@ -45,7 +45,7 @@ fn start_with(listener: StdListener, router: Router) -> anyhow::Result<u16> {
         let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
             Ok(rt) => rt,
             Err(e) => {
-                error!("无法创建 tokio 运行时: {e}");
+                error!("failed to create the tokio runtime: {e}");
                 return;
             }
         };
@@ -53,16 +53,16 @@ fn start_with(listener: StdListener, router: Router) -> anyhow::Result<u16> {
             let listener = match tokio::net::TcpListener::from_std(listener) {
                 Ok(l) => l,
                 Err(e) => {
-                    error!("转换监听器失败: {e}");
+                    error!("failed to convert the listener: {e}");
                     return;
                 }
             };
             let app = router
                 .layer(CorsLayer::permissive())
                 .layer(TraceLayer::new_for_http());
-            info!("GraphTell API 监听 http://127.0.0.1:{port}");
+            info!("GraphTell API listening on http://127.0.0.1:{port}");
             if let Err(e) = axum::serve(listener, app).await {
-                error!("API 服务退出: {e}");
+                error!("API service exited: {e}");
             }
         });
     });

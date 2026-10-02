@@ -1,23 +1,23 @@
-//! 规则供给端口。
+//! The rule-provider port.
 //!
-//! 内核不认识任何具体规则：规则由 YAML 声明，由出站适配器装载后从这里注入。
-//! 新增一条规则 = 加一份 YAML，不需要改内核（开闭原则）。
+//! The kernel knows no concrete rule: rules are declared in YAML, loaded by an outbound adapter and injected here.
+//! Adding a rule = adding one YAML file, no kernel change (open-closed principle).
 
 use crate::model::CheckRule;
 
-/// 规则供给。
+/// Rule provider.
 pub trait RuleProvider: Send + Sync {
-    /// 全部已装载的规则（保持 YAML 中的声明顺序）。
+    /// Every loaded rule (in the declaration order from YAML).
     fn rules(&self) -> &[CheckRule];
-    /// 按 id 查找。
+    /// Look up by id.
     fn rule(&self, id: &str) -> Option<&CheckRule> {
         self.rules().iter().find(|r| r.id == id)
     }
-    /// 启用的规则。
+    /// The enabled rules.
     fn enabled_rules(&self) -> Vec<&CheckRule> {
         self.rules().iter().filter(|r| r.enabled).collect()
     }
-    /// 已装载规则数。
+    /// Number of loaded rules.
     fn len(&self) -> usize {
         self.rules().len()
     }

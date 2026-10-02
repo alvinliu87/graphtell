@@ -1,4 +1,4 @@
-//! 领域模型。
+//! Domain model.
 
 pub mod fkb;
 pub mod graph;

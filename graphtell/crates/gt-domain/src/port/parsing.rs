@@ -1,36 +1,36 @@
-//! 源码解析端口。
+//! The source-parsing port.
 //!
-//! 解析器适配器把任意语言的具体语法树翻译成语言无关的 [`SyntaxFacts`]，
-//! 使上层流水线与语言无关。
+//! A parser adapter translates any language's concrete syntax tree into the language-agnostic [`SyntaxFacts`],
+//! making the upper pipeline language-independent.
 
 use crate::error::Result;
 use crate::model::{Language, SyntaxFacts};
 
-/// 单语言解析器。
+/// A single-language parser.
 ///
-/// 除语法解析外，还声明该语言的**命名空间书写规则**与**生态约定**。
-/// 后者原本散落在流水线各处（分隔符写死 `\\`、标记文件写死 `composer.json`、
-/// 排除目录写死 `vendor/`），使得新增一门语言必须改内核。补齐这几个方法后，
-/// 这些知识随语言注册进来，内核不再认识任何具体语言。
+/// Besides parsing, it declares the language's **namespace notation rules** and **ecosystem conventions**.
+/// The latter used to be scattered across the pipeline (a hard-coded `\\` separator, a hard-coded `composer.json`
+/// marker file, a hard-coded `vendor/` exclusion), so adding a language always meant changing the kernel. With these
+/// methods in place that knowledge arrives with the language registration, and the kernel knows no concrete language.
 pub trait LanguageParser: Send + Sync {
-    /// 该解析器负责的语言。
+    /// The language this parser is responsible for.
     fn language(&self) -> Language;
-    /// 该语言默认的源码扩展名（不含点）。
+    /// The language's default source extensions (without the dot).
     fn extensions(&self) -> &'static [&'static str];
-    /// 解析单个文件，产出语法事实。
+    /// Parse a single file into syntax facts.
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts>;
 
-    /// 命名空间分隔符（可能有多个，如 PHP 的 `\`、Python 的 `.`）。
+    /// Namespace separator (there may be several, e.g. PHP's `\` and Python's `.`).
     fn namespace_separator(&self) -> &'static [char];
 
-    /// 成员分隔符：类与其方法/属性之间的符号。
+    /// Member separator: the symbol between a class and its methods / properties.
     ///
-    /// PHP 与 C++ 是 `::`，Java / JS / Python 是 `.`。内核此前到处硬编码 `::`。
+    /// PHP and C++ use `::`, while Java / JS / Python use `.`. The kernel used to hard-code `::` everywhere.
     fn member_separator(&self) -> &'static str {
         "::"
     }
 
-    /// 拼接命名空间与标识符，产出全限定名。
+    /// Join a namespace with an identifier into a fully qualified name.
     fn join_namespace(&self, ns: &str, name: &str) -> String {
         let sep = self.namespace_separator().first().copied().unwrap_or('\\');
         let ns = ns.trim_end_matches(|c| self.namespace_separator().contains(&c));
@@ -41,30 +41,30 @@ pub trait LanguageParser: Send + Sync {
         }
     }
 
-    /// 拼接类与其成员，产出成员的完全限定名（`App\Foo::bar` / `com.Foo.bar`）。
+    /// Join a class with its member into the member's fully qualified name (`App\Foo::bar` / `com.Foo.bar`).
     fn join_member(&self, class_fqn: &str, member: &str) -> String {
         format!("{}{}{}", class_fqn, self.member_separator(), member)
     }
 
-    /// 该语言生态的工程/包标记文件（用于子工程识别），如 `composer.json`。
+    /// The project / package marker files of this language's ecosystem (for sub-project detection), e.g. `composer.json`.
     fn manifest_files(&self) -> &'static [&'static str] {
         &[]
     }
 
-    /// 该语言生态的依赖与构建输出目录（叠加在通用排除规则之上），如 `vendor/`。
+    /// The dependency and build-output directories of this language's ecosystem (layered on the common exclusions), e.g. `vendor/`.
     fn exclude_dirs(&self) -> &'static [&'static str] {
         &[]
     }
 }
 
-/// 解析器注册中心（工厂端口）。
+/// Parser registry (factory port).
 ///
-/// 新增语言只需注册一个新实现，无需改动任何上层代码。
+/// Adding a language only means registering a new implementation; no upper-layer code changes.
 pub trait ParserRegistry: Send + Sync {
     fn parser_for(&self, language: &Language) -> Option<&dyn LanguageParser>;
     fn supported_languages(&self) -> Vec<Language>;
 
-    /// 按文件扩展名推断语言。
+    /// Infer the language from a file extension.
     fn language_for_extension(&self, ext: &str) -> Option<Language> {
         self.supported_languages().into_iter().find(|lang| {
             self.parser_for(lang)

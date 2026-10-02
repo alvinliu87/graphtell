@@ -1,11 +1,11 @@
-//! P2 CfAst：从语言语法创建语法级节点与边。
+//! P2 CfAst: create syntax-level nodes and edges from the language grammar.
 //!
-//! 产物：`Class` / `Interface` / `Trait` / `Enum` / `Method` / `Function` /
-//! `Property` / `Const` / `Namespace` / `CallSite` 节点，
-//! `imports` 表（短名 → FQN）、`by_name` 索引（FQN → NodeId），
-//! 以及继承 / 实现 / trait 边。
+//! Products: `Class` / `Interface` / `Trait` / `Enum` / `Method` / `Function` /
+//! `Property` / `Const` / `Namespace` / `CallSite` nodes,
+//! the `imports` table (short name -> FQN), the `by_name` index (FQN -> NodeId),
+//! and inheritance / implementation / trait edges.
 //!
-//! 本阶段**完全语言无关**：它只消费 `SyntaxFacts`。
+//! This phase is **completely language-agnostic**: it only consumes `SyntaxFacts`.
 
 use std::collections::HashMap;
 
@@ -18,19 +18,13 @@ use tracing::{debug, warn};
 
 use crate::context::PipelineContext;
 
-/// 执行 CfAst。
+/// Run CfAst.
 pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn FileSystem) {
     let phase = Phase(Phase::CF_AST.to_string());
     let project_id = ctx.project.id;
     let root = ctx.project.root_path.clone();
     let files: Vec<SourceFile> = ctx.files.clone();
 
-    // 「语言 → 因无解析器而被跳过的文件数」。
-    //
-    // 必须显式报出来：`MARKERS` 里已有 go.mod / Cargo.toml 等标记，扩展名兜底表
-    // 也能把 `.go` / `.rs` 扫进来，于是这些工程会**被识别成子工程**，却在 P2 一个
-    // 语法事实都产不出 —— 工程图静默为空，而流水线照常成功。Python 在补上解析器
-    // 之前正是这个状态，且无人察觉（连一条 warn 都没有）。
     let mut unsupported: HashMap<String, usize> = HashMap::new();
 
     for file in files {
@@ -38,31 +32,27 @@ pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn Fil
         let source = match fs.read_to_string(&abs) {
             Ok(s) => s,
             Err(e) => {
-                debug!("跳过无法读取的文件 {}: {e}", file.path);
+                debug!("skipping an unreadable file {}: {e}", file.path);
                 continue;
             }
         };
         let Some(parser) = parsers.parser_for(&file.language) else {
             *unsupported.entry(file.language.as_str().to_string()).or_insert(0) += 1;
-            // 降级而不是丢弃：仍建出 **File 节点**。
-            //
-            // 此前这里直接 `continue`，于是无解析器的子工程在图上**一个节点都没有**
-            // —— 用户看到空画布，无从判断是"工程本身没东西"还是"工具不支持"。
-            // 建出 File 节点后至少有文件清单（结构层）可看，语义层为空由诊断明确告知。
+            // Degrade instead of dropping: still build the **File node**.
             build_file(ctx, project_id, &file, &SyntaxFacts::default(), &phase);
             continue;
         };
         let facts: SyntaxFacts = match parser.parse(&file.path, &source) {
             Ok(f) => f,
             Err(e) => {
-                warn!("解析失败 {}: {e}", file.path);
+                warn!("parse failed {}: {e}", file.path);
                 continue;
             }
         };
         build_file(ctx, project_id, &file, &facts, &phase);
     }
 
-    // 按语言**聚合**后各报一条（而不是每文件一条，避免刷屏）。
+    // Report **per language** aggregated (not per file, to avoid flooding).
     let mut langs: Vec<(String, usize)> = unsupported.into_iter().collect();
     langs.sort();
     for (lang, n) in langs {
@@ -71,19 +61,19 @@ pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn Fil
             "NoParserForLanguage",
             Severity::Warning,
             format!(
-                "语言 `{lang}` 暂无解析器：{n} 个源文件**只建出文件节点**（结构层），\
-                 没有类 / 函数 / 调用等语义抽取 —— 该子工程的图只有文件结构"
+                "language `{lang}` has no parser yet: {n} source files only built file nodes (the structural layer),\
+                 no class / function / call semantic extraction — this sub-project's graph has only file structure"
             ),
             None,
         );
-        // 机器可读的同事实，供 UI 直接出横幅（诊断给人看，这条给界面查）。
+        // The same fact in machine-readable form, for the UI to render a banner directly (diagnostics are for humans, this is for the interface to look up).
         ctx.ws.put_symbol(
             ctx.project.id,
             "unsupported_languages",
             &lang,
             serde_json::json!({ "files": n }),
         );
-        warn!("语言 {lang} 暂无解析器：{n} 个文件只建结构层节点（无语义抽取）");
+        warn!("language {lang} has no parser yet: {n} files only built structural-layer nodes (no semantic extraction)");
     }
 }
 
@@ -112,13 +102,13 @@ fn build_file(
     });
     ctx.ws.record_file_node(&file.path, file_node);
 
-    // 导入表：短名(小写) → FQN（class 短名映射到 fully qualified name）
+    // Imports table: short name (lowercased) -> FQN (class short name maps to fully qualified name)
     let mut imports: HashMap<String, String> = HashMap::new();
     for imp in &facts.imports {
         let fqn = imp.name.trim_start_matches('\\').to_string();
         let short = match &imp.alias {
             Some(a) => a.clone(),
-            // 短名取最后一个命名空间分段：Java 用 `.`、PHP 用 `\`，统一按两者之一切分。
+            // Short name takes the last namespace segment: Java uses `.`, PHP uses `\`, split uniformly by either.
             None => fqn
                 .rsplit(|c: char| c == '.' || c == '\\')
                 .next()
@@ -137,12 +127,12 @@ fn build_file(
             );
         }
     }
-    // 留一份**本文件**的导入表供 P7 解析调用接收者：全局 `imports` 符号表是先到先得的，
-    // 同名短名在不同文件里指向不同类时它必然出错，只有按文件存才符合 PHP 的解析规则。
+    // Keep a **per-file** imports table for P7 to resolve call receivers: the global `imports` symbol table is first-come-first-served,
+    // and would necessarily break when the same short name points to different classes in different files; only storing per file matches PHP resolution rules.
     ctx.ws
         .record_file_imports(file.id.get(), &file.path, imports.clone());
 
-    // Namespace 节点（按 FQN 去重）
+    // Namespace node (deduped by FQN)
     let mut ns_node: Option<NodeId> = None;
     for d in &facts.declarations {
         if d.kind.as_str() != NodeKind::NAMESPACE {
@@ -169,7 +159,7 @@ fn build_file(
         ns_node = Some(id);
     }
 
-    // 类型节点（先建类，再建成员，保证 by_name 可用）
+    // Type nodes (build classes first, then members, so by_name is usable)
     let mut local: HashMap<String, NodeId> = HashMap::new();
     for d in &facts.declarations {
         if !matches!(
@@ -216,7 +206,7 @@ fn build_file(
         }
     }
 
-    // 成员节点：Method / Function / Property / Const / EnumCase
+    // Member nodes: Method / Function / Property / Const / EnumCase
     for d in &facts.declarations {
         if !matches!(
             d.kind.as_str(),
@@ -250,8 +240,8 @@ fn build_file(
             }
         }
         if d.kind.as_str() == NodeKind::METHOD {
-            // 参数类型：`__construct(LoginServices $services)` → 变量 services : LoginServices。
-            // 供 P7 解析 `$services->appAuth()`（按变量类型）。
+            // Parameter type: `__construct(LoginServices $services)` -> variable services : LoginServices.
+            // Used by P7 to resolve `$services->appAuth()` (by variable type).
             if let Some(params) = d.extra.get("parameters").and_then(|v| v.as_array()) {
                 for p in params {
                     let (Some(var), Some(ty)) = (
@@ -268,12 +258,12 @@ fn build_file(
                         &imports,
                         ty.trim_start_matches('?'),
                     );
-                    // 变量名统一去掉 `$` 前缀，便于按 `$var` 查表。
+                    // Strip the `$` prefix from variable names uniformly, so they can be looked up by `$var`.
                     ctx.ws
                         .add_param_type(&d.fqn, var.trim_start_matches('$'), &fqn);
                 }
             }
-            // 构造器注入：`$this->services = $services` → 属性 services 的类型 = 参数 services 的类型。
+            // Constructor injection: `$this->services = $services` -> property services type = parameter services type.
             if let Some(assigns) = d.extra.get("this_assigns").and_then(|v| v.as_array()) {
                 let Some(class_fqn) = d.parent_fqn.as_deref() else {
                     continue;
@@ -291,10 +281,6 @@ fn build_file(
                     }
                 }
             }
-            // 右侧自带类型的属性赋值：`$this->model = new OrderModel;` /
-            // `$this->orderInfo = OrderModel::getDetail(...)` / `$this->x = app(Y::class)`。
-            // 只在**还没有更权威来源**（参数类型提示 / 属性声明类型）时才补，
-            // 让"显式声明 > 构造器注入 > 赋值推断"这条优先级成立。
             if let Some(assigns) = d.extra.get("this_assign_types").and_then(|v| v.as_array()) {
                 let Some(class_fqn) = d.parent_fqn.as_deref() else {
                     continue;
@@ -313,7 +299,7 @@ fn build_file(
                     ctx.ws.set_prop_type(class_fqn, prop, &fqn);
                 }
             }
-            // 方法内局部变量：`$model = new OrderModel();` → `$model->where(...)` 可解析。
+            // Local variable inside a method: `$model = new OrderModel();` -> `$model->where(...)` is resolvable.
             if let Some(list) = d.extra.get("local_assign_types").and_then(|v| v.as_array()) {
                 for a in list {
                     let (Some(var), Some(cls)) = (
@@ -326,8 +312,8 @@ fn build_file(
                     ctx.ws.set_local_type(&d.fqn, var, &fqn);
                 }
             }
-            // `return X::class;` → 声明式联系：所属类 → X（如 `Dao::setModel()` → Model）。
-            // 跨文件引用交给 P7 统一解析（此时目标类可能尚未建节点）。
+            // `return X::class;` -> declarative link: owning class -> X (e.g. `Dao::setModel()` -> Model).
+            // Cross-file references are resolved uniformly by P7 (the target class may not have a node yet).
             if let Some(list) = d.extra.get("returns_class").and_then(|v| v.as_array()) {
                 if let Some(owner_id) = d.parent_fqn.as_ref().and_then(|p| local.get(p).copied()) {
                     for c in list {
@@ -366,7 +352,7 @@ fn build_file(
         }
     }
 
-    // 继承 / 实现 / trait
+    // Inheritance / implementation / trait
     for inh in &facts.inheritances {
         let base_fqn = resolve_type(facts.namespace.as_deref(), &imports, &inh.base_name);
         let target = ctx
@@ -386,9 +372,6 @@ fn build_file(
             file: file.path.clone(),
             span: inh.span,
         });
-        // 基类可能在 vendor 等被排除目录里（不在图内）。继承关系本身**必须**
-        // 被记录——下游「继承链」推导（如模型→表）依赖它，否则整条都丢。
-        // 因此为被排除的基类建一个占位节点并连边。
         let target = match target {
             Some(t) => t,
             None => {
@@ -397,7 +380,7 @@ fn build_file(
                     "AliasTargetMissing",
                     Severity::Info,
                     format!(
-                        "基类 {} 不在图内（可能被 Ingest 排除），已记占位节点",
+                        "base class {} is not in the graph (possibly excluded by Ingest), a placeholder node was recorded",
                         base_fqn
                     ),
                     Some(format!("{}:{}", file.path, inh.span.start_line)),
@@ -434,8 +417,8 @@ fn build_file(
         });
     }
 
-    // `@method` 魔法方法：类用 phpdoc 声明、由 `__call` 转发的方法名。
-    // 它们没有方法节点，但调用点上写的是真实方法名 —— P7 据此把它转给 FKB 声明的委派属性。
+    // `@method` magic methods: methods a class declares via phpdoc and forwards through `__call`.
+    // They have no method node, but the call site writes the real method name — P7 uses this to hand it to the FKB-declared delegation attribute.
     for d in &facts.declarations {
         if d.kind.as_str() != NodeKind::CLASS {
             continue;
@@ -454,23 +437,19 @@ fn build_file(
         ctx.ws.set_magic_methods(&d.fqn, &names);
     }
 
-    // 字段声明类型：按 import 还原成 FQN，写入 `prop_types`（供 P7 按字段类型解析
-    // `field.method()` 实例调用，打通 `service → mapper → 表` 的调用链）。
+    // Field-declaration type: restored to FQN via import, written into `prop_types` (so P7 can resolve `field.method()`
+    // instance calls by field type, connecting the `service -> mapper -> table` call chain).
     for ft in &facts.field_types {
         let type_fqn = resolve_type(facts.namespace.as_deref(), &imports, &ft.type_name);
         ctx.ws.set_prop_type(&ft.class_fqn, &ft.field, &type_fqn);
     }
 
-    // 调用点：细化到 CallSite 节点
+    // Call sites: refine down to CallSite nodes
     for call in &facts.call_sites {
         let owner = local
             .get(&call.owner_fqn)
             .copied()
             .or_else(|| ctx.ws.find_by_name(&call.owner_fqn))
-            // 字段装饰器的 owner 是**字段 FQN**（`@Column() body` → `UserEntity.body`），
-            // 而字段本身不是节点。此时退回它所属的类，而不是整份退到文件节点：
-            // 否则这类调用点会挂在 File 下（`HasCallSite` 从文件发出），Synthesize 的
-            // `link`（起点取 owner）也就连不到实体类上。
             .or_else(|| {
                 owner_parent(&call.owner_fqn).and_then(|p| {
                     local.get(&p).copied().or_else(|| ctx.ws.find_by_name(&p))
@@ -493,9 +472,6 @@ fn build_file(
             language: file.language.clone(),
             phase: phase.clone(),
             confidence: 1.0,
-            // 调用语句原文：供 UI 在链路的"调用处"直接显示，便于一眼核验。
-            // `in_loop`：parser 记录的「在循环体内」，N+1 规则的判据之一 —— 图里
-            // 没有别的地方表达"这段会被执行 N 次"。
             properties: {
                 let mut props = match &call.snippet {
                     Some(s) => serde_json::json!({ "snippet": s }),
@@ -537,8 +513,8 @@ fn build_file(
             sub: file.sub_project_id,
             language: file.language.clone(),
         });
-        // 同行链式调用的实参（`->except(['read'])`）：P4/P5 时 `calls` 会被临时
-        // 移出工作区，故在此顺手登记进索引，供 Synthesize 的展开表读取。
+        // Same-line chained-call arguments (`->except(['read'])`): `calls` is temporarily moved out of the workspace in P4/P5,
+        // so register it in the index here on the side, for the Synthesize expansion table to read.
         ctx.ws.index_chained(
             &file.path,
             call.span.start_line,
@@ -547,7 +523,7 @@ fn build_file(
         );
     }
 
-    // 配置条目（`return [...]` 型文件）
+    // Config entries (`return [...]`-style files)
     let locale = crate::engine::capture_locale("lang/{locale}/*.php", &file.path);
     let file_stem = std::path::Path::new(&file.path)
         .file_stem()
@@ -564,7 +540,7 @@ fn build_file(
         });
     }
 
-    // CORS 头赋值事实：补上文件路径，供 `phase::cors` 与调用点按 (文件, 行) 对齐。
+    // CORS header-assignment fact: add the file path, so `phase::cors` aligns with the call site by (file, line).
     for h in &facts.header_assignments {
         ctx.ws.header_assignments.push(gt_domain::model::syntax::HeaderAssignFact {
             key: h.key.clone(),
@@ -574,7 +550,7 @@ fn build_file(
         });
     }
 
-    // 签名比较事实：补上文件路径，供 `phase::sign` 与同函数内的签名计算对齐。
+    // Signature-comparison fact: add the file path, so `phase::sign` aligns with the in-function signature computation.
     for c in &facts.sign_compares {
         ctx.ws.sign_compares.push(gt_domain::model::syntax::SignCompareFact {
             left: c.left.clone(),
@@ -586,7 +562,7 @@ fn build_file(
         });
     }
 
-    // 局部变量赋值事实：补上文件路径，供 `phase::taint` 在同函数内反向追踪变量来源。
+    // Local-variable-assignment fact: add the file path, so `phase::taint` traces variable origins backward within the same function.
     for a in &facts.variable_assignments {
         ctx.ws
             .variable_assignments
@@ -600,10 +576,10 @@ fn build_file(
     }
 }
 
-/// `Class.member` / `Ns\Class::member` → `Class`（无成员分隔符时返回 `None`）。
+/// `Class.member` / `Ns\Class::member` -> `Class` (returns `None` when there is no member separator).
 ///
-/// 成员分隔符随语言而变：PHP `::`、Java / JS `.`。只在**精确 FQN 查不到节点**时才用，
-/// 故不会把类 FQN（`com.example.MyClass`）误切成包名 —— 那种情况本就不会走到这里。
+/// The member separator varies by language: PHP `::`, Java / JS `.`. Only used when **the exact FQN lookup finds no node**,
+/// so it will not wrongly slice a class FQN (`com.example.MyClass`) into a package name — that case would never reach here.
 fn owner_parent(fqn: &str) -> Option<String> {
     let idx = fqn.rfind("::").or_else(|| fqn.rfind('.'))?;
     let parent = &fqn[..idx];
@@ -621,7 +597,7 @@ fn property_value(d: &Declaration) -> FactValue {
         .unwrap_or(FactValue::Null)
 }
 
-/// 把源码里写的类型名解析为完全限定名。
+/// Resolve a type name written in source into a fully qualified name.
 pub fn resolve_type(ns: Option<&str>, imports: &HashMap<String, String>, name: &str) -> String {
     let raw = name.trim();
     if raw.starts_with('\\') {
@@ -639,7 +615,7 @@ pub fn resolve_type(ns: Option<&str>, imports: &HashMap<String, String>, name: &
     }
 }
 
-/// 是否为语言内建类型（`int` / `string` / `array`…），不是类名，跳过后不参与类型推断。
+/// Whether it is a language-builtin type (`int` / `string` / `array` …), not a class name; skipped, not participating in type inference.
 fn is_builtin_type(t: &str) -> bool {
     matches!(
         t.trim_start_matches('?').trim().to_ascii_lowercase().as_str(),

@@ -1,7 +1,7 @@
-//! 持久化端口。
+//! Persistence ports.
 //!
-//! 按 **接口隔离原则** 拆成若干细粒度 trait，再由一个空的组合 trait
-//! [`Persistence`] 提供 blanket impl，方便上层一次拿到全部能力。
+//! Split into several fine-grained traits following the **interface segregation principle**, with one empty
+//! composite trait [`Persistence`] providing a blanket impl so upper layers can take all capabilities at once.
 
 use std::collections::HashMap;
 
@@ -15,10 +15,10 @@ use crate::model::{
 };
 use crate::model::graph::NodeSummary;
 
-/// 图的一次批量写入。
+/// One batch write of the graph.
 ///
-/// 流水线各阶段在内存中累积变更，阶段结束一次性落库 ——
-/// 既保证原子性，也让领域逻辑保持纯粹（不依赖事务 API）。
+/// Each pipeline phase accumulates changes in memory and persists them once at the end of the phase — this keeps
+/// atomicity while letting the domain logic stay pure (no dependency on a transaction API).
 #[derive(Debug, Clone, Default)]
 pub struct GraphDelta {
     pub nodes: Vec<NewNode>,
@@ -27,19 +27,20 @@ pub struct GraphDelta {
     pub aliases: Vec<AliasEntry>,
     pub symbols: Vec<SymbolEntry>,
     pub diagnostics: Vec<Diagnostic>,
-    /// 为 `true` 时先清空该工程的图数据（重跑流水线用）。
+    /// When `true`, clear this project's graph data first (for re-running the pipeline).
     pub reset_project: bool,
     pub project_id: Option<ProjectId>,
-    /// 合成节点在后续阶段被补充的属性（id → patch）。
+    /// Properties added to a synthetic node by later phases (id -> patch).
     pub property_patches: Vec<(crate::model::NodeId, Value)>,
-    /// 合成节点的"多处共现位置"追加（id → 位置）。
+    /// Appended "co-occurrence locations" of a synthetic node (id -> location).
     pub location_patches: Vec<(crate::model::NodeId, crate::model::SourceLocation)>,
-    /// **节点种类的晋升**（id → 新种类）。
+    /// **Node-kind promotion** (id -> new kind).
     ///
-    /// 用于「语法节点被认出语义角色后升级为语义节点」——典型如中间件：它先是 P2 建出来的
-    /// 一个 `Class`，等 P14 确认它确实挂在路由上时，把它晋升成 `Middleware`
-    /// （**改的只是 kind，节点仍只有这一个**，绝不新造一个同身份节点 —— 否则同一份
-    /// 代码在图里出现两次，扇入分裂、跳转给出两份位置）。
+    /// Used for "a syntax node recognised as having a semantic role is promoted to a semantic node" — the typical
+    /// case is middleware: it is first built by P2 as a `Class`, and once P14 confirms it really is attached to a
+    /// route it is promoted to `Middleware` (**only the kind changes, there is still exactly one node** — never create
+    /// a second node with the same identity, otherwise the same piece of code appears twice on the graph, fan-in
+    /// splits, and jump-to-source offers two locations).
     pub kind_patches: Vec<(crate::model::NodeId, crate::model::NodeKind)>,
 }
 
@@ -73,7 +74,7 @@ impl GraphDelta {
     }
 }
 
-/// 工程读端口。
+/// The project-read port.
 pub trait ProjectReader: Send + Sync {
     fn get_project(&self, id: ProjectId) -> Result<Option<Project>>;
     fn list_projects(&self) -> Result<Vec<Project>>;
@@ -81,7 +82,7 @@ pub trait ProjectReader: Send + Sync {
     fn list_files(&self, project_id: ProjectId, sub: Option<SubProjectId>) -> Result<Vec<SourceFile>>;
 }
 
-/// 工程写端口。
+/// The project-write port.
 pub trait ProjectWriter: Send + Sync {
     fn create_project(&self, new: NewProject) -> Result<Project>;
     fn update_project(&self, id: ProjectId, patch: ProjectPatch) -> Result<Project>;
@@ -93,22 +94,23 @@ pub trait ProjectWriter: Send + Sync {
         subs: Vec<NewSubProject>,
     ) -> Result<Vec<SubProject>>;
     fn update_sub_project_facts(&self, id: SubProjectId, facts: Value) -> Result<()>;
-    /// 回填 P3 识别出的框架标识。
+    /// Back-fill the framework identifier detected by P3.
     fn set_sub_project_frameworks(&self, id: SubProjectId, frameworks: Vec<String>) -> Result<()>;
     fn replace_files(&self, project_id: ProjectId, files: Vec<NewSourceFile>)
         -> Result<Vec<SourceFile>>;
 }
 
-/// 图写入端口。
+/// The graph-write port.
 pub trait GraphSink: Send + Sync {
-    /// 应用一批变更。
+    /// Apply a batch of changes.
     ///
-    /// 节点 id 由流水线按工程分段分配（`gt_pipeline::NODE_ID_STRIDE` 的设计约定），
-    /// 因此这里不需要"当前最大 id"之类的全局协调：并发建图也不会互相覆盖。
+    /// Node ids are allocated by the pipeline in per-project segments (the design convention of
+    /// `gt_pipeline::NODE_ID_STRIDE`), so no global coordination such as "the current maximum id" is needed here:
+    /// concurrent graph builds cannot overwrite each other.
     fn apply(&self, delta: &GraphDelta) -> Result<()>;
 }
 
-/// 节点过滤条件。
+/// Node filter conditions.
 #[derive(Debug, Clone, Default)]
 pub struct NodeFilter {
     pub project_id: ProjectId,
@@ -118,46 +120,49 @@ pub struct NodeFilter {
     pub offset: Option<u32>,
 }
 
-/// 图统计。
+/// Graph statistics.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct GraphStats {
     pub nodes: u64,
     pub edges: u64,
     pub annotations: u64,
     pub by_kind: std::collections::BTreeMap<String, u64>,
-    /// 按 `properties.category` 统计（目前 `category` 与 `kind` 一致）。
+    /// Counted by `properties.category` (currently `category` is identical to `kind`).
     #[serde(default)]
     pub by_category: std::collections::BTreeMap<String, u64>,
 }
 
-/// 图查询端口。
+/// The graph-query port.
 pub trait GraphQuery: Send + Sync {
     fn query_nodes(&self, filter: &NodeFilter) -> Result<Vec<Node>>;
     fn get_node(&self, id: crate::model::NodeId) -> Result<Option<Node>>;
-    /// 批量取节点（`id IN (...)`，内部分块）。
+    /// Fetch nodes in batches (`id IN (...)`, chunked internally).
     ///
-    /// 折叠视图要把每条边 `via` 链上所有节点的位置一次内联出来，一次请求涉及几十上百个
-    /// 节点 —— 逐个 `get_node` 是 N+1 往返，实测占对象视图耗时近三分之一。
+    /// The folded view has to inline the locations of every node on an edge's `via` chain at once, and one request can
+    /// involve tens or hundreds of nodes — calling `get_node` one by one is an N+1 round trip that measured as nearly
+    /// a third of the object-view time.
     fn get_nodes(&self, ids: &[crate::model::NodeId]) -> Result<HashMap<i64, Node>>;
     fn edges_of(
         &self,
         node: crate::model::NodeId,
         direction: EdgeDirection,
     ) -> Result<Vec<Edge>>;
-    /// 工程全部节点的概要（id/kind/name/fqn/sub_project_id），供视图层一次预加载，
-    /// 取代 BFS 里每个节点一次的 `get_node` 往返。返回 `id -> 概要` 便于 O(1) 查询。
+    /// Summaries of every node in a project (id/kind/name/fqn/sub_project_id), so the view layer can preload in one
+    /// shot instead of one `get_node` round trip per node during BFS. Returns `id -> summary` for O(1) lookups.
     fn nodes_summary(&self, project_id: ProjectId) -> Result<HashMap<i64, NodeSummary>>;
-    /// 批量取「出边」：返回 `from_id -> 边列表`，内部按 `from_id IN (...)` 分块查询。
+    /// Fetch "out-edges" in batches: returns `from_id -> edge list`, chunked internally by `from_id IN (...)`.
     fn edges_outgoing(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>>;
-    /// 批量取「入边」：返回 `to_id -> 边列表`，内部按 `to_id IN (...)` 分块查询。
+    /// Fetch "in-edges" in batches: returns `to_id -> edge list`, chunked internally by `to_id IN (...)`.
     fn edges_incoming(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>>;
-    /// 链式边邻接（仅 `from_id, to_id`，已过滤为调用链边），供候选打分 BFS 在内存里跑。
-    /// 返回 `(outgoing: from_id -> [to_id], incoming: to_id -> [from_id], semantic_incoming: to_id -> [from_id])`，
-    /// 一次性取整个工程的链边，避免逐节点查库、也避开完整 `Edge`（含 `properties` JSON）的沉重传输。
+    /// Chain-edge adjacency (only `from_id, to_id`, already filtered to call-chain edges), so candidate scoring BFS can
+    /// run in memory. Returns `(outgoing: from_id -> [to_id], incoming: to_id -> [from_id], semantic_incoming:
+    /// to_id -> [from_id])`, taking the whole project's chain edges in one go — avoiding per-node queries and the heavy
+    /// transfer of a full `Edge` (which carries a `properties` JSON).
     ///
-    /// 第三份 `semantic_incoming` **只含语义边**（见 [`crate::model::kinds::is_semantic_edge`]）：
-    /// 徽标里的"入边"必须按语义口径计数 —— 链边里的 `Calls` / `HasCallSite` 是语法调用边，
-    /// 把它们数进"入边 N"会让数字既不与画布（只画语义边）对得上，也不承载业务含义。
+    /// The third map, `semantic_incoming`, contains **semantic edges only** (see
+    /// [`crate::model::kinds::is_semantic_edge`]): the badge's "in-edges" must be counted on the semantic basis —
+    /// `Calls` / `HasCallSite` among chain edges are syntactic call edges, and counting them into "N in-edges" would
+    /// make the number agree neither with the canvas (which draws semantic edges only) nor with any business meaning.
     fn chain_adjacency(
         &self,
         project_id: ProjectId,
@@ -166,51 +171,50 @@ pub trait GraphQuery: Send + Sync {
         HashMap<i64, Vec<i64>>,
         HashMap<i64, Vec<i64>>,
     )>;
-    /// 工程内出现过的全部**边种类**。
+    /// Every **edge kind** that occurs in the project.
     ///
-    /// 规则引擎用它校验判据是否成立（见 [`crate::model::RuleRequirements`]）：
-    /// 图上从来没有 `Triggers` 边时，`no_incoming: Triggers` 对每个节点都成立，
-    /// 会把全部事件节点报成"没人触发"。跑之前先确认这个边种类真的存在过。
+    /// The rule engine uses it to check whether a criterion can hold (see [`crate::model::RuleRequirements`]): when the
+    /// graph has never had a `Triggers` edge, `no_incoming: Triggers` holds for every node and would report all event
+    /// nodes as "never triggered". Confirm the edge kind really exists before running.
     fn edge_kinds(&self, project_id: ProjectId) -> Result<Vec<String>>;
-    /// 工程内出现过的全部**节点种类**。
+    /// Every **node kind** that occurs in the project.
     ///
-    /// 与 [`Self::edge_kinds`] 同理：召回要按「图上真实存在的类型」取候选，而不是
-    /// 硬编码一份类型清单 —— 否则新语言适配器 / 流水线新增的类型会被静默漏掉
-    /// （不是分数低，而是压根不参与召回）。
+    /// Same reasoning as [`Self::edge_kinds`]: recall should take candidates from "the kinds that really exist on the
+    /// graph" rather than a hard-coded list — otherwise types added by a new language adapter or a new pipeline phase
+    /// are silently missed (not scored low, but never participating in recall at all).
     fn node_kinds(&self, project_id: ProjectId) -> Result<Vec<String>>;
-    /// 工程内出现过的全部标注 `(channel, kind)`。
+    /// Every annotation `(channel, kind)` that occurs in the project.
     ///
-    /// 与 [`Self::edge_kinds`] 同理，用于挡住"标注压根没产出"导致的恒真误报；
-    /// 带上 `channel` 是因为 `NoCapability` 只认 `Capability` 通道的标注。
+    /// Same reasoning as [`Self::edge_kinds`], used to block vacuously-true false positives caused by "the annotation
+    /// was never produced"; `channel` is included because `NoCapability` only looks at the `Capability` channel.
     fn annotation_kinds(&self, project_id: ProjectId) -> Result<Vec<(String, String)>>;
     fn annotations_of(&self, node: crate::model::NodeId) -> Result<Vec<Annotation>>;
-    /// 批量取工程全部标注（`node_id -> 标注列表`）。
+    /// Fetch all annotations of a project in one batch (`node_id -> annotation list`).
     ///
-    /// 规则引擎要对成千上万个节点判断 `HasAnnotation` / `NoAnnotation`，
-    /// 逐节点 `annotations_of` 是 N+1 往返（实测万级节点即秒级抖动）。
-    /// 一次预装载后，规则求值全程在内存里完成。
+    /// The rule engine has to evaluate `HasAnnotation` / `NoAnnotation` for thousands of nodes, and a per-node
+    /// `annotations_of` is an N+1 round trip (measured as second-level jitter at the ten-thousand-node scale).
+    /// After one preload, rule evaluation runs entirely in memory.
     fn annotations_of_project(
         &self,
         project_id: ProjectId,
     ) -> Result<HashMap<i64, Vec<Annotation>>>;
-    /// 批量取工程内全部源文件路径（`file_id -> path`）。
-    ///
-    /// 违规与召回都要把节点还原成 `path:line`；同样是避免逐文件往返。
+    /// Fetch all source file paths in a project in one batch (`file_id -> path`).
     fn file_paths(&self, project_id: ProjectId) -> Result<HashMap<i64, String>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
-    /// 按「种类 + 端（side）」统计节点数（比 `query_nodes` 轻量，只 `COUNT`）。
-    /// 视角层用它给带 `side` 过滤的视角（如前端本地存储 / 后端缓存拆分）算候选数量。
+    /// Count nodes by "kind + side" (lighter than `query_nodes`, a `COUNT` only).
+    /// The view layer uses it to compute candidate counts for perspectives with a `side` filter (such as the front-end
+    /// local-storage / back-end cache split).
     ///
-    /// `side` 为 `None` 时不限制端；`kind` 为 `None` 时不限制种类。
+    /// `side` = `None` means no restriction on the side; `kind` = `None` means no restriction on the kind.
     fn count_nodes(
         &self,
         project_id: ProjectId,
         kind: Option<&NodeKind>,
         side: Option<&str>,
     ) -> Result<u64>;
-    /// 按主键取边（供"边证据链"查询）。
+    /// Fetch an edge by primary key (for the "edge evidence chain" query).
     fn find_edge(&self, id: crate::model::EdgeId) -> Result<Option<Edge>>;
-    /// 取文件路径（供跳转定位）。
+    /// Fetch a file path (for jump-to-source).
     fn file_path(&self, id: crate::model::FileId) -> Result<Option<String>>;
 }
 
@@ -221,13 +225,13 @@ pub enum EdgeDirection {
     Both,
 }
 
-/// 权威符号表读端口。
+/// The authoritative symbol-table read port.
 pub trait SymbolTableReader: Send + Sync {
     fn get_symbol(&self, project_id: ProjectId, table: &str, key: &str) -> Result<Option<Value>>;
     fn list_symbols(&self, project_id: ProjectId, table: &str) -> Result<Vec<SymbolEntry>>;
 }
 
-/// 诊断落库端口。
+/// The diagnostics persistence port.
 pub trait DiagnosticSink: Send + Sync {
     fn push_diagnostics(&self, items: &[Diagnostic]) -> Result<()>;
     fn list_diagnostics(
@@ -235,23 +239,22 @@ pub trait DiagnosticSink: Send + Sync {
         project_id: ProjectId,
         limit: u32,
     ) -> Result<Vec<Diagnostic>>;
-    /// 列诊断，**排除**给定 code 前缀。
+    /// List diagnostics, **excluding** a given code prefix.
     ///
-    /// 与 [`DiagnosticSink::count_diagnostics_excluding`] 必须成对使用：
-    /// 页面上的角标按"排除 rule:"统计，列表却按"全部"取的话，
-    /// 用户会看到角标写着 0 error、表格里却全是别的东西 —— 两个口径不一致
-    /// 比任何一条具体错误都更能摧毁信任。
+    /// Must be used together with [`DiagnosticSink::count_diagnostics_excluding`]: the page badge counts "excluding
+    /// rule:" while the list takes "everything", so the user would see a badge saying 0 errors next to a table full of
+    /// something else — two inconsistent definitions destroy trust more than any single error does.
     fn list_diagnostics_excluding(
         &self,
         project_id: ProjectId,
         exclude_prefix: &str,
         limit: u32,
     ) -> Result<Vec<Diagnostic>>;
-    /// 按 code 前缀列出诊断（如 `rule:` 取全部规则违规）。
+    /// List diagnostics by code prefix (e.g. `rule:` for all rule violations).
     ///
-    /// `sub_project_id` 为 `Some(ids)` 时只返回归属这些子工程的诊断，
-    /// 且**共享诊断（`sub_project_id IS NULL`，如跨子工程的表/队列）始终保留**——
-    /// 与图视图的"共享节点在任一过滤下都显示"语义一致。为 `None` 时不限制。
+    /// When `sub_project_id` is `Some(ids)` only diagnostics belonging to those sub-projects are returned, and
+    /// **shared diagnostics (`sub_project_id IS NULL`, e.g. cross-sub-project tables / queues) are always kept** —
+    /// consistent with the graph view's "shared nodes show under any filter" semantics. `None` means no restriction.
     fn list_diagnostics_by_code(
         &self,
         project_id: ProjectId,
@@ -259,36 +262,37 @@ pub trait DiagnosticSink: Send + Sync {
         sub_project_id: Option<&[SubProjectId]>,
         limit: u32,
     ) -> Result<Vec<Diagnostic>>;
-    /// 按 code 前缀清理诊断，返回删除条数。
+    /// Clear diagnostics by code prefix, returning the number deleted.
     ///
-    /// 规则可反复执行，若不清理上一轮的 `rule:*` 违规，诊断表会无限堆积、
-    /// 且用户看到的会是"历史结论"而非当前代码的结论。
+    /// Rules can run repeatedly; without clearing the previous round's `rule:*` violations the diagnostics table grows
+    /// without bound and the user sees "historical conclusions" rather than conclusions about the current code.
     fn clear_diagnostics(&self, project_id: ProjectId, code_prefix: &str) -> Result<u64>;
-    /// 按 code 前缀 + 严重度聚合计数，返回 `(severity_snake_case, count)` 列表。
+    /// Aggregate counts by code prefix + severity, returning a `(severity_snake_case, count)` list.
     ///
-    /// 用于菜单角标这类轻量汇总：不拉全量违规，只取分组计数。
+    /// For lightweight summaries such as the menu badge: no full violation fetch, only grouped counts.
     fn count_diagnostics_by_code(
         &self,
         project_id: ProjectId,
         code_prefix: &str,
         sub_project_id: Option<&[SubProjectId]>,
     ) -> Result<Vec<(String, u64)>>;
-    /// 按 code **排除**某前缀 + 严重度聚合计数，返回 `(severity_snake_case, count)` 列表。
+    /// Aggregate counts by severity while **excluding** a code prefix, returning a `(severity_snake_case, count)` list.
     ///
-    /// 诊断页展示的是"非规则"的诊断（根缺失、断链、identity 冲突等），
-    /// 规则违规已单独归到合规检查，这里排除 `rule:` 前缀避免重复计数。
+    /// The diagnostics page shows "non-rule" diagnostics (missing roots, broken links, identity conflicts, …); rule
+    /// violations already have their own compliance-check home, so `rule:` is excluded here to avoid double counting.
     fn count_diagnostics_excluding(
         &self,
         project_id: ProjectId,
         exclude_prefix: &str,
     ) -> Result<Vec<(String, u64)>>;
-    /// 按 code **排除**某前缀 + 按 `(code, severity_snake_case)` 聚合计数，
-    /// 返回 `(code, severity, count)` 列表。
+    /// Aggregate counts by `(code, severity_snake_case)` while **excluding** a code prefix, returning a
+    /// `(code, severity, count)` list.
     ///
-    /// 与 [`Self::count_diagnostics_excluding`] **同一口径**（都排除 `rule:`），只是聚合粒度更细。
-    /// 为什么要细到 code：一条引擎诊断可能在几百个文件上重复触发（`IdentityUnresolved`
-    /// 在 CRMEB 上就有 349 条），报「349 条」读不出信息量 —— 那是 349 个**同类事实**。
-    /// 报「1 类 · 349 处」才说得清"图少了哪一块、要不要管"。
+    /// **Same definition** as [`Self::count_diagnostics_excluding`] (both exclude `rule:`), just at a finer granularity.
+    /// Why it must go down to `code`: one engine diagnostic can fire across hundreds of files (`IdentityUnresolved`
+    /// alone has 349 entries on CRMEB), and reporting "349 entries" carries no information — those are 349 **facts of
+    /// the same type**. Reporting "1 type · 349 places" is what tells you which piece of the graph is missing and
+    /// whether it matters.
     fn count_diagnostics_by_code_excluding(
         &self,
         project_id: ProjectId,
@@ -296,20 +300,20 @@ pub trait DiagnosticSink: Send + Sync {
     ) -> Result<Vec<(String, String, u64)>>;
 }
 
-/// 工程级规则配置端口（按工程覆盖规则的启用态与参数）。
+/// The project-level rule config port (per-project override of a rule's enabled state and parameters).
 pub trait RuleConfigStore: Send + Sync {
-    /// 取某工程全部规则配置覆盖（key = rule_id）。
+    /// Take every rule config override of a project (key = rule_id).
     fn get_rule_configs(
         &self,
         project_id: ProjectId,
     ) -> Result<std::collections::HashMap<String, ProjectRuleConfig>>;
-    /// 写入（或清除）单条规则配置。覆盖为空（enabled=None 且 options 为空）= 删除该行。
+    /// Write (or clear) one rule's config. An empty override (enabled=None and options empty) means delete the row.
     fn set_rule_config(&self, cfg: &ProjectRuleConfig) -> Result<()>;
-    /// 删除某工程单条规则的配置（恢复继承默认）。
+    /// Delete one rule's config for a project (back to inheriting the default).
     fn delete_rule_config(&self, project_id: ProjectId, rule_id: &str) -> Result<()>;
 }
 
-/// 组合端口：一次拿到全部持久化能力。
+/// Composite port: take every persistence capability at once.
 pub trait Persistence:
     ProjectReader
     + ProjectWriter

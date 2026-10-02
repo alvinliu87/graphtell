@@ -1,7 +1,8 @@
-//! `gt-adapter-parser` —— 源码解析适配器（出站端口 `ParserRegistry` 的实现）。
+//! `gt-adapter-parser` — the source-parsing adapter (implementation of the outbound port `ParserRegistry`).
 //!
-//! 本 crate 是**唯一**接触 tree-sitter 的地方。它把各语言的具体语法树
-//! 翻译成领域定义的、语言无关的 [`SyntaxFacts`]，从而使流水线与语言无关。
+//! This crate is the **only** place that touches tree-sitter. It translates each language's concrete
+//! syntax tree into the language-agnostic [`SyntaxFacts`] defined by the domain, making the pipeline
+//! language-independent.
 
 pub mod java;
 pub mod js;
