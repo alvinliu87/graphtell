@@ -20,7 +20,7 @@ if os.path.isdir(DST_DIR):
     shutil.rmtree(DST_DIR)
 os.makedirs(DST_DIR, exist_ok=True)
 
-print(">> 加载 bge-m3 backbone ...", flush=True)
+print(">> loading bge-m3 backbone ...", flush=True)
 tok = AutoTokenizer.from_pretrained(SRC)
 model = AutoModel.from_pretrained(SRC)
 model.eval()
@@ -48,7 +48,7 @@ attention_mask = torch.ones(1, seq, dtype=torch.long)
 token_type_ids = torch.zeros(1, seq, dtype=torch.long)
 position_ids = torch.arange(0, seq, dtype=torch.long).unsqueeze(0)
 
-print(">> 导出 ONNX ...", flush=True)
+print(">> exporting ONNX ...", flush=True)
 torch.onnx.export(
     w,
     (input_ids, attention_mask, token_type_ids, position_ids),
@@ -66,4 +66,4 @@ torch.onnx.export(
     do_constant_folding=True,
     dynamo=False,
 )
-print(f">> 已导出: {DST} ({os.path.getsize(DST)/1e6:.1f} MB)")
+print(f">> exported: {DST} ({os.path.getsize(DST)/1e6:.1f} MB)")

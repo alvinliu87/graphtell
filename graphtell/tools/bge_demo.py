@@ -19,7 +19,7 @@ def ensure_model():
     if os.path.exists(os.path.join(MS_DIR, "pytorch_model.bin")) or \
        os.path.exists(os.path.join(MS_DIR, "model.safetensors")):
         return MS_DIR
-    print(">> 经 ModelScope 下载 bge-m3（git-lfs，绕开 Xet 墙）...", flush=True)
+    print(">> downloading bge-m3 via ModelScope (git-lfs, to bypass the Xet wall)...", flush=True)
     return snapshot_download(
         "BAAI/bge-m3",
         local_dir=MS_DIR,
@@ -33,7 +33,7 @@ def cos(a, b):
 
 def main():
     path = ensure_model()
-    print(">> 加载 bge-m3 ...", flush=True)
+    print(">> loading bge-m3 ...", flush=True)
     model = SentenceTransformer(path)
 
     # Candidate "business node" texts (CRMEB-style code, English naming)
@@ -61,7 +61,7 @@ def main():
             ((name, cos(qv, v)) for name, v in node_vecs.items()),
             key=lambda x: -x[1],
         )
-        print(f"\n查询: {q}")
+        print(f"\nquery: {q}")
         for name, s in ranked[:5]:
             print(f"  {s:+.4f}  {name}")
     print("\nDONE")

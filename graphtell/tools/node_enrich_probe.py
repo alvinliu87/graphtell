@@ -251,9 +251,9 @@ def main():
                         new_cos[nm] = (len(enr), new_cos.get(nm, (0,None))[1] or np.dot(v, qvec))
         best_enr = max(new_cos.items(), key=lambda kv: kv[1][1]) if new_cos else (None,(0,0))
         print(f"\n# {q}")
-        print(f"    当前真答案名次={cur_rank}  第20名门槛余弦={thr20:.3f}")
-        print(f"    富化后最佳余弦={best_enr[1][1]:.3f} (补{best_enr[1][0]}词: {best_enr[0]})")
-        print(f"    -> 富化后能否进前20: {'✓' if best_enr[1][1] >= thr20 else '✗ (仍差)'}")
+        print(f"    current true-rank={cur_rank}  top-20 threshold cosine={thr20:.3f}")
+        print(f"    best cosine after enrichment={best_enr[1][1]:.3f} (added {best_enr[1][0]} terms: {best_enr[0]})")
+        print(f"    -> enters top 20 after enrichment: {'✓' if best_enr[1][1] >= thr20 else '✗ (still short)'}")
 
 
 if __name__ == "__main__":

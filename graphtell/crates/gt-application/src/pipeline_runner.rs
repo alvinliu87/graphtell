@@ -159,7 +159,7 @@ impl PipelineService {
                 Ok(out)
             }
             Err(e) => {
-                error!("工程 {} 建图失败: {e}", project.name);
+                error!("project {} failed to build the graph: {e}", project.name);
                 self.store.set_project_status(project_id, ProjectStatus::Failed)?;
                 Err(e)
             }
@@ -196,15 +196,15 @@ impl PipelineService {
                     report.duration_ms
                 );
                 for s in &report.rules_unavailable {
-                    warn!("规则停用（判据在本工程不成立）：{}", s);
+                    warn!("rule disabled (its criterion does not hold in this project): {}", s);
                 }
                 for s in &report.rules_silent {
-                    warn!("规则 0 命中（需确认是代码干净还是规则瞎了）：{}", s);
+                    warn!("rule hit 0 times (confirm whether the code is clean or the rule is blind): {}", s);
                 }
             }
             Err(e) => {
                 // Don't propagate upward: the graph is already built; a failed "conclusion" must not mark the build as failed.
-                warn!("工程 {} 自动合规检查失败（图仍可用）：{}", project_name, e);
+                warn!("auto compliance check failed for project {} (the graph is still usable): {}", project_name, e);
             }
         }
     }
@@ -339,7 +339,7 @@ impl PipelineService {
         let edge_n = delta.edges.len();
         let promoted_n = delta.kind_patches.len();
         if let Err(e) = self.store.apply(&delta) {
-            warn!("工程 {project_id} 声明式中间件挂链失败：{e}");
+            warn!("declarative middleware chain failed for project {project_id}: {e}");
         } else {
             info!(
                 "工程 {project_id} 声明式中间件挂链完成：{} 条边 / {} 个晋升为 Middleware",
@@ -357,7 +357,7 @@ impl PipelineService {
         let svc = Arc::clone(self);
         std::thread::spawn(move || {
             if let Err(e) = svc.run(project_id, observer.as_ref()) {
-                error!("后台建图失败: {e}");
+                error!("background graph build failed: {e}");
             }
         });
         Ok(())

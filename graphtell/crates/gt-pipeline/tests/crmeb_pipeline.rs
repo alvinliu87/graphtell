@@ -536,7 +536,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
         })
         .expect("查询可读");
     let Some(center) = contracts.first().cloned() else {
-        eprintln!("未找到 apple_login 契约，跳过");
+        eprintln!("apple_login contract not found, skipping");
         return;
     };
 
@@ -601,7 +601,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
             }
         }
     }
-    eprintln!("apple_login 的语义终点：{semantic:?}");
+    eprintln!("semantic endpoint of apple_login: {semantic:?}");
 
     assert!(
         semantic
@@ -676,7 +676,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
             "WechatUserDao 应有一条 ResolvesTo 边指向 WechatUser（setModel 返回 User::class）"
         );
     } else {
-        eprintln!("未找到 WechatUserDao 类，跳过 Dao→Model 断言");
+        eprintln!("WechatUserDao class not found, skipping the Dao→Model assertion");
     }
 }
 
@@ -831,7 +831,7 @@ fn apple_login_route_chain_from_v1_php() {
             }
         }
     }
-    eprintln!("POST /apple_login 链路语义终点：{semantic:?}");
+    eprintln!("semantic endpoint of the POST /apple_login chain: {semantic:?}");
 
     let hit = |kind: &str, name: &str| semantic.iter().any(|(k, n)| k == kind && n == name);
     assert!(
@@ -1091,7 +1091,7 @@ fn v1_php_routes_are_in_graph() {
         .filter_map(|c| c.identity.as_ref().map(|i| i.value.clone()))
         .collect();
     from_v1.sort();
-    eprintln!("v1.php 贡献的 HttpContract 数量 = {}", from_v1.len());
+    eprintln!("HttpContract count contributed by v1.php = {}", from_v1.len());
     for id in from_v1.iter().take(30) {
         eprintln!("  {id}");
     }
@@ -1129,7 +1129,7 @@ fn synthesize_detects_queues_from_framework_fkb() {
             offset: Some(0),
         })
         .expect("查询可读");
-    eprintln!("CRMEB 探测到的 Queue 节点数 = {}", queues.len());
+    eprintln!("Queue nodes detected in CRMEB = {}", queues.len());
     assert!(
         !queues.is_empty(),
         "框架级 FKB 应探测出队列节点（CRMEB 经门面/包装/trait 使用 think\\facade\\Queue）"
@@ -1185,7 +1185,7 @@ fn synthesize_detects_schedules_from_project_fkb() {
             offset: Some(0),
         })
         .expect("查询可读");
-    eprintln!("CRMEB 探测到的 Schedule 节点数 = {}", schedules.len());
+    eprintln!("Schedule nodes detected in CRMEB = {}", schedules.len());
     assert!(
         !schedules.is_empty(),
         "项目级 FKB（crmeb.yaml）应把 crontab/* 路由合成为 Schedule 节点"
@@ -1292,7 +1292,7 @@ fn v1_php_parse_result() {
         .iter()
         .filter(|c| c.receiver.as_deref() == Some("Route"))
         .collect();
-    eprintln!("Route:: 调用点数量 = {}", route_calls.len());
+    eprintln!("Route:: call-site count = {}", route_calls.len());
     for c in route_calls.iter().take(30) {
         let args: Vec<String> = c
             .args
@@ -1342,12 +1342,12 @@ fn facade_short_name_resolves_per_file_import() {
     };
     let cache_model = by_fqn("app\\model\\other\\Cache");
     let Some(model) = cache_model else {
-        eprintln!("图里没有 app\\model\\other\\Cache，跳过");
+        eprintln!("the graph has no app\\model\\other\\Cache, skipping");
         return;
     };
     let remember = by_fqn("crmeb\\services\\CacheService::remember");
     let Some(remember) = remember else {
-        eprintln!("图里没有 CacheService::remember，跳过");
+        eprintln!("the graph has no CacheService::remember, skipping");
         return;
     };
 

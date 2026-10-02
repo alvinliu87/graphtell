@@ -40,13 +40,13 @@ pub fn run(
         // Framework-level + project-level knowledge recognized separately: project-level loads only when that sub-project is recognized as the corresponding project,
         // its rules only enter `rules_by_sub` (not `ctx.frameworks`, not global), never leaking into other projects.
         let frameworks = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Framework);
-        info!("子工程 {} 识别到框架: {:?}", sub.name, frameworks);
+        info!("sub-project {} recognized framework: {:?}", sub.name, frameworks);
         detected_frameworks.extend(frameworks.iter().cloned());
         ctx.frameworks.insert(sub.id.get(), frameworks.clone());
 
         let projects = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Project);
         if !projects.is_empty() {
-            info!("子工程 {} 识别到项目知识: {:?}", sub.name, projects);
+            info!("sub-project {} recognized project knowledge: {:?}", sub.name, projects);
         }
 
         // Route-handler resolution rules + consumer entry-method names: framework-level first, then project-level.
@@ -475,7 +475,7 @@ fn run_loaders(
             &contract_steps,
             fk,
         ) {
-            warn!("装载器 {} 失败: {e}", loader.id);
+            warn!("loader {} failed: {e}", loader.id);
         }
     }
 }
@@ -582,7 +582,7 @@ fn run_loader(
                         );
                     }
                 }
-                Err(e) => warn!("解析 {} 失败: {e}", rel_display),
+                Err(e) => warn!("failed to parse {}: {e}", rel_display),
             }
         }
         gt_domain::model::LoaderSource::Glob { pattern, locale_regex, .. } => {
@@ -703,7 +703,7 @@ fn run_builtin(
             }
         }
         "nginx_config" => load_nginx(ctx, sub, project_root, fs),
-        other => debug!("未知内置装载器: {other}"),
+        other => debug!("unknown built-in loader: {other}"),
     }
 }
 
@@ -1932,7 +1932,7 @@ fn load_routes(
             }
         }
         if !groups.is_empty() {
-            info!("P3 路由组：{} 个带前缀的路由组", groups.len());
+            info!("P3 route groups: {} route groups with prefixes", groups.len());
             ctx.ws.add_route_groups(groups);
         }
     }
@@ -1948,7 +1948,7 @@ fn load_routes(
         let scopes = collect_route_guards(spec, &ctx.ws.calls);
         if !scopes.is_empty() {
             let total: usize = scopes.iter().map(|s| s.guards.len()).sum();
-            info!("P3 路由守卫：{} 段区间 / {} 处中间件挂载", scopes.len(), total);
+            info!("P3 route guards: {} scope ranges / {} middleware mounts", scopes.len(), total);
         }
         ctx.ws.add_route_guard_scopes(scopes);
     }

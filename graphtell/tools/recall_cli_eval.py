@@ -78,23 +78,23 @@ def main():
         with ThreadPoolExecutor(max_workers=a.workers) as ex:
             for r in ex.map(run_case, cases):
                 if not r["top3"] and not any(r["hit"].values()):
-                    print(f"#{r['project']} {r['query']}: 超时", file=sys.stderr)
+                    print(f"#{r['project']} {r['query']}: timeout", file=sys.stderr)
                 results.append(r)
     else:
         for c in cases:
             r = run_case(c)
             if not r["top3"] and not any(r["hit"].values()):
-                print(f"#{c['project']} {c['query']}: 超时", file=sys.stderr)
+                print(f"#{c['project']} {c['query']}: timeout", file=sys.stderr)
             results.append(r)
 
-    print(f"{'批':<4}{'工程':<6}{'语':<4}{'查询':<26}{'@5':<6}{'@10':<6}{'@20':<6} 命中前3")
+    print(f"{'batch':<4}{'proj':<6}{'lang':<4}{'query':<26}{'@5':<6}{'@10':<6}{'@20':<6} top3 hit")
     print("-" * 106)
     for r in results:
         mk = lambda b: "✓" if b else "·"
         print(f"{r['batch']:<4}#{r['project']:<5}{r['lang']:<4}{r['query'][:24]:<26}"
               f"{mk(r['hit'][5]):<6}{mk(r['hit'][10]):<6}{mk(r['hit'][20]):<6} {r['top3']}")
 
-    print("\n=== 汇总（真实流水线）===")
+    print("\n=== summary (real pipeline) ===")
     for group, keyfn in (
         ("按批次", lambda r: f"batch{r['batch']}"),
         ("按工程", lambda r: f"#{r['project']} {projects.get(str(r['project']),'')}"),
@@ -109,7 +109,7 @@ def main():
                 f"@{k}={sum(1 for r in rs if r['hit'][k])}/{len(rs)}" for k in KS)
             print(f"    {g[:44]:<46}{line}")
     total = len(results)
-    print("  总体: " + " ".join(
+    print("  overall: " + " ".join(
         f"@{k}={sum(1 for r in results if r['hit'][k])}/{total}" for k in KS))
 
 

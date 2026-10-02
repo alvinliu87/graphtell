@@ -65,8 +65,8 @@ def main():
         try:
             names = recall(a.base, c["project"], c["query"])
         except urllib.error.URLError as e:
-            print(f"无法连接常驻服务 {a.base}：{e}", file=sys.stderr)
-            print("请先启动：graphtell serve", file=sys.stderr)
+            print(f"cannot connect to resident service {a.base}: {e}", file=sys.stderr)
+            print("please start it first: graphtell serve", file=sys.stderr)
             return 2
         hits = {k: hit_at(names, c["targets"], k) for k in KS}
         # Warmup state: the persisted file exists -> semantic path; otherwise still on the fast (hash) path.
@@ -84,7 +84,7 @@ def main():
         )
 
     # ---- print
-    print(f"{'工程':<6}{'预热':<6}{'语':<4}{'查询':<26}{'@5':<6}{'@10':<6}{'@20':<6} 命中前3")
+    print(f"{'proj':<6}{'warm':<6}{'lang':<4}{'query':<26}{'@5':<6}{'@10':<6}{'@20':<6} top3 hit")
     print("-" * 102)
     for r in results:
         mark = lambda b: "  ✓  " if b else "  ·  "
@@ -95,7 +95,7 @@ def main():
             f" {r['top5'][:3]}"
         )
 
-    print("\n=== 汇总 ===")
+    print("\n=== summary ===")
     for group, keyfn in (
         ("按工程", lambda r: f"#{r['project']} {projects.get(str(r['project']), '')}"),
         ("按语言", lambda r: "中文" if r["lang"] == "zh" else "英文(对照)"),
@@ -121,17 +121,17 @@ def main():
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"\n基线已写入 {a.out}")
+        print(f"\nbaseline written to {a.out}")
 
     if a.compare:
         try:
             with open(a.compare, encoding="utf-8") as f:
                 base = json.load(f)
         except OSError as e:
-            print(f"读取基线失败：{e}", file=sys.stderr)
+            print(f"failed to read baseline: {e}", file=sys.stderr)
             return 2
         bmap = {(b["project"], b["query"]): b for b in base}
-        print("\n=== 与基线对比（+ 改善 / - 退化）===")
+        print("\n=== vs baseline (+ improvement / - regression) ===")
         changed = 0
         for r in results:
             b = bmap.get((r["project"], r["query"]))
@@ -145,7 +145,7 @@ def main():
                     print(f"  {sign} @{k} #{r['project']} {r['query']}")
                     changed += 1
         if not changed:
-            print("  无变化")
+            print("  no change")
     return 0
 
 

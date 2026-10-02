@@ -263,7 +263,7 @@ def build_ui() -> None:
     """Build the frontend with same-origin + hash routing + relative base (needed for Pages sub-path deploy)."""
     env = dict(os.environ)
     env.update({"VITE_API_BASE": "same-origin", "VITE_STATIC_DEMO": "1"})
-    print("==> 构建前端（VITE_API_BASE=same-origin VITE_STATIC_DEMO=1 --base=./）")
+    print("==> building frontend (VITE_API_BASE=same-origin VITE_STATIC_DEMO=1 --base=./)")
     subprocess.run(
         ["npx", "tsc", "-b"], cwd=ROOT / "ui", env=env, check=False,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -310,13 +310,13 @@ def main() -> int:
     data_dir.mkdir(parents=True)
     bin_ = ROOT / "target" / "debug" / "graphtell"
     if not bin_.exists():
-        print("找不到 target/debug/graphtell，请先 cargo build -p gt-app", file=sys.stderr)
+        print("target/debug/graphtell not found, please run cargo build -p gt-app first", file=sys.stderr)
         return 1
 
-    print("==> 建图")
+    print("==> building graph")
     for name, path in samples:
         if not Path(path).is_dir():
-            print(f"    跳过（不存在）：{path}")
+            print(f"    skipped (does not exist): {path}")
             continue
         t = time.time()
         subprocess.run(
@@ -324,7 +324,7 @@ def main() -> int:
              "create", "--name", name, "--path", path],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        print(f"    {name}: 建图完成 ({time.time()-t:.1f}s)")
+        print(f"    {name}: graph built ({time.time()-t:.1f}s)")
 
     # 2) Start backend
     port = free_port()
@@ -342,7 +342,7 @@ def main() -> int:
             except Exception:
                 time.sleep(1)
         else:
-            print("后端未能启动", file=sys.stderr)
+            print("backend failed to start", file=sys.stderr)
             return 1
 
         # 3) Record
@@ -356,7 +356,7 @@ def main() -> int:
         for pr in projects:
             pid = pr.get("id")
             name = pr.get("name")
-            print(f"==> 录制工程 {name} (#{pid})")
+            print(f"==> recording project {name} (#{pid})")
             P = f"{base}/api/projects/{pid}"
             for ep in ["", "/sub-projects", "/stats", "/diagnostics",
                        "/diagnostics/summary", "/check/summary", "/rules/config"]:
@@ -429,7 +429,7 @@ def main() -> int:
                 rec.record("POST", P + "/prompt", {"query": q, "limit": 8})
 
         rec.finalize()
-        print(f"==> 录制完成：{rec.n} 个响应 -> {out/'__api__'}")
+        print(f"==> recording done: {rec.n} responses -> {out/'__api__'}")
     finally:
         srv.send_signal(signal.SIGTERM)
         try:
@@ -440,7 +440,7 @@ def main() -> int:
     # 4) Copy frontend artifacts + inject interceptor
     dist = ROOT / "ui" / "dist"
     if not dist.exists():
-        print("ui/dist 不存在，构建可能失败", file=sys.stderr)
+        print("ui/dist missing, build may fail", file=sys.stderr)
         return 1
     for item in dist.iterdir():
         dst = out / item.name
@@ -471,8 +471,8 @@ def main() -> int:
     # 6) Documentation
     (out / "README.md").write_text(DEMO_README, encoding="utf-8")
 
-    print(f"==> 完成：静态 demo 在 {out}/")
-    print("    本地预览：python3 -m http.server -d %s 8080" % out)
+    print(f"==> done: static demo at {out}/")
+    print("    local preview: python3 -m http.server -d %s 8080" % out)
     return 0
 
 

@@ -327,7 +327,7 @@ pub fn run(ctx: &mut PipelineContext) {
     }
 
     tracing::info!(
-        "P14 路由守卫完成：PassesThrough 边 {} 条 / {} 个晋升为 Middleware / {} 个按名建成 Middleware（中间件不在图里且未授权 {} 处，跳过不猜）",
+        "P14 路由守卫完成：PassesThrough 边 {} 条 / {} 个晋升为 Middleware / {} 个按名建成 Middleware（中间件不在图里且未授权 {} 处, skipping不猜）",
         created,
         promoted,
         synthesized,

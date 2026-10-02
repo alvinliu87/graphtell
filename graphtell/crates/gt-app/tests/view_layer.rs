@@ -140,7 +140,7 @@ fn view_svc(b: &Built) -> ViewService {
 }
 
 fn skip() -> &'static str {
-    "跳过：未找到 CRMEB 样本（可用 GRAPHTELL_SAMPLE_DIR 指定）"
+    "skipped: 未找到 CRMEB 样本（可用 GRAPHTELL_SAMPLE_DIR 指定）"
 }
 
 /// Whether this perspective is registered in `views/perspectives.yaml` (unregistered aggregate perspectives can't be asserted).
@@ -221,7 +221,7 @@ fn aggregate_deploy_unit_clusters() {
     };
     let views = view_svc(&b);
     if !registered(&views, b.project_id, "deploy_unit") {
-        eprintln!("跳过：deploy_unit 视角未在 views/perspectives.yaml 中启用");
+        eprintln!("skipped: the deploy_unit perspective is not enabled in views/perspectives.yaml");
         return;
     }
     let agg = views
@@ -243,7 +243,7 @@ fn aggregate_platform_matrix() {
     };
     let views = view_svc(&b);
     if !registered(&views, b.project_id, "platform") {
-        eprintln!("跳过：platform 视角未在 views/perspectives.yaml 中启用");
+        eprintln!("skipped: the platform perspective is not enabled in views/perspectives.yaml");
         return;
     }
     let agg = views
@@ -267,7 +267,7 @@ fn object_view_chain_and_hidden() {
     };
     let views = view_svc(&b);
     let Some((pid, nid)) = first_object_target(&views, b.project_id) else {
-        eprintln!("没有可用的对象类视角候选，跳过 object_view 断言");
+        eprintln!("no usable object-perspective candidates; skipping the object_view assertion");
         return;
     };
     let ov = views
@@ -308,7 +308,7 @@ fn object_view_default_is_semantic_only() {
     };
     let views = view_svc(&b);
     let Some((pid, _)) = first_object_target(&views, b.project_id) else {
-        eprintln!("没有可用的对象类视角候选，跳过");
+        eprintln!("no usable object-perspective candidates, skipping");
         return;
     };
     // Take the highest-value candidate (`candidates` already sorted by semantic-dependency value descending).
@@ -316,7 +316,7 @@ fn object_view_default_is_semantic_only() {
         .candidates(b.project_id, &pid, 5, None, None)
         .expect("candidates");
     let Some(top) = cands.first() else {
-        eprintln!("该视角没有候选，跳过");
+        eprintln!("this perspective has no candidates, skipping");
         return;
     };
     assert!(
@@ -373,7 +373,7 @@ fn object_view_resource_center_shows_its_users() {
         .candidates(b.project_id, "table", 1, None, None)
         .expect("candidates");
     let Some(top) = cands.first() else {
-        eprintln!("表视角没有候选，跳过");
+        eprintln!("the table perspective has no candidates, skipping");
         return;
     };
     let ov = views
@@ -465,7 +465,7 @@ fn orphan_access_is_accounted_not_drawn() {
             checked += 1;
         }
     }
-    eprintln!("校验孤儿记账 {checked} 条（数量取决于工程，为 0 亦合法）");
+    eprintln!("verified orphan accounting for {checked} entries (the count depends on the project; 0 is also valid)");
 }
 
 /// Event perspective: canvas = center event + **stable roles on both producer and consumer sides**.
@@ -490,7 +490,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
         .candidates(b.project_id, "event", 20, None, None)
         .expect("candidates");
     let Some(top) = cands.first() else {
-        eprintln!("事件视角没有候选，跳过");
+        eprintln!("the event perspective has no candidates, skipping");
         return;
     };
     let ov = views
@@ -553,7 +553,7 @@ fn node_locations_returns_sources() {
     };
     let views = view_svc(&b);
     let Some(nid) = first_object_target(&views, b.project_id).map(|(_, n)| n) else {
-        eprintln!("无对象节点，跳过 locations 断言");
+        eprintln!("no object node; skipping the locations assertion");
         return;
     };
     let locs = views.node_locations(nid).expect("node_locations");
@@ -569,7 +569,7 @@ fn edge_evidence_verifies_chain() {
     };
     let views = view_svc(&b);
     let Some((_pid, nid)) = first_object_target(&views, b.project_id) else {
-        eprintln!("无对象节点，跳过 edge 断言");
+        eprintln!("no object node; skipping the edge assertion");
         return;
     };
     let store = &b.container.store;
@@ -577,7 +577,7 @@ fn edge_evidence_verifies_chain() {
         .edges_of(nid, EdgeDirection::Both)
         .expect("edges_of 不应失败");
     let Some(e) = edges.into_iter().next() else {
-        eprintln!("中心节点没有任何边，跳过 edge_evidence 断言");
+        eprintln!("the center node has no edges; skipping the edge_evidence assertion");
         return;
     };
     let ev = views
@@ -608,7 +608,7 @@ fn folded_semantic_edges_end_at_real_contact() {
     let cands = match views.candidates(b.project_id, "route", 6, None, None) {
         Ok(c) => c,
         Err(_) => {
-            eprintln!("无 route 候选，跳过");
+            eprintln!("no route candidates, skipping");
             return;
         }
     };
@@ -772,7 +772,7 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
         })
         .expect("query_nodes");
     let Some(contract) = nodes.first() else {
-        eprintln!("图里没有 invoice_detail 路由，跳过");
+        eprintln!("the graph has no invoice_detail route, skipping");
         return;
     };
     let ov = views
@@ -843,7 +843,7 @@ fn invoice_detail_route_first_hop_has_call_site() {
         })
         .expect("query_nodes");
     let Some(contract) = nodes.first() else {
-        eprintln!("图里没有 invoice_detail 路由，跳过");
+        eprintln!("the graph has no invoice_detail route, skipping");
         return;
     };
     let ov = views
@@ -899,7 +899,7 @@ fn object_view_characterization_invoice_detail() {
         })
         .expect("query_nodes");
     let Some(contract) = nodes.first() else {
-        eprintln!("图里没有 invoice_detail 路由，跳过");
+        eprintln!("the graph has no invoice_detail route, skipping");
         return;
     };
     let ov = views
@@ -1058,7 +1058,7 @@ fn schedule_view_follows_outgoing_chain() {
             cs.line
         );
     } else {
-        eprintln!("图里没有 crontab/set_open 计划任务，跳过具体断言");
+        eprintln!("the graph has no crontab/set_open scheduled task; skipping the specific assertion");
     }
 
     // General invariant: the badge's "semantic dependency N" is the count of semantic nodes reachable within 3 hops (`semantic_value`).
@@ -1141,7 +1141,7 @@ fn empty_entry_view_carries_hint() {
         }
     }
     if empty_seen == 0 {
-        eprintln!("本次样本没有空依赖的入口（不影响不变量），跳过内容断言");
+        eprintln!("this sample has no entry with empty dependencies (does not affect the invariant); skipping the content assertion");
     } else {
         assert!(empty_seen > 0, "应至少命中一个空依赖入口以验证提示内容");
     }

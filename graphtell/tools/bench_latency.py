@@ -39,7 +39,7 @@ def bench(port, label):
     print(f"\n===== {label} (port {port}) =====")
     # warmup
     t = recall(port, QUERIES[0])
-    print(f"  warmup  单句 {QUERIES[0][:10]}…  {t*1000:7.1f} ms")
+    print(f"  warmup  single query {QUERIES[0][:10]}…  {t*1000:7.1f} ms")
     # Multi-turn: repeat the same sentence + diff a different one
     reps, diffs = [], []
     for i in range(5):
@@ -50,7 +50,7 @@ def bench(port, label):
         reps.append(tr)
         diffs.append(td)
         print(f"  round{i+1}: repeat {tr*1000:7.1f} ms | diff {td*1000:7.1f} ms  ({q_diff[:12]}…)")
-    print(f"  -> repeat 均值 {sum(reps)/len(reps)*1000:7.1f} ms | diff 均值 {sum(diffs)/len(diffs)*1000:7.1f} ms")
+    print(f"  -> repeat avg {sum(reps)/len(reps)*1000:7.1f} ms | diff avg {sum(diffs)/len(diffs)*1000:7.1f} ms")
 
 
 if __name__ == "__main__":
@@ -58,4 +58,4 @@ if __name__ == "__main__":
         try:
             bench(port, label)
         except Exception as e:
-            print(f"  !! {label} 失败: {e}")
+            print(f"  !! {label} failed: {e}")

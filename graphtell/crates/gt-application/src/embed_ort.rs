@@ -226,7 +226,7 @@ impl Embedder for HybridBgeEmbedder {
         })) {
             Ok(v) => v,
             Err(_) => {
-                tracing::warn!("tract 查询编码失败，本次降级到 candle 编码（结果等价，仅变慢）");
+                tracing::warn!("tract query encoding failed; falling back to candle encoding for this call (equivalent result, only slower)");
                 self.candle.embed_query(text)
             }
         }

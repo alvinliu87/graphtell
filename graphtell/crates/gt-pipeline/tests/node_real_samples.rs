@@ -292,7 +292,7 @@ fn class_links_to(b: &common::Built, class: &str, edge: &str) -> bool {
 #[test]
 fn nestjs_real_sample_produces_route_contracts() {
     let Some((nest_root, _)) = node_samples() else {
-        eprintln!("跳过：未找到 NestJS 真实样本（samples/nestjs-realworld-example-app）");
+        eprintln!("skipped: real NestJS sample not found (samples/nestjs-realworld-example-app)");
         return;
     };
     let Some(b) = common::graph_with_root(&nest_root, ProjectConfig::default()) else {
@@ -389,7 +389,7 @@ fn nestjs_real_sample_produces_route_contracts() {
 #[test]
 fn nestjs_real_sample_consumer_middleware() {
     let Some((nest_root, _)) = node_samples() else {
-        eprintln!("跳过：未找到 NestJS 真实样本（samples/nestjs-realworld-example-app）");
+        eprintln!("skipped: real NestJS sample not found (samples/nestjs-realworld-example-app)");
         return;
     };
     let Some(b) = common::graph_with_root(&nest_root, ProjectConfig::default()) else {
@@ -424,13 +424,13 @@ fn nestjs_real_sample_consumer_middleware() {
         .flat_map(|m| b.store.edges_of(m.id, EdgeDirection::Incoming).expect("edges"))
         .filter(|e| e.kind.as_str() == "PassesThrough")
         .count();
-    eprintln!("NestJS 真实样本 AuthMiddleware 守卫的契约数 = {count}");
+    eprintln!("contracts guarded by AuthMiddleware in the real NestJS sample = {count}");
 }
 
 #[test]
 fn express_real_sample_produces_route_contracts() {
     let Some((_, expr_root)) = node_samples() else {
-        eprintln!("跳过：未找到 Express 真实样本（samples/hackathon-starter）");
+        eprintln!("skipped: real Express sample not found (samples/hackathon-starter)");
         return;
     };
     let Some(b) = common::graph_with_root(&expr_root, ProjectConfig::default()) else {
@@ -447,5 +447,5 @@ fn express_real_sample_produces_route_contracts() {
         names.iter().any(|n| n.contains("login")),
         "应包含 /login 契约，实际：{names:?}"
     );
-    eprintln!("Express 真实样本契约数 = {}，示例：{:?}", names.len(), &names[..names.len().min(8)]);
+    eprintln!("contract count in the real Express sample = {}, examples: {:?}", names.len(), &names[..names.len().min(8)]);
 }

@@ -1,5 +1,5 @@
-/* 静态 demo 的 API 回放：把 /api/* 请求改从预录的 JSON 读取。
-   这样 GitHub Pages 这种纯静态托管上跑的仍是**真产品前端**，无需后端。 */
+/* API replay for the static demo: serve /api/* requests from pre-recorded JSON.
+   This way pure static hosting like GitHub Pages still runs the **real product frontend**, with no backend needed. */
 (() => {
   const IDX_URL = new URL('./index.json', document.currentScript.src).href;
   let idx = null;
@@ -35,7 +35,7 @@
     const base = method + ' ' + new URL(req.url, location.href).pathname;
     let file = null;
     if (method !== 'GET') {
-      // 写 / 查询类：优先按 body 精确匹配（例如不同的召回问句各返回各的结果）
+      // Write / query class: prefer exact body match (e.g. different recall queries each return their own result)
       let bodyKey = null;
       try {
         const text = await req.clone().text();
@@ -46,7 +46,7 @@
     } else {
       file = table[key];
     }
-    // 忽略查询参数的兜底：命中「同路径第一条」录制，保证页面照常渲染
+    // Fallback ignoring query params: hit the "first recording of the same path" so the page still renders normally
     if (!file) file = table[base];
     if (!file) {
       console.warn('[demo] 未录制的请求（静态 demo 无后端）:', method, norm(req.url));

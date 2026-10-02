@@ -95,7 +95,7 @@ def main():
         proj = c["project"]
         md = recall_markdown(proj, c["query"])
         if md is None:
-            print(f"#{proj} {c['query']}: recall 超时", file=sys.stderr)
+            print(f"#{proj} {c['query']}: recall timeout", file=sys.stderr)
             continue
         md_tokens = est_tokens(md)
 
@@ -107,7 +107,7 @@ def main():
         else:
             whole_tokens = 0
             win_tokens = 0
-            print(f"  ! 找不到答案文件：#{proj} {c['query']} -> {path}", file=sys.stderr)
+            print(f"  ! answer file not found: #{proj} {c['query']} -> {path}", file=sys.stderr)
 
         gt_tokens = md_tokens + win_tokens
         rows.append({
@@ -116,7 +116,7 @@ def main():
             "gt": gt_tokens, "path": path or "",
         })
 
-    print(f"{'工程':<4}{'语':<3}{'查询':<26}{'IDE整文件':>10}{'召回+窗':>10}{'倍率':>7} 省%")
+    print(f"{'proj':<4}{'lang':<3}{'query':<26}{'IDE full':>10}{'recall+win':>10}{'ratio':>7} saved%")
     print("-" * 86)
     tot_ide = tot_gt = 0
     wins = 0
@@ -135,22 +135,22 @@ def main():
         tot_gt += r["gt"]
 
     print("-" * 86)
-    print(f"汇总：IDE 整文件注入 = {tot_ide:,} tokens")
+    print(f"summary: IDE full-file injection = {tot_ide:,} tokens")
     print(f"      GraphTell  = {tot_gt:,} tokens  "
           f"(召回列表 {sum(r['md'] for r in rows):,} + 按需窗口 {sum(r['win'] for r in rows):,})")
     if tot_gt:
-        print(f"      => 整体约 {tot_ide/tot_gt:.1f}x 缩减，省 {(1-tot_gt/tot_ide)*100:.0f}% token")
+        print(f"      => overall ~ {tot_ide/tot_gt:.1f}x reduction, saving {(1-tot_gt/tot_ide)*100:.0f}% tokens")
     # Key pattern: the recall list has a fixed overhead (~{rows[0]['md'] if rows else 0} tokens/call),
     # so it only pays off when "the answer file is big enough"; small files are cheap to read whole anyway.
     big = [r for r in rows if r["whole"] >= 1000]
     small = [r for r in rows if r["whole"] < 1000]
     bw = sum(1 for r in big if r["gt"] < r["whole"])
-    print(f"      逐用例 GraphTell 更省：{wins}/{len(rows)}")
+    print(f"      per-case GraphTell saves more: {wins}/{len(rows)}")
     if big:
-        print(f"      答案文件 ≥1000 tokens（真正费 token 的文件）：{bw}/{len(big)} 更省，"
+        print(f"      answer files >=1000 tokens (the ones that really cost tokens): {bw}/{len(big)} save more,"
               f"省 { (1 - sum(r['gt'] for r in big)/max(1,sum(r['whole'] for r in big)))*100:.0f}%")
     if small:
-        print(f"      {len(small)} 例'更费'全是 <1000 tokens 的微文件（整读本就便宜，差额可忽略）")
+        print(f"      all {len(small)} 'cost more' cases are <1000-token micro-files (full read is cheap anyway, delta negligible)")
 
 
 if __name__ == "__main__":

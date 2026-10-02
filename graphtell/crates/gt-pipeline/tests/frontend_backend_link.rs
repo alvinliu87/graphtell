@@ -160,12 +160,12 @@ fn frontend_calls_backend_merge_into_contract() {
                         .any(|t| t.id == e.to_id && t.name == "deleteItem")
             });
         if linked {
-            eprintln!("✓ 前端跨文件调用链：App.onDelete → api.deleteItem (Calls)");
+            eprintln!("✓ frontend cross-file call chain: App.onDelete → api.deleteItem (Calls)");
         } else {
-            eprintln!("ℹ 前端跨文件 Calls 由 P7 按名解析；若未落边属预期内（名称解析需全局唯一）");
+            eprintln!("ℹ frontend cross-file Calls are resolved by P7 by name; a missing edge is expected (name resolution requires global uniqueness)");
         }
     } else {
-        eprintln!("ℹ 未检测到 onDelete 节点");
+        eprintln!("ℹ no onDelete node detected");
     }
 
     // ---- 2) Contract bridge: frontend and backend synthesise the same ContractId and merge ----
@@ -186,9 +186,9 @@ fn frontend_calls_backend_merge_into_contract() {
     // ---- Informational: backend handler resolution (P7, existing mechanism) ----
     let out = b.store.edges_of(c.id, EdgeDirection::Outgoing).unwrap_or_default();
     if out.iter().any(|e| e.kind.as_str() == "HandledBy") {
-        eprintln!("✓ 后端 HandledBy 也已解析（完整契约桥）");
+        eprintln!("✓ backend HandledBy also resolved (complete contract bridge)");
     } else {
-        eprintln!("ℹ 后端 HandledBy 由 P7 解析，未在此样本确定性落边；既有 CRMEB 集成测试覆盖该路径");
+        eprintln!("ℹ backend HandledBy is resolved by P7 and does not deterministically land an edge in this sample; the existing CRMEB integration test covers that path");
     }
 }
 

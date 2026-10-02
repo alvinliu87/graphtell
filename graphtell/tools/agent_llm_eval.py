@@ -284,21 +284,21 @@ def main():
     llm = LLM()
     if a.mock:
         llm.mode = "mock"
-    print(f"LLM 模式: {llm.mode}"
+    print(f"LLM mode:  {llm.mode}"
           + ("" if llm.mode == "real" else "（无 GT_LLM_KEY，按 mock 验证管线）"))
     ok_n = 0
     for c in cases:
         p, q, tg = c["project"], c["query"], c["targets"]
         root = roots.get(p)
         if not root:
-            print(f"#{p} {q}: 无 root", file=sys.stderr)
+            print(f"#{p} {q}: no root", file=sys.stderr)
             continue
         gold = answer_files(root, tg)
         ok, why, edit = run_task(llm, p, q, root, gold, a.mock)
         ok_n += 1 if ok else 0
         print(f"#{p} {c.get('lang','zh')} {q[:30]:<32} → "
               f"{'✓' if ok else '·'} ({why})  edit={edit['file'] if edit else None}")
-    print(f"\n成功 {ok_n}/{len(cases)}（{'mock 仅验证管线，非真实 LLM 能力' if llm.mode!='real' else '真实 LLM'}）")
+    print(f"\nSuccess {ok_n}/{len(cases)} ({'mock validates the pipeline only, not real LLM capability' if llm.mode!='real' else 'real LLM'})")
 
 
 if __name__ == "__main__":

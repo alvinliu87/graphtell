@@ -146,7 +146,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
                     Arc::new(e)
                 }
                 Err(err) => {
-                    tracing::warn!("远程 embedding 加载失败（{err}），退回离线词面编码器");
+                    tracing::warn!("remote embedding load failed ({err}); falling back to the offline lexical encoder");
                     set_backend_info("hash (remote failed)", 256);
                     Arc::new(LocalHashingEmbedder::new(256))
                 }
@@ -179,11 +179,11 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
             let tok = format!("{dir}/tokenizer.json");
             match crate::embed_ort::HybridBgeEmbedder::load(&dir, &onnx, &tok) {
                 Ok(embedder) => {
-                    tracing::info!("已加载混合 bge-m3 编码器（查询 tract / 批量 candle，{onnx}）");
+                    tracing::info!("loaded the hybrid bge-m3 encoder (query tract / batch candle, {onnx})");
                     set_backend_info("bge-m3-local (hybrid tract+candle)", embedder.dim());
                     return Arc::new(embedder);
                 }
-                Err(err) => tracing::warn!("混合编码器加载失败（{onnx}），回退 candle：{err}"),
+                Err(err) => tracing::warn!("hybrid encoder load failed ({onnx}); falling back to candle: {err}"),
             }
         }
     }
@@ -193,12 +193,12 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
             .unwrap_or_else(|_| "models/bge-m3-safetensors".to_string());
         match crate::embed_model::CandleBgeEmbedder::load(&dir) {
             Ok(embedder) => {
-                tracing::info!("已加载真实 bge-m3 语义编码器（{dir}）");
+                tracing::info!("loaded the real bge-m3 semantic encoder ({dir})");
                 set_backend_info("bge-m3-local (candle)", embedder.dim());
                 return Arc::new(embedder);
             }
             Err(err) => {
-                tracing::warn!("bge-m3 模型加载失败（{dir}），退回本地哈希编码器：{err}");
+                tracing::warn!("bge-m3 model load failed ({dir}); falling back to the local hash encoder: {err}");
             }
         }
     }
@@ -223,10 +223,10 @@ pub fn try_real_recall_embedder() -> Option<Arc<dyn Embedder>> {
             let tok = format!("{dir}/tokenizer.json");
             match crate::embed_ort::HybridBgeEmbedder::load(&dir, &onnx, &tok) {
                 Ok(embedder) => {
-                    tracing::info!("已加载混合 bge-m3 编码器（查询 tract / 批量 candle，{onnx}）");
+                    tracing::info!("loaded the hybrid bge-m3 encoder (query tract / batch candle, {onnx})");
                     return Some(Arc::new(embedder));
                 }
-                Err(err) => tracing::warn!("混合编码器加载失败（{onnx}），回退 candle：{err}"),
+                Err(err) => tracing::warn!("hybrid encoder load failed ({onnx}); falling back to candle: {err}"),
             }
         }
     }
@@ -236,18 +236,18 @@ pub fn try_real_recall_embedder() -> Option<Arc<dyn Embedder>> {
             .unwrap_or_else(|_| "models/bge-m3-safetensors".to_string());
         match crate::embed_model::CandleBgeEmbedder::load(&dir) {
             Ok(embedder) => {
-                tracing::info!("已加载真实 bge-m3 语义编码器（{dir}）");
+                tracing::info!("loaded the real bge-m3 semantic encoder ({dir})");
                 Some(Arc::new(embedder))
             }
             Err(err) => {
-                tracing::warn!("bge-m3 模型加载失败（{dir}），无语义编码器：{err}");
+                tracing::warn!("bge-m3 model load failed ({dir}); no semantic encoder: {err}");
                 None
             }
         }
     }
     #[cfg(not(feature = "model-candle"))]
     {
-        tracing::info!("未编译 model-candle，无语义编码器（仅词面 / 快速向量路）");
+        tracing::info!("model-candle not compiled; no semantic encoder (lexical / fast vector path only)");
         None
     }
 }

@@ -121,7 +121,7 @@ def main():
         proj_cache[pid] = (ids, mat, name_to_ids)
         return proj_cache[pid]
 
-    print(f"{'工程':<5}{'语':<4}{'查询':<22}{'基线名次':<8}{'扩展名次':<8}{'扩展@5/10/20'}")
+    print(f"{'proj':<5}{'lang':<4}{'query':<22}{'base-rank':<8}{'exp-rank':<8}{'exp@5/10/20'}")
     print("-" * 78)
     improved = 0
     rescued = 0
@@ -168,7 +168,7 @@ def main():
         nr = str(new_rank) if new_rank else "—"
         h = "".join(f"{'✓' if hit[k] else '·'}" for k in KS)
         print(f"#{pid:<4}{c.get('lang','zh'):<4}{q[:20]:<22}{br:<8}{nr:<8}{h}")
-    print(f"\n基线漏掉 @20 的用例: {total_miss}; 经扩展救回(进前20): {rescued}; 名次下降(变好)的: {improved}")
+    print(f"\nbaseline missed @20: {total_miss}; rescued by expansion (in top 20): {rescued}; improved rank: {improved}")
 
 
 if __name__ == "__main__":

@@ -101,7 +101,7 @@ fn run(
                     acquire_rebuild_slot();
                     match pipeline.spawn(project_id, Arc::new(ProgressObserver::new(project_id))) {
                         Ok(()) => {
-                            info!("工程 #{} 源码变更，已触发重建", project_id.get());
+                            info!("project #{} source changed, rebuild triggered", project_id.get());
                             // Graph rebuilt, old node vectors are stale: clear the recall cache, next recall recomputes / re-warms on the new graph.
                             recall.clear_node_cache();
                             dirty = false;

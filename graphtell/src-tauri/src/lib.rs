@@ -60,8 +60,8 @@ pub fn run() {
         .setup(|_app| {
             let config = AppConfig::default();
             match bootstrap(config) {
-                Ok(port) => tracing::info!("后端已启动，端口 {port}"),
-                Err(e) => tracing::error!("后端启动失败: {e}"),
+                Ok(port) => tracing::info!("backend started on port {port}"),
+                Err(e) => tracing::error!("backend failed to start: {e}"),
             }
             Ok(())
         })

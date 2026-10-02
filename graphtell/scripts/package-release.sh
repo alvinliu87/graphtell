@@ -16,21 +16,21 @@ VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
 OUT="release/graphtell-$VERSION"
 GT_FEATURES="${GT_FEATURES:---}"
 
-echo "==> 版本：$VERSION  输出目录：$OUT"
+echo "==> version: $VERSION  output dir: $OUT"
 
 # 1) frontend
-echo "==> 构建前端 UI (VITE_API_BASE=same-origin)"
+echo "==> building frontend UI (VITE_API_BASE=same-origin)"
 cd "$ROOT/ui"
 npm ci
 VITE_API_BASE=same-origin npm run build
 cd "$ROOT"
 
 # 2) backend
-echo "==> 构建后端 release 二进制 (cargo build --release $GT_FEATURES -p gt-app)"
+echo "==> building backend release binary (cargo build --release $GT_FEATURES -p gt-app)"
 cargo build --release $GT_FEATURES -p gt-app
 
 # 3) assemble
-echo "==> 组装发布目录"
+echo "==> assembling release dir"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 cp "target/release/graphtell" "$OUT/graphtell"
@@ -55,5 +55,5 @@ EOF
 # 4) package
 TARBALL="release/graphtell-$VERSION.tar.gz"
 tar -czf "$TARBALL" -C release "graphtell-$VERSION"
-echo "==> 完成：$TARBALL"
-echo "    解压后执行其中 README.txt 的启动命令即可。"
+echo "==> done: $TARBALL"
+echo "    after extracting, run the startup command from README.txt inside it."

@@ -180,7 +180,7 @@ def main():
         p, q, tg, lang = c["project"], c["query"], c["targets"], c.get("lang", "zh")
         root = roots.get(p)
         if not root:
-            print(f"#{p} {q}: 无 root", file=sys.stderr)
+            print(f"#{p} {q}: no root", file=sys.stderr)
             continue
         gold = answer_files(root, tg)
         _, terms, _ = recall(p, q)
@@ -191,7 +191,7 @@ def main():
 
     def mk(b):
         return "✓" if b else "·"
-    print(f"{'工程':<6}{'语':<4}{'任务(查询)':<26}{'A(召回)':<16}{'B(grep×'+str(K)+')':<18}{'B-raw':<8} 结论")
+    print(f"{'proj':<6}{'lang':<4}{'task (query)':<26}{'A(recall)':<16}{'B(grep×'+str(K)+')':<18}{'B-raw':<8} verdict")
     print("-" * 124)
     for r in rows:
         A, B, Br = r["A"], r["B"], r["Br"]
@@ -215,12 +215,12 @@ def main():
     sbr = sum(1 for r in rows if r["Br"]["ok"])
     ta = sum(r["A"]["ctx"] + r["A"]["read"] for r in rows)
     tb = sum(r["B"]["ctx"] + r["B"]["read"] for r in rows)
-    print("\n=== 汇总（确定性策略模拟；LLM 驱动可替换策略函数）===")
-    print(f"  成功率   A(召回引导) {sa}/{n}   B(grep×{K}) {sb}/{n}   B-raw(原话) {sbr}/{n}")
-    print(f"  总 token A={ta}   B={tb}   → A 仅为 B 的 {100*ta/max(tb,1):.1f}%（grep 宽词输出为消防水带级，真实 agent 会分页/精炼，但 B 成功率更低是硬伤）")
+    print("\n=== summary (deterministic policy simulation; LLM-driven policy is swappable) ===")
+    print(f"  success rate   A(recall-guided) {sa}/{n}   B(grep×{K}) {sb}/{n}   B-raw(verbatim) {sbr}/{n}")
+    print(f"  total tokens A={ta}   B={tb}   -> A is only {100*ta/max(tb,1):.1f}% of B (grep's wide terms spew a fire-hose of output; a real agent would paginate/refine, but B's lower success rate is the real flaw)")
     awins = sum(1 for r in rows if r["A"]["ok"] and
                 (not r["B"]["ok"] or (r["A"]["ctx"]+r["A"]["read"]) <= (r["B"]["ctx"]+r["B"]["read"])))
-    print(f"  A 既成功又(更省或B失败) 的用例：{awins}/{n}")
+    print(f"  cases where A succeeds AND (saves or B fails): {awins}/{n}")
 
 
 if __name__ == "__main__":

@@ -1043,7 +1043,7 @@ fn merged_aliases(project_root: Option<&std::path::Path>) -> Vec<(String, Vec<St
                         }
                     }
                 }
-                Err(e) => tracing::warn!("项目别名配置解析失败 {cfg:?}：{e}（已忽略，仅用内置表）"),
+                Err(e) => tracing::warn!("failed to parse the project alias config {cfg:?}: {e} (ignored; using the built-in table only)"),
             }
         }
     }
@@ -1713,7 +1713,7 @@ impl RecallService {
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
-                tracing::debug!("snapshot load {path:?} 读取失败: {e}");
+                tracing::debug!("snapshot load {path:?} read failed: {e}");
                 return None;
             }
         };
@@ -1727,11 +1727,11 @@ impl RecallService {
                 Some(p.set)
             }
             Ok(p) => {
-                tracing::debug!("snapshot load 版本不符: 文件{} 当前{}", p.version, SNAPSHOT_VERSION);
+                tracing::debug!("snapshot load version mismatch: file {} vs current {}", p.version, SNAPSHOT_VERSION);
                 None
             }
             Err(e) => {
-                tracing::debug!("snapshot load {path:?} 解析失败: {e}");
+                tracing::debug!("snapshot load {path:?} parse failed: {e}");
                 None
             }
         }
@@ -1760,7 +1760,7 @@ impl RecallService {
                 std::fs::rename(&tmp, &path)?;
                 Ok(())
             })() {
-                tracing::warn!("候选快照落盘失败(工程 {pid}): {e}");
+                tracing::warn!("failed to persist the candidate snapshot (project {pid}): {e}");
             }
         });
     }
@@ -2009,7 +2009,7 @@ fn persist_vectors(
         let emb = match &self.semantic_embedder {
             Some(e) => e,
             None => {
-                tracing::warn!("未配置语义编码器（缺 bge 权重），embed 无操作");
+                tracing::warn!("no semantic encoder configured (missing bge weights); embed is a no-op");
                 return Ok(0);
             }
         };
@@ -2636,7 +2636,7 @@ fn persist_vectors(
                 let path = dir.join(format!("{}.rmp", project_id.get()));
                 let t_p = std::time::Instant::now();
                 self.persist(&path, nodes, &enrich);
-                tracing::debug!("latency: 落盘写回 {} ms", t_p.elapsed().as_millis());
+                tracing::debug!("latency: persist write-back {} ms", t_p.elapsed().as_millis());
             }
         }
 
@@ -3031,7 +3031,7 @@ fn warm_up_worker(
         Ok(())
     })();
     if let Err(e) = res {
-        tracing::error!("后台预热工程 #{pid} 失败：{e}");
+        tracing::error!("background warmup of project #{pid} failed: {e}");
     }
     warming.lock().unwrap().remove(&pid);
     progress.lock().unwrap().remove(&pid);
@@ -3077,7 +3077,7 @@ fn scan_kinds(store: &dyn Persistence, project_id: ProjectId) -> Vec<String> {
                 return v;
             }
         }
-        Err(e) => tracing::warn!("读取节点种类失败，回退内置清单: {e}"),
+        Err(e) => tracing::warn!("failed to read node kinds, falling back to the built-in list: {e}"),
     }
     FALLBACK_SCAN_KINDS.iter().map(|s| s.to_string()).collect()
 }
@@ -5414,7 +5414,7 @@ mod tests {
         let model_dir = std::env::var("GT_BGE_MODEL")
             .unwrap_or_else(|_| root.join("bge-m3-safetensors").to_string_lossy().into());
         if !Path::new(&model_dir).join("model.safetensors").exists() {
-            eprintln!("skip bge_semantic_recall: 未找到 {model_dir}/model.safetensors（先跑 tools/convert_bge_safetensors.py）");
+            eprintln!("skip bge_semantic_recall: {model_dir}/model.safetensors not found (run tools/convert_bge_safetensors.py first)");
             return;
         }
         let emb = CandleBgeEmbedder::load(&model_dir).expect("加载 bge-m3 safetensors 失败");
@@ -5427,7 +5427,7 @@ mod tests {
         let co = crate::embedding::cosine(&q, &order);
         let cd = crate::embedding::cosine(&q, &discount);
         let cn = crate::embedding::cosine(&q, &noise);
-        println!("cos(下单改优惠, placeOrder)={co:.4}  (applyDiscount)={cd:.4}  (unused_log)={cn:.4}");
+        println!("cos('place order, change discount', placeOrder)={co:.4}  (applyDiscount)={cd:.4}  (unused_log)={cn:.4}");
 
         assert!(
             co > 0.4 && cd > 0.4,

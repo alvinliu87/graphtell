@@ -174,7 +174,7 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
         }
     }
 
-    info!("P7 解析完成：{} 个解析点，{} 轮迭代", uniques.len(), rounds);
+    info!("P7 resolution complete: {} resolution points, {} iteration rounds", uniques.len(), rounds);
 }
 
 fn resolve_once(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
@@ -1105,7 +1105,7 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
             }
         }
     }
-    info!("P7 调用链解析：{} 条 Calls 边", added);
+    info!("P7 call-chain resolution: {} Calls edges", added);
 }
 
 /// Resolve the call receiver's type FQN:

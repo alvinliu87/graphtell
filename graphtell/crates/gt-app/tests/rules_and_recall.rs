@@ -281,7 +281,7 @@ rules:
 #[test]
 fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -327,7 +327,7 @@ fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
 #[test]
 fn partial_rerun_only_replaces_its_own_violations() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -357,7 +357,7 @@ fn partial_rerun_only_replaces_its_own_violations() {
 #[test]
 fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -385,7 +385,7 @@ fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
 #[test]
 fn check_can_run_a_subset_of_rules() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -421,7 +421,7 @@ rules:
     message: "命中 {name}"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -439,7 +439,7 @@ rules:
 #[test]
 fn builtin_rules_yaml_loads() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     let set = &f.container.rules;
@@ -465,7 +465,7 @@ fn builtin_rules_yaml_loads() {
 #[test]
 fn recall_expands_from_seed_along_graph() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -536,7 +536,7 @@ fn recall_expands_from_seed_along_graph() {
 #[test]
 fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -617,7 +617,7 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
 #[test]
 fn recall_chinese_intent_bridges_to_english_nodes() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     let store = &f.container.store;
@@ -750,7 +750,7 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
 #[test]
 fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     let store = &f.container.store;
@@ -881,7 +881,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
 #[test]
 fn recall_event_driven_listener_surfaces_without_quality_collapse() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     let store = &f.container.store;
@@ -1098,7 +1098,7 @@ fn recall_real_bge_model_chinese_to_english() {
     }
 
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     let store = &f.container.store;
@@ -1208,7 +1208,7 @@ fn recall_real_bge_model_chinese_to_english() {
         .find(|s| s.name == "unused_log")
         .map(|s| s.score)
         .unwrap_or(0.0);
-    println!("bge 召回得分: placeOrder={p:.1} applyDiscount={a:.1} unused_log={n:.1}");
+    println!("bge recall scores: placeOrder={p:.1} applyDiscount={a:.1} unused_log={n:.1}");
 
     assert!(p > n, "placeOrder 得分应高于噪声 unused_log：{p} vs {n}");
     assert!(a > n, "applyDiscount 得分应高于噪声 unused_log：{a} vs {n}");
@@ -1218,7 +1218,7 @@ fn recall_real_bge_model_chinese_to_english() {
 #[test]
 fn recall_understands_chinese_kind_hints() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1257,7 +1257,7 @@ fn recall_understands_chinese_kind_hints() {
 #[test]
 fn build_runs_check_automatically() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
 
@@ -1327,7 +1327,7 @@ fn set_stack(f: &Fixture, language: &str, frameworks: &[&str]) {
 #[test]
 fn php_only_rules_are_skipped_on_java_project() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1366,7 +1366,7 @@ fn php_only_rules_are_skipped_on_java_project() {
 #[test]
 fn php_only_rules_run_on_php_project() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1396,7 +1396,7 @@ fn php_only_rules_run_on_php_project() {
 #[test]
 fn js_only_rules_are_skipped_on_backend_only_project() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1431,7 +1431,7 @@ fn js_only_rules_are_skipped_on_backend_only_project() {
 #[test]
 fn rule_is_disabled_when_its_edge_never_occurs() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     // The criterion's edge kind truly doesn't exist on the graph → the rule must deactivate
@@ -1495,7 +1495,7 @@ fn builtin_rules_are_organised_per_language() {
 #[test]
 fn recall_splits_chinese_sentence_into_bigrams() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1544,7 +1544,7 @@ fn recall_splits_chinese_sentence_into_bigrams() {
 #[test]
 fn recall_keeps_snake_case_identifiers_intact() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1581,7 +1581,7 @@ fn recall_keeps_snake_case_identifiers_intact() {
 #[test]
 fn recall_produces_markdown_context_pack() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1679,7 +1679,7 @@ rules:
     message: "表 {name} 命中了"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1732,7 +1732,7 @@ rules:
     message: "表 {name} 有 {kind} 引用"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1776,7 +1776,7 @@ rules:
     message: "表 {name}"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1812,7 +1812,7 @@ rules:
 #[test]
 fn java_n1_query_rule_fires_on_loop_db_read() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     set_stack(&f, "java", &["spring-boot"]);
@@ -1916,7 +1916,7 @@ rules:
     message: "位置 {file}:{line} 名称 {name}"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -1954,7 +1954,7 @@ rules:
 #[test]
 fn recall_kinds_filters_seeds_not_results() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2007,7 +2007,7 @@ fn recall_kinds_filters_seeds_not_results() {
 #[test]
 fn recall_limit_truncates_results() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2040,7 +2040,7 @@ fn recall_limit_truncates_results() {
 #[test]
 fn recall_handles_empty_query() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2203,7 +2203,7 @@ rules:
     message: "{name} 既无 pii 也无人引用"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2247,7 +2247,7 @@ rules:
     message: "表 {name} 未识别到鉴权能力"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2318,7 +2318,7 @@ rules:
     message: "{name} 命中"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2338,7 +2338,7 @@ rules:
 #[test]
 fn recall_reads_snippet_from_real_file() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     // Register a file that really exists on disk (a backend controller in the synthetic sample)
@@ -2571,12 +2571,12 @@ fn check_completes_within_budget() {
     const BUDGET_MS: u128 = 2_000;
 
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_many_tables(&f, N);
     let (ms, hits) = time_check_on_tables(&f);
-    eprintln!("[perf] {N} 节点 {ms} ms（预算 {BUDGET_MS} ms）");
+    eprintln!("[perf] {N} nodes in {ms} ms (budget {BUDGET_MS} ms)");
 
     assert_eq!(hits, N, "应全部命中");
     assert!(
@@ -2593,7 +2593,7 @@ fn check_completes_within_budget() {
 #[test]
 fn recall_with_snippets_is_safe_when_file_missing() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2631,7 +2631,7 @@ fn recall_with_snippets_is_safe_when_file_missing() {
 #[tokio::test]
 async fn recall_http_get_endpoint_returns_hits() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2666,7 +2666,7 @@ async fn recall_http_get_endpoint_returns_hits() {
 #[tokio::test]
 async fn recall_http_post_endpoint_returns_hits() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2705,7 +2705,7 @@ async fn recall_http_post_endpoint_returns_hits() {
 #[tokio::test]
 async fn recall_http_include_body_appends_full_file_section() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2743,7 +2743,7 @@ async fn recall_http_include_body_appends_full_file_section() {
 #[tokio::test]
 async fn recall_http_without_include_body_has_no_full_file_section() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
@@ -2774,7 +2774,7 @@ async fn recall_http_without_include_body_has_no_full_file_section() {
 #[tokio::test]
 async fn warmup_http_endpoint_returns_status_fields() {
     let Some(f) = fixture() else {
-        eprintln!("跳过：未找到 samples/frontend-backend-link（可用 GRAPHTELL_SAMPLE_DIR 指定）");
+        eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);

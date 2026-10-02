@@ -157,7 +157,7 @@ def main():
         )
 
     # ---- print
-    print(f"{'工程':<6}{'语':<4}{'查询':<24}{'真答案名次':<10}{'@5':<6}{'@10':<6}{'@20':<6} 对照(流水线)")
+    print(f"{'proj':<6}{'lang':<4}{'query':<24}{'true-rank':<10}{'@5':<6}{'@10':<6}{'@20':<6} vs(pipeline)")
     print("-" * 110)
     for r in rows:
         br = base.get((r["project"], r["query"]))
@@ -179,7 +179,7 @@ def main():
             f" {cmp}"
         )
 
-    print("\n=== 纯余弦汇总（按语言）===")
+    print("\n=== pure-cosine summary (by language) ===")
     for lang, label in (("zh", "中文"), ("en", "英文(对照)")):
         rs = [r for r in rows if r["lang"] == lang]
         if not rs:
@@ -190,19 +190,19 @@ def main():
         print(f"  {label}:{line}")
 
     # Key diagnostic: of the Chinese misses, how many are "rescuable by pure cosine" (retrieval / ranking bug)
-    print("\n=== 诊断：中文差距归因 ===")
+    print("\n=== diagnosis: attribution of the Chinese gap ===")
     zh = [r for r in rows if r["lang"] == "zh"]
     miss20 = [r for r in zh if not r["hit"][20]]
     rescuable = [r for r in miss20 if r["best_rank"] is not None and r["best_rank"] <= 20]
     embedding_gap = [r for r in miss20 if r["best_rank"] is None or r["best_rank"] > 20]
-    print(f"  中文用例 {len(zh)} 个，@20 漏掉 {len(miss20)} 个")
-    print(f"    → 纯余弦可救（真答案在前20，检索/排序 bug）：{len(rescuable)} 个")
+    print(f"  {len(zh)} Chinese cases, {len(miss20)} missed at @20")
+    print(f"    -> rescuable by pure cosine (true answer in top 20, retrieval/ranking bug): {len(rescuable)} cases")
     for r in rescuable:
-        print(f"        #{r['project']} {r['query']}  真答案名次={r['best_rank']} ({r['best_name']})")
-    print(f"    → 嵌入/桥缺口（真答案不在前20）：{len(embedding_gap)} 个")
+        print(f"        #{r['project']} {r['query']}  true-rank={r['best_rank']} ({r['best_name']})")
+    print(f"    -> embedding/bridge gap (true answer not in top 20): {len(embedding_gap)} cases")
     for r in embedding_gap:
         rank_s = str(r["best_rank"]) if r["best_rank"] else "未进索引"
-        print(f"        #{r['project']} {r['query']}  真答案{rank_s} ({r['best_name']})")
+        print(f"        #{r['project']} {r['query']}  true-rank {rank_s} ({r['best_name']})")
 
 
 if __name__ == "__main__":
