@@ -1,8 +1,10 @@
-# CRMEB 电商系统（ThinkPHP 6 生态）的**业务语义**知识
+# CRMEB 电商系统（ThinkPHP 6 生态）的**项目特有**知识
 #
 # 与 thinkphp6.yaml 的分工：
-#   thinkphp6.yaml —— 框架机制（路由、容器、事件、ORM）
-#   crmeb.yaml     —— 业务语义（PII、公开端点、配置可变性、i18n 覆盖）
+#   thinkphp6.yaml —— 框架机制（路由、容器、事件、ORM）+ 跨版本通用的 P6 标注
+#                    （PII / 表重要度 / 配置可变性 / 公开端点 / i18n，参数已通用化）
+#   crmeb.yaml     —— 仅 CRMEB 特有的数据增补与业务语义：
+#                    `contact_phone` 列名增补、以及业务入口 `entrypoint.login`
 #
 # 这里的规则选择器几乎都是 `kind: node`（作用在图上已建好的节点），
 # 因为像"这张表含手机号"必须等 P5 把表节点汇聚完、P3 把 schema 装载完才知道。
@@ -35,109 +37,29 @@ detectors:
     path: app/services
     confidence: 0.5
 
+annotation_kinds:
+  # 业务特有标注种类（内核标准之外）：`entrypoint.login` 是 CRMEB 的登录入口语义，
+  # 由下方 `crmeb-login-entrypoint` 原始规则产出。标准种类（pii / data.criticality /
+  # auth.public / i18n.missing_locale …）由内核 `annotation_templates` 识别器产出，
+  # 不在此列 —— 栈不发明注解种类。
+  - entrypoint.login
+
+# ===== P6 标注：引用内核标准识别器，按本栈数据实现（列名 / 源表 / 阈值）=====
+# 「哪些注解种类存在、怎么识别」是**内核标准**（见 `DEFAULT_ANNOTATIONS_YAML`），
+# 这里只声明 CRMEB 的数据。通用 PII 列名（phone / email / idcard…）已是跨应用约定，
+# 业务域列名（contact_phone）仍是栈特有 —— 留作参数，不写死在识别器里。
+# PII / 重要度 / 配置 / 公开端点 / i18n 的通用识别器与通用参数已上移到 `thinkphp6.yaml`
+# （内核标准 `annotation_templates` 的栈实现）。此处只保留 CRMEB 特有的参数增补：
+# `contact_phone` 列名。两条规则各自匹配、`MaxByKind` 合并，互不冲突。
+annotation_interfaces:
+  - annotation: pii
+    params:
+      table: schema
+      names: [contact_phone]
+      subkind: phone
+
 rules:
-  # ===== P6：给 Table 打 PII 标签（依赖 P3 的 schema 权威源）=====
-  # 若没有这一步，规则只能靠"字段名恰好是 phone"硬匹配，
-  # 会漏掉 user_phone / contact_mobile 这类变体列名。
-  - id: crmeb-pii-table-tagging
-    phase: AnnotatePost
-    selector:
-      kind: node
-      node_kind: Table
-      where:
-        - columns_match:
-            table: schema
-            names: ["phone", "mobile", "tel", "contact_phone", "idcard", "email"]
-    binding:
-      - Annotate:
-          phase: Post
-          channel: FkbMark
-          target: matched
-          annotations:
-            - kind: pii
-              subkind: { literal: phone }
-              confidence: 0.9
-          merge: MaxByKind
-
-  # ===== P6：表的重要度（fan_in 只有汇聚完才算得准）=====
-  - id: crmeb-table-criticality
-    phase: AnnotatePost
-    selector:
-      kind: node
-      node_kind: Table
-    binding:
-      - Annotate:
-          phase: Post
-          channel: FkbMark
-          target: matched
-          annotations:
-            - kind: data.criticality
-              subkind:
-                from_fan_in:
-                  thresholds: { high: 50, medium: 10 }
-              confidence: 0.85
-          merge: MaxByKind
-
-  # ===== P6：配置键的权威元数据（storage / mutability）=====
-  # 这两项直接决定抽象解释遇到 sys_config 时只能给 ⊤。
-  - id: crmeb-config-metadata
-    phase: AnnotatePost
-    selector:
-      kind: node
-      node_kind: ConfigKey
-    binding:
-      - Annotate:
-          phase: Post
-          channel: FkbMark
-          target: matched
-          annotations:
-            - kind: config.storage
-              subkind: { from_symbol_table: { table: config_keys, field: storage } }
-              confidence: 1.0
-            - kind: config.mutability
-              subkind: { from_symbol_table: { table: config_keys, field: mutable } }
-              confidence: 1.0
-          merge: MaxByKind
-
-  # ===== P6：公开端点判定（必须等两侧建完、中间件解析完）=====
-  - id: crmeb-public-endpoint
-    phase: AnnotatePost
-    selector:
-      kind: node
-      node_kind: HttpContract
-      where:
-        - none_of_capability: ["Authentication", "Authorization"]
-    binding:
-      - Annotate:
-          phase: Post
-          channel: FkbMark
-          target: matched
-          annotations:
-            - kind: auth.public
-              confidence: 0.9
-          merge: MaxByKind
-
-  # ===== P6：把组级能力投影到端点节点（遍历 → O(1) 查询）=====
-  # 注意：只有当端点**已经**具备该能力（由 P4 在 RouteGroup 上声明后投影）
-  # 才打标；这里不做凭空推断，避免产出虚假事实。
-  # ===== P6：i18n locale 覆盖标记（外贸版刚需）=====
-  - id: crmeb-i18n-coverage
-    phase: AnnotatePost
-    selector:
-      kind: node
-      node_kind: I18nKey
-    binding:
-      - Annotate:
-          phase: Post
-          channel: FkbMark
-          target: matched
-          annotations:
-            - kind: i18n.missing_locale
-              subkind: { computed: missing_locales }
-              confidence: 1.0
-          merge: MaxByKind
-
-  # ===== P6：给 HttpContract 打"入口点"语义 =====
+  # ===== P6：给 HttpContract 打"入口点"语义（CRMEB 业务特有，留在栈里实现）=====
   - id: crmeb-login-entrypoint
     phase: AnnotatePost
     selector:

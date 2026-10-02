@@ -288,6 +288,28 @@ resolvers:
     call: "*->*"
     strategy: variable_type
 
+# ---------------------------------------------------------------- P6 标注：内核标准识别器 + 本栈数据实现
+# 「哪些注解种类存在、怎么识别」是内核标准（见 `DEFAULT_ANNOTATIONS_YAML`），这里只声明
+# ThinkPHP 跨版本通用的数据。项目特有参数（如 CRMEB 的 `contact_phone` 列名）由各项目 FKB
+# 追加声明，与本条取并集生效（两条规则各自匹配、MaxByKind 合并，互不冲突）。
+annotation_interfaces:
+  - annotation: pii
+    params:
+      table: schema
+      names: [phone, mobile, tel, idcard, email]
+      subkind: phone
+  - annotation: table_criticality
+    params:
+      thresholds: { high: 50, medium: 10 }
+  - annotation: config_metadata
+    params:
+      table: config_keys
+  - annotation: public_endpoint
+    params:
+      caps: [Authentication, Authorization]
+  - annotation: i18n_coverage
+    params: {}
+
 # ---------------------------------------------------------------- 规则
 rules:
   # ===== P4 Annotate-Pre：污点语义 =====

@@ -90,28 +90,17 @@ rules:
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.9
 
-# ===== 缓存 / Redis：用「能力接口声明」表达（识别机制在核心能力模板，跨语言）=====
-# 引擎把每条声明摊平成匹配 `Type::method|*Suffix::method` 的合成规则，与手写 Rule 等价。
-# 封装层（如 `*CacheService`）不单独声明：最里层真实调用被认出后，由「不衰减的 P8 传播」
-# 自动穿透到任意深度的调用方。第三方 / 业务自研客户端（如 Predis）由用户 FKB 追加声明。
+# ===== 缓存 / Redis：用「能力接口声明」表达（识别机制在跨语言能力模板）=====
+# 跨语言通用命名约定（`Cache` / `Redis` / `*CacheService` / `*RedisClient` …）已写在
+# 核心能力模板 `cache` 里（装载器 `DEFAULT_CAPABILITIES_YAML`），对所有语言生效一次，
+# 按 `Wrapper` 模式摊平成 `*Type::method`。这里只补**词根不合通用约定、必须精确声明**
+# 的 PHP 库类型 —— 例如 `Predis\Client`（`*Client` 太泛会误伤 `HttpClient`/`DbClient`，
+# 故不能进通用集合）。引擎把两者取并集。框架门面 `Cache::get` / 模型 `app\model\other\Cache`
+# 经模板 `*Cache::get` 命中；封装层 `*CacheService` 也由模板兜底、不在此重复声明。
 capability_interfaces:
-  # 框架缓存门面（ThinkPHP `Cache::*` / Laravel `Illuminate\Support\Facades\Cache::*`）。
-  # 同时覆盖 CRMEB 业务里同名模型 `app\model\other\Cache`（其 `get/set` 经 `*Cache::*` 命中）。
+  # PHP 专用 Redis 客户端：Predis（词根 `Client` 不合通用约定，精确声明为 Backend）。
   - capability: cache
-    types: ["Cache"]
-    read: [get, has, many, remember, cache]
-    write: [set, put, save, add, forever, forget, delete, clear]
-  # Redis 客户端（跨框架通用）。
-  - capability: cache
-    types: ["Redis"]
+    types: ["Predis\\Client"]
     read: [get, hGet, mGet]
     write: [set, hSet, del, delete]
-  # 缓存服务封装类（如 CRMEB `crmeb\services\CacheService`）：按「类后缀 + 方法名」匹配。
-  # 框架缓存门面（ThinkPHP / Laravel `Cache`）经魔术分发，P7 看不到内部真实 `Cache::get`
-  # 调用，只能认「名为 `*CacheService::get` 的封装方法」——这是框架自带约定，非随意猜测。
-  # 需要引擎 `callee` 匹配支持前导 `*` 通配（类后缀），见 `gt-pipeline::engine::recv_matches`。
-  - capability: cache
-    types: ["*CacheService"]
-    read: [get, load, read, has, fetch]
-    write: [set, save, put, delete, remove, clear, forget]
-    match_mode: wrapper
+    match_mode: by_type

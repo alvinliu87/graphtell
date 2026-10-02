@@ -396,6 +396,56 @@ declare_open_kind! { SynthesizedKind => "合成节点的 identity 类型";
     CONTRACT_ID = "ContractId" => "HTTP 契约 `METHOD /path`",
 }
 
+// 标注种类（FKB 打在节点上的语义标签，开放可扩展）。
+//
+// 与 `NodeKind` / `EdgeKind` 同构：内核只列**跨栈通用的标准语义**（隐私 / 合规 /
+// 数据重要度 / 配置元数据 / 鉴权 / i18n …），它们由内核标准识别器
+// （见 `gt_adapter_fkb::loader` 的 `annotation_templates`）产出；**业务特有**的标注
+// 种类（如某项目的 `entrypoint.login`）经 `register_annotation_kinds` 追加，
+// 不写死内核 —— 这是「只写 FKB、零代码」承诺在**标注**这一维的落地。
+//
+// 设计意图（用户原则）：「哪些注解种类存在、怎么识别」是**内核标准 / 接口**，
+// 每种技术栈按自己的数据去**实现**这些接口（声明列名 / 源表 / 阈值），不该自己造
+// 识别器、也不该自己发明注解种类。
+declare_open_kind! { AnnotationKind => "标注种类（FKB 打在节点上的语义标签，开放可扩展）";
+    PII                = "pii"                  => "个人敏感信息（隐私 / 合规）",
+    DATA_CRITICALITY   = "data.criticality"     => "数据重要度（fan_in 汇聚后判定 high / medium / low）",
+    CONFIG_STORAGE     = "config.storage"       => "配置存储介质（决定抽象解释遇到它只能给 ⊤）",
+    CONFIG_MUTABILITY  = "config.mutability"    => "配置可变性（运行时可变 vs 只读）",
+    AUTH_PUBLIC        = "auth.public"          => "公开端点（未挂任何鉴权类中间件）",
+    I18N_MISSING_LOCALE = "i18n.missing_locale" => "i18n 缺失 locale 覆盖",
+    // 业务特有的标注种类由 FKB 经 `register_annotation_kinds` 追加，内核不认识具体名字。
+}
+
+/// FKB 追加登记的标注种类（进程内单例，随 FKB 装载填充）。
+///
+/// 与节点的 [`EXTRA_SEMANTIC`] / 边的 [`EXTRA_SEMANTIC_EDGE`] 同构：让"新增一种标注
+/// 语义"也只需写 FKB、不改内核。内核标准种类见 [`AnnotationKind`] 常量清单。
+static EXTRA_ANNOTATION: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// 登记 FKB 声明的标注种类（可重复调用，幂等合并）。
+///
+/// 调用方：`gt_adapter_fkb::loader` 在装载 FKB 时，把 `annotation_kinds` 喂进来。
+pub fn register_annotation_kinds(kinds: impl IntoIterator<Item = String>) {
+    let mut set = EXTRA_ANNOTATION
+        .get_or_init(Default::default)
+        .write()
+        .expect("标注种类注册表未被破坏");
+    set.extend(kinds);
+}
+
+/// 当前已登记的 FKB 标注种类（供诊断 / 测试观察）。
+pub fn extra_annotation_kinds() -> Vec<String> {
+    let mut out: Vec<String> = EXTRA_ANNOTATION
+        .get_or_init(Default::default)
+        .read()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
 /// 技术栈语言（开放可扩展）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default)]
 #[serde(transparent)]
@@ -462,5 +512,15 @@ mod tests {
         // 纯语法链边仍走内置分支。
         assert!(is_chain_edge("Calls"));
         assert!(is_chain_edge("HasCallSite"));
+    }
+
+    #[test]
+    fn annotation_kind_registry_extends_classification() {
+        // 内核标准种类（常量，即 `&'static str`）：与字面量直接比较。
+        assert_eq!(AnnotationKind::PII, "pii");
+        assert_eq!(AnnotationKind::AUTH_PUBLIC, "auth.public");
+        // 业务特有种类：经注册后成为一等公民（OCP 逃生舱，与边种类同构）。
+        register_annotation_kinds(vec!["entrypoint.login".to_string()]);
+        assert!(extra_annotation_kinds().contains(&"entrypoint.login".to_string()));
     }
 }

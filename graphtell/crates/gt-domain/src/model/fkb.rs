@@ -43,6 +43,20 @@ pub struct FrameworkKnowledge {
     /// 模板只写一次，各语言 / 各库只声明「谁暴露了什么能力」。
     #[serde(default)]
     pub capability_interfaces: Vec<CapabilityInterface>,
+    /// 标准**注解识别器**引用（P6 标注的「接口实现」）：每个栈按自己的数据声明
+    /// 本栈如何实例化内核标准识别器（PII 列名 / 配置源表 / 重要度阈值 …）。
+    /// 识别器本身是内核标准（见 `gt_adapter_fkb::loader` 的 `annotation_templates`），
+    /// 各栈只填参数、不造识别器、不发明注解种类 —— 与 `capability_interfaces` 同构。
+    #[serde(default)]
+    pub annotation_interfaces: Vec<AnnotationInterface>,
+    /// 本 FKB 引入的**业务特有标注种类**（在内核标准 [`AnnotationKind`] 之外追加）。
+    ///
+    /// 标准种类（pii / data.criticality / config.storage / auth.public / i18n.missing_locale …）
+    /// 由内核识别器产出，不在此列；此处只放「项目特有的业务语义」（如 `entrypoint.login`）。
+    /// 加载时登记进 [`crate::model::kinds::register_annotation_kinds`]，与 `semantic_kinds`
+    /// （节点）同构 —— 新增一种业务标注不该以改内核为代价。
+    #[serde(default)]
+    pub annotation_kinds: Vec<String>,
     /// P7 动态解析声明：哪些调用是容器解析 / 事件触发 / 门面调用。
     pub resolvers: Vec<ResolverSpec>,
     /// 缺省排除目录（叠加在工程/语言默认规则之上）。
@@ -646,25 +660,30 @@ pub struct Rule {
     pub confidence: f32,
 }
 
-/// 能力接口的匹配模式。
+/// 能力接口的匹配模式：按什么维度把「类型 × 方法」摊成调用匹配串。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchMode {
-    /// 按「真实后端调用」匹配：对 `types × methods` 摊出 `Type::method|*Suffix::method`。
-    /// 适用于 P7 能解析出内部调用的库（Predis / Redis / 自研客户端）。
+    /// 按「真实实现类型」匹配：对 `types × methods` 摊出 `Type::method|*Suffix::method`。
+    /// `Type::method` 精确匹配声明的类；`*Suffix::method` 兜底匹配「任何以该尾部片段
+    /// 结尾的类」（如 `Predis\Client` → 也命中 `XxxClient`）。适用于 P7 能解析出内部
+    /// 真实调用的库（Predis / Redis / 自研客户端）。
     #[default]
-    Backend,
-    /// 按「封装类命名约定」匹配：对 `types` 摊出 `*Type::method`（类后缀 + 方法名）。
+    ByType,
+    /// 按「命名约定」匹配：对 `types` 摊出 `*Type::method`（类后缀 + 方法名）。
     /// 适用于框架门面（ThinkPHP / Laravel `Cache`）经魔术分发、P7 看不到内部真实调用，
-    /// 只能认「名为 `*CacheService::get` 的封装方法」——这是框架自带约定，非随意猜测。
-    Wrapper,
+    /// 只认「名为 `*CacheService::get` 的封装方法」——这是框架自带约定，非随意猜测。
+    ByName,
 }
 
-/// 能力接口声明：某库 / 框架的哪些类型、哪些方法暴露某能力（读 / 写）。
+/// 能力接口声明：某库 / 框架的哪些**特有**类型、哪些方法暴露某能力（读 / 写）。
 ///
 /// 例：`{ capability: cache, types: ["Predis\\Client"], read: [get], write: [set] }`
-/// 由装载器查 `capability_templates` 摊平成匹配 `Predis\Client::get` / `*Client::get`
-/// 的合成规则。属于「框架 / 库知识」（分语言），与跨语言的能力模板分离。
+/// 由装载器查 `capability_templates`，与本模板的**跨语言通用约定**取并集，摊平成
+/// 匹配 `Predis\Client::get` / `*Client::get` 的合成规则。属于「框架 / 库知识」
+/// （分语言、可用户扩展），与跨语言的能力模板（识别机制）分离：通用命名约定
+/// （`Cache` / `*CacheService` …）只写一次在模板里，这里只补「词根不合通用约定、
+/// 必须精确声明」的库类型。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CapabilityInterface {
@@ -678,27 +697,37 @@ pub struct CapabilityInterface {
     pub write: Vec<String>,
     /// 覆盖默认置信度。
     pub confidence: Option<f32>,
-    /// 匹配模式：`backend`（按真实调用）或 `wrapper`（按封装类命名约定）。
+    /// 匹配模式：`by_type`（按真实实现类型）或 `by_name`（按封装类命名约定）。
     pub match_mode: MatchMode,
 }
 
-/// 能力模板（跨语言、核心机制，**不属于 FKB**）：描述「某能力如何落成图节点与边」。
+/// 标准**注解识别器**引用：每栈按自己的数据「实现」内核提供的接口 / 标准。
 ///
-/// 例：`cache` → 建 `ExternalSystem`(Cache) 节点、身份取 arg0、`ReadsCache` / `WritesCache` 边。
-/// 同一模板被所有语言、所有库的 `capability_interfaces` 复用 —— 识别逻辑只写一次，
-/// 且它不绑定任何框架 / 语言，故放在核心配置而非 `fkb/<lang>/` 下。
+/// 例：`{ annotation: pii, params: { table: schema, names: [phone, mobile, ...], subkind: phone } }`
+/// 由装载器查**内核标准识别器** `annotation_templates`（见 `gt_adapter_fkb::loader`
+/// 的 `DEFAULT_ANNOTATIONS_YAML`），把模板里的 `{{key}}` 占位符替换成 `params` 后，
+/// 摊平成一条具体的 `Annotate` 规则。
+///
+/// 这把「能力识别」那套开闭原则原样平移到 **P6 标注**：
+/// * 「哪些注解种类存在、怎么识别」是**内核标准**（与 `NodeKind` / `EdgeKind` 同构），
+///   只写一次在 `annotation_templates` 里，且产出的 `kind` 全部来自内核标准词汇
+///   （[`crate::model::kinds::AnnotationKind`]）—— 栈**无法自己发明**注解种类；
+/// * 各栈只声明「本栈的数据长什么样」（列名 / 源表 / 阈值 / 能力名单），即「接口的实现」；
+/// * 业务特有的标注种类仍可由 FKB 经 [`FrameworkKnowledge::annotation_kinds`] 注册
+///   （OCP 逃生舱），但识别器本身永远是内核标准提供的那几个，不重复造。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CapabilityTemplate {
-    pub node: NodeKind,
-    pub subtype: Option<String>,
-    pub identity: IdentitySpec,
-    pub fields: Vec<FieldSpec>,
-    pub read_link: EdgeKind,
-    pub write_link: EdgeKind,
-    #[serde(default = "default_conf")]
-    pub confidence: f32,
+pub struct AnnotationInterface {
+    /// 内核标准识别器名（查 `annotation_templates`，如 `pii` / `table_criticality`
+    /// / `config_metadata` / `public_endpoint` / `i18n_coverage`）。
+    pub annotation: String,
+    /// 替换模板占位符的参数（`{{key}}` → 参数值）。
+    pub params: HashMap<String, Value>,
+    /// 覆盖默认置信度（同时覆盖 `Rule` 与 `Annotate` 动作里的置信度）。
+    pub confidence: Option<f32>,
 }
+
+
 
 /// 选择器：决定规则作用于什么。
 #[derive(Debug, Clone, Serialize, Deserialize)]
