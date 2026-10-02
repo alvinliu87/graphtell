@@ -1110,7 +1110,10 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
                     from_id: call.owner,
                     to_id: target,
                     phase: phase.clone(),
-                    confidence: 0.7,
+                    // 静态 / 门面调用（`Class::method`）接收者即类名，解析确定 —— 置信度 1.0，
+                    // P8 沿此类边传播时**不衰减**。变量类型推断的边（见下方 `via: receiver_type`）
+                    // 置信度较低，传播时自然衰减。
+                    confidence: 1.0,
                     properties: serde_json::json!({
                         "callee": call.callee,
                         // 精确记录这次调用对应的 CallSite 节点 id，视图层据此直接取到"调用处"，

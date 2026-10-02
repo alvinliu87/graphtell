@@ -27,8 +27,9 @@ use crate::context::{PipelineContext, PropSeed};
 pub fn run(ctx: &mut PipelineContext) {
     let phase = Phase(Phase::PROPAGATE.to_string());
 
-    // 反向调用索引：被调方法 → 它的所有「方法 / 函数」调用方（构建时已过滤非方法节点）。
-    let mut callers: HashMap<i64, Vec<i64>> = HashMap::new();
+    // 反向调用索引：被调方法 → 它的所有「方法 / 函数」调用方，连同该 `Calls` 边的
+    // 解析置信度（静态调用 1.0、变量类型推断较低）。传播时的衰减完全由这些置信度决定。
+    let mut callers: HashMap<i64, Vec<(i64, f32)>> = HashMap::new();
     for e in ctx.ws.edges() {
         if e.kind.as_str() != EdgeKind::CALLS {
             continue;
@@ -39,7 +40,10 @@ pub fn run(ctx: &mut PipelineContext) {
         if !is_action_site(from.kind.as_str()) {
             continue;
         }
-        callers.entry(e.to_id.get()).or_default().push(e.from_id.get());
+        callers
+            .entry(e.to_id.get())
+            .or_default()
+            .push((e.from_id.get(), e.confidence));
     }
 
     let seeds = std::mem::take(&mut ctx.propagation_seeds);
@@ -75,8 +79,9 @@ pub fn run(ctx: &mut PipelineContext) {
         let src_seeds = &by_source[src];
         let reach = transitive_callers(*src, &callers, ctx);
         for s in src_seeds {
-            let (confidence, indirect) = propagated(&s.kind, s.confidence);
-            for c in &reach {
+            for (c, path_conf) in &reach {
+                // 传播置信度 = 种子置信度 × 沿调用链的路径解析置信度连乘。
+                let (confidence, indirect) = propagated(&s.kind, s.confidence, *path_conf);
                 // `from` 是沿调用链上行到达的调用方，`to` 是语义目标；
                 // `src` 才是真正执行该动作的方法节点（根因）。
                 let key = (EdgeKind(s.kind.clone()), *c, s.target.get());
@@ -133,25 +138,33 @@ pub fn run(ctx: &mut PipelineContext) {
     );
 }
 
-/// 从 `src` 出发，沿 `callers` 索引向上收集所有可达的「方法 / 函数」调用方（不含 src 自身）。
+/// 从 `src` 出发，沿 `callers` 索引向上收集所有可达的「方法 / 函数」调用方（不含 src 自身），
+/// 并返回每个调用方沿路径累积的**解析置信度连乘**（`路径上每条 Calls` 边置信度之积）。
 ///
-/// `seen` 保证循环安全；`is_action_site` 保证只经过方法 / 函数节点。
+/// 确定性调用链（边置信度 1.0）连乘仍为 1.0 → **不衰减**；推断 / 动态调用（<1.0）自然衰减。
+/// `best` 保证循环安全，且对同一节点只保留最高连乘置信度。
 fn transitive_callers(
     src: i64,
-    callers: &HashMap<i64, Vec<i64>>,
+    callers: &HashMap<i64, Vec<(i64, f32)>>,
     ctx: &PipelineContext,
-) -> Vec<i64> {
-    let mut out: Vec<i64> = Vec::new();
-    let mut seen: HashSet<i64> = HashSet::new();
-    let mut stack = vec![src];
-    while let Some(cur) = stack.pop() {
+) -> Vec<(i64, f32)> {
+    let mut out: Vec<(i64, f32)> = Vec::new();
+    let mut best: HashMap<i64, f32> = HashMap::new();
+    let mut stack = vec![(src, 1.0f32)];
+    best.insert(src, 1.0);
+    while let Some((cur, cur_conf)) = stack.pop() {
         let Some(next) = callers.get(&cur) else {
             continue;
         };
-        for c in next {
-            if !seen.insert(*c) {
-                continue;
+        for (c, econf) in next {
+            let path_conf = cur_conf * *econf;
+            // 已访问且当前路径不更优则跳过；否则更新最优并继续向上。
+            if let Some(prev) = best.get(c) {
+                if *prev >= path_conf {
+                    continue;
+                }
             }
+            best.insert(*c, path_conf);
             // 仅当调用方是方法 / 函数时才纳入并继续向上；其余节点（类 / 文件）不进入传播链。
             let is_site = ctx
                 .ws
@@ -159,8 +172,8 @@ fn transitive_callers(
                 .map(|n| is_action_site(n.kind.as_str()))
                 .unwrap_or(false);
             if is_site {
-                out.push(*c);
-                stack.push(*c);
+                out.push((*c, path_conf));
+                stack.push((*c, path_conf));
             }
         }
     }
@@ -172,27 +185,26 @@ fn is_action_site(kind: &str) -> bool {
     kind == NODE_KIND_METHOD || kind == NODE_KIND_FUNCTION
 }
 
-/// 传播时会**退化**的语义边种类。
+/// 传播后标记为「间接」的语义边种类（环境读取）。
 ///
-/// `ReadsDb` / `WritesDb` / `PublishesTo` 这类是**真实发生的动作**：调用方调用了它，
-/// 该动作就确实在这次调用中发生了，传播到调用方不算失真。
+/// 与「真实发生的动作」（`ReadsDb` / `WritesDb` / `PublishesTo`：调用方调用了它，
+/// 该动作就确实发生了，传播不算失真）不同，`ReadsCache` / `ReadsConfig` 是**环境读取**，
+/// 传播后含义从「此处读取」弱化为「上游某处读过，本入口可能受影响」。下游据此把
+/// 这类边按「间接」降权，避免共享 helper 把所有途经入口都标成读过该配置 / 缓存。
 ///
-/// `ReadsConfig` / `ReadsCache` 则不同：它们是**环境读取**，传播后含义从
-/// 「此处读取了该配置」退化为「上游某处读过，本入口可能受影响」——事实强度明显更弱。
-/// 若不加以区分，任何一个读了 `member_func_status` 的共享方法，都会把所有途经它的
-/// 入口全标成「读取该配置」，产生大量假正。
+/// 注意：数值衰减**不再**用固定系数——确定性调用链（边置信度 1.0）连乘后仍不衰减，
+/// 只有推断 / 动态调用（边置信度 <1.0）才自然衰减。这里只负责打 `indirect` 标记。
 const DECAYED_KINDS: &[&str] = &[EdgeKind::READS_CONFIG, "ReadsCache"];
 
-/// 退化系数：环境读取类语义边沿调用链每向上传播一次所保留的置信度。
-const DECAY_FACTOR: f32 = 0.6;
-
 /// 计算传播边的置信度与「是否间接」标记。
-fn propagated(kind: &str, base: f32) -> (f32, bool) {
-    if DECAYED_KINDS.contains(&kind) {
-        (base * DECAY_FACTOR, true)
-    } else {
-        (base, false)
-    }
+///
+/// * `base`：种子（最里层动作发出方）的置信度。
+/// * `path_conf`：沿调用链上每条 `Calls` 边解析置信度的连乘（由 `transitive_callers` 给出）。
+///   确定性链 ≈ 1.0 → 不衰减；推断 / 动态链 < 1.0 → 自然衰减。
+/// * `indirect`：仅对环境读取类打标，供下游区分直连与间接。
+fn propagated(kind: &str, base: f32, path_conf: f32) -> (f32, bool) {
+    let indirect = DECAYED_KINDS.contains(&kind);
+    (base * path_conf, indirect)
 }
 
 const NODE_KIND_METHOD: &str = "Method";
@@ -338,6 +350,91 @@ mod tests {
             .count();
         assert_eq!(b_count, 1);
         assert!(has_edge(&ctx, c, q, EdgeKind::PUBLISHES_TO));
+    }
+
+    fn calls_conf(ctx: &mut PipelineContext, from: NodeId, to: NodeId, conf: f32) {
+        ctx.ws.add_edge(NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind("Calls".to_string()),
+            from_id: from,
+            to_id: to,
+            phase: Phase("Resolve".into()),
+            confidence: conf,
+            properties: serde_json::Value::Null,
+        });
+    }
+
+    #[test]
+    fn static_chain_propagates_without_decay() {
+        // 确定性调用链（Calls 边置信度 1.0）：种子 0.85 应原样传到顶层，不衰减。
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let cache = add_node(&mut ctx, "ExternalSystem", "Cache:default");
+
+        calls_conf(&mut ctx, top, mid, 1.0);
+        calls_conf(&mut ctx, mid, leaf, 1.0);
+
+        ctx.propagation_seeds.push(PropSeed {
+            source: leaf,
+            target: cache,
+            kind: "ReadsCache".to_string(),
+            confidence: 0.85,
+            sub: None,
+            phase: Phase("Synthesize".into()),
+        });
+
+        super::run(&mut ctx);
+        let edge = ctx
+            .ws
+            .edges()
+            .iter()
+            .find(|e| e.from_id == top && e.to_id == cache && e.kind.as_str() == "ReadsCache")
+            .unwrap();
+        assert!(
+            (edge.confidence - 0.85).abs() < 1e-3,
+            "确定性链不应衰减，期望 0.85，实际 {}",
+            edge.confidence
+        );
+        // 环境读取仍标记 indirect，供下游区分直连 / 间接。
+        assert_eq!(edge.properties.get("indirect"), Some(&serde_json::json!(true)));
+    }
+
+    #[test]
+    fn uncertain_chain_propagates_with_decay() {
+        // 推断 / 动态调用链（每段 Calls 边置信度 0.5）：两段连乘 0.25，种子 0.85 → 0.2125。
+        // 说明衰减随跳数累积（每段不确定调用各衰减一次）。
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let cache = add_node(&mut ctx, "ExternalSystem", "Cache:default");
+
+        calls_conf(&mut ctx, top, mid, 0.5);
+        calls_conf(&mut ctx, mid, leaf, 0.5);
+
+        ctx.propagation_seeds.push(PropSeed {
+            source: leaf,
+            target: cache,
+            kind: "ReadsCache".to_string(),
+            confidence: 0.85,
+            sub: None,
+            phase: Phase("Synthesize".into()),
+        });
+
+        super::run(&mut ctx);
+        let edge = ctx
+            .ws
+            .edges()
+            .iter()
+            .find(|e| e.from_id == top && e.to_id == cache && e.kind.as_str() == "ReadsCache")
+            .unwrap();
+        assert!(
+            (edge.confidence - 0.2125).abs() < 1e-3,
+            "不确定性链应衰减（0.5^2），期望 0.2125，实际 {}",
+            edge.confidence
+        );
     }
 }
 

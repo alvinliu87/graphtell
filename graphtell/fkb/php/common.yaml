@@ -70,140 +70,6 @@ tx_calls:
   - "Db::transaction"
 
 rules:
-  # ===== P5 Synthesize：Cache（跨框架通用）=====
-  # `Cache::get/set(...)` 在 ThinkPHP / Laravel 里写法相同（门面 import 后用短名
-  # `Cache::*`，或全限定 `*Cache::*` 如 `think\facade\Cache::*` /
-  # `Illuminate\Support\Facades\Cache::*`）。用 `*Cache::*` 一揽子覆盖两种门面写法，
-  # 无需按框架拆规则。按字面量 key 区分节点（与 ConfigKey / Table / Queue 一致）。
-  - id: php-common-cache-read
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "Cache::get|Cache::has|Cache::many|Cache::remember|cache|*Cache::get|*Cache::has|*Cache::many|*Cache::remember"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Cache" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
-          link: { kind: ReadsCache, direction: incoming }
-          confidence: 0.85
-
-  - id: php-common-cache-write
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "Cache::set|Cache::put|Cache::save|Cache::add|Cache::forever|Cache::forget|Cache::delete|Cache::clear|*Cache::set|*Cache::put|*Cache::save|*Cache::add|*Cache::forever|*Cache::forget|*Cache::delete|*Cache::clear"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Cache" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
-          link: { kind: WritesCache, direction: incoming }
-          confidence: 0.85
-
-  # ===== P5 Synthesize：Redis（缓存后端，跨框架通用）=====
-  - id: php-common-redis-read
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "Redis::get|Redis::hGet|Redis::mGet|*Redis::get|*Redis::hGet|*Redis::mGet"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Redis" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
-          link: { kind: ReadsCache, direction: incoming }
-          confidence: 0.85
-
-  - id: php-common-redis-write
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "Redis::set|Redis::hSet|Redis::del|Redis::delete|*Redis::set|*Redis::hSet|*Redis::del|*Redis::delete"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Redis" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
-          link: { kind: WritesCache, direction: incoming }
-          confidence: 0.85
-
-  # ===== P5 Synthesize：缓存服务类（如 CRMEB 的 `app/services/*CacheService`）=====
-  # 业务常把缓存包一层服务类；命名约定 `*CacheService::*` 跨项目通用，故放通用层。
-  - id: php-common-cache-service-read
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "*CacheService::get|*CacheService::load|*CacheService::read|*CacheService::has"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Cache" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
-          link: { kind: ReadsCache, direction: incoming }
-          confidence: 0.8
-
-  - id: php-common-cache-service-write
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "*CacheService::set|*CacheService::save|*CacheService::put|*CacheService::delete|*CacheService::remove|*CacheService::clear"
-    binding:
-      - Synthesize:
-          node: ExternalSystem
-          subtype: Cache
-          identity:
-            kind: Named
-            value: { arg: 0, require_literal: true }
-            value_fallback: { literal: "Cache" }
-          fields:
-            - name: key
-              value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
-          link: { kind: WritesCache, direction: incoming }
-          confidence: 0.8
-
   # ===== P5 Synthesize：ConfigKey（跨框架通用：config() / Config::get / env）=====
   # 与 `Cache::get` 同理，两框架写法相同，抽到通用层避免重复。
   # CRMEB 特有的 `sys_config` 仍留在 `thinkphp6.yaml`（业务约定，非通用）。
@@ -223,3 +89,29 @@ rules:
               value: { literal: "backend" }
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.9
+
+# ===== 缓存 / Redis：用「能力接口声明」表达（识别机制在核心能力模板，跨语言）=====
+# 引擎把每条声明摊平成匹配 `Type::method|*Suffix::method` 的合成规则，与手写 Rule 等价。
+# 封装层（如 `*CacheService`）不单独声明：最里层真实调用被认出后，由「不衰减的 P8 传播」
+# 自动穿透到任意深度的调用方。第三方 / 业务自研客户端（如 Predis）由用户 FKB 追加声明。
+capability_interfaces:
+  # 框架缓存门面（ThinkPHP `Cache::*` / Laravel `Illuminate\Support\Facades\Cache::*`）。
+  # 同时覆盖 CRMEB 业务里同名模型 `app\model\other\Cache`（其 `get/set` 经 `*Cache::*` 命中）。
+  - capability: cache
+    types: ["Cache"]
+    read: [get, has, many, remember, cache]
+    write: [set, put, save, add, forever, forget, delete, clear]
+  # Redis 客户端（跨框架通用）。
+  - capability: cache
+    types: ["Redis"]
+    read: [get, hGet, mGet]
+    write: [set, hSet, del, delete]
+  # 缓存服务封装类（如 CRMEB `crmeb\services\CacheService`）：按「类后缀 + 方法名」匹配。
+  # 框架缓存门面（ThinkPHP / Laravel `Cache`）经魔术分发，P7 看不到内部真实 `Cache::get`
+  # 调用，只能认「名为 `*CacheService::get` 的封装方法」——这是框架自带约定，非随意猜测。
+  # 需要引擎 `callee` 匹配支持前导 `*` 通配（类后缀），见 `gt-pipeline::engine::recv_matches`。
+  - capability: cache
+    types: ["*CacheService"]
+    read: [get, load, read, has, fetch]
+    write: [set, save, put, delete, remove, clear, forget]
+    match_mode: wrapper

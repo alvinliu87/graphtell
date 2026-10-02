@@ -129,14 +129,19 @@ fn recv_matches(pattern: &str, receiver: Option<&str>, callee: &str) -> bool {
     let Some(r) = receiver else { return false };
     // 前导分隔符折叠：Java 的 `com.x.X` 与 PHP 的 `\X` 统一去掉前缀分隔符。
     let r = r.trim_start_matches(|c| NS_SEPARATORS.contains(&c));
-    if r.eq_ignore_ascii_case(pattern) {
+    // 前导 `*` 通配：匹配「任意前缀 + 该后缀」的类（如 `*CacheService` 匹配
+    // `crmeb\services\CacheService`、`*Cache` 匹配 `app\model\other\Cache`）。
+    // 与既有「尾部伞名匹配」一致，只是不要求后缀前有命名空间分隔符——这正是
+    // 能力接口 `wrapper` 模式（`*Type::method`）所需的「按封装类命名约定匹配」。
+    let pat = pattern.strip_prefix('*').unwrap_or(pattern);
+    if r.eq_ignore_ascii_case(pat) {
         return true;
     }
     // 尾部匹配（伞名）：`Queue` 匹配 `think\facade\Queue`，`Service` 匹配 `com.x.Service`。
     // 分隔符取已知语言的并集，不假设某门语言用哪个符号（内核零语言知识）。
-    if r.len() > pattern.len() {
+    if r.len() > pat.len() {
         for sep in NS_SEPARATORS {
-            let prefix = format!("{}{}", sep, pattern);
+            let prefix = format!("{}{}", sep, pat);
             if r.len() >= prefix.len()
                 && r.as_bytes()[r.len() - prefix.len()..].eq_ignore_ascii_case(prefix.as_bytes())
             {
@@ -1390,6 +1395,32 @@ mod tests {
 
         let rec2 = call_record(Some("UnknownThing"), Some("push"), "UnknownThing::push");
         assert!(!aliased_callee_matches(&ws, "Queue::push", &rec2));
+    }
+
+    #[test]
+    fn leading_wildcard_matches_class_suffix() {
+        // 能力接口 `wrapper` 模式（`*CacheService`）应匹配「任意前缀 + 该后缀」的类 FQN，
+        // 即框架缓存门面经魔术分发后只能认「名为 `*CacheService::get` 的封装方法」这一约定。
+        let ws = GraphWorkspace::new(ProjectId(1));
+        let rec = call_record(
+            Some("crmeb\\services\\CacheService"),
+            Some("get"),
+            "crmeb\\services\\CacheService::get",
+        );
+        assert!(aliased_callee_matches(&ws, "*CacheService::get", &rec));
+        // 同义的短名 receiver（无 import 别名）也应命中（尾部伞名匹配）。
+        let rec2 = call_record(Some("CacheService"), Some("get"), "CacheService::get");
+        assert!(aliased_callee_matches(&ws, "*CacheService::get", &rec2));
+        // 不含该后缀的类（如框架门面 `Cache`）不应命中。
+        let rec3 = call_record(Some("Cache"), Some("get"), "Cache::get");
+        assert!(!aliased_callee_matches(&ws, "*CacheService::get", &rec3));
+        // 既有 `*Cache` 伞名仍匹配同名模型 `app\model\other\Cache`（无回归）。
+        let rec4 = call_record(
+            Some("app\\model\\other\\Cache"),
+            Some("get"),
+            "app\\model\\other\\Cache::get",
+        );
+        assert!(aliased_callee_matches(&ws, "*Cache::get", &rec4));
     }
 
     #[test]

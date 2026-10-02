@@ -36,6 +36,13 @@ pub struct FrameworkKnowledge {
     pub loaders: Vec<LoaderSpec>,
     /// 分阶段规则。
     pub rules: Vec<Rule>,
+    /// 能力接口声明（库 / 框架 → 能力映射）：按 `capability` 名查**跨语言的能力模板**
+    /// （`capability_templates`，由装载器从核心配置载入），摊平成 `rules`。
+    ///
+    /// 这是「框架 / 库知识」（分语言、可用户扩展），与跨语言的能力模板（识别机制）分离：
+    /// 模板只写一次，各语言 / 各库只声明「谁暴露了什么能力」。
+    #[serde(default)]
+    pub capability_interfaces: Vec<CapabilityInterface>,
     /// P7 动态解析声明：哪些调用是容器解析 / 事件触发 / 门面调用。
     pub resolvers: Vec<ResolverSpec>,
     /// 缺省排除目录（叠加在工程/语言默认规则之上）。
@@ -635,6 +642,60 @@ pub struct Rule {
     pub phase: Phase,
     pub selector: Selector,
     pub binding: Vec<Action>,
+    #[serde(default = "default_conf")]
+    pub confidence: f32,
+}
+
+/// 能力接口的匹配模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMode {
+    /// 按「真实后端调用」匹配：对 `types × methods` 摊出 `Type::method|*Suffix::method`。
+    /// 适用于 P7 能解析出内部调用的库（Predis / Redis / 自研客户端）。
+    #[default]
+    Backend,
+    /// 按「封装类命名约定」匹配：对 `types` 摊出 `*Type::method`（类后缀 + 方法名）。
+    /// 适用于框架门面（ThinkPHP / Laravel `Cache`）经魔术分发、P7 看不到内部真实调用，
+    /// 只能认「名为 `*CacheService::get` 的封装方法」——这是框架自带约定，非随意猜测。
+    Wrapper,
+}
+
+/// 能力接口声明：某库 / 框架的哪些类型、哪些方法暴露某能力（读 / 写）。
+///
+/// 例：`{ capability: cache, types: ["Predis\\Client"], read: [get], write: [set] }`
+/// 由装载器查 `capability_templates` 摊平成匹配 `Predis\Client::get` / `*Client::get`
+/// 的合成规则。属于「框架 / 库知识」（分语言），与跨语言的能力模板分离。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapabilityInterface {
+    /// 能力名（查核心能力模板，如 `cache` / `queue` / `config`）。
+    pub capability: String,
+    /// 暴露该能力的类型 FQN（或尾部片段，如 `Predis\Client` / `Cache`）。
+    pub types: Vec<String>,
+    /// 读语义方法名。
+    pub read: Vec<String>,
+    /// 写语义方法名。
+    pub write: Vec<String>,
+    /// 覆盖默认置信度。
+    pub confidence: Option<f32>,
+    /// 匹配模式：`backend`（按真实调用）或 `wrapper`（按封装类命名约定）。
+    pub match_mode: MatchMode,
+}
+
+/// 能力模板（跨语言、核心机制，**不属于 FKB**）：描述「某能力如何落成图节点与边」。
+///
+/// 例：`cache` → 建 `ExternalSystem`(Cache) 节点、身份取 arg0、`ReadsCache` / `WritesCache` 边。
+/// 同一模板被所有语言、所有库的 `capability_interfaces` 复用 —— 识别逻辑只写一次，
+/// 且它不绑定任何框架 / 语言，故放在核心配置而非 `fkb/<lang>/` 下。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapabilityTemplate {
+    pub node: NodeKind,
+    pub subtype: Option<String>,
+    pub identity: IdentitySpec,
+    pub fields: Vec<FieldSpec>,
+    pub read_link: EdgeKind,
+    pub write_link: EdgeKind,
     #[serde(default = "default_conf")]
     pub confidence: f32,
 }

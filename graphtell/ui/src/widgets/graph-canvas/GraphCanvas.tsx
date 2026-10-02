@@ -28,16 +28,40 @@ import { nodeIcon, usedKinds } from './nodeIcons';
  * 40 是按"横向分层图"定的：标签沿各层散开，不太会叠。星形视图（一个中心拖 27 个
  * 配置键）所有边的中点都挤在中心附近那一小圈里，二十几个标签必然叠成一摞 ——
  * 所以这个阈值必须按"标签会不会物理重叠"取值，14 条以上星形就已经叠了。
+ *
+ * 这是**唯一**判据，不与缩放挂钩：标签与边同处一层 `scale(k)`，等比缩放不改变它们
+ * 之间的相对排布 —— "缩小后更挤"是错觉，k=1 时不叠的在 k=0.5 时也不叠。
+ * 缩放只改变字的物理像素，那件事由下面的反向补偿字号负责。
  */
 const EDGE_LABEL_LIMIT = 14;
+/** 边标签基准字号（世界坐标，k=1 时的屏幕像素）。 */
+const EDGE_LABEL_FONT = 10;
+/**
+ * 反向补偿的字号上限（世界坐标）。
+ *
+ * 缩小时若任由字号等比衰减，k=0.5 下只剩 5px —— 那是噪声不是信息；
+ * 所以按 `10 / min(k, 1)` 反向放大。**必须封顶**：一是再大就要碰相邻标签（此时边不再
+ * 等比变小，纯粹是字在长大），二是不能超过节点名（11px）—— 谓语比主语还响就把主次
+ * 读反了。取 16 意味着补偿生效区间是 k∈[0.62, 1]，再往下才重新随图缩小（fit 下限 0.5
+ * 时屏幕约 8px，仍认得出）。
+ */
+const EDGE_LABEL_MAX_FONT = 16;
+/**
+ * 密图的放大逃生口：缩放 ≥ 此值时**无视边数**全部标注。
+ *
+ * 虽如上所述等比缩放不改变相对重叠，但放大会把大部分标签推出视口 —— 视野内的标签
+ * 密度确实降下来了，这正是"凑近看细节"的时刻，此时给足谓语是划算的。
+ */
+const EDGE_LABEL_DETAIL_K = 1.15;
 /**
  * 「适应屏幕」的缩放区间。
  *
  * 下限 0.5：星形大图（一个中心拖 27 个药丸，包围盒 2000px+）在 0.85 下根本放不进
  * 视口 —— fit 把中心对到视口中央、两边照样被裁，"适应屏幕"名存实亡，只能盲滚。
  * 取舍从「宁可滚，也不缩字」改为「先见全貌，再看细节」：0.5 时 13px 字约 6.5px，
- * 认结构足够、认内容吃力，但边标签在缩小后已自动隐藏（见 `EDGE_LABEL_LIMIT`），
- * 结构轮廓 + 滚轮放大看细节才是这个尺度下的正确用法。
+ * 认结构足够、认内容吃力。疏散图（≤ `EDGE_LABEL_LIMIT` 条边）在缩小时仍显示边标签
+ * 且字号已反向补偿（见 `EDGE_LABEL_MAX_FONT`），所以这个尺度下依旧读得出谓语；
+ * 密图才退化为按需标注。结构轮廓 + 滚轮放大看细节始终是这个尺度下的正确用法。
  * 上限是 1：小图不放大成巨号字。
  */
 const FIT_MIN_K = 0.5;
@@ -732,6 +756,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
   // 取名 `tf` 而非 `view`，避免与边渲染里的局部 `view`（EdgeView）混淆。
   const tf = transform ?? fitTransform ?? { x: 0, y: 0, k: 1 };
 
+  // 边标签字号：**只在缩小时**反向补偿（`min(k, 1)`）。放大时保持不变，让标签随图一起
+  // 长大 —— 那才是"凑近看细节"的预期；`EDGE_LABEL_MAX_FONT` 负责封顶。
+  const edgeLabelFont = Math.min(EDGE_LABEL_MAX_FONT, EDGE_LABEL_FONT / Math.min(tf.k, 1));
+
   return (
     <div
       ref={containerRef}
@@ -952,23 +980,30 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   style={{ pointerEvents: 'none' }}
                 />
                 {/* 边的类型：语义边种类（`ReadsConfig` / `MapsTo`…）就是这个图的"谓语"，
-                    标出来才读得懂。默认**常显**（不再要求悬浮）：只有边数超过阈值、
-                    又没被放大时，才退化为"只标悬浮/选中那条"以防糊成一片。
-                    悬浮时其它边只淡出、不隐藏标签（不因聚焦而丢信息）。
-                    另外缩小时（k < 0.85）标签物理上更挤，也退化为按需标注 ——
-                    反正那时字已经小到读不清，常显只剩噪声。 */}
+                    标出来才读得懂。默认**常显**（不再要求悬浮）：只有边数超过阈值才
+                    退化为"只标悬浮/选中那条"以防糊成一片。悬浮时其它边只淡出、不隐藏
+                    标签（不因聚焦而丢信息）。
+                    阈值只看**密度**（且用 `layout.edges` 而非入参 `edges` —— 折叠视图会
+                    合成 / 去重，真正画出来的是前者）：标签与图同为等比缩放，相对排布不
+                    随 zoom 改变，所以"要不要标"取决于会否重叠（边数 / 锚点分布），
+                    与放大缩小无关；字号另由 `edgeLabelFont` 反向补偿保住可读性。
+                    例外是 `EDGE_LABEL_DETAIL_K`：放大到那个尺度 = 用户在看细节，密图也全标。 */}
                 {view &&
                 showEdgeLabels &&
-                (active || (edges.length <= EDGE_LABEL_LIMIT && tf.k >= 0.85) || tf.k >= 1.15) ? (
+                (active ||
+                  layout.edges.length <= EDGE_LABEL_LIMIT ||
+                  tf.k >= EDGE_LABEL_DETAIL_K) ? (
                   <text
                     x={lp.x}
                     y={lp.y}
-                    fontSize={10}
+                    fontSize={edgeLabelFont}
                     fontWeight={500}
                     textAnchor="middle"
                     dominantBaseline="central"
                     stroke="#ffffff"
-                    strokeWidth={3.5}
+                    // 挖缺口的白色描边随字号等比变化：补偿后字变大了，描边若固定 3.5
+                    // 会相对变细，压不住底下的边线。
+                    strokeWidth={edgeLabelFont * 0.35}
                     strokeLinejoin="round"
                     paintOrder="stroke"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}
