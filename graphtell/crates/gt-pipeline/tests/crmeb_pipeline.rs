@@ -232,8 +232,8 @@ fn prepare_resolves_app_root_from_composer_psr4() {
         "解析依据必须记录在 source 里，实际：{source}"
     );
     assert!(
-        backend.frameworks.contains(&"thinkphp6".to_string()),
-        "应识别出 thinkphp6，实际：{:?}",
+        backend.frameworks.contains(&"thinkphp".to_string()),
+        "应识别出 thinkphp，实际：{:?}",
         backend.frameworks
     );
 }
@@ -343,14 +343,20 @@ fn synthesize_merges_table_identity_idempotently() {
 
     // Multi-source convergence: both the Db::name call site and the Model-convention inference
     let props = &same[0].properties;
-    let sources = props
+    let sources: Vec<&str> = props
         .get("sources")
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
     assert!(
-        sources >= 1,
+        !sources.is_empty(),
         "Table 节点应记录来源规则，实际 properties={props}"
+    );
+    // Item ids are namespaced at load time (`<fkb-id>-<local id>`), so what lands on the graph is
+    // always qualified — a bare `db-name-table` would mean the prefix was lost somewhere.
+    assert!(
+        sources.iter().any(|s| s.starts_with("thinkphp-")),
+        "来源规则 id 应带框架命名空间，实际 {sources:?}"
     );
 }
 
@@ -1110,7 +1116,7 @@ fn v1_php_routes_are_in_graph() {
 /// Look directly at v1.php's parse product (raw call sites), without going through the whole graph.
 /// Queue semantic nodes should be detected by the **framework-level** FKB (no project-level FKB needed).
 ///
-/// CRMEB uses `think\facade\Queue` via `QueueTrait::dispatch` / `crmeb\utils\Queue`; the framework rule `tp6-queue-topic`
+/// CRMEB uses `think\facade\Queue` via `QueueTrait::dispatch` / `crmeb\utils\Queue`; the framework rule `thinkphp-queue-topic`
 /// synthesises the queue topic through `arg:0` (the Job class) + `owner_class` fallback (the class that produces the call);
 /// propagation then walks the `PublishesTo` edge up to each Service.
 #[test]

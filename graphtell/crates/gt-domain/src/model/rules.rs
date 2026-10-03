@@ -450,7 +450,7 @@ pub struct RuleScope {
     /// exactly that kind of false positive.
     #[serde(default)]
     pub languages: Vec<String>,
-    /// **Applicable framework allowlist** (`thinkphp6` / `laravel` / `spring-boot` / `uni-app` …).
+    /// **Applicable framework allowlist** (`thinkphp` / `laravel` / `spring-boot` / `uni-app` …).
     ///
     /// A finer granularity than `languages`: even within one language, edge semantics can differ per framework.
     /// Empty means no framework restriction.

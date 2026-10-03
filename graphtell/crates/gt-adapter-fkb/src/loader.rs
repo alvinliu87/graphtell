@@ -104,6 +104,7 @@ impl YamlKnowledgeBase {
                 )));
             }
         }
+        apply_id_namespaces(&mut fk);
         apply_side_defaults(&mut fk);
         Ok(fk)
     }
@@ -111,6 +112,7 @@ impl YamlKnowledgeBase {
     /// Deserialize from YAML text (for tests and single-file loading).
     pub fn from_str(text: &str) -> Result<FrameworkKnowledge> {
         let mut fk = deserialize_knowledge(text)?;
+        apply_id_namespaces(&mut fk);
         apply_side_defaults(&mut fk);
         Ok(fk)
     }
@@ -136,6 +138,46 @@ const SIDE_AWARE_KINDS: &[&str] = &[
     "Store",
     "Table",
 ];
+
+/// Namespace every **item id** of a knowledge base under its own `id`: `<fkb-id>-<local-id>`.
+///
+/// Ids are not private labels: a rule's id is written into the graph as provenance (a node's
+/// `sources`, an edge's `evidence.rule`) and is the dedup key of `dedup_rules` / the global rule
+/// collection, so it must be globally unique — two knowledge bases sharing an id means one of them
+/// is **silently dropped**, decided by concatenation order. Hence the namespace.
+///
+/// But making the author repeat it on every one of forty rules is exactly how it gets forgotten
+/// (the same argument that moved `side` from a per-rule literal to a top-level field), so the prefix
+/// is **derived at load time** from `fk.id` instead of being written by hand.
+///
+/// Idempotent on purpose: an id that already starts with `<fkb-id>-` is left alone. That keeps a
+/// hand-written fully-qualified id working (an escape hatch for a knowledge base that wants a
+/// different prefix) and makes this a no-op for files that have not been migrated to short ids yet.
+fn apply_id_namespaces(fk: &mut FrameworkKnowledge) {
+    if fk.id.is_empty() {
+        return;
+    }
+    let prefix = fk.id.clone();
+    for rule in &mut fk.rules {
+        namespace_id(&prefix, &mut rule.id);
+    }
+    for loader in &mut fk.loaders {
+        namespace_id(&prefix, &mut loader.id);
+    }
+    for root in &mut fk.root_rules {
+        namespace_id(&prefix, &mut root.id);
+    }
+    for resolver in &mut fk.resolvers {
+        namespace_id(&prefix, &mut resolver.id);
+    }
+}
+
+fn namespace_id(prefix: &str, id: &mut String) {
+    if id.is_empty() || *id == prefix || id.starts_with(&format!("{prefix}-")) {
+        return;
+    }
+    *id = format!("{prefix}-{id}");
+}
 
 /// Fill in `side` for every synthesis action that should have one and does not.
 fn apply_side_defaults(fk: &mut FrameworkKnowledge) {
@@ -281,5 +323,46 @@ rules:
         .unwrap();
         assert_eq!(fk.rules.len(), 1);
         assert!(fk.rules[0].applies_to(&Language("*".into()), &Language("python".into())));
+    }
+
+    #[test]
+    fn item_ids_are_namespaced_under_the_knowledge_base_id() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: thinkphp
+language: php
+rules:
+  - id: pii
+    phase: AnnotatePre
+    selector: { kind: call, callee: "Db::name" }
+    binding: []
+resolvers:
+  - id: container-make
+    call: "app()->make|app"
+    strategy: container
+"#,
+        )
+        .unwrap();
+        // The prefix is added at load time, so the author writes the local name only.
+        assert_eq!(fk.rules[0].id, "thinkphp-pii");
+        assert_eq!(fk.resolvers[0].id, "thinkphp-container-make");
+    }
+
+    #[test]
+    fn namespacing_is_idempotent() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: thinkphp
+language: php
+rules:
+  - id: thinkphp-pii
+    phase: AnnotatePre
+    selector: { kind: call, callee: "Db::name" }
+    binding: []
+"#,
+        )
+        .unwrap();
+        // Already qualified: not prefixed twice (this is what lets a file opt out of the convention).
+        assert_eq!(fk.rules[0].id, "thinkphp-pii");
     }
 }

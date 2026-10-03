@@ -56,7 +56,7 @@ rules:
   # `@Entity('user')` — the table name comes from the first argument (a string literal); `@Entity()` with no argument
   # and the object form `@Entity({ name: 'user' })` have no literal path, so they are skipped ("better missing than guessed").
   # Model class -> table (`MapsTo`, isomorphic to Spring's `@TableName` and SQLAlchemy's declarative mapping).
-  - id: typeorm-entity
+  - id: entity
     phase: Synthesize
     selector:
       kind: call
@@ -89,8 +89,8 @@ rules:
   # entities must count separately, otherwise they would be merged idempotently into a wrong node — hence the entity
   # scope rather than a bare field name.
   # Only **column** decorators are collected; `@ManyToOne` / `@OneToMany` / `@JoinColumn` are **relations** (foreign
-  # keys) and are modelled separately by `typeorm-relation` below (so a relation is not mistaken for a column).
-  - id: typeorm-column
+  # keys) and are modelled separately by `relation` below (so a relation is not mistaken for a column).
+  - id: column
     phase: Synthesize
     selector:
       kind: call
@@ -122,7 +122,7 @@ rules:
   # declaration and describes the same relation as its paired `@ManyToOne`, so building another edge would be a
   # redundant reverse edge (in the real sample `Article.comments` and `Comment.article` are exactly such a pair).
   # Honest gap: a one-directional `@OneToMany` (with no paired ManyToOne) therefore produces no edge.
-  - id: typeorm-relation
+  - id: relation
     phase: Synthesize
     selector:
       kind: call
@@ -148,7 +148,7 @@ rules:
   # (it can only take one name per end, and with several relations it would silently build just one).
   # If a landing point cannot be reached it is skipped: an entity with a no-argument `@Entity()` has no `Table`
   # (`Comment` in the real sample), so its foreign key is not added — better missing than guessed.
-  - id: typeorm-foreign-key
+  - id: foreign-key
     phase: AnnotatePost
     selector:
       kind: node

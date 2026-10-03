@@ -35,7 +35,7 @@ exclude_globs:
 # ---------------------------------------------------------------- P3 loading
 loaders:
   # Route table + guards: the recognition logic is declared by `route_guards` below (a route is a decorator call; a guard is another decorator on the same function).
-  - id: flask-route-list
+  - id: route-list
     table: route_list
     from:
       kind: builtin
@@ -105,7 +105,7 @@ rules:
   # `default` only covers the case where an empty string was obtained.)
   # Honest gaps: ① `methods=` is only read at arg1; written further back it falls back to GET;
   #              ② a multi-method route (["GET","POST"]) only yields the first method.
-  - id: flask-route-contract
+  - id: route-contract
     phase: Synthesize
     selector:
       kind: call
@@ -141,7 +141,7 @@ rules:
   # ===== P5 Synthesize: Flask 2.x verb shortcuts =====
   # Since Flask 2.0 there are `@app.get/post/put/delete/patch(...)`, the same shape as FastAPI's spelling,
   # so the method can be derived directly from the decorator name.
-  - id: flask-verb-contract
+  - id: verb-contract
     phase: Synthesize
     selector:
       kind: call

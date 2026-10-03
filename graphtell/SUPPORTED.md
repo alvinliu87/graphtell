@@ -12,7 +12,7 @@ authoring see [`docs/fkb-authoring.md`](./docs/fkb-authoring.md).
 
 | Language | Framework / form | Semantic extraction | Compliance rules |
 | --- | --- | --- | --- |
-| **PHP** | ThinkPHP 6 / CRMEB / Laravel / Uni-app backend contracts / **Symfony (PHP 8 attribute routes, §3.3)** | complete (tables / **ORM relations** / **table foreign keys** / routes / config / i18n / cache / events / queues / signature verification …, §3.2) | complete (including N+1, signature verification, external call in loop, multi-write without tx) |
+| **PHP** | ThinkPHP (5.1 / 6.x / 8.x) / CRMEB / Laravel / Uni-app backend contracts / **Symfony (PHP 8 attribute routes, §3.3)** | complete (tables / **ORM relations** / **table foreign keys** / routes / config / i18n / cache / events / queues / signature verification …, §3.2) | complete (including N+1, signature verification, external call in loop, multi-write without tx) |
 | **Java** | Spring Boot (Spring Cache / ApplicationEvent / Spring AMQP / Spring Kafka / Spring Scheduling / JPA / MyBatis-Plus) | complete (§2) | reuses `rules/global/` (topology-based rules); framework-specific rules (`orphan-event` / `orphan-queue` …) not yet written for Java |
 | **JavaScript / TypeScript** | Uni-app frontend (event bus / local storage / pages / Store) | complete | `rules/js/` (frontend event bus dead code) |
 | **JavaScript / TypeScript** | **Node backend**: NestJS (decorator routes / controllers) / Express (member-style routes) / **Koa** / **Fastify** | route contracts (NestJS additionally links `HandledBy` to method nodes, §3.1) | reuses `rules/global/` (topology-based); framework-specific rules not yet written for Node |
@@ -231,7 +231,7 @@ skips when they're missing.
 
 ---
 
-## 3.2 PHP (ThinkPHP 6 / Laravel) ORM semantic features
+## 3.2 PHP (ThinkPHP / Laravel) ORM semantic features
 
 **Table mapping** on the PHP side has existed for a while (more mature than the Node side: it also has
 `db_verbs` backing the `ReadsDb` / `WritesDb` read / write classification). This round adds **model
@@ -251,7 +251,7 @@ usually written **in pairs**, so building only the holder avoids reverse redunda
 building one side would miss edges broadly -- better redundant than missing.
 
 Following the precedent of `db_verbs`, the rules are **written per framework**
-(`fkb/php/laravel.yaml` and `fkb/php/thinkphp6.yaml`) rather than factored into `php-common.yaml` --
+(`fkb/php/laravel.yaml` and `fkb/php/thinkphp.yaml`) rather than factored into `php-common.yaml` --
 relation methods are a **strong ORM assumption**, while `php-common` declares
 `apply_without_detection: true` and **applies unconditionally to all PHP projects**.
 

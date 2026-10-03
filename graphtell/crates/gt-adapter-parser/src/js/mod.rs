@@ -16,7 +16,7 @@
 //! `<script>` block and parsing it as TS (with line numbers aligned).
 //!
 //! HTTP calls (`uni.request` / `request` / `http.request` / `axios*` / `fetch`) are still recognised, and their
-//! `args[0]` is normalised into a `{ url, method }` object, fed to FKB's `frontend-http-contract` rule to
+//! `args[0]` is normalised into a `{ url, method }` object, fed to FKB's `frontend-js-common-http-contract` rule to
 //! synthesize an `HttpContract` and attach `CallsHttp` (converging on the same `ContractId` node as the back
 //! end's `HandledBy`).
 //!

@@ -48,7 +48,7 @@ bridge_edge_kinds: [References]
 # ---------------------------------------------------------------- P3 loading
 loaders:
   # Route table + guards: the recognition logic is declared by `route_guards` below.
-  - id: django-route-list
+  - id: route-list
     table: route_list
     from:
       kind: builtin
@@ -100,7 +100,7 @@ rules:
   # Laravel's `laravel-model-table`: `Post` -> `posts`). Django's real table name is `app_label_modelname`;
   # app_label is not available here, so the pluralised class short name is used as a fallback; if a project sets
   # it explicitly via `class Meta: db_table = "x"`, that is not read yet (see the honesty boundary below).
-  - id: django-model-table
+  - id: model-table
     phase: Synthesize
     selector:
       kind: inheritance
@@ -132,12 +132,12 @@ rules:
   # must count separately. `HasColumn` links to `owner_class` (the model class) and then reaches the table via `MapsTo`.
   #
   # Only **column** field types are collected; `@ForeignKey` / `@OneToOneField` / `@ManyToManyField` are relations
-  # and are modelled separately by `django-model-relation` below (so a foreign-key field is not mistaken for an
+  # and are modelled separately by `model-relation` below (so a foreign-key field is not mistaken for an
   # ordinary column).
   # Note: the Django idiom is `from django.db import models` and then `models.CharField`; if a project instead
   # writes `from django.db.models import CharField` and calls `CharField(...)` directly, the current callee does
   # not match (bare field names are too generic, and we do not want to loosen it and misfire on ordinary variables).
-  - id: django-column
+  - id: column
     phase: Synthesize
     selector:
       kind: call
@@ -167,7 +167,7 @@ rules:
   # write a reverse `related_name` call, so building the holder side is enough; two-way declarations are rare, and
   # if one is written the reverse edge would duplicate the paired edge (in the real sample `Article.author` and
   # `User.articles` are exactly that), so only the holder side is built.
-  - id: django-model-relation
+  - id: model-relation
     phase: Synthesize
     selector:
       kind: call
@@ -191,7 +191,7 @@ rules:
   #
   # If a landing point cannot be reached it is skipped: a model with no `Table` (e.g. one not hit by the
   # `models.Model` inheritance match) contributes no foreign key — better missing than guessed.
-  - id: django-table-foreign-key
+  - id: table-foreign-key
     phase: AnnotatePost
     selector:
       kind: node
@@ -222,7 +222,7 @@ rules:
   # * `views.user_list` (module attribute) and `XView.as_view()` (CBV) — not resolved yet, left as a boundary;
   # * `path("api/", include("api.urls"))` style "prefix + include" is treated as one endpoint contract (with no
   #   handler edge) — known noise (see the honesty boundary in SUPPORTED.md).
-  - id: django-route
+  - id: route
     phase: Synthesize
     selector:
       kind: call

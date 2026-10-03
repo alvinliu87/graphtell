@@ -45,7 +45,7 @@ rules:
   # `router.get('/users', handler)` / `admin.post('/x', ...)`.
   # The path comes from the first argument; the method is derived from the receiver's property name (`get` -> GET).
   # `router.all(...)` is Koa's wildcard spelling and normalises to ANY (the same semantics as Django's `ANY`).
-  - id: koa-route-contract
+  - id: route-contract
     phase: Synthesize
     selector:
       kind: call

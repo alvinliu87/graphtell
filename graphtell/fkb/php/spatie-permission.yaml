@@ -25,7 +25,7 @@ detectors:
 
 loaders:
   # Written into the `middleware_classes` table: when P14 cannot resolve a node it materialises a Middleware node from this table.
-  - id: spatie-permission-middleware
+  - id: middleware
     table: middleware_classes
     from:
       kind: inline

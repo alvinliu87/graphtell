@@ -31,7 +31,7 @@ detectors:
 rules:
   # ===== P5 Synthesize: Queue consumer side =====
   # `@RabbitListener(queues = "q")`, destination from the first argument.
-  - id: spring-rabbit-listener
+  - id: rabbit-listener
     phase: Synthesize
     selector:
       kind: call
@@ -57,7 +57,7 @@ rules:
   # `JmsTemplate`, so the node still materialises as a `Queue` even when the real broker is not Rabbit. It
   # lives here because Rabbit is by far the common case; to split them out later, narrow it by receiver
   # umbrella name.
-  - id: spring-rabbit-produce
+  - id: rabbit-produce
     phase: Synthesize
     selector:
       kind: call

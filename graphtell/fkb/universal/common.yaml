@@ -9,7 +9,7 @@ rules:
   # `*Cache` / `*Redis*` naming conventions; each language's specific client (e.g. PHP `Predis\Client`) is
   # declared by that language's own FKB (see `fkb/php/common.yaml`). `languages: ["*"]` makes it apply to every
   # project language.
-  - id: universal-cap-cache-read
+  - id: cache-read
     languages: ["*"]
     phase: Synthesize
     selector:
@@ -30,7 +30,7 @@ rules:
               value: { literal: "backend" }
           link: { kind: ReadsCache, direction: incoming, confidence: 0.85 }
           confidence: 0.85
-  - id: universal-cap-cache-write
+  - id: cache-write
     languages: ["*"]
     phase: Synthesize
     selector:

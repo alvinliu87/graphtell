@@ -1,1 +1,1 @@
-{"ok": true, "data": [{"id": 95759, "project_id": 1, "kind": "HandledBy", "from_id": 1000095151, "to_id": 1000023436, "phase": "Resolve", "confidence": 0.85499996, "properties": null}, {"id": 124827, "project_id": 1, "kind": "PassesThrough", "from_id": 1000095151, "to_id": 1000022676, "phase": "Guard", "confidence": 0.9, "properties": null}], "error": null}
+{"ok": true, "data": [], "error": null}

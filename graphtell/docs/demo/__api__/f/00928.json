@@ -1,1 +1,1 @@
-{"ok": true, "data": [{"id": 2375, "node_id": 1000094770, "channel": "Capability", "kind": "Authentication", "subkind": null, "confidence": 0.9, "evidence": {"middleware": ["AuthTokenMiddleware"], "source": "route_guard"}, "phase": "GuardCapability"}, {"id": 4904, "node_id": 1000094770, "channel": "FkbMark", "kind": "frontend.called", "subkind": null, "confidence": 0.80999994, "evidence": {"hook": "frontend-mark-called", "location": null, "severity": null}, "phase": "AnnotatePost"}], "error": null}
+{"ok": true, "data": [], "error": null}

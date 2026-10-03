@@ -1,1 +1,1 @@
-{"ok": true, "data": [], "error": null}
+{"ok": true, "data": [{"id": 222648, "project_id": 3, "kind": "ReadsCache", "from_id": 3000000042, "to_id": 3000000078, "phase": "Synthesize", "confidence": 0.85, "properties": {"evidence": {"location": "frontend/src/api.js:52", "rule": "universal-common-cache-read", "snippet": "cache.get('/api/ping');"}}}], "error": null}

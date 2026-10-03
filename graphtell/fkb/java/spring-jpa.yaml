@@ -33,7 +33,7 @@ detectors:
 rules:
   # ===== P5 Synthesize: Table =====
   # JPA `@Table(name = "eb_user")`. The MyBatis-Plus `@TableName` spelling lives in `fkb/java/mybatis.yaml`.
-  - id: spring-table-name-jpa
+  - id: table-name
     phase: Synthesize
     selector:
       kind: call
@@ -60,7 +60,7 @@ rules:
   # `resolve` is written on **every ValueSource**: `Action::Link` runs `ev.string(src)` and then `find_by_name`
   # directly, so a top-level `resolve` does not participate. Both ends yield names: the start is the DAO's FQN,
   # the end is the entity's **short name** (resolved via the short-name index).
-  - id: spring-dao-references-entity-jpa
+  - id: dao-references-entity
     phase: Synthesize
     selector:
       kind: call

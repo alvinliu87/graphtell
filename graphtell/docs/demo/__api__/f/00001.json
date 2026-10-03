@@ -1,1 +1,1 @@
-{"ok": true, "data": {"status": "ok", "version": "0.1.0", "languages": ["java", "javascript", "json", "php", "python", "typescript"], "frameworks": 20, "is_wsl": true, "wsl_distro": "Ubuntu"}, "error": null}
+{"ok": true, "data": {"status": "ok", "version": "0.1.0", "languages": ["java", "javascript", "json", "php", "python", "typescript"], "frameworks": 32, "is_wsl": true, "wsl_distro": "Ubuntu"}, "error": null}

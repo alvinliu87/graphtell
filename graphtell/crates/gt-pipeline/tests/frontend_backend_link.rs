@@ -6,7 +6,7 @@
 //!      synthesises an `HttpContract` with an **incoming `CallsHttp`** edge whose source is the frontend **function node**
 //!      (`deleteItem`) — this is exactly a "frontend semantic node": isomorphic to the backend `Method`, not a File;
 //!   2. the same contract node is annotated `side = frontend` by the frontend FKB;
-//!   3. the backend `thinkphp6` `Route::post('/api/delete', ...)` and the frontend synthesise
+//!   3. the backend `thinkphp` `Route::post('/api/delete', ...)` and the frontend synthesise
 //!      **the same `ContractId` (`POST /api/delete`)** and merge idempotently — the contract bridge's
 //!      cross-sub-project convergence point;
 //!   4. a frontend cross-file call chain: `App.onDelete -> api.deleteItem` is resolved into a `Calls` edge by P7
@@ -71,8 +71,8 @@ fn frontend_calls_backend_merge_into_contract() {
     // The two sub-projects should be recognised correctly: backend php / frontend javascript.
     let subs = b.store.list_sub_projects(b.project.id).unwrap_or_default();
     assert!(
-        subs.iter().any(|s| s.language.as_str() == "php" && s.frameworks.contains(&"thinkphp6".to_string())),
-        "后端应识别为 thinkphp6，实际：{:?}",
+        subs.iter().any(|s| s.language.as_str() == "php" && s.frameworks.contains(&"thinkphp".to_string())),
+        "后端应识别为 thinkphp，实际：{:?}",
         subs.iter().map(|s| (&s.language, &s.frameworks)).collect::<Vec<_>>()
     );
     assert!(

@@ -22,7 +22,7 @@ detectors:
 rules:
   # ===== P5 Synthesize: Topic consumer side =====
   # `@KafkaListener(topics = "t")`, topic from the first argument.
-  - id: spring-kafka-listener
+  - id: listener
     phase: Synthesize
     selector:
       kind: call
@@ -48,7 +48,7 @@ rules:
   # their `.send` precisely. `KafkaTemplate.sendDefault(...)` is Kafka-specific by name, so `*::sendDefault`
   # covers any receiver as a fallback. Topic name comes from arg0 (must be a literal).
   # If a project uses another field name (e.g. `kt`), add that variable name to the alternatives below.
-  - id: spring-kafka-produce
+  - id: produce
     phase: Synthesize
     selector:
       kind: call

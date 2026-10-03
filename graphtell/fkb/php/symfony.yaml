@@ -44,7 +44,7 @@ rules:
   # The parser has already synthesized a call site for each route attribute (including an explicit method; `Route`
   # without `methods` degrades to the wildcard ANY).
   # `entity` points at the controller method itself and links to the method node via `resolve: class_const`.
-  - id: symfony-route
+  - id: route
     phase: Synthesize
     selector:
       kind: call

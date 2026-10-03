@@ -1,6 +1,6 @@
 //! Domain model of the Framework Knowledge Base (FKB).
 //!
-//! FKB is the serialisable form of "preset framework knowledge": ThinkPHP 6, Uni-app, Laravel, CRMEB…
+//! FKB is the serialisable form of "preset framework knowledge": ThinkPHP, Uni-app, Laravel, CRMEB…
 //! one YAML per framework, describing
 //! * how to **recognise** the framework ([`Detector`])
 //! * how to **resolve its root** ([`RootRule`], e.g. `autoload.psr-4` in `composer.json`)
@@ -79,7 +79,7 @@ pub struct FrameworkKnowledge {
     pub exclude_globs: Vec<String>,
     /// Scope of the knowledge base: framework-level (default) vs project-level.
     ///
-    /// * `Framework`: generic framework knowledge (e.g. `thinkphp6` / `laravel`), loaded by any project using that
+    /// * `Framework`: generic framework knowledge (e.g. `thinkphp` / `laravel`), loaded by any project using that
     ///   framework;
     /// * `Project`: project-specific knowledge (e.g. `crmeb`), loaded **only when the project is recognised as
     ///   that project**, so project conventions (e.g. CRMEB's crontab routes) do not bleed into other projects on

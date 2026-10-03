@@ -45,7 +45,9 @@ exclude_globs:
 
 rules:
   # e.g. extract a "cache read" semantic node (remember `side`; out-of-process mediators must have it)
-  - id: my-cache-read
+  # Item ids are **local**: the loader namespaces them as `<id>-<local id>`, so this one lands on the
+  # graph as `my-framework-cache-read`. See docs/fkb-authoring.md §2.3.
+  - id: cache-read
     phase: Synthesize
     selector:
       kind: call

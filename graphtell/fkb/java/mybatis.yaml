@@ -42,7 +42,7 @@ detectors:
 
 rules:
   # `<select>` is a read, `<insert|update|delete>` are writes.
-  - id: mybatis-select-table
+  - id: select-table
     phase: Synthesize
     selector:
       kind: call
@@ -61,7 +61,7 @@ rules:
           link: { kind: ReadsDb, direction: incoming }
           confidence: 0.85
 
-  - id: mybatis-write-table
+  - id: write-table
     phase: Synthesize
     selector:
       kind: call
@@ -88,7 +88,7 @@ rules:
   #   interface --Declares--> interface method --ReadsDb/WritesDb--> table  =>  interface --MapsTo--> table.
   # Only Mapper interfaces that really carry action edges produce anything, so service interfaces see no
   # side effect.
-  - id: mybatis-mapper-maps-to-table
+  - id: mapper-maps-to-table
     phase: AnnotatePost
     selector:
       kind: node
@@ -111,7 +111,7 @@ rules:
   # `@TableName("eb_user")` — the JPA `@Table` spelling lives in `fkb/java/spring-jpa.yaml`. Both are gated on the
   # project actually using that persistence library, so a Spring Boot project that uses neither produces no `Table`
   # node from these annotations.
-  - id: spring-table-name-mp
+  - id: table-name-mp
     phase: Synthesize
     selector:
       kind: call
@@ -138,7 +138,7 @@ rules:
   # `resolve` is written on **every ValueSource**: `Action::Link` runs `ev.string(src)` and then `find_by_name`
   # directly, so a top-level `resolve` does not participate. Both ends yield names: the start is the DAO's FQN,
   # the end is the entity's **short name** (resolved via the short-name index).
-  - id: spring-dao-references-entity-mp
+  - id: dao-references-entity-mp
     phase: Synthesize
     selector:
       kind: call

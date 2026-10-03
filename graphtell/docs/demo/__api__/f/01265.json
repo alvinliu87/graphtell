@@ -1,1 +1,1 @@
-{"ok": true, "data": [{"id": 91687, "project_id": 1, "kind": "PublishesTo", "from_id": 1000023165, "to_id": 1000095104, "phase": "Synthesize", "confidence": 0.765, "properties": {"evidence": {"location": "crmeb/app/jobs/ProductStockJob.php:32", "rule": "tp6-queue-topic", "snippet": "ProductStockJob::dispatch('calcValueStock', [$key]);"}}}], "error": null}
+{"ok": true, "data": [{"id": 96009, "project_id": 1, "kind": "HandledBy", "from_id": 1000095053, "to_id": 1000011190, "phase": "Resolve", "confidence": 0.80999994, "properties": null}], "error": null}

@@ -1,6 +1,6 @@
 # nginx — web-server configuration, as knowledge of its own.
 #
-# Why this file exists: the loader used to sit inside `fkb/php/thinkphp6.yaml`, where it made no sense —
+# Why this file exists: the loader used to sit inside `fkb/php/thinkphp.yaml`, where it made no sense —
 # nginx has nothing to do with ThinkPHP. The cost was concrete: `laravel.yaml` had no such loader, so **no
 # Laravel project could read nginx config at all**, even though Laravel apps are deployed behind nginx just as
 # often.
@@ -27,7 +27,7 @@ scope: framework
 apply_without_detection: true
 
 loaders:
-  - id: nginx-config
+  - id: config
     table: nginx
     from:
       kind: builtin

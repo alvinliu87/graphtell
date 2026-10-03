@@ -35,7 +35,7 @@ exclude_globs:
 loaders:
   # Route table + guards: the recognition logic is declared by `route_guards` below (the positional-argument style
   # `app.post('/login', loginLimiter, handler)`); the kernel no longer hard-codes it.
-  - id: express-route-list
+  - id: route-list
     table: route_list
     from:
       kind: builtin
@@ -75,7 +75,7 @@ rules:
   # ===== P5 Synthesize: HTTP contract (route) =====
   # `app.get('/login', handler)` / `router.post('/x', ...)`.
   # The path comes from the first argument; the method is derived from the receiver's property name (get/post/...).
-  - id: express-route-contract
+  - id: route-contract
     phase: Synthesize
     selector:
       kind: call

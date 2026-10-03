@@ -39,7 +39,7 @@ exclude_globs:
   - "*/build/**"
 
 root_rules:
-  - id: spring-source-root
+  - id: source-root
     key: app_root
     source:
       kind: directory_exists
@@ -52,7 +52,7 @@ root_rules:
 # ---------------------------------------------------------------- P3 loading
 loaders:
   # Route table + guards: the recognition logic is declared by `route_guards` below (annotation model).
-  - id: spring-route-list
+  - id: route-list
     table: route_list
     from:
       kind: builtin
@@ -107,7 +107,7 @@ route_guards:
 rules:
   # ===== P5 Synthesize: HTTP contract =====
   # `@GetMapping("/list")` — the method is derived from the annotation name (strip the `Mapping` suffix, then upper-case).
-  - id: spring-mapping-http-contract
+  - id: mapping-http-contract
     phase: Synthesize
     selector:
       kind: call
@@ -143,7 +143,7 @@ rules:
   # `@RequestMapping("/api/x")` — no HTTP method declared, recorded as ANY.
   # Another common spelling is `@RequestMapping(value = "/x", method = RequestMethod.GET)`, whose literal
   # argument also lands in arg:0; the method cannot be extracted, so it is conservatively recorded as ANY.
-  - id: spring-request-mapping-contract
+  - id: request-mapping-contract
     phase: Synthesize
     selector:
       kind: call
@@ -165,7 +165,7 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            # Same as spring-mapping-http-contract: prefer the method node, fall back to the controller class.
+            # Same as mapping-http-contract: prefer the method node, fall back to the controller class.
             to: { owner_class: true, resolve: class_const }
             to_method: { owner_member: true }
           confidence: 0.8
@@ -197,7 +197,7 @@ rules:
   #   so service interfaces see no side effect.
   # ===== P5 Synthesize: ConfigKey =====
   # `@Value("${app.name}")` — strip `${` and `}` to get the config key.
-  - id: spring-value-config
+  - id: value-config
     phase: Synthesize
     selector:
       kind: call
@@ -225,7 +225,7 @@ rules:
   #   event type **merge into one Event node**, forming a real publish / subscribe loop.
   # When `entity` is unavailable (e.g. `publishEvent(var)`, or the parser did not recognise the parameter) it
   #   falls back to `owner_member` (the sending / receiving method name) — semantically safe, no edge is lost.
-  - id: spring-event-listener
+  - id: event-listener
     phase: Synthesize
     selector:
       kind: call
@@ -242,7 +242,7 @@ rules:
           link: { kind: ListensTo, direction: incoming }
           confidence: 0.8
 
-  - id: spring-event-publish
+  - id: event-publish
     phase: Synthesize
     selector:
       kind: call
@@ -279,7 +279,7 @@ rules:
   # ===== P5 Synthesize: Schedule (@Scheduled) =====
   # A method-level annotation, callee = Scheduled; cron / fixedRate etc. come from annotation argument arg0.
   # The scheduler "triggers" that method: a `Triggers` out-edge (Schedule node -> method node).
-  - id: spring-scheduled
+  - id: scheduled
     phase: Synthesize
     selector:
       kind: call
@@ -311,7 +311,7 @@ rules:
   # Project "DAO -> entity" down to "DAO -> table": the end point walks one `MapsTo` hop.
   # Applies only to `Interface` nodes — otherwise PHP / TypeORM's `References` (model -> model) would be
   # mis-projected into a `MapsTo` of "model -> another table", polluting the existing graph.
-  - id: spring-dao-maps-to-table
+  - id: dao-maps-to-table
     phase: AnnotatePost
     selector:
       kind: node
@@ -326,14 +326,14 @@ rules:
 
 resolvers:
   # `@Autowired` field injection: resolve instance calls by the field's declared type.
-  - id: spring-autowired-call
+  - id: autowired-call
     call: "*->*"
     strategy: variable_type
 
 # JPA Repository / MyBatis-Plus CRUD verbs -> read / write classification (used by P7).
 #
 # The criterion matches the PHP side: the receiver type must have a `MapsTo` (supplied to the DAO by
-# `spring-dao-maps-to-table` above). Only verbs that **really hit the database** are listed; intermediate
+# `dao-maps-to-table` above). Only verbs that **really hit the database** are listed; intermediate
 # methods that merely build a query (`where` / `orderBy`) are excluded — otherwise one chained call would be
 # turned into several duplicate action edges.
 #

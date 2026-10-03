@@ -16,7 +16,7 @@ export interface RuleScope {
   limit: number | string;
   /** Applicable language allowlist (php / java / javascript / typescript); empty = language-agnostic. */
   languages?: string[];
-  /** Applicable framework allowlist (thinkphp6 / spring-boot …); empty = any framework. */
+  /** Applicable framework allowlist (thinkphp / spring-boot …); empty = any framework. */
   frameworks?: string[];
 }
 

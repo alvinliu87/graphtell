@@ -499,7 +499,7 @@ mod tests {
             language: Language::new(Language::PHP),
             role: "backend".into(),
             detected_by: "composer.json".into(),
-            frameworks: vec!["thinkphp6".into()],
+            frameworks: vec!["thinkphp".into()],
             facts: serde_json::Value::Null,
         }
     }

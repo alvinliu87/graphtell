@@ -1,1 +1,1 @@
-{"ok": true, "data": [], "error": null}
+{"ok": true, "data": [{"id": 8729, "node_id": 3000000069, "channel": "FkbMark", "kind": "auth.public", "subkind": null, "confidence": 0.80999994, "evidence": {"hook": "thinkphp-public-endpoint", "location": null, "severity": null}, "phase": "AnnotatePost"}, {"id": 8730, "node_id": 3000000069, "channel": "FkbMark", "kind": "frontend.called", "subkind": null, "confidence": 0.80999994, "evidence": {"hook": "frontend-js-common-mark-called", "location": null, "severity": null}, "phase": "AnnotatePost"}], "error": null}

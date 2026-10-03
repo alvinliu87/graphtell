@@ -1,1 +1,1 @@
-{"ok": true, "data": [], "error": null}
+{"ok": true, "data": [{"id": 6379, "node_id": 1000095105, "channel": "FkbMark", "kind": "data.criticality", "subkind": "medium", "confidence": 0.765, "evidence": {"hook": "thinkphp-table-criticality", "location": null, "severity": null}, "phase": "AnnotatePost"}], "error": null}

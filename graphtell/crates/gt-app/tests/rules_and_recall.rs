@@ -1370,7 +1370,7 @@ fn php_only_rules_run_on_php_project() {
         return;
     };
     seed_graph(&f);
-    set_stack(&f, "php", &["thinkphp6"]);
+    set_stack(&f, "php", &["thinkphp"]);
 
     let svc = RuleService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1770,7 +1770,7 @@ rules:
     category: contract
     applies_to:
       kinds: [Table]
-      frameworks: [thinkphp6]
+      frameworks: [thinkphp]
     when:
       - fan_in_gte: 0
     message: "表 {name}"
@@ -1787,15 +1787,15 @@ rules:
     let without = svc.check(f.project, None, false).expect("检查不应失败");
     assert!(
         without.rules_not_applicable.iter().any(|s| s.starts_with("tp-only")),
-        "laravel 工程上 thinkphp6 规则应不适用，实际 {:?}",
+        "laravel 工程上 thinkphp 规则应不适用，实际 {:?}",
         without.rules_not_applicable
     );
 
-    set_stack(&f, "php", &["thinkphp6"]);
+    set_stack(&f, "php", &["thinkphp"]);
     let with = svc.check(f.project, None, false).expect("检查不应失败");
     assert!(
         !with.rules_not_applicable.iter().any(|s| s.starts_with("tp-only")),
-        "thinkphp6 工程上应恢复执行，实际 {:?}",
+        "thinkphp 工程上应恢复执行，实际 {:?}",
         with.rules_not_applicable
     );
     assert!(

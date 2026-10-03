@@ -113,7 +113,7 @@ pub struct SubProject {
     pub role: String,
     /// The recognition evidence, e.g. "composer.json".
     pub detected_by: String,
-    /// Identifier list of the frameworks (matched by FKB, e.g. `["thinkphp6", "uni-app"]`).
+    /// Identifier list of the frameworks (matched by FKB, e.g. `["thinkphp", "uni-app"]`).
     pub frameworks: Vec<String>,
     /// Framework root information (AppRoot, etc.), back-filled by the Prepare phase after resolution via FKB.
     pub facts: serde_json::Value,

@@ -1,7 +1,7 @@
-# **Project-specific** knowledge for the CRMEB e-commerce system (ThinkPHP 6 ecosystem)
+# **Project-specific** knowledge for the CRMEB e-commerce system (ThinkPHP ecosystem)
 #
-# Division of labour with thinkphp6.yaml:
-#   thinkphp6.yaml — framework mechanics (routes, container, events, ORM) + cross-version common P6 annotations
+# Division of labour with thinkphp.yaml:
+#   thinkphp.yaml — framework mechanics (routes, container, events, ORM) + cross-version common P6 annotations
 #                    (PII / table criticality / config mutability / public endpoints / i18n, parameters generalised)
 #   crmeb.yaml     — only CRMEB-specific data additions and business semantics:
 #                    the `contact_phone` column-name addition, and the business entry `entrypoint.login`
@@ -41,7 +41,7 @@ detectors:
 
 annotation_kinds:
   # Business-specific annotation kinds (beyond the kernel standard): `entrypoint.login` is CRMEB's login-entry
-  # semantics, produced by the `crmeb-login-entrypoint` raw rule below. Standard kinds (pii / data.criticality /
+  # semantics, produced by the `login-entrypoint` raw rule below. Standard kinds (pii / data.criticality /
   # auth.public / i18n.missing_locale …) are produced by the kernel's `annotation_templates` recognizer and are not
   # listed here — a stack does not invent annotation kinds.
   - entrypoint.login
@@ -51,7 +51,7 @@ annotation_kinds:
 
 rules:
   # ===== P6 annotation: CRMEB's stack-specific PII column name (plain rule, formerly annotation_interfaces) =====
-  - id: crmeb-pii
+  - id: pii
     phase: AnnotatePost
     selector:
       kind: node
@@ -69,7 +69,7 @@ rules:
               confidence: 0.9
           merge: MaxByKind
   # ===== P6: mark "entry point" semantics on HttpContracts (CRMEB business-specific, kept in the stack) =====
-  - id: crmeb-login-entrypoint
+  - id: login-entrypoint
     phase: AnnotatePost
     selector:
       kind: node

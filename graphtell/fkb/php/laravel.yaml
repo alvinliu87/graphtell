@@ -53,7 +53,7 @@ semantic_edge_kinds: [ForeignKey]
 bridge_edge_kinds: [References]
 
 root_rules:
-  - id: laravel-app-root
+  - id: app-root
     key: app_root
     source:
       kind: manifest_json
@@ -65,7 +65,7 @@ root_rules:
       - app
       - src
   # Table prefix: Laravel, like ThinkPHP, writes it in `config/database.php`; the structure is the same, so the detection can be reused directly.
-  - id: laravel-db-prefix
+  - id: db-prefix
     key: db_prefix
     source:
       kind: manifest
@@ -100,7 +100,7 @@ entry_methods: ["handle", "__invoke"]
 
 # Eloquent / Query Builder CRUD verbs -> read / write classification (pairs with `MapsTo`; see P7 verb classification).
 #
-# Why Laravel needs this copy: previously only `thinkphp6` declared `db_verbs`, so the three Laravel projects
+# Why Laravel needs this copy: previously only `thinkphp` declared `db_verbs`, so the three Laravel projects
 # (aimeos / bagisto / beikeshop) had **not a single `WritesDb` edge** — and `n1-query-in-loop` /
 # `n1-write-in-loop` / `read-only-table` / `write-only-table` were all judged `rules_unavailable`
 # (measured on bagisto: 11 of 28 rules unavailable).
@@ -123,7 +123,7 @@ db_verbs:
 
 loaders:
   # FacadeMap: Laravel's facades (real class names taken from the Illuminate components).
-  - id: laravel-facade-map
+  - id: facade-map
     table: facade_map
     from:
       kind: inline
@@ -137,14 +137,14 @@ loaders:
         - { facade: "Illuminate\\Support\\Facades\\Event", target: "Illuminate\\Events\\Dispatcher" }
         - { facade: "Illuminate\\Support\\Facades\\Storage", target: "Illuminate\\Filesystem\\FilesystemManager" }
   # Database schema (the `CREATE TABLE` columns in SQL install scripts + table-name call sites in the source).
-  # Same built-in loader as ThinkPHP's `tp6-db-schema` (reads `.sql`, framework-agnostic), but the
+  # Same built-in loader as ThinkPHP's `thinkphp-db-schema` (reads `.sql`, framework-agnostic), but the
   # **declaration** has to be written once per framework FKB (loaders load per framework and do not share declarations).
   # Without it a Laravel project has no authoritative column information — the `ColumnsMatch` predicate and P6's
   # "schema column -> `Column` graph node" sedimentation both come up empty.
   # Middleware alias table (`$routeMiddleware` in `app/Http/Kernel.php`).
   # **Must be declared before `php_routes`**: the route table resolves aliases back into class names, and if the
   # load order is reversed the whole guard set is lost (better missing than guessed).
-  - id: laravel-middleware-aliases
+  - id: middleware-aliases
     table: middleware_aliases
     from:
       kind: builtin
@@ -160,11 +160,11 @@ loaders:
         separator: "=>"
         extensions: ["php"]
   # Laravel 11's `bootstrap/app.php`: `->withMiddleware(fn ($m) => $m->alias([...]))` registers
-  # **application-level custom aliases** (framework defaults are in `laravel-default-aliases` below).
-  # Writes to the same `middleware_aliases` table as `laravel-middleware-aliases` above, so load order between
-  # them does not matter, but both must come before `laravel-routes` (aliases must load before routes, otherwise
+  # **application-level custom aliases** (framework defaults are in `default-aliases` below).
+  # Writes to the same `middleware_aliases` table as `middleware-aliases` above, so load order between
+  # them does not matter, but both must come before `routes` (aliases must load before routes, otherwise
   # the table is still empty when aliases are resolved back to class names).
-  - id: laravel-bootstrap-aliases
+  - id: bootstrap-aliases
     table: middleware_aliases
     from:
       kind: builtin
@@ -181,7 +181,7 @@ loaders:
   # aliases commonly used in routes — `auth` / `throttle` / `guest` / `verified` / `can` / `signed` — be resolved
   # statically back into classes; Laravel 11 no longer has `app/Http/Kernel.php`, so without this the whole
   # alias table would come up empty.
-  - id: laravel-default-aliases
+  - id: default-aliases
     table: middleware_aliases
     from:
       kind: inline
@@ -207,7 +207,7 @@ loaders:
   # by FKB, at confidence 1.0.
   #
   # The declaration reuses the existing `inline` loader (same kind as `facade_map`), so no parser change is needed.
-  - id: laravel-known-middleware
+  - id: known-middleware
     table: middleware_classes
     from:
       kind: inline
@@ -233,7 +233,7 @@ loaders:
         - { class: "Illuminate\\Auth\\Middleware\\EnsureEmailIsVerified", capability: "Authentication" }
         - { class: "Illuminate\\Auth\\Middleware\\RequirePassword", capability: "Authentication" }
   # Route table (`Route::get/post/...` in `routes/*.php`) — the recognition logic is declared by `route_guards` below.
-  - id: laravel-routes
+  - id: routes
     table: route_list
     from:
       kind: builtin
@@ -290,7 +290,7 @@ rules:
   # ===== P5 Synthesize: Queue =====
   # `dispatch(new OrderCreatedJob($x))` / `OrderCreatedJob::dispatch($x)`.
   # Same as ThinkPHP's `Queue::push`: prefer the real class in arg:0, fall back to "the class that issued the call".
-  - id: laravel-queue-dispatch
+  - id: queue-dispatch
     phase: Synthesize
     selector:
       kind: call
@@ -323,7 +323,7 @@ rules:
   #   ② `function ($x) {...}` closure -> cannot be resolved statically; only the event node is built, no `HandledBy` edge
   #   ③ `protected $listen = ['evt' => [[Product::class, 'beforeUpdate']]]` class property
   #      -> **the current DSL cannot express this** (a property array value is not a `config_entry`); left for later
-  - id: laravel-event-registration
+  - id: event-registration
     phase: Synthesize
     selector:
       kind: call
@@ -357,7 +357,7 @@ rules:
   #   `to: { arg: 1, element: 0 }` takes the class name, `to_method: { arg: 1, element: 1 }` takes the method name;
   #   when arg1 is not an array (`Route::resource` gives the class directly) `element` gets nothing,
   #   and `to_fallback` falls back to "the whole arg1" resolved as a class.
-  - id: laravel-route-http-contract
+  - id: route-http-contract
     phase: Synthesize
     selector:
       kind: call
@@ -387,15 +387,15 @@ rules:
           confidence: 0.9
 
 resolvers:
-  - id: laravel-container-make
+  - id: container-make
     call: "app|app()->make|resolve|make"
     strategy: container
-  - id: laravel-event-trigger
+  - id: event-trigger
     call: "event|Event::dispatch"
     strategy: event
-  - id: laravel-facade
+  - id: facade
     call: "Illuminate\\Support\\Facades\\*::*"
     strategy: facade
-  - id: laravel-typed-instance-call
+  - id: typed-instance-call
     call: "*->*"
     strategy: variable_type

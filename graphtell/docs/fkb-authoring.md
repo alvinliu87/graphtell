@@ -170,7 +170,7 @@ that is enqueued by string (instead of `Job::class`) is the same shape as a rout
 
 ```yaml
 # Queue a job by string FQN or short name: `Queue::push('app\job\SendMail')` / `Queue::push('SendMail')`
-- id: myfw-queue-consumer
+- id: queue-consumer        # lands on the graph as `myfw-queue-consumer`, see §2.3
   selector: { kind: call, callee: "Queue::push" }
   binding:
     - Link:
@@ -181,6 +181,66 @@ that is enqueued by string (instead of `Job::class`) is the same shape as a rout
 
 Because the resolver only ever keeps a candidate that **exists on the graph**, a typo'd or dynamic job string simply
 produces no edge — never a ghost node. (When a framework enqueues by `X::class` instead, use `class_const`, not `method_ref`.)
+
+---
+
+### 2.3 Naming: the file, the `id`, and the item ids
+
+#### The file name and `id` carry the framework name — never a version number
+
+Version is **not a dimension of the mechanism**: no detector can express a version range (§2.1 — a
+`manifest_dependency` names a package, not `^6.0`), and `version_hint` is display-only. What a knowledge
+base actually describes is an **API-shape family**, and shape differences between releases are absorbed
+**as data inside one file** — parallel selectors, dual loaders, fallbacks:
+
+```yaml
+# fkb/php/thinkphp.yaml covers 5.1 / 6.x / 8.x in one file:
+#   * event registry: 5.x `app/tags.php` (flat) vs 6.x+ `app/event.php` (nested under `listen`)
+#     -> two `config_entry` rules, each keyed to its own file name
+#   * event trigger: 5.x `Hook::listen` vs 6.x+ `event()` / `Event::trigger` -> two resolvers
+#   * app root: 5.x `application/` vs 6.x+ `app/` -> one `root_rules` entry with fallbacks
+version_hint: "5.1 / 6.x / 8.x"
+```
+
+**Split a file when the shape forks, not when the version number changes.** A detector is a gate: every
+rule of a knowledge base that passes is matched against every call site, so the gate must stay narrow
+(§2.1). Splitting by version duplicates one shape's rules across N files whose gates all overlap;
+splitting by shape keeps the gates mutually exclusive — give each new file its own evidence (a marker
+file, a manifest entry, a code import) and name it after the **shape family**, e.g. `thinkphp.yaml` +
+`thinkphp-legacy.yaml`, never `thinkphp5.yaml` / `thinkphp6.yaml`.
+
+#### Item ids are local names
+
+`rules` / `loaders` / `root_rules` / `resolvers` ids are written **without** the framework prefix; the
+loader namespaces them at load time as `<id>-<local id>`:
+
+```yaml
+id: thinkphp
+rules:
+  - id: pii        # lands on the graph as `thinkphp-pii`
+```
+
+Why the namespace exists at all:
+
+1. **Ids are provenance.** A rule id is written into the graph — a node's `sources`, an edge's
+   `evidence.rule`, an annotation's `evidence.hook` — and into diagnostics (`rule <id>: …`). Bare names
+   would be ambiguous once several knowledge bases have touched the same node.
+2. **Ids are the dedup key.** Rules are collected from every applicable knowledge base (framework +
+   language-common + project) and `dedup_rules` keeps the **first** id it sees, so two knowledge bases
+   sharing an id means one of them is **silently dropped** — decided by concatenation order. That is a
+   real failure mode, not a hypothetical one: it is why `fkb/projects/crmeb.yaml` and `fkb/php/crmeb.yaml`
+   had to be given different ids.
+
+Why it is added at load time rather than typed by hand: repeating it on forty rules is exactly how an
+author ends up forgetting it (the same argument that moved `side` to the top level, §5.1).
+
+Two consequences worth knowing:
+
+* **It is idempotent.** An id that already starts with `<id>-` is left alone — that is both the escape
+  hatch for a knowledge base that wants a different prefix and the reason a not-yet-migrated file keeps
+  working.
+* **`graphtell validate` reports collisions**: a qualified id declared by two files is a warning, because
+  the second declaration never runs.
 
 ---
 
@@ -337,7 +397,7 @@ only, reject variables) · `require_class` (the resolution must be a real class,
 Declare it **once per knowledge base**, at the top level:
 
 ```yaml
-id: thinkphp6
+id: thinkphp
 language: php
 side: backend            # frontend | backend | external — a closed set, validated at load time
 ```
@@ -445,7 +505,7 @@ it is in the core list **or** in any FKB's `semantic_edge_kinds` / `bridge_edge_
 ### 6.1 Backend cache (excerpt from `fkb/php/common.yaml`) -- shows `side: backend`
 
 ```yaml
-- id: php-common-cache-read
+- id: cache-predis-read     # namespaced to `php-common-cache-predis-read` at load time (§2.3)
   phase: Synthesize
   selector:
     kind: call
@@ -473,7 +533,7 @@ id: frontend-js
 language: javascript
 semantic_kinds: [Store, Page, EventBus]   # Store isn't built-in, so it must be declared
 rules:
-  - id: frontend-emit
+  - id: emit                 # namespaced to `frontend-js-emit` at load time (§2.3)
     phase: Synthesize
     selector:
       kind: call
@@ -495,7 +555,7 @@ rules:
 ### 6.3 Java HTTP contract (`fkb/java/spring-boot.yaml`) -- shows `ContractId` identity
 
 ```yaml
-- id: spring-mapping-http-contract
+- id: mapping-http-contract  # namespaced to `spring-boot-mapping-http-contract` at load time (§2.3)
   phase: Synthesize
   selector:
     kind: call

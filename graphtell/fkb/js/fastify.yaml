@@ -37,7 +37,7 @@ exclude_globs:
 rules:
   # ===== P5 Synthesize: HTTP contract (route) =====
   # `fastify.get('/users', handler)` / `app.post('/x', ...)` / `server.put(...)`。
-  - id: fastify-route-contract
+  - id: route-contract
     phase: Synthesize
     selector:
       kind: call

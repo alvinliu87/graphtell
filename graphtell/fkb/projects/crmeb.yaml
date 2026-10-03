@@ -2,14 +2,14 @@
 #
 # Scope: project level (scope: project). Loaded only when the project is detected as CRMEB (detectors hit), so it
 # does not pollute other ThinkPHP projects. This describes only CRMEB's **project-specific conventions**; the
-# framework-common parts remain in fkb/php/thinkphp6.yaml.
+# framework-common parts remain in fkb/php/thinkphp.yaml.
 #
 # Scheduling convention: CRMEB does not use a framework-level scheduler (ThinkPHP's core has no built-in Schedule,
 # and CRMEB does not use an extension like topthink/think-schedule); instead it implements its own scheduled tasks
 # as "HTTP route + external scheduler heartbeat trigger":
 #   Route::get('crontab/order_cancel', 'v1.CrontabController/orderUnpaidCancel')
 #     ->name('orderUnpaidCancel')->option(['real_name' => 'cancel unpaid orders automatically']);
-# These routes are both ordinary HttpContracts (synthesized by tp6-route-http-contract) and, by this rule, additionally
+# These routes are both ordinary HttpContracts (synthesized by thinkphp-route-http-contract) and, by this rule, additionally
 # synthesized into Schedule semantic nodes with HandledBy to the corresponding CrontabController method.
 
 # The `id` must be **unique**: the kernel takes project-level rules via `kb.by_id(id)`, and `by_id` returns only the
@@ -42,9 +42,9 @@ rules:
   # ===== P5 Synthesize: ConfigKey =====
   # CRMEB's own `sys_config()` / `sys_config_all()`, which read the store's settings table.
   #
-  # This is a **project** convention, not a ThinkPHP one — it used to live in `fkb/php/thinkphp6.yaml` (its
+  # This is a **project** convention, not a ThinkPHP one — it used to live in `fkb/php/thinkphp.yaml` (its
   # comment even said so), which meant every ThinkPHP project carried a rule that only CRMEB can ever hit.
-  - id: crmeb-sys-config
+  - id: sys-config
     phase: Synthesize
     selector:
       kind: call
@@ -66,7 +66,7 @@ rules:
           confidence: 0.9
 
   # ===== P5 Synthesize: scheduled tasks (Schedule) =====
-  - id: crmeb-schedule-task
+  - id: schedule-task
     phase: Synthesize
     selector:
       kind: call

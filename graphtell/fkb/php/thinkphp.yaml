@@ -12,10 +12,15 @@
 #     6.x+ is `vendor/topthink/framework/` (already excluded by the generic rule)
 #   * app root: 5.x commonly `application/`, 6.x+ is `app/` (already covered by root_rules.fallbacks)
 # These differences are **absorbed by data inside this file** (parallel selectors / dual loaders / fallbacks)
-# rather than splitting files by major version — see the shape-splitting convention in `fkb/README`.
+# rather than splitting files by major version — see "when to split a knowledge base" in
+# `docs/fkb-authoring.md`. That is also why neither the file name nor `id` carries a version number:
+# a version number would imply one file per major release, which is not how this knowledge is shaped.
+#
+# Item ids below are **local**: the loader namespaces them as `thinkphp-<local id>` (see
+# `docs/fkb-authoring.md`), so `db-prefix` here is `thinkphp-db-prefix` on the graph.
 
-id: thinkphp6
-display_name: ThinkPHP 6
+id: thinkphp
+display_name: ThinkPHP
 language: php
 version_hint: "5.1 / 6.x / 8.x"
 side: backend
@@ -56,7 +61,7 @@ tx_calls:
 #   { "autoload": { "psr-4": { "app\\": "app/", "crmeb\\": "crmeb/" } } }
 #   -> AppRoot = "app", confidence 1.0, and `source` records the basis of the resolution
 root_rules:
-  - id: tp6-app-root
+  - id: app-root
     key: app_root
     source:
       kind: manifest_json
@@ -72,7 +77,7 @@ root_rules:
   # Auto-detect the database table prefix: ThinkPHP writes the prefix into `config/database.php`'s
   # `connections.<driver>.prefix`. The result is written to the `db_prefix` fact, and P3 configures
   # table_prefixes for the whole project from it, avoiding hard-coding CRMEB's `eb_` in the generic layer.
-  - id: tp6-db-prefix
+  - id: db-prefix
     key: db_prefix
     source:
       kind: manifest
@@ -118,7 +123,7 @@ db_verbs:
 # ---------------------------------------------------------------- P3 loading
 loaders:
   # FacadeMap: given by framework knowledge (authoritative), never guessed
-  - id: tp6-facade-map
+  - id: facade-map
     table: facade_map
     from:
       kind: inline
@@ -134,14 +139,14 @@ loaders:
         - { facade: "think\\facade\\Session", target: "think\\Session" }
         - { facade: "think\\facade\\View", target: "think\\View" }
   # Container bindings: app/provider.php
-  - id: tp6-container-bindings
+  - id: container-bindings
     table: container_bindings
     from:
       kind: file
       path: "{app_root}/provider.php"
       format: php
   # Event listener registry: app/event.php (6.x+ shape)
-  - id: tp6-event-listeners
+  - id: event-listeners
     table: event_listeners
     from:
       kind: file
@@ -152,14 +157,14 @@ loaders:
   # TP5 calls events "behaviours (Behavior)"; the registry is `tags.php` and is **flat**
   # (`'sms_send' => [Listener::class]`), with no 6.x-style outer `listen` key.
   # The loader skips the file silently when it is absent, so there is no side effect on 6.x+ projects.
-  - id: tp6-behavior-listeners
+  - id: behavior-listeners
     table: event_listeners
     from:
       kind: file
       path: "{app_root}/tags.php"
       format: php
   # Database schema (collected from SQL install scripts / table names in the source)
-  - id: tp6-db-schema
+  - id: db-schema
     table: schema
     from:
       kind: builtin
@@ -172,7 +177,7 @@ loaders:
         table_receivers: ["Db", "\\Db", "Query", "Model"]
         table_methods: ["name", "table"]
   # Config-key authoritative source
-  - id: tp6-config-keys
+  - id: config-keys
     table: config_keys
     from:
       kind: builtin
@@ -182,7 +187,7 @@ loaders:
         accessors: ["sys_config", "sys_config_all", "config", "env", "Env::get"]
         suffixes: ["::get"]
   # I18n (lang/<locale>/*.php)
-  - id: tp6-i18n
+  - id: i18n
     table: i18n
     from:
       kind: glob
@@ -190,7 +195,7 @@ loaders:
       locale_regex: "lang/([^/]+)/"
       format: php
   # Route table (collected from Route:: calls) — the recognition logic is declared by `route_guards` below; the kernel no longer hard-codes it.
-  - id: tp6-route-list
+  - id: route-list
     table: route_list
     from:
       kind: builtin
@@ -201,7 +206,7 @@ loaders:
   # in multi-app mode `'middleware' => [...]` in `app/<app>/config/route.php` applies only to that app's routes.
   # Both are attached to `route_list`, and P14 promotes them to Middleware nodes + PassesThrough edges.
   # Paths / keys / scopes are all declared here; the kernel's `declared_middleware` loader knows no framework.
-  - id: tp6-middleware-global
+  - id: middleware-global
     table: route_list
     from:
       kind: builtin
@@ -209,7 +214,7 @@ loaders:
       params:
         paths: ["app/middleware.php"]
         scope: global
-  - id: tp6-middleware-per-app
+  - id: middleware-per-app
     table: route_list
     from:
       kind: builtin
@@ -247,10 +252,10 @@ route_guards:
 
 # ---------------------------------------------------------------- P7 resolution
 resolvers:
-  - id: tp6-container-make
+  - id: container-make
     call: "app()->make|app|make|invoke"
     strategy: container
-  - id: tp6-event-trigger
+  - id: event-trigger
     call: "event|Event::trigger"
     strategy: event
   # 5.x shape: `Hook::listen('sms_send', $params)` / `hook('sms_send')`.
@@ -258,7 +263,7 @@ resolvers:
   # to the event node synthesized from `tags.php` / `event.php`.
   # Note it uses `event` and not `event_listen`: the latter's arg1 is a **listener class**
   # (`Event::listen('x', Listener::class)`), while `Hook::listen`'s arg1 is a **payload parameter**.
-  - id: tp6-hook-trigger
+  - id: hook-trigger
     call: "Hook::listen|hook"
     strategy: event
   # Runtime event listener registration: `Event::listen('x', Listener::class)`.
@@ -266,27 +271,27 @@ resolvers:
   # from the event node to the arg1 listener.
   # Note: in `Event::subscribe(Sub::class)` arg0 is a "subscriber class", not an event name (the event name lives
   # inside its subscribe() body), so it cannot be linked back to a concrete event and is only marked `listener`
-  # by the `tp6-event-listener-registration` rule — no edge is created here.
-  - id: tp6-event-listen
+  # by the `event-listener-registration` rule — no edge is created here.
+  - id: event-listen
     call: "Event::listen"
     strategy: event_listen
-  - id: tp6-facade
+  - id: facade
     call: "think\\facade\\*::*"
     strategy: facade
-  - id: tp6-accessor
+  - id: accessor
     call: "*->get*Attr"
     strategy: accessor
   # "Current class" calls in a static context: `self::detail()` / `static::deleteAll()`.
   # Syntactically these use `::` (not `->`), so the original `*->*` resolver never matched them, which meant
   # these read / write verbs could never produce a `ReadsDb` / `WritesDb`. `receiver_type_fqn` already treats
   # `self` / `static` as the class defining the method; this only routes them through VariableType resolution too.
-  - id: tp6-static-self-call
+  - id: static-self-call
     call: "self::*|static::*|Self::*|Static::*"
     strategy: variable_type
   # Instance method calls: `$services->appAuth()`. Types come from method parameter type hints and constructor
   # property injection (`__construct(T $x){ $this->p = $x; }`), ThinkPHP's DI convention.
   # No edge is created for an unknown type — better a missing edge than a wrong one.
-  - id: tp6-typed-instance-call
+  - id: typed-instance-call
     call: "*->*"
     strategy: variable_type
 
@@ -296,7 +301,7 @@ resolvers:
 rules:
   # ===== P6 annotation: kernel-standard recognizers, written directly as `selector + binding` rules =====
   # (previously `annotation_interfaces` + `DEFAULT_ANNOTATIONS_YAML`; now plain rules — same engine, one writing style)
-  - id: tp6-pii
+  - id: pii
     phase: AnnotatePost
     selector:
       kind: node
@@ -313,7 +318,7 @@ rules:
               subkind: { literal: phone }
               confidence: 0.9
           merge: MaxByKind
-  - id: tp6-table-criticality
+  - id: table-criticality
     phase: AnnotatePost
     selector:
       kind: node
@@ -328,7 +333,7 @@ rules:
               subkind: { from_fan_in: { thresholds: { high: 50, medium: 10 } } }
               confidence: 0.85
           merge: MaxByKind
-  - id: tp6-config-metadata
+  - id: config-metadata
     phase: AnnotatePost
     selector:
       kind: node
@@ -344,7 +349,7 @@ rules:
             - kind: config.mutability
               from_symbol_table: { table: config_keys, field: mutable }
           merge: MaxByKind
-  - id: tp6-public-endpoint
+  - id: public-endpoint
     phase: AnnotatePost
     selector:
       kind: node
@@ -360,7 +365,7 @@ rules:
             - kind: auth.public
               confidence: 0.9
           merge: MaxByKind
-  - id: tp6-i18n-coverage
+  - id: i18n-coverage
     phase: AnnotatePost
     selector:
       kind: node
@@ -376,7 +381,7 @@ rules:
               confidence: 1.0
           merge: MaxByKind
   # ===== P4 Annotate-Pre: taint semantics =====
-  - id: tp6-sanitizer-param
+  - id: sanitizer-param
     phase: AnnotatePre
     selector:
       kind: call
@@ -391,7 +396,7 @@ rules:
               confidence: 0.9
           merge: Coexist
 
-  - id: tp6-sink-raw-sql
+  - id: sink-raw-sql
     phase: AnnotatePre
     selector:
       kind: call
@@ -407,7 +412,7 @@ rules:
               confidence: 0.9
           merge: Coexist
 
-  - id: tp6-source-request
+  - id: source-request
     phase: AnnotatePre
     selector:
       kind: call
@@ -429,7 +434,7 @@ rules:
           merge: Coexist
 
   # ===== P5 Synthesize: Table (three hooks converge on the same identity) =====
-  - id: tp6-db-name-table
+  - id: db-name-table
     phase: Synthesize
     selector:
       kind: call
@@ -464,7 +469,7 @@ rules:
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.95
 
-  - id: tp6-model-table-property
+  - id: model-table-property
     phase: Synthesize
     selector:
       kind: inheritance
@@ -484,7 +489,7 @@ rules:
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.95
 
-  - id: tp6-model-table-convention
+  - id: model-table-convention
     phase: Synthesize
     selector:
       kind: inheritance
@@ -503,7 +508,7 @@ rules:
                 - trim
           # `side` is mandatory: the identity **merge key includes scope** (derived from side).
           # Without it, the table built by this rule (`app\model\user\User` -> `user`) and the same-named table
-          # built by `tp6-db-name-table` (`Db::name('user')` -> `user`) get inconsistent scopes and are judged as
+          # built by `db-name-table` (`Db::name('user')` -> `user`) get inconsistent scopes and are judged as
           # two different identities, so one table appears as **two nodes** on the graph and idempotent merging
           # breaks (measured on CRMEB: the user table had 2 nodes, each with only half of its sources).
           link: { kind: MapsTo, direction: incoming }
@@ -514,7 +519,7 @@ rules:
   # ThinkPHP's relation API is **identical in name and shape** to Eloquent's (`hasOne` / `hasMany` / `belongsTo` /
   # `belongsToMany` / `morphXxx`), so the rule matches `laravel-model-relation`;
   # both sides are built (Laravel / ThinkPHP projects often declare only one side, so building one side would lose a lot of edges).
-  - id: tp6-model-relation
+  - id: model-relation
     phase: Synthesize
     selector:
       kind: call
@@ -527,9 +532,9 @@ rules:
           confidence: 0.75
 
   # ===== P6 AnnotatePost: model relation -> table-level foreign key =====
-  # Each end walks one `MapsTo` hop down to its own table (edges built by `tp6-model-table-property` /
-  # `tp6-model-table-convention`). One-to-many; when one end has no table this entry is skipped.
-  - id: tp6-table-foreign-key
+  # Each end walks one `MapsTo` hop down to its own table (edges built by `model-table-property` /
+  # `model-table-convention`). One-to-many; when one end has no table this entry is skipped.
+  - id: table-foreign-key
     phase: AnnotatePost
     selector:
       kind: node
@@ -561,7 +566,7 @@ rules:
   #   rejects it we fall back to the service class that made the call and the topic becomes that service.
   #   So "supporting the single framework think\facade\Queue" automatically benefits every project that uses
   #   queues through facades / wrappers / traits, without any project-level FKB.
-  - id: tp6-queue-topic
+  - id: queue-topic
     phase: Synthesize
     selector:
       kind: call
@@ -612,7 +617,7 @@ rules:
           confidence: 0.85
 
   # ===== P5 Synthesize: HTTP contract bridge (backend side) =====
-  - id: tp6-route-http-contract
+  - id: route-http-contract
     phase: Synthesize
     selector:
       kind: call
@@ -650,7 +655,7 @@ rules:
   # The expansion table lives in FKB (the kernel only knows "one call expands into N nodes"), and the action
   # filtering of `->only([...])` / `->except([...])` is read by the kernel from the chained call arguments on
   # **the same statement line** — so "which actions really exist" is decided by the code, not guessed by us.
-  - id: tp6-route-resource
+  - id: route-resource
     phase: Synthesize
     selector:
       kind: call
@@ -691,7 +696,7 @@ rules:
           confidence: 0.9
 
   # ===== P4+P5+P6: event registry =====
-  - id: tp6-event-registry
+  - id: event-registry
     phase: AnnotatePre
     selector:
       kind: config_entry
@@ -743,13 +748,13 @@ rules:
           merge: MaxByKind
 
   # ===== P4+P5+P6: behaviour extension registry (**5.x shape** `app/tags.php`) =====
-  # Isomorphic to `tp6-event-registry` above, with only two differences:
+  # Isomorphic to `event-registry` above, with only two differences:
   #   * file name: 5.x is `tags.php`, 6.x+ is `event.php`. The `file` selector supports only `*` wildcards,
   #     not `|` alternation, so this is written as two rules rather than one rule with `|`;
   #   * structure: 5.x's `tags.php` is **flat** (`'sms_send' => [Listener::class]`), with no 6.x outer
   #     `listen` key — hence `key_path: "*"`, and identity uses `path_segment: 0` (a flat key has a single
   #     segment; taking `1` returns None because `n < segs.len()` does not hold).
-  - id: tp6-behavior-registry
+  - id: behavior-registry
     phase: AnnotatePre
     selector:
       kind: config_entry
@@ -811,7 +816,7 @@ rules:
   # `event.php` registry above. If an event is registered purely at runtime and is absent from `event.php`,
   # its listener is annotated `listener` but has no precise `HandledBy` edge yet (the view still shows the
   # consumer via the `listener` annotation).
-  - id: tp6-event-listener-registration
+  - id: event-listener-registration
     phase: AnnotatePost
     selector:
       kind: call
@@ -853,7 +858,7 @@ rules:
   # Confidence is deliberately pushed down to 0.5 — this is **convention inference**, not explicit source text
   # (the semantics may break due to project config `url_route_must`, middleware or an inherited `__call`), and
   # the node carries `auto_route: true` so upper layers can tell it apart.
-  - id: tp6-auto-route-contract
+  - id: auto-route-contract
     phase: AnnotatePost
     selector:
       kind: node
@@ -898,7 +903,7 @@ rules:
           confidence: 0.5
 
   # ===== P5 Synthesize: I18nKey (several locales merge into one node) =====
-  - id: tp6-i18n-key
+  - id: i18n-key
     phase: Synthesize
     selector:
       kind: config_entry

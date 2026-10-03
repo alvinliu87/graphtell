@@ -44,7 +44,7 @@ rules:
   # the first few positions in order (when nothing is found the result is an empty string and the whole thing falls
   # back via `value_fallback` to the function name — which is exactly Celery's default task name). This mirrors Java's
   # `@EventListener` falling back to `owner_member`.
-  - id: celery-task-consumer
+  - id: task-consumer
     phase: Synthesize
     selector:
       kind: call
@@ -78,7 +78,7 @@ rules:
   #
   # `delay` / `apply_async` are Celery-specific method names (not generic like `get` / `send`), so `*` allows any
   # receiver — the same trade-off as `*::sendDefault` on the Spring side.
-  - id: celery-task-producer
+  - id: task-producer
     phase: Synthesize
     selector:
       kind: call
@@ -125,7 +125,7 @@ rules:
   # `@Scheduled` pointing at "the method carrying the annotation"). The task actually triggered sits in `arg:1`
   # (the `task.s()` call), whose value is not a literal and currently cannot serve as a link target — annotate honestly,
   # do not fabricate an edge.
-  - id: celery-beat-periodic-task
+  - id: beat-periodic-task
     phase: Synthesize
     selector:
       kind: call

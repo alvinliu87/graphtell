@@ -1,5 +1,6 @@
 /* API replay for the static demo: serve /api/* requests from pre-recorded JSON.
-   This way pure static hosting like GitHub Pages still runs the **real product frontend**, with no backend needed. */
+   This way pure static hosting like GitHub Pages still runs the **real product frontend**,
+   with no backend needed. */
 (() => {
   const IDX_URL = new URL('./index.json', document.currentScript.src).href;
   let idx = null;
@@ -35,21 +36,23 @@
     const base = method + ' ' + new URL(req.url, location.href).pathname;
     let file = null;
     if (method !== 'GET') {
-      // Write / query class: prefer exact body match (e.g. different recall queries each return their own result)
+      // Write / query class: prefer exact body match (e.g. different recall queries each
+      // return their own result)
       let bodyKey = null;
       try {
         const text = await req.clone().text();
         const obj = JSON.parse(text || '{}');
         bodyKey = key + '|' + JSON.stringify(obj, Object.keys(obj).sort());
-      } catch (e) { /* body 不是 JSON，忽略 */ }
+      } catch (e) { /* body is not JSON, ignore */ }
       file = (bodyKey && table[bodyKey]) || table[key + '|*'] || table[key];
     } else {
       file = table[key];
     }
-    // Fallback ignoring query params: hit the "first recording of the same path" so the page still renders normally
+    // Fallback ignoring query params: hit the "first recording of the same path" so the page
+    // still renders normally
     if (!file) file = table[base];
     if (!file) {
-      console.warn('[demo] 未录制的请求（静态 demo 无后端）:', method, norm(req.url));
+      console.warn('[demo] Unrecorded request (static demo has no backend):', method, norm(req.url));
       return jsonResponse({});
     }
     try {

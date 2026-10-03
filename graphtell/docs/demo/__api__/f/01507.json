@@ -1,1 +1,1 @@
-{"ok": true, "data": [{"id": 2000089241, "name": "Cache", "badge": "语义依赖 2 · 语义入边 10", "sub_project_id": 12}, {"id": 2000089308, "name": "phonepe_access_token", "badge": "语义依赖 1 · 语义入边 4", "sub_project_id": 21}], "error": null}
+{"ok": true, "data": [{"id": 2000089241, "name": "Cache", "badge": "semantic dependencies 2 · semantic in-edges 10", "sub_project_id": 12}, {"id": 2000089309, "name": "phonepe_access_token", "badge": "semantic dependencies 1 · semantic in-edges 4", "sub_project_id": 21}], "error": null}

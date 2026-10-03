@@ -512,10 +512,17 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
     // First pass: load every file, aggregating across files the "edge kinds explicitly declared by some FKB".
     // An edge kind may be declared in file A and used in file B, so it must be aggregated before it counts as "known".
     let mut declared_edge: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Rule ids are namespaced at load time (`<fkb-id>-<local-id>`), so a collision can only happen when two
+    // knowledge bases declare the same qualified id — the second one is then dropped silently by `dedup_rules`.
+    let mut rule_id_owner: std::collections::HashMap<String, PathBuf> =
+        std::collections::HashMap::new();
     for path in &files {
         if let Ok(fk) = YamlKnowledgeBase::load_file(path) {
             for k in fk.semantic_edge_kinds.iter().chain(fk.bridge_edge_kinds.iter()) {
                 declared_edge.insert(k.clone());
+            }
+            for r in &fk.rules {
+                rule_id_owner.entry(r.id.clone()).or_insert_with(|| path.clone());
             }
         }
     }
@@ -528,6 +535,17 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
                 ok += 1;
                 let mut warns = Vec::new();
                 for r in &fk.rules {
+                    // Same qualified id declared by another knowledge base: one of the two never runs.
+                    if let Some(other) = rule_id_owner.get(&r.id) {
+                        if *other != *path {
+                            warns.push(format!(
+                                "Rule id `{}` is also declared by {} — ids are deduplicated globally, so the later one is silently dropped",
+                                r.id,
+                                other.display()
+                            ));
+                        }
+                    }
+
                     for a in &r.binding {
                         // A synthesized node's effective kind = subtype (if any), otherwise node.
                         if let Action::Synthesize(s) = a {
@@ -608,6 +626,9 @@ fn validate_fkbs(dir: &Path) -> anyhow::Result<()> {
     }
     println!();
     println!("{} file(s) in total: {} passed, {} failed", files.len(), ok, broken);
+    println!(
+        "Rule / loader / root_rule / resolver ids are namespaced as `<id>-<local id>` (see docs/fkb-authoring.md)."
+    );
     if broken > 0 {
         anyhow::bail!("Some FKB files could not be parsed");
     }

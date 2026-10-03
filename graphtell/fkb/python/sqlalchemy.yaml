@@ -42,7 +42,7 @@ rules:
   #   2. P3 records the property value on the **class node** (`property_of(class, "__tablename__")`);
   #   3. here `HasProperty` matches it and `property` reads the value — the SQLAlchemy knowledge lives only in this
   #      YAML, not in the parser or the kernel.
-  - id: sqlalchemy-table
+  - id: table
     phase: AnnotatePost
     selector:
       kind: node

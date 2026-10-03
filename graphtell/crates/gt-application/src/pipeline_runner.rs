@@ -223,7 +223,7 @@ impl PipelineService {
     ///
     /// # Why after build, not P14
     ///
-    /// In auto-routing projects like likeadmin, most HttpContracts are synthesized by the `frontend-http-contract` rule only at
+    /// In auto-routing projects like likeadmin, most HttpContracts are synthesized by the `frontend-js-common-http-contract` rule only at
     /// the `run_check` stage; when P14 runs they don't exist yet, so hanging the chain would fall through entirely. Here we read the declarations
     /// written into the `declared_middleware` symbol table during prepare (file name / key / scope all live in FKB, kernel has zero framework strings),
     /// hang edges onto **all** contract nodes by scope, and promote the corresponding `Class` nodes to `Middleware`.

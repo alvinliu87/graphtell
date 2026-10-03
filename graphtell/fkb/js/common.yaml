@@ -29,7 +29,7 @@ rules:
   # Covers de-facto standard spellings such as axios / fetch / request / http.request, plus common wrapper shapes
   # (`request::{...}`, `http::{...}`, `$http::`, `ajax::`, `api::`, `apiClient::`, `httpClient::`).
   # uni-app's own `uni.request` is in `uni-app.yaml`.
-  - id: frontend-http-contract
+  - id: http-contract
     phase: Synthesize
     selector:
       kind: call
@@ -72,7 +72,7 @@ rules:
   # ===== P5 Synthesize: Cache (web-standard local storage, cross-framework common) =====
   # `localStorage` / `sessionStorage` are web standards, common to React / Vue / vanilla JS.
   # uni-app's own `uni.setStorageSync` is in `uni-app.yaml`.
-  - id: frontend-cache-read
+  - id: cache-read
     phase: Synthesize
     selector:
       kind: call
@@ -91,7 +91,7 @@ rules:
           link: { kind: ReadsCache, direction: incoming }
           confidence: 0.85
 
-  - id: frontend-cache-write
+  - id: cache-write
     phase: Synthesize
     selector:
       kind: call
@@ -113,7 +113,7 @@ rules:
 
   # ===== P5 Synthesize: ConfigKey (front-end config, cross-framework common) =====
   # Declarative config entries in `*/config/*.js`, isomorphic to the backend's `config/*.php`.
-  - id: frontend-config-key
+  - id: config-key
     phase: Synthesize
     selector:
       kind: config_entry
@@ -133,7 +133,7 @@ rules:
   # ===== P5 Synthesize: I18nKey (localised copy, cross-framework common) =====
   # `i18n.t('k')` / `this.$t('k')`: the same kind as the I18nKey synthesized from the backend's `lang/*.php`,
   # and with the same identity front-end and back-end copy converge onto one node.
-  - id: frontend-i18n-key
+  - id: i18n-key
     phase: Synthesize
     selector:
       kind: call
@@ -154,7 +154,7 @@ rules:
   # longer "the side" (it becomes `bridge` as soon as more than one party has evidence on it — see the
   # derived `sides` set in `engine.rs`). The edge is the only honest witness of "the front end really calls
   # this", which is also why `has_incoming` was added to the selector predicate vocabulary (`Predicate`).
-  - id: frontend-mark-called
+  - id: mark-called
     phase: AnnotatePost
     selector:
       kind: node

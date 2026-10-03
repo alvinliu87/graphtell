@@ -56,7 +56,7 @@ rules:
   # `fkb/js/common.yaml`. This file keeps only uni-app-specific spellings.
 
   # ===== P5 Synthesize: HttpContract (uni-app-specific `uni.request`) =====
-  - id: frontend-http-uni
+  - id: http-uni
     phase: Synthesize
     selector:
       kind: call
@@ -90,7 +90,7 @@ rules:
   # `localStorage` / `sessionStorage`, and the pipeline de-duplicates rules **by id, keeping the first** —
   # so sharing the id silently dropped whichever of the two lost, leaving a uni-app project with only one
   # of its two cache spellings recognised.
-  - id: frontend-uni-cache-read
+  - id: uni-cache-read
     phase: Synthesize
     selector:
       kind: call
@@ -109,7 +109,7 @@ rules:
           link: { kind: ReadsCache, direction: incoming }
           confidence: 0.85
 
-  - id: frontend-uni-cache-write
+  - id: uni-cache-write
     phase: Synthesize
     selector:
       kind: call
@@ -132,7 +132,7 @@ rules:
   # ===== P5 Synthesize: Store (the Vuex / Pinia state container, uni-app-specific `$store`) =====
   # `$store.commit('menus/set')` / `$store.dispatch('routesList')` -> `Store` node.
   # `Store` is a **new semantic kind declared by this FKB** (see `semantic_kinds` at the top of the file).
-  - id: frontend-store-mutation
+  - id: store-mutation
     phase: Synthesize
     selector:
       kind: call
@@ -155,7 +155,7 @@ rules:
   # selector works for front-end routes too — isomorphic to the `HttpContract` synthesized from the
   # backend's `Route::get(...)`. In the route perspective front-end and back-end
   # "page <-> endpoint" can then be compared directly.
-  - id: frontend-page
+  - id: page
     phase: Synthesize
     selector:
       kind: config_entry
@@ -175,7 +175,7 @@ rules:
   # ===== P5 Synthesize: front-end page navigation (NavigatesTo edge, uni-app-specific) =====
   # `uni.navigateTo({ url })` / `redirectTo` / `reLaunch` / `switchTab`: from the initiator
   # (a function / component method) to the target `Page` node
-  - id: frontend-navigate
+  - id: navigate
     phase: Synthesize
     selector:
       kind: call
@@ -202,7 +202,7 @@ rules:
   # listeners of the same event name merge idempotently into one `EventBus` node — in the folded view the
   # event node acts as a "via" bridge and lights up both "who emits" and "who listens"
   # (component interaction finally becomes visible).
-  - id: frontend-emit
+  - id: emit
     phase: Synthesize
     selector:
       kind: call
@@ -218,7 +218,7 @@ rules:
           link: { kind: Emits, direction: incoming }
           confidence: 0.8
 
-  - id: frontend-listen
+  - id: listen
     phase: Synthesize
     selector:
       kind: call

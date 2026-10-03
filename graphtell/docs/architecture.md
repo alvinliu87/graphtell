@@ -333,7 +333,7 @@ propagated along the call chain by P8, would cover every upstream caller -- that
 method's call chain read the DB", unable to distinguish "queried N times inside a loop" from "queried
 once outside it"; the noise would share a root with the rejected "god method" rule.
 
-Known boundary: `db-query` depends on FKB's `db_verbs`. Both `thinkphp6` and `laravel` declare it, so
+Known boundary: `db-query` depends on FKB's `db_verbs`. Both `thinkphp` and `laravel` declare it, so
 N+1 runs on both kinds of PHP project (Laravel's Eloquent / Query Builder verb list is under
 `db_verbs` in `fkb/php/laravel.yaml`). The Java side isn't done (`mapper.xxx()` would need Java
 `db_verbs` + loop recognition in the Java parser).

@@ -1,1 +1,1 @@
-{"ok": true, "data": [], "error": null}
+{"ok": true, "data": [{"id": 93670, "project_id": 1, "kind": "CallsHttp", "from_id": 1000075009, "to_id": 1000094901, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"location": "template/uni-app/api/activity.js:221", "rule": "frontend-js-common-http-contract", "snippet": "return request.get(\"combination/poster_info/\" + id);"}}}], "error": null}

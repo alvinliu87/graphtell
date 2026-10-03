@@ -180,7 +180,7 @@ pub fn run(
         }
         // Authoritative symbol tables, under the same "does this knowledge apply" test as the lists above.
         // The `apply_without_detection` arm is what makes a **framework-independent** loader possible: `nginx`
-        // used to have to hide inside `thinkphp6.yaml` purely because an unconditional FKB was never
+        // used to have to hide inside `thinkphp.yaml` purely because an unconditional FKB was never
         // "detected" and therefore never had its loaders run — which cost every other framework the ability
         // to read nginx config at all.
         for fk in kb.all() {
@@ -2057,7 +2057,7 @@ fn load_nginx(
 /// and the graph has no middleware at all (likeadmin is typical).
 ///
 /// This loader stores "declared class list + scope" into the workspace `declared_middleware` symbol table; **doesn't build nodes directly**
-/// — because HttpContract nodes (especially auto-route ones like likeadmin, or contracts synthesized by the `frontend-http-contract` rule)
+/// — because HttpContract nodes (especially auto-route ones like likeadmin, or contracts synthesized by the `frontend-js-common-http-contract` rule)
 /// don't exist yet at prepare time. The real nodes / `PassesThrough` edges are hung by a post-build step
 /// (see `gt-application::PipelineService::attach_declared_middleware`) once HttpContract nodes are complete, by scope,
 /// reusing P14's same mechanism, kernel zero framework strings.
@@ -2448,7 +2448,7 @@ mod tests {
         RouteGuardSpec, RouteMatchBy, Span, SubProject, SubProjectId,
     };
 
-    /// ThinkPHP 6's `route_guards` declaration (minimal set equivalent to `fkb/php/thinkphp6.yaml`), for test reuse.
+    /// ThinkPHP 6's `route_guards` declaration (minimal set equivalent to `fkb/php/thinkphp.yaml`), for test reuse.
     fn tp6_spec() -> RouteGuardSpec {
         RouteGuardSpec {
             route_calls: vec![RouteCallSpec {

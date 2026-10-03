@@ -1,1 +1,1 @@
-{"ok": true, "data": {"id": 3000000083, "kind": "HttpContract", "name": "ANY /ping/ping", "synthetic": true, "locations": [{"file": "backend/app/controller/Ping.php", "line": 8, "symbol": "ANY /ping/ping", "note": "规则 tp6-auto-route-contract"}], "reference_count": 0}, "error": null}
+{"ok": true, "data": {"id": 3000000083, "kind": "HttpContract", "name": "ANY /order/delete", "synthetic": true, "locations": [{"file": "backend/app/controller/Order.php", "line": 9, "symbol": "ANY /order/delete", "note": "rule thinkphp-auto-route-contract"}], "reference_count": 0}, "error": null}

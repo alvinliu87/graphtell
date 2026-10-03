@@ -28,7 +28,7 @@ rules:
   # `os.environ.get("SECRET_KEY")` / `os.getenv("SECRET_KEY")`.
   # The parser keeps the full attribute chain (the receiver of `os.environ.get` is `os.environ`), so
   # `os.environ::get` matches precisely and never misfires on `self.config.get(...)`.
-  - id: python-env-config
+  - id: env-config
     phase: Synthesize
     selector:
       kind: call

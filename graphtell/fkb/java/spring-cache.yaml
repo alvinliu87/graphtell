@@ -31,7 +31,7 @@ rules:
   # Annotations are modelled as call sites in the kernel (callee = annotation name), and the cache name comes
   # from the value/value argument (arg0).
   # The engine needs no code change for a "brand new" edge kind: `ReadsCache` / `WritesCache` are already built-in semantic edges.
-  - id: spring-cacheable
+  - id: cacheable
     phase: Synthesize
     selector:
       kind: call
@@ -49,7 +49,7 @@ rules:
           link: { kind: ReadsCache, direction: incoming }
           confidence: 0.85
 
-  - id: spring-cache-put
+  - id: put
     phase: Synthesize
     selector:
       kind: call
@@ -67,7 +67,7 @@ rules:
           link: { kind: WritesCache, direction: incoming }
           confidence: 0.85
 
-  - id: spring-cache-evict
+  - id: evict
     phase: Synthesize
     selector:
       kind: call

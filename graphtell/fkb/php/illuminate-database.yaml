@@ -48,7 +48,7 @@ tx_calls:
 
 loaders:
   # Table names reachable through the Query Builder / Eloquent receivers.
-  - id: illuminate-db-schema
+  - id: schema
     table: schema
     from:
       kind: builtin
@@ -63,7 +63,7 @@ loaders:
   # the loader can parse it directly.
   # Writes to the same `schema` table as `php_db_schema` above; the loader takes a **union** internally, so
   # load order does not matter.
-  - id: illuminate-migration-schema
+  - id: migration-schema
     table: schema
     from:
       kind: builtin
@@ -80,7 +80,7 @@ bridge_edge_kinds: [References]
 rules:
   # ===== P5 Synthesize: Table =====
   # `DB::table('product_flat')` — measured 200+ places in bagisto.
-  - id: illuminate-db-table
+  - id: table
     phase: Synthesize
     selector:
       kind: call
@@ -101,7 +101,7 @@ rules:
 
   # Eloquent convention: `class ProductGroupedProduct extends Model` -> `product_grouped_products`.
   # Same algorithm as ThinkPHP's Model convention (snake_plural), only the base class differs.
-  - id: illuminate-model-table
+  - id: model-table
     phase: Synthesize
     selector:
       kind: inheritance
@@ -130,7 +130,7 @@ rules:
   # The target model comes from arg0's `Post::class`; if unavailable it is skipped silently (`morphTo()` with
   # no argument is exactly that case). Relation methods are defined **inside the method body**, and owner_fqn
   # is `App\Models\User::posts`, so `owner_class` resolves to the model class rather than the relation method.
-  - id: illuminate-model-relation
+  - id: model-relation
     phase: Synthesize
     selector:
       kind: call
@@ -148,7 +148,7 @@ rules:
   # Project "model -> model" down to "table -> table": each end walks one `MapsTo` hop to its own table.
   # One-to-many (a model with N relations produces N foreign-key edges); if one end has no `Table`, that
   # entry is skipped.
-  - id: illuminate-table-foreign-key
+  - id: table-foreign-key
     phase: AnnotatePost
     selector:
       kind: node

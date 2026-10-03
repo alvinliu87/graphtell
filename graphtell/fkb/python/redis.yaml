@@ -34,7 +34,7 @@ exclude_globs:
 rules:
   # ===== P5 Synthesize: Cache (Redis) =====
   # Narrowed by receiver variable name: a bare `get` / `set` would hit the same-named method on every object.
-  - id: redis-cache-read
+  - id: cache-read
     phase: Synthesize
     selector:
       kind: call
@@ -52,7 +52,7 @@ rules:
           link: { kind: ReadsCache, direction: incoming }
           confidence: 0.8
 
-  - id: redis-cache-write
+  - id: cache-write
     phase: Synthesize
     selector:
       kind: call

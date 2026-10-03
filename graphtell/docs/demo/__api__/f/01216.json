@@ -1,1 +1,1 @@
-{"ok": true, "data": [{"id": 5571, "node_id": 1000095093, "channel": "FkbMark", "kind": "data.criticality", "subkind": "medium", "confidence": 0.765, "evidence": {"hook": "crmeb-table-criticality", "location": null, "severity": null}, "phase": "AnnotatePost"}], "error": null}
+{"ok": true, "data": [], "error": null}
