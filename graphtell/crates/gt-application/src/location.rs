@@ -56,3 +56,110 @@ fn absolute(raw: &str, root: Option<&Path>) -> String {
         _ => raw.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::{
+        FileId, IdentityKey, Language, Node, NodeId, NodeKind, Phase, ProjectId, Span,
+    };
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    fn tnode(id: i64, kind: &str, name: &str, fqn: Option<&str>, identity: Option<&str>) -> Node {
+        Node {
+            id: NodeId::new(id),
+            project_id: ProjectId::new(1),
+            sub_project_id: None,
+            kind: NodeKind::new(kind),
+            name: name.to_string(),
+            fqn: fqn.map(|s| s.to_string()),
+            identity: identity.map(IdentityKey::fqn),
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: serde_json::json!({}),
+        }
+    }
+
+    // ---- absolute() ----
+
+    #[test]
+    fn absolute_keeps_already_absolute_path() {
+        assert_eq!(
+            absolute("/abs/path/file.php", Some(Path::new("/root"))),
+            "/abs/path/file.php"
+        );
+    }
+
+    #[test]
+    fn absolute_joins_relative_path_under_root() {
+        assert_eq!(
+            absolute("app/Order.php", Some(Path::new("/root"))),
+            "/root/app/Order.php"
+        );
+    }
+
+    #[test]
+    fn absolute_without_root_returns_raw() {
+        assert_eq!(absolute("app/Order.php", None), "app/Order.php");
+    }
+
+    // ---- node_location() ----
+
+    #[test]
+    fn syntax_node_uses_file_id_and_span_line() {
+        let mut n = tnode(1, "Method", "createOrder", None, None);
+        n.file_id = Some(FileId::new(7));
+        n.span = Span {
+            start_line: 42,
+            ..Span::default()
+        };
+        let files = HashMap::from([(7i64, "app/Order.php".to_string())]);
+        let (path, line) = node_location(&n, &files, Some(Path::new("/root")));
+        assert_eq!(path, Some("/root/app/Order.php".to_string()));
+        assert_eq!(line, Some(42));
+    }
+
+    #[test]
+    fn missing_file_id_falls_back_to_synthetic_locations() {
+        let mut n = tnode(2, "Table", "store_order", None, Some("Table:store_order"));
+        n.properties = serde_json::json!({ "locations": [{ "file": "sql/order.sql", "line": 10 }] });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, Some("/root/sql/order.sql".to_string()));
+        assert_eq!(line, Some(10));
+    }
+
+    /// A present-but-unknown file_id must not hide the synthetic locations (otherwise jumps to a real definition
+    /// silently disappear when the file map is incomplete).
+    #[test]
+    fn file_id_present_but_unknown_still_uses_synthetic() {
+        let mut n = tnode(3, "Table", "t", None, Some("Table:t"));
+        n.file_id = Some(FileId::new(99));
+        n.properties = serde_json::json!({ "locations": [{ "file": "/abs/t.sql", "line": 5 }] });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        // already-absolute path is returned as-is
+        assert_eq!(path, Some("/abs/t.sql".to_string()));
+        assert_eq!(line, Some(5));
+    }
+
+    #[test]
+    fn no_file_id_and_no_locations_is_none() {
+        let n = tnode(4, "Table", "x", None, Some("Table:x"));
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, None);
+        assert_eq!(line, None);
+    }
+
+    /// A synthetic location with no `file` but a `line` must degrade to line-only (path None) rather than erroring.
+    #[test]
+    fn empty_locations_file_falls_back_to_line_only() {
+        let mut n = tnode(5, "Table", "x", None, Some("Table:x"));
+        n.properties = serde_json::json!({ "locations": [{ "line": 7 }] });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, None);
+        assert_eq!(line, Some(7));
+    }
+}

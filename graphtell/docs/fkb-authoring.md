@@ -228,8 +228,11 @@ Why the namespace exists at all:
 2. **Ids are the dedup key.** Rules are collected from every applicable knowledge base (framework +
    language-common + project) and `dedup_rules` keeps the **first** id it sees, so two knowledge bases
    sharing an id means one of them is **silently dropped** — decided by concatenation order. That is a
-   real failure mode, not a hypothetical one: it is why `fkb/projects/crmeb.yaml` and `fkb/php/crmeb.yaml`
-   had to be given different ids.
+   real failure mode, not a hypothetical one: CRMEB's knowledge was once split across two files that
+   both declared `id: crmeb`, and the project-level one was shadowed whole — its rules (including
+   crontab routes -> `Schedule`) never ran until it was renamed. The two files have since been merged
+   into one (`fkb/projects/crmeb.yaml`), which is the better fix: **one product, one knowledge file,
+   one gate**.
 
 Why it is added at load time rather than typed by hand: repeating it on forty rules is exactly how an
 author ends up forgetting it (the same argument that moved `side` to the top level, §5.1).

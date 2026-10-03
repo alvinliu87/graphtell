@@ -281,6 +281,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A project that only declares a concrete uni-app mini-program compiler package (no `@dcloudio/uni-app`
+    /// umbrella) must still be recognised as `mini-program`: `is_uni` matches via the `@dcloudio/uni` substring
+    /// and the `uni-mp-` branch fires on the compiler package itself.
+    #[test]
+    fn js_mp_compiler_dep_alone_is_mini_program() {
+        let dir = scratch("mp_only");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies":{"@dcloudio/uni-mp-weixin":"^3.0.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            JsTechStackAdapter::new().sub_project_kind(&dir, &StdFileSystem::new()),
+            Some("mini-program".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// uni-app projects often keep `manifest.json` under `src/`; the adapter must fall back to that path rather
+    /// than only looking at the project root (a regression silently mislabels such sub-projects as plain web).
+    #[test]
+    fn js_reads_manifest_from_src_dir() {
+        let dir = scratch("src_mani");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies":{"@dcloudio/uni-app":"^3.0.0"}}"#,
+        )
+        .unwrap();
+        // No uni-mp-* dep, so the kind must come from the manifest — deliberately placed under src/.
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src").join("manifest.json"),
+            r#"{"mp-qq":{}}"#, // a non-weixin mp target, exercises the full target list
+        )
+        .unwrap();
+        assert_eq!(
+            JsTechStackAdapter::new().sub_project_kind(&dir, &StdFileSystem::new()),
+            Some("mini-program".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `collect_deps` must merge `devDependencies` too: a mini-program compiler listed under devDependencies
+    /// must not be missed (a regression that only scans `dependencies` would silently mislabel the sub-project).
+    #[test]
+    fn js_dev_dependency_mp_target_is_detected() {
+        let dir = scratch("mp_dev");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"devDependencies":{"@dcloudio/uni-mp-weixin":"^3.0.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            JsTechStackAdapter::new().sub_project_kind(&dir, &StdFileSystem::new()),
+            Some("mini-program".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plain web project (no react-native, no uni family) must NOT get a forced kind, so Ingest keeps the
+    /// bare `frontend` role — guards against over-detection.
+    #[test]
+    fn js_plain_web_returns_none() {
+        let dir = scratch("web_plain");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies":{"react":"^18.2.0","vue":"^3.3.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            JsTechStackAdapter::new().sub_project_kind(&dir, &StdFileSystem::new()),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Missing `package.json`: the adapter must degrade to `None` rather than erroring.
+    #[test]
+    fn js_missing_package_json_returns_none() {
+        let dir = scratch("no_pkg");
+        // scratch() already created the (empty) dir; deliberately write no package.json.
+        assert_eq!(
+            JsTechStackAdapter::new().sub_project_kind(&dir, &StdFileSystem::new()),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn js_reports_javascript_language() {
         assert_eq!(

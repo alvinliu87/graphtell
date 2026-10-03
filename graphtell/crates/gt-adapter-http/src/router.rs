@@ -764,7 +764,7 @@ impl RecallGetQuery {
     fn into_query(self) -> RecallQuery {
         RecallQuery {
             query: self.q,
-            limit: self.limit.unwrap_or(20),
+            limit: self.limit.unwrap_or(10),
             hops: self.hops.unwrap_or(2),
             kinds: self
                 .kinds
@@ -849,7 +849,7 @@ async fn compose_prompt(
 ) -> Json<ApiResponse<ComposePromptResult>> {
     let rq = RecallQuery {
         query: req.query.clone(),
-        limit: req.limit.unwrap_or(20),
+        limit: req.limit.unwrap_or(10),
         hops: req.hops.unwrap_or(2),
         kinds: Vec::new(),
         with_snippets: req.with_snippets.unwrap_or(true),
@@ -1019,4 +1019,85 @@ async fn browse_fs(State(_state): State<Shared>, Query(q): Query<BrowseQuery>) -
 #[allow(dead_code)]
 fn _sub(id: SubProjectId) -> SubProjectId {
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `?sub_project_id=1,2` parses to a list; empty / missing means "no filtering" (None).
+    #[test]
+    fn parse_sub_project_ids_handles_empty_and_csv() {
+        assert_eq!(parse_sub_project_ids(&None), None);
+        assert_eq!(parse_sub_project_ids(&Some(String::new())), None);
+        assert_eq!(
+            parse_sub_project_ids(&Some("1,2,3".to_string())),
+            Some(vec![SubProjectId(1), SubProjectId(2), SubProjectId(3)])
+        );
+        // whitespace tolerance; non-numeric tokens are skipped
+        assert_eq!(
+            parse_sub_project_ids(&Some(" 4 , 5 , x".to_string())),
+            Some(vec![SubProjectId(4), SubProjectId(5)])
+        );
+    }
+
+    /// The GET recall path must agree with the `RecallQuery` serde default (limit 10, hops 2), not an old 20.
+    #[test]
+    fn recall_get_query_applies_contract_defaults() {
+        let q = RecallGetQuery {
+            q: "find the order service".to_string(),
+            limit: None,
+            hops: None,
+            kinds: None,
+            snippets: None,
+            include_body: None,
+        };
+        let rq = q.into_query();
+        assert_eq!(rq.limit, 10, "GET recall 默认 limit 应与 RecallQuery 契约一致 (10)");
+        assert_eq!(rq.hops, 2);
+        assert!(rq.kinds.is_empty());
+        assert!(rq.with_snippets);
+        assert!(!rq.include_body);
+    }
+
+    #[test]
+    fn recall_get_query_splits_kinds_and_overrides() {
+        let q = RecallGetQuery {
+            q: "q".to_string(),
+            limit: Some(5),
+            hops: Some(3),
+            kinds: Some("Table,HttpContract".to_string()),
+            snippets: Some(false),
+            include_body: Some(true),
+        };
+        let rq = q.into_query();
+        assert_eq!(rq.limit, 5);
+        assert_eq!(rq.hops, 3);
+        assert_eq!(rq.kinds, vec!["Table".to_string(), "HttpContract".to_string()]);
+        assert!(!rq.with_snippets);
+        assert!(rq.include_body);
+    }
+
+    /// Token estimate: ASCII ~4 chars/token, CJK ~1.5 chars/token, rounded up.
+    #[test]
+    fn estimate_tokens_counts_ascii_and_cjk() {
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("中文"), 2);
+        assert_eq!(estimate_tokens("ab中文"), 2);
+        assert_eq!(estimate_tokens(""), 0);
+    }
+
+    /// The composed prompt must carry the context, the (possibly inferred) task, and the requirements block.
+    #[test]
+    fn compose_prompt_text_contains_context_and_task() {
+        let text = compose_prompt_text("my query", Some("do X"), "# the context");
+        assert!(text.contains("RELEVANT CODE CONTEXT"));
+        assert!(text.contains("# the context"));
+        assert!(text.contains("do X"));
+        assert!(text.contains("[TASK]"));
+
+        // Omitted intent falls back to the "infer the task" placeholder.
+        let inferred = compose_prompt_text("q", None, "md");
+        assert!(inferred.contains("not provided"));
+    }
 }

@@ -663,9 +663,12 @@ impl GraphSink for SqliteStore {
         // Property patch
         for (id, patch) in &delta.property_patches {
             let current: Option<String> = tx
-                .query_row("SELECT properties FROM nodes WHERE id = ?1", params![id.get()], |r| r.get(0))
+                .query_row("SELECT properties FROM nodes WHERE id = ?1", params![id.get()], |r| {
+                    Ok(r.get::<_, Option<String>>(0)?)
+                })
                 .optional()
-                .map_err(DomainError::infra)?;
+                .map_err(DomainError::infra)?
+                .flatten();
             let mut merged: Value = current
                 .as_deref()
                 .and_then(|c| serde_json::from_str(c).ok())
@@ -690,9 +693,12 @@ impl GraphSink for SqliteStore {
         // Append co-occurrence locations (several definitions of a synthetic node)
         for (id, loc) in &delta.location_patches {
             let current: Option<String> = tx
-                .query_row("SELECT properties FROM nodes WHERE id = ?1", params![id.get()], |r| r.get(0))
+                .query_row("SELECT properties FROM nodes WHERE id = ?1", params![id.get()], |r| {
+                    Ok(r.get::<_, Option<String>>(0)?)
+                })
                 .optional()
-                .map_err(DomainError::infra)?;
+                .map_err(DomainError::infra)?
+                .flatten();
             let mut merged: Value = current
                 .as_deref()
                 .and_then(|c| serde_json::from_str(c).ok())

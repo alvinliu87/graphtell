@@ -1,33 +1,61 @@
-# CRMEB project knowledge
+# CRMEB project knowledge (**one product = one knowledge file**)
 #
-# Scope: project level (scope: project). Loaded only when the project is detected as CRMEB (detectors hit), so it
-# does not pollute other ThinkPHP projects. This describes only CRMEB's **project-specific conventions**; the
-# framework-common parts remain in fkb/php/thinkphp.yaml.
+# CRMEB is a product built on ThinkPHP, not a framework others build on: everything about it belongs in
+# **one** file, at `scope: project`. It used to be split across `fkb/php/crmeb.yaml` (framework scope,
+# declaring the PII / login-entrypoint annotations) and this file (project scope, declaring the
+# ConfigKey / Schedule synthesis), which caused two problems:
+#   * two **independent gates** for the same product — if one missed, half the knowledge silently
+#     stopped applying (a detector hit is `best > 0.0`, there is no confidence threshold to fail on);
+#   * `crmeb` was reported as a *framework* of the sub-project (`frameworks: ["crmeb", "thinkphp"]`),
+#     which is what framework-scope knowledge does — a product is not a framework.
 #
-# Scheduling convention: CRMEB does not use a framework-level scheduler (ThinkPHP's core has no built-in Schedule,
-# and CRMEB does not use an extension like topthink/think-schedule); instead it implements its own scheduled tasks
-# as "HTTP route + external scheduler heartbeat trigger":
-#   Route::get('crontab/order_cancel', 'v1.CrontabController/orderUnpaidCancel')
-#     ->name('orderUnpaidCancel')->option(['real_name' => 'cancel unpaid orders automatically']);
-# These routes are both ordinary HttpContracts (synthesized by thinkphp-route-http-contract) and, by this rule, additionally
-# synthesized into Schedule semantic nodes with HandledBy to the corresponding CrontabController method.
+# Division of labour now:
+#   thinkphp.yaml — framework mechanics (routes, container, events, ORM) + cross-version annotations
+#   this file     — everything CRMEB-specific: business semantics (`entrypoint.login`) and the conventions
+#                   only this codebase has (crontab routes, `sys_config()`,
+#                   `BaseServices` -> `$this->dao` forwarding).
+#
+# Two detectors were dropped in the merge:
+#   * `manifest_dependency: composer.json / crmeb-crmeb` — never fires: CRMEB ships with
+#     `composer.json` declaring `topthink/think`, there is no `crmeb/*` package to depend on;
+#   * `file_exists: app/services` — fires on any PHP project with that directory (it was weighted 0.5
+#     and still counted as a hit), so it would have attached CRMEB's business semantics to projects
+#     that are not CRMEB.
 
-# The `id` must be **unique**: the kernel takes project-level rules via `kb.by_id(id)`, and `by_id` returns only the
-# first entry with a given id. Previously this file and fkb/php/crmeb.yaml (framework scope) were both named `crmeb`,
-# and the framework one came first (directory order), so this file's rules (including crontab -> Schedule below) were
-# entirely shadowed and never took effect. After the rename each has its place: framework level owns mechanics,
-# project level owns business conventions.
-id: crmeb-project
+id: crmeb
 display_name: CRMEB
 language: php
 scope: project
-version_hint: "CRMEB store"
+version_hint: "standard / multi-merchant"
 
 detectors:
+  # CRMEB's own module directory (the app ships as `crmeb/`, next to `app/`).
+  - kind: file_exists
+    path: crmeb
+    confidence: 0.7
   # CRMEB-specific marker file: the backend scheduled-task service (a core module, stably present).
   - kind: file_exists
     path: app/services/system/crontab/SystemCrontabServices.php
     confidence: 0.9
+
+# "Which middleware provides which capability" — this is **this project's own naming convention** (the kernel
+# should not know a name like `AuthTokenMiddleware`), so it is declared in FKB and landed by P5.5 on the contract's
+# `Capability` channel.
+#
+# Only entries **certain from the name alone** are listed: same-meaning names under several app directories
+# (`AuthTokenMiddleware` / `KefuAuthTokenMiddleware`) are both matched by the `AuthToken` fragment.
+# When the attached argument explicitly says optional (`AuthTokenMiddleware::class, false` == reachable without
+# login) no capability is produced — calling "optional" "mandatory" would be fabrication.
+middleware_capabilities:
+  - matches: AuthToken
+    capability: Authentication
+
+annotation_kinds:
+  # Business-specific annotation kinds (beyond the kernel standard): `entrypoint.login` is CRMEB's login-entry
+  # semantics, produced by the `login-entrypoint` rule below. Standard kinds (pii / data.criticality /
+  # auth.public / i18n.missing_locale …) are produced by the kernel's `annotation_templates` recognizer and are not
+  # listed here — a stack does not invent annotation kinds.
+  - entrypoint.login
 
 # Magic-method forwarding: `BaseServices` declares 20+ `get` / `getOne` / `getList` / `count` / `delete` … via
 # `@method`, and they are actually forwarded by `__call` to `$this->dao` (the dao's type is injected by each subclass's
@@ -66,6 +94,14 @@ rules:
           confidence: 0.9
 
   # ===== P5 Synthesize: scheduled tasks (Schedule) =====
+  # Scheduling convention: CRMEB does not use a framework-level scheduler (ThinkPHP's core has no built-in
+  # Schedule, and CRMEB does not use an extension like topthink/think-schedule); instead it implements its
+  # own scheduled tasks as "HTTP route + external scheduler heartbeat trigger":
+  #   Route::get('crontab/order_cancel', 'v1.CrontabController/orderUnpaidCancel')
+  #     ->name('orderUnpaidCancel')->option(['real_name' => 'cancel unpaid orders automatically']);
+  # These routes are both ordinary HttpContracts (synthesized by thinkphp-route-http-contract) and, by this
+  # rule, additionally synthesized into Schedule semantic nodes with HandledBy to the corresponding
+  # CrontabController method.
   - id: schedule-task
     phase: Synthesize
     selector:
@@ -90,3 +126,34 @@ rules:
             direction: to_target
             to: { arg: 1, resolve: method_ref }
           confidence: 0.9
+
+  # ===== P6: mark "entry point" semantics on HttpContracts (CRMEB business-specific) =====
+  #
+  # Note on PII: there used to be a product-level `pii` rule here (first `contact_phone`, later `tell`), and it
+  # **never contributed anything**:
+  #   * `contact_phone` exists in no CRMEB install script — the rule was dead on arrival;
+  #   * `tell` (CRMEB's spelling in `eb_store_order_invoice` / `eb_user_invoice`) does exist, but both tables
+  #     also carry `drawer_phone` / `email`, so the generic rule in `thinkphp.yaml` (which matches `x` and
+  #     `*_x`) already flags them — the product-level copy added 0 new nodes.
+  # Measured after the `db_prefix` fix below: 19 tables annotated `pii`, **all** via `thinkphp-pii`.
+  #
+  # The real defect was elsewhere: `db_prefix` was not resolved (CRMEB writes `Env::get('database.prefix', 'eb_')`,
+  # which the config reader did not recognise), so the install script's `eb_*` DDL never matched the `Table`
+  # nodes, **0** `Column` nodes were materialised, and `columns_match` could not fire at all.
+  # Reading the prefix is what turned 0 columns / 0 PII annotations into 1885 columns / 19 tables.
+  - id: login-entrypoint
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: HttpContract
+      where:
+        - name_matches: "login"
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: entrypoint.login
+              confidence: 0.8
+          merge: MaxByKind

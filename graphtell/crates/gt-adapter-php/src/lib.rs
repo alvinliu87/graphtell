@@ -186,12 +186,20 @@ fn resolve_manifest_php(
     })
 }
 
-/// Lightweight fallback: extract the literal default from `config/database.php` source text `<leaf> => 'x'` or
-/// `<leaf> => env('K', 'x')`. Only for cases the parser can't statically evaluate.
+/// Lightweight fallback: extract the literal default from `config/database.php` source text `<leaf> => 'x'`,
+/// `<leaf> => env('K', 'x')` or `<leaf> => Env::get('K', 'x')`. Only for cases the parser can't statically
+/// evaluate.
+///
+/// Both env spellings must be accepted: Laravel / newer ThinkPHP apps call the helper `env('DB_PREFIX', 'eb_')`,
+/// while ThinkPHP's own config files (CRMEB among them) use the facade `Env::get('database.prefix', 'eb_')`.
+/// Recognising only the first silently cost those projects their `db_prefix` fact — and with it every
+/// column-level fact: the DDL in the install script keeps the prefix (`eb_user`) while the code writes
+/// `Db::name('user')`, so without the prefix the schema symbol table never matches a `Table` node and no
+/// `Column` node is ever produced (measured on CRMEB: 0 columns, 0 PII annotations).
 fn extract_php_config_default(text: &str, leaf: &str) -> Option<String> {
     let escaped = regex::escape(leaf);
     let re = regex::Regex::new(&format!(
-        r#"(?i)(?:['"]){escaped}(?:['"])\s*=>\s*(?:env\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]*)['"]\s*\)|['"]([^'"]*)['"])"#
+        r#"(?i)(?:['"]){escaped}(?:['"])\s*=>\s*(?:(?:env\s*\(\s*|Env\s*::\s*get\s*\(\s*)['"][^'"]*['"]\s*,\s*['"]([^'"]*)['"]\s*\)|['"]([^'"]*)['"])"#
     ))
     .ok()?;
     re.captures(text)
@@ -584,5 +592,144 @@ mod tests {
             "应从 env('DB_PREFIX', 'eb_') 的默认值读出表前缀"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ThinkPHP's own spelling (`Env::get`) — CRMEB's `config/database.php` writes
+    /// `'prefix' => Env::get('database.prefix', 'eb_')`. Missing it means no `db_prefix` fact, so the
+    /// install script's `eb_*` tables never match the `Table` nodes and no column is ever materialised.
+    #[test]
+    fn reads_prefix_from_env_get_default() {
+        let dir = std::env::temp_dir().join(format!("phpad_test_envget_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("config"));
+        std::fs::write(
+            dir.join("config/database.php"),
+            "<?php\nreturn [\n    'connections' => [\n        'mysql' => [\n            'prefix' => Env::get('database.prefix', 'eb_'),\n        ],\n    ],\n];",
+        )
+        .unwrap();
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let got = adapter().read_manifest(
+            &sub,
+            &dir,
+            "config/database.php",
+            "connections.mysql.prefix",
+            &fs,
+            &parsers,
+        );
+        assert_eq!(
+            got.map(|(v, _)| v),
+            Some("eb_".to_string()),
+            "应从 Env::get('database.prefix', 'eb_') 的默认值读出表前缀"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- pure / filesystem-light helpers (private surface) ----
+
+    #[test]
+    fn manifest_namespaces_from_psr4() {
+        let dir = std::env::temp_dir().join(format!("phpad_test_psr4_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{ "autoload": { "psr-4": { "app\\": "app/", "App\\": "src/" } } }"#,
+        )
+        .unwrap();
+        let ns = adapter().manifest_namespaces(&dir, &dir);
+        let names: Vec<&str> = ns.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"app"), "PSR-4 应导出 app 命名空间: {names:?}");
+        assert!(names.contains(&"App"), "PSR-4 应导出 App 命名空间: {names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only whitelisted column-declaration methods are captured; modifiers (`comment` / `default` / `after`)
+    /// carry string args but must NOT be mistaken for column names.
+    #[test]
+    fn migration_columns_exclude_modifiers() {
+        let body = r#"
+            $table->id();
+            $table->string('email');
+            $table->comment('邮箱');
+            $table->default('x');
+            $table->after('name');
+            $table->timestamps();
+        "#;
+        let cols = columns_of_blueprint(body);
+        assert!(cols.contains(&"email".to_string()), "string('email') 应被识别为列: {cols:?}");
+        assert!(cols.contains(&"id".to_string()), "id() 隐式列名应为 id: {cols:?}");
+        assert!(
+            cols.contains(&"created_at".to_string()) && cols.contains(&"updated_at".to_string()),
+            "timestamps() 应展开为 created_at/updated_at: {cols:?}"
+        );
+        assert!(!cols.contains(&"邮箱".to_string()), "comment 的字符串参数不应误判为列");
+        assert!(!cols.contains(&"name".to_string()), "after 的字符串参数不应误判为列");
+    }
+
+    #[test]
+    fn migration_table_and_columns_parsed() {
+        let src = r#"
+            Schema::create('users', function (Blueprint $table) {
+                $table->id();
+                $table->string('name');
+                $table->string('email');
+            });
+            Schema::create('orders', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('user_id');
+            });
+        "#;
+        let tables = parse_migration_tables(src);
+        let users = tables.iter().find(|(t, _)| t == "users").expect("users 表");
+        assert_eq!(users.1, vec!["id", "name", "email"]);
+        let orders = tables.iter().find(|(t, _)| t == "orders").expect("orders 表");
+        assert_eq!(orders.1, vec!["id", "user_id"]);
+    }
+
+    /// A `)` inside a string literal must not terminate the Blueprint body early.
+    #[test]
+    fn migration_paren_in_string_is_balanced() {
+        let src = "Schema::create('items', function (Blueprint $table) {\n    $table->string('note')->default(')');\n    $table->string('name');\n});";
+        let tables = parse_migration_tables(src);
+        let (_, cols) = tables.iter().find(|(t, _)| t == "items").expect("items 表");
+        assert!(
+            cols.contains(&"name".to_string()),
+            "括号在字符串内不应截断解析: {cols:?}"
+        );
+        assert!(!cols.contains(&")".to_string()));
+    }
+
+    #[test]
+    fn implicit_columns_by_convention() {
+        assert_eq!(implicit_columns("id"), vec!["id"]);
+        assert_eq!(
+            implicit_columns("timestamps"),
+            vec!["created_at", "updated_at"]
+        );
+        assert_eq!(implicit_columns("softDeletes"), vec!["deleted_at"]);
+        assert_eq!(implicit_columns("rememberToken"), vec!["remember_token"]);
+    }
+
+    /// Both `env('K', 'x')` (Laravel / newer ThinkPHP) and `Env::get('K', 'x')` (ThinkPHP / CRMEB) spellings,
+    /// plus a plain literal, must be recognised.
+    #[test]
+    fn config_default_handles_both_env_spellings() {
+        let src = r#"return [
+            'prefix' => env('DB_PREFIX', 'eb_'),
+            'other' => Env::get('database.prefix', 'xx_'),
+            'plain' => 'yy_',
+        ];"#;
+        assert_eq!(extract_php_config_default(src, "prefix"), Some("eb_".to_string()));
+        assert_eq!(extract_php_config_default(src, "other"), Some("xx_".to_string()));
+        assert_eq!(extract_php_config_default(src, "plain"), Some("yy_".to_string()));
+        assert_eq!(extract_php_config_default(src, "missing"), None);
+    }
+
+    #[test]
+    fn strip_prefixes_handles_doubled_prefix() {
+        let p = vec!["eb_".to_string()];
+        assert_eq!(strip_prefixes("eb_user", &p), "user");
+        assert_eq!(strip_prefixes("eb_eb_store_order", &p), "store_order");
+        assert_eq!(strip_prefixes("no_prefix_here", &p), "no_prefix_here");
     }
 }

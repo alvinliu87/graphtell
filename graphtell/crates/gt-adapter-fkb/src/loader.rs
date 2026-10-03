@@ -365,4 +365,198 @@ rules:
         // Already qualified: not prefixed twice (this is what lets a file opt out of the convention).
         assert_eq!(fk.rules[0].id, "thinkphp-pii");
     }
+
+    // ---- loader invariants that were previously untested (silent-failure surface) ----
+
+    /// Recursively collect every `*.yaml` / `*.yml` under a directory (mirrors `load_dir`'s walk).
+    fn collect_yaml(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"))
+                    .unwrap_or(false)
+                {
+                    out.push(path);
+                }
+            }
+        }
+        out
+    }
+
+    /// The single most valuable guard: `load_dir` **silently skips** any corrupt / un-deserialisable file
+    /// (warn + continue, loader.rs:80), and `common/mod.rs` only checks `!is_empty()`. A typo'd enum variant
+    /// in one FKB file (the historical `kind: manifest_php` miss) therefore loses knowledge with zero test
+    /// signal. Here we load the **real** `fkb/` tree file-by-file and fail loudly if any file cannot parse,
+    /// and also catch duplicate `id`s (the loader does not dedupe within one dir, so a duplicate would be
+    /// silently dropped downstream in the global rule collection).
+    #[test]
+    fn every_real_fkb_file_parses_and_ids_are_unique() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb");
+        assert!(root.is_dir(), "fkb 目录应存在: {}", root.display());
+
+        let files = collect_yaml(&root);
+        assert!(!files.is_empty(), "fkb 目录下应至少有 1 个 yaml 文件");
+
+        let mut ids = std::collections::HashSet::new();
+        for f in &files {
+            let fk = YamlKnowledgeBase::load_file(f)
+                .unwrap_or_else(|e| panic!("FKB 文件解析失败（会被静默跳过，导致知识丢失）: {}: {e}", f.display()));
+            assert!(
+                ids.insert(fk.id.clone()),
+                "重复 FKB id（下游会静默丢弃一个）: {}  ({})",
+                fk.id,
+                f.display()
+            );
+        }
+    }
+
+    /// `side` is a closed vocabulary validated at load time; an unknown value must be rejected, not coerced.
+    #[test]
+    fn side_must_be_a_closed_vocabulary() {
+        let dir = std::env::temp_dir().join(format!(
+            "gt-fkb-side-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let bad = dir.join("bad.yaml");
+        std::fs::write(
+            &bad,
+            "id: bad\ndisplay_name: Bad\nlanguage: php\nside: sideways\nrules: []\n",
+        )
+        .unwrap();
+        assert!(
+            YamlKnowledgeBase::load_file(&bad).is_err(),
+            "非法的 side 必须被拒绝"
+        );
+
+        let good = dir.join("good.yaml");
+        std::fs::write(
+            &good,
+            "id: good\ndisplay_name: Good\nlanguage: php\nside: backend\nrules: []\n",
+        )
+        .unwrap();
+        assert!(
+            YamlKnowledgeBase::load_file(&good).is_ok(),
+            "合法的 side 应通过校验"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn side_of_first_synth(fk: &FrameworkKnowledge) -> Option<String> {
+        for rule in &fk.rules {
+            for action in &rule.binding {
+                if let Action::Synthesize(syn) = action {
+                    if let Some(f) = syn.fields.iter().find(|f| f.name == "side") {
+                        return f.value.as_ref().and_then(|v| v.literal.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Side-aware kinds (HttpContract / Queue / Event / Cache …) must receive the FKB's `side` when they
+    /// declare none — this is what makes those nodes visible to `side` filters.
+    #[test]
+    fn apply_side_defaults_injects_side_for_side_aware_kinds() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: demo
+language: php
+side: backend
+rules:
+  - id: cache-read
+    phase: Synthesize
+    selector: { kind: call, callee: "Cache::get" }
+    binding:
+      - Synthesize:
+          node: Cache
+          subtype: Cache
+          identity: { kind: Named, value: { literal: "Cache" } }
+          fields: []
+          confidence: 0.9
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            side_of_first_synth(&fk).as_deref(),
+            Some("backend"),
+            "side-aware kind 应被注入 side"
+        );
+    }
+
+    /// Non-side-aware kinds (Method / Class …) must NOT inherit `side` — inheritance is restricted to
+    /// `SIDE_AWARE_KINDS` on purpose.
+    #[test]
+    fn apply_side_defaults_skips_non_side_aware_kinds() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: demo
+language: php
+side: backend
+rules:
+  - id: meth
+    phase: Synthesize
+    selector: { kind: call, callee: "Foo::bar" }
+    binding:
+      - Synthesize:
+          node: Method
+          identity: { kind: Named, value: { literal: "Foo::bar" } }
+          fields: []
+          confidence: 0.9
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            side_of_first_synth(&fk),
+            None,
+            "非 side-aware kind 不应被注入 side"
+        );
+    }
+
+    /// An explicit per-rule `side` must win over the FKB default.
+    #[test]
+    fn explicit_side_wins_over_default() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: demo
+language: php
+side: backend
+rules:
+  - id: cache-read
+    phase: Synthesize
+    selector: { kind: call, callee: "Cache::get" }
+    binding:
+      - Synthesize:
+          node: Cache
+          subtype: Cache
+          identity: { kind: Named, value: { literal: "Cache" } }
+          fields:
+            - name: side
+              value: { literal: "frontend" }
+          confidence: 0.9
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            side_of_first_synth(&fk).as_deref(),
+            Some("frontend"),
+            "显式声明的 side 应优先于 FKB 默认值"
+        );
+    }
 }

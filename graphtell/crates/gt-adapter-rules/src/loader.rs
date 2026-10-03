@@ -208,4 +208,88 @@ rules:
             );
         }
     }
+
+    /// The bare-array form (`- id: ...`, no `rules:` wrapper) is a documented convenience for single-rule files.
+    #[test]
+    fn bare_array_yaml_is_loaded() {
+        let yaml = "- id: lone-rule\n  title: Lone\n  message: \"hi\"\n";
+        let set = YamlRuleSet::from_str(yaml).expect("bare array should parse");
+        assert_eq!(set.rules().len(), 1);
+        assert_eq!(set.rules()[0].id, "lone-rule");
+    }
+
+    #[test]
+    fn empty_id_is_rejected() {
+        let yaml = "rules:\n  - id: \"\"\n    title: t\n    message: \"m\"\n";
+        let err = YamlRuleSet::from_str(yaml).expect_err("empty id must be rejected");
+        assert!(err.to_string().contains("id"), "actual error: {err}");
+    }
+
+    /// An empty message renders as a worthless violation in the UI — catching it at load time avoids shipping that.
+    #[test]
+    fn empty_message_is_rejected() {
+        let yaml = "rules:\n  - id: r1\n    title: t\n    message: \"\"\n";
+        let err = YamlRuleSet::from_str(yaml).expect_err("empty message must be rejected");
+        assert!(err.to_string().contains("message"), "actual error: {err}");
+    }
+
+    /// Same id: the later declaration overrides the earlier (matches FKB loading semantics).
+    #[test]
+    fn duplicate_id_keeps_last() {
+        let yaml = "rules:\n  - id: dup\n    title: t\n    message: \"first\"\n  - id: dup\n    title: t\n    message: \"second\"\n";
+        let set = YamlRuleSet::from_str(yaml).expect("duplicate ids are allowed, deduped");
+        assert_eq!(set.rules().len(), 1, "duplicate id should collapse to one rule");
+        assert_eq!(set.rules()[0].message, "second", "later declaration should win");
+    }
+
+    #[test]
+    fn load_dir_recurses_into_subdirs() {
+        let root = std::env::temp_dir().join(format!("gtar_rules_sub_{}", std::process::id()));
+        let sub = root.join("group/a");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            root.join("root.yaml"),
+            "rules:\n  - id: in-root\n    title: t\n    message: \"m\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sub.join("nested.yaml"),
+            "rules:\n  - id: in-sub\n    title: t\n    message: \"m\"\n",
+        )
+        .unwrap();
+
+        let set = YamlRuleSet::load_dir(&root).expect("load_dir should succeed");
+        let ids: Vec<&str> = set.rules().iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"in-root"), "root-level rule missing: {ids:?}");
+        assert!(ids.contains(&"in-sub"), "subdirectory rule missing (recursion broken): {ids:?}");
+        assert_eq!(set.sources().len(), 2, "both files should be recorded as sources");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_dir_missing_directory_is_empty() {
+        let missing = std::env::temp_dir().join(format!("gtar_rules_none_{}", std::process::id()));
+        let set = YamlRuleSet::load_dir(&missing).expect("missing dir returns Ok");
+        assert!(set.rules().is_empty(), "missing dir should yield zero rules");
+        assert!(set.sources().is_empty());
+    }
+
+    /// A single corrupt file must not take down the whole rule set: it is skipped (with a warning) and the
+    /// other files still load.
+    #[test]
+    fn load_dir_skips_corrupt_file_but_keeps_others() {
+        let root = std::env::temp_dir().join(format!("gtar_rules_corrupt_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("good.yaml"),
+            "rules:\n  - id: good\n    title: t\n    message: \"m\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("bad.yaml"), "this: : is: not: valid: yaml: [\n").unwrap();
+
+        let set = YamlRuleSet::load_dir(&root).expect("load_dir should tolerate a corrupt file");
+        assert_eq!(set.rules().len(), 1, "the good file should still load");
+        assert_eq!(set.rules()[0].id, "good");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

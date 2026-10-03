@@ -1,1 +1,1 @@
-{"ok": true, "data": [], "error": null}
+{"ok": true, "data": [{"id": 93076, "project_id": 1, "kind": "CallsHttp", "from_id": 1000058277, "to_id": 1000094186, "phase": "Synthesize", "confidence": 0.80999994, "properties": {"evidence": {"location": "template/admin/src/api/product.js:39", "rule": "frontend-js-common-http-contract", "snippet": "return request({"}}}], "error": null}

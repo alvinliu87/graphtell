@@ -151,3 +151,74 @@ impl AppConfig {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // env vars are process-global; serialize the tests that mutate them.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn explicit_dir_wins_over_everything() {
+        // The integration suite always passes explicit dirs, so this is the path it exercises — pin it so a
+        // future refactor that ignores the explicit override regresses loudly.
+        let cfg = AppConfig {
+            views_dir: Some(PathBuf::from("/explicit/views")),
+            ..AppConfig::default()
+        };
+        assert_eq!(cfg.resolve_views_dir(), PathBuf::from("/explicit/views"));
+        let cfg = AppConfig {
+            fkb_dir: Some(PathBuf::from("/explicit/fkb")),
+            ..AppConfig::default()
+        };
+        assert_eq!(cfg.resolve_fkb_dir(), PathBuf::from("/explicit/fkb"));
+        let cfg = AppConfig {
+            rules_dir: Some(PathBuf::from("/explicit/rules")),
+            ..AppConfig::default()
+        };
+        assert_eq!(cfg.resolve_rules_dir(), PathBuf::from("/explicit/rules"));
+    }
+
+    #[test]
+    fn env_var_is_used_when_no_explicit() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("GRAPHTELL_VIEWS_DIR", "/env/views");
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.resolve_views_dir(), PathBuf::from("/env/views"));
+        std::env::remove_var("GRAPHTELL_VIEWS_DIR");
+    }
+
+    /// When nothing (explicit / env / manifest / exe-relative) resolves, the bare `views`/`fkb`/`rules` name is the
+    /// last-ditch fallback. The integration suite never hits this branch, so a typo in the fallback name would be
+    /// invisible there.
+    #[test]
+    fn falls_back_to_bare_name_when_nothing_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("GRAPHTELL_VIEWS_DIR");
+        std::env::remove_var("GRAPHTELL_FKB_DIR");
+        std::env::remove_var("GRAPHTELL_RULES_DIR");
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.resolve_views_dir(), PathBuf::from("views"));
+        assert_eq!(cfg.resolve_fkb_dir(), PathBuf::from("fkb"));
+        assert_eq!(cfg.resolve_rules_dir(), PathBuf::from("rules"));
+    }
+
+    #[test]
+    fn ui_dir_is_none_when_not_configured() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("GRAPHTELL_UI_DIR");
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.resolve_ui_dir(), None, "dev default must not host the SPA");
+    }
+
+    #[test]
+    fn database_path_under_data_dir() {
+        let cfg = AppConfig {
+            data_dir: PathBuf::from("./data"),
+            ..AppConfig::default()
+        };
+        assert_eq!(cfg.database_path(), PathBuf::from("./data/graphtell.sqlite"));
+    }
+}

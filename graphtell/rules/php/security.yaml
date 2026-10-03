@@ -23,8 +23,8 @@ rules:
   #
   # ⚠️ 2026-09 status update (re-tested after the Capability channel started working on PHP):
   # this rule is **no longer** blocked by `rules_unavailable` (it now runs on CRMEB), but gets **0 hits
-  # out of 1603 candidates** — because it is structurally hollowed out by `crmeb-public-endpoint` in
-  # `fkb/php/crmeb.yaml`: the latter uses `none_of_capability` to judge "public endpoint", which is
+  # out of 1603 candidates** — because it is structurally hollowed out by `thinkphp-public-endpoint`
+  # in `fkb/php/thinkphp.yaml`: the latter uses `none_of_capability` to judge "public endpoint", which is
   # exactly the complement of this rule's `no_capability`; on the **same evidence source** the two are
   # mutually exclusive and exhaustive — a write endpoint either has an auth capability or has already
   # been judged public, so they never intersect.
@@ -32,7 +32,7 @@ rules:
   # auth, and **500 have no auth middleware at all** — the third group is exactly what this rule wants to
   # report, and `auth.public` has already excluded them.
   # To make it meaningful again, pick one (both need code changes; do not enable this entry on your own):
-  #   ① Tighten `crmeb-public-endpoint`: only judge public those with no auth middleware attached at all;
+  #   ① Tighten `thinkphp-public-endpoint`: only judge public those with no auth middleware attached at all;
   #     this needs a new predicate that can read `route_list.guards` (engine side).
   #   ② Turn it into a positive rule — **already delivered as `write-endpoint-with-optional-auth` below**:
   #     only report write endpoints "with an auth middleware whose argument is explicitly false (optional)";
@@ -128,7 +128,8 @@ rules:
     description: >-
       The table is annotated as containing personal information (phone number / national ID, etc.).
       The MVP only asks for a review; it does not judge whether encryption and masking are adequate.
-      (Note: the `pii` annotation is produced by fkb/php/crmeb.yaml; other projects have no such
+      (Note: the `pii` annotation is produced by FKB's column list — `thinkphp-pii` on the PHP side
+      (`phone` / `mobile` / `tel` / `idcard` / `email`, matching `x` and `*_x`); other stacks have no such
       annotation yet and will then be blocked by `rules_unavailable` rather than hard-reporting 0 hits.)
     severity: warning
     category: security
