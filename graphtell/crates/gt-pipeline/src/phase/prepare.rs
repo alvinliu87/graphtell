@@ -178,8 +178,21 @@ pub fn run(
                 ctx.ws.set_table_prefixes(prefixes);
             }
         }
-        for id in frameworks.iter().chain(projects.iter()) {
-            let Some(fk) = kb.by_id(id) else { continue };
+        // Authoritative symbol tables, under the same "does this knowledge apply" test as the lists above.
+        // The `apply_without_detection` arm is what makes a **framework-independent** loader possible: `nginx`
+        // used to have to hide inside `thinkphp6.yaml` purely because an unconditional FKB was never
+        // "detected" and therefore never had its loaders run — which cost every other framework the ability
+        // to read nginx config at all.
+        for fk in kb.all() {
+            if fk.language != sub.language && fk.language.0 != "*" {
+                continue;
+            }
+            let applies = frameworks.contains(&fk.id)
+                || projects.contains(&fk.id)
+                || fk.apply_without_detection;
+            if !applies {
+                continue;
+            }
             run_loaders(ctx, fk, sub, &project_root, fs, parsers, &phase, techstack);
         }
 

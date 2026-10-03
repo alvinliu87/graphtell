@@ -218,13 +218,8 @@ loaders:
         paths: ["app/*/config/route.php"]
         key: middleware
         scope: per_app
-  # Nginx config
-  - id: nginx-config
-    table: nginx
-    from:
-      kind: builtin
-      name: nginx_config
-      params: {}
+  # Nginx config is **not** declared here any more: it is deployment infrastructure, not a ThinkPHP concern,
+  # and it now lives in `fkb/universal/nginx.yaml`, where every stack gets it — Laravel included.
 
 # ---------------------------------------------------------------- route-guard recognition
 # Fully declarative: how middleware is attached, how verbs are mapped and what the group-prefix method is
@@ -548,28 +543,8 @@ rules:
           confidence: 0.7
 
   # ===== P5 Synthesize：ConfigKey =====
-  - id: tp6-sys-config
-    phase: Synthesize
-    selector:
-      kind: call
-      # Cross-framework spellings such as `config()` / `Cache::get()` were factored into `fkb/php/common.yaml`
-      # (`php-common-config`). Only CRMEB's own `sys_config` stays here.
-      callee: "sys_config|sys_config_all"
-    binding:
-      - Synthesize:
-          node: ConfigKey
-          identity:
-            kind: Named
-            value: { arg: 0 }
-          fields:
-            - name: storage
-              from_symbol_table: { table: config_keys, field: storage }
-            - name: value_type
-              from_symbol_table: { table: config_keys, field: value_type }
-            - name: mutable
-              from_symbol_table: { table: config_keys, field: mutable }
-          link: { kind: ReadsConfig, direction: incoming }
-          confidence: 0.9
+  # `sys_config` is **not** here any more — it is CRMEB's own function, not a ThinkPHP one, so it moved to
+  # `fkb/projects/crmeb.yaml` (project scope), where only CRMEB pays for it.
 
   # ===== P5 Synthesize: Cache =====
   # Factored into the language-common layer `fkb/php/common.yaml` (`php-common-cache-*` rules), effective for

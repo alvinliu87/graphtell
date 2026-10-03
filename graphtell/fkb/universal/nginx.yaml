@@ -1,0 +1,35 @@
+# nginx — web-server configuration, as knowledge of its own.
+#
+# Why this file exists: the loader used to sit inside `fkb/php/thinkphp6.yaml`, where it made no sense —
+# nginx has nothing to do with ThinkPHP. The cost was concrete: `laravel.yaml` had no such loader, so **no
+# Laravel project could read nginx config at all**, even though Laravel apps are deployed behind nginx just as
+# often.
+#
+# Why it can be unconditional: `nginx_config` scans for `.conf` files and only records the ones that actually
+# contain `server_name` / `root` / `location`, so a project with no nginx config in the tree simply produces
+# nothing. (`scan_text_files` already skips `vendor` / `node_modules` / `target` and caps the scan, so opening
+# this up to every project costs nothing.)
+#
+# Why `apply_without_detection`: there is no detector that could fire. Nginx config lives at whatever path the
+# project chose, and it is not a dependency of anything — it is deployment infrastructure. Unconditional used
+# to mean "your `loaders` never run", which is exactly why this had to be parked in a framework file; that
+# restriction is gone, so framework-independent loaders can live in a framework-independent file.
+#
+# `language: "*"` because nginx fronts every stack: PHP, Java, Node, Python.
+#
+# Deliberately no `side`: this file is loaded for every party, so any single value would be a lie.
+
+id: nginx
+display_name: Nginx
+language: "*"
+version_hint: "*"
+scope: framework
+apply_without_detection: true
+
+loaders:
+  - id: nginx-config
+    table: nginx
+    from:
+      kind: builtin
+      name: nginx_config
+      params: {}

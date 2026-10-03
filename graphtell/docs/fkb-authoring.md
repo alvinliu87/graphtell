@@ -43,7 +43,8 @@ rules: [...]              # ★ core: this framework's extraction rules
 semantic_kinds: []        # "new semantic node kinds" introduced by this FKB (must be declared if not on the core list, §5.2)
 
 scope: framework          # framework (generic) | project (project-specific, loaded only when that project is recognized)
-apply_without_detection: false  # true = applies to all sub-projects of that language (for a "language-generic layer", no framework assumptions)
+apply_without_detection: false  # true = applies to every sub-project of that language — rules, loaders and the
+                                # three merged lists alike (for a "language-generic layer", no framework assumptions)
 exclude_globs: ["node_modules/**", "dist/**"]
 
 # Framework-specific conventions (those with no framework assumptions go in the language-generic layer; strong assumptions stay here):

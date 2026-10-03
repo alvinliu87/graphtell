@@ -10,15 +10,14 @@
 # framework assumptions (table access `Db::name` vs `DB::table`, route handler shape, event registration style…)
 # stay in each framework's own FKB, so framework A's knowledge is never used to explain framework B's code.
 #
-# Important (loader trap): this file **only contributes `rules` plus `external_calls` / `tx_calls`**; it runs no
-# `loaders`. The reason is that an `apply_without_detection` FKB is never "detected", and the pipeline (the assembly
-# stage in `prepare.rs`) only calls `run_loaders` for "detected frameworks / projects".
-# So `builtin` loaders (such as `php_db_schema` / `php_config_keys` / `php_migration_schema`) **must be written in
-# each framework-specific YAML** and cannot be factored into this file — otherwise the loader silently never runs and
-# its symbol table (schema / config_keys / migration columns) comes up entirely empty, with the related rules
-# silently reporting 0 hits.
-# If you want to "de-duplicate" their `params`, each framework YAML declares its own copy (identical values but
-# independent); do not try to move them here.
+# On `loaders`: an unconditional FKB's loaders **do** run now, so a framework-independent loader can live here
+# (or in `fkb/universal/`) — that is how `nginx` stopped having to hide inside `thinkphp6.yaml`.
+#
+# The loaders still listed in the framework files are there for a different reason: their `params` are
+# framework-specific paths and spellings. `php_db_schema` needs to know the framework's table receivers
+# (`Db::name` vs `DB::table`), `php_migration_schema` needs the migrations directory, `php_config_keys` the
+# config layout — values that differ per framework, so each declares its own copy. Factoring them out would
+# need the params to become variables, which the schema does not have yet.
 
 id: php-common
 display_name: PHP common

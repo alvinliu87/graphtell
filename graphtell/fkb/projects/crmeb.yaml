@@ -39,6 +39,32 @@ magic_delegation:
   confidence: 0.7
 
 rules:
+  # ===== P5 Synthesize: ConfigKey =====
+  # CRMEB's own `sys_config()` / `sys_config_all()`, which read the store's settings table.
+  #
+  # This is a **project** convention, not a ThinkPHP one — it used to live in `fkb/php/thinkphp6.yaml` (its
+  # comment even said so), which meant every ThinkPHP project carried a rule that only CRMEB can ever hit.
+  - id: crmeb-sys-config
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "sys_config|sys_config_all"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value: { arg: 0 }
+          fields:
+            - name: storage
+              from_symbol_table: { table: config_keys, field: storage }
+            - name: value_type
+              from_symbol_table: { table: config_keys, field: value_type }
+            - name: mutable
+              from_symbol_table: { table: config_keys, field: mutable }
+          link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.9
+
   # ===== P5 Synthesize: scheduled tasks (Schedule) =====
   - id: crmeb-schedule-task
     phase: Synthesize

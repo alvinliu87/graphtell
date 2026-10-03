@@ -15,7 +15,8 @@
 # Content note: `db_verbs` (Eloquent's save/find → WritesDb/ReadsDb) deliberately stays in `laravel.yaml`.
 # It is single-valued — the pipeline takes the first FKB that declares it — so moving it here would make
 # every Laravel project depend on this file being recognised, for a field that is really a framework-level
-# API convention. What lives here is the part that is genuinely the component's: its transaction spelling.
+# API convention. Everything **mergeable** (rules and loaders) is here: the Query Builder, the Eloquent
+# conventions, the migrations and the `schema` symbol table.
 #
 # `tx_calls` is collected only from knowledge that **applies to the project** — recognised frameworks and
 # projects, plus the unconditional `apply_without_detection` language layer. So this entry really is gated:
@@ -44,3 +45,118 @@ detectors:
 # i.e. in the layer applied to every PHP project whether or not it has Laravel's DB facade.
 tx_calls:
   - "DB::transaction"
+
+loaders:
+  # Table names reachable through the Query Builder / Eloquent receivers.
+  - id: illuminate-db-schema
+    table: schema
+    from:
+      kind: builtin
+      name: php_db_schema
+      params:
+        table_receivers: ["Db", "\\Db", "Query", "Model"]
+        table_methods: ["name", "table"]
+
+  # Database migrations (`database/migrations/*.php`) — **the main source of Laravel columns**.
+  # PHP ORM models do not declare fields; columns only exist in migrations. And `$table->string('email')`
+  # sits inside a closure whose owner is the closure, so FKB cannot tell which table it belongs to — only
+  # the loader can parse it directly.
+  # Writes to the same `schema` table as `php_db_schema` above; the loader takes a **union** internally, so
+  # load order does not matter.
+  - id: illuminate-migration-schema
+    table: schema
+    from:
+      kind: builtin
+      name: php_migration_schema
+      params:
+        paths: ["database/migrations"]
+        extensions: ["php"]
+
+# `ForeignKey` is a semantic edge (table -> table: a real business-resource dependency), `References` a
+# bridge edge (model -> model: code nodes at both ends). Both used to be declared by `laravel.yaml`.
+semantic_edge_kinds: [ForeignKey]
+bridge_edge_kinds: [References]
+
+rules:
+  # ===== P5 Synthesize: Table =====
+  # `DB::table('product_flat')` — measured 200+ places in bagisto.
+  - id: illuminate-db-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "DB::table"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: ReadsDb, direction: incoming }
+          confidence: 0.9
+
+  # Eloquent convention: `class ProductGroupedProduct extends Model` -> `product_grouped_products`.
+  # Same algorithm as ThinkPHP's Model convention (snake_plural), only the base class differs.
+  - id: illuminate-model-table
+    phase: Synthesize
+    selector:
+      kind: inheritance
+      base: "Illuminate\\Database\\Eloquent\\Model|Model"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              self: true
+              transform: { snake_plural: true, strip_namespace: true }
+              normalize:
+                - singularize
+                - trim
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.6
+
+  # ===== P5 Synthesize: model relations =====
+  # `public function posts() { return $this->hasMany(Post::class); }`
+  #
+  # Laravel / ThinkPHP **often declare only one side** (the common case being `User hasMany Post` with no
+  # reverse `belongsTo`), so both sides are built here; better redundant than missing. (TypeORM on the Node
+  # side is different: its `@ManyToOne` / `@OneToMany` usually come in pairs.)
+  #
+  # The target model comes from arg0's `Post::class`; if unavailable it is skipped silently (`morphTo()` with
+  # no argument is exactly that case). Relation methods are defined **inside the method body**, and owner_fqn
+  # is `App\Models\User::posts`, so `owner_class` resolves to the model class rather than the relation method.
+  - id: illuminate-model-relation
+    phase: Synthesize
+    selector:
+      kind: call
+      # Only `$this->` receivers are recognised: relations are always defined in model instance methods, and a
+      # bare method name would misfire on ordinary methods of the same name.
+      callee: "$this->hasOne|$this->hasMany|$this->belongsTo|$this->belongsToMany|$this->hasOneThrough|$this->hasManyThrough|$this->morphOne|$this->morphMany|$this->morphToMany|$this->morphedByMany|$this->morphTo"
+    binding:
+      - Link:
+          kind: References
+          from: { owner_class: true, resolve: class_const }
+          to: { arg: 0, resolve: class_const, require_class: true }
+          confidence: 0.75
+
+  # ===== P6 AnnotatePost: model relation -> table-level foreign key =====
+  # Project "model -> model" down to "table -> table": each end walks one `MapsTo` hop to its own table.
+  # One-to-many (a model with N relations produces N foreign-key edges); if one end has no `Table`, that
+  # entry is skipped.
+  - id: illuminate-table-foreign-key
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Class
+    binding:
+      - Project:
+          kind: ForeignKey
+          along: References
+          from: [MapsTo]
+          to: [MapsTo]
+          confidence: 0.7
