@@ -1,0 +1,65 @@
+# SQLAlchemy — a **library**-level FKB (not a framework)
+#
+# Why this is separate from `fastapi.yaml`: SQLAlchemy is a standalone ORM, independent of FastAPI — it is
+# used equally by Flask, by Django-raw-SQL projects, and by standalone scripts. The FastAPI FKB should only
+# carry FastAPI's own conventions (`@app.get`, `os.environ`, `Depends`); the declarative-table mapping belongs
+# to SQLAlchemy itself. Splitting it means a Flask+SQLAlchemy project gets the same `Table` + `MapsTo` semantics
+# without FastAPI ever being detected — and a FastAPI project that does not use SQLAlchemy no longer gets fake
+# tables from `__tablename__` (the same "only parse what you actually use" principle as Laravel's
+# `illuminate/database` split).
+#
+# Detection: a project that really uses SQLAlchemy names it in requirements.txt / pyproject.toml.
+
+id: sqlalchemy
+display_name: SQLAlchemy
+language: python
+version_hint: "1.4+ / 2.0+"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: requirements.txt
+    dependency: "sqlalchemy"
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: pyproject.toml
+    dependency: "sqlalchemy"
+    confidence: 0.9
+
+exclude_globs:
+  - "__pycache__/**"
+  - "*/__pycache__/**"
+  - "*/.venv/**"
+  - "*/venv/**"
+
+rules:
+  # ===== P6 AnnotatePost: Table (SQLAlchemy declarative mapping) =====
+  # `class UserModel(Base): __tablename__ = "users"` — the table mapping is written in a **class attribute** with no
+  # call site to go on, so this goes through P6's **graph-node selector** (rather than the `kind: call` selector):
+  #   1. the parser registers a literal assignment inside a class body as a Property declaration (language-neutral
+  #      modelling, the same mechanism as PHP class properties — it does not know what __tablename__ is);
+  #   2. P3 records the property value on the **class node** (`property_of(class, "__tablename__")`);
+  #   3. here `HasProperty` matches it and `property` reads the value — the SQLAlchemy knowledge lives only in this
+  #      YAML, not in the parser or the kernel.
+  - id: sqlalchemy-table
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Class
+      where:
+        - has_property: "__tablename__"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              property: "__tablename__"
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          # Model class -> table (MapsTo, same as Spring's `@TableName`)
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.85

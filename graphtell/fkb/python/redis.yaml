@@ -1,0 +1,71 @@
+# Redis (redis-py) — a **library**-level FKB (not a framework)
+#
+# Why this is separate from `fastapi.yaml`: the `redis-py` client is a standalone library, not part of FastAPI.
+# The cache read/write semantics (`Cache` + `ReadsCache` / `WritesCache`) should be contributed by the Redis
+# library itself, so any Python project that uses redis — Flask, FastAPI, or a standalone worker — gets the same
+# cache nodes. FastAPI's FKB keeps only its own conventions. This mirrors the Java split where `spring-cache`
+# carries the Cache node kind rather than each framework redeclaring it.
+#
+# Detection: a project that really uses redis names `redis` (or `redis-py`) in requirements.txt / pyproject.toml.
+
+id: redis
+display_name: Redis (redis-py)
+language: python
+version_hint: "4.x / 5.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: requirements.txt
+    dependency: "redis"
+    confidence: 0.95
+  - kind: manifest_dependency
+    manifest: pyproject.toml
+    dependency: "redis"
+    confidence: 0.9
+
+exclude_globs:
+  - "__pycache__/**"
+  - "*/__pycache__/**"
+  - "*/.venv/**"
+  - "*/venv/**"
+
+rules:
+  # ===== P5 Synthesize: Cache (Redis) =====
+  # Narrowed by receiver variable name: a bare `get` / `set` would hit the same-named method on every object.
+  - id: redis-cache-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "cache::get|redis_client::get|redis::get|cache_client::get"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.8
+
+  - id: redis-cache-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "cache::set|redis_client::set|redis::set|cache_client::set"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.8

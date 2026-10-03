@@ -36,6 +36,8 @@ dependencies = [
     "fastapi>=0.100",
     "uvicorn",
     "celery>=5.3",
+    "sqlalchemy>=2.0",
+    "redis>=5.0",
 ]
 "#,
     )

@@ -968,7 +968,7 @@ def remove_order():
     /// table mapping being recognised.
     ///
     /// Note this contains **no** ORM knowledge: the parser only knows "class attribute = literal"; reading
-    /// `__tablename__` as a table name is left entirely to FKB (see fkb/python/fastapi.yaml).
+    /// `__tablename__` as a table name is left entirely to FKB (see fkb/python/sqlalchemy.yaml).
     #[test]
     fn class_body_literal_assignment_becomes_property() {
         let facts = parse_src(
