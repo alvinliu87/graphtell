@@ -17,7 +17,7 @@ use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
 use gt_adapter_parser::DefaultParserRegistry;
 use gt_adapter_php::PhpTechStackAdapter;
 use gt_adapter_sqlite::SqliteStore;
-use gt_adapter_techstack::DefaultMarkerProvider;
+use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};
 use gt_domain::model::{Project, ProjectConfig};
 use gt_domain::port::{
     DefaultTechStackRegistry, FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider,
@@ -104,7 +104,8 @@ impl TestInfra {
             parsers: DefaultParserRegistry::new(),
             kb,
             techstack: DefaultTechStackRegistry::new()
-                .register(Box::new(PhpTechStackAdapter::new())),
+                .register(Box::new(PhpTechStackAdapter::new()))
+                .register(Box::new(JsTechStackAdapter::new())),
             markers: DefaultMarkerProvider::new(),
             store,
         }

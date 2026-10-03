@@ -39,6 +39,10 @@ pub enum AdapterFact {
 }
 
 /// A single tech-stack's prepare-time knowledge for one language.
+///
+/// Every method except [`TechStackAdapter::language`] has a neutral default, so an adapter only
+/// implements the conventions its own ecosystem actually has (mirrors `LanguageParser`, where
+/// `member_separator` / `manifest_files` / `exclude_dirs` are all defaulted).
 pub trait TechStackAdapter: Send + Sync {
     /// The language this adapter is responsible for.
     fn language(&self) -> Language;
@@ -46,23 +50,27 @@ pub trait TechStackAdapter: Send + Sync {
     /// PSR-4 (or equivalent) namespace → directory roots for this ecosystem, derived from its
     /// package manifest (e.g. composer.json `autoload.psr-4`). The kernel never assumes a hard-coded
     /// directory name like `Http/Controllers` / `controller`.
-    fn manifest_namespaces(&self, sub_root: &Path, project_root: &Path) -> Vec<(String, PathBuf)>;
+    fn manifest_namespaces(&self, _sub_root: &Path, _project_root: &Path) -> Vec<(String, PathBuf)> {
+        Vec::new()
+    }
 
     /// Read an authoritative value from a project manifest / config file (e.g. composer.json PSR-4,
     /// a PHP `return [...]` config) by a dotted pointer.
     fn read_manifest(
         &self,
-        sub: &SubProject,
-        project_root: &Path,
-        manifest: &str,
-        pointer: &str,
-        fs: &dyn FileSystem,
-        parsers: &dyn ParserRegistry,
-    ) -> Option<(String, String)>;
+        _sub: &SubProject,
+        _project_root: &Path,
+        _manifest: &str,
+        _pointer: &str,
+        _fs: &dyn FileSystem,
+        _parsers: &dyn ParserRegistry,
+    ) -> Option<(String, String)> {
+        None
+    }
 
     /// Enrich a `method_ref` spec with this stack's namespace / app-module knowledge (learned from the
     /// real class FQNs on the graph, not from a hard-coded controller directory name).
-    fn enrich_method_ref(&self, spec: &mut MethodRefSpec, sub_root: &Path, project_root: &Path);
+    fn enrich_method_ref(&self, _spec: &mut MethodRefSpec, _sub_root: &Path, _project_root: &Path) {}
 
     /// Run a named built-in loader and return the facts to persist.
     ///
@@ -73,14 +81,26 @@ pub trait TechStackAdapter: Send + Sync {
     /// can strip it from table names before returning a `Schema` fact.
     fn load(
         &self,
-        loader_id: &str,
-        params: &serde_json::Value,
-        sub: &SubProject,
-        project_root: &Path,
-        fs: &dyn FileSystem,
-        parsers: &dyn ParserRegistry,
-        table_prefixes: &[String],
-    ) -> Result<Vec<AdapterFact>>;
+        _loader_id: &str,
+        _params: &serde_json::Value,
+        _sub: &SubProject,
+        _project_root: &Path,
+        _fs: &dyn FileSystem,
+        _parsers: &dyn ParserRegistry,
+        _table_prefixes: &[String],
+    ) -> Result<Vec<AdapterFact>> {
+        Ok(Vec::new())
+    }
+
+    /// Recognise a sub-project's **type** from this ecosystem's own config, for when the directory
+    /// name alone is not conclusive (e.g. a JS project whose `package.json` declares `react-native`
+    /// → `mobile`, or uni-app plus a `uni-mp-*` compiler → `mini-program`).
+    ///
+    /// This is only the **fallback**: the kernel first tries its language-agnostic directory-name
+    /// heuristics. Returning `None` means "this stack cannot tell" and the kernel keeps the bare tier.
+    fn sub_project_kind(&self, _dir: &Path, _fs: &dyn FileSystem) -> Option<String> {
+        None
+    }
 }
 
 /// Factory port: resolve the adapter that matches a sub-project's language.

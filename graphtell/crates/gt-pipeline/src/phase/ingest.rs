@@ -9,7 +9,9 @@ use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
     Language, NewSourceFile, NewSubProject, Project, ProjectId, SourceFile, SubProject,
 };
-use gt_domain::port::{FileScanner, Marker, MarkerProvider, ParserRegistry, ScanRequest};
+use gt_domain::port::{
+    FileScanner, FileSystem, Marker, MarkerProvider, ParserRegistry, ScanRequest, TechStackRegistry,
+};
 use tracing::info;
 
 /// The product of the Ingest phase.
@@ -46,8 +48,9 @@ pub fn run(
     project: &Project,
     scanner: &dyn FileScanner,
     parsers: &dyn ParserRegistry,
-    fs: &dyn gt_domain::port::FileSystem,
+    fs: &dyn FileSystem,
     markers: &dyn MarkerProvider,
+    techstack: &dyn TechStackRegistry,
 ) -> Result<IngestResult> {
     // Sub-project markers come from the tech-stack registration (`MarkerProvider`), not from a hard-coded
     // kernel table: which manifest file marks which language is tech-stack knowledge.
@@ -64,7 +67,7 @@ pub fn run(
         }
         // On top of "frontend / backend", refine the sub-project **type** from the directory name
         // (mini-program / admin console / mobile / API / Worker …), so the role string looks like `frontend:admin`.
-        let role = refine_role(&tier, dir);
+        let role = refine_role(&tier, dir, &Language::new(&language), techstack, fs);
         subs.push(NewSubProject {
             project_id: project.id,
             name: sub_name(project.id, &project.root_path, dir),
@@ -196,10 +199,16 @@ fn marker_of(path: &Path, known: &[Marker]) -> (String, String, String) {
 /// Returns a role string of the form `tier:kind` (`frontend:admin`, `backend:worker` …); when a concrete type cannot
 /// be recognised it falls back to bare `frontend` / `backend`, keeping backward compatibility with old data.
 /// Other tiers (`library` / `unknown`) are returned as-is.
-fn refine_role(tier: &str, dir: &Path) -> String {
-    let kind: Option<&str> = match tier {
-        "frontend" => refine_frontend_kind(dir),
-        "backend" => refine_backend_kind(dir),
+fn refine_role(
+    tier: &str,
+    dir: &Path,
+    language: &Language,
+    techstack: &dyn TechStackRegistry,
+    fs: &dyn FileSystem,
+) -> String {
+    let kind: Option<String> = match tier {
+        "frontend" => refine_frontend_kind(dir, language, techstack, fs),
+        "backend" => refine_backend_kind(dir).map(|k| k.to_string()),
         _ => return tier.to_string(),
     };
     match kind {
@@ -208,8 +217,13 @@ fn refine_role(tier: &str, dir: &Path) -> String {
     }
 }
 
-/// Frontend sub-project type: directory name first, config as fallback.
-fn refine_frontend_kind(dir: &Path) -> Option<&'static str> {
+/// Frontend sub-project type: directory name first, ecosystem config as fallback.
+fn refine_frontend_kind(
+    dir: &Path,
+    language: &Language,
+    techstack: &dyn TechStackRegistry,
+    fs: &dyn FileSystem,
+) -> Option<String> {
     let rel = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -229,10 +243,10 @@ fn refine_frontend_kind(dir: &Path) -> Option<&'static str> {
         || has("wechat")
         || has("alipay")
     {
-        return Some("mini-program");
+        return Some("mini-program".to_string());
     }
     if has("admin") || has("manage") || has("console") || has("dashboard") || has("cms") {
-        return Some("admin");
+        return Some("admin".to_string());
     }
     if has("mobile")
         || has("react-native")
@@ -241,10 +255,13 @@ fn refine_frontend_kind(dir: &Path) -> Option<&'static str> {
         || has("android")
         || has("h5")
     {
-        return Some("mobile");
+        return Some("mobile".to_string());
     }
-    // 2) Config fallback: uni-app / React Native etc.
-    detect_frontend_kind_via_config(dir)
+    // 2) Config fallback: ecosystem-specific (`package.json` / `manifest.json` for JS, …). Which package
+    // names mean "mini-program" is tech-stack knowledge, so it lives in the tech-stack adapter.
+    techstack
+        .adapter_for(language)
+        .and_then(|a| a.sub_project_kind(dir, fs))
 }
 
 /// Backend sub-project type: a directory-name hit suffices (backend type differences are mostly directory-based, config not read for now).
@@ -275,69 +292,6 @@ fn refine_backend_kind(dir: &Path) -> Option<&'static str> {
         return Some("admin");
     }
     None
-}
-
-/// Read `package.json` and similar config to recognise the frontend framework, covering misses caused by
-/// "irregular directory naming". Mainly covers:
-/// - React Native -> `mobile`
-/// - uni-app: if it directly depends on a `uni-mp-*` compiler package, or `manifest.json` declares an mp-* mini-program target, then `mini-program`;
-///   otherwise it is just ordinary web and falls back to the default `frontend` (no forced mini-program tag).
-fn detect_frontend_kind_via_config(dir: &Path) -> Option<&'static str> {
-    let pkg = read_json(&dir.join("package.json"))?;
-    let deps = collect_deps(&pkg);
-
-    // React Native -> mobile
-    if deps.iter().any(|d| d == "react-native" || d.contains("react-native")) {
-        return Some("mobile");
-    }
-
-    // uni-app family
-    let is_uni = deps.iter().any(|d| d.contains("uni-app") || d.contains("@dcloudio/uni"));
-    if is_uni {
-        // Directly depends on a concrete mini-program-platform compiler package
-        if deps.iter().any(|d| d.contains("uni-mp-")) {
-            return Some("mini-program");
-        }
-        // Otherwise check whether manifest.json declares an mp-* target
-        for m in [dir.join("manifest.json"), dir.join("src").join("manifest.json")] {
-            if let Some(mani) = read_json(&m) {
-                if manifest_has_mp_target(&mani) {
-                    return Some("mini-program");
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Merge the key lists of dependencies / devDependencies / peerDependencies.
-fn collect_deps(pkg: &serde_json::Value) -> Vec<String> {
-    let mut out = Vec::new();
-    for field in ["dependencies", "devDependencies", "peerDependencies"] {
-        if let Some(obj) = pkg.get(field).and_then(|v| v.as_object()) {
-            for k in obj.keys() {
-                out.push(k.clone());
-            }
-        }
-    }
-    out
-}
-
-/// Whether `manifest.json` (uni-app) declares any mini-program compiler target (mp-weixin / mp-alipay …).
-fn manifest_has_mp_target(mani: &serde_json::Value) -> bool {
-    let lower = mani.to_string().to_ascii_lowercase();
-    [
-        "mp-weixin", "mp-alipay", "mp-toutiao", "mp-baidu", "mp-qq", "mp-360",
-        "mp-kuaishou", "mp-jd", "mp-lark", "mp-xhs", "mp-qsn",
-    ]
-    .iter()
-    .any(|k| lower.contains(k))
-}
-
-/// Safely read and parse a JSON file; return None when missing / parse fails.
-fn read_json(path: &Path) -> Option<serde_json::Value> {
-    let s = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&s).ok()
 }
 
 fn sub_name(_project: ProjectId, root: &Path, dir: &Path) -> String {
@@ -378,31 +332,55 @@ pub fn validate_root(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    use gt_adapter_fs::StdFileSystem;
+    use gt_adapter_techstack::JsTechStackAdapter;
+    use gt_domain::port::DefaultTechStackRegistry;
+
+    /// `refine_role` consults the tech-stack adapter as a fallback, so the tests inject the JS adapter
+    /// (recognition of `react-native` / uni-app lives in `gt-adapter-techstack`, not in the kernel).
+    fn js() -> (DefaultTechStackRegistry, StdFileSystem, Language) {
+        (
+            DefaultTechStackRegistry::new().register(Box::new(JsTechStackAdapter::new())),
+            StdFileSystem::new(),
+            Language::new(Language::JAVASCRIPT),
+        )
+    }
+
+    fn role(tier: &str, dir: &Path) -> String {
+        let (reg, fs, lang) = js();
+        refine_role(tier, dir, &lang, &reg, &fs)
+    }
+
     #[test]
     fn refines_frontend_role_by_dir_name() {
-        assert_eq!(
-            refine_role("frontend", Path::new("/p/miniprogram")),
-            "frontend:mini-program"
-        );
-        assert_eq!(refine_role("frontend", Path::new("/p/admin")), "frontend:admin");
-        assert_eq!(
-            refine_role("frontend", Path::new("/p/mobile-app")),
-            "frontend:mobile"
-        );
-        assert_eq!(refine_role("frontend", Path::new("/p/web")), "frontend");
+        assert_eq!(role("frontend", Path::new("/p/miniprogram")), "frontend:mini-program");
+        assert_eq!(role("frontend", Path::new("/p/admin")), "frontend:admin");
+        assert_eq!(role("frontend", Path::new("/p/mobile-app")), "frontend:mobile");
+        assert_eq!(role("frontend", Path::new("/p/web")), "frontend");
     }
 
     #[test]
     fn refines_backend_role_by_dir_name() {
-        assert_eq!(refine_role("backend", Path::new("/p/admin")), "backend:admin");
-        assert_eq!(refine_role("backend", Path::new("/p/worker")), "backend:worker");
-        assert_eq!(refine_role("backend", Path::new("/p/api")), "backend");
+        assert_eq!(role("backend", Path::new("/p/admin")), "backend:admin");
+        assert_eq!(role("backend", Path::new("/p/worker")), "backend:worker");
+        assert_eq!(role("backend", Path::new("/p/api")), "backend");
     }
 
     #[test]
     fn passes_through_non_tier_roles() {
-        assert_eq!(refine_role("library", Path::new("/p/lib")), "library");
-        assert_eq!(refine_role("unknown", Path::new("/p/x")), "unknown");
+        assert_eq!(role("library", Path::new("/p/lib")), "library");
+        assert_eq!(role("unknown", Path::new("/p/x")), "unknown");
+    }
+
+    /// Without a registered adapter the kernel must degrade gracefully (bare tier, no panic).
+    #[test]
+    fn falls_back_to_bare_tier_without_adapter() {
+        let lang = Language::new(Language::JAVASCRIPT);
+        let empty = DefaultTechStackRegistry::new();
+        assert_eq!(
+            refine_role("frontend", Path::new("/p/web"), &lang, &empty, &StdFileSystem::new()),
+            "frontend"
+        );
     }
 
     #[test]
@@ -420,7 +398,7 @@ mod tests {
             r#"{"mp-weixin":{"appid":"wx123"},"mp-alipay":{}}"#,
         )
         .unwrap();
-        assert_eq!(refine_role("frontend", &dir), "frontend:mini-program");
+        assert_eq!(role("frontend", &dir), "frontend:mini-program");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -435,7 +413,7 @@ mod tests {
         )
         .unwrap();
         // No mp-* target declared -> ordinary web, fall back to bare frontend
-        assert_eq!(refine_role("frontend", &dir), "frontend");
+        assert_eq!(role("frontend", &dir), "frontend");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -449,7 +427,7 @@ mod tests {
             r#"{"dependencies":{"react-native":"^0.72.0","react":"^18.2.0"}}"#,
         )
         .unwrap();
-        assert_eq!(refine_role("frontend", &dir), "frontend:mobile");
+        assert_eq!(role("frontend", &dir), "frontend:mobile");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

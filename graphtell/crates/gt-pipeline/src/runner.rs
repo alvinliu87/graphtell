@@ -77,6 +77,7 @@ pub fn run(
         infra.parsers(),
         infra.fs(),
         infra.markers(),
+        infra.techstack(),
     )?;
     let subs: Vec<SubProject> = infra
         .projects()
