@@ -1,0 +1,47 @@
+# Python common recognition — applies to **every** Python project regardless of framework.
+#
+# Why `apply_without_detection`: `os.environ` / `os.getenv` is the Python standard library, used by FastAPI,
+# Flask, Django, and standalone scripts alike. It is not a framework and not a third-party package, so it
+# cannot (and should not) be "detected" — a Python project that reads env vars should always surface them as
+# ConfigKey nodes. Scoping this file to `language: python` (rather than the cross-language
+# `universal/common.yaml`, which uses `language: "*"`) keeps it from leaking into PHP / JS projects, which read
+# config differently (`$_ENV` / `getenv()` / `process.env`).
+#
+# Mirror of the `fkb/universal/common.yaml` pattern, narrowed to Python.
+
+id: python-common
+display_name: Python common recognition
+language: python
+version_hint: "*"
+side: backend
+scope: framework
+apply_without_detection: true
+
+exclude_globs:
+  - "__pycache__/**"
+  - "*/__pycache__/**"
+  - "*/.venv/**"
+  - "*/venv/**"
+
+rules:
+  # ===== P5 Synthesize: ConfigKey (env vars) =====
+  # `os.environ.get("SECRET_KEY")` / `os.getenv("SECRET_KEY")`.
+  # The parser keeps the full attribute chain (the receiver of `os.environ.get` is `os.environ`), so
+  # `os.environ::get` matches precisely and never misfires on `self.config.get(...)`.
+  - id: python-env-config
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "os.environ::get|os::getenv"
+    binding:
+      - Synthesize:
+          node: ConfigKey
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ReadsConfig, direction: incoming }
+          confidence: 0.85

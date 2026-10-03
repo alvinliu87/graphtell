@@ -166,28 +166,6 @@ rules:
             to_method: { owner_member: true }
           confidence: 0.9
 
-  # ===== P5 Synthesize: ConfigKey =====
-  # `os.environ.get("SECRET_KEY")` / `os.getenv("SECRET_KEY")`.
-  # The parser keeps the full attribute chain (the receiver of `os.environ.get` is `os.environ`), so `os.environ::get`
-  # matches precisely and never misfires on `self.config.get(...)`.
-  - id: fastapi-env-config
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "os.environ::get|os::getenv"
-    binding:
-      - Synthesize:
-          node: ConfigKey
-          identity:
-            kind: Named
-            value:
-              arg: 0
-              require_literal: true
-              normalize:
-                - trim
-          link: { kind: ReadsConfig, direction: incoming }
-          confidence: 0.85
-
   # ===== P5 Synthesize: dependency injection (Depends) =====
   # `def handler(db: Session = Depends(get_db))` — the dependency is written in a **parameter default**, not inside
   # the method body, so ordinary traversal cannot catch it. The parser records it as a call site and resolves `get_db`
