@@ -4,7 +4,7 @@
 # used equally by Flask, by Django-raw-SQL projects, and by standalone scripts. The FastAPI FKB should only
 # carry FastAPI's own conventions (`@app.get`, `os.environ`, `Depends`); the declarative-table mapping belongs
 # to SQLAlchemy itself. Splitting it means a Flask+SQLAlchemy project gets the same `Table` + `MapsTo` semantics
-# without FastAPI ever being detected — and a FastAPI project that does not use SQLAlchemy no longer gets fake
+# without FastAPI ever being detected — and a FastAPI project that does not use SQLAlchemy gets no fake
 # tables from `__tablename__` (the same "only parse what you actually use" principle as Laravel's
 # `illuminate/database` split).
 #

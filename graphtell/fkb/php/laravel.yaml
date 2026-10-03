@@ -100,8 +100,8 @@ entry_methods: ["handle", "__invoke"]
 
 # Eloquent / Query Builder CRUD verbs -> read / write classification (pairs with `MapsTo`; see P7 verb classification).
 #
-# Why Laravel needs this copy: previously only `thinkphp` declared `db_verbs`, so the three Laravel projects
-# (aimeos / bagisto / beikeshop) had **not a single `WritesDb` edge** — and `n1-query-in-loop` /
+# Why Laravel needs this copy: without its own declaration the three Laravel projects
+# (aimeos / bagisto / beikeshop) would have **not a single `WritesDb` edge** — and `n1-query-in-loop` /
 # `n1-write-in-loop` / `read-only-table` / `write-only-table` were all judged `rules_unavailable`
 # (measured on bagisto: 11 of 28 rules unavailable).
 #

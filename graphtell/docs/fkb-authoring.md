@@ -228,11 +228,10 @@ Why the namespace exists at all:
 2. **Ids are the dedup key.** Rules are collected from every applicable knowledge base (framework +
    language-common + project) and `dedup_rules` keeps the **first** id it sees, so two knowledge bases
    sharing an id means one of them is **silently dropped** — decided by concatenation order. That is a
-   real failure mode, not a hypothetical one: CRMEB's knowledge was once split across two files that
-   both declared `id: crmeb`, and the project-level one was shadowed whole — its rules (including
-   crontab routes -> `Schedule`) never ran until it was renamed. The two files have since been merged
-   into one (`fkb/projects/crmeb.yaml`), which is the better fix: **one product, one knowledge file,
-   one gate**.
+   real failure mode, not a hypothetical one: one product's knowledge split across two files that both
+   declare `id: crmeb` means the project-level one is shadowed whole — its rules (including crontab
+   routes -> `Schedule`) never run. Hence **one product, one knowledge file, one gate**
+   (`fkb/projects/crmeb.yaml`).
 
 Why it is added at load time rather than typed by hand: repeating it on forty rules is exactly how an
 author ends up forgetting it (the same argument that moved `side` to the top level, §5.1).
@@ -626,9 +625,8 @@ In these cases **FKB alone isn't enough**, and Rust must be touched:
    in `view_service.rs`, or the bridge-edge layout of `HandledBy` / `CallsHttp`). Declaring a new edge
    kind itself needs no code -- see §5.4.
 
-> Note: a **brand-new edge kind** used to require a line in `SEMANTIC` / `BRIDGE` in `kinds.rs`. That
-> is no longer true -- declare `semantic_edge_kinds` / `bridge_edge_kinds` at the FKB top level
-> instead (§5.4). Only *dedicated rendering* for such a kind still needs an engine change.
+> Note: a **brand-new edge kind** needs no line in `SEMANTIC` / `BRIDGE` in `kinds.rs` -- declare
+> `semantic_edge_kinds` / `bridge_edge_kinds` at the FKB top level instead (§5.4). Only *dedicated rendering* for such a kind still needs an engine change.
 
 Most real frameworks (Spring / Laravel / Django / Rails / Express …) map onto the **existing**
 Cache/Event/Queue/HttpContract/Table/ConfigKey kinds, so about 90% of FKB can be done with **zero

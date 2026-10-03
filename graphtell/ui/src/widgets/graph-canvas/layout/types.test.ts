@@ -484,7 +484,7 @@ describe('radialLayout: resource perspective (star)', () => {
     expect(crossings(r.edges)).toBe(0);
     expect(segmentsThroughNodes(r.edges, r.nodes)).toBe(0);
 
-    // Hop count is no longer expressed by radius, so adjacency must compensate: the inner ring (direct consumers) is ordered entirely before the outer ring (traced back)
+    // Hop count is not expressed by radius, so adjacency must compensate: the inner ring (direct consumers) is ordered entirely before the outer ring (traced back)
     const yOf = (n: LayoutNode) => r.nodes.find((x) => x.id === n.id)!.y;
     expect(Math.max(...rings[0].map(yOf))).toBeLessThan(Math.min(...rings[1].map(yOf)));
   });

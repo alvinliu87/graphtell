@@ -32,11 +32,10 @@ pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 /// Locate the CRMEB sample under `dir/samples`.
 ///
 /// The real layout is **classified by tech stack over several levels** (e.g.
-/// `samples/php-projects/thinkphp/CRMEB`), and the directory name may or may not carry a `-master` suffix. An early
-/// version only matched `samples/*/CRMEB-master` (one level + suffix), which did not fit the real layout — the
-/// sample was on disk yet never matched, so the tests silently skipped and CI was all green with zero coverage.
-/// This now does a **bounded-depth** recursive search under `samples/` for a directory named `CRMEB` /
-/// `CRMEB-master`, no longer depending on a specific depth or naming.
+/// `samples/php-projects/thinkphp/CRMEB`), and the directory name may or may not carry a `-master` suffix. So it
+/// does a **bounded-depth** recursive search under `samples/` for a directory named `CRMEB` / `CRMEB-master`,
+/// independent of a specific depth or naming (a fixed pattern that misses the real layout makes the tests
+/// silently skip — CI all green with zero coverage).
 fn under_samples(dir: &Path) -> Option<PathBuf> {
     /// Search at most `depth` levels under `dir`; return the lexicographically first hit (for a stable result).
     fn search(dir: &Path, depth: usize) -> Option<PathBuf> {

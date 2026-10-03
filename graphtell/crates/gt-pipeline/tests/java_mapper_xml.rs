@@ -4,7 +4,7 @@
 //! framework detection (`fkb/java/mybatis.yaml`'s detectors). Two things must stay true:
 //! * a project that **is** recognised keeps all of its table semantics — these come from nowhere else, since the
 //!   mapper XML is not source code and the language parser never touches it;
-//! * a project that is **not** recognised no longer gets them, even with a mapper XML lying in its resources —
+//! * a project that is **not** recognised must not get them, even with a mapper XML lying in its resources —
 //!   which is exactly the point: whether a library applies is knowledge, not something the kernel decides.
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};

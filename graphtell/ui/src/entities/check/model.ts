@@ -138,10 +138,10 @@ export const SEVERITY_RANK: Record<Severity, number> = {
  * Severity display names: the table column tag, the stat cards and the filter
  * all share **this single source**.
  *
- * These tiers used to be written twice — once in CheckPage and once in RulesPage
- * — so they inevitably drifted: the stat cards listed 4 tiers while the list's
- * severity filter only listed the last 3, making "critical" visible only under
- * "All" and unfilterable. The truth about how many tiers exist lives in the
+ * Writing these tiers twice — once in CheckPage and once in RulesPage — makes
+ * them drift: the stat cards list 4 tiers while the list's severity filter lists
+ * only the last 3, making "critical" visible only under "All" and unfilterable.
+ * The truth about how many tiers exist lives in the
  * `Severity` type plus this map; any second list is a future inconsistency.
  */
 export const SEVERITY_LABEL: Record<Severity, string> = {

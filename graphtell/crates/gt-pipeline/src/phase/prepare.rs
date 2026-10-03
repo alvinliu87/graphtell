@@ -101,11 +101,9 @@ pub fn run(
         // These three lists are collected only from knowledge that **actually applies** to this sub-project:
         // a recognised framework / project, or the unconditional language layer (`apply_without_detection`).
         //
-        // They used to be merged from **every** FKB of the language with no detector consulted, so a library
-        // contributed its entries to projects that never went near it — `GuzzleHttp\Client::request` landed
-        // in every PHP project's outbound-call list, `Db::transaction` in Laravel's. That is what let the
-        // entries drift into a language-common file in the first place, and it is what made moving them out
-        // to their owning library a no-op.
+        // Merging them from **every** FKB of the language with no detector consulted would let a library
+        // contribute its entries to projects that never went near it — `GuzzleHttp\Client::request` landing
+        // in every PHP project's outbound-call list, `Db::transaction` in Laravel's.
         //
         // The `apply_without_detection` arm is not optional: that layer holds the genuinely
         // framework-independent entries (`curl_exec`, `Http::get`, `transaction`, `commit` …), and it is
@@ -179,10 +177,9 @@ pub fn run(
             }
         }
         // Authoritative symbol tables, under the same "does this knowledge apply" test as the lists above.
-        // The `apply_without_detection` arm is what makes a **framework-independent** loader possible: `nginx`
-        // used to have to hide inside `thinkphp.yaml` purely because an unconditional FKB was never
-        // "detected" and therefore never had its loaders run — which cost every other framework the ability
-        // to read nginx config at all.
+        // The `apply_without_detection` arm is what makes a **framework-independent** loader possible: an
+        // unconditional FKB is never "detected", so without this arm its loaders never run and such a loader
+        // would have to hide inside a framework file — costing every other framework the ability to read it.
         for fk in kb.all() {
             if fk.language != sub.language && fk.language.0 != "*" {
                 continue;
@@ -2832,8 +2829,9 @@ mod tests {
     /// NestJS `MiddlewareConsumer`: `consumer.apply(AuthMiddleware).forRoutes({path, method})`'s **object-literal** arg
     /// must be parsed into (path, verb) and landed on the corresponding route by "path + verb".
     ///
-    /// Reproduces the realworld project's `user.module.ts` style — previously `forRoutes` only recognized string /
-    /// `Unknown` names, object literals were treated as nameless args, the whole module got 0 guard hits.
+    /// Reproduces the realworld project's `user.module.ts` style — without it `forRoutes` would only recognize
+    /// string / `Unknown` names, object literals would be treated as nameless args, and the whole module would
+    /// get 0 guard hits.
     #[test]
     fn nestjs_consumer_object_literal_routes() {
         let consumer_spec = ConsumerGuardSpec {

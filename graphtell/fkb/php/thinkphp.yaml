@@ -51,8 +51,7 @@ detectors:
     path: think
     confidence: 0.5
 
-# Transaction-boundary markers. `Db::transaction` is ThinkPHP's own facade spelling — it used to sit in
-# `php/common.yaml`, i.e. in the layer applied to every PHP project, Laravel ones included.
+# Transaction-boundary markers. `Db::transaction` is ThinkPHP's own facade spelling.
 tx_calls:
   - "Db::transaction"
 
@@ -92,8 +91,6 @@ root_rules:
 # Controllers all live under `app/<app-section>/controller/`; the app section is inferred from the route
 # file path (`app/api/route/pc.php` -> `api`), and when it cannot be inferred the candidates below are tried one by one.
 #
-# This block **used to be hard-coded in the kernel** (the `app\{app}\controller\{C}` template in `resolve.rs`
-# and the `["api","adminapi","outapi","kefuapi","index"]` allowlist); it now lives in FKB.
 method_ref:
   method_separators: ["/"]
   hierarchy_separators: ["."]
@@ -105,7 +102,7 @@ method_ref:
 
 # Consumer entry method names: when linking to a class, which method to prefer.
 #   `handle` for event listeners, `doJob`/`fire` for queue Jobs (CRMEB `QueueTrait` convention),
-#   `run` for TP5 behaviour classes (Behavior). Once declared, the kernel's default set no longer applies.
+#   `run` for TP5 behaviour classes (Behavior). Once declared, the kernel's default set does not apply.
 entry_methods: ["handle", "doJob", "fire", "run", "__invoke"]
 
 # Data-model CRUD verbs -> read / write classification (pairs with MapsTo; see P7 verb classification).
@@ -194,7 +191,7 @@ loaders:
       pattern: "lang/*/*.php"
       locale_regex: "lang/([^/]+)/"
       format: php
-  # Route table (collected from Route:: calls) — the recognition logic is declared by `route_guards` below; the kernel no longer hard-codes it.
+  # Route table (collected from Route:: calls) — the recognition logic is declared by `route_guards` below.
   - id: route-list
     table: route_list
     from:
@@ -300,7 +297,6 @@ resolvers:
 # ---------------------------------------------------------------- rules
 rules:
   # ===== P6 annotation: kernel-standard recognizers, written directly as `selector + binding` rules =====
-  # (previously `annotation_interfaces` + `DEFAULT_ANNOTATIONS_YAML`; now plain rules — same engine, one writing style)
   - id: pii
     phase: AnnotatePost
     selector:
@@ -458,10 +454,10 @@ rules:
           # the terminal verb (`->find()` vs `->update()`) is only known at P7
           # (see `resolve.rs::classify_facade_db_calls` and FKB's `db_verbs`).
           #
-          # This used to produce `ReadsDb`, so `Db::name('Goods')->insertGetId($data)` was also asserted as
-          # "this method read goods": the same "method -> table" pair carried both a fake read edge and the real
-          # write edge produced by P7, and the view tie-break always picks the earlier one (P5 before P7), so
-          # writes were **all** displayed as "reads DB" — measured on shopxo: 1825 / 1825, no exception.
+          # Producing `ReadsDb` here would also assert `Db::name('Goods')->insertGetId($data)` as
+          # "this method read goods": the same "method -> table" pair would carry both a fake read edge and the
+          # real write edge produced by P7, and the view tie-break always picks the earlier one (P5 before P7),
+          # so writes would **all** be displayed as "reads DB".
           #
           # `MapsTo` means "a structural mapping between model / table" and is overridden by P7's `ReadsDb` /
           # `WritesDb` (see `view_service::access_rank` and P8's MapsTo suppression), so it only shows as a
@@ -546,10 +542,6 @@ rules:
           from: [MapsTo]
           to: [MapsTo]
           confidence: 0.7
-
-  # ===== P5 Synthesize：ConfigKey =====
-  # `sys_config` is **not** here any more — it is CRMEB's own function, not a ThinkPHP one, so it moved to
-  # `fkb/projects/crmeb.yaml` (project scope), where only CRMEB pays for it.
 
   # ===== P5 Synthesize: Cache =====
   # Factored into the language-common layer `fkb/php/common.yaml` (`php-common-cache-*` rules), effective for

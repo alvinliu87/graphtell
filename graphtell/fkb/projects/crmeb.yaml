@@ -1,25 +1,24 @@
 # CRMEB project knowledge (**one product = one knowledge file**)
 #
 # CRMEB is a product built on ThinkPHP, not a framework others build on: everything about it belongs in
-# **one** file, at `scope: project`. It used to be split across `fkb/php/crmeb.yaml` (framework scope,
-# declaring the PII / login-entrypoint annotations) and this file (project scope, declaring the
-# ConfigKey / Schedule synthesis), which caused two problems:
+# **one** file, at `scope: project`. Splitting one product's knowledge across two files causes two
+# problems:
 #   * two **independent gates** for the same product — if one missed, half the knowledge silently
 #     stopped applying (a detector hit is `best > 0.0`, there is no confidence threshold to fail on);
 #   * `crmeb` was reported as a *framework* of the sub-project (`frameworks: ["crmeb", "thinkphp"]`),
 #     which is what framework-scope knowledge does — a product is not a framework.
 #
-# Division of labour now:
+# Division of labour:
 #   thinkphp.yaml — framework mechanics (routes, container, events, ORM) + cross-version annotations
 #   this file     — everything CRMEB-specific: business semantics (`entrypoint.login`) and the conventions
 #                   only this codebase has (crontab routes, `sys_config()`,
 #                   `BaseServices` -> `$this->dao` forwarding).
 #
-# Two detectors were dropped in the merge:
+# Two detectors are deliberately not used:
 #   * `manifest_dependency: composer.json / crmeb-crmeb` — never fires: CRMEB ships with
 #     `composer.json` declaring `topthink/think`, there is no `crmeb/*` package to depend on;
-#   * `file_exists: app/services` — fires on any PHP project with that directory (it was weighted 0.5
-#     and still counted as a hit), so it would have attached CRMEB's business semantics to projects
+#   * `file_exists: app/services` — fires on any PHP project with that directory (weighted 0.5
+#     and it still counts as a hit), so it would attach CRMEB's business semantics to projects
 #     that are not CRMEB.
 
 id: crmeb
@@ -70,8 +69,7 @@ rules:
   # ===== P5 Synthesize: ConfigKey =====
   # CRMEB's own `sys_config()` / `sys_config_all()`, which read the store's settings table.
   #
-  # This is a **project** convention, not a ThinkPHP one — it used to live in `fkb/php/thinkphp.yaml` (its
-  # comment even said so), which meant every ThinkPHP project carried a rule that only CRMEB can ever hit.
+  # This is a **project** convention, not a ThinkPHP one.
   - id: sys-config
     phase: Synthesize
     selector:
@@ -129,12 +127,11 @@ rules:
 
   # ===== P6: mark "entry point" semantics on HttpContracts (CRMEB business-specific) =====
   #
-  # Note on PII: there used to be a product-level `pii` rule here (first `contact_phone`, later `tell`), and it
-  # **never contributed anything**:
-  #   * `contact_phone` exists in no CRMEB install script — the rule was dead on arrival;
+  # Note on PII: a product-level `pii` rule here would contribute **nothing**:
+  #   * `contact_phone` exists in no CRMEB install script — the rule would be dead on arrival;
   #   * `tell` (CRMEB's spelling in `eb_store_order_invoice` / `eb_user_invoice`) does exist, but both tables
   #     also carry `drawer_phone` / `email`, so the generic rule in `thinkphp.yaml` (which matches `x` and
-  #     `*_x`) already flags them — the product-level copy added 0 new nodes.
+  #     `*_x`) already flags them — a product-level copy would add 0 new nodes.
   # Measured after the `db_prefix` fix below: 19 tables annotated `pii`, **all** via `thinkphp-pii`.
   #
   # The real defect was elsewhere: `db_prefix` was not resolved (CRMEB writes `Env::get('database.prefix', 'eb_')`,

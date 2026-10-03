@@ -161,7 +161,7 @@ identity:
 rather than hardcoding a specific prefix. The prefix is read automatically at P3 by FKB's `db_prefix`
 root_rule from framework config (e.g. ThinkPHP's `connections.mysql.prefix` in `config/database.php`,
 supporting the `env('KEY', 'default')` default), or comes from project config
-`ProjectConfig.table_prefixes`; the generic layer `ProjectConfig::default()` no longer bakes in any
+`ProjectConfig.table_prefixes`; the generic layer `ProjectConfig::default()` bakes in no
 project-specific prefix.
 
 Normalization makes `store_order` / `eb_store_order` / `store_orders` converge onto one node;
@@ -319,8 +319,8 @@ languages later only means adding rules for that stack under `rules/<lang>/` and
 
 #### Two new graph facts used by N+1 (per-row DB read / write inside a loop)
 
-A loop is a control-flow concept the graph previously had **no model for at all**: `CallSite` records
-only "who called whom", not "how many times". So this rule depends on two new facts, both on
+A loop is a control-flow concept that `CallSite` alone cannot express: it records only "who called
+whom", not "how many times". So this rule depends on two new facts, both on
 **CallSite nodes**:
 
 | Fact | Produced by | Notes |
@@ -603,9 +603,8 @@ The built graph has **96 241 nodes / 125 368 edges** in total; main node output:
 `Class` 1043, `Method` 6724, `CallSite` 80 263, **`HttpContract` 1603**, **`Table` 156**,
 `Function` 1907, `ConfigKey` 278, `Cache` 42, `Queue` 27, `Event` 20, **`Schedule` 17**.
 
-Of these, `Schedule` comes from CRMEB's **project-level** FKB synthesizing `crontab/...` routes (it
-was previously always 0 because the project-level FKB's `id` collided with the framework-level FKB's
-and was shadowed -- fixed). Annotations cover channels such as `pii.phone` (including `store_order`
+Of these, `Schedule` comes from CRMEB's **project-level** FKB synthesizing `crontab/...` routes.
+Annotations cover channels such as `pii.phone` (including `store_order`
 identified via the `user_phone` variant column name), `data.criticality`, `config.storage:Database`
 and `entrypoint.login`.
 

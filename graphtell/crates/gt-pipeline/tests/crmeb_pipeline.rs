@@ -406,7 +406,7 @@ fn synthesize_creates_event_mediator_nodes() {
         })
         .expect("查询可读");
     assert!(!events.is_empty(), "应从 app/event.php 合成事件中介节点");
-    // The event node's kind is directly `Event` (no longer loosely `ExternalSystem`); `category` equals kind only.
+    // The event node's kind is directly `Event`; `category` equals kind only.
     assert!(
         events.iter().all(|n| n.kind.as_str() == "Event"),
         "事件中介节点的种类应为 `Event`（子类型已提升为种类）"
@@ -576,7 +576,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
         };
         let is_semantic = is_semantic_node(&node);
         if id != center.id && is_semantic {
-            continue; // Semantic nodes no longer penetrate outward
+            continue; // Semantic nodes do not penetrate outward
         }
         if node.kind.as_str() == NodeKind::METHOD {
             for e in b

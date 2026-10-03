@@ -8,10 +8,11 @@
 #
 # Note: this file only holds rules whose "spelling is identical across PHP frameworks"; rules carrying strong
 # framework assumptions (table access `Db::name` vs `DB::table`, route handler shape, event registration style…)
-# stay in each framework's own FKB, so framework A's knowledge is never used to explain framework B's code.
+# stay in each framework's own FKB, and conventions belonging to a single product (CRMEB's `sys_config()`)
+# go to `fkb/projects/<product>.yaml`, so framework A's knowledge is never used to explain framework B's code.
 #
-# On `loaders`: an unconditional FKB's loaders **do** run now, so a framework-independent loader can live here
-# (or in `fkb/universal/`) — that is how `nginx` stopped having to hide inside `thinkphp.yaml`.
+# On `loaders`: an unconditional FKB's loaders **do** run, so a framework-independent loader can live here
+# (or in `fkb/universal/`).
 #
 # The loaders still listed in the framework files are there for a different reason: their `params` are
 # framework-specific paths and spellings. `php_db_schema` needs to know the framework's table receivers
@@ -36,9 +37,9 @@ apply_without_detection: true
 # `Http::*` is the HTTP client facade both frameworks have.
 # Matching basis: a call site matches if its full callee (`Http::get`) or its method name (`curl_exec`) hits any entry.
 #
-# `GuzzleHttp\Client::*` used to be listed here, and is not any more: it is a claim about Guzzle, so it moved
-# to `guzzle.yaml`, which is detected by `import_exists` / `call_exists` — i.e. it now fires only for projects
-# that really reach for Guzzle, instead of for every PHP project.
+# `GuzzleHttp\Client::*` is not listed here: it is a claim about Guzzle, so it belongs to `guzzle.yaml`,
+# which is detected by `import_exists` / `call_exists` — i.e. it fires only for projects that really
+# reach for Guzzle, instead of for every PHP project.
 external_calls:
   - "curl_exec"
   - "curl_multi_exec"
@@ -65,8 +66,8 @@ external_calls:
 # method as "not wrapped".
 #
 # Only spellings that are genuinely framework-independent belong here. `DB::transaction` (Laravel) and
-# `Db::transaction` (ThinkPHP) used to be listed, and are not any more — each is one framework's facade, so
-# they moved to `illuminate-database.yaml` and `thinkphp.yaml` respectively.
+# `Db::transaction` (ThinkPHP) are not listed — each is one framework's facade, so they belong to
+# `illuminate-database.yaml` and `thinkphp.yaml` respectively.
 tx_calls:
   - "transaction"
   - "startTrans"
@@ -78,7 +79,6 @@ tx_calls:
 rules:
   # ===== P5 Synthesize: ConfigKey (cross-framework common: config() / Config::get / env) =====
   # Same reasoning as `Cache::get`: the spelling is identical in both frameworks, so it is factored out to avoid duplication.
-  # CRMEB's own `sys_config` stays in `thinkphp.yaml` (a business convention, not a generic one).
   - id: cache-predis-read
     phase: Synthesize
     selector:

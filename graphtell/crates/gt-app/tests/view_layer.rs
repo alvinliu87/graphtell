@@ -25,10 +25,10 @@ use gt_domain::port::{
 /// Locate the CRMEB sample under `dir/samples`.
 ///
 /// The sample is actually placed in a **multi-level taxonomy** by tech stack (e.g. `samples/php-projects/thinkphp/CRMEB`),
-/// and the dir name may or may not carry a `-master` suffix. Earlier we only matched `samples/*/CRMEB-master`
-/// (one level + suffix), mismatching the real layout → the sample is clearly on disk but not matched → the whole group
-/// takes `built()`'s soft-skip branch, still counted as passed, but in fact **zero coverage**.
-/// Here we switch to a bounded-depth recursive search under `samples/`, no longer depending on concrete level or naming.
+/// and the dir name may or may not carry a `-master` suffix — a fixed one-level pattern would mismatch the real
+/// layout → the sample is on disk but not matched → the whole group takes `built()`'s soft-skip branch, still
+/// counted as passed, but in fact **zero coverage**. So this does a bounded-depth recursive search under
+/// `samples/`, independent of concrete level or naming.
 fn under_samples(dir: &Path) -> Option<PathBuf> {
     /// Search at most `depth` levels within `dir`; return the lexicographically first hit (stable result).
     fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
@@ -278,7 +278,7 @@ fn object_view_chain_and_hidden() {
     assert!(!ov.center.name.is_empty());
     assert_eq!(ov.center.ring, 0, "中心节点应在 0 环");
     assert!(!ov.hidden.note.is_empty(), "必须给出省略说明（诚实性）");
-    // Candidates are **no longer** brought back by the object view: the frontend dropdown requests `/view/{p}/candidates` on demand,
+    // Candidates are not brought back by the object view: the frontend dropdown requests `/view/{p}/candidates` on demand,
     // recomputing "score 5000 candidates one-by-one BFS" inside every object view is pure waste (see `ObjectView` comment).
 }
 
@@ -515,7 +515,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
             (e.from, e.to)
         );
     }
-    // Orphans accounting should no longer contain a trigger already drawn as an edge (downgrade only for enrichment-failed cases).
+    // Orphans accounting should not contain a trigger already drawn as an edge (downgrade only for enrichment-failed cases).
     let trigger_orphans = ov
         .orphans
         .iter()
@@ -877,9 +877,9 @@ fn invoice_detail_route_first_hop_has_call_site() {
 // It guards "behavior unchanged", not "correctness" — once numbers change, they must be **explicitly** accepted and the reason written,
 // never silently passed.
 //
-// This snapshot was recalibrated against the current reference sample (CRMEB v6.0.0): edge total 31 → 35, the extra 4 are
-// `{ForeignKey: 1, PassesThrough: 3}` — from the later-added P6 table foreign keys and P14 middleware promotion, both being
-// **direct structural edges**, so `indirect` (31) no longer equals the edge total (35).
+// This snapshot is calibrated against the current reference sample (CRMEB v6.0.0): edge total 35, of which 4 are
+// `{ForeignKey: 1, PassesThrough: 3}` — P6 table foreign keys and P14 middleware promotion, both **direct structural
+// edges**, so `indirect` (31) is less than the edge total (35).
 // Core metrics unchanged: ReadsCache 2, ReadsConfig 28, longest via chain 5 hops.
 #[test]
 fn object_view_characterization_invoice_detail() {

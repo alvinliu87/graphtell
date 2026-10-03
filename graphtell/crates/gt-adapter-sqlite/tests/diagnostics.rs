@@ -3,7 +3,7 @@
 //! Diagnostics are a first-class product (violations / missing links). The re-run correctness depends on
 //! `clear_diagnostics` scoping by code prefix: a regression that clears the wrong prefix (or ignores it) leaves
 //! "historical conclusions" on screen, or wipes the wrong category. These guard the push / list / clear / count
-//! surface that previously had zero tests.
+//! surface.
 
 use gt_adapter_sqlite::SqliteStore;
 use gt_domain::model::{Diagnostic, Phase, ProjectId, Severity};

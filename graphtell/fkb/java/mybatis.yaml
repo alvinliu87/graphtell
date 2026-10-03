@@ -2,7 +2,7 @@
 #
 # Why it is not part of the framework file: MyBatis is a standalone ORM that happens to be commonly used
 # with Spring Boot. A Spring project may just as well use JPA / Hibernate, and then none of this applies —
-# yet the rules used to run for every project recognised as Spring Boot. The MyBatis-Plus annotations
+# yet the rules would run for every project recognised as Spring Boot. The MyBatis-Plus annotations
 # (`@TableName` / `BaseMapper`) are also hosted here, because MyBatis-Plus is just a MyBatis extension.
 #
 # How it works: `gt-pipeline::mybatis` parses the mapper XML and injects each statement as a **pseudo call

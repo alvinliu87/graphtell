@@ -224,7 +224,7 @@ fn frontend_chain_visible_in_folded_route_view() {
             "CallsHttp start should be a frontend function node (isomorphic to a backend Method), got kind = {}",
             o.kind
         );
-        // It must no longer appear on the canvas: neither in a ring nor as an endpoint of any edge.
+        // It must not appear on the canvas: neither in a ring nor as an endpoint of any edge.
         let on_canvas = ov
             .rings
             .iter()

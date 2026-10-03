@@ -23,9 +23,8 @@ use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter, ProjectReader};
 
 /// A synthetic sample directory inside the repo (shipped with the repo).
 ///
-/// The sample tree lives at the **repo root** (`samples/`). It used to be looked for at the inner workspace
-/// root first, but that directory was empty and shadowed the real one — it has since been removed, so there
-/// is now exactly one location. Hard-coding "up N levels" would point at a non-existent directory once the
+/// The sample tree lives at the **repo root** (`samples/`). Hard-coding "up N levels" would point at a
+/// non-existent directory once the
 /// sample moves — then the case fails, or worse is changed to skip, becoming "CI all green but zero
 /// coverage". Here we instead search **upward level by level** from `CARGO_MANIFEST_DIR`, and support a
 /// `GRAPHTELL_SAMPLES_DIR` override; only when nothing is found do we fall back to a candidate path, so the
@@ -49,8 +48,7 @@ fn synth_root() -> PathBuf {
         }
     }
     // Fallback: the repo root — `crates/gt-pipeline` -> `crates` -> workspace -> repo root — so the assert
-    // names the path that really should hold the sample. It used to stop one level short, at the workspace
-    // root, whose own (now removed) `samples/` was empty.
+    // names the path that really should hold the sample.
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
     p.pop();
@@ -113,7 +111,7 @@ fn frontend_calls_backend_merge_into_contract() {
     let caller = frontend_caller
         .expect("前端 axios.post('/api/delete') 应合成 HttpContract 并产生 CallsHttp 入边");
     // The frontend HTTP call is wrapped in `export function deleteItem`, so CallsHttp is initiated by the function node,
-    // isomorphic to the backend `Method --HandledBy--> HttpContract` (it used to be a File node, now fixed).
+    // isomorphic to the backend `Method --HandledBy--> HttpContract`.
     assert_eq!(
         caller.kind.as_str(),
         "Function",
@@ -195,8 +193,8 @@ fn frontend_calls_backend_merge_into_contract() {
 
     // ---- 3) `side` on a bridge node: not "the side that patched last", but the honest derived label ----
     // Two parties have evidence on this node, so the scalar label is `bridge` and the parties live in `sides`.
-    // This used to be `frontend` merely because the front-end rule happened to run last — which is exactly the
-    // order-dependent lie this test now forbids (`GraphWorkspace::record_side`).
+    // The label must not be `frontend` merely because the front-end rule happens to run last — that is exactly
+    // the order-dependent lie this test forbids (`GraphWorkspace::record_side`).
     assert_eq!(
         c.properties.get("side").and_then(|v| v.as_str()),
         Some("bridge"),
@@ -248,7 +246,7 @@ fn member_style_request_bridges() {
         .expect("应由 `request.get('/api/ping')` 合成契约 GET /api/ping");
     assert_eq!(ping.name, "GET /api/ping", "成员名应成为 HTTP method");
     // Both the backend `Route::get('/api/ping')` and the frontend `request.get('/api/ping')` synthesise this
-    // node, hence `bridge` + both parties in `sides` (previously `frontend`, chosen by patch order).
+    // node, hence `bridge` + both parties in `sides`.
     assert_eq!(
         ping.properties.get("side").and_then(|v| v.as_str()),
         Some("bridge"),

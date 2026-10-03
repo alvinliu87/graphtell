@@ -145,10 +145,8 @@ impl TechStackRegistry for DefaultTechStackRegistry {
 /// A sub-project detection marker: a package manifest file that identifies one language's ecosystem.
 ///
 /// This is **bootstrap** knowledge — Ingest must decide a sub-project's language *before* any FKB is
-/// loaded, so it cannot come from FKB. It used to be a hard-coded table inside the kernel
-/// (`ingest::MARKERS`, e.g. `composer.json` → php / backend), which meant adding a language always meant
-/// changing the kernel. It now arrives with the tech-stack registration, so the kernel knows no
-/// concrete language here either.
+/// loaded, so it cannot come from FKB. It arrives with the tech-stack registration, so the kernel knows
+/// no concrete language here either.
 #[derive(Debug, Clone)]
 pub struct Marker {
     /// Marker file name, e.g. `composer.json`.

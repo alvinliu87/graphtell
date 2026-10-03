@@ -518,7 +518,7 @@ export function RulesPage() {
         subtitle={t('Rules are declared in backend YAML and only rendered here; you can override enabled state and thresholds per project — saving triggers a re-check.')}
         extra={
           <Space>
-            {/* The sidebar no longer has a “Rule Set” item: the only entry to this page is the check page header, so a way back is given here */}
+            {/* The only entry to this page is the check page header, so a way back is given here */}
             <Button onClick={() => navigate(`/projects/${id}/check`)}>{t('Back to rule inspection')}</Button>
             <Button onClick={discard} disabled={!dirty || saving}>
               {t('Discard changes')}

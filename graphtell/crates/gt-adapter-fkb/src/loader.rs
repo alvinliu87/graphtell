@@ -366,7 +366,7 @@ rules:
         assert_eq!(fk.rules[0].id, "thinkphp-pii");
     }
 
-    // ---- loader invariants that were previously untested (silent-failure surface) ----
+    // ---- loader invariants (silent-failure surface) ----
 
     /// Recursively collect every `*.yaml` / `*.yml` under a directory (mirrors `load_dir`'s walk).
     fn collect_yaml(root: &Path) -> Vec<PathBuf> {

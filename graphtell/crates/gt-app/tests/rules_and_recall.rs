@@ -707,7 +707,7 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
         .recall(
             f.project,
             &RecallQuery {
-                // Express intent with **cross-domain generic verbs** (query / list), no longer depending on any domain lexicon:
+                // Express intent with **cross-domain generic verbs** (query / list), without depending on any domain lexicon:
                 // domain nouns (下单 / 优惠) are uniformly handed to the project's own i18n bridge.
                 query: "查询订单列表".into(),
                 limit: 20,
@@ -1758,7 +1758,7 @@ rules:
 
 /// Framework gate: a rule that declares `frameworks` must also be skipped when that framework is absent.
 ///
-/// The environment gate has two levels; previously only `languages` was tested, the `frameworks` branch was unguarded.
+/// The environment gate has two levels — `languages` and `frameworks` — and both are guarded here.
 #[test]
 fn framework_gate_skips_rules_for_other_frameworks() {
     const YAML: &str = r#"
@@ -2266,7 +2266,7 @@ rules:
         "被停用的规则不应产出违规"
     );
 
-    // Phase 2: add a **different** capability (RateLimiting), channel no longer empty
+    // Phase 2: add a **different** capability (RateLimiting), channel is not empty
     f.container
         .store
         .apply(&GraphDelta {

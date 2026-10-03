@@ -7,9 +7,8 @@
 # project would report every event / queue node as "unused" — all vacuously-true false positives.
 #
 # Note: `Emits` / `ListensTo` (front-end event bus) are **JS** edges and are not in this file —
-# they moved to `rules/js/deadcode.yaml`. Rules such as `orphan-eventbus` were once mislabelled php,
-# and because the Emits edge does not exist on PHP projects they were silently skipped via
-# `rules_unavailable`, i.e. never effective; they now declare javascript in `rules/js`.
+# they are declared in `rules/js/deadcode.yaml`. On a PHP project the `Emits` edge does not exist, so
+# such a rule here would be silently skipped via `rules_unavailable`, i.e. never effective.
 
 rules:
   # Note: Event and EventBus use different edge kinds and **must not be merged into one rule**.

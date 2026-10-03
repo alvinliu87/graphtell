@@ -583,8 +583,8 @@ function obstaclesForPath(
 /**
  * Grouping of parallel edges (several paths between the same pair of endpoints).
  *
- * The backend now emits one edge per **distinct path** between the same endpoints (it used to dedupe by
- * (kind, from, to) and keep one, losing all branching information). But their endpoints are identical —
+ * The backend emits one edge per **distinct path** between the same endpoints (deduping by
+ * (kind, from, to) would keep one and lose all branching information). But their endpoints are identical —
  * drawn as-is they **overlap completely** and the user cannot see there are two. So they must be offset
  * group by group.
  */
@@ -680,7 +680,7 @@ function orderByBarycenter(layers: LayoutNode[][], edges: LayoutEdge[]): LayoutN
 
 // ---------------------------------------------------------------- layered
 
-/** Fan-out beyond this on a single ring switches to the radial layout (one row no longer fits). */
+/** Fan-out beyond this on a single ring switches to the radial layout (one row does not fit). */
 const HUB_MIN = 7;
 
 /**
@@ -960,7 +960,7 @@ function hubSpokeLayout(input: LayoutInput, fanout: LayoutNode[], viaStar = fals
     ? `Neighbors are arranged in an **angle-limited equal-length fan** (an arc centered on the center, with fixed adjacent chord spacing and each edge ≈${Math.round(arcR)}px long), eliminating the over-long edges that top / bottom nodes dragged out in the single-column form;`
     : '';
   const fanNote =
-    'Each edge\'s start point spreads along the center pill\'s **side facing the neighbor** -- “top → side → bottom” -- in target order (one entry/exit per edge, no longer mushing into a bundle near the center),';
+    'Each edge\'s start point spreads along the center pill\'s **side facing the neighbor** -- “top → side → bottom” -- in target order (one entry/exit per edge, not a bundle near the center),';
   // The crossing count is reported honestly (same basis as stackedLayout): the single-column form has a structural guarantee of 0 crossings,
   // but the arc ends of the equal-length fan may need a detour as a fallback, and a failed detour must not be reported as "0".
   const polys = placed.map((e) => ({ from: e.from, to: e.to, pts: e.points }));
@@ -1028,7 +1028,7 @@ function stackedLayout(input: LayoutInput): LayoutResult {
 
   const ordered = orderByBarycenter(layers, edges);
   // The centre node must be measured with the "centre" spec (13px / 700): the renderer draws the centre one size larger than a normal node,
-  // and a pill measured at 11px / 500 cannot hold the bold large text — the text overflows the box (the route perspective centre used to overflow).
+  // and a pill measured at 11px / 500 cannot hold the bold large text — the text overflows the box.
   const widths = ordered.map((layer) =>
     layer.map((n) => pillWidth(n.kind, n.name, n.id === center.id, input.showIcons ?? true)),
   );
@@ -1065,7 +1065,7 @@ function stackedLayout(input: LayoutInput): LayoutResult {
     const a = pos.get(e.from);
     const b = pos.get(e.to);
     if (!a || !b) return;
-    // Direct links (no more "down → across → down" orthogonal polylines: those put the horizontal segment of every edge in a layer on one line, stacking all labels on a single y).
+    // Direct links (not "down → across → down" orthogonal polylines: those put the horizontal segment of every edge in a layer on one line, stacking all labels on a single y).
     // One row per layer ⇒ a direct link's y range covers only two adjacent row lines, so structurally it touches no node;
     // only a "jumping edge" across layers (possible with folded pull-up) hits the detour fallback below.
     const straight: Pt[] = [a, b];

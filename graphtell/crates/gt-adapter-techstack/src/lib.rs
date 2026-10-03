@@ -2,9 +2,8 @@
 //! `MarkerProvider`).
 //!
 //! Ingest needs to decide a sub-project's language **before** any FKB is loaded (bootstrap), so the
-//! "which manifest file marks which language / role" table cannot live in FKB. It used to be a hard-coded
-//! `MARKERS` table inside the kernel's `phase::ingest`, which meant adding a language always meant editing
-//! the kernel. It now lives here, in an adapter, and the kernel only knows the `MarkerProvider` port.
+//! "which manifest file marks which language / role" table cannot live in FKB. It lives here, in an adapter,
+//! and the kernel only knows the `MarkerProvider` port.
 
 use std::path::Path;
 
@@ -76,9 +75,7 @@ impl MarkerProvider for DefaultMarkerProvider {
 ///
 /// JS has no PSR-4-style autoload map and no PHP-style `return [...]` config, so it only implements
 /// [`TechStackAdapter::sub_project_kind`]: recognising the frontend framework from `package.json` /
-/// `manifest.json` when the directory name alone is inconclusive. It used to live inside the kernel's
-/// `phase::ingest` (`detect_frontend_kind_via_config`), which meant the kernel knew about
-/// `react-native` / `@dcloudio/uni` / `uni-mp-*` package names.
+/// `manifest.json` when the directory name alone is inconclusive.
 pub struct JsTechStackAdapter;
 
 impl JsTechStackAdapter {

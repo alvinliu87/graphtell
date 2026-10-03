@@ -72,8 +72,8 @@ declare_open_kind! { NodeKind => "Graph node kinds (syntax nodes + synthetic nod
     HTTP_CONTRACT = "HttpContract" => "HTTP contract bridge (where frontend and backend converge)",
     CONFIG_KEY = "ConfigKey"   => "config key",
     I18N_KEY   = "I18nKey"     => "i18n key",
-    // Out-of-process mediators: they used to hang under the `ExternalSystem` category umbrella, now each is its
-    // own kind — the naming granularity matches Table / ConfigKey, and perspectives switch directly by kind.
+    // Out-of-process mediators: each is its own kind — the naming granularity matches Table / ConfigKey, and
+    // perspectives switch directly by kind.
     EVENT      = "Event"       => "event-bus node (an out-of-process mediator)",
     QUEUE      = "Queue"       => "message-queue node (an out-of-process mediator)",
     // The **consumer-side** semantic role in the event / queue perspectives: listener / consumer classes are
@@ -102,8 +102,7 @@ impl NodeKind {
     /// Function / CallSite…) is an implementation detail belonging to the "syntax chain you expand by clicking".
     ///
     /// Out-of-process mediators like `Event` / `Queue` / `Cache` / `Topic` sit at the same level as Table /
-    /// ConfigKey and are no longer lumped under the `ExternalSystem` category umbrella — every semantic node
-    /// takes its concrete kind as `kind`.
+    /// ConfigKey — every semantic node takes its concrete kind as `kind`.
     pub const SYNTHESIZED: &'static [&'static str] = &[
         Self::TABLE,
         Self::HTTP_CONTRACT,

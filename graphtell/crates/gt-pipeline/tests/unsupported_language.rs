@@ -68,7 +68,7 @@ fn unsupported_language_is_reported_instead_of_silently_skipped() {
             .collect::<Vec<_>>()
     );
 
-    // The key point: no longer silent — the CfAst phase must produce a diagnostic naming that language
+    // The key point: not silent — the CfAst phase must produce a diagnostic naming that language
     let report = common::phase_report(&b, "CfAst").expect("expected a CfAst phase report");
     let diag = report
         .diagnostics

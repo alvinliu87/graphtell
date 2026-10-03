@@ -1,4 +1,4 @@
-//! Java parser — the **second language**, used to verify that the language-layer abstraction is really pluggable.
+//! Java parser — one of the language adapters, verifying that the language layer is really pluggable.
 //!
 //! It only does what the syntax layer (P2) should: translate the Java syntax tree into the language-agnostic
 //! [`SyntaxFacts`]. The semantic layer (Spring's `@GetMapping` / MyBatis Mapper / JPA entities) is declared by

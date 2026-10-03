@@ -163,7 +163,7 @@ export function CoveragePage() {
       <PageHeader
         title={t('Build Report')}
         subtitle={t('Missing root nodes, routes pointing to non-existent handlers, identity conflicts, etc. — these records are the conclusions.')}
-        // The sidebar no longer has a "diagnostics" menu item: this page's only entry is the ⓘ Popover beside the code-graph title,
+        // This page's only entry is the ⓘ Popover beside the code-graph title,
         // so a way back must be given here, otherwise users who come in can't get out (only the browser Back button).
         extra={
           <Button size="small" onClick={() => navigate(`/projects/${id}/graph`)}>

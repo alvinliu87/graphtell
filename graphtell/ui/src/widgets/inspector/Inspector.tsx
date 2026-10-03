@@ -35,7 +35,7 @@ const NAME_INDENT = TAG_W + SP.tagGap; // 64 + 6 = 70
 
 /** Node name text color: neutral near-black rather than colored, to avoid stacking too many colors with "the Tag's kind color" and "the filename's blue Link". */
 const NODE_NAME_COLOR = '#1f2937';
-/** Timeline dot color: uniform neutral gray, no longer colored by kind (kind is already conveyed by the Tag), reducing overall screen color. */
+/** Timeline dot color: uniform neutral gray, not colored by kind (kind is already conveyed by the Tag), reducing overall screen color. */
 const TIMELINE_DOT_COLOR = '#94a3b8';
 
 /**

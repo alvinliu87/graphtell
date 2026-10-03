@@ -1,9 +1,9 @@
 //! Settle the **authoritative schema's columns** into `Column` graph nodes.
 //!
-//! Column information used to live only in the symbol table (the `schema` table, loaded by P3 from SQL install
-//! scripts / table-name call sites) and could only be "asked a question" by the `ColumnsMatch` predicate (e.g. CRMEB
-//! tagging tables that contain phone numbers with PII); on the graph it was **neither visible nor traversable** —
-//! impact analysis stopped at the table and could not drill down to field level.
+//! Kept only in the symbol table (the `schema` table, loaded by P3 from SQL install scripts / table-name call
+//! sites), column information can only be "asked a question" by the `ColumnsMatch` predicate (e.g. CRMEB tagging
+//! tables that contain phone numbers with PII); on the graph it is **neither visible nor traversable** — impact
+//! analysis stops at the table and cannot drill down to field level.
 //!
 //! Here it is materialised onto the graph: `Table --HasColumn--> Column`.
 //! It is **the same shape** as the columns built from TypeORM's `@Column` (a `Column` node + a `HasColumn` edge);

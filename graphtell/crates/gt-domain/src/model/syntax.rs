@@ -229,8 +229,7 @@ pub struct SignCompareFact {
 /// A language's namespace / member notation rules.
 ///
 /// Extracted from [`crate::port::LanguageParser`] and carried along the pipeline — most places in the kernel
-/// cannot reach the parser registry, but they all have the pipeline context. This information used to be
-/// scattered through the kernel as `\` and `::` literals, so adding a language meant changing all of it.
+/// cannot reach the parser registry, but they all have the pipeline context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespacePolicy {
     /// The preferred namespace separator (used for **joining**).

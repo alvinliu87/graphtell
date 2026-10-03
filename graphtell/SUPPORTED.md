@@ -111,9 +111,9 @@ hit -- the same mechanism as FastAPI using `owner_class` FQN).
 2. Resolve the **view argument** of `path()` / `re_path()` / `url()` calls into a full FQN stored in
    `entity` (same reason: function nodes aren't in the short-name index, so a full FQN is required to
    link).
-3. **Fixed relative imports**: `from .views import user_list` previously resolved to the wrong
-   `views.user_list`; now it's restored to `myapp.views.user_list` against the current module's parent
-   package (leading dot count aligned to parent-package depth); absolute imports are unaffected.
+3. **Relative imports**: `from .views import user_list` is restored to `myapp.views.user_list`
+   against the current module's parent package (leading dot count aligned to parent-package depth);
+   absolute imports are unaffected.
 
 **Honest boundaries**:
 - **The Django idiom is `from django.db import models` then `models.CharField`**: if a project instead
@@ -162,10 +162,10 @@ drop edges). Which edges to walk is still declared by FKB; the core still knows 
 
 **Field-level semantics** (`@Column`) need two more **generic** capabilities (not Node-specific; other
 languages share them): ① the parser attaches **field decorators** to the field FQN (`Class.field`) --
-previously only class / method decorators were attached and `@Column` was dropped entirely; ② at P2,
+attaching only class / method decorators would drop `@Column` entirely; ② at P2,
 when a node can't be found precisely by the call site's `owner_fqn`, it **falls back to the owning
-class** (previously it fell all the way back to the file node, so `@Column`'s `HasCallSite` / semantic
-edges originated from `File`).
+class** (falling all the way back to the file node would make `@Column`'s `HasCallSite` / semantic
+edges originate from `File`).
 
 | Framework | Trigger | Node | Edge | Notes |
 | --- | --- | --- | --- | --- |
@@ -387,8 +387,7 @@ attribute routes** (`#[Route]` / `#[Get]` / `#[Post]` …) → `HttpContract` + 
 **same semantics** as Spring (annotations), FastAPI (decorators) and Django (`path()`).
 
 On the parser side (`collect_method` in `gt-adapter-parser/src/php/mod.rs`) each route attribute is
-**synthesized into a call site** (previously the PHP parser didn't recognize PHP 8 attribute nodes like
-`attribute_list`):
+**synthesized into a call site** (PHP 8 attribute nodes reach the parser as `attribute_list`):
 
 | Form | Contract method | Notes |
 | --- | --- | --- |
@@ -450,11 +449,11 @@ reading graphs:
   can't land a `WritesDb`. The three steps:
 
   1. **The Java parser captures `extends` generic arguments** -- **done**.
-     `interface UserRepository extends JpaRepository<User, Long>` can now extract `User`, recording it
-     as a `generic.JpaRepository` synthesized call site (`entity` = entity name). This also fixed a
-     pre-existing defect: an interface's `extends` is an **`extends_interfaces` node without a field
-     name** in tree-sitter-java, so `child_by_field_name` could never fetch it, and "interface extends
-     interface" inheritance was previously lost entirely.
+     `interface UserRepository extends JpaRepository<User, Long>` extracts `User`, recording it
+     as a `generic.JpaRepository` synthesized call site (`entity` = entity name). This has to work
+     around a structural quirk: an interface's `extends` is an **`extends_interfaces` node without a
+     field name** in tree-sitter-java, so `child_by_field_name` cannot fetch it, and without that
+     "interface extends interface" inheritance would be lost entirely.
   2. **Add rules chaining Repository / Mapper → entity → table** -- **done**. `spring-boot.yaml` writes
      the `Link` (DAO → entity's `References`) + `Project` (project along the entity's `MapsTo` into
      DAO → table), verified by `crates/gt-pipeline/tests/java_db_verbs.rs`. Two pitfalls:

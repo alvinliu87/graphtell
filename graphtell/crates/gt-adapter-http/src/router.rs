@@ -488,10 +488,10 @@ async fn symbols(
 /// Read cap for the diagnostics list.
 ///
 /// It must not be small: the diagnostics page **groups by problem type** (per-type counts, sample locations,
-/// expandable lists), and grouping is only correct when it sees the full set. It used to be 200, while CRMEB
-/// alone has 445 build diagnostics for one project — so the page listed only the 200 most recently written rows
-/// (`ORDER BY id DESC`), showing the user "write order" rather than "how many problems", and the per-type counts
-/// were wrong too.
+/// expandable lists), and grouping is only correct when it sees the full set — CRMEB alone has 445 build
+/// diagnostics for one project, so a smaller cap would list only the most recently written rows
+/// (`ORDER BY id DESC`), showing the user "write order" rather than "how many problems", and the per-type
+/// counts would be wrong too.
 ///
 /// Same order of magnitude as the compliance page's `STORED_LIMIT` (5000): this is the "full fetch before
 /// pagination"; the page paginates itself.
@@ -656,8 +656,9 @@ fn parse_sub_project_ids(raw: &Option<String>) -> Option<Vec<SubProjectId>> {
 /// Read the violations persisted by the previous check (without re-running rules).
 /// The **default count** for reading persisted violations.
 ///
-/// It used to be 500, while one measured likeshop check produced 996 — so "just ran, see 996 / 59 critical" and
-/// "refresh, see 500 / 0 critical" disagreed, and were read as "nothing was persisted / back to old data".
+/// One measured likeshop check produced 996 violations, so the cap must clear that: at 500, "just ran,
+/// see 996 / 59 critical" and "refresh, see 500 / 0 critical" disagree, and are read as
+/// "nothing was persisted / back to old data".
 /// Reading the violation table is a full fetch before pagination (the UI pages 20 at a time itself), so this is
 /// only an **upper-bound guard**, not a pagination parameter; hence an obviously generous value. When it really is
 /// exceeded, the ordering already guarantees the least severe are the ones evicted.

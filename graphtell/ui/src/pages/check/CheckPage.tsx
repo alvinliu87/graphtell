@@ -276,7 +276,7 @@ export function CheckPage() {
         subtitle={t('Rule conclusions produced automatically after the build (persisted); which rules are enabled and their thresholds are tuned in "Rule Set".')}
         extra={
           <Space>
-            {/* The rule-set entry lives here (the sidebar no longer carries it): the motivation to tune rules comes "after seeing the conclusions",
+            {/* The rule-set entry lives here: the motivation to tune rules comes "after seeing the conclusions",
                      not "I want to browse rules" -- so it is an action on the conclusions page, not a parallel destination. */}
             <Button icon={<ProfileOutlined />} onClick={() => navigate(`/projects/${id}/rules`)}>
               {t('Rule Set')}

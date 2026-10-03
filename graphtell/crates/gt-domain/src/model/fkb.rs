@@ -64,9 +64,8 @@ pub struct FrameworkKnowledge {
     ///
     /// It is the default `side` for every [`SynthesizeAction`] in this file that does not state one explicitly
     /// (see `loader.rs`), so one line here replaces tens of per-rule literals — and, more importantly, so a rule
-    /// can no longer *forget* it. Forgetting was a real bug: `python/celery.yaml` and `java/spring-boot.yaml`
-    /// declared no side at all, so their Cache / Event / Queue nodes had no evidence of a party and vanished from
-    /// every side-filtered perspective.
+    /// cannot *forget* it: a file declaring no side at all leaves its Cache / Event / Queue nodes with no
+    /// evidence of a party, and they vanish from every side-filtered perspective.
     ///
     /// A per-rule `fields: [ { name: side, ... } ]` still wins when present (an escape hatch for knowledge that
     /// genuinely crosses parties). Cross-language knowledge (`language: "*"`, e.g. `universal/common.yaml`) should
@@ -153,10 +152,7 @@ pub struct FrameworkKnowledge {
     pub entry_methods: Vec<String>,
     /// **First-class semantic node kinds** introduced by this FKB (appended to [`NodeKind::SYNTHESIZED`]).
     ///
-    /// "Which kinds count as semantic nodes" used to live only in the constant list in `kinds.rs` — so every new
-    /// semantic node (the frontend's `Store`, the page perspective's `Page`…) required a kernel change, violating
-    /// OCP.
-    /// Now FKB can declare it itself: `semantic_kinds: [Store, Page]`, registered at load time into
+    /// FKB declares it itself: `semantic_kinds: [Store, Page]`, registered at load time into
     /// [`crate::model::kinds::register_semantic_kinds`], and the folded view then renders them as semantic nodes.
     #[serde(default)]
     pub semantic_kinds: Vec<String>,
@@ -1227,8 +1223,7 @@ pub struct ValueSource {
     /// When the argument is an **array**, take the n-th item by index.
     ///
     /// For array-style handlers — Laravel's main form `Route::get('/x', [Ctrl::class, 'method'])` has the class
-    /// name in `arg1[0]` and the method name in `arg1[1]`, which previously could not be expressed (only the whole
-    /// array could be taken).
+    /// name in `arg1[0]` and the method name in `arg1[1]`.
     pub element: Option<usize>,
     /// Take a field when the argument is an object literal (e.g. `uni.request({url:..})`).
     pub field: Option<String>,

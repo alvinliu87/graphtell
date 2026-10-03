@@ -9,8 +9,7 @@
  * * **Sharing / reporting** — one link is one conclusion ("look at this endpoint's link")
  *
  * Short keys keep the URL readable: `p` perspective, `n` centre, `d` depth, `i` Inspector.
- * (There used to be an `m` layout override: layout is declared per perspective in
- * `views/perspectives.yaml` and is no longer exposed to the user.)
+ * Layout is declared per perspective in `views/perspectives.yaml`, so it is not part of the state.
  */
 export interface ViewState {
   /** Level one: perspective id. */

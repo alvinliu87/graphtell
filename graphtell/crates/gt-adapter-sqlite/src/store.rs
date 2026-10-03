@@ -205,16 +205,16 @@ impl SqliteStore {
     ///
     /// # Why this must be computed **only once, at the start of a batch query**
     ///
-    /// This filter used to be a sub-query written into each chunk's SQL:
-    /// `project_id IN (SELECT project_id FROM nodes WHERE id IN (<the chunk's 400 ids>))`.
-    /// The chunk count grows linearly with size, so that sub-query ran **N/400 times over**; worse, SQLite
+    /// Written as a sub-query in each chunk's SQL —
+    /// `project_id IN (SELECT project_id FROM nodes WHERE id IN (<the chunk's 400 ids>))` —
+    /// the chunk count grows linearly with size, so that sub-query would run **N/400 times over**; worse, SQLite
     /// rebuilds a temporary table for `IN (SELECT …)` on every execution, a cost proportional to the size of
-    /// the sub-query result — measured, this degraded batch edge fetching to about **N^1.5~1.7**
+    /// the sub-query result — measured, this degrades batch edge fetching to about **N^1.5~1.7**
     /// (16k nodes: in-edges 156ms / out-edges 131ms, 4~5 times `query_nodes`).
     ///
     /// Callers always pass ids from a single project, so the project set is resolved once here and then sent
     /// down to each chunk as a very short constant list (usually a single value).
-    /// The semantics are unchanged; the cost drops from "one sub-query per chunk" to "one query in total".
+    /// The cost is "one query in total" instead of "one sub-query per chunk".
     fn project_ids_of(&self, ids: &[NodeId]) -> Result<Vec<i64>> {
         let conn = self.conn.lock().unwrap();
         let mut out: Vec<i64> = Vec::new();

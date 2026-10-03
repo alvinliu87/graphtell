@@ -1,6 +1,6 @@
 # Spring for Apache Kafka — a **library**-level FKB, separated out of `spring-boot.yaml`.
 #
-# Why: a Spring Boot project may use RabbitMQ, or Kafka, or no broker at all, and both brokers' rules used to
+# Why: a Spring Boot project may use RabbitMQ, or Kafka, or no broker at all, and both brokers' rules would
 # run for every Spring Boot project.
 
 id: spring-kafka

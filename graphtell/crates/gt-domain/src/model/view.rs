@@ -292,7 +292,7 @@ pub struct EdgeView {
     pub from: NodeId,
     pub to: NodeId,
     /// Whether this is a resolved solid edge (there is traceable evidence, not an unsupported inference).
-    /// Note: a dashed line on the canvas only means "indirect (propagated through the call chain)"; it no longer implies "pending verification".
+    /// Note: a dashed line on the canvas only means "indirect (propagated through the call chain)"; it does not imply "pending verification".
     pub resolved: bool,
     pub confidence: f32,
     /// How many hops the dashed edge passes through (`via: 3 hops`).
@@ -373,8 +373,7 @@ pub struct UnresolvedInfo {
 ///
 /// A resource perspective draws semantic nodes only: when the accessor is a syntax node (Method / Function …) and
 /// walking up the call chain finds no semantic initiator (route / contract / scheduled job), it can neither be drawn
-/// as a semantic user nor appear in the `via` chain of any lifted edge — that used to be the reason for "lighting it
-/// up as a syntax node", which degraded the resource perspective into a call graph.
+/// as a semantic user nor appear in the `via` chain of any lifted edge.
 ///
 /// The current treatment is **degradation, not omission**: it takes no canvas space (syntax nodes carry little
 /// information and would crowd out the semantic-node budget), but it is tallied honestly and the contact-point

@@ -26,10 +26,10 @@ pub struct ScanRequest {
     pub languages: Vec<Language>,
     /// "Language -> extension list", supplied by the parser registry.
     ///
-    /// Used to decide the language from an extension. The scanner used to carry its own hard-coded extension table,
-    /// which did **not line up** with the sub-project marker table (`composer.json` / `go.mod` / `pyproject.toml` …)
-    /// — so Go / Python sub-projects were detected yet not a single source file was scanned.
-    /// Empty falls back to the scanner's built-in table (backwards compatibility).
+    /// Used to decide the language from an extension. The extension table comes from the parser registry, so it
+    /// lines up with the sub-project marker table (`composer.json` / `go.mod` / `pyproject.toml` …) — otherwise
+    /// a sub-project would be detected yet not a single source file scanned.
+    /// Empty falls back to the scanner's built-in table.
     pub language_extensions: Vec<(String, Vec<String>)>,
 }
 

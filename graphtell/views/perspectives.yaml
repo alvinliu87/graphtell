@@ -18,7 +18,7 @@
 #
 # Out-of-process mediators (Event / Queue / Cache / Topic) are each their own kind, and perspectives
 # **show them directly by kind** (event / queue / cache / message topic); there is no umbrella
-# "external system" anymore.
+# "external system".
 #
 # `Middleware` is the **only semantic node promoted from a syntax node**: P2 first builds it as a
 # `Class`, then P14 — once it is confirmed to be attached to a route — changes its kind to
@@ -38,7 +38,7 @@
 #
 # Why both are set semantics: the pipeline accumulates each party's claim into a sorted `sides` set and turns
 # the scalar `side` into a mere display label — one party ⇒ that party, several ⇒ `bridge`. So "the backend
-# participates" can no longer be phrased as "the label equals backend": a bridged node would answer no and
+# participates" cannot be phrased as "the label equals backend": a bridged node would answer no and
 # vanish. Rows written by an older pipeline carry only the scalar and still match, so enabling a side filter
 # never forces a rebuild. Nodes with no side evidence at all match neither form, as before.
 
@@ -109,7 +109,7 @@ perspectives:
     mode: object
     node_kind: Cache
     # Backend caches only (`side=backend`): `Cache::*` / `Redis::*` / `*CacheService::*`.
-    # Front-end local storage was split out into the "local storage" perspective and is no longer mixed in here.
+    # Front-end local storage belongs to the "local storage" perspective and is not mixed in here.
     side: backend
     layout: radial
     depth: 2
@@ -208,7 +208,7 @@ node_views:
   HttpContract: route
   Table: table
   # Out-of-process mediators are each their own kind and switch directly to the matching concrete
-  # perspective (there is no "external system" umbrella anymore).
+  # perspective.
   Cache: cache
   Event: event
   EventBus: event_bus

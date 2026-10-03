@@ -214,16 +214,15 @@ pub struct GraphWorkspace {
     /// Source-file id → path (reverse of `file_id_by_path`).
     ///
     /// P6's selector acts on **graph nodes**; a node's `file_id` must be restored to `file:line`
-    /// to give resolvable / synthesized nodes a jumpable origin
-    /// (previously it returned an identity string, and the frontend jump got a fake path).
+    /// to give resolvable / synthesized nodes a jumpable origin.
     source_path_by_id: HashMap<i64, String>,
     /// **Each file's own** `use` import table: `source-file id → (short name lowercased → FQN)`.
     ///
     /// Why it must be per-file: PHP short names resolve **per file** (`use think\facade\Cache;`
-    /// and `use app\model\other\Cache;` mean completely different things in different files). There used to be only
-    /// one global short-name index (`by_short`) and a first-come-first-served global `imports` symbol table, so
-    /// `Cache::tag()` was treated as `app\model\other\Cache` (a Model), spuriously creating a
-    /// `Model --MapsTo--> Table(cache)` class-level semantic edge and polluting the whole call chain.
+    /// and `use app\model\other\Cache;` mean completely different things in different files). A single global
+    /// short-name index and a first-come-first-served global `imports` symbol table would treat `Cache::tag()` as
+    /// `app\model\other\Cache` (a Model), spuriously creating a `Model --MapsTo--> Table(cache)` class-level
+    /// semantic edge and polluting the whole call chain.
     file_imports: HashMap<i64, HashMap<String, String>>,
     /// Out-edge adjacency: `from → [(kind, to)]`, for ancestor-chain judgment.
     out_edges: HashMap<i64, Vec<(String, i64)>>,
@@ -276,7 +275,7 @@ impl GraphWorkspace {
     pub fn new(project_id: ProjectId) -> Self {
         Self {
             project_id,
-            // Node ids are segmented per project, no longer relying on "read global MAX once at start" (see `NODE_ID_STRIDE`).
+            // Node ids are segmented per project, without relying on "read global MAX once at start" (see `NODE_ID_STRIDE`).
             next_node: node_id_base(project_id),
             next_edge: 1,
             next_ann: 1,

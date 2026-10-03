@@ -1,4 +1,4 @@
-//! End-to-end self-check of the generic `method_ref` resolver (formerly `handler_pattern`).
+//! End-to-end self-check of the generic `method_ref` resolver.
 //!
 //! Covers the three behaviours agreed for the "string -> method/function" resolver:
 //!   1. a string-literal handler (`'admin.Login/login'`) resolves to the real controller method via `HandledBy`;

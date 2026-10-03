@@ -2,8 +2,8 @@
 #
 # Why: Spring Cache is an opt-in starter (`spring-boot-starter-cache`); a Spring Boot project may use no
 # caching at all, or bring its own (Caffeine / Redis / Ehcache) so none of these `@Cacheable` rules apply.
-# They used to run for every project recognised as Spring Boot, materialising `Cache` nodes from the mere
-# presence of the annotations even when the cache abstraction was never on the classpath.
+# They would run for every project recognised as Spring Boot, materialising `Cache` nodes from the mere
+# presence of the annotations even when the cache abstraction is never on the classpath.
 #
 # Detector note: the starter is named `spring-boot-starter-cache` (contains `cache`); the precise probe is the
 # `org.springframework.cache.annotation.Cacheable` import — every cache rule keys off one of the three

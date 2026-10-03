@@ -14,8 +14,8 @@ interface State {
 /**
  * Global render error boundary.
  *
- * Why it is needed: the UI previously had **no** React error boundary at all (no `componentDidCatch`
- * anywhere in `ui/src`). Once any component throws during render (malformed JSON from the backend,
+ * Why it is needed: without a React error boundary (no `componentDidCatch` anywhere in `ui/src`),
+ * once any component throws during render (malformed JSON from the backend,
  * an undefined field, a broken antd usage), React bubbles it all the way to the root, and the result
  * is a **completely blank page with no degradation** — harder to diagnose than a backend 500.
  *

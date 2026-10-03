@@ -2,8 +2,8 @@
 #
 # Why: JPA is an opt-in starter (`spring-boot-starter-data-jpa`, pulling in Hibernate); a Spring Boot project
 # may use MyBatis-Plus, or raw JDBC, or no persistence at all. The `@Table` annotation and the `JpaRepository`
-# generic DAO used to run for every project recognised as Spring Boot, materialising `Table` nodes and
-# `MapsTo` edges even when JPA was nowhere on the classpath.
+# generic DAO would run for every project recognised as Spring Boot, materialising `Table` nodes and
+# `MapsTo` edges even when JPA is nowhere on the classpath.
 #
 # Detector note: the starter is `spring-boot-starter-data-jpa` (contains `data-jpa`); `hibernate` is a second
 # manifest spelling for projects that depend on it directly. The precise probe is the

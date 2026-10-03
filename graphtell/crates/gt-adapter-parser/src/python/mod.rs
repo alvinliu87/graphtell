@@ -1087,8 +1087,7 @@ class Post(models.Model):
     }
 
     /// Relative imports `from .x import y` must be restored to absolute module names, otherwise the FQN `y` resolves to is
-    /// wrong (it used to be concatenated directly as `views.user_list` instead of `app.views.user_list`), and Django routes /
-    /// Flask blueprint cross-file references would fail to connect.
+    /// wrong, and Django routes / Flask blueprint cross-file references would fail to connect.
     #[test]
     fn relative_import_resolves_to_absolute_module() {
         let facts = parse_src(

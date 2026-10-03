@@ -1,8 +1,7 @@
 //! Contract smoke test of the HTTP inbound adapter: assemble a real `AppState` from an in-memory database plus an
 //! empty asset directory, and verify that the router can be built and the health / status endpoints return 200.
 //!
-//! This crate previously had **zero tests at all**, which was high risk (the whole REST contract surface lives in
-//! `router.rs`). This does not try to cover every handler; it only pins "the route exists and the basic endpoints
+//! This does not try to cover every handler; it only pins "the route exists and the basic endpoints
 //! respond", so a route cannot be deleted by accident or a handler signature drift unnoticed.
 
 use std::sync::Arc;

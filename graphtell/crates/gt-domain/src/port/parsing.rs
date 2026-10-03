@@ -9,9 +9,8 @@ use crate::model::{Language, SyntaxFacts};
 /// A single-language parser.
 ///
 /// Besides parsing, it declares the language's **namespace notation rules** and **ecosystem conventions**.
-/// The latter used to be scattered across the pipeline (a hard-coded `\\` separator, a hard-coded `composer.json`
-/// marker file, a hard-coded `vendor/` exclusion), so adding a language always meant changing the kernel. With these
-/// methods in place that knowledge arrives with the language registration, and the kernel knows no concrete language.
+/// That knowledge arrives with the language registration, so the kernel knows no concrete language and adding
+/// one needs no kernel change.
 pub trait LanguageParser: Send + Sync {
     /// The language this parser is responsible for.
     fn language(&self) -> Language;
@@ -25,7 +24,7 @@ pub trait LanguageParser: Send + Sync {
 
     /// Member separator: the symbol between a class and its methods / properties.
     ///
-    /// PHP and C++ use `::`, while Java / JS / Python use `.`. The kernel used to hard-code `::` everywhere.
+    /// PHP and C++ use `::`, while Java / JS / Python use `.`.
     fn member_separator(&self) -> &'static str {
         "::"
     }

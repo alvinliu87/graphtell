@@ -105,12 +105,10 @@ CREATE INDEX IF NOT EXISTS idx_edges_proj_from ON edges(project_id, from_id);
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS node_annotations (
-    -- A redundant copy of `project_id`: an annotation naturally belongs to a project, but the table used to have
-    -- only `node_id`, so cleanup / counting by project had to go through
-    -- `node_id IN (SELECT id FROM nodes WHERE project_id=?)`.
-    -- Once the nodes are deleted first (re-running a build clears nodes first), that subquery is empty and
-    -- the annotations can never be deleted again — historical databases accumulated nearly ten thousand
-    -- permanently undeletable dangling annotations because of this.
+    -- A redundant copy of `project_id`: an annotation naturally belongs to a project, and resolving it through
+    -- `node_id IN (SELECT id FROM nodes WHERE project_id=?)` breaks once the nodes are deleted first
+    -- (re-running a build clears nodes first): that subquery is empty and the annotations can never be
+    -- deleted again, leaving permanently undeletable dangling annotations.
     project_id   INTEGER NOT NULL DEFAULT 0,
     id          INTEGER PRIMARY KEY,
     node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,

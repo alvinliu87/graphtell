@@ -2,7 +2,7 @@
 //!
 //! A project can override a rule's enabled state and parameter values. A regression here means a user's toggle
 //! "silently does nothing" (or is ignored), so a disabled rule still fires or an enabled one stays quiet. These
-//! guard `set` / `get` / `delete` that previously had zero tests.
+//! guard `set` / `get` / `delete`.
 
 use gt_adapter_sqlite::SqliteStore;
 use gt_domain::model::{ProjectId, ProjectRuleConfig};

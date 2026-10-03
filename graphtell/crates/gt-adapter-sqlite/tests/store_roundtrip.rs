@@ -1,7 +1,6 @@
 //! Persistence round-trip contract tests for the SQLite adapter: create project -> persist graph (nodes / edges) -> query back.
 //!
-//! This crate previously had **zero tests** while carrying all persistence logic (`store.rs`). These tests only
-//! verify the core contract "what is written can be read back", not every column / branch — but that is enough to
+//! These tests only verify the core contract "what is written can be read back", not every column / branch — but that is enough to
 //! raise the alarm immediately when a migration script or the read/write logic is broken.
 
 use gt_adapter_sqlite::SqliteStore;
@@ -121,11 +120,11 @@ fn node_and_edge_roundtrip() {
     assert_eq!(out[0].to_id, NodeId(101));
 }
 
-/// `count_nodes` used to compare one scalar (`$.side = ?`), which made any node several parties had written
-/// invisible to a side-filtered perspective: a contract bridge reads `side = bridge` and matched **neither**
-/// `side = frontend` nor `side = backend`, so "the backend participates" quietly dropped every contract the
-/// front end had touched. It now asks "does any of these parties have evidence" — reading the derived `sides`
-/// set, with the scalar kept as a fallback so rows written before `sides` existed still count (no rebuild).
+/// `count_nodes` asks "does any of these parties have evidence" — reading the derived `sides` set, with the
+/// scalar kept as a fallback so rows written before `sides` existed still count (no rebuild). Comparing one
+/// scalar (`$.side = ?`) would make any node several parties had written invisible to a side-filtered
+/// perspective: a contract bridge reads `side = bridge` and matches **neither** `side = frontend` nor
+/// `side = backend`, so "the backend participates" would quietly drop every contract the front end touched.
 #[test]
 fn count_nodes_accepts_any_party_with_evidence() {
     let store = make_store();

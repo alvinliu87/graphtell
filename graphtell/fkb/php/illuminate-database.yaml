@@ -41,8 +41,7 @@ detectors:
     confidence: 0.9
 
 # Transaction-boundary markers (used by the "several database writes in one method but no transaction
-# recognised" judgement). `DB::transaction` is the Laravel spelling; it used to sit in `php/common.yaml`,
-# i.e. in the layer applied to every PHP project whether or not it has Laravel's DB facade.
+# recognised" judgement). `DB::transaction` is the Laravel spelling.
 tx_calls:
   - "DB::transaction"
 
@@ -73,7 +72,7 @@ loaders:
         extensions: ["php"]
 
 # `ForeignKey` is a semantic edge (table -> table: a real business-resource dependency), `References` a
-# bridge edge (model -> model: code nodes at both ends). Both used to be declared by `laravel.yaml`.
+# bridge edge (model -> model: code nodes at both ends).
 semantic_edge_kinds: [ForeignKey]
 bridge_edge_kinds: [References]
 

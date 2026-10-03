@@ -173,7 +173,7 @@ fn is_action_site(kind: &str) -> bool {
 /// whose meaning weakens after propagation from "read here" to "somewhere upstream was read, this entry may be affected". Downstream uses this to
 /// down-weight such edges as "indirect", avoiding a shared helper marking every entry it passes through as having read that config / cache.
 ///
-/// Note: numeric decay **no longer** uses a fixed coefficient — a deterministic call chain (edge confidence 1.0) stays un-decayed on product,
+/// Note: numeric decay does not use a fixed coefficient — a deterministic call chain (edge confidence 1.0) stays un-decayed on product,
 /// only inferred / dynamic calls (edge confidence <1.0) decay naturally. Here we only set the `indirect` flag.
 const DECAYED_KINDS: &[&str] = &[EdgeKind::READS_CONFIG, "ReadsCache"];
 

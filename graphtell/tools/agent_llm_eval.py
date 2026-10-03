@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """True end-to-end agent benchmark (LLM-driven) + safety validation.
 
-This is the "real LLM" version of agent_task_eval.py (deterministic policy): the agent is no longer our hand-written
-policy but **really calls an LLM**, given four tools -- recall / grep / read_file / propose_edit --
+This is the "real LLM" version of agent_task_eval.py (deterministic policy): the agent is **really an LLM
+call**, given four tools -- recall / grep / read_file / propose_edit --
 and decides for itself "where and how to change".
 
 ⚠️ This environment has no usable LLM (no API key, no local model), so it defaults to `--mock` mode:

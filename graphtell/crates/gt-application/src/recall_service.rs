@@ -88,7 +88,7 @@ const GENERIC_CRUD_VERB_ONLY_DISCOUNT: f64 = 0.5;
 ///
 /// Methods like `user()`/`refund()` have bodies of only `hasOne/hasMany/belongsTo`, no business logic; on the graph they
 /// carry a `MapsTo` out-edge. They get 100 by exact same-name match with generic words; measured "notify user after order"
-/// had four such in top five. Dropped to 0.3 they no longer hog seed slots but can still be recalled.
+/// had four such in top five. At 0.3 they do not hog seed slots but can still be recalled.
 const RELATION_ACCESSOR_DISCOUNT: f64 = 0.3;
 
 /// Whether it's an ORM association accessor: has a `MapsTo` out-edge (maps to another entity).
@@ -116,7 +116,7 @@ const ANCHOR_FQN_BOOST: f64 = 1.6;
 ///
 /// Developers don't look for business impl in unit tests, but `test/user.test.js` is full of symbols that "look like answers"
 /// (`makeFakeUser`/`fixtureFilename`); measured: 4 of top 5 of "thumbnail after avatar upload" came from `test/**`. After
-/// downweighting they can still be recalled, just no longer occupy slots.
+/// downweighting they can still be recalled, just without occupying slots.
 const TEST_FILE_DISCOUNT: f64 = 0.55;
 
 /// Discount factor for **generator boilerplate files** (MyBatis Generator `mall-mbg`/`generated-sources`…).
@@ -314,7 +314,7 @@ const CONCEPT_CLUSTERS: &[(&[&str], &[&str])] = &[
         &["mail", "email", "sms"],
         &["mail", "email", "sms", "notify", "message", "push"],
     ),
-    // pay / transaction concept (pay moved to `all`: avoid "unpaid" etc. negatives over-lifting pay* nodes and squeezing order-cancel targets)
+    // pay / transaction concept (pay is in `all`: avoid "unpaid" etc. negatives over-lifting pay* nodes and squeezing order-cancel targets)
     (
         &["payment", "checkout"],
         &["pay", "payment", "checkout", "transaction", "wallet"],
@@ -666,8 +666,8 @@ fn collect_event_seeds<'a>(
 /// Split an identifier into a lowercase token sequence by "camelCase boundary + non-alphanumeric boundary".
 ///
 /// E.g.: `StoreCouponIssue` → ["store","coupon","issue"]; `userAddressServices` → ["user","address","services"]; `HTTPResponse` →
-/// ["http","response"]. The old impl concatenated then did whole-string `contains`, treating mid-word fragments as hits (`Recorder`
-/// contains `order`). After token + prefix matching, `order` only hits `order`/`orders`/`orderItem`, no longer `recorder`. Shape-dependent,
+/// ["http","response"]. Whole-string `contains` would treat mid-word fragments as hits (`Recorder` contains `order`); token +
+/// prefix matching means `order` only hits `order`/`orders`/`orderItem`, not `recorder`. Shape-dependent,
 /// project-independent. Prefix (not strict) keeps reasonable compound/inflected matches (`pay`→`payment`).
 fn split_ident_tokens(s: &str) -> Vec<String> {
     let chars: Vec<char> = s.chars().collect();
@@ -879,7 +879,7 @@ const PACK_ECOMMERCE: &[(&str, &[&str])] = &[
     ("积分", &["point", "score", "integral"]),
     ("规格", &["spec", "specification", "attr", "attribute"]),
     ("验证码", &["captcha", "code", "verify"]),
-    // ---- fill in previously-regressed domain words (not in table before, query could only hit generic add/save) ----
+    // ---- fill in domain words the alias table alone would miss (the query would only hit generic add/save) ----
     ("二维码", &["qrcode", "qr", "code"]),
     ("头像", &["avatar", "profile"]),
     ("地址", &["address"]),
@@ -1107,7 +1107,7 @@ fn cohesion_multiplier(matched: &[String], group_map: &HashMap<String, String>) 
 
 /// Seed selection: lexical top-k and vector top-k union (dedup), merged score = lexical + vector.
 ///
-/// Key: cross-language nodes (coupon→Coupon) even with low lexical score can be BFS-expanded as "vector seeds", no longer drowned by
+/// Key: cross-language nodes (coupon→Coupon) even with low lexical score can be BFS-expanded as "vector seeds" instead of being drowned by
 /// generic-word lexical matches like Order*; merging by addition (not max) lets pure semantic hits also rank.
 fn select_seeds<'a>(
     lexical: &HashMap<i64, (f64, Vec<String>)>,
@@ -1230,15 +1230,14 @@ fn query_embed_text(query: &str, alias_terms: &[String]) -> String {
 
 /// Whether a node participates in vector encoding.
 ///
-/// `Method`/`Function` were once wholly excluded for "being most of the graph", with the side effect that Chinese semantic queries
-/// couldn't directly hit business methods — only via `INTENT_ALIASES` lexical bridge or BFS from a hit class, quality capped.
-/// Now included in the vector space to raise the recall ceiling; encoding cost is bounded by `ensure_cached_with`'s BATCH + skipping
+/// `Method`/`Function` are included in the vector space to raise the recall ceiling; excluding them for "being most of the
+/// graph" would leave Chinese semantic queries unable to hit business methods directly — only via `INTENT_ALIASES`
+/// lexical bridge or BFS from a hit class, quality capped. Encoding cost is bounded by `ensure_cached_with`'s BATCH + skipping
 /// [`DEFAULT_EXCLUDED_KINDS`].
 ///
-/// Early versions also skipped `getXxx`/`setXxx` accessors ("many, semantics carried by fields"). But Chinese "get/query" intent often
+/// Filtering out `getXxx`/`setXxx` accessors ("many, semantics carried by fields") is wrong too: Chinese "get/query" intent often
 /// lands exactly on `getXxx` business methods (`getWorkbench`/`getDictData`/`getAdminByUsername`/`setRechargeConfig`) — all business,
-/// not pure field accessors; cut by a blanket rule they vanished from vector space. So here we no longer filter by accessor — include
-/// all methods/functions with a source location.
+/// not pure field accessors. So accessors are not filtered here: all methods/functions with a source location are included.
 fn is_vector_kind(node: &Node) -> bool {
     let k = node.kind.as_str();
     if DEFAULT_EXCLUDED_KINDS.contains(&k) {
@@ -1510,8 +1509,8 @@ pub struct RecallService {
 
 /// The "graph snapshot" needed for one recall: candidate nodes + neighbors + file paths. See [`RecallService::candidate_cache`].
 ///
-/// Derives `Clone`/`Serialize`/`Deserialize` for **disk reuse**: cold start no longer rebuilds from SQLite live (CRMEB ~10s), but reads
-/// the persisted snapshot (<1s). See [`RecallService::candidate_set`].
+/// Derives `Clone`/`Serialize`/`Deserialize` for **disk reuse**: cold start reads the persisted snapshot (<1s) instead of
+/// rebuilding from SQLite live (CRMEB ~10s). See [`RecallService::candidate_set`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CandidateSet {
     nodes: Vec<Node>,
@@ -3245,7 +3244,7 @@ fn split_camel(s: &str) -> Vec<String> {
 
 /// Structural "containment" edge: when a container (class/interface/table/contract) is hit, use it to bring in its members.
 ///
-/// Recall previously only expanded along call-chain edges, so hitting `ArticleService` couldn't get its `findAll` — reproducible even
+/// Expanding only along call-chain edges means hitting `ArticleService` cannot get its `findAll` — reproducible even
 /// for English queries (`article list pagination` only yields the class, not the method). Containment edges are pure structural info,
 /// independent of language/domain/naming style.
 fn is_containment_edge(kind: &str) -> bool {
@@ -3501,8 +3500,8 @@ fn is_entry_kind(kind: &str) -> bool {
 /// specific step of any flow.
 const HUB_FANIN: usize = 60;
 
-/// Hub decay factor: smoothly pushed down with fan-in, minimum 0.4, never 0 — the infrastructure can still be recalled, just no longer
-/// crowds the front of the chain (see [`reorder_for_flow`]).
+/// Hub decay factor: smoothly pushed down with fan-in, minimum 0.4, never 0 — the infrastructure can still be recalled, just without
+/// crowding the front of the chain (see [`reorder_for_flow`]).
 fn hub_penalty(fan_in: usize) -> f64 {
     if fan_in <= HUB_FANIN {
         return 1.0;

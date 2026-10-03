@@ -27,12 +27,12 @@ pub struct ViewService {
 /// A folded view's **discovery result**: the layered-BFS product rooted at the center (rings / parent pointers / kind-name cache /
 /// edge cache) plus the "access mode" labels recorded along discovery.
 ///
-/// Why it's a separate struct: `object_view` used to hold a dozen cross-referencing HashMaps inside one function body,
-/// dodging the borrow checker only via `{ }` scopes and a `pending` staging buffer — that's exactly why that near-thousand-line logic
-/// couldn't be split or read. Extracted:
+/// Why it's a separate struct: a dozen cross-referencing HashMaps inside one function body can only dodge the
+/// borrow checker via `{ }` scopes and a `pending` staging buffer — exactly why that near-thousand-line logic
+/// can't be split or read. Extracted:
 /// * `discover()` builds the state once and returns it;
 /// * later stages immutably borrow `&Discovery`; closures like `chain_to` / `via_from_ids` /
-///   `push_edge` no longer fight "fill in kind / name" writes (NLL handles it).
+///   `push_edge` never fight "fill in kind / name" writes (NLL handles it).
 struct FoldResult {
     /// Edges drawn (folded, lifted, with via inlined).
     edges: Vec<EdgeView>,
@@ -274,8 +274,8 @@ impl ViewService {
     /// Queue / Cache / Topic) and the semantic edges between them; syntactic nodes (Method / CallSite / Class …)
     /// are folded into the edge's `via` chain, with each hop's call site inlined -- click an edge to verify hop by hop.
     ///
-    /// There used to be an `expand` param to unfold all syntactic nodes; removed: that branch did no lifting, generated no `via`,
-    /// and inlined no call sites -- **more nodes drawn but less evidence**, and it blew the graph into multi-layer single rows needing several horizontal scrolls.
+    /// An `expand` param to unfold all syntactic nodes is deliberately absent: that branch does no lifting, generates no `via`,
+    /// and inlines no call sites -- **more nodes drawn but less evidence**, and it blows the graph into multi-layer single rows needing several horizontal scrolls.
     pub fn object_view(
         &self,
         project_id: ProjectId,
@@ -309,7 +309,7 @@ impl ViewService {
         let chain_depth = depth;
 
         let summary = self.store.nodes_summary(project_id)?;
-        // `inc` / `sem_inc` only served candidate scoring (removed from object view, see `ObjectView` note), no longer needed here.
+        // `inc` / `sem_inc` only serve candidate scoring, so they are not needed here (see the `ObjectView` note).
         let (out, _inc, _sem_inc) = self.store.chain_adjacency(project_id)?;
 
         // Semantic-ness is computed on demand from kind, avoiding repeated DB lookups for "is this a semantic node".
@@ -593,7 +593,7 @@ impl ViewService {
         }
 
         // Layered BFS: fetch edges per layer in one batch, compressing the original "one `edges_of` round-trip per node" into a few chunked queries;
-        // semantic nodes are terminals (collapsed mode no longer penetrates outward), third-party library sub-project nodes are not expanded either.
+        // semantic nodes are terminals (collapsed mode does not penetrate outward), third-party library sub-project nodes are not expanded either.
         let library_check = !library_subs.is_empty();
         let mut current: Vec<i64> = vec![center_id.get()];
         let mut ring: u32 = 0;
@@ -2001,7 +2001,7 @@ impl ViewService {
             "Extends" | "Implements" | "UsesTrait" | "Declares" | "Contains" | "HasCallSite"
         );
         let has_tier = e.properties.get("tier").is_some();
-        // `indirect` (P8 propagation along the call chain) only decides dashed styling and the "indirect" label, no longer down-weights as "to-verify".
+        // `indirect` (P8 propagation along the call chain) only decides dashed styling and the "indirect" label; it does not down-weight as "to-verify".
         let indirect = is_indirect_edge(&e);
         // Resolved = syntax/structural edge (authoritative) or authoritative-resolution edge (has_tier) or semantic edge (agg_rank>0).
         let resolved = (authoritative || has_tier) || Self::agg_rank(e.kind.as_str()) > 0;
@@ -2615,7 +2615,7 @@ fn is_chain_edge(kind: &str) -> bool {
 
 /// Semantic-node judgment: first-class semantic kind (`SYNTHESIZED` in `kinds.rs`: `Table` / `HttpContract` /
 /// `ConfigKey` / `I18nKey` / `Event` / `Queue` / `Cache` / `Topic`…).
-/// `Event` / `Queue` / `Cache` / `Topic` are concrete kinds now, no longer relying on the `category` umbrella.
+/// `Event` / `Queue` / `Cache` / `Topic` are concrete kinds, not the `category` umbrella.
 /// Classification authority is `kinds.rs`.
 fn node_is_semantic(n: &gt_domain::model::Node) -> bool {
     NodeKind(n.kind.to_string()).is_semantic()

@@ -40,7 +40,7 @@ const EDGE_LABEL_FONT = 10;
  * Upper bound for the compensating font size (world coords).
  *
  * If the font were left to decay proportionally when zooming out, only 5px would remain at k=0.5 -- that's noise, not information;
- * so we scale up inversely by `10 / min(k, 1)`. **It must be capped**: any larger and it collides with neighboring labels (the edge no longer
+ * so we scale up inversely by `10 / min(k, 1)`. **It must be capped**: any larger and it collides with neighboring labels (the edge does not
  * shrinks proportionally, it's purely the glyph growing), and it must not exceed the node name (11px) -- a predicate louder than the subject
  * reads the priority backwards. 16 means compensation is active over k∈[0.62, 1]; below that it shrinks with the graph again (at the fit floor
  * of 0.5 it's about 8px on screen, still legible).
@@ -72,7 +72,7 @@ const FIT_PAD = 16;
 const DIM_OPACITY_MIN = 0.12; // deepest, for dense graphs
 const DIM_OPACITY_MAX = 0.4; // lightest, for sparse graphs
 const DIM_EDGE_LOW = 4; // below this many edges use the lightest
-/** Sub-project colors: one stable hue per sub-project; multiple frontends / backends each get their own color (no longer collapsed into blue / orange buckets). */
+/** Sub-project colors: one stable hue per sub-project; multiple frontends / backends each get their own color. */
 const SUB_PROJECT_PALETTE = [
   '#0ea5e9', '#f97316', '#22c55e', '#a855f7', '#eab308',
   '#ec4899', '#14b8a6', '#6366f1', '#ef4444', '#84cc16',
@@ -322,7 +322,7 @@ export interface GraphCanvasProps {
   /**
    * Sub-project filter: show nodes and edges by multi-selected `sub_project_id`; the center node is always kept as an anchor.
    * An empty array (default) means no filtering, show everything. Multiple frontends / backends each form their own category,
-   * no longer collapsed into two "frontend / backend" buckets.
+   * rather than collapsed into two "frontend / backend" buckets.
    */
   subFilter?: number[];
 /** The current project's sub-project list (with id / name / role), used for coloring and the legend. */
@@ -911,7 +911,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           {/* Edges */}
           {layout.edges.map((e) => {
             // Exact back-reference: `seq` = this edge's index in `edges` => directly get **the EdgeView that carries its own via**.
-            // Multiple parallel paths sharing (id, from, to) therefore no longer share one view (otherwise the hover card always showed the first).
+            // Multiple parallel paths sharing (id, from, to) therefore do not share one view (otherwise the hover card would always show the first).
             // Falls back to lookup by id / endpoints only when the layout carries no `seq` (legacy / synthetic paths).
             const view =
               (e.seq != null ? edges[e.seq] : undefined) ??
@@ -938,7 +938,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
               ? clipArrowTip(_p0, _p1, _toRect.x, _toRect.y, _toRect.w, _toRect.h)
               : _p1;
             const _len = Math.hypot(_p1[0] - _p0[0], _p1[1] - _p0[1]) || 1;
-            // Arrow tip lands directly on the boundary intersection (no longer pulled back 3px): the endpoint is already pinned to the pill's near edge by the layout,
+            // Arrow tip lands directly on the boundary intersection (not pulled back 3px): the endpoint is already pinned to the pill's near edge by the layout,
             // and pulling back only creates a "just short of the end" gap (from real user feedback).
             const _tipx = _border[0];
             const _tipy = _border[1];
@@ -980,7 +980,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   style={{ pointerEvents: 'none' }}
                 />
                 {/* Edge type: the semantic edge kind (`ReadsConfig` / `MapsTo` …) is this graph's "predicate";
-                    labeling it is what makes it readable. **Always shown** by default (no longer requires hover): only when the edge count
+                    labeling it is what makes it readable. **Always shown** by default (not only on hover): only when the edge count
                     exceeds the threshold does it degrade to "label just the hovered / selected one" to avoid mush. On hover other edges only fade, never hide
                     their labels (focus never loses information).
                     The threshold looks only at **density** (and uses `layout.edges` rather than the input `edges` -- the collapsed view synthesizes /
@@ -1056,7 +1056,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                 }}
               >
                 {/* All nodes use a uniform 1.4px kind-colored stroke; center emphasis is carried by size + font weight instead,
-                    no longer stacking hierarchy via thicker borders, which made same-kind nodes' stroke widths look inconsistent.
+                    not stacking hierarchy via thicker borders, which would make same-kind nodes' stroke widths look inconsistent.
                     Frontend HTTP callers additionally get a light kind fill to highlight their "first-class entry" status. */}
                 <rect
                   x={-w / 2}
@@ -1145,7 +1145,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 >
                   {/* The semantic name (e.g. `store_order_refund_service` / `GET /v2/order/.../create`) is what a person
-                      is actually looking for, so it leads. Kind is already conveyed by the left icon + color and no longer competes. Long names are truncated
+                      is actually looking for, so it leads. Kind is already conveyed by the left icon + color, so it does not compete. Long names are truncated
                       in the middle at 40 by **visual width** (keeping head and tail; a CJK char counts as 1.8), matching the layout's `pillWidth` estimate so they don't overflow the pill.
                       `tspan` was removed: it repeated the parent's same font size / weight and was even inconsistent with it (400 vs 500),
                       leaving the risk of two sources of truth. */}

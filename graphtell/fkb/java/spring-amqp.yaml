@@ -1,8 +1,8 @@
 # Spring AMQP (RabbitMQ) — a **library**-level FKB, separated out of `spring-boot.yaml`.
 #
-# Why: a Spring Boot project may use Kafka, or RabbitMQ, or no broker at all. Both brokers' rules used to run
-# for every Spring Boot project, so a Kafka-only project still declared `convertAndSend` as one of its queue
-# producers.
+# Why: a Spring Boot project may use Kafka, or RabbitMQ, or no broker at all. Both brokers' rules would run
+# for every Spring Boot project, so a Kafka-only project would still declare `convertAndSend` as one of its
+# queue producers.
 #
 # Detector note: the dependency is usually pulled in as `spring-boot-starter-amqp`, whose name contains
 # **neither** `spring-rabbit` nor `rabbitmq`, so the manifest probe looks for `amqp` — with `spring-rabbit`

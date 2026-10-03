@@ -19,8 +19,6 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   SafetyCertificateOutlined,
-  // Temporarily commented out: the rule-set entry moved to the rule-check page
-  // ProfileOutlined,
   SearchOutlined,
   UnorderedListOutlined,
   // Temporarily commented out: the settings entry is hidden
@@ -105,13 +103,13 @@ export function AppShell() {
 
   const withProject = (path: string) => (projectId ? `/projects/${projectId}${path}` : '/');
 
-  // The sidebar holds only "in-project views"; project navigation (select / switch / overview) moved to the top-bar dropdown,
+  // The sidebar holds only "in-project views"; project navigation (select / switch / overview) lives in the top-bar dropdown,
   // avoiding the hierarchy ambiguity of putting "project overview" at the same level as views. With no project the list is empty and a hint renders.
   /**
    * The sidebar keeps only **three flat items** -- no grouping, no group headings.
    *
    * Group headings ("explore" / "quality gate") are signposts for "a group of ≥3 similar items";
-   * now there are only three items in total, each a different action (view graph / search code / view conclusions);
+   * there are only three items in total, each a different action (view graph / search code / view conclusions);
    * grouping would make "two groups of one or two" look like padding -- flat actually reads in one glance.
    *
    * The rule set **stays out of the menu**: it tunes "which rules are enabled and at what threshold" -- it is a **configuration** of rule checking,

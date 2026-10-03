@@ -104,8 +104,8 @@ export function GraphPage() {
   const candidates = candidateBundle.p === state.p ? candidateBundle.list : [];
   const [candidateSearch, setCandidateSearch] = useState('');
   /** Whether the level-2 object dropdown is open: candidates are only fetched from the backend when it is open (loaded on demand).
-   *  backend candidates without a search term used to take all candidates and rank by "semantic dependency value", but after moving
-   *  to whole-graph preloading it runs BFS in memory (no per-node DB lookups) and is fast; with a search term it matches by name, no scoring.
+   *  without a search term it runs BFS in memory over the whole preloaded graph
+   *  (no per-node DB lookups) and is fast; with a search term it matches by name, no scoring.
    *  Still loaded on demand here: never prefetch when a node is selected and the dropdown is closed, so a perspective switch makes no pointless call. */
   const [dropdownOpen, setDropdownOpen] = useState(false);
   /** In collapsed mode, the syntactic subgraph shown on demand after clicking a node (grouped by node id). */
@@ -605,7 +605,7 @@ export function GraphPage() {
     ? { rows: aggView.matrix.rows, cols: aggView.matrix.cols, cells: aggView.matrix.cells }
     : undefined;
 
-  // Layout is declared per perspective in `views/perspectives.yaml` (routes = layered, resources = radial …); no manual override anymore.
+  // Layout is declared per perspective in `views/perspectives.yaml` (routes = layered, resources = radial …); there is no manual override.
   const layoutMode: LayoutMode = current?.layout ?? 'radial';
   // Temporarily commented out: the local root template / WSL mode / per-project override settings are only needed for "jump to IDE",
   // and that entry has been removed; copying an absolute path can just use the backend root_path (revisit later if we bring it back).
@@ -1049,7 +1049,7 @@ export function GraphPage() {
         onClose={() => setDrawerOpen(false)}
         styles={{ body: { padding: 16 } }}
       >
-        {/* "Conclusions" no longer gets its own card: the two big numbers (in-edges / out-edges) are countable at a glance on the graph
+        {/* "Conclusions" gets no card of its own: the two big numbers (in-edges / out-edges) are countable at a glance on the graph
                   (the ring node titles state them too); a big-number card costs ~150px just to say two sentences. Compressed into the ring
                   node card's extra + one bottom line; only things with incremental information (annotations / schema column count / route-table registration) qualify. */}
         <Card

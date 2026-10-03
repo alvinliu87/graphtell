@@ -26,12 +26,8 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Locate the CRMEB sample root: prefer `GRAPHTELL_SAMPLE_DIR`, otherwise search recursively under `samples/`
-/// **level by level upward** from `CARGO_MANIFEST_DIR`.
-///
-/// It used to look only at `workspace_root()/samples` (the inner workspace) and match `samples/*/CRMEB-master`
-/// (one level + suffix), which does not fit the real layout `samples/php-projects/thinkphp/CRMEB` (two levels, no
-/// suffix) -> the sample was never found -> the case took the soft-skip branch and still counted as passed, with
-/// zero coverage in reality.
+/// **level by level upward** from `CARGO_MANIFEST_DIR` — a fixed one-level pattern does not fit the real
+/// layout `samples/php-projects/thinkphp/CRMEB`, and a miss must not become a silent skip.
 fn find_sample() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
         let p = PathBuf::from(dir);
