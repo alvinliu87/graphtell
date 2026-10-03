@@ -146,7 +146,10 @@ impl PipelineContext {
             out.extend(
                 self.rules_global
                     .iter()
-                    .filter(|(l, _)| lang.as_ref().map(|x| *l == *x).unwrap_or(true))
+                    .filter(|(l, r)| match &lang {
+                        Some(lang) => r.applies_to(l, lang),
+                        None => true,
+                    })
                     .map(|(_, r)| r.clone()),
             );
         }

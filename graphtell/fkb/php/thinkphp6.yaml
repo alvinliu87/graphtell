@@ -294,31 +294,91 @@ resolvers:
     call: "*->*"
     strategy: variable_type
 
-# ---------------------------------------------------------------- P6 annotation: kernel-standard recognizers + this stack's data
-# "Which annotation kinds exist and how they are recognised" is a kernel standard (see `DEFAULT_ANNOTATIONS_YAML`);
-# this only declares the data common across ThinkPHP versions. Project-specific parameters (e.g. CRMEB's
-# `contact_phone` column name) are appended by each project's FKB and take effect as a union (both rules match
-# independently and MaxByKind merges them, with no conflict).
-annotation_interfaces:
-  - annotation: pii
-    params:
-      table: schema
-      names: [phone, mobile, tel, idcard, email]
-      subkind: phone
-  - annotation: table_criticality
-    params:
-      thresholds: { high: 50, medium: 10 }
-  - annotation: config_metadata
-    params:
-      table: config_keys
-  - annotation: public_endpoint
-    params:
-      caps: [Authentication, Authorization]
-  - annotation: i18n_coverage
-    params: {}
+
 
 # ---------------------------------------------------------------- rules
 rules:
+  # ===== P6 annotation: kernel-standard recognizers, written directly as `selector + binding` rules =====
+  # (previously `annotation_interfaces` + `DEFAULT_ANNOTATIONS_YAML`; now plain rules — same engine, one writing style)
+  - id: tp6-pii
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Table
+      where:
+        - columns_match: { table: schema, names: [phone, mobile, tel, idcard, email] }
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: pii
+              subkind: { literal: phone }
+              confidence: 0.9
+          merge: MaxByKind
+  - id: tp6-table-criticality
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Table
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: data.criticality
+              subkind: { from_fan_in: { thresholds: { high: 50, medium: 10 } } }
+              confidence: 0.85
+          merge: MaxByKind
+  - id: tp6-config-metadata
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: ConfigKey
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: config.storage
+              from_symbol_table: { table: config_keys, field: storage }
+            - kind: config.mutability
+              from_symbol_table: { table: config_keys, field: mutable }
+          merge: MaxByKind
+  - id: tp6-public-endpoint
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: HttpContract
+      where:
+        - none_of_capability: [Authentication, Authorization]
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: auth.public
+              confidence: 0.9
+          merge: MaxByKind
+  - id: tp6-i18n-coverage
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: I18nKey
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: i18n.missing_locale
+              computed: missing_locales
+              confidence: 1.0
+          merge: MaxByKind
   # ===== P4 Annotate-Pre: taint semantics =====
   - id: tp6-sanitizer-param
     phase: AnnotatePre

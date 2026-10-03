@@ -160,11 +160,15 @@ pub fn run(
             .collect();
         for fk in kb.all() {
             if fk.scope == KnowledgeScope::Framework
-                && fk.language == sub.language
+                && (fk.language == sub.language || fk.language.0 == "*")
                 && !frameworks.contains(&fk.id)
                 && fk.apply_without_detection
             {
-                rules.extend(fk.rules.iter().cloned());
+                for r in &fk.rules {
+                    if r.applies_to(&fk.language, &sub.language) {
+                        rules.push(r.clone());
+                    }
+                }
             }
         }
         for id in &projects {

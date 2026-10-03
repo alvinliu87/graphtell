@@ -47,22 +47,27 @@ annotation_kinds:
   - entrypoint.login
 
 # ===== P6 annotation: reference the kernel-standard recognizers, implemented with this stack's data (column names / source tables / thresholds) =====
-# "Which annotation kinds exist and how they are recognised" is a **kernel standard** (see `DEFAULT_ANNOTATIONS_YAML`);
-# this only declares CRMEB's data. Generic PII column names (phone / email / idcard…) are already a cross-application
-# convention, while business-domain column names (contact_phone) remain stack-specific — kept as parameters rather
-# than hard-coded into the recognizer.
-# The generic recognizers and generic parameters for PII / criticality / config / public endpoints / i18n were moved
-# up into `thinkphp6.yaml` (the stack implementation of the kernel-standard `annotation_templates`). Only CRMEB's own
-# parameter addition stays here: the `contact_phone` column name. The two rules match independently and `MaxByKind`
-# merges them, with no conflict.
-annotation_interfaces:
-  - annotation: pii
-    params:
-      table: schema
-      names: [contact_phone]
-      subkind: phone
+
 
 rules:
+  # ===== P6 annotation: CRMEB's stack-specific PII column name (plain rule, formerly annotation_interfaces) =====
+  - id: crmeb-pii
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Table
+      where:
+        - columns_match: { table: schema, names: [contact_phone] }
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: pii
+              subkind: { literal: phone }
+              confidence: 0.9
+          merge: MaxByKind
   # ===== P6: mark "entry point" semantics on HttpContracts (CRMEB business-specific, kept in the stack) =====
   - id: crmeb-login-entrypoint
     phase: AnnotatePost

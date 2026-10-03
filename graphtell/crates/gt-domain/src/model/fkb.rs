@@ -36,23 +36,7 @@ pub struct FrameworkKnowledge {
     pub loaders: Vec<LoaderSpec>,
     /// Rules grouped by phase.
     pub rules: Vec<Rule>,
-    /// Capability interface declarations (library / framework -> capability mapping): look up the
-    /// **cross-language capability template** by `capability` name (`capability_templates`, loaded by the loader
-    /// from the core config) and flatten it into `rules`.
-    ///
-    /// This is "framework / library knowledge" (per language, user-extensible), kept separate from the
-    /// cross-language capability templates (the recognition mechanism): a template is written once, and each
-    /// language / library only declares "who exposes which capability".
-    #[serde(default)]
-    pub capability_interfaces: Vec<CapabilityInterface>,
-    /// References to standard **annotation recognisers** (the "interface implementation" behind P6 tagging): each
-    /// stack declares, against its own data, how it instantiates the kernel's standard recognisers (PII column
-    /// names / config source tables / criticality thresholds …).
-    /// The recognisers themselves are kernel standard (see `annotation_templates` in `gt_adapter_fkb::loader`);
-    /// each stack only fills in parameters, it does not build recognisers or invent annotation kinds — isomorphic
-    /// to `capability_interfaces`.
-    #[serde(default)]
-    pub annotation_interfaces: Vec<AnnotationInterface>,
+
     /// **Business-specific annotation kinds** introduced by this FKB (appended to the kernel-standard
     /// [`AnnotationKind`]).
     ///
@@ -692,81 +676,25 @@ pub struct Rule {
     pub binding: Vec<Action>,
     #[serde(default = "default_conf")]
     pub confidence: f32,
+    /// Per-rule language scoping. `None` inherits the owning FKB's `language` (current behaviour);
+    /// `Some(list)` restricts the rule to the listed languages, where the sentinel `Language("*")`
+    /// means "all languages" (used by cross-language universal rules).
+    #[serde(default)]
+    pub languages: Option<Vec<Language>>,
 }
 
-/// The matching pattern of a capability interface: on which dimension to flatten "type x method" into a call-matching string.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MatchMode {
-    /// Match on the "real implementation type": flatten `types x methods` into `Type::method|*Suffix::method`.
-    /// `Type::method` matches the declared class exactly; `*Suffix::method` is the fallback matching "any class whose
-    /// name ends with that tail fragment" (e.g. `Predis\Client` -> also matches `XxxClient`). For libraries where
-    /// P7 can resolve the internal real call (Predis / Redis / an in-house client).
-    #[default]
-    ByType,
-    /// Match on "naming convention": flatten `types` into `*Type::method` (class suffix + method name).
-    /// For framework facades (ThinkPHP / Laravel `Cache`) that dispatch magically so P7 cannot see the internal
-    /// real call and can only recognise "a wrapper method named `*CacheService::get`" — that is a convention the
-    /// framework ships with, not an arbitrary guess.
-    ByName,
+impl Rule {
+    /// Whether this rule is effective for a sub-project of `sub_language`, given the language of the
+    /// FKB that declared it (`fk_language`). See `languages` for the scoping semantics.
+    pub fn applies_to(&self, fk_language: &Language, sub_language: &Language) -> bool {
+        match &self.languages {
+            Some(list) => list.iter().any(|x| x == sub_language || x.0 == "*"),
+            None => fk_language == sub_language || fk_language.0 == "*",
+        }
+    }
 }
 
-/// A capability interface declaration: which **specific** types and methods of a library / framework expose a
-/// capability (read / write).
-///
-/// Example: `{ capability: cache, types: ["Predis\\Client"], read: [get], write: [set] }`
-/// The loader looks up `capability_templates`, unions it with this template's **cross-language generic
-/// conventions**, and flattens it into synthesis rules matching `Predis\Client::get` / `*Client::get`. This is
-/// "framework / library knowledge" (per language, user-extensible), kept separate from the cross-language
-/// capability templates (the recognition mechanism): the generic naming conventions (`Cache` /
-/// `*CacheService` …) are written once in the template, and this only adds the library types whose word stem
-/// does not follow the generic convention and therefore must be declared explicitly.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CapabilityInterface {
-    /// Capability name (looks up the core capability template, e.g. `cache` / `queue` / `config`).
-    pub capability: String,
-    /// FQN of the type exposing the capability (or a tail fragment, e.g. `Predis\Client` / `Cache`).
-    pub types: Vec<String>,
-    /// Method names with read semantics.
-    pub read: Vec<String>,
-    /// Method names with write semantics.
-    pub write: Vec<String>,
-    /// Override the default confidence.
-    pub confidence: Option<f32>,
-    /// Matching pattern: `by_type` (by real implementation type) or `by_name` (by wrapper-class naming convention).
-    pub match_mode: MatchMode,
-}
 
-/// A reference to a standard **annotation recogniser**: each stack "implements", against its own data, the
-/// interfaces / standards the kernel provides.
-///
-/// Example: `{ annotation: pii, params: { table: schema, names: [phone, mobile, ...], subkind: phone } }`
-/// The loader looks up the **kernel-standard recogniser** `annotation_templates` (see `DEFAULT_ANNOTATIONS_YAML`
-/// in `gt_adapter_fkb::loader`), substitutes the template's `{{key}}` placeholders from `params`, and flattens it
-/// into one concrete `Annotate` rule.
-///
-/// This moves the open-closed principle of "capability recognition" straight across to **P6 tagging**:
-/// * "which annotation kinds exist and how they are recognised" is a **kernel standard** (isomorphic to
-///   `NodeKind` / `EdgeKind`), written once in `annotation_templates`, and every `kind` it produces comes from the
-///   kernel's standard vocabulary ([`crate::model::kinds::AnnotationKind`]) — a stack **cannot invent** annotation
-///   kinds;
-/// * each stack only declares "what this stack's data looks like" (column names / source tables / thresholds /
-///   capability lists), i.e. "the implementation of the interface";
-/// * business-specific annotation kinds can still be registered by FKB via
-///   [`FrameworkKnowledge::annotation_kinds`] (the OCP escape hatch), but the recognisers themselves are always
-///   the handful the kernel provides — never rebuilt.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AnnotationInterface {
-    /// Kernel-standard recogniser name (looks up `annotation_templates`, e.g. `pii` / `table_criticality`
-    /// / `config_metadata` / `public_endpoint` / `i18n_coverage`）。
-    pub annotation: String,
-    /// Parameters substituted into the template's placeholders (`{{key}}` -> parameter value).
-    pub params: HashMap<String, Value>,
-    /// Override the default confidence (overriding the confidence in both the `Rule` and the `Annotate` action).
-    pub confidence: Option<f32>,
-}
 
 
 

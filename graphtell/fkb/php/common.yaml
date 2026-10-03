@@ -77,6 +77,46 @@ rules:
   # ===== P5 Synthesize: ConfigKey (cross-framework common: config() / Config::get / env) =====
   # Same reasoning as `Cache::get`: the spelling is identical in both frameworks, so it is factored out to avoid duplication.
   # CRMEB's own `sys_config` stays in `thinkphp6.yaml` (a business convention, not a generic one).
+  - id: php-common-cache-predis-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Predis\\Client::get|*Client::get|Predis\\Client::hGet|*Client::hGet|Predis\\Client::mGet|*Client::mGet"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: ReadsCache, direction: incoming, confidence: 0.85 }
+          confidence: 0.85
+  - id: php-common-cache-predis-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Predis\\Client::set|*Client::set|Predis\\Client::hSet|*Client::hSet|Predis\\Client::del|*Client::del|Predis\\Client::delete|*Client::delete"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: WritesCache, direction: incoming, confidence: 0.85 }
+          confidence: 0.85
   - id: php-common-config
     phase: Synthesize
     selector:
@@ -94,18 +134,4 @@ rules:
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.9
 
-# ===== Cache / Redis: expressed via a "capability interface declaration" (the recognition mechanism lives in the cross-language capability template) =====
-# The cross-language common naming conventions (`Cache` / `Redis` / `*CacheService` / `*RedisClient` …) are already
-# written in the core capability template `cache` (loader `DEFAULT_CAPABILITIES_YAML`), applied once for every
-# language and flattened as `*Type::method` under the `Wrapper` mode. This only adds PHP library types whose **word
-# root does not fit the common convention and must be declared precisely** — e.g. `Predis\Client` (`*Client` is too
-# generic and would misfire on `HttpClient`/`DbClient`, so it cannot go into the common set). The engine takes the
-# union of both. Framework facades `Cache::get` and the model `app\model\other\Cache` are hit by the template
-# `*Cache::get`; the wrapper layer `*CacheService` is also covered by the template and not repeated here.
-capability_interfaces:
-  # PHP-specific Redis client: Predis (the `Client` root does not fit the common convention, so it is declared precisely as Backend).
-  - capability: cache
-    types: ["Predis\\Client"]
-    read: [get, hGet, mGet]
-    write: [set, hSet, del, delete]
-    match_mode: by_type
+

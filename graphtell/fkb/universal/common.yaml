@@ -1,0 +1,53 @@
+id: universal-common
+display_name: Cross-language universal recognition
+language: "*"
+scope: framework
+apply_without_detection: true
+rules:
+  # Cross-language cache reads. This single `selector + binding` rule replaces the old
+  # `DEFAULT_CAPABILITIES_YAML` template plus its per-language string instantiation. It covers the universal
+  # `*Cache` / `*Redis*` naming conventions; each language's specific client (e.g. PHP `Predis\Client`) is
+  # declared by that language's own FKB (see `fkb/php/common.yaml`). `languages: ["*"]` makes it apply to every
+  # project language.
+  - id: universal-cap-cache-read
+    languages: ["*"]
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "*Cache::{get,has,many,remember,fetch,load,read}|*Redis::{get,has,many,remember,fetch,load,read}|*CacheService::{get,has,many,remember,fetch,load,read}|*CacheManager::{get,has,many,remember,fetch,load,read}|*CacheStore::{get,has,many,remember,fetch,load,read}|*CacheClient::{get,has,many,remember,fetch,load,read}|*RedisService::{get,has,many,remember,fetch,load,read}|*RedisClient::{get,has,many,remember,fetch,load,read}|*RedisStore::{get,has,many,remember,fetch,load,read}|*SessionStore::{get,has,many,remember,fetch,load,read}"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: ReadsCache, direction: incoming, confidence: 0.85 }
+          confidence: 0.85
+  - id: universal-cap-cache-write
+    languages: ["*"]
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "*Cache::{set,put,save,add,forever,forget,delete,clear,remove}|*Redis::{set,put,save,add,forever,forget,delete,clear,remove}|*CacheService::{set,put,save,add,forever,forget,delete,clear,remove}|*CacheManager::{set,put,save,add,forever,forget,delete,clear,remove}|*CacheStore::{set,put,save,add,forever,forget,delete,clear,remove}|*CacheClient::{set,put,save,add,forever,forget,delete,clear,remove}|*RedisService::{set,put,save,add,forever,forget,delete,clear,remove}|*RedisClient::{set,put,save,add,forever,forget,delete,clear,remove}|*RedisStore::{set,put,save,add,forever,forget,delete,clear,remove}|*SessionStore::{set,put,save,add,forever,forget,delete,clear,remove}"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Cache
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+            value_fallback: { literal: "Cache" }
+          fields:
+            - name: key
+              value: { arg: 0, require_literal: true }
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: WritesCache, direction: incoming, confidence: 0.85 }
+          confidence: 0.85
