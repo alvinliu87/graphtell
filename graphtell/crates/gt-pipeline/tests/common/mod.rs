@@ -18,10 +18,12 @@ use gt_adapter_parser::DefaultParserRegistry;
 use gt_adapter_php::PhpTechStackAdapter;
 use gt_adapter_sqlite::SqliteStore;
 use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};
+use gt_adapter_resource::MyBatisMapperAdapter;
 use gt_domain::model::{Project, ProjectConfig};
 use gt_domain::port::{
-    DefaultTechStackRegistry, FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider,
-    ParserRegistry, ProjectWriter, TechStackRegistry,
+    DefaultResourceAdapterRegistry, DefaultTechStackRegistry, FileScanner, FileSystem, GraphSink,
+    KnowledgeProvider, MarkerProvider, ParserRegistry, ProjectWriter, ResourceAdapterRegistry,
+    TechStackRegistry,
 };
 use gt_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
@@ -90,6 +92,7 @@ pub struct TestInfra {
     kb: YamlKnowledgeBase,
     techstack: DefaultTechStackRegistry,
     markers: DefaultMarkerProvider,
+    resources: DefaultResourceAdapterRegistry,
     store: Arc<SqliteStore>,
 }
 
@@ -107,6 +110,8 @@ impl TestInfra {
                 .register(Box::new(PhpTechStackAdapter::new()))
                 .register(Box::new(JsTechStackAdapter::new())),
             markers: DefaultMarkerProvider::new(),
+            resources: DefaultResourceAdapterRegistry::new()
+                .register(Box::new(MyBatisMapperAdapter::default())),
             store,
         }
     }
@@ -127,6 +132,9 @@ impl PipelineInfrastructure for TestInfra {
     }
     fn markers(&self) -> &dyn MarkerProvider {
         &self.markers
+    }
+    fn resources(&self) -> &dyn ResourceAdapterRegistry {
+        &self.resources
     }
     fn kb(&self) -> &dyn KnowledgeProvider {
         &self.kb

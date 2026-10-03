@@ -12,12 +12,14 @@ use gt_adapter_php::PhpTechStackAdapter;
 use gt_adapter_rules::YamlRuleSet;
 use gt_adapter_sqlite::SqliteStore;
 use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};
+use gt_adapter_resource::MyBatisMapperAdapter;
 use gt_adapter_views::YamlViewRegistry;
 use gt_application::pipeline_runner::PipelineDeps;
 use gt_domain::error::Result;
 use gt_domain::port::{
-    DefaultTechStackRegistry, FileScanner, FileSystem, KnowledgeProvider, ParserRegistry,
-    Persistence, RuleProvider, TechStackRegistry, ViewRegistryProvider,
+    DefaultResourceAdapterRegistry, DefaultTechStackRegistry, FileScanner, FileSystem,
+    KnowledgeProvider, ParserRegistry, Persistence, RuleProvider, TechStackRegistry,
+    ViewRegistryProvider,
 };
 use tracing::info;
 
@@ -63,6 +65,10 @@ impl Container {
             kb: Arc::new(kb),
             techstack,
             markers: Arc::new(DefaultMarkerProvider::new()),
+            resources: Arc::new(
+                DefaultResourceAdapterRegistry::new()
+                    .register(Box::new(MyBatisMapperAdapter::default())),
+            ),
         });
 
         Ok(Self {

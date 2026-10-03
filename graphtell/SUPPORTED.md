@@ -535,6 +535,10 @@ reading graphs:
 - If you add a language but **don't write a parser yet**, be aware: its files are still scanned and
   sub-projects still recognized, and P2 reports `NoParserForLanguage`. Don't treat a marker in
   `MarkerProvider` (default table: `gt-adapter-techstack`) as "supported".
+- Add a library whose facts live in files that are **not source code** (MyBatis mapper XML today) = implement
+  `ResourceAdapter` in `gt-adapter-resource`, and declare the detectors for the same knowledge id in
+  `fkb/<lang>/<lib>.yaml`. The kernel runs such an adapter only for sub-projects where P3 recognised that id
+  and applies the returned pseudo call sites itself, so `gt-pipeline` needs no change.
 - Add a compliance rule = add a YAML under `rules/<env>/`, then measure hits against the sample library
   (5 ThinkPHP + 3 Spring Boot projects already built): it must be neither 0 (silent failure) nor
   flooding (noise) before you decide to ship it.

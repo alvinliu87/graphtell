@@ -1,0 +1,15 @@
+[package]
+name = "gt-adapter-resource"
+description = "GraphTell resource adapters: non-source files (MyBatis mapper XML, …) turned into pipeline facts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gt-domain = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+gt-adapter-fs = { workspace = true }

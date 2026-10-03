@@ -12,7 +12,7 @@ use axum::http::{Request, StatusCode};
 use gt_adapter_http::router::{build_router, state};
 use gt_adapter_sqlite::SqliteStore;
 use gt_application::pipeline_runner::PipelineDeps;
-use gt_domain::port::{DefaultTechStackRegistry, Persistence};
+use gt_domain::port::{DefaultResourceAdapterRegistry, DefaultTechStackRegistry, Persistence};
 use gt_adapter_techstack::DefaultMarkerProvider;
 use tower::ServiceExt;
 
@@ -33,6 +33,7 @@ fn test_state() -> gt_adapter_http::router::Shared {
         ),
         techstack: Arc::new(DefaultTechStackRegistry::new()),
         markers: Arc::new(DefaultMarkerProvider::new()),
+        resources: Arc::new(DefaultResourceAdapterRegistry::new()),
     });
     let views = Arc::new(
         gt_adapter_views::YamlViewRegistry::load_dir(std::path::Path::new("/__nonexistent_views__"))

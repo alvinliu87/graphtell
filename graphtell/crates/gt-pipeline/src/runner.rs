@@ -9,7 +9,7 @@ use gt_domain::model::{
 };
 use gt_domain::port::{
     FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider, ParserRegistry,
-    PipelineObserver, ProjectWriter, TechStackRegistry,
+    PipelineObserver, ProjectWriter, ResourceAdapterRegistry, TechStackRegistry,
 };
 use serde_json::Value;
 use tracing::{error, info};
@@ -28,6 +28,8 @@ pub trait PipelineInfrastructure {
     fn techstack(&self) -> &dyn TechStackRegistry;
     /// The sub-project detection markers (bootstrap knowledge needed before any FKB is loaded).
     fn markers(&self) -> &dyn MarkerProvider;
+    /// The resource adapters, which turn files that are **not source code** (MyBatis mapper XML, …) into facts.
+    fn resources(&self) -> &dyn ResourceAdapterRegistry;
     fn kb(&self) -> &dyn KnowledgeProvider;
     fn projects(&self) -> &dyn ProjectWriter;
     fn graph(&self) -> &dyn GraphSink;
@@ -130,9 +132,11 @@ pub fn run(
         infra.parsers(),
         infra.techstack(),
     )?;
-    // MyBatis mapper XML -> pseudo call sites (the source of table semantics for a native MyBatis project).
-    // Must run after P2 (Mapper interface method nodes exist) and before P5 (pseudo call sites feed the synthesis rules).
-    crate::mybatis::run(&mut ctx);
+    // Pseudo call sites injected from resource files that are not source code (MyBatis mapper XML today).
+    // Must run after P3 for two reasons: the owner nodes come from P2, and **whether an adapter applies at all is
+    // decided by P3's framework detection** (`ctx.frameworks`) rather than by the kernel — so this stays before
+    // P5, whose synthesis rules consume the injected calls.
+    crate::resource::run(&mut ctx, infra.resources(), infra.fs());
     // Write the framework identifiers back
     for sub in &ctx.sub_projects {
         let ids = ctx.frameworks.get(&sub.id.get()).cloned().unwrap_or_default();

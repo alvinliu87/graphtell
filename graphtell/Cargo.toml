@@ -17,6 +17,7 @@ members = [
     "crates/gt-adapter-parser",
     "crates/gt-adapter-php",
     "crates/gt-adapter-techstack",
+    "crates/gt-adapter-resource",
     "crates/gt-adapter-fkb",
     "crates/gt-adapter-views",
     "crates/gt-adapter-rules",
@@ -74,6 +75,7 @@ gt-adapter-fs = { path = "crates/gt-adapter-fs" }
 gt-adapter-parser = { path = "crates/gt-adapter-parser" }
 gt-adapter-php = { path = "crates/gt-adapter-php" }
 gt-adapter-techstack = { path = "crates/gt-adapter-techstack" }
+gt-adapter-resource = { path = "crates/gt-adapter-resource" }
 gt-adapter-fkb = { path = "crates/gt-adapter-fkb" }
 gt-adapter-views = { path = "crates/gt-adapter-views" }
 gt-adapter-rules = { path = "crates/gt-adapter-rules" }

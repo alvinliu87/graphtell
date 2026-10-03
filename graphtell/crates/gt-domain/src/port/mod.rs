@@ -8,11 +8,16 @@ pub mod knowledge;
 pub mod observability;
 pub mod parsing;
 pub mod persistence;
+pub mod resource;
 pub mod rules;
 pub mod techstack;
 
 pub use filesystem::{FileScanner, FileSystem, ScanRequest, ScannedFile};
 pub use knowledge::KnowledgeProvider;
+pub use resource::{
+    DefaultResourceAdapterRegistry, PseudoCall, ResourceAdapter, ResourceAdapterRegistry,
+    ResourceFact,
+};
 pub use rules::RuleProvider;
 pub use techstack::{
     AdapterFact, DefaultTechStackRegistry, Marker, MarkerProvider, TechStackAdapter,
