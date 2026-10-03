@@ -1533,3 +1533,65 @@ pub enum ResolveStrategy {
     /// injection (`__construct(T $x){ $this->p = $x; }`), recorded by P2 and consumed by this strategy.
     VariableType,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `RootSource::Manifest` keeps `manifest_php` as a deserialization alias so existing FKB data (which still
+    /// spells the PHP-specific tag) keeps loading. Dropping the alias would make the *entire* FKB fail to
+    /// deserialize — `app_root` / `db_prefix` / `method_ref` all lost — so this is pinned directly, not only via
+    /// the sample-dependent gt-pipeline integration tests.
+    #[test]
+    fn root_source_manifest_accepts_both_alias_and_new_tag() {
+        let as_alias: RootSource = serde_json::from_value(json!({
+            "kind": "manifest_php",
+            "manifest": "config/database.php",
+            "pointer": "connections.mysql.prefix"
+        }))
+        .expect("manifest_php alias must deserialize");
+        assert!(matches!(as_alias, RootSource::Manifest { .. }));
+
+        let as_new: RootSource = serde_json::from_value(json!({
+            "kind": "manifest",
+            "manifest": "config/database.php",
+            "pointer": "connections.mysql.prefix"
+        }))
+        .expect("language-agnostic manifest tag must deserialize");
+        assert!(matches!(as_new, RootSource::Manifest { .. }));
+    }
+
+    #[test]
+    fn root_source_other_variants_deserialize() {
+        let json_src: RootSource = serde_json::from_value(json!({
+            "kind": "manifest_json",
+            "manifest": "composer.json",
+            "pointer": "autoload.psr-4",
+            "pick": "shallowest_dir"
+        }))
+        .expect("manifest_json must deserialize");
+        assert!(matches!(json_src, RootSource::ManifestJson { .. }));
+
+        let dir_src: RootSource = serde_json::from_value(json!({
+            "kind": "directory_exists",
+            "path": "app"
+        }))
+        .expect("directory_exists must deserialize");
+        assert!(matches!(dir_src, RootSource::DirectoryExists { .. }));
+    }
+
+    /// `RootRule` defaults `confidence` (0.9) and `fallbacks` (empty) when omitted — a regression that turns these
+    /// into required fields would silently break every FKB root rule.
+    #[test]
+    fn root_rule_defaults_confidence_and_fallbacks() {
+        let rule: RootRule = serde_json::from_value(json!({
+            "id": "r1",
+            "key": "app_root",
+            "source": { "kind": "directory_exists", "path": "app" }
+        }))
+        .expect("RootRule without confidence/fallbacks must deserialize");
+        assert_eq!(rule.confidence, 0.9);
+        assert!(rule.fallbacks.is_empty());
+    }
+}

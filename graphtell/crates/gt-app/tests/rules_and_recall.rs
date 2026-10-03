@@ -1128,7 +1128,6 @@ fn recall_real_bge_model_chinese_to_english() {
         )
         .expect("文件应可写入");
     let svc_file = files[0].id;
-    let i18n_file = files[1].id;
 
     let node = |kind: &str, name: &str, id: i64, file: Option<FileId>| NewNode {
         id: Some(NodeId(id)),
