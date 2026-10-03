@@ -11,6 +11,8 @@ gt-application = { workspace = true }
 gt-pipeline = { workspace = true }
 gt-adapter-fs = { workspace = true }
 gt-adapter-parser = { workspace = true }
+gt-adapter-php = { workspace = true }
+gt-adapter-techstack = { workspace = true }
 gt-adapter-fkb = { workspace = true }
 gt-adapter-views = { workspace = true }
 gt-adapter-rules = { workspace = true }

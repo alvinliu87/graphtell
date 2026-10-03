@@ -15,10 +15,13 @@ use std::sync::{Arc, OnceLock};
 use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
 use gt_adapter_parser::DefaultParserRegistry;
+use gt_adapter_php::PhpTechStackAdapter;
 use gt_adapter_sqlite::SqliteStore;
+use gt_adapter_techstack::DefaultMarkerProvider;
 use gt_domain::model::{Project, ProjectConfig};
 use gt_domain::port::{
-    FileScanner, FileSystem, GraphSink, KnowledgeProvider, ParserRegistry, ProjectWriter,
+    DefaultTechStackRegistry, FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider,
+    ParserRegistry, ProjectWriter, TechStackRegistry,
 };
 use gt_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
@@ -85,6 +88,8 @@ pub struct TestInfra {
     scanner: WalkDirScanner,
     parsers: DefaultParserRegistry,
     kb: YamlKnowledgeBase,
+    techstack: DefaultTechStackRegistry,
+    markers: DefaultMarkerProvider,
     store: Arc<SqliteStore>,
 }
 
@@ -98,6 +103,9 @@ impl TestInfra {
             scanner: WalkDirScanner::new(Vec::new()),
             parsers: DefaultParserRegistry::new(),
             kb,
+            techstack: DefaultTechStackRegistry::new()
+                .register(Box::new(PhpTechStackAdapter::new())),
+            markers: DefaultMarkerProvider::new(),
             store,
         }
     }
@@ -112,6 +120,12 @@ impl PipelineInfrastructure for TestInfra {
     }
     fn parsers(&self) -> &dyn ParserRegistry {
         &self.parsers
+    }
+    fn techstack(&self) -> &dyn TechStackRegistry {
+        &self.techstack
+    }
+    fn markers(&self) -> &dyn MarkerProvider {
+        &self.markers
     }
     fn kb(&self) -> &dyn KnowledgeProvider {
         &self.kb

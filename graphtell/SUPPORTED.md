@@ -534,7 +534,7 @@ reading graphs:
   `owner_class` backfill for module-level functions, and other dynamic-language issues).
 - If you add a language but **don't write a parser yet**, be aware: its files are still scanned and
   sub-projects still recognized, and P2 reports `NoParserForLanguage`. Don't treat a marker in
-  `MARKERS` as "supported".
+  `MarkerProvider` (default table: `gt-adapter-techstack`) as "supported".
 - Add a compliance rule = add a YAML under `rules/<env>/`, then measure hits against the sample library
   (5 ThinkPHP + 3 Spring Boot projects already built): it must be neither 0 (silent failure) nor
   flooding (noise) before you decide to ship it.

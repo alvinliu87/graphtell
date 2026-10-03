@@ -130,7 +130,7 @@ pub struct PendingLink {
     ///
     /// Why it must reach P7: the `handler` often only writes the class (`Route::resource('level','v1.agent.AgentLevel')`),
     /// the real entry method comes from the **expansion variant** (framework knowledge); at the P5 link stage we don't yet know the class's FQN
-    /// (it's built from FKB's `class_templates`), so passing `to_method` straight to
+    /// (its FQN is derived from PSR-4 + the real class nodes on the graph, not a hard-coded template), so passing `to_method` straight to
     /// `find_target_node` would miss; it can only degrade to a PendingLink. If we didn't carry the method name,
     /// the `raw` P7 gets would be only the class name — whether or not the class has a matching method, the edge degrades to class-level
     /// (measured: CRMEB had 164 resource routes falling to `Class`, but `AgentLevel::delete` was clearly in the graph).
@@ -699,6 +699,73 @@ impl GraphWorkspace {
             }
         }
         found.map(|f| f.to_string())
+    }
+
+    /// Resolve a `method_ref` controller reference to a real class FQN — **without assuming any controller
+    /// directory name** (no `controller` / `Http/Controllers` hard-coded).
+    ///
+    /// Strategy (name-agnostic, driven by `composer`'s PSR-4 namespaces + the real class FQNs on the graph):
+    /// 1. If `controller_part` is already a fully-qualified FQN that exists on the graph, return it directly.
+    ///    (Covers Laravel/ThinkPHP handlers written as full class names, e.g. `App\Http\Controllers\UserController`.)
+    /// 2. Otherwise it is a short name. Look up every class whose last segment equals the controller's short name
+    ///    (the `by_short` index) and keep the ones that live under `<psr4_ns><module>\` whose remaining path is
+    ///    exactly `<controller_layer_depth> segment(s)` followed by the (hierarchy-expanded) `controller_part`.
+    ///    The layer *name* is never inspected — only its depth — so `controller` / `Http/Controllers` / anything
+    ///    the user chose all work equally. Ambiguous matches (more than one distinct FQN under the constraints)
+    ///    are rejected rather than connecting the wrong edge.
+    pub fn resolve_controller(
+        &self,
+        controller_part: &str,
+        psr4_namespaces: &[String],
+        module: &str,
+        controller_layer_depth: usize,
+    ) -> Option<String> {
+        // 1. direct fully-qualified FQN
+        if let Some(id) = self.find_by_name(controller_part) {
+            return self.nodes.get(&id.get()).and_then(|n| n.fqn.clone());
+        }
+        let class_short = controller_part.rsplit('\\').next().unwrap_or(controller_part);
+        let lower = class_short.to_ascii_lowercase();
+        let ids = self.by_short.get(&lower)?;
+        let tail: Vec<&str> = controller_part.split('\\').collect();
+        if tail.is_empty() {
+            return None;
+        }
+        let depth = controller_layer_depth.max(1);
+        let mut matched: Option<String> = None;
+        for ns in psr4_namespaces {
+            let mut prefix = ns.trim_end_matches('\\').to_string();
+            prefix.push('\\');
+            if !module.is_empty() {
+                prefix.push_str(&module.replace('/', "\\"));
+                prefix.push('\\');
+            }
+            for id in ids {
+                let Some(fqn) = self.nodes.get(id).and_then(|n| n.fqn.as_deref()) else {
+                    continue;
+                };
+                if !fqn.starts_with(&prefix) {
+                    continue;
+                }
+                let rest: Vec<&str> = fqn[prefix.len()..].split('\\').collect();
+                // exactly `depth` layer segments between the module and the (hierarchy-expanded) controller_part
+                if rest.len() != tail.len() + depth {
+                    continue;
+                }
+                let ok = rest[depth..]
+                    .iter()
+                    .zip(tail.iter())
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b));
+                if ok {
+                    match &matched {
+                        Some(prev) if prev.eq_ignore_ascii_case(fqn) => {}
+                        Some(_) => return None, // ambiguous -> reject, never synthesize a ghost
+                        None => matched = Some(fqn.to_string()),
+                    }
+                }
+            }
+        }
+        matched
     }
 
     // ------------------------------------------------------------ edges

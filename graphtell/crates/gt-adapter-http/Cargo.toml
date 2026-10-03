@@ -24,4 +24,5 @@ gt-adapter-parser = { workspace = true }
 gt-adapter-fkb = { workspace = true }
 gt-adapter-rules = { workspace = true }
 gt-adapter-views = { workspace = true }
+gt-adapter-techstack = { workspace = true }
 tower = { workspace = true }

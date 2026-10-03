@@ -9,8 +9,8 @@ use gt_domain::model::{
     ProjectStatus,
 };
 use gt_domain::port::{
-    EdgeDirection, FileScanner, FileSystem, GraphSink, KnowledgeProvider, NodeFilter, ParserRegistry,
-    Persistence, PipelineObserver, ProjectWriter, RuleProvider,
+    EdgeDirection, FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider, NodeFilter,
+    ParserRegistry, Persistence, PipelineObserver, ProjectWriter, RuleProvider, TechStackRegistry,
 };
 use gt_pipeline::runner::PipelineOutcome;
 use tracing::{error, info, warn};
@@ -23,6 +23,10 @@ pub struct PipelineDeps {
     pub scanner: Arc<dyn FileScanner>,
     pub parsers: Arc<dyn ParserRegistry>,
     pub kb: Arc<dyn KnowledgeProvider>,
+    /// Tech-stack-specific prepare logic (PSR-4 / PHP config / Laravel migrations / …), injected from the composition root.
+    pub techstack: Arc<dyn TechStackRegistry>,
+    /// Sub-project detection markers (bootstrap: needed before any FKB is loaded).
+    pub markers: Arc<dyn MarkerProvider>,
 }
 
 /// Adapt [`PipelineDeps`] and persistence into the [`PipelineInfrastructure`] that `gt-pipeline` needs.
@@ -40,6 +44,12 @@ impl<'a> gt_pipeline::runner::PipelineInfrastructure for Infra<'a> {
     }
     fn parsers(&self) -> &dyn ParserRegistry {
         self.deps.parsers.as_ref()
+    }
+    fn techstack(&self) -> &dyn TechStackRegistry {
+        self.deps.techstack.as_ref()
+    }
+    fn markers(&self) -> &dyn MarkerProvider {
+        self.deps.markers.as_ref()
     }
     fn kb(&self) -> &dyn KnowledgeProvider {
         self.deps.kb.as_ref()

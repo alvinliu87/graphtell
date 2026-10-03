@@ -9,19 +9,8 @@ use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
     Language, NewSourceFile, NewSubProject, Project, ProjectId, SourceFile, SubProject,
 };
-use gt_domain::port::{FileScanner, ParserRegistry, ScanRequest};
+use gt_domain::port::{FileScanner, Marker, MarkerProvider, ParserRegistry, ScanRequest};
 use tracing::info;
-
-/// Sub-project marker file -> (language, role).
-pub const MARKERS: &[(&str, &str, &str)] = &[
-    ("composer.json", "php", "backend"),
-    ("package.json", "javascript", "frontend"),
-    ("pom.xml", "java", "backend"),
-    ("build.gradle", "java", "backend"),
-    ("Cargo.toml", "rust", "backend"),
-    ("go.mod", "go", "backend"),
-    ("pyproject.toml", "python", "backend"),
-];
 
 /// The product of the Ingest phase.
 pub struct IngestResult {
@@ -58,20 +47,24 @@ pub fn run(
     scanner: &dyn FileScanner,
     parsers: &dyn ParserRegistry,
     fs: &dyn gt_domain::port::FileSystem,
+    markers: &dyn MarkerProvider,
 ) -> Result<IngestResult> {
-    let markers: Vec<&str> = MARKERS.iter().map(|m| m.0).collect();
-    let found = scanner.find_markers(&project.root_path, &markers, 4)?;
+    // Sub-project markers come from the tech-stack registration (`MarkerProvider`), not from a hard-coded
+    // kernel table: which manifest file marks which language is tech-stack knowledge.
+    let known = markers.markers();
+    let marker_names: Vec<&str> = known.iter().map(|m| m.file.as_str()).collect();
+    let found = scanner.find_markers(&project.root_path, &marker_names, 4)?;
 
     let mut subs: Vec<NewSubProject> = Vec::new();
     for path in &found {
         let Some(dir) = path.parent() else { continue };
-        let (language, tier, detected_by) = marker_of(path);
+        let (language, tier, detected_by) = marker_of(path, &known);
         if subs.iter().any(|s| s.root_path == dir) {
             continue;
         }
         // On top of "frontend / backend", refine the sub-project **type** from the directory name
         // (mini-program / admin console / mobile / API / Worker …), so the role string looks like `frontend:admin`.
-        let role = refine_role(tier, dir);
+        let role = refine_role(&tier, dir);
         subs.push(NewSubProject {
             project_id: project.id,
             name: sub_name(project.id, &project.root_path, dir),
@@ -181,14 +174,15 @@ pub fn assign_files(files: &mut [SourceFile], subs: &[SubProject], root: &Path) 
     }
 }
 
-fn marker_of(path: &Path) -> (&'static str, &'static str, String) {
+/// Resolve a discovered marker file to `(language, tier, detected_by)` using the injected markers.
+fn marker_of(path: &Path, known: &[Marker]) -> (String, String, String) {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    for (marker, language, role) in MARKERS {
-        if marker.eq_ignore_ascii_case(name) {
-            return (language, role, marker.to_string());
+    for m in known {
+        if m.file.eq_ignore_ascii_case(name) {
+            return (m.language.as_str().to_string(), m.role.clone(), m.file.clone());
         }
     }
-    ("unknown", "unknown", name.to_string())
+    ("unknown".to_string(), "unknown".to_string(), name.to_string())
 }
 
 /// Beyond the `frontend` / `backend` tiers, further recognise the sub-project **type**, so the legend and filters

@@ -117,7 +117,7 @@ impl<'a> Evaluator<'a> {
                     resolved
                 }
                 ResolveAs::AsIs => self.resolve_name(&s),
-                ResolveAs::HandlerPattern | ResolveAs::ByAlias => s,
+                ResolveAs::MethodRef | ResolveAs::ByAlias => s,
             };
         }
         if let Some(t) = &src.transform {

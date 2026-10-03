@@ -47,7 +47,7 @@ apply_without_detection: false  # true = applies to all sub-projects of that lan
 exclude_globs: ["node_modules/**", "dist/**"]
 
 # Framework-specific conventions (those with no framework assumptions go in the language-generic layer; strong assumptions stay here):
-handler: {...}            # how a route handler string resolves back to "class + method"
+handler: {...}            # config for the `method_ref` resolver: how a STRING literal (e.g. a route handler 'admin.Login/login') resolves back to "class + method". Generic — not route-only; any rule may use `resolve: method_ref` on a string-literal arg.
 db_verbs: {read: [...], write: [...]}   # model CRUD verbs -> read / write classification
 magic_delegation: {...}   # @method annotation + __call forwarding to some property
 external_calls: [...]     # callees that make network requests (for "external call inside a loop" detection)
@@ -57,6 +57,57 @@ entry_methods: [...]      # candidate consumer entry method names (handle/fire/d
 
 **Core principle**: `rules` is the point; `detectors` decides "who this knowledge applies to";
 `semantic_kinds` decides "whether the node you create is visible".
+
+### 2.1 `method_ref` vs `class_const` (resolving references to code)
+
+Two `resolve:` strategies turn a rule argument into a real graph node. Pick by the argument's **shape**:
+
+| Strategy | Argument shape | Example | Existence-gated? |
+|---|---|---|---|
+| `class_const` | a real code reference (`X::class`, a variable of known type) | `Event::listen('x', Listener::class)` | yes (`require_class`) |
+| `method_ref` | a **string literal** denoting `class::method` / a function | `Route::get('/x', 'admin.Login/login')` | yes |
+
+`method_ref` is **generic, not route-only**: any rule whose argument is a string that names a callable may use
+`resolve: method_ref`. It reads the per-framework `method_ref` field (`method_separators` / `hierarchy_separators` /
+`psr4_namespaces` / `controller_layer_depth` / `app_anchor_dir`) to split the string, then keeps **only** the candidate
+that **actually exists on the graph** (`find_by_name`) — so a miss yields no edge and never synthesizes a ghost node.
+
+**No controller directory name is ever assumed.** The FKB does not hard-code `controller`, `Http/Controllers`, or any
+such convention. Instead, at prepare time `psr4_namespaces` is derived from `composer.json`'s `autoload.psr-4`, and the
+resolver matches the handler against the **real class FQNs on the graph** under those namespaces:
+
+* If the handler is already fully-qualified (`App\Http\Controllers\UserController`, `app\admin\controller\Login`), it
+  resolves by exact match — the directory name is irrelevant.
+* If it is a short name (`admin.Login/login`), the resolver infers the app module (from the route file path, see
+  `app_anchor_dir`) and looks up the class whose FQN sits exactly `controller_layer_depth` namespace segments below that
+  module and whose trailing segments equal the (hierarchy-expanded) controller name. Only the **depth** is configured,
+  never the name — so `controller` / `Http\Controllers` / anything the user chose all work, and ambiguous matches are
+  rejected rather than connected to the wrong node.
+
+`controller_layer_depth` is a structural fact (ThinkPHP = 1, Laravel's `App\Http\Controllers` = 2), not a name; it
+defaults to 1 and may be omitted for the common case.
+
+> Do **not** point `method_ref` at a `X::class` argument — those are real references and belong to `class_const`.
+> `method_ref` is only ever fed string literals by the rules that invoke it.
+
+#### Non-route example
+
+`method_ref` is **edge-agnostic** — any rule may use it on a string-literal argument, not just routes. A queue
+that is enqueued by string (instead of `Job::class`) is the same shape as a route handler:
+
+```yaml
+# Queue a job by string FQN or short name: `Queue::push('app\job\SendMail')` / `Queue::push('SendMail')`
+- id: myfw-queue-consumer
+  selector: { kind: call, callee: "Queue::push" }
+  binding:
+    - Link:
+        kind: HandledBy
+        direction: to_target
+        to: { arg: 0, resolve: method_ref }   # FQN -> exact match (L1); short name -> import/template fallback
+```
+
+Because the resolver only ever keeps a candidate that **exists on the graph**, a typo'd or dynamic job string simply
+produces no edge — never a ghost node. (When a framework enqueues by `X::class` instead, use `class_const`, not `method_ref`.)
 
 ---
 

@@ -63,7 +63,7 @@ root_rules:
   - id: laravel-db-prefix
     key: db_prefix
     source:
-      kind: manifest_php
+      kind: manifest
       manifest: config/database.php
       pointer: connections.mysql.prefix
     confidence: 1.0
@@ -79,13 +79,13 @@ root_rules:
 # The key difference from ThinkPHP: Laravel controllers are usually **already fully qualified** (imported via
 # `use` or `::class`), so the `app\{app}\controller\{C}` assembly is unnecessary; the template therefore puts
 # `{controller}` directly, and when that misses it falls back to "short name + route-file import".
-handler:
+method_ref:
   method_separators: ["@", "::", "/"]
   hierarchy_separators: []
-  class_templates:
-    - "{controller}"
-    - "App\\Http\\Controllers\\{controller}"
-  app_segments: []
+  # Laravel handlers are usually fully-qualified (`App\Http\Controllers\X@method`) and resolve directly; for the
+  # rare short form, `controller_layer_depth: 2` matches the `App\Http\Controllers` two-segment layer — again with
+  # NO hard-coded directory name (the resolver learns it from the graph under the PSR-4 `App\` namespace).
+  controller_layer_depth: 2
   app_anchor_dir: "routes"
   app_fallback: ""
 
@@ -446,7 +446,7 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            to: { arg: 1, resolve: handler_pattern }
+            to: { arg: 1, resolve: method_ref }
           confidence: 0.9
           alias:
             namespace: event_name

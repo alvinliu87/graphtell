@@ -59,12 +59,13 @@ pub struct FrameworkKnowledge {
     ///   that project**, so project conventions (e.g. CRMEB's crontab routes) do not bleed into other projects on
     ///   the same framework.
     pub scope: KnowledgeScope,
-    /// Resolution rules for route handlers: how to turn the second argument of `Route::get` back into "class +
-    /// method".
+    /// Resolution rules for **string-literal callable references** (route handlers, queue string-jobs,
+    /// `invokeAction` …): how to turn a string argument naming `class::method` / a function back into a graph
+    /// node. Generic — not route-only; see [`MethodRefSpec`].
     ///
-    /// This is **framework knowledge**, not kernel knowledge — see [`HandlerSpec`].
+    /// This is **framework knowledge**, not kernel knowledge — see [`MethodRefSpec`].
     #[serde(default)]
-    pub handler: Option<HandlerSpec>,
+    pub method_ref: Option<MethodRefSpec>,
     /// Magic-method delegation: a class declares `@method getList(...)` and forwards it to some property via
     /// `__call`.
     ///
@@ -182,11 +183,14 @@ pub enum KnowledgeScope {
 /// | Symfony | `App\Controller\LoginController::login` |
 /// | Rails | `'login#index'` |
 ///
-/// So "which symbol separates the method", "how the class name is assembled" and "what the app segments are" are
-/// all declared by FKB; the kernel only expands the candidates per the declaration and looks them up.
+/// So "which symbol separates the method" and "how the class name is assembled" are declared by FKB; the kernel
+/// only expands the candidates per the declaration and looks them up. Where a framework would otherwise hard-code a
+/// controller *directory name* (e.g. `controller` / `Http/Controllers`), the kernel **never assumes that name**:
+/// instead it reads `composer.json`'s PSR-4 autoload (`psr4_namespaces`) and resolves the handler against the real
+/// class FQNs on the graph — see the resolver for the name-agnostic matching rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct HandlerSpec {
+pub struct MethodRefSpec {
     /// Separators between controller and method inside the handler string (tried in order, the first one that splits wins).
     pub method_separators: Vec<String>,
     /// The character that represents a namespace level inside the controller (it is replaced by that language's
@@ -194,10 +198,23 @@ pub struct HandlerSpec {
     ///
     /// ThinkPHP's `v1.agent.AgentManage` -> `v1\agent\AgentManage`.
     pub hierarchy_separators: Vec<String>,
-    /// Class-name candidate template; `{app}` and `{controller}` are placeholders.
-    pub class_templates: Vec<String>,
     /// Candidate values for `{app}` (template x segment, expanded one by one).
+    ///
+    /// Deprecated in favour of deriving the app modules from the project layout; kept only as an optional
+    /// extra allow-list of module names to try (besides the one inferred from the route file path and the
+    /// single-app shape). An empty list means "rely on path inference + single-app only".
     pub app_segments: Vec<String>,
+    /// PSR-4 root namespaces for the sub-project, derived at prepare time from `composer.json`'s `autoload.psr-4`.
+    ///
+    /// These drive the resolver: a handler string is resolved against the real class FQNs under these namespaces,
+    /// so **no controller directory name is ever assumed**.
+    pub psr4_namespaces: Vec<String>,
+    /// How many namespace segments sit between the (inferred) app module and the controller class itself.
+    ///
+    /// This is a *structural* fact (e.g. ThinkPHP puts controllers one directory below the module; Laravel's
+    /// `App\Http\Controllers` is two), **not** a name — so `controller` / `Http/Controllers` are never hard-coded.
+    /// Default `1`.
+    pub controller_layer_depth: usize,
     /// Infer `{app}` from the route file path: take the directory name **one level above** the anchor directory.
     /// Example: `app/api/route/pc.php` + anchor `route` -> `api`.
     pub app_anchor_dir: Option<String>,
@@ -527,13 +544,14 @@ impl Default for MagicDelegationSpec {
     }
 }
 
-impl Default for HandlerSpec {
+impl Default for MethodRefSpec {
     fn default() -> Self {
         Self {
             method_separators: vec!["/".into()],
             hierarchy_separators: Vec::new(),
-            class_templates: Vec::new(),
             app_segments: Vec::new(),
+            psr4_namespaces: Vec::new(),
+            controller_layer_depth: 1,
             app_anchor_dir: None,
             app_fallback: String::new(),
         }
@@ -592,10 +610,14 @@ pub enum RootSource {
     },
     /// Probe directly whether a directory exists.
     DirectoryExists { path: String },
-    /// Read a value from a PHP config file (e.g. ThinkPHP's `config/database.php`) by dotted pointer.
+    /// Read a value from a project manifest / config file (e.g. ThinkPHP's `config/database.php`) by
+    /// dotted pointer. The *interpretation* of the file format is delegated to the tech-stack adapter
+    /// (`TechStackAdapter::read_manifest`), so the kernel knows no language-specific file format.
     ///
-    /// Used to auto-detect project-level config (e.g. a table prefix) so project-specific conventions are not hard-coded into FKB.
-    ManifestPhp {
+    /// `manifest_php` is kept as a deserialization alias: existing FKB data still spells the PHP-specific
+    /// tag, and it keeps loading unchanged while new data can adopt the language-agnostic `manifest`.
+    #[serde(alias = "manifest_php")]
+    Manifest {
         /// Path relative to the project root, e.g. `config/database.php`.
         manifest: String,
         /// Dotted path, e.g. `connections.mysql.prefix`.
@@ -1220,8 +1242,9 @@ pub struct TransformSpec {
 pub enum ResolveAs {
     /// `Foo::class` -> a fully qualified class name -> look up by_name.
     ClassConst,
-    /// `'Login/appleLogin'` -> assemble an FQN per the controller / method pattern.
-    HandlerPattern,
+    /// Assemble an FQN from a string reference to a `class::method` / function (e.g. `'Login/appleLogin'`).
+    /// Generic string → callable resolver: route handlers, queue string-jobs, `invokeAction`, etc. — not route-only.
+    MethodRef,
     /// Look up the by_alias index.
     ByAlias,
     /// Use it directly as a name.

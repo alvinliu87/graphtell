@@ -1,6 +1,7 @@
 //! A language that "is recognised but has no parser" must be **visible**, not silently produce an empty graph.
 //!
-//! `MARKERS` already has sub-project markers like `go.mod` / `Cargo.toml`, and the extension fallback table can
+//! The marker table (`MarkerProvider`, default `gt-adapter-techstack`) already has sub-project markers like
+//! `go.mod` / `Cargo.toml`, and the extension fallback table can
 //! also scan `.go` / `.rs` into the file list; but `gt-adapter-parser` has no parser for them. So these projects
 //! **get recognised as sub-projects** yet produce not a single syntax fact in P2 — the project graph is silently
 //! empty while the pipeline still reports success. Python was exactly in this state before its parser was added,

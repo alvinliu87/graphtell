@@ -18,5 +18,7 @@ walkdir = { workspace = true }
 [dev-dependencies]
 gt-adapter-fs = { workspace = true }
 gt-adapter-parser = { workspace = true }
+gt-adapter-php = { workspace = true }
+gt-adapter-techstack = { workspace = true }
 gt-adapter-fkb = { workspace = true }
 gt-adapter-sqlite = { workspace = true }

@@ -62,5 +62,5 @@ rules:
           link:
             kind: HandledBy
             direction: to_target
-            to: { arg: 1, resolve: handler_pattern }
+            to: { arg: 1, resolve: method_ref }
           confidence: 0.9

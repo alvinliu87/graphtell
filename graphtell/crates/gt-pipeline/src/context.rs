@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use gt_domain::model::{
-    DbVerbsSpec, HandlerSpec, Language, MagicDelegationSpec, MiddlewareCapability,
+    DbVerbsSpec, MethodRefSpec, Language, MagicDelegationSpec, MiddlewareCapability,
     NamespacePolicy, NodeId, Phase, Project, ProjectConfig, Rule, SourceFile, SubProject,
     SubProjectId,
 };
@@ -40,13 +40,13 @@ pub struct PipelineContext {
     /// Sub-project -> the recognised framework id.
     pub frameworks: HashMap<i64, Vec<String>>,
     /// Sub-project -> route handler resolution rules (declared by FKB, assembled by P3, consumed by P7).
-    pub handler_specs: HashMap<i64, HandlerSpec>,
+    pub method_ref_specs: HashMap<i64, MethodRefSpec>,
     /// Global fallback handler resolution rules: in a single-framework project P7 often cannot reach the
     /// sub-project context, so the first framework that declares `handler` serves as the fallback.
-    pub handler_spec_default: Option<HandlerSpec>,
+    pub method_ref_spec_default: Option<MethodRefSpec>,
     /// Sub-project -> the forwarding target of `@method` magic methods (FKB `magic_delegation`).
     pub magic_delegation: HashMap<i64, MagicDelegationSpec>,
-    /// Global fallback forwarding target (chosen the same way as `handler_spec_default`).
+    /// Global fallback forwarding target (chosen the same way as `method_ref_spec_default`).
     pub magic_delegation_default: Option<MagicDelegationSpec>,
     /// Sub-project -> the data model's read / write verbs (FKB `db_verbs`).
     pub db_verbs: HashMap<i64, DbVerbsSpec>,
@@ -85,8 +85,8 @@ impl PipelineContext {
             sub_projects: Vec::new(),
             files: Vec::new(),
             frameworks: HashMap::new(),
-            handler_specs: HashMap::new(),
-            handler_spec_default: None,
+            method_ref_specs: HashMap::new(),
+            method_ref_spec_default: None,
             magic_delegation: HashMap::new(),
             magic_delegation_default: None,
             db_verbs: HashMap::new(),

@@ -8,8 +8,8 @@ use gt_domain::model::{
     SourceFile, SubProject, SubProjectId,
 };
 use gt_domain::port::{
-    FileScanner, FileSystem, GraphSink, KnowledgeProvider, ParserRegistry, PipelineObserver,
-    ProjectWriter,
+    FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider, ParserRegistry,
+    PipelineObserver, ProjectWriter, TechStackRegistry,
 };
 use serde_json::Value;
 use tracing::{error, info};
@@ -24,6 +24,10 @@ pub trait PipelineInfrastructure {
     fn fs(&self) -> &dyn FileSystem;
     fn scanner(&self) -> &dyn FileScanner;
     fn parsers(&self) -> &dyn ParserRegistry;
+    /// The tech-stack registry, for tech-stack-specific prepare logic (PSR-4, PHP config, Laravel migrations, …).
+    fn techstack(&self) -> &dyn TechStackRegistry;
+    /// The sub-project detection markers (bootstrap knowledge needed before any FKB is loaded).
+    fn markers(&self) -> &dyn MarkerProvider;
     fn kb(&self) -> &dyn KnowledgeProvider;
     fn projects(&self) -> &dyn ProjectWriter;
     fn graph(&self) -> &dyn GraphSink;
@@ -67,7 +71,13 @@ pub fn run(
     observer.on_phase_start(project.id, &Phase(Phase::INGEST.to_string()));
     let root = ingest::validate_root(&project.root_path)?;
     let _ = root;
-    let ingested = ingest::run(project, infra.scanner(), infra.parsers(), infra.fs())?;
+    let ingested = ingest::run(
+        project,
+        infra.scanner(),
+        infra.parsers(),
+        infra.fs(),
+        infra.markers(),
+    )?;
     let subs: Vec<SubProject> = infra
         .projects()
         .replace_sub_projects(project.id, ingested.sub_projects.clone())?;
@@ -112,7 +122,13 @@ pub fn run(
     // ---------------------------------------------------------- P3 Prepare
     let started = Instant::now();
     observer.on_phase_start(project.id, &Phase(Phase::PREPARE.to_string()));
-    prepare::run(&mut ctx, infra.kb(), infra.fs(), infra.parsers())?;
+    prepare::run(
+        &mut ctx,
+        infra.kb(),
+        infra.fs(),
+        infra.parsers(),
+        infra.techstack(),
+    )?;
     // MyBatis mapper XML -> pseudo call sites (the source of table semantics for a native MyBatis project).
     // Must run after P2 (Mapper interface method nodes exist) and before P5 (pseudo call sites feed the synthesis rules).
     crate::mybatis::run(&mut ctx);

@@ -10,11 +10,13 @@ use std::path::{Path, PathBuf};
 
 use gt_domain::error::Result;
 use gt_domain::model::{
-    Action, Detector, FactValue, FrameworkKnowledge, GuardAttachSpec, KnowledgeScope,
-    Language, NormalizeStep, Phase, PickStrategy, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule,
+    Action, Detector, FactValue, FrameworkKnowledge, GuardAttachSpec, KnowledgeScope, Language,
+    NormalizeStep, Phase, PickStrategy, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule,
     SubProjectId, SynthesizedKind,
 };
-use gt_domain::port::{FileSystem, KnowledgeProvider, LanguageParser, ParserRegistry};
+use gt_domain::port::{
+    AdapterFact, FileSystem, KnowledgeProvider, LanguageParser, ParserRegistry, TechStackRegistry,
+};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
@@ -29,6 +31,7 @@ pub fn run(
     kb: &dyn KnowledgeProvider,
     fs: &dyn FileSystem,
     parsers: &dyn ParserRegistry,
+    techstack: &dyn TechStackRegistry,
 ) -> Result<()> {
     let phase = Phase(Phase::PREPARE.to_string());
     let subs = ctx.sub_projects.clone();
@@ -51,16 +54,21 @@ pub fn run(
 
         // Route-handler resolution rules + consumer entry-method names: framework-level first, then project-level.
         // Both declared by FKB (how each framework writes handlers / what entry methods are called is framework knowledge).
-        if let Some(spec) = frameworks
+        if let Some(mut spec) = frameworks
             .iter()
             .chain(projects.iter())
             .filter_map(|id| kb.by_id(id))
-            .find_map(|fk| fk.handler.clone())
+            .find_map(|fk| fk.method_ref.clone())
         {
-            if ctx.handler_spec_default.is_none() {
-                ctx.handler_spec_default = Some(spec.clone());
+            // Derive `psr4_namespaces` / `app_segments` from the tech-stack adapter (PSR-4 autoload for PHP;
+            // no controller-dir name assumed — the resolver learns the controller location from the real class FQNs).
+            if let Some(adapter) = techstack.adapter_for(&sub.language) {
+                adapter.enrich_method_ref(&mut spec, &sub.root_path, &project_root);
             }
-            ctx.handler_specs.insert(sub.id.get(), spec);
+            if ctx.method_ref_spec_default.is_none() {
+                ctx.method_ref_spec_default = Some(spec.clone());
+            }
+            ctx.method_ref_specs.insert(sub.id.get(), spec);
         }
         // `@method` magic-method forwarding target: also FKB knowledge (which property to forward to is a framework/project convention).
         if let Some(spec) = frameworks
@@ -128,7 +136,7 @@ pub fn run(
         let mut facts = serde_json::Map::new();
         for id in frameworks.iter().chain(projects.iter()) {
             let Some(fk) = kb.by_id(id) else { continue };
-            apply_root_rules(ctx, fk, sub, &mut facts, &phase, fs, parsers);
+            apply_root_rules(ctx, fk, sub, &mut facts, &phase, fs, parsers, techstack);
             // Auto-detect table prefix: FKB's `db_prefix` root_rule reads it from project config,
             // merged with the prefix from the project's explicit config (dedup), for P3 loading and P5 normalization.
             if let Some(v) = facts
@@ -145,7 +153,7 @@ pub fn run(
         }
         for id in frameworks.iter().chain(projects.iter()) {
             let Some(fk) = kb.by_id(id) else { continue };
-            run_loaders(ctx, fk, sub, &project_root, fs, parsers, &phase);
+            run_loaders(ctx, fk, sub, &project_root, fs, parsers, &phase, techstack);
         }
 
         let facts_value = Value::Object(facts);
@@ -274,6 +282,7 @@ fn apply_root_rules(
     phase: &Phase,
     fs: &dyn FileSystem,
     parsers: &dyn ParserRegistry,
+    techstack: &dyn TechStackRegistry,
 ) {
     for rule in &fk.root_rules {
         let resolved = match &rule.source {
@@ -285,9 +294,11 @@ fn apply_root_rules(
             gt_domain::model::RootSource::DirectoryExists { path } => {
                 resolve_directory_exists(&sub.root_path, path)
             }
-            gt_domain::model::RootSource::ManifestPhp { manifest, pointer } => {
-                resolve_manifest_php(sub, &ctx.project.root_path, manifest, pointer, fs, parsers)
-            }
+            gt_domain::model::RootSource::Manifest { manifest, pointer } => techstack
+                .adapter_for(&sub.language)
+                .and_then(|a| {
+                    a.read_manifest(sub, &ctx.project.root_path, manifest, pointer, fs, parsers)
+                }),
         };
 
         let (value, source, fallback_used, confidence) = match resolved {
@@ -406,54 +417,7 @@ fn resolve_manifest_pointer(
     ))
 }
 
-/// Read a value from a PHP config file (e.g. ThinkPHP's `config/database.php`) by dot-separated pointer.
-///
-/// Reuse the PHP parser to flatten `return [...]` into `config_entries`, then precisely match `pointer` (e.g. `connections.mysql.prefix`).
-/// If the config value is a form that can't be statically evaluated like `env('KEY', 'default')` (parser records as `Unknown`),
-/// use a lightweight regex to extract its literal default as a fallback.
-fn resolve_manifest_php(
-    sub: &gt_domain::model::SubProject,
-    project_root: &Path,
-    manifest: &str,
-    pointer: &str,
-    fs: &dyn FileSystem,
-    parsers: &dyn ParserRegistry,
-) -> Option<(String, String)> {
-    let abs = sub.root_path.join(manifest);
-    let abs = if abs.exists() { abs } else { project_root.join(manifest) };
-    if !abs.exists() {
-        return None;
-    }
-    let text = fs.read_to_string(&abs).ok()?;
-    let parser = parser_for_file(parsers, Some(sub), &abs)?;
-    let rel = abs.to_string_lossy().replace('\\', "/");
-    if let Ok(facts) = parser.parse(&rel, &text) {
-        for entry in &facts.config_entries {
-            if entry.key_path == pointer {
-                if let Some(s) = entry.value.as_str() {
-                    return Some((s.to_string(), format!("php config: {}", abs.display())));
-                }
-            }
-        }
-    }
-    // Fallback: the value may be `env('KEY', 'default')` → extract the default for the leaf key from source text.
-    let leaf = pointer.rsplit('.').next().unwrap_or(pointer);
-    extract_prefix_via_regex(&text, leaf).map(|s| {
-        (s, format!("php config (env default): {}", abs.display()))
-    })
-}
 
-/// Lightweight fallback: extract the literal default from `config/database.php` source text `<leaf> => 'x'` or
-/// `<leaf> => env('K', 'x')`. Only for cases the parser can't statically evaluate.
-fn extract_prefix_via_regex(text: &str, leaf: &str) -> Option<String> {
-    let escaped = regex::escape(leaf);
-    let re = regex::Regex::new(&format!(
-        r#"(?i)(?:['"]){escaped}(?:['"])\s*=>\s*(?:env\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]*)['"]\s*\)|['"]([^'"]*)['"])"#
-    ))
-    .ok()?;
-    re.captures(text)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()))
-}
 
 // ---------------------------------------------------------------- loaders
 
@@ -465,6 +429,7 @@ fn run_loaders(
     fs: &dyn FileSystem,
     parsers: &dyn ParserRegistry,
     phase: &Phase,
+    techstack: &dyn TechStackRegistry,
 ) {
     let contract_steps = contract_steps_of(fk);
     for loader in &fk.loaders {
@@ -478,6 +443,7 @@ fn run_loaders(
             phase,
             &contract_steps,
             fk,
+            techstack,
         ) {
             warn!("loader {} failed: {e}", loader.id);
         }
@@ -535,6 +501,7 @@ fn run_loader(
     phase: &Phase,
     contract_steps: &[NormalizeStep],
     fk: &FrameworkKnowledge,
+    techstack: &dyn TechStackRegistry,
 ) -> Result<()> {
     let app_root = ctx
         .ws
@@ -610,7 +577,19 @@ fn run_loader(
             }
         }
         gt_domain::model::LoaderSource::Builtin { name, params } => {
-            run_builtin(ctx, name, params, sub, project_root, fs, phase, contract_steps, fk);
+            run_builtin(
+                ctx,
+                name,
+                params,
+                sub,
+                project_root,
+                fs,
+                parsers,
+                phase,
+                contract_steps,
+                fk,
+                techstack,
+            );
         }
     }
     Ok(())
@@ -687,13 +666,19 @@ fn run_builtin(
     sub: &gt_domain::model::SubProject,
     project_root: &Path,
     fs: &dyn FileSystem,
+    parsers: &dyn ParserRegistry,
     phase: &Phase,
     contract_steps: &[NormalizeStep],
     fk: &FrameworkKnowledge,
+    techstack: &dyn TechStackRegistry,
 ) {
     match name {
         "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
-        "php_migration_schema" => load_migration_schema(ctx, params, project_root),
+        // PHP migration parsing is tech-stack-specific (Laravel `Schema::create` / `$table->col()`); the
+        // concrete logic lives in the tech-stack adapter, which returns schema facts for the kernel to merge.
+        "php_migration_schema" => {
+            run_adapter_loader(ctx, techstack, sub, project_root, fs, parsers, name, params)
+        }
         "php_config_keys" => load_config_keys(ctx, params, sub),
         // Generic alias loader: file / block marker / separator all declared by FKB `params`, bound to no language.
         "middleware_aliases" => load_middleware_aliases(ctx, project_root, params),
@@ -708,6 +693,55 @@ fn run_builtin(
         }
         "nginx_config" => load_nginx(ctx, sub, project_root, fs),
         other => debug!("unknown built-in loader: {other}"),
+    }
+}
+
+/// Dispatch a tech-stack-specific built-in loader to the adapter matching the sub-project's language,
+/// then persist the returned facts into the workspace.
+fn run_adapter_loader(
+    ctx: &mut PipelineContext,
+    techstack: &dyn TechStackRegistry,
+    sub: &gt_domain::model::SubProject,
+    project_root: &Path,
+    fs: &dyn FileSystem,
+    parsers: &dyn ParserRegistry,
+    name: &str,
+    params: &Value,
+) {
+    let Some(adapter) = techstack.adapter_for(&sub.language) else {
+        return;
+    };
+    match adapter.load(
+        name,
+        params,
+        sub,
+        project_root,
+        fs,
+        parsers,
+        &ctx.ws.table_prefixes(),
+    ) {
+        Ok(facts) => {
+            for f in facts {
+                apply_adapter_fact(ctx, f);
+            }
+        }
+        Err(e) => warn!("tech-stack loader {name} failed: {e}"),
+    }
+}
+
+/// Persist one fact returned by a tech-stack adapter into the workspace. The kernel owns all
+/// `PipelineContext` mutation; the adapter only ever returns data.
+fn apply_adapter_fact(ctx: &mut PipelineContext, fact: AdapterFact) {
+    match fact {
+        AdapterFact::Schema {
+            table,
+            columns,
+            source,
+        } => merge_schema_columns(ctx, &table, columns, &source),
+        AdapterFact::Symbol { table, key, value } => {
+            ctx.ws
+                .put_symbol(ctx.project.id, &table, &key, value);
+        }
     }
 }
 
@@ -796,256 +830,15 @@ fn load_schema(
     }
 }
 
-/// Laravel migration: `Schema::create('users', function (Blueprint $table) { … })`.
-///
-/// Why it must exist: PHP ORM models **don't declare fields**; columns are only written in migrations; and
-/// `$table->string('email')` is inside a closure, the call site owner is the closure not the model class,
-/// so FKB can't get "which table this column belongs to" (this is the key difference from TypeORM `@Column`).
-/// Hence the loader writes columns straight into the `schema` symbol table, and P6 settles them into `Column` graph nodes.
-fn load_migration_schema(ctx: &mut PipelineContext, params: &Value, project_root: &Path) {
-    let mut prefixes: Vec<String> = ctx.ws.table_prefixes().to_vec();
-    if let Some(extra) = params
-        .get("prefixes")
-        .and_then(|p| serde_json::from_value::<Vec<String>>(p.clone()).ok())
-    {
-        for x in extra {
-            if !prefixes.contains(&x) {
-                prefixes.push(x);
-            }
-        }
-    }
-    // migration file path fragment and extension declared by FKB `params` (default Laravel/ThinkPHP common shape).
-    let paths: Vec<String> = params
-        .get("paths")
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_else(|| vec!["database/migrations".into()]);
-    let exts: Vec<String> = params
-        .get("extensions")
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_else(|| vec!["php".into()]);
-    for (path, text) in scan_migration_files(project_root, &paths, &exts) {
-        for (table, columns) in parse_migration_tables(&text) {
-            let name = strip_prefixes(&table, &prefixes);
-            merge_schema_columns(ctx, &name, columns, &path);
-        }
-    }
-}
 
-/// Scan migration files (path fragment + extension declared by FKB `params`, default `database/migrations` + `php`).
-/// Skip dependency dirs (generic, framework-independent).
-fn scan_migration_files(root: &Path, paths: &[String], exts: &[String]) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut walker = walkdir::WalkDir::new(root).follow_links(false).into_iter();
-    while let Some(entry) = walker.next() {
-        let Ok(entry) = entry else { continue };
-        if entry.file_type().is_dir() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if matches!(
-                name.as_str(),
-                "vendor" | "node_modules" | "target" | ".git" | "dist" | "build" | "runtime"
-            ) {
-                walker.skip_current_dir();
-            }
-            continue;
-        }
-        let p = entry.path();
-        let is_php = p
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
-            .unwrap_or(false);
-        let norm = p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
-        let is_migration = paths.iter().any(|pat| norm.contains(&pat.to_ascii_lowercase()));
-        if !is_php || !is_migration {
-            continue;
-        }
-        if let Ok(text) = std::fs::read_to_string(p) {
-            let rel = p
-                .strip_prefix(root)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .replace('\\', "/");
-            out.push((rel, text));
-        }
-    }
-    out
-}
 
-/// Parse migration's `Schema::create` / `Schema::table`, extract "table name → column names".
-fn parse_migration_tables(src: &str) -> Vec<(String, Vec<String>)> {
-    let Ok(re) = regex::Regex::new(
-        r#"Schema\s*::\s*(?:create|table)\s*\(\s*['"]([\w]+)['"]"#,
-    ) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for cap in re.captures_iter(src) {
-        let Some(m0) = cap.get(0) else { continue };
-        let table = cap[1].to_string();
-        // Pair the `(` of `Schema::create(` with its `)` (skip parentheses inside strings), take the whole call block
-        let Some(rel) = m0.as_str().find('(') else { continue };
-        let open = m0.start() + rel;
-        let Some(close) = matching_paren(src, open) else { continue };
-        if close <= open + 1 {
-            continue;
-        }
-        out.push((table, columns_of_blueprint(&src[open + 1..close])));
-    }
-    out
-}
-
-/// Take column declarations in the Blueprint closure body: `$table->string('email')` → `email`.
-///
-/// **Only recognize column-declaration methods (whitelist)** — can't simply "take the first string arg":
-/// `->comment('说明')` / `->after('col')` / `->default('x')` modifiers also carry
-/// string args, would be mistaken as column names.
-fn columns_of_blueprint(body: &str) -> Vec<String> {
-    let b = body.as_bytes();
-    let mut cols: Vec<String> = Vec::new();
-    let mut i = 0usize;
-    while i < b.len() {
-        let Some(rel) = body[i..].find("$table") else { break };
-        let at = i + rel;
-        let mut p = at + "$table".len();
-        p = skip_ws(b, p);
-        if !body[p..].starts_with("->") {
-            i = at + 1;
-            continue;
-        }
-        p = skip_ws(b, p + 2);
-        let ms = p;
-        while p < b.len() && (b[p].is_ascii_alphanumeric() || b[p] == b'_') {
-            p += 1;
-        }
-        let method = &body[ms..p];
-        // Jump to the arg list's left paren
-        while p < b.len() && b[p] != b'(' && b[p] != b';' && b[p] != b'{' {
-            p += 1;
-        }
-        if p >= b.len() || b[p] != b'(' {
-            i = at + 1;
-            continue;
-        }
-        if !is_column_method(method) {
-            i = at + 1;
-            continue;
-        }
-        let q = skip_ws(b, p + 1);
-        if q < b.len() && (b[q] == b'\'' || b[q] == b'"') {
-            if let Some(col) = read_quoted(b, q) {
-                push_col(&mut cols, &col);
-            }
-        } else if q < b.len() && b[q] == b')' {
-            // Column declarations with no args (`$table->id()` / `->timestamps()`): fill column name by Laravel convention
-            for c in implicit_columns(method) {
-                push_col(&mut cols, c);
-            }
-        }
-        i = at + 1;
-    }
-    cols
-}
-
-fn skip_ws(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
-        i += 1;
-    }
-    i
-}
-
-/// Read the string-literal content at `i` (without quotes).
-fn read_quoted(b: &[u8], i: usize) -> Option<String> {
-    let quote = *b.get(i)?;
-    if quote != b'\'' && quote != b'"' {
-        return None;
-    }
-    let mut e = i + 1;
-    while e < b.len() && b[e] != quote {
-        if b[e] == b'\\' {
-            e += 1;
-        }
-        e += 1;
-    }
-    if e >= b.len() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&b[i + 1..e]).to_string())
-}
-
-fn push_col(cols: &mut Vec<String>, c: &str) {
-    if !c.is_empty() && !cols.iter().any(|x| x == c) {
-        cols.push(c.to_string());
-    }
-}
-
-/// Methods in Blueprint that **really declare columns** (whitelist, see [`columns_of_blueprint`]).
-fn is_column_method(m: &str) -> bool {
-    matches!(
-        m,
-        "bigIncrements" | "bigInteger" | "binary" | "boolean" | "char" | "date" | "dateTime"
-        | "dateTimeTz" | "decimal" | "double" | "enum" | "float" | "foreignId" | "foreignUuid"
-        | "geography" | "geometry" | "id" | "increments" | "integer" | "ipAddress" | "json"
-        | "jsonb" | "longText" | "macAddress" | "mediumIncrements" | "mediumInteger"
-        | "mediumText" | "set" | "smallIncrements" | "smallInteger" | "string" | "text"
-        | "time" | "timeTz" | "timestamp" | "timestampTz" | "tinyIncrements" | "tinyInteger"
-        | "tinyText" | "unsignedBigInteger" | "unsignedDecimal" | "unsignedDouble"
-        | "unsignedFloat" | "unsignedInteger" | "unsignedMediumInteger" | "unsignedSmallInteger"
-        | "unsignedTinyInteger" | "ulid" | "uuid" | "year"
-        // Methods with no args, fill column name by convention
-        | "rememberToken" | "softDeletes" | "softDeletesTz" | "timestamps" | "timestampsTz"
-        | "nullableTimestamps" | "morphs" | "nullableMorphs" | "nullableUuidMorphs"
-        | "nullableUlidMorphs"
-    )
-}
 
 /// **Implicit column names** for argument-less column declarations (Laravel convention).
 ///
 /// Deliberately exclude bare `uuid()` / `ulid()`: their default column name is `uuid` / `ulid`,
         // but more commonly code writes `$table->uuid('id')` (covered by the arg form) — don't guess.
-fn implicit_columns(m: &str) -> Vec<&'static str> {
-    match m {
-        "id" | "increments" | "bigIncrements" | "mediumIncrements" | "smallIncrements"
-        | "tinyIncrements" => vec!["id"],
-        "timestamps" | "timestampsTz" | "nullableTimestamps" => vec!["created_at", "updated_at"],
-        "softDeletes" | "softDeletesTz" => vec!["deleted_at"],
-        "rememberToken" => vec!["remember_token"],
-        _ => Vec::new(),
-    }
-}
 
-/// Find the `)` pairing the `(` at `open` (skip parentheses inside string literals).
-fn matching_paren(src: &str, open: usize) -> Option<usize> {
-    let b = src.as_bytes();
-    if open >= b.len() || b[open] != b'(' {
-        return None;
-    }
-    let mut depth = 0i32;
-    let mut i = open;
-    while i < b.len() {
-        match b[i] {
-            b'\'' | b'"' | b'`' => {
-                let quote = b[i];
-                i += 1;
-                while i < b.len() && b[i] != quote {
-                    if b[i] == b'\\' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-            }
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
+
 
 /// Merge a batch of columns into the `schema` symbol table (**union dedup**, not full overwrite).
 ///
@@ -2434,16 +2227,12 @@ fn dedup_rules(rules: Vec<Rule>) -> Vec<Rule> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::{collect_route_guards, guard_arg_text};
     use crate::workspace::{CallRecord, GraphWorkspace};
-    use gt_adapter_fs::StdFileSystem;
-    use gt_adapter_parser::DefaultParserRegistry;
+
     use gt_domain::model::{
         ChainGuardSpec, ConsumerGuardSpec, ConsumerScope, FactValue, GuardAttach, GuardAttachSpec,
-        Language, NodeId, ProjectId, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Span, SubProject,
-        SubProjectId,
+        Language, NodeId, ProjectId, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Span,
     };
 
     /// ThinkPHP 6's `route_guards` declaration (minimal set equivalent to `fkb/php/thinkphp6.yaml`), for test reuse.
@@ -2476,20 +2265,6 @@ mod tests {
             })),
             alias_table: None,
             synthesize_unresolved: false,
-        }
-    }
-
-    fn make_sub(root: PathBuf) -> SubProject {
-        SubProject {
-            id: SubProjectId::new(1),
-            project_id: ProjectId::new(1),
-            name: "test".into(),
-            root_path: root,
-            language: Language::new(Language::PHP),
-            role: "backend".into(),
-            detected_by: "composer.json".into(),
-            frameworks: vec!["thinkphp6".into()],
-            facts: serde_json::Value::Null,
         }
     }
 
@@ -3124,81 +2899,4 @@ mod tests {
         assert_eq!(got[0].arg.as_deref(), Some("false"), "内层实参覆盖外层");
     }
 
-    #[test]
-    fn detects_table_prefix_from_php_config() {
-        let dir = std::env::temp_dir().join(format!("em_test_prefix_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(dir.join("config"));
-        std::fs::write(
-            dir.join("config/database.php"),
-            "<?php\nreturn [\n    'default' => 'mysql',\n    'connections' => [\n        'mysql' => [\n            'prefix' => 'eb_',\n        ],\n    ],\n];",
-        )
-        .unwrap();
-        let fs = StdFileSystem::new();
-        let parsers = DefaultParserRegistry::new();
-        let sub = make_sub(dir.clone());
-        let got = super::resolve_manifest_php(
-            &sub,
-            &dir,
-            "config/database.php",
-            "connections.mysql.prefix",
-            &fs,
-            &parsers,
-        );
-        assert_eq!(
-            got,
-            Some((
-                "eb_".to_string(),
-                format!("php config: {}", dir.join("config/database.php").display())
-            )),
-            "应从 config/database.php 的 connections.mysql.prefix 读出表前缀"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn no_prefix_when_config_missing() {
-        let dir = std::env::temp_dir().join(format!("em_test_noprefix_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let fs = StdFileSystem::new();
-        let parsers = DefaultParserRegistry::new();
-        let sub = make_sub(dir.clone());
-        let got = super::resolve_manifest_php(
-            &sub,
-            &dir,
-            "config/database.php",
-            "connections.mysql.prefix",
-            &fs,
-            &parsers,
-        );
-        assert!(got.is_none(), "配置文件缺失时不应探测到前缀");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn detects_prefix_from_env_default() {
-        let dir = std::env::temp_dir().join(format!("em_test_envprefix_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(dir.join("config"));
-        std::fs::write(
-            dir.join("config/database.php"),
-            "<?php\nreturn [\n    'connections' => [\n        'mysql' => [\n            'prefix' => env('DB_PREFIX', 'eb_'),\n        ],\n    ],\n];",
-        )
-        .unwrap();
-        let fs = StdFileSystem::new();
-        let parsers = DefaultParserRegistry::new();
-        let sub = make_sub(dir.clone());
-        let got = super::resolve_manifest_php(
-            &sub,
-            &dir,
-            "config/database.php",
-            "connections.mysql.prefix",
-            &fs,
-            &parsers,
-        );
-        assert_eq!(
-            got.map(|(v, _)| v),
-            Some("eb_".to_string()),
-            "应从 env('DB_PREFIX', 'eb_') 的默认值读出表前缀"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

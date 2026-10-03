@@ -8,14 +8,16 @@ use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
 use gt_adapter_http::build_router;
 use gt_adapter_parser::DefaultParserRegistry;
+use gt_adapter_php::PhpTechStackAdapter;
 use gt_adapter_rules::YamlRuleSet;
 use gt_adapter_sqlite::SqliteStore;
+use gt_adapter_techstack::DefaultMarkerProvider;
 use gt_adapter_views::YamlViewRegistry;
 use gt_application::pipeline_runner::PipelineDeps;
 use gt_domain::error::Result;
 use gt_domain::port::{
-    FileScanner, FileSystem, KnowledgeProvider, ParserRegistry, Persistence, RuleProvider,
-    ViewRegistryProvider,
+    DefaultTechStackRegistry, FileScanner, FileSystem, KnowledgeProvider, ParserRegistry,
+    Persistence, RuleProvider, TechStackRegistry, ViewRegistryProvider,
 };
 use tracing::info;
 
@@ -49,11 +51,16 @@ impl Container {
         let rules = Arc::new(YamlRuleSet::load_dir(&config.resolve_rules_dir())?);
         info!("Loaded {} check rules", rules.len());
 
+        let techstack: Arc<dyn TechStackRegistry> = Arc::new(
+            DefaultTechStackRegistry::new().register(Box::new(PhpTechStackAdapter::new())),
+        );
         let deps = Arc::new(PipelineDeps {
             fs: Arc::new(StdFileSystem::new()),
             scanner: Arc::new(WalkDirScanner::new(Vec::new())),
             parsers: Arc::new(DefaultParserRegistry::new()),
             kb: Arc::new(kb),
+            techstack,
+            markers: Arc::new(DefaultMarkerProvider::new()),
         });
 
         Ok(Self {

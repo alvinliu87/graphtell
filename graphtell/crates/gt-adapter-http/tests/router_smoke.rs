@@ -12,7 +12,8 @@ use axum::http::{Request, StatusCode};
 use gt_adapter_http::router::{build_router, state};
 use gt_adapter_sqlite::SqliteStore;
 use gt_application::pipeline_runner::PipelineDeps;
-use gt_domain::port::Persistence;
+use gt_domain::port::{DefaultTechStackRegistry, Persistence};
+use gt_adapter_techstack::DefaultMarkerProvider;
 use tower::ServiceExt;
 
 /// Assemble a real usable HTTP state from an in-memory database plus an empty asset directory (no dependency on the
@@ -30,6 +31,8 @@ fn test_state() -> gt_adapter_http::router::Shared {
             gt_adapter_fkb::YamlKnowledgeBase::load_dir(std::path::Path::new("/__nonexistent_fkb__"))
                 .expect("an empty KB should load"),
         ),
+        techstack: Arc::new(DefaultTechStackRegistry::new()),
+        markers: Arc::new(DefaultMarkerProvider::new()),
     });
     let views = Arc::new(
         gt_adapter_views::YamlViewRegistry::load_dir(std::path::Path::new("/__nonexistent_views__"))

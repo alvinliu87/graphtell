@@ -997,6 +997,7 @@ dependencies = [
  "gt-adapter-parser",
  "gt-adapter-rules",
  "gt-adapter-sqlite",
+ "gt-adapter-techstack",
  "gt-adapter-views",
  "gt-application",
  "gt-domain",
@@ -1027,6 +1028,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gt-adapter-php"
+version = "0.1.0"
+dependencies = [
+ "gt-adapter-fs",
+ "gt-adapter-parser",
+ "gt-domain",
+ "regex",
+ "serde",
+ "serde_json",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "gt-adapter-rules"
 version = "0.1.0"
 dependencies = [
@@ -1051,6 +1066,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gt-adapter-techstack"
+version = "0.1.0"
+dependencies = [
+ "gt-domain",
+]
+
+[[package]]
 name = "gt-adapter-views"
 version = "0.1.0"
 dependencies = [
@@ -1072,8 +1094,10 @@ dependencies = [
  "gt-adapter-fs",
  "gt-adapter-http",
  "gt-adapter-parser",
+ "gt-adapter-php",
  "gt-adapter-rules",
  "gt-adapter-sqlite",
+ "gt-adapter-techstack",
  "gt-adapter-views",
  "gt-application",
  "gt-domain",
@@ -1126,7 +1150,9 @@ dependencies = [
  "gt-adapter-fkb",
  "gt-adapter-fs",
  "gt-adapter-parser",
+ "gt-adapter-php",
  "gt-adapter-sqlite",
+ "gt-adapter-techstack",
  "gt-domain",
  "once_cell",
  "regex",

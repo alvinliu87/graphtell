@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gt_domain::model::{
-    AnnotationChannel, EdgeKind, FactValue, HandlerSpec, Language, MergeStrategy, NewAnnotation,
+    AnnotationChannel, EdgeKind, FactValue, MethodRefSpec, Language, MergeStrategy, NewAnnotation,
     NewEdge, NodeId, NodeKind, Phase, ResolveStrategy, ResolveTier, Resolution, Severity,
     SubProjectId,
 };
@@ -776,8 +776,8 @@ pub fn resolve_handler_target(
 ) -> Option<(NodeId, &'static str)> {
     // The handler's shape (separator / class-name template / app segment) is all declared by FKB — kernel knows no framework.
     let spec = sub
-        .and_then(|s| ctx.handler_specs.get(&s.get()).cloned())
-        .or_else(|| ctx.handler_spec_default.clone())
+        .and_then(|s| ctx.method_ref_specs.get(&s.get()).cloned())
+        .or_else(|| ctx.method_ref_spec_default.clone())
         .unwrap_or_default();
     // Namespace / member separator comes from the language strategy (PHP `\` + `::`, Java `.` + `.`)
     let policy = ctx.lang_policy_for_sub(sub).clone();
@@ -806,36 +806,36 @@ pub fn resolve_handler_target(
         }
     }
 
-    // ③ candidate class name = template × app segment
+    // ③ Resolve the controller class without assuming any controller *directory name*.
+    //    We only know: the PSR-4 root namespaces (from composer) + the app module (inferred from the route file
+    //    path, plus any framework-declared extras, plus the single-app shape "") + the structural fact that the
+    //    controller sits `controller_layer_depth` namespace segments below the module. The actual directory name
+    //    is learned from the real class FQNs on the graph (`resolve_controller`), so `controller` / `Http/Controllers`
+    //    / anything custom all work.
     let app_seg = route_app_segment(file, &spec);
-    let mut app_segs: Vec<String> = vec![app_seg];
-    app_segs.extend(spec.app_segments.iter().cloned());
-    let mut bases: Vec<String> = Vec::new();
-    for tpl in &spec.class_templates {
-        for seg in &app_segs {
-            let b = tpl
-                .replace("{app}", seg)
-                .replace("{controller}", &controller);
-            if !bases.contains(&b) {
-                bases.push(b);
-            }
-        }
-    }
-    // When the framework declares no template, the controller itself is the candidate (fully-qualified or short name, ⑤ falls back)
-    if bases.is_empty() {
-        bases.push(controller.clone());
-    }
+    let mut module_candidates: Vec<String> = vec![app_seg];
+    module_candidates.extend(spec.app_segments.iter().cloned());
+    module_candidates.push(String::new()); // single-app shape
+    let mut seen = std::collections::HashSet::new();
+    let module_candidates: Vec<&str> = module_candidates
+        .iter()
+        .filter(|m| seen.insert(m.as_str()))
+        .map(|m| m.as_str())
+        .collect();
+
+    let class_fqn = module_candidates.iter().find_map(|m| {
+        ctx.ws
+            .resolve_controller(&controller, &spec.psr4_namespaces, m, spec.controller_layer_depth)
+    });
 
     // ④ method first, then fall back to class (controller methods often inherit from base, requiring method existence breaks the chain)
-    if !method.is_empty() {
-        for base in &bases {
-            if let Some(id) = ctx.ws.find_by_name(&policy.join_member(base, &method)) {
+    if let Some(fqn) = &class_fqn {
+        if !method.is_empty() {
+            if let Some(id) = ctx.ws.find_by_name(&policy.join_member(fqn, &method)) {
                 return Some((id, "方法精确命中"));
             }
         }
-    }
-    for base in &bases {
-        if let Some(id) = ctx.ws.find_by_name(base) {
+        if let Some(id) = ctx.ws.find_by_name(fqn) {
             return Some((id, "类命中（方法未在图内，可能继承自基类）"));
         }
     }
@@ -874,7 +874,7 @@ fn split_handler(raw: &str, seps: &[String]) -> (String, String) {
 }
 
 /// Infer the app segment from the route file path: `app/api/route/pc.php` + anchor `route` → `api`.
-fn route_app_segment(file: &str, spec: &HandlerSpec) -> String {
+fn route_app_segment(file: &str, spec: &MethodRefSpec) -> String {
     let parts: Vec<&str> = file.split('/').collect();
     if let Some(anchor) = &spec.app_anchor_dir {
         if let Some(pos) = parts.iter().position(|p| *p == anchor.as_str()) {
@@ -989,7 +989,7 @@ fn resolve_pending_links(ctx: &mut PipelineContext, phase: &Phase) {
     let pending = std::mem::take(&mut ctx.ws.pending_links);
     for link in &pending {
         let target = match link.resolve {
-            gt_domain::model::ResolveAs::HandlerPattern => {
+            gt_domain::model::ResolveAs::MethodRef => {
                 let (file, _) = link.file.split_once(':').unwrap_or((link.file.as_str(), "0"));
                 resolve_handler_target(ctx, &link.raw, file, link.sub, link.method.as_deref())
                     .map(|(id, _)| id)

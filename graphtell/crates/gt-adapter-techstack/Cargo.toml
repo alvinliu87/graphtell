@@ -1,0 +1,9 @@
+[package]
+name = "gt-adapter-techstack"
+description = "Cross-language tech-stack knowledge for GraphTell (sub-project detection markers)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gt-domain = { workspace = true }
