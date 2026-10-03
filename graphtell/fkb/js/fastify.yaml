@@ -20,6 +20,7 @@ id: fastify
 display_name: Fastify
 language: javascript
 version_hint: "4+"
+side: backend
 scope: framework
 
 detectors:

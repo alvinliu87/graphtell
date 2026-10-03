@@ -20,6 +20,12 @@ detectors:
     confidence: 0.95
   # - kind: file_exists
   #   path: some-marker-file.php
+  # For a **library** (rather than a framework) prefer code evidence — a manifest says what was installed,
+  # not what was used, and misses anything pulled in transitively. See docs/fkb-authoring.md §2.1:
+  # - kind: import_exists
+  #   symbol: "Vendor\\Package\\ClassName"
+  # - kind: call_exists
+  #   callee: "Vendor\\Package\\ClassName::*"
 
 # --- "new semantic node kinds" introduced by this FKB (must be declared when absent from the kernel list, otherwise the folded view hides them) ---
 # semantic_kinds: [MyKind]

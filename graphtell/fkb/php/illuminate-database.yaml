@@ -1,0 +1,46 @@
+# illuminate/database — Laravel's database component, as its **own** knowledge file.
+#
+# Why this is separate from `laravel.yaml`: the framework file is for *conventions* (how handlers are
+# spelled, where the app root is, what the entry method is called). This file is for what the **component**
+# contributes. Keeping them apart means the same component knowledge can be reused by anything else that
+# pulls in `illuminate/database` — and, more importantly, that a Laravel project gets it through
+# `laravel.yaml`'s `provides:` rather than through a detector that can never fire.
+#
+# Why it needs `provides` to work at all: an app's composer.json names `laravel/framework` and nothing else,
+# so `illuminate/database` appears in **no manifest the app wrote** — only in composer.lock, and only there
+# because laravel/framework asked for it. `manifest_dependency` is therefore structurally incapable of
+# seeing it. `lock_dependency` can, and `provides` short-circuits even that by trusting the bundle
+# declaration. Both are declared: the lock file also catches projects that require the component directly.
+#
+# Content note: `db_verbs` (Eloquent's save/find → WritesDb/ReadsDb) deliberately stays in `laravel.yaml`.
+# It is single-valued — the pipeline takes the first FKB that declares it — so moving it here would make
+# every Laravel project depend on this file being recognised, for a field that is really a framework-level
+# API convention. What lives here is the part that is genuinely the component's: its transaction spelling.
+#
+# `tx_calls` is collected only from knowledge that **applies to the project** — recognised frameworks and
+# projects, plus the unconditional `apply_without_detection` language layer. So this entry really is gated:
+# a project that is not Laravel (and does not require the component directly) never gets `DB::transaction`
+# on its transaction-marker list.
+
+id: illuminate-database
+display_name: Illuminate\Database (Eloquent / Query Builder)
+language: php
+version_hint: "10.x / 11.x / 12.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: composer.json
+    dependency: illuminate/database
+    confidence: 0.95
+  - kind: lock_dependency
+    lock: composer.lock
+    dependency: illuminate/database
+    confidence: 0.9
+
+# Transaction-boundary markers (used by the "several database writes in one method but no transaction
+# recognised" judgement). `DB::transaction` is the Laravel spelling; it used to sit in `php/common.yaml`,
+# i.e. in the layer applied to every PHP project whether or not it has Laravel's DB facade.
+tx_calls:
+  - "DB::transaction"

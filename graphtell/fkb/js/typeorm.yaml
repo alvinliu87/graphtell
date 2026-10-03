@@ -11,6 +11,7 @@ id: typeorm
 display_name: TypeORM
 language: javascript
 version_hint: "0.3.x"
+side: backend
 scope: framework
 
 detectors:

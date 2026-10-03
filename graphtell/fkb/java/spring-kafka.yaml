@@ -1,0 +1,67 @@
+# Spring for Apache Kafka — a **library**-level FKB, separated out of `spring-boot.yaml`.
+#
+# Why: a Spring Boot project may use RabbitMQ, or Kafka, or no broker at all, and both brokers' rules used to
+# run for every Spring Boot project.
+
+id: spring-kafka
+display_name: Spring Kafka
+language: java
+version_hint: "2.x / 3.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: spring-kafka
+    confidence: 0.95
+  - kind: import_exists
+    symbol: "org.springframework.kafka.annotation.KafkaListener"
+    confidence: 0.95
+
+rules:
+  # ===== P5 Synthesize: Topic consumer side =====
+  # `@KafkaListener(topics = "t")`, topic from the first argument.
+  - id: spring-kafka-listener
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "KafkaListener"
+    binding:
+      - Synthesize:
+          node: Topic
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ListensTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize: Topic producer side =====
+  # `kafkaTemplate.send("t", ...)`.
+  # Matching the bare method name `send` would over-match (`response.sendError` / `email.send` would all
+  # misfire), so it is narrowed by the Spring "receiver variable-name convention": a Kafka producer is almost
+  # always injected as `kafkaTemplate` / `kafkaProducer` / `producer`, and the `receiver::method` form hits
+  # their `.send` precisely. `KafkaTemplate.sendDefault(...)` is Kafka-specific by name, so `*::sendDefault`
+  # covers any receiver as a fallback. Topic name comes from arg0 (must be a literal).
+  # If a project uses another field name (e.g. `kt`), add that variable name to the alternatives below.
+  - id: spring-kafka-produce
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "kafkaTemplate::send|kafkaProducer::send|producer::send|*::sendDefault"
+    binding:
+      - Synthesize:
+          node: Topic
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: PublishesTo, direction: incoming }
+          confidence: 0.8

@@ -20,6 +20,7 @@ id: frontend-js-common
 display_name: Front-end JS common
 language: javascript
 version_hint: "*"
+side: frontend
 # No detectors declared: this file is not "a detected framework", just a common layer effective for every JS front-end project.
 apply_without_detection: true
 
@@ -65,9 +66,6 @@ rules:
                 - leading_slash
                 # The parameter name does not matter, the shape does: `/:param` ≡ the backend's `/:id`
                 - param_wildcard
-          fields:
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: CallsHttp, direction: incoming }
           confidence: 0.9
 
@@ -90,8 +88,6 @@ rules:
           fields:
             - name: key
               value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: ReadsCache, direction: incoming }
           confidence: 0.85
 
@@ -112,8 +108,6 @@ rules:
           fields:
             - name: key
               value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: WritesCache, direction: incoming }
           confidence: 0.85
 
@@ -134,8 +128,6 @@ rules:
           fields:
             - name: value
               value: { entry_value: true }
-            - name: side
-              value: { literal: "frontend" }
           confidence: 0.8
 
   # ===== P5 Synthesize: I18nKey (localised copy, cross-framework common) =====
@@ -152,19 +144,23 @@ rules:
           identity:
             kind: Named
             value: { arg: 0, require_literal: true }
-          fields:
-            - name: side
-              value: { literal: "frontend" }
           confidence: 0.85
 
-  # Front-end contract call marker: annotate `side=frontend` HttpContracts with `frontend.called`.
+  # Front-end contract call marker: annotate contracts that really have a `CallsHttp` in-edge
+  # with `frontend.called`.
+  #
+  # The criterion **must be the edge, not the `side` property**: a bridge contract is synthesised by
+  # **both** sides onto the same node, so its `side` property is decided by whoever patches last and is no
+  # longer "the side" (it becomes `bridge` as soon as more than one party has evidence on it — see the
+  # derived `sides` set in `engine.rs`). The edge is the only honest witness of "the front end really calls
+  # this", which is also why `has_incoming` was added to the selector predicate vocabulary (`Predicate`).
   - id: frontend-mark-called
     phase: AnnotatePost
     selector:
       kind: node
       node_kind: HttpContract
-      where:
-        - property_is: { name: "side", value: "frontend" }
+    where:
+      - has_incoming: CallsHttp
     binding:
       - Annotate:
           phase: Post

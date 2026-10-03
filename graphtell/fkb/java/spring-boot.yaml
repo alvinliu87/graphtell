@@ -20,6 +20,7 @@ id: spring-boot
 display_name: Spring Boot
 language: java
 version_hint: "2.x / 3.x"
+side: backend
 scope: framework
 
 detectors:
@@ -195,43 +196,8 @@ rules:
   # The pipeline (gt-pipeline::mybatis) injects each statement x table as a pseudo call site:
   # `mybatis::select|insert|update|delete(table-name)`, owner = the Mapper interface method (namespace.id).
   # `<select>` is a read, `<insert|update|delete>` are writes.
-  - id: mybatis-select-table
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "mybatis::select"
-    binding:
-      - Synthesize:
-          node: Table
-          identity:
-            kind: Fqn
-            value:
-              arg: 0
-              require_literal: true
-              normalize:
-                - singularize
-                - trim
-          link: { kind: ReadsDb, direction: incoming }
-          confidence: 0.85
-
-  - id: mybatis-write-table
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "mybatis::insert|mybatis::update|mybatis::delete"
-    binding:
-      - Synthesize:
-          node: Table
-          identity:
-            kind: Fqn
-            value:
-              arg: 0
-              require_literal: true
-              normalize:
-                - singularize
-                - trim
-          link: { kind: WritesDb, direction: incoming }
-          confidence: 0.85
+  # MyBatis statements are **not** handled here: see `fkb/java/mybatis.yaml`, which owns them (and is gated on
+  # the project actually using MyBatis — a Spring project may just as well use JPA).
 
   # **Mapper interface -> table**: the two rules above only hang action edges off the Mapper interface's
   # **method**, while P7's read / write verb classification looks up `MapsTo` by **receiver type**
@@ -245,25 +211,6 @@ rules:
   #   interface --Declares--> interface method --ReadsDb/WritesDb--> table
   #   => interface --MapsTo--> table. Only Mapper interfaces that really carry action edges produce anything,
   #   so service interfaces see no side effect.
-  - id: mybatis-mapper-maps-to-table
-    phase: AnnotatePost
-    selector:
-      kind: node
-      node_kind: Interface
-    binding:
-      - Project:
-          kind: MapsTo
-          along: Declares
-          from: []
-          to: [ReadsDb]
-          confidence: 0.8
-      - Project:
-          kind: MapsTo
-          along: Declares
-          from: []
-          to: [WritesDb]
-          confidence: 0.8
-
   # ===== P5 Synthesize: ConfigKey =====
   # `@Value("${app.name}")` — strip `${` and `}` to get the config key.
   - id: spring-value-config
@@ -393,41 +340,8 @@ rules:
   # Producer side: `RabbitTemplate.convertAndSend("q", ...)` (below) and `KafkaTemplate.send("t", ...)`,
   # where the destination comes from the first argument (arg0; depends on the parser capturing method-call
   # arguments positionally).
-  - id: spring-rabbit-listener
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "RabbitListener"
-    binding:
-      - Synthesize:
-          node: Queue
-          identity:
-            kind: Named
-            value:
-              arg: 0
-              require_literal: true
-              normalize:
-                - trim
-          link: { kind: ListensTo, direction: incoming }
-          confidence: 0.85
-
-  - id: spring-kafka-listener
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "KafkaListener"
-    binding:
-      - Synthesize:
-          node: Topic
-          identity:
-            kind: Named
-            value:
-              arg: 0
-              require_literal: true
-              normalize:
-                - trim
-          link: { kind: ListensTo, direction: incoming }
-          confidence: 0.85
+  # Broker listeners are **not** handled here: `@RabbitListener` lives in `fkb/java/spring-amqp.yaml` and
+  # `@KafkaListener` in `fkb/java/spring-kafka.yaml`, each gated on the project actually using that broker.
 
   # ===== P5 Synthesize: Queue producer side (consumer side above) =====
   # `rabbitTemplate.convertAndSend("q", ...)`: callee = convertAndSend (matches the method name, receiver
@@ -435,50 +349,7 @@ rules:
   # of "literal arguments of a method call" (otherwise arg0 is always Unknown).
   # Note: `convertAndSend` also comes from RedisTemplate / JmsTemplate, so the node still materialises as a
   # Queue; if they need to be distinguished, it can later be refined by receiver umbrella name.
-  - id: spring-rabbit-produce
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "convertAndSend"
-    binding:
-      - Synthesize:
-          node: Queue
-          identity:
-            kind: Named
-            value:
-              arg: 0
-              require_literal: true
-              normalize:
-                - trim
-          link: { kind: PublishesTo, direction: incoming }
-          confidence: 0.8
-
-  # Producer side (Kafka): `kafkaTemplate.send("t", ...)`.
-  # Matching the bare method name `send` would over-match (`response.sendError` / `email.send` would all misfire),
-  # so it is narrowed by "receiver variable-name convention": in Spring a Kafka producer is almost always injected
-  # as a field named `kafkaTemplate` / `kafkaProducer` / `producer`, and the `receiver::method` form hits their
-  # `.send` precisely.
-  # In addition, `KafkaTemplate.sendDefault(...)`'s `sendDefault` is a Kafka-specific method name, so `*::` covers
-  # any receiver as a fallback — with a very small misfire surface. The topic name comes from arg0 (the first
-  # argument, which must be a literal).
-  # If a project uses a different field name (e.g. `kt`), just add that variable name to the alternatives below.
-  - id: spring-kafka-produce
-    phase: Synthesize
-    selector:
-      kind: call
-      callee: "kafkaTemplate::send|kafkaProducer::send|producer::send|*::sendDefault"
-    binding:
-      - Synthesize:
-          node: Topic
-          identity:
-            kind: Named
-            value:
-              arg: 0
-              require_literal: true
-              normalize:
-                - trim
-          link: { kind: PublishesTo, direction: incoming }
-          confidence: 0.8
+  # Producers likewise: `convertAndSend` in `spring-amqp.yaml`, `kafkaTemplate::send` in `spring-kafka.yaml`.
 
   # ===== P5 Synthesize: Schedule (@Scheduled) =====
   # A method-level annotation, callee = Scheduled; cron / fixedRate etc. come from annotation argument arg0.

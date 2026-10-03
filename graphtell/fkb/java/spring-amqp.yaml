@@ -1,0 +1,76 @@
+# Spring AMQP (RabbitMQ) — a **library**-level FKB, separated out of `spring-boot.yaml`.
+#
+# Why: a Spring Boot project may use Kafka, or RabbitMQ, or no broker at all. Both brokers' rules used to run
+# for every Spring Boot project, so a Kafka-only project still declared `convertAndSend` as one of its queue
+# producers.
+#
+# Detector note: the dependency is usually pulled in as `spring-boot-starter-amqp`, whose name contains
+# **neither** `spring-rabbit` nor `rabbitmq`, so the manifest probe looks for `amqp` — with `spring-rabbit`
+# as a second spelling for projects that depend on it directly. The import probe is the precise one.
+
+id: spring-amqp
+display_name: Spring AMQP (RabbitMQ)
+language: java
+version_hint: "2.x / 3.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: amqp
+    confidence: 0.9
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: spring-rabbit
+    confidence: 0.9
+  - kind: import_exists
+    symbol: "org.springframework.amqp.rabbit.annotation.RabbitListener"
+    confidence: 0.95
+
+rules:
+  # ===== P5 Synthesize: Queue consumer side =====
+  # `@RabbitListener(queues = "q")`, destination from the first argument.
+  - id: spring-rabbit-listener
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "RabbitListener"
+    binding:
+      - Synthesize:
+          node: Queue
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ListensTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5 Synthesize: Queue producer side =====
+  # `rabbitTemplate.convertAndSend("q", ...)`: callee = convertAndSend (method-name match, receiver agnostic),
+  # target name from arg0. Depends on the parser capturing method-call arguments positionally.
+  #
+  # Caveat carried over from the framework file: `convertAndSend` also comes from `RedisTemplate` /
+  # `JmsTemplate`, so the node still materialises as a `Queue` even when the real broker is not Rabbit. It
+  # lives here because Rabbit is by far the common case; to split them out later, narrow it by receiver
+  # umbrella name.
+  - id: spring-rabbit-produce
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "convertAndSend"
+    binding:
+      - Synthesize:
+          node: Queue
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: PublishesTo, direction: incoming }
+          confidence: 0.8

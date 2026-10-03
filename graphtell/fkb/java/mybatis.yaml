@@ -1,0 +1,101 @@
+# MyBatis — a **library**-level FKB, separated out of `spring-boot.yaml`.
+#
+# Why it is not part of the framework file: MyBatis is a standalone ORM that happens to be commonly used
+# with Spring Boot. A Spring project may just as well use JPA / Hibernate, and then none of this applies —
+# yet the rules used to run for every project recognised as Spring Boot. The three rules even carried
+# `mybatis-*` ids inside the framework file, which is the tell that they never belonged there.
+#
+# How it works: `gt-pipeline::mybatis` parses the mapper XML and injects each statement as a **pseudo call
+# site** `mybatis::select|insert|update|delete(table-name)`, owned by the Mapper interface method. These rules
+# turn those pseudo call sites into `Table` nodes and `ReadsDb` / `WritesDb` edges; the third one projects the
+# interface's action edges into an `interface --MapsTo--> table` hop, which is what Java's N+1 rules need.
+#
+# Detector note — `call_exists` cannot be used here: those pseudo call sites are injected **after** P3
+# (`mybatis::run` runs between Prepare and Synthesize), so at detection time the graph does not have them yet.
+# Detection therefore goes through the manifest and through imports, which cover the two real-world spellings:
+# a starter dependency in `pom.xml` (matched textually — `pom.xml` is not JSON), and `@Mapper` /
+# `org.apache.ibatis.*` imports in the Java sources. XML-only mappers with no Java annotation are caught by
+# the first, annotation-driven ones by the second.
+
+id: mybatis
+display_name: MyBatis
+language: java
+version_hint: "3.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: mybatis
+    confidence: 0.95
+  - kind: import_exists
+    symbol: "org.apache.ibatis"
+    confidence: 0.9
+
+rules:
+  # `<select>` is a read, `<insert|update|delete>` are writes.
+  - id: mybatis-select-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "mybatis::select"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: ReadsDb, direction: incoming }
+          confidence: 0.85
+
+  - id: mybatis-write-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "mybatis::insert|mybatis::update|mybatis::delete"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: WritesDb, direction: incoming }
+          confidence: 0.85
+
+  # The Mapper interface itself has no `MapsTo`, so on its own it produces no `WritesDb` and Java's N+1 rules
+  # get disabled for "no db-write annotation at all". This supplies the interface -> table hop.
+  #
+  # `Project` rather than `Link`: `Link` resolves both ends with `find_by_name`, while a Table node's **fqn is
+  # NULL** (only a name), so a lookup by name always misses. `Project` walks edges instead:
+  #   interface --Declares--> interface method --ReadsDb/WritesDb--> table  =>  interface --MapsTo--> table.
+  # Only Mapper interfaces that really carry action edges produce anything, so service interfaces see no
+  # side effect.
+  - id: mybatis-mapper-maps-to-table
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: Interface
+    binding:
+      - Project:
+          kind: MapsTo
+          along: Declares
+          from: []
+          to: [ReadsDb]
+          confidence: 0.8
+      - Project:
+          kind: MapsTo
+          along: Declares
+          from: []
+          to: [WritesDb]
+          confidence: 0.8

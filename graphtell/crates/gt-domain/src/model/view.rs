@@ -78,6 +78,16 @@ pub struct PerspectiveSpec {
     /// into "cache perspective / local-storage perspective".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<String>,
+    /// Accept a node as soon as **any** of these parties has evidence on it (set semantics), instead of
+    /// requiring the node's scalar `side` to equal one value.
+    ///
+    /// This is the honest way to filter nodes several parties may write: a contract bridge carries both sides'
+    /// evidence, so its derived `side` reads `bridge` and it matches **neither** `side: frontend` nor
+    /// `side: backend`. Writing the intent as `side_any: [backend]` — "the backend participates" — keeps those
+    /// nodes in view. Nodes written by an older pipeline (scalar `side` only, no derived `sides` set) are still
+    /// matched through that scalar, so enabling a `side_any` filter never forces a rebuild.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_any: Option<Vec<String>>,
     /// Default layout algorithm.
     pub layout: LayoutMode,
     /// Grouping dimension of an aggregate perspective.
@@ -94,6 +104,48 @@ pub struct PerspectiveSpec {
     pub collapsed_kinds: Vec<String>,
 }
 
+impl PerspectiveSpec {
+    /// The sides this perspective accepts, `side` (one required party) and `side_any` (any one suffices)
+    /// combined. Empty ⇒ no side filtering at all.
+    ///
+    /// Kept in one place so the three filtering sites (availability count / object candidates / aggregate
+    /// candidates) cannot drift apart, and so the SQL counting path and the in-memory one agree.
+    pub fn accepted_sides(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        if let Some(s) = &self.side {
+            out.push(s.as_str());
+        }
+        if let Some(list) = &self.side_any {
+            out.extend(list.iter().map(|s| s.as_str()));
+        }
+        out
+    }
+
+    /// Whether a node qualifies for this perspective's side filter, given its persisted properties.
+    ///
+    /// `#` `#` A node qualifies when **any** accepted party has evidence: either it is present in the derived
+    /// set `sides` (written by the current pipeline), or — for rows written before `sides` existed — the
+    /// scalar `side` equals it. Nodes with no side evidence at all never qualify, same as before.
+    pub fn matches_sides(&self, props: &Value) -> bool {
+        let accepted = self.accepted_sides();
+        if accepted.is_empty() {
+            return true;
+        }
+        let sides: Vec<String> = props
+            .get("sides")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        if sides.iter().any(|s| accepted.contains(&s.as_str())) {
+            return true;
+        }
+        props
+            .get("side")
+            .and_then(|v| v.as_str())
+            .map(|s| accepted.contains(&s))
+            .unwrap_or(false)
+    }
+}
+
 impl Default for PerspectiveSpec {
     fn default() -> Self {
         Self {
@@ -102,6 +154,7 @@ impl Default for PerspectiveSpec {
             mode: ViewMode::Object,
             node_kind: None,
             side: None,
+            side_any: None,
             layout: LayoutMode::Radial,
             group_by: None,
             row_from: None,
@@ -436,4 +489,77 @@ pub struct NodeLocations {
     pub locations: Vec<SourceLocation>,
     /// How many other places reference this node (for "N other references").
     pub reference_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn spec(side: Option<&str>, side_any: Option<&[&str]>) -> PerspectiveSpec {
+        PerspectiveSpec {
+            id: "t".into(),
+            side: side.map(|s| s.to_string()),
+            side_any: side_any.map(|l| l.iter().map(|s| s.to_string()).collect()),
+            ..PerspectiveSpec::default()
+        }
+    }
+
+    /// A contract written by **both** sides: the derived label is `bridge`, the parties live in `sides`.
+    fn bridge() -> Value {
+        json!({ "side": "bridge", "sides": ["backend", "frontend"] })
+    }
+
+    /// A row written before `sides` existed: only the scalar present.
+    fn legacy() -> Value {
+        json!({ "side": "backend" })
+    }
+
+    #[test]
+    fn no_side_filter_accepts_everything() {
+        let s = spec(None, None);
+        assert!(s.accepted_sides().is_empty());
+        assert!(s.matches_sides(&bridge()));
+        assert!(s.matches_sides(&json!({})));
+    }
+
+    #[test]
+    fn bridge_node_matches_each_of_its_parties() {
+        // Why this matters: with a strict scalar reading, a bridge node matches neither `side: frontend` nor
+        // `side: backend`, so "the backend participates" silently dropped every node the front end had touched.
+        for side in ["backend", "frontend"] {
+            let s = spec(Some(side), None);
+            assert!(s.matches_sides(&bridge()), "bridge 应命中 {side}");
+            let s_any = spec(None, Some(&[side]));
+            assert!(s_any.matches_sides(&bridge()), "side_any: bridge 应命中 {side}");
+        }
+    }
+
+    #[test]
+    fn single_party_node_only_matches_that_party() {
+        let s = spec(Some("backend"), None);
+        assert!(s.matches_sides(&json!({ "side": "backend", "sides": ["backend"] })));
+        assert!(!s.matches_sides(&json!({ "side": "frontend", "sides": ["frontend"] })));
+    }
+
+    #[test]
+    fn legacy_rows_without_sides_still_match_through_the_scalar() {
+        // So switching a perspective to a side filter never forces a rebuild of existing projects.
+        assert!(spec(Some("backend"), None).matches_sides(&legacy()));
+        assert!(!spec(Some("frontend"), None).matches_sides(&legacy()));
+    }
+
+    #[test]
+    fn nodes_without_any_side_evidence_never_match() {
+        assert!(!spec(Some("backend"), None).matches_sides(&json!({})));
+        assert!(!spec(None, Some(&["backend"])).matches_sides(&json!({ "other": 1 })));
+    }
+
+    #[test]
+    fn accepted_sides_unions_both_declarations() {
+        let s = spec(Some("backend"), Some(&["frontend", "external"]));
+        let mut got = s.accepted_sides();
+        got.sort_unstable();
+        assert_eq!(got, vec!["backend", "external", "frontend"]);
+    }
 }

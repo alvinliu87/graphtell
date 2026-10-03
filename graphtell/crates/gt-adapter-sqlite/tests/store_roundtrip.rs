@@ -120,3 +120,63 @@ fn node_and_edge_roundtrip() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].to_id, NodeId(101));
 }
+
+/// `count_nodes` used to compare one scalar (`$.side = ?`), which made any node several parties had written
+/// invisible to a side-filtered perspective: a contract bridge reads `side = bridge` and matched **neither**
+/// `side = frontend` nor `side = backend`, so "the backend participates" quietly dropped every contract the
+/// front end had touched. It now asks "does any of these parties have evidence" — reading the derived `sides`
+/// set, with the scalar kept as a fallback so rows written before `sides` existed still count (no rebuild).
+#[test]
+fn count_nodes_accepts_any_party_with_evidence() {
+    let store = make_store();
+    let pid = seed_project(&store);
+
+    let node = |id: i64, kind: &str, name: &str, props: serde_json::Value| NewNode {
+        id: Some(NodeId(id)),
+        project_id: pid,
+        sub_project_id: None,
+        kind: NodeKind::new(kind),
+        name: name.into(),
+        fqn: None,
+        identity: None,
+        file_id: None,
+        span: gt_domain::model::Span { start_line: 1, end_line: 2, start_byte: 0, end_byte: 0 },
+        language: Language::new("php"),
+        phase: Phase("Synthesize".to_string()),
+        confidence: 1.0,
+        properties: props,
+    };
+    let nodes = vec![
+        // Written by both sides: the derived label is `bridge`, the parties live in the set.
+        node(201, "HttpContract", "bridged", serde_json::json!({ "side": "bridge", "sides": ["backend", "frontend"] })),
+        // One party each.
+        node(202, "HttpContract", "backend-only", serde_json::json!({ "side": "backend", "sides": ["backend"] })),
+        node(203, "HttpContract", "frontend-only", serde_json::json!({ "side": "frontend", "sides": ["frontend"] })),
+        // No side evidence at all (e.g. a knowledge base that never declared `side`).
+        node(204, "HttpContract", "anonymous", serde_json::json!({})),
+        // A legacy row: scalar only, no `sides` set.
+        node(205, "Cache", "token", serde_json::json!({ "side": "backend" })),
+    ];
+    store
+        .apply(&GraphDelta { project_id: Some(pid), nodes, ..Default::default() })
+        .expect("persisting the graph should succeed");
+
+    let count = |kind: Option<&str>, sides: &[&str]| -> u64 {
+        let sides: Vec<String> = sides.iter().map(|s| s.to_string()).collect();
+        match kind {
+            Some(k) => store.count_nodes(pid, Some(&NodeKind::new(k)), &sides),
+            None => store.count_nodes(pid, None, &sides),
+        }
+        .expect("count_nodes should succeed")
+    };
+
+    let contracts = Some("HttpContract");
+    assert_eq!(count(contracts, &["backend"]), 2, "bridge + backend-only");
+    assert_eq!(count(contracts, &["frontend"]), 2, "bridge + frontend-only");
+    assert_eq!(count(contracts, &["backend", "frontend"]), 3, "三方各行按需，无重复计数");
+    assert_eq!(count(contracts, &["external"]), 0, "没有证据的一方不该命中");
+    assert_eq!(count(contracts, &[]), 4, "空集合 = 不过滤");
+    // Legacy rows (scalar only) keep working, which is what makes the filter safe without a rebuild.
+    assert_eq!(count(Some("Cache"), &["backend"]), 1);
+    assert_eq!(count(Some("Cache"), &["frontend"]), 0);
+}

@@ -13,6 +13,7 @@ id: spatie-permission
 display_name: spatie/laravel-permission
 language: php
 version_hint: "5.x / 6.x"
+side: backend
 scope: framework
 # A library's knowledge likewise **only takes effect when it is detected** (the package is really installed per
 # composer.json) and never leaks into projects that do not use it.

@@ -28,6 +28,19 @@
 # Node kinds **not** listed in `node_views` do not switch the top filter, they only open the
 # Inspector on the right — asset / structural nodes such as ConfigKey / KeyPattern / Component /
 # SecretLocation have no "single link" semantics.
+#
+# The two ways to filter by side:
+#   side: backend       — at least one party's evidence must be `backend` (see below). Historically it was a
+#                         strict `$.side == "backend"` equality; that reading silently dropped every node
+#                         several parties had written, because those carry more than one label.
+#   side_any: [backend] — same thing written explicitly; prefer this form for anything a **bridge** node can
+#                         appear in (a `HttpContract` is written by both the front end and the back end).
+#
+# Why both are set semantics: the pipeline accumulates each party's claim into a sorted `sides` set and turns
+# the scalar `side` into a mere display label — one party ⇒ that party, several ⇒ `bridge`. So "the backend
+# participates" can no longer be phrased as "the label equals backend": a bridged node would answer no and
+# vanish. Rows written by an older pipeline carry only the scalar and still match, so enabling a side filter
+# never forces a rebuild. Nodes with no side evidence at all match neither form, as before.
 
 perspectives:
   # ---------------- object perspectives (single link) ----------------

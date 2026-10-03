@@ -394,6 +394,9 @@ pub fn eval_predicate(
             None => false,
         },
         Predicate::NotClaimedBy(kind) => !ws.claimed_by(node, kind),
+        // Evidence-based counterpart of the "marker property" habits: the edge is the witness, a property
+        // several parties all patch is not.
+        Predicate::HasIncoming(kind) => ws.has_incoming_edge(node, kind),
         Predicate::ArgCount(n) => match mctx {
             Some(MatchCtx::Call(c)) => c.args.len() == *n,
             _ => false,
@@ -931,7 +934,20 @@ fn exec_synthesize_one(
             None
         };
         if let Some(v) = value {
-            ctx.ws.patch_properties(node_id, json!({ f.name.clone(): v }));
+            // `side` is **evidence about who has touched this node**, not "the owner": The same synthesised node
+            // may be written by several parties (a contract bridge is written by both the front end and the back
+            // end onto one node). Patching a scalar here made the result depend on **who patches last** — an
+            // order-dependent lie. So it is accumulated into a sorted set `sides` (order-independent by
+            // construction) and `side` becomes merely the derived display label: one party ⇒ that party, several
+            // ⇒ `bridge`. `sides` must never be folded into `IdentityKey::scope` (it is not part of "what is
+            // this node", it answers "who knows about it").
+            if f.name == "side" {
+                if let Some(side) = v.as_str() {
+                    ctx.ws.record_side(node_id, side);
+                }
+            } else {
+                ctx.ws.patch_properties(node_id, json!({ f.name.clone(): v }));
+            }
         }
     }
 

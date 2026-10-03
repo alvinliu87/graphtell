@@ -402,5 +402,14 @@ fn celery_tasks_form_publish_subscribe_loop() {
             incoming.iter().any(|k| k == "PublishesTo"),
             "{task} 应有 PublishesTo，实际入边 {incoming:?}；全部队列：{names:?}"
         );
+        // Celery declared no `side` at all historically, so its Queue nodes had no party evidence and were
+        // invisible to every side filter. It now inherits `backend` from `fkb/python/celery.yaml`'s top-level
+        // declaration — which is also what lets a PHP producer and a Python consumer merge onto one Queue node.
+        assert_eq!(
+            node.properties.get("side").and_then(|v| v.as_str()),
+            Some("backend"),
+            "{task} 应继承 side=backend，实际 properties={}",
+            node.properties
+        );
     }
 }

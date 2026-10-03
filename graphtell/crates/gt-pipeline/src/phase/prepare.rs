@@ -5,7 +5,7 @@
 //! * use `loaders` to load authoritative sources: `schema` / `config_keys` / `i18n` / `facade_map`
 //!   / `container_bindings` / `event_listeners` / `route_list` / `nginx`
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gt_domain::error::Result;
@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
 use crate::context::PipelineContext;
-use crate::engine::{capture_locale, path_matches};
+use crate::engine::{callee_matches, capture_locale, path_matches};
 use crate::normalize::strip_prefixes;
 use crate::workspace::{CallRecord, RouteGroup, RouteGuard, RouteGuardScope};
 
@@ -42,12 +42,14 @@ pub fn run(
     for sub in &subs {
         // Framework-level + project-level knowledge recognized separately: project-level loads only when that sub-project is recognized as the corresponding project,
         // its rules only enter `rules_by_sub` (not `ctx.frameworks`, not global), never leaking into other projects.
-        let frameworks = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Framework);
+        let evidence = collect_code_evidence(ctx, sub);
+        let frameworks =
+            detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Framework, &evidence);
         info!("sub-project {} recognized framework: {:?}", sub.name, frameworks);
         detected_frameworks.extend(frameworks.iter().cloned());
         ctx.frameworks.insert(sub.id.get(), frameworks.clone());
 
-        let projects = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Project);
+        let projects = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Project, &evidence);
         if !projects.is_empty() {
             info!("sub-project {} recognized project knowledge: {:?}", sub.name, projects);
         }
@@ -96,7 +98,32 @@ pub fn run(
             }
             ctx.db_verbs.insert(sub.id.get(), spec);
         }
-        for fk in kb.all().iter().filter(|fk| fk.language == sub.language) {
+        // These three lists are collected only from knowledge that **actually applies** to this sub-project:
+        // a recognised framework / project, or the unconditional language layer (`apply_without_detection`).
+        //
+        // They used to be merged from **every** FKB of the language with no detector consulted, so a library
+        // contributed its entries to projects that never went near it — `GuzzleHttp\Client::request` landed
+        // in every PHP project's outbound-call list, `Db::transaction` in Laravel's. That is what let the
+        // entries drift into a language-common file in the first place, and it is what made moving them out
+        // to their owning library a no-op.
+        //
+        // The `apply_without_detection` arm is not optional: that layer holds the genuinely
+        // framework-independent entries (`curl_exec`, `Http::get`, `transaction`, `commit` …), and it is
+        // never in `frameworks` because it has no detectors. Dropping it would silently disable every rule
+        // that reads these lists.
+        //
+        // Measured safe on the real samples (6 PHP projects, `tests/detector_coverage.rs`): zero cases where
+        // the code used a library and its detectors did not fire.
+        for fk in kb.all() {
+            if fk.language != sub.language {
+                continue;
+            }
+            let applies = frameworks.contains(&fk.id)
+                || projects.contains(&fk.id)
+                || fk.apply_without_detection;
+            if !applies {
+                continue;
+            }
             for c in &fk.external_calls {
                 if !ctx.external_calls.iter().any(|x| x.eq_ignore_ascii_case(c)) {
                     ctx.external_calls.push(c.clone());
@@ -214,6 +241,7 @@ fn detect_frameworks(
     sub: &gt_domain::model::SubProject,
     project_root: &Path,
     scope: KnowledgeScope,
+    evidence: &CodeEvidence,
 ) -> Vec<String> {
     let mut hits: Vec<(String, f32)> = Vec::new();
     for fk in kb.all() {
@@ -234,13 +262,16 @@ fn detect_frameworks(
                 Detector::FileExists { path, .. } => {
                     sub.root_path.join(path).exists() || project_root.join(path).exists()
                 }
+                Detector::LockDependency { lock, dependency, .. } => {
+                    let path = sub.root_path.join(lock);
+                    lock_has(&path, dependency, fs)
+                        || lock_has(&project_root.join(lock), dependency, fs)
+                }
+                Detector::ImportExists { symbol, .. } => evidence.imports(symbol),
+                Detector::CallExists { callee, .. } => evidence.calls(callee),
             };
             if ok {
-                let conf = match d {
-                    Detector::ManifestDependency { confidence, .. } => *confidence,
-                    Detector::FileExists { confidence, .. } => *confidence,
-                };
-                best = best.max(conf);
+                best = best.max(d.confidence());
             }
         }
         if best > 0.0 {
@@ -248,7 +279,126 @@ fn detect_frameworks(
         }
     }
     hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    hits.into_iter().map(|(id, _)| id).collect()
+    expand_provided(hits, kb).into_iter().map(|(id, _)| id).collect()
+}
+
+/// Expand `provides`: recognising a framework recognises the component knowledge it bundles.
+///
+/// Breadth-first and cycle-safe (`seen`), and **directly detected knowledge always precedes provided
+/// knowledge** regardless of confidence — a component may declare a lower confidence than some other
+/// framework's direct hit, but "the code / manifest said so" outranks "something else said so". That
+/// ordering is what keeps a framework's own declaration of a single-valued field (`db_verbs`,
+/// `method_ref` …, all taken by `find_map`) ahead of a component's.
+fn expand_provided(
+    hits: Vec<(String, f32)>,
+    kb: &dyn KnowledgeProvider,
+) -> Vec<(String, f32)> {
+    let mut out = hits;
+    let mut seen: HashSet<String> = out.iter().map(|(id, _)| id.clone()).collect();
+    let mut i = 0;
+    while i < out.len() {
+        let (id, conf) = out[i].clone();
+        if let Some(fk) = kb.by_id(&id) {
+            for p in &fk.provides {
+                if seen.insert(p.clone()) {
+                    out.push((p.clone(), conf * PROVIDED_CONFIDENCE_DECAY));
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Confidence granted to knowledge that was merely *provided* rather than detected.
+const PROVIDED_CONFIDENCE_DECAY: f32 = 0.9;
+
+/// What the sub-project's **code** says it uses, as opposed to what its manifest says it installed.
+///
+/// Both collections are de-duplicated while being built, so each detector costs O(distinct) rather than
+/// O(call sites) — the gate itself must stay cheap, since its whole purpose is to keep the far more
+/// expensive O(call sites × rules) matching in P5 down to the knowledge this project actually needs.
+#[derive(Default)]
+struct CodeEvidence {
+    /// Imported FQNs, lowercased and stripped of a leading separator.
+    imports: HashSet<String>,
+    /// Distinct callees, each with the receiver / method P2 saw it with (needed because callee matching
+    /// is three-way: pattern vs `callee` + `receiver` + `method`).
+    callees: HashMap<String, (Option<String>, Option<String>)>,
+}
+
+impl CodeEvidence {
+    /// Whether `symbol` is imported by this sub-project. A trailing `*` matches a namespace prefix.
+    fn imports(&self, symbol: &str) -> bool {
+        let pat = symbol.trim_start_matches('\\').to_ascii_lowercase();
+        match pat.strip_suffix('*') {
+            Some(prefix) => self.imports.iter().any(|fqn| fqn.starts_with(prefix)),
+            None => self.imports.contains(&pat),
+        }
+    }
+
+    /// Whether any call site of this sub-project matches `pattern` (grammar of `selector.callee`).
+    ///
+    /// Matching is three-way (`pattern` vs callee + receiver + method), so a call site the parser did not
+    /// split into receiver / method would silently match nothing. A fully-qualified callee already carries
+    /// both halves, so recover them — otherwise the detector misses precisely the inline spelling
+    /// (`\GuzzleHttp\Client::request()`) that it exists to catch.
+    fn calls(&self, pattern: &str) -> bool {
+        self.callees.iter().any(|(callee, (receiver, method))| {
+            let recovered =
+                (receiver.is_none() || method.is_none()).then(|| split_callee(callee));
+            let (r, m) = match &recovered {
+                Some((r, m)) => (r.as_deref(), m.as_deref()),
+                None => (receiver.as_deref(), method.as_deref()),
+            };
+            callee_matches(pattern, callee, r, m)
+        })
+    }
+}
+
+/// Split `A::m` / `A->m` into its halves. Both separators are two characters wide.
+fn split_callee(callee: &str) -> (Option<String>, Option<String>) {
+    match callee.rfind("::").or_else(|| callee.rfind("->")) {
+        Some(pos) => (
+            Some(callee[..pos].to_string()),
+            Some(callee[pos + 2..].to_string()),
+        ),
+        None => (None, None),
+    }
+}
+
+/// Collect one sub-project's code evidence from the P2 output.
+fn collect_code_evidence(ctx: &PipelineContext, sub: &gt_domain::model::SubProject) -> CodeEvidence {
+    // Files are recorded project-relative while `root_path` is absolute; a sub-project that *is* the
+    // project root has no prefix, and then every file belongs to it.
+    let prefix = match sub.root_path.strip_prefix(&ctx.project.root_path) {
+        Ok(rel) if !rel.as_os_str().is_empty() => Some(
+            format!("{}/", rel.to_string_lossy().replace('\\', "/").trim_matches('/')),
+        ),
+        _ => None,
+    };
+    let in_sub = |path: &str| match &prefix {
+        Some(p) => path.starts_with(p.as_str()),
+        None => true,
+    };
+
+    let mut ev = CodeEvidence::default();
+    for (file_id, fqn) in ctx.ws.all_imported_fqns() {
+        if !ctx.ws.source_path_of(file_id).is_some_and(|p| in_sub(&p)) {
+            continue;
+        }
+        ev.imports.insert(fqn.trim_start_matches('\\').to_ascii_lowercase());
+    }
+    for call in &ctx.ws.calls {
+        // `sub` is authoritative (P0 assigned it from the file); the path check only catches the rare
+        // call site whose owning file was never assigned to a sub-project.
+        if call.sub == Some(sub.id) || (call.sub.is_none() && in_sub(&call.file)) {
+            ev.callees
+                .entry(call.callee.clone())
+                .or_insert_with(|| (call.receiver.clone(), call.method.clone()));
+        }
+    }
+    ev
 }
 
 fn manifest_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
@@ -268,6 +418,53 @@ fn manifest_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
                 }
             }
         }
+    }
+    text.contains(dependency)
+}
+
+/// Whether `dependency` appears in a **lock file**: the resolved dependency closure, so it covers packages
+/// the project never declared itself.
+///
+/// Unlike [`manifest_has`], which only ever looks at hand-written declarations, this reads what was actually
+/// installed — the only manifest-shaped signal that can see a package pulled in transitively. Layouts are
+/// recognised per ecosystem; anything else (yarn.lock, poetry.lock …) falls back to a plain-text probe
+/// rather than failing to match, the same conservative direction `manifest_has` takes.
+fn lock_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
+    if !fs.exists(path) {
+        return false;
+    }
+    let Ok(text) = fs.read_to_string(path) else { return false };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return text.contains(dependency);
+    };
+    let needle = dependency.to_ascii_lowercase();
+    let mut names: Vec<String> = Vec::new();
+    // composer.lock: `packages` / `packages-dev` are arrays of `{ "name": ... }`.
+    for section in ["packages", "packages-dev"] {
+        if let Some(arr) = v.get(section).and_then(|s| s.as_array()) {
+            for p in arr {
+                if let Some(n) = p.get("name").and_then(|n| n.as_str()) {
+                    names.push(n.to_string());
+                }
+            }
+        }
+    }
+    // package-lock.json v2+: `packages` is an object keyed by install path (`node_modules/foo`).
+    if let Some(map) = v.get("packages").and_then(|s| s.as_object()) {
+        for (key, entry) in map {
+            let n = entry.get("name").and_then(|n| n.as_str()).unwrap_or(key);
+            names.push(n.trim_start_matches("node_modules/").to_string());
+        }
+    }
+    // package-lock.json v1: `dependencies` is an object keyed by package name.
+    if let Some(map) = v.get("dependencies").and_then(|s| s.as_object()) {
+        names.extend(map.keys().cloned());
+    }
+    if names
+        .iter()
+        .any(|n| n.to_ascii_lowercase() == needle || n.to_ascii_lowercase().contains(&needle))
+    {
+        return true;
     }
     text.contains(dependency)
 }
@@ -2230,9 +2427,12 @@ mod tests {
     use super::{collect_route_guards, guard_arg_text};
     use crate::workspace::{CallRecord, GraphWorkspace};
 
+    use super::{detect_frameworks, expand_provided, lock_has, CodeEvidence};
+    use std::collections::HashMap;
     use gt_domain::model::{
-        ChainGuardSpec, ConsumerGuardSpec, ConsumerScope, FactValue, GuardAttach, GuardAttachSpec,
-        Language, NodeId, ProjectId, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Span,
+        ChainGuardSpec, ConsumerGuardSpec, ConsumerScope, Detector, FactValue, FrameworkKnowledge,
+        GuardAttach, GuardAttachSpec, KnowledgeScope, Language, NodeId, ProjectId, RouteCallSpec,
+        RouteGuardSpec, RouteMatchBy, Span, SubProject, SubProjectId,
     };
 
     /// ThinkPHP 6's `route_guards` declaration (minimal set equivalent to `fkb/php/thinkphp6.yaml`), for test reuse.
@@ -2897,6 +3097,245 @@ mod tests {
         let got = ws.route_guards(f, 5);
         assert_eq!(got.len(), 1, "同名中间件只算一个");
         assert_eq!(got[0].arg.as_deref(), Some("false"), "内层实参覆盖外层");
+    }
+
+    // ------------------------------------------------------------ code-evidence detectors
+
+    /// A knowledge base of exactly the given entries, so detection needs no YAML directory.
+    struct StaticKb(Vec<FrameworkKnowledge>);
+
+    impl gt_domain::port::KnowledgeProvider for StaticKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> {
+            self.0.iter().collect()
+        }
+        fn by_id(&self, id: &str) -> Option<&FrameworkKnowledge> {
+            self.0.iter().find(|fk| fk.id == id)
+        }
+    }
+
+    /// A filesystem where nothing exists: the detectors under test never touch the disk.
+    struct NoFs;
+
+    impl gt_domain::port::FileSystem for NoFs {
+        fn exists(&self, _: &std::path::Path) -> bool {
+            false
+        }
+        fn is_dir(&self, _: &std::path::Path) -> bool {
+            false
+        }
+        fn read_to_string(&self, _: &std::path::Path) -> gt_domain::error::Result<String> {
+            Err(gt_domain::error::DomainError::infra("no fs"))
+        }
+        fn len(&self, _: &std::path::Path) -> gt_domain::error::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    fn fk(id: &str, detectors: Vec<Detector>) -> FrameworkKnowledge {
+        FrameworkKnowledge {
+            id: id.into(),
+            display_name: id.into(),
+            language: Language("php".into()),
+            detectors,
+            ..Default::default()
+        }
+    }
+
+    fn evidence(imports: &[&str], callees: &[(&str, Option<&str>, Option<&str>)]) -> CodeEvidence {
+        CodeEvidence {
+            imports: imports.iter().map(|s| s.to_ascii_lowercase()).collect(),
+            callees: callees
+                .iter()
+                .map(|(c, r, m)| {
+                    (c.to_string(), (r.map(str::to_string), m.map(str::to_string)))
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn import_exists_matches_fqn_exactly_and_by_prefix() {
+        let ev = evidence(&["guzzlehttp\\client", "app\\services\\order"], &[]);
+        assert!(ev.imports("GuzzleHttp\\Client"), "大小写不敏感");
+        assert!(ev.imports("\\GuzzleHttp\\Client"), "前导分隔符忽略");
+        assert!(ev.imports("GuzzleHttp\\*"), "命名空间前缀");
+        assert!(!ev.imports("GuzzleHttp\\HandlerStack"), "前缀内未导入的符号不算");
+        assert!(!ev.imports("GuzzleHttp"), "无通配时是完整 FQN 比较，不是前缀");
+    }
+
+    #[test]
+    fn call_exists_uses_the_rule_callee_grammar() {
+        let ev = evidence(
+            &[],
+            &[
+                ("GuzzleHttp\\Client::request", Some("GuzzleHttp\\Client"), Some("request")),
+                ("Client::get", Some("Client"), Some("get")),
+            ],
+        );
+        // Fully-qualified inline call: what `import_exists` cannot see.
+        assert!(ev.calls("GuzzleHttp\\Client::*"));
+        assert!(ev.calls("GuzzleHttp\\Client::request|GuzzleHttp\\Client::get"));
+        assert!(!ev.calls("GuzzleHttp\\Client::pool"));
+        // Bare method names and `*` tail matching behave as they do in a rule selector.
+        assert!(ev.calls("*:get"));
+        assert!(!ev.calls("*:delete"));
+    }
+
+    #[test]
+    fn detectors_activate_knowledge_without_any_manifest() {
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "app".into(),
+            root_path: std::path::PathBuf::from("/p"),
+            language: Language("php".into()),
+            role: "backend".into(),
+            detected_by: "composer.json".into(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        };
+        let root = std::path::Path::new("/p");
+        // No composer.json anywhere (NoFs says nothing exists), so only code evidence can fire.
+        let ev = evidence(&["guzzlehttp\\client"], &[]);
+
+        let kb = StaticKb(vec![
+            fk(
+                "guzzle",
+                vec![Detector::ImportExists { symbol: "GuzzleHttp\\Client".into(), confidence: 0.95 }],
+            ),
+            fk(
+                "unrelated",
+                vec![Detector::CallExists { callee: "Redis::get".into(), confidence: 0.9 }],
+            ),
+        ]);
+        let hits = detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev);
+        assert_eq!(hits, vec!["guzzle".to_string()], "只激活代码里真用到的库");
+
+        // And the alias spelling — `use GuzzleHttp\Client as G;` — records the same FQN, so it too fires.
+        let kb2 = StaticKb(vec![fk(
+            "guzzle",
+            vec![Detector::CallExists { callee: "GuzzleHttp\\Client::*".into(), confidence: 0.9 }],
+        )]);
+        let ev2 = evidence(&[], &[("GuzzleHttp\\Client::request", None, None)]);
+        assert_eq!(
+            detect_frameworks(&kb2, &NoFs, &sub, root, KnowledgeScope::Framework, &ev2),
+            vec!["guzzle".to_string()]
+        );
+    }
+
+    /// An in-memory filesystem, so lock-file parsing needs no temp files.
+    struct MemFs(HashMap<std::path::PathBuf, String>);
+
+    impl gt_domain::port::FileSystem for MemFs {
+        fn exists(&self, p: &std::path::Path) -> bool {
+            self.0.contains_key(p)
+        }
+        fn is_dir(&self, _: &std::path::Path) -> bool {
+            false
+        }
+        fn read_to_string(&self, p: &std::path::Path) -> gt_domain::error::Result<String> {
+            self.0.get(p).cloned().ok_or_else(|| gt_domain::error::DomainError::infra("missing"))
+        }
+        fn len(&self, p: &std::path::Path) -> gt_domain::error::Result<u64> {
+            Ok(self.0.get(p).map(|s| s.len() as u64).unwrap_or(0))
+        }
+    }
+
+    #[test]
+    fn lock_dependency_sees_the_resolved_closure() {
+        let lock = std::path::PathBuf::from("/p/composer.lock");
+        let fs = MemFs(HashMap::from([(
+            lock.clone(),
+            r#"{"packages": [
+                 {"name": "laravel/framework"},
+                 {"name": "illuminate/database"},
+                 {"name": "guzzlehttp/guzzle"}
+               ], "packages-dev": [{"name": "phpunit/phpunit"}]}"#
+                .into(),
+        )]));
+        // None of these are in the app's own composer.json — that is the whole point.
+        assert!(lock_has(&lock, "illuminate/database", &fs));
+        assert!(lock_has(&lock, "guzzlehttp/guzzle", &fs));
+        assert!(lock_has(&lock, "phpunit/phpunit", &fs), "packages-dev 也算");
+        assert!(!lock_has(&lock, "spatie/laravel-permission", &fs));
+        assert!(!lock_has(
+            &std::path::PathBuf::from("/p/other.lock"),
+            "illuminate/database",
+            &fs
+        ));
+    }
+
+    #[test]
+    fn lock_dependency_reads_npm_layouts_too() {
+        // package-lock.json v2+: an object keyed by install path.
+        let v2 = std::path::PathBuf::from("/p/package-lock.json");
+        let fs = MemFs(HashMap::from([(
+            v2.clone(),
+            r#"{"packages": {"node_modules/express": {"version": "4.18.0"}, "": {"name": "app"}}}"#.into(),
+        )]));
+        assert!(lock_has(&v2, "express", &fs), "key 去掉 node_modules/ 前缀后应命中");
+
+        // v1: an object keyed by package name under `dependencies`.
+        let v1 = std::path::PathBuf::from("/q/package-lock.json");
+        let fs1 = MemFs(HashMap::from([(
+            v1.clone(),
+            r#"{"dependencies": {"koa": {"version": "2.14.0"}}}"#.into(),
+        )]));
+        assert!(lock_has(&v1, "koa", &fs1));
+    }
+
+    #[test]
+    fn provides_switches_on_component_knowledge_and_ranks_below_direct_hits() {
+        // A framework bundles components the app never declared; recognising the bundle recognises them.
+        let mut laravel = fk("laravel", vec![]);
+        laravel.provides = vec!["illuminate-database".into()];
+        let mut db = fk("illuminate-database", vec![]);
+        db.provides = vec!["illuminate-support".into()]; // transitive: a component may bundle further ones
+        let kb = StaticKb(vec![laravel, db, fk("illuminate-support", vec![])]);
+
+        let hits = expand_provided(vec![("laravel".to_string(), 0.95)], &kb);
+        let ids: Vec<&str> = hits.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["laravel", "illuminate-database", "illuminate-support"]);
+
+        // Directly detected knowledge keeps its place ahead of provided knowledge, whatever the confidence.
+        let hits2 = expand_provided(
+            vec![("laravel".to_string(), 0.95), ("guzzle".to_string(), 0.5)],
+            &kb,
+        );
+        let ids2: Vec<&str> = hits2.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            ids2,
+            vec!["laravel", "guzzle", "illuminate-database", "illuminate-support"],
+            "派生知识排在直接命中之后"
+        );
+        assert!(
+            hits2.iter().find(|(id, _)| id == "illuminate-database").unwrap().1 < 0.95,
+            "被 provides 引入的置信度低于其提供者"
+        );
+    }
+
+    #[test]
+    fn provides_is_cycle_safe() {
+        let mut a = fk("a", vec![]);
+        a.provides = vec!["b".into()];
+        let mut b = fk("b", vec![]);
+        b.provides = vec!["a".into(), "b".into()]; // mutual, and self-referential
+        let kb = StaticKb(vec![a, b]);
+        let hits = expand_provided(vec![("a".to_string(), 0.9)], &kb);
+        assert_eq!(hits.len(), 2, "环不应导致重复或无限展开");
+    }
+
+    #[test]
+    fn detector_confidence_is_declared_not_defaulted() {
+        use gt_domain::model::Detector;
+        assert_eq!(
+            Detector::ImportExists { symbol: "x".into(), confidence: 0.5 }.confidence(),
+            0.5
+        );
+        assert_eq!(
+            Detector::CallExists { callee: "x".into(), confidence: 0.7 }.confidence(),
+            0.7
+        );
     }
 
 }

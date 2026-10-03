@@ -14,6 +14,7 @@ id: celery
 display_name: Celery
 language: python
 version_hint: "5.x"
+side: backend
 scope: framework
 
 detectors:

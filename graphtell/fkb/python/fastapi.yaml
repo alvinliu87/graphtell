@@ -19,6 +19,7 @@ id: fastapi
 display_name: FastAPI
 language: python
 version_hint: "0.100+"
+side: backend
 scope: framework
 
 detectors:

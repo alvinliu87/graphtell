@@ -11,6 +11,7 @@ id: nestjs
 display_name: NestJS
 language: javascript
 version_hint: "9.x / 10.x"
+side: backend
 scope: framework
 
 detectors:

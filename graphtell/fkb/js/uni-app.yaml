@@ -17,6 +17,7 @@ id: frontend-js
 display_name: Front-end JS/TS
 language: javascript
 version_hint: "*"
+side: frontend
 
 # **Semantic node kinds** introduced by this FKB (appended to the kernel's built-in list).
 # `Store` (a Vuex / Pinia state container) sits at the same level as the backend's `Table` / `Cache`;
@@ -78,9 +79,6 @@ rules:
                 - strip_prefix: ["api/"]
                 - leading_slash
                 - param_wildcard
-          fields:
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: CallsHttp, direction: incoming }
           confidence: 0.9
 
@@ -104,8 +102,6 @@ rules:
           fields:
             - name: key
               value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: ReadsCache, direction: incoming }
           confidence: 0.85
 
@@ -126,8 +122,6 @@ rules:
           fields:
             - name: key
               value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: WritesCache, direction: incoming }
           confidence: 0.85
 
@@ -148,8 +142,6 @@ rules:
           fields:
             - name: kind
               value: { method_name: true }
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: Mutates, direction: incoming }
           confidence: 0.85
 
@@ -174,9 +166,6 @@ rules:
           identity:
             kind: Named
             value: { entry_value: true }
-          fields:
-            - name: side
-              value: { literal: "frontend" }
           confidence: 0.9
 
   # ===== P5 Synthesize: front-end page navigation (NavigatesTo edge, uni-app-specific) =====
@@ -199,9 +188,6 @@ rules:
             normalize:
               - leading_slash
               - strip_query
-          fields:
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: NavigatesTo, direction: incoming }
           confidence: 0.85
 
@@ -225,9 +211,6 @@ rules:
             value:
               arg: 0
               require_literal: true
-          fields:
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: Emits, direction: incoming }
           confidence: 0.8
 
@@ -244,8 +227,5 @@ rules:
             value:
               arg: 0
               require_literal: true
-          fields:
-            - name: side
-              value: { literal: "frontend" }
           link: { kind: ListensTo, direction: incoming }
           confidence: 0.8

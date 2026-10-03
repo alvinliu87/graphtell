@@ -49,9 +49,10 @@ rules:
       never registered it at all).
       It may be a genuinely dead link or something the graph failed to recognise, so it is only a warning.
 
-      Only **backend** contracts are considered: when a front-end contract (`side=frontend`) matches,
-      this rule and the "phantom call" one **report the same batch of nodes twice** (measured on p7/p8
-      where all 123 / 162 entries overlapped) — saying the same thing twice and doubling the warnings.
+      Only contracts **only the backend has ever synthesised** are considered (`side=backend`, i.e. `sides`
+      holds a single party). Otherwise this rule and the "phantom call" one report the same batch of nodes
+      twice (measured on p7/p8 where all 123 / 162 entries overlapped) — saying the same thing twice and
+      doubling the warnings.
     severity: warning
     category: contract
     params:
@@ -73,8 +74,11 @@ rules:
   - id: frontend-calls-missing-backend
     title: Front end calls an endpoint that does not exist on the back end (phantom call)
     description: >-
-      A contract node is marked side=frontend by the front-end FKB but has no HandledBy out-edge to a
-      backend handler.
+      The front end really calls the contract (a `CallsHttp` in-edge exists), but the contract has no
+      HandledBy out-edge to a backend handler.
+      The criterion is the **edge, not the `side` property**: several parties may write the same synthesised
+      node, and the scalar `side` is only a derived label then (`bridge`), so "who knows about this node"
+      belongs to the evidence, not to a property any party can overwrite.
       **Known limitation**: the baseURL prefix of front-end axios/request calls (e.g. `/adminapi/v1`)
       does not yet take part in identity normalisation, so many hits actually come from "the prefix was
       not joined" rather than a real phantom call — hence warning rather than error, and the wording
@@ -91,7 +95,7 @@ rules:
       kinds: [HttpContract]
       name_contains: "$name_filter"
     when:
-      - property_is: { name: "side", value: "frontend" }
+      - has_incoming: CallsHttp
       - no_outgoing: HandledBy
     message: "The front end calls {name}, but the graph has no matching backend route (could be a real phantom call, or the front-end baseURL prefix was not normalised)"
     remediation: "Sample and check by hand; if it is a prefix problem, add baseURL resolution rules to the front-end FKB"

@@ -103,6 +103,10 @@ public class DemoService {
 }
 
 fn count_kind(b: &common::Built, kind: &str) -> usize {
+    nodes_of_kind(b, kind).len()
+}
+
+fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<gt_domain::model::Node> {
     b.store
         .query_nodes(&NodeFilter {
             project_id: b.project.id,
@@ -112,7 +116,6 @@ fn count_kind(b: &common::Built, kind: &str) -> usize {
             offset: Some(0),
         })
         .expect("query")
-        .len()
 }
 
 fn has_incoming_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
@@ -198,6 +201,23 @@ fn spring_features_produce_semantic_nodes_and_edges() {
         has_incoming_edge(&b, "Queue", "PublishesTo"),
         "Queue should have a PublishesTo in-edge (the message producer side)"
     );
+
+    // Every out-of-process mediator this FKB builds must carry `side`. These rules historically declared none,
+    // so their nodes arrived with no party evidence and disappeared from any side-filtered perspective; the side
+    // is now inherited from `fkb/java/spring-boot.yaml`'s top-level `side: backend` (see the loader).
+    for kind in ["Cache", "Event", "Queue"] {
+        let nodes = nodes_of_kind(&b, kind);
+        assert!(!nodes.is_empty(), "{kind} 节点应存在");
+        for n in &nodes {
+            assert_eq!(
+                n.properties.get("side").and_then(|v| v.as_str()),
+                Some("backend"),
+                "{kind} 节点 {name} 应继承侧别 side=backend（继承自增顶层声明），实际 properties={props}",
+                name = n.name,
+                props = n.properties
+            );
+        }
+    }
 
     // Schedule's Triggers is an out-edge (Schedule ——> method).
     let schedules = b

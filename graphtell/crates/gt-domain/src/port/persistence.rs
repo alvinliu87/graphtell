@@ -201,16 +201,18 @@ pub trait GraphQuery: Send + Sync {
     /// Fetch all source file paths in a project in one batch (`file_id -> path`).
     fn file_paths(&self, project_id: ProjectId) -> Result<HashMap<i64, String>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
-    /// Count nodes by "kind + side" (lighter than `query_nodes`, a `COUNT` only).
-    /// The view layer uses it to compute candidate counts for perspectives with a `side` filter (such as the front-end
-    /// local-storage / back-end cache split).
+    /// Count nodes by "kind + which parties have evidence on them" (lighter than `query_nodes`, a `COUNT` only).
+    /// The view layer uses it to compute candidate counts for perspectives with a side filter (such as the
+    /// front-end local-storage / back-end cache split).
     ///
-    /// `side` = `None` means no restriction on the side; `kind` = `None` means no restriction on the kind.
+    /// `sides` is **set semantics**: a node counts when any listed party appears in its derived `sides` set, or
+    /// — for rows written before that set existed — equals its scalar `side`. An empty slice means no restriction
+    /// on the side; `kind` = `None` means no restriction on the kind.
     fn count_nodes(
         &self,
         project_id: ProjectId,
         kind: Option<&NodeKind>,
-        side: Option<&str>,
+        sides: &[String],
     ) -> Result<u64>;
     /// Fetch an edge by primary key (for the "edge evidence chain" query).
     fn find_edge(&self, id: crate::model::EdgeId) -> Result<Option<Edge>>;

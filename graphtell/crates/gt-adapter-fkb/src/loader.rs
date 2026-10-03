@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use gt_domain::error::{DomainError, Result};
-use gt_domain::model::{FrameworkKnowledge, Language};
+use gt_domain::model::{
+    Action, FieldSpec, FrameworkKnowledge, Language, SynthesizeAction, ValueSource,
+};
 use gt_domain::port::KnowledgeProvider;
 use tracing::{info, warn};
 
@@ -84,7 +86,7 @@ impl YamlKnowledgeBase {
 
     pub fn load_file(path: &Path) -> Result<FrameworkKnowledge> {
         let text = std::fs::read_to_string(path).map_err(DomainError::infra)?;
-        let fk = deserialize_knowledge(&text)
+        let mut fk = deserialize_knowledge(&text)
             .map_err(|e| DomainError::InvalidKnowledge(format!("{}: {e}", path.display())))?;
         if fk.id.is_empty() {
             return Err(DomainError::InvalidKnowledge(format!(
@@ -92,14 +94,73 @@ impl YamlKnowledgeBase {
                 path.display()
             )));
         }
+        // A closed vocabulary keeps `side` comparable: every consumer (identity scope, the derived `sides` set,
+        // `side_any` filters) compares plain strings, so free-form values would silently match nothing.
+        if let Some(side) = &fk.side {
+            if !matches!(side.as_str(), "frontend" | "backend" | "external") {
+                return Err(DomainError::InvalidKnowledge(format!(
+                    "{}: side must be one of frontend | backend | external, got `{side}`",
+                    path.display()
+                )));
+            }
+        }
+        apply_side_defaults(&mut fk);
         Ok(fk)
     }
 
     /// Deserialize from YAML text (for tests and single-file loading).
     pub fn from_str(text: &str) -> Result<FrameworkKnowledge> {
-        deserialize_knowledge(text)
+        let mut fk = deserialize_knowledge(text)?;
+        apply_side_defaults(&mut fk);
+        Ok(fk)
     }
+}
 
+/// Node kinds for which a missing `side` is filled in from the knowledge base's declaration.
+///
+/// Restricted on purpose: apart from `HttpContract`, `side` is folded into the identity's **scope**
+/// ([`IdentityKey::with_scope`]), i.e. it decides which nodes merge. Inheriting it into every kind would silently
+/// re-key nodes that were never party-aware (Column, Schedule …). This list is exactly "the kinds that already
+/// carry a `side` somewhere in the shipped knowledge", so inheritance can only fill gaps — including the real
+/// omissions it was written for: `python/celery.yaml` (Queue) and `java/spring-boot.yaml` (Cache / ConfigKey /
+/// Event / Queue) declared none, which made their nodes invisible to every side filter.
+const SIDE_AWARE_KINDS: &[&str] = &[
+    "Cache",
+    "ConfigKey",
+    "Event",
+    "EventBus",
+    "HttpContract",
+    "I18nKey",
+    "Page",
+    "Queue",
+    "Store",
+    "Table",
+];
+
+/// Fill in `side` for every synthesis action that should have one and does not.
+fn apply_side_defaults(fk: &mut FrameworkKnowledge) {
+    let Some(side) = fk.side.clone() else { return };
+    for rule in &mut fk.rules {
+        for action in &mut rule.binding {
+            let Action::Synthesize(syn) = action else { continue };
+            let syn: &mut SynthesizeAction = syn;
+            let kind = syn.subtype.as_deref().unwrap_or_else(|| syn.node.as_str());
+            if !SIDE_AWARE_KINDS.contains(&kind) {
+                continue;
+            }
+            if syn.fields.iter().any(|f| f.name == "side") {
+                continue; // an explicit declaration always wins
+            }
+            syn.fields.push(FieldSpec {
+                name: "side".into(),
+                value: Some(ValueSource { literal: Some(side.clone()), ..Default::default() }),
+                ..Default::default()
+            });
+        }
+    }
+}
+
+impl YamlKnowledgeBase {
     /// Load from several directories in order (later ones override entries with the same id).
     pub fn load_dirs(dirs: &[PathBuf]) -> Result<Self> {
         let mut merged: Vec<FrameworkKnowledge> = Vec::new();

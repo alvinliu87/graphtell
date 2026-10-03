@@ -58,7 +58,79 @@ entry_methods: [...]      # candidate consumer entry method names (handle/fire/d
 **Core principle**: `rules` is the point; `detectors` decides "who this knowledge applies to";
 `semantic_kinds` decides "whether the node you create is visible".
 
-### 2.1 `method_ref` vs `class_const` (resolving references to code)
+### 2.1 Detectors: four kinds of evidence
+
+A detector answers "does this knowledge apply to this sub-project". It is a **gate**, and the gate must stay
+narrow: the rules of every FKB that passes the gate are matched against every call site, so a gate left open
+costs `O(call sites × rules)` and — worse — can interpret code with knowledge that does not belong to it.
+
+| Kind | Evidence | Use for |
+|---|---|---|
+| `manifest_dependency` | a dependency is declared in `composer.json` / `package.json` | the framework itself; the package a project installs **directly** |
+| `file_exists` | a marker file or directory exists | frameworks with a characteristic entry (`artisan`, `think`) |
+| `lock_dependency` | a dependency is in the **lock file** (`composer.lock` / `package-lock.json`), i.e. in the resolved closure | a package reached **transitively** |
+| `import_exists` | the source **imports** this FQN (`use GuzzleHttp\Client;`) | a library — see below |
+| `call_exists` | a call site matches this callee pattern | a library with no import (inline `\GuzzleHttp\Client::request()`) |
+
+**`provides`** covers what no detector can reach. A framework is a bundle, and it is the bundle the manifest
+names: `laravel/framework` pulls in `illuminate/database`, `illuminate/cache` … none of which appear in the
+app's own `composer.json`, and which the lock file only lists *because* the framework asked for them. The
+framework declares the bundle once:
+
+```yaml
+# laravel.yaml
+provides: [illuminate-database]
+```
+
+Recognising `laravel` then recognises `illuminate-database` too, transitively and cycle-safely. Directly
+detected knowledge always ranks **above** provided knowledge regardless of confidence, so a framework's own
+declaration of a single-valued field (`db_verbs`, `method_ref`, all taken by `find_map`) still wins over a
+component's — which is why `db_verbs` stays in `laravel.yaml` and not in `illuminate-database.yaml`.
+
+#### The three merged lists follow detection
+
+`external_calls`, `tx_calls` and `middleware_capabilities` are not per-framework settings — every FKB that
+applies contributes to one shared list. **"Applies" now means detected**: a recognised framework or project,
+or a knowledge base flagged `apply_without_detection`.
+
+So where you put an entry decides its reach:
+
+* genuinely language-wide (`curl_exec`, `transaction`, `commit`) → the unconditional layer, e.g.
+  `php/common.yaml`. These are never detected (they declare no detectors) and would vanish from every
+  project if they lived anywhere else;
+* specific to one library or component (`GuzzleHttp\Client::*`, `DB::transaction`) → that library's own file,
+  where its detectors gate it.
+
+Before this followed detection, the lists were merged from every FKB of the language, which is why entries
+that belong to one library had drifted into the language-common file.
+
+Prefer **code evidence** (`import_exists` / `call_exists`) for libraries, for two reasons:
+
+1. **A manifest says what was installed, not what was used**, and it is blind to anything pulled in
+   transitively — a Laravel app's own `composer.json` lists `laravel/framework` and nothing else, so every
+   `illuminate/*` component its code uses is invisible to `manifest_dependency`.
+2. **It is alias-proof.** `use GuzzleHttp\Client as G;` records the same FQN, so renaming the local alias
+   changes nothing. Detection reads the per-file import tables, so it also survives a short-name collision
+   (`GuzzleHttp\Client` vs some project `Client`) — the global short-name index would not.
+
+Declare both for a library when the language allows more than one spelling; either one matching is enough:
+
+```yaml
+detectors:
+  - kind: import_exists
+    symbol: "GuzzleHttp\\Client"      # exact FQN, or a `*` suffix for a namespace prefix ("GuzzleHttp\\*")
+    confidence: 0.95
+  - kind: call_exists
+    callee: "GuzzleHttp\\Client::*"   # same grammar as a rule's `selector.callee`
+    confidence: 0.9
+```
+
+See `fkb/php/guzzle.yaml` for a worked example. Note what it does **not** do: rather than switching on
+`apply_without_detection` to skip detection entirely, it lets the code decide — an unconditional FKB applies
+its rules to every project of that language, which is only safe for knowledge that is genuinely universal
+(see `php/common.yaml`).
+
+### 2.2 `method_ref` vs `class_const` (resolving references to code)
 
 Two `resolve:` strategies turn a rule argument into a real graph node. Pick by the argument's **shape**:
 
@@ -261,20 +333,54 @@ only, reject variables) · `require_class` (the resolution must be a real class,
 
 ### 5.1 `side`: splitting frontend and backend (most important)
 
-Out-of-process mediators (Cache / ConfigKey / Event / Queue / Topic) and asset-class nodes **must**
-state in `fields` which side they belong to:
+Declare it **once per knowledge base**, at the top level:
 
 ```yaml
-fields:
-  - name: side
-    value: { literal: "backend" }   # or "frontend"
+id: thinkphp6
+language: php
+side: backend            # frontend | backend | external — a closed set, validated at load time
 ```
 
-**Why it's mandatory**: the Engine injects `side` into the node `identity`'s scope (see `with_scope`
-in `engine.rs`). Without it, frontend `uni.setStorageSync('token')` and backend `Cache::get('token')`
-share a name and merge into **the same** Cache node, and the graph becomes a mess. It is also what
-the "cache perspective / event perspective" split by `side` relies on (`side: backend` /
-`side: frontend` in `views/perspectives.yaml`).
+The loader then fills it in for every `Synthesize` action in that file which does not state one
+explicitly, so no rule can forget it. The engine injects that value into the node `identity`'s scope
+(see `with_scope` in `engine.rs`), which decides **which nodes merge**: without it, frontend
+`uni.setStorageSync('token')` and backend `Cache::get('token')` share a name and merge into **the
+same** Cache node, and the graph becomes a mess. It is also what the "cache perspective / event
+perspective" split relies on (`side: backend` / `side: frontend` in `views/perspectives.yaml`).
+
+Details:
+
+* **Which rules inherit it**: those whose synthesised node kind already carries a `side` somewhere in
+  the shipped knowledge (`Cache` / `ConfigKey` / `Event` / `EventBus` / `HttpContract` / `I18nKey` /
+  `Page` / `Queue` / `Store` / `Table` — the list lives in `loader.rs`). Widening it to every kind would
+  silently re-key nodes that were never party-aware, because the scope takes part in the merge key.
+* **A per-rule `fields: [ { name: side, ... } ]` still wins** — an escape hatch for knowledge that
+  genuinely crosses parties.
+* **Cross-language knowledge (`language: "*"`, e.g. `universal/common.yaml`) must NOT declare one**:
+  the same file is loaded for every party, so a single value would be a lie — state it per rule there,
+  if at all.
+* **Why this replaced per-rule literals**: repetition is exactly why `python/celery.yaml` and
+  `java/spring-boot.yaml` ended up declaring none at all — their Cache / Event / Queue nodes then had
+  no party evidence and vanished from every side-filtered perspective. The carried-over lesson is that
+  `side` is one value per *particle* (per sub-project role), not one per rule; the whole point of the
+  closed vocabulary is that a PHP producer and a Python consumer stay on the same `backend` side and
+  therefore merge onto the same Queue node.
+
+**`side` is one claim, not the whole truth — never select on it.** Two facts follow from that:
+
+1. Several parties can write the **same** synthesised node (that is the point of a contract bridge:
+   the backend `Route::post('/api/delete')` and the frontend `axios.post('/api/delete')` both exist).
+   So `side` is accumulated into a sorted de-duplicated set **`sides`**, and the scalar `side` becomes
+   a derived label: one party ⇒ that party, several ⇒ `bridge`. Which means `side` **never** tells you
+   "is this party involved" — after the merge it reads `bridge` for both.
+2. Therefore: whenever you need "does X really touch this node", select on the **evidence**, not on the
+   property — e.g. `frontend.called` is judged by `where: [ has_incoming: CallsHttp ]`, not by
+   `side = frontend` (same for the compliance rule `frontend-calls-missing-backend`).
+
+`identity.scope` deliberately keeps using the **rule-declared** literal (that is what decides "are
+these the same thing"), so nothing about merging changes; `sides` is read-only derived data and must
+**never** be folded into `IdentityKey::scope` — doing so would make the merge key depend on how many
+parties happen to have touched the node.
 
 ### 5.2 `semantic_kinds`: introducing a new node kind
 

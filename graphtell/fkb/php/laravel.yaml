@@ -22,6 +22,7 @@ id: laravel
 display_name: Laravel
 language: php
 version_hint: "10.x / 11.x / 12.x"
+side: backend
 
 detectors:
   - kind: manifest_dependency
@@ -31,6 +32,10 @@ detectors:
   - kind: file_exists
     path: artisan
     confidence: 0.7
+
+# What `laravel/framework` drags in. None of these appear in an app's own composer.json — only in
+# composer.lock — so without this declaration their knowledge could never switch on for a Laravel project.
+provides: [illuminate-database]
 
 exclude_globs:
   - "vendor/**"
@@ -312,9 +317,6 @@ rules:
               normalize:
                 - singularize
                 - trim
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: ReadsDb, direction: incoming }
           confidence: 0.9
 
@@ -336,9 +338,6 @@ rules:
               normalize:
                 - singularize
                 - trim
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
 
@@ -411,9 +410,6 @@ rules:
             value_fallback:
               owner_class: true
               transform: { class_to_topic: true }
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.85
 
@@ -440,9 +436,6 @@ rules:
           identity:
             kind: Named
             value: { arg: 0, require_literal: true }
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -484,8 +477,6 @@ rules:
           fields:
             - name: raw_path
               value: { arg: 0 }
-            - name: side
-              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target

@@ -85,13 +85,17 @@ impl ViewService {
         for spec in &self.views.registry().perspectives {
             let available = match (&spec.mode, &spec.node_kind) {
                 (gt_domain::model::ViewMode::Object, Some(kind)) => {
-                    // Perspectives with `side`: count precisely by `kind + side` (frontend/backend cache split).
-                    if let Some(side) = &spec.side {
+                    // Perspectives with a side filter: count precisely by `kind + sides` (frontend/backend
+                    // cache split, or the set-semantics `side_any` form).
+                    let accepted = spec.accepted_sides();
+                    if !accepted.is_empty() {
+                        let sides: Vec<String> =
+                            accepted.iter().map(|s| s.to_string()).collect();
                         self.store
                             .count_nodes(
                                 project_id,
                                 Some(&gt_domain::model::NodeKind(kind.clone())),
-                                Some(side.as_str()),
+                                &sides,
                             )
                             .unwrap_or(0)
                     } else {
@@ -152,16 +156,11 @@ impl ViewService {
             nodes.retain(|n| n.sub_project_id == Some(sid));
         }
 
-        // Filter by "side": split nodes that share a kind but differ in side (e.g. frontend/backend cache) into their own perspectives.
-        // Nodes not satisfying `side` (missing attribute or not matching the perspective) are dropped; a perspective whose `side` is `None` applies no filtering.
-        if let Some(side) = &spec.side {
-            nodes.retain(|n| {
-                n.properties
-                    .get("side")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s == side.as_str())
-                    .unwrap_or(false)
-            });
+        // Filter by side: split nodes that share a kind but differ in side (e.g. frontend/backend cache) into
+        // their own perspectives. Nodes with no side evidence, or with none of the accepted parties, are dropped;
+        // a perspective declaring neither `side` nor `side_any` applies no filtering.
+        if !spec.accepted_sides().is_empty() {
+            nodes.retain(|n| spec.matches_sides(&n.properties));
         }
 
         // With a search term: match by name directly, skip full scoring (dropdown searches on demand, optimize for speed).
@@ -1602,15 +1601,9 @@ impl ViewService {
             limit: Some(2000),
             offset: Some(0),
         })?;
-        // Filter by "side" (frontend/backend cache split).
-        if let Some(side) = &spec.side {
-            nodes.retain(|n| {
-                n.properties
-                    .get("side")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s == side.as_str())
-                    .unwrap_or(false)
-            });
+        // Filter by side (frontend/backend cache split, or the "any of these parties" form).
+        if !spec.accepted_sides().is_empty() {
+            nodes.retain(|n| spec.matches_sides(&n.properties));
         }
 
         if spec.layout == gt_domain::model::LayoutMode::Matrix {

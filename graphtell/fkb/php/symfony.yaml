@@ -17,6 +17,7 @@ id: symfony
 display_name: Symfony
 language: php
 version_hint: "5.x / 6.x / 7.x"
+side: backend
 
 detectors:
   - kind: manifest_dependency

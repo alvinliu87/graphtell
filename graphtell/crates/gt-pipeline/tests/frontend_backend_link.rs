@@ -23,11 +23,14 @@ use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter, ProjectReader};
 
 /// A synthetic sample directory inside the repo (shipped with the repo).
 ///
-/// The sample tree's location is **not fixed**: it may be at the inner workspace root, or at the upper repo root (after merging `samples/`).
-/// Hard-coding "up two levels" would point at a non-existent directory once the sample is moved — then the case fails, or worse is changed
-/// to skip, becoming "CI all green but zero coverage". Here we instead search **upward level by level** from `CARGO_MANIFEST_DIR`, and support a
-/// `GRAPHTELL_SAMPLES_DIR` override; only when nothing is found do we fall back to the original candidate path, so the caller's assert raises a
-/// diagnosable missing-path message (this file deliberately requires failure rather than skip).
+/// The sample tree lives at the **repo root** (`samples/`). It used to be looked for at the inner workspace
+/// root first, but that directory was empty and shadowed the real one — it has since been removed, so there
+/// is now exactly one location. Hard-coding "up N levels" would point at a non-existent directory once the
+/// sample moves — then the case fails, or worse is changed to skip, becoming "CI all green but zero
+/// coverage". Here we instead search **upward level by level** from `CARGO_MANIFEST_DIR`, and support a
+/// `GRAPHTELL_SAMPLES_DIR` override; only when nothing is found do we fall back to a candidate path, so the
+/// caller's assert raises a diagnosable missing-path message (this file deliberately requires failure
+/// rather than skip).
 fn synth_root() -> PathBuf {
     if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLES_DIR") {
         let candidate = PathBuf::from(dir).join("frontend-backend-link");
@@ -45,8 +48,11 @@ fn synth_root() -> PathBuf {
             break;
         }
     }
-    // Fallback: return to the original candidate, so the caller's assert points out the specific missing path.
+    // Fallback: the repo root — `crates/gt-pipeline` -> `crates` -> workspace -> repo root — so the assert
+    // names the path that really should hold the sample. It used to stop one level short, at the workspace
+    // root, whose own (now removed) `samples/` was empty.
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.pop();
     p.pop();
     p.pop();
     p.join("samples/frontend-backend-link")
@@ -176,11 +182,30 @@ fn frontend_calls_backend_merge_into_contract() {
         "前后端应汇聚到同一个 ContractId（POST /api/delete）"
     );
 
-    // ---- 3) Frontend FKB annotation ----
+    // ---- 2.5) The "was the front end here?" marker must be judged by the **edge**, not by a property.
+    // Historically `frontend-mark-called` selected on `side = frontend`; but a bridge node is patched by both
+    // sides and its scalar `side` is decided by whoever patches last, so the marker could vanish silently.
+    // The selector now asks for a `CallsHttp` in-edge — this assertion locks that (see `Predicate::HasIncoming`).
+    let anns = b.store.annotations_of(c.id).expect("标注可读");
+    assert!(
+        anns.iter().any(|a| a.kind == "frontend.called"),
+        "被前端连入的契约应命中 frontend-mark-called（判据是 CallsHttp 边），实际标注：{:?}",
+        anns.iter().map(|a| a.kind.clone()).collect::<Vec<_>>()
+    );
+
+    // ---- 3) `side` on a bridge node: not "the side that patched last", but the honest derived label ----
+    // Two parties have evidence on this node, so the scalar label is `bridge` and the parties live in `sides`.
+    // This used to be `frontend` merely because the front-end rule happened to run last — which is exactly the
+    // order-dependent lie this test now forbids (`GraphWorkspace::record_side`).
     assert_eq!(
         c.properties.get("side").and_then(|v| v.as_str()),
-        Some("frontend"),
-        "契约节点应被前端 FKB 标注 side=frontend"
+        Some("bridge"),
+        "前后端共有的契约 side 应为 bridge"
+    );
+    assert_eq!(
+        c.properties.get("sides"),
+        Some(&serde_json::json!(["backend", "frontend"])),
+        "sides 应是两侧的有序去重集合"
     );
 
     // ---- Informational: backend handler resolution (P7, existing mechanism) ----
@@ -222,10 +247,17 @@ fn member_style_request_bridges() {
         .find(|n| n.kind.as_str() == "HttpContract" && n.name.contains("/api/ping"))
         .expect("应由 `request.get('/api/ping')` 合成契约 GET /api/ping");
     assert_eq!(ping.name, "GET /api/ping", "成员名应成为 HTTP method");
+    // Both the backend `Route::get('/api/ping')` and the frontend `request.get('/api/ping')` synthesise this
+    // node, hence `bridge` + both parties in `sides` (previously `frontend`, chosen by patch order).
     assert_eq!(
         ping.properties.get("side").and_then(|v| v.as_str()),
-        Some("frontend"),
-        "契约应被前端 FKB 标注 side=frontend"
+        Some("bridge"),
+        "桥梁契约 side 应为 bridge"
+    );
+    assert_eq!(
+        ping.properties.get("sides"),
+        Some(&serde_json::json!(["backend", "frontend"])),
+        "sides 应包含前后端两侧"
     );
 
     // Frontend side: CallsHttp is initiated by a **function node** (semantic node), not a File.
@@ -371,6 +403,24 @@ fn member_style_request_bridges() {
     assert!(
         !ids.contains("GET /api/tags/:id"),
         "`->except(['read'])` 应剔除 read 动作，不该凭空造出 GET /api/tags/:id"
+    );
+
+    // The other branch of the derived label: a contract **only** the backend ever synthesised stays `backend`
+    // (single party ⇒ the party itself, no `bridge`). This is what "backend-only endpoints" are selected by.
+    let items_index = all
+        .iter()
+        .find(|n| n.kind.as_str() == "HttpContract"
+            && n.identity.as_ref().map(|i| i.value.as_str()) == Some("GET /api/items"))
+        .expect("资源路由应展开出 GET /api/items");
+    assert_eq!(
+        items_index.properties.get("side").and_then(|v| v.as_str()),
+        Some("backend"),
+        "只有后端一侧有证据的契约 side 应为 backend"
+    );
+    assert_eq!(
+        items_index.properties.get("sides"),
+        Some(&serde_json::json!(["backend"])),
+        "只有后端一侧有证据的契约 sides 应为 [backend]"
     );
 
     // Frontend **page-route** semantic node: comes from `pages.json`, isomorphic to the backend `Route`.

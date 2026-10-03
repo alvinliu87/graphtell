@@ -13,6 +13,7 @@ id: flask
 display_name: Flask
 language: python
 version_hint: "2.x / 3.x"
+side: backend
 scope: framework
 
 detectors:

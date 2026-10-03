@@ -3,7 +3,7 @@
 //! Each phase builds, queries, and annotates the graph in memory; after all phases the application layer persists the accumulated
 //! [`GraphDelta`] in one shot (guaranteeing phase-level atomicity while keeping domain logic free of transaction APIs).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use gt_domain::model::{
     AliasEntry, Annotation, Diagnostic, Edge, EdgeKind, FactValue, GraphDelta, IdentityKey,
@@ -11,7 +11,7 @@ use gt_domain::model::{
     ProjectId, Severity, Span, SubProjectId, SynthesizedKind,
 };
 use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// One call site's record in the workspace.
 #[derive(Debug, Clone)]
@@ -615,6 +615,32 @@ impl GraphWorkspace {
         }
         // Nodes in the delta already carry properties at insert; later patches record a separate upsert
         self.delta.property_patches.push((id, patch));
+    }
+
+    /// Record one party's claim on a synthesised node: `sides` grows as a **sorted set** (so the result is
+    /// independent of the order in which the parties happen to run), and `side` stays a plain scalar label for
+    /// display / UI colouring — one party ⇒ that party, several parties ⇒ `bridge`.
+    ///
+    /// Why a set and not an overwrite: a node like an `HttpContract` is deliberately synthesised **twice**, once
+    /// from the backend route and once from the frontend call site, and both rules declare `side`. Overwriting
+    /// made the node claim to belong to whichever side ran last (and silently broke every consumer reading
+    /// `side`, e.g. `frontend-mark-called`). See [`crate::engine::exec_synthesize_one`].
+    pub fn record_side(&mut self, id: NodeId, side: &str) {
+        if side.is_empty() {
+            return;
+        }
+        let mut sides: BTreeSet<String> = self
+            .nodes
+            .get(&id.0)
+            .and_then(|n| n.properties.get("sides"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        if !sides.insert(side.to_string()) {
+            return;
+        }
+        let list: Vec<String> = sides.into_iter().collect();
+        let label = if list.len() > 1 { "bridge".to_string() } else { list[0].clone() };
+        self.patch_properties(id, json!({ "sides": list, "side": label }));
     }
 
     pub fn node_count(&self) -> usize {
@@ -1294,6 +1320,17 @@ impl GraphWorkspace {
     ///
     /// The handler shape is the generic `Class/method` (with method name) or `Class` (REST resource route,
     /// equivalent to claiming the whole class's standard actions), so compare by shape; the kernel need not know the concrete framework.
+    /// Whether the node already has an in-edge of the given kind ([`Predicate::HasIncoming`]).
+    ///
+    /// Same source as [`Self::claimed_by`] minus its fqn-scope fallback: this is pure "does the edge exist",
+    /// used when the fact to establish is "somebody really linked to me" rather than "somebody will link to me".
+    pub fn has_incoming_edge(&self, node: NodeId, kind: &str) -> bool {
+        self.in_edges
+            .get(&node.get())
+            .map(|v| v.iter().any(|(k, _)| k == kind))
+            .unwrap_or(false)
+    }
+
     pub fn claimed_by(&self, node: NodeId, kind: &str) -> bool {
         if self
             .in_edges
@@ -1350,6 +1387,21 @@ impl GraphWorkspace {
         self.file_id_by_path
             .get(path)
             .and_then(|id| self.file_imports.get(id))
+    }
+
+    /// Every FQN that **any** file imported: `(source-file id, FQN)`.
+    ///
+    /// Deliberately not the global `imports` symbol table: that one is keyed by **short name** and
+    /// first-come-first-served (see `cf_ast`), so `GuzzleHttp\Client` is silently dropped as soon as any
+    /// earlier file imported a different `Client` — the very collision that forced `file_imports` to be
+    /// per-file. Detection asks "does this FQN appear anywhere", which must not lose entries, so it walks
+    /// the per-file tables. Pair with [`Self::source_path_of`] to scope the answer to one sub-project.
+    pub fn all_imported_fqns(&self) -> impl Iterator<Item = (i64, &str)> + '_ {
+        self.file_imports
+            .iter()
+            .flat_map(|(file_id, imports)| {
+                imports.values().map(move |fqn| (*file_id, fqn.as_str()))
+            })
     }
 
     /// Restore a short name to an FQN **within some file** — everywhere that needs to "guess a class name" should go through here.

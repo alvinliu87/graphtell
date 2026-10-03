@@ -1,0 +1,46 @@
+# guzzlehttp/guzzle — a **library**-level FKB (not a framework), and the first one detected from **code**.
+#
+# Why this file exists: the three Guzzle entries used to live in `php/common.yaml`, i.e. in the layer that
+# applies to *every* PHP project whether or not it uses Guzzle. An `external_calls` entry is a claim about
+# what this project's outbound calls are, so it belongs to Guzzle, not to "PHP".
+#
+# `external_calls` (like `tx_calls` / `middleware_capabilities`) is collected only from knowledge that
+# **applies to the project** — the frameworks and projects actually recognised, plus the unconditional
+# `apply_without_detection` language layer (`php/common.yaml`). So these entries are gated by the detectors
+# below: a PHP project that never reaches for Guzzle no longer counts Guzzle's calls as its outbound calls.
+#
+# Why detection is by code and not by manifest: a Laravel app's `composer.json` lists `laravel/framework`
+# and nothing else — every `illuminate/*` component, and every third-party HTTP client, is either pulled in
+# transitively or not declared at all. `manifest_dependency` therefore cannot see most of what a project
+# actually uses. `import_exists` / `call_exists` read what P2 already extracted from the source, so they see
+# exactly that.
+#
+# Two detectors on purpose, because PHP lets you spell the same call two ways:
+#   * `use GuzzleHttp\Client;` + `$c->get(...)`  → only `import_exists` sees it (the callee is `Client::get`,
+#     and with `as G;` even that is gone). Import matching is alias-proof: the recorded FQN is the same.
+#   * `\GuzzleHttp\Client::request([...])` inline → no `use` at all, only `call_exists` sees it.
+# Either one activating the file is enough.
+
+id: guzzle
+display_name: Guzzle HTTP client
+language: php
+version_hint: "7.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: import_exists
+    symbol: "GuzzleHttp\\Client"
+    confidence: 0.95
+  - kind: call_exists
+    callee: "GuzzleHttp\\Client::*"
+    confidence: 0.9
+
+# Outbound HTTP calls (used by the "external call inside a loop" judgement).
+#
+# One network round trip costs an order of magnitude more than a database query, so putting one inside a loop
+# drags an endpoint down even more reliably than N+1. Migrated here from `php/common.yaml`.
+external_calls:
+  - "GuzzleHttp\\Client::request"
+  - "GuzzleHttp\\Client::get"
+  - "GuzzleHttp\\Client::post"

@@ -30,6 +30,19 @@ pub struct FrameworkKnowledge {
     pub version_hint: Option<String>,
     /// Recognition signals.
     pub detectors: Vec<Detector>,
+    /// Component knowledge this one **brings with it**: when this knowledge is recognised, the listed ids
+    /// count as recognised too (transitively, so a component may itself provide further ones).
+    ///
+    /// This exists because a framework is a bundle of libraries plus conventions, and it is the **bundle**
+    /// the manifest names: `laravel/framework` pulls in `illuminate/database`, `illuminate/cache` … none of
+    /// which appear in the app's own `composer.json`, so no detector of theirs can fire. Declaring the
+    /// bundle here is what lets each library keep its own file — detected on its own terms, by manifest, by
+    /// lock file or by code — while still being switched on as a group the moment the framework is.
+    ///
+    /// Directly detected knowledge always ranks **above** provided knowledge, so a framework's own
+    /// declaration of a single-valued field still wins over a component's.
+    #[serde(default)]
+    pub provides: Vec<String>,
     /// Rules for resolving the framework root / key paths.
     pub root_rules: Vec<RootRule>,
     /// P3 authoritative symbol-table loaders.
@@ -47,6 +60,19 @@ pub struct FrameworkKnowledge {
     /// `semantic_kinds` (nodes) — adding a business annotation should not cost a kernel change.
     #[serde(default)]
     pub annotation_kinds: Vec<String>,
+    /// The **party** this knowledge describes: `frontend` / `backend` (a closed set, validated at load time).
+    ///
+    /// It is the default `side` for every [`SynthesizeAction`] in this file that does not state one explicitly
+    /// (see `loader.rs`), so one line here replaces tens of per-rule literals — and, more importantly, so a rule
+    /// can no longer *forget* it. Forgetting was a real bug: `python/celery.yaml` and `java/spring-boot.yaml`
+    /// declared no side at all, so their Cache / Event / Queue nodes had no evidence of a party and vanished from
+    /// every side-filtered perspective.
+    ///
+    /// A per-rule `fields: [ { name: side, ... } ]` still wins when present (an escape hatch for knowledge that
+    /// genuinely crosses parties). Cross-language knowledge (`language: "*"`, e.g. `universal/common.yaml`) should
+    /// **not** declare one: the same file is loaded for every party, so a single value would be a lie.
+    #[serde(default)]
+    pub side: Option<String>,
     /// P7 dynamic-resolution declarations: which calls are container resolutions / event triggers / facade calls.
     pub resolvers: Vec<ResolverSpec>,
     /// Additional exclusion directories (layered on top of the project / language defaults).
@@ -575,6 +601,63 @@ pub enum Detector {
         #[serde(default = "default_conf")]
         confidence: f32,
     },
+    /// A fully-qualified symbol is **imported** by some source file of the sub-project
+    /// (`use GuzzleHttp\Client;`).
+    ///
+    /// This is **code evidence**, not manifest evidence, and it is what a manifest structurally cannot
+    /// provide: a manifest only says what was *installed*, never what was *used*, and it is blind to
+    /// anything pulled in transitively — `illuminate/*` never appears in a Laravel app's own
+    /// `composer.json`, yet it is everywhere in its code. Writing `use` is also alias-proof:
+    /// `use GuzzleHttp\Client as G;` records the same FQN, so renaming the local alias changes nothing.
+    ///
+    /// Matching: exact FQN, or a prefix when the pattern ends with `*` (`GuzzleHttp\*`). Both sides are
+    /// compared lowercased and stripped of a leading separator, so `GuzzleHttp\Client` and
+    /// `\GuzzleHttp\Client` are the same thing.
+    ImportExists {
+        symbol: String,
+        #[serde(default = "default_conf")]
+        confidence: f32,
+    },
+    /// A dependency exists in the **lock file** (`composer.lock`, `package-lock.json` …), i.e. in the
+    /// resolved dependency closure rather than in the hand-written manifest.
+    ///
+    /// This is the only manifest-shaped signal that can see transitive dependencies: `composer.lock` lists
+    /// every package actually installed, including the ones only `laravel/framework` asked for. It cannot
+    /// tell you whether the code *uses* the package though — prefer [`Detector::ImportExists`] for that, and
+    /// keep this for libraries that are consumed without a distinctive import.
+    LockDependency {
+        lock: String,
+        dependency: String,
+        #[serde(default = "default_conf")]
+        confidence: f32,
+    },
+    /// A call site matching this pattern occurs in the sub-project's source.
+    ///
+    /// Same grammar as a rule's `selector.callee` (`|` alternatives, `A::b` with `*` tail matching, bare
+    /// method names). Use it for libraries that leave no import behind — a PHP fully-qualified inline call
+    /// (`\GuzzleHttp\Client::request()`), or a JS global — and pair it with [`Detector::ImportExists`]
+    /// so either spelling activates the knowledge.
+    CallExists {
+        callee: String,
+        #[serde(default = "default_conf")]
+        confidence: f32,
+    },
+}
+
+impl Detector {
+    /// The confidence this signal carries when it matches.
+    ///
+    /// A method rather than a `match` at each call site, because a call-site match silently defaults new
+    /// variants to whatever the last arm says — that is exactly the kind of bug this accessor removes.
+    pub fn confidence(&self) -> f32 {
+        match self {
+            Detector::ManifestDependency { confidence, .. }
+            | Detector::FileExists { confidence, .. }
+            | Detector::ImportExists { confidence, .. }
+            | Detector::LockDependency { confidence, .. }
+            | Detector::CallExists { confidence, .. } => *confidence,
+        }
+    }
 }
 
 fn default_conf() -> f32 {
@@ -830,6 +913,14 @@ pub enum Predicate {
     /// CRMEB, which registers routes exhaustively, sprouts thousands of duplicate endpoints. This is the same
     /// accounting principle as "better a missing edge than a wrong edge".
     NotClaimedBy(String),
+    /// The node **already has an in-edge of the given kind**.
+    ///
+    /// Use this instead of a marker property whenever the fact you want is "somebody really linked to me":
+    /// a synthesised node may be written by several parties (a contract bridge is written by both the front end
+    /// and the back end), and any scalar property they all patch is decided by **whoever patches last** — so the
+    /// property lies about the party set, while the edge is first-hand evidence.
+    /// Example: `frontend.called` must be judged by a `CallsHttp` in-edge, not by `side = frontend`.
+    HasIncoming(String),
 }
 
 /// A binding action.

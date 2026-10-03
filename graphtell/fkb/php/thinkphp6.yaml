@@ -18,6 +18,7 @@ id: thinkphp6
 display_name: ThinkPHP 6
 language: php
 version_hint: "5.1 / 6.x / 8.x"
+side: backend
 # NOTE: this field currently has **no effect** — Ingest (P0) runs before framework detection (P3),
 # so files cannot be filtered per FKB; what actually applies is `ProjectConfig.exclude_globs` (project level).
 # Kept here only to record the intent; it will be wired up once Ingest supports pre-detection.
@@ -44,6 +45,11 @@ detectors:
   - kind: file_exists
     path: think
     confidence: 0.5
+
+# Transaction-boundary markers. `Db::transaction` is ThinkPHP's own facade spelling — it used to sit in
+# `php/common.yaml`, i.e. in the layer applied to every PHP project, Laravel ones included.
+tx_calls:
+  - "Db::transaction"
 
 # ---------------------------------------------------------------- framework root
 # Resolve AppRoot from composer.json's autoload.psr-4:
@@ -448,9 +454,6 @@ rules:
                 - singularize
                 - strip_prefix: []
                 - trim
-          fields:
-            - name: side
-              value: { literal: "backend" }
           # Only a **neutral** `MapsTo` can be produced: all P5 knows is "this method touched that table";
           # the terminal verb (`->find()` vs `->update()`) is only known at P7
           # (see `resolve.rs::classify_facade_db_calls` and FKB's `db_verbs`).
@@ -483,9 +486,6 @@ rules:
                 - strip_prefix: []
                 - singularize
                 - trim
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.95
 
@@ -511,9 +511,6 @@ rules:
           # built by `tp6-db-name-table` (`Db::name('user')` -> `user`) get inconsistent scopes and are judged as
           # two different identities, so one table appears as **two nodes** on the graph and idempotent merging
           # breaks (measured on CRMEB: the user table had 2 nodes, each with only half of its sources).
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
 
@@ -565,8 +562,6 @@ rules:
             kind: Named
             value: { arg: 0 }
           fields:
-            - name: side
-              value: { literal: "backend" }
             - name: storage
               from_symbol_table: { table: config_keys, field: storage }
             - name: value_type
@@ -610,9 +605,6 @@ rules:
             value_fallback:
               owner_class: true
               transform: { class_to_topic: true }
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: PublishesTo, direction: incoming }
           confidence: 0.85
       # Consumer side: queue messages are consumed by the Job class (its `fire()` / `handle()` processes the
@@ -634,9 +626,6 @@ rules:
             value_fallback:
               owner_class: true
               transform: { class_to_topic: true }
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -674,8 +663,6 @@ rules:
               value: { arg: 0 }
             - name: handler
               value: { arg: 1 }
-            - name: side
-              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -721,8 +708,6 @@ rules:
               value: { arg: 0 }
             - name: handler
               value: { arg: 1 }
-            - name: side
-              value: { literal: "backend" }
           link:
             kind: HandledBy
             direction: to_target
@@ -762,8 +747,6 @@ rules:
             kind: Named
             value: { path_segment: 1 }
           fields:
-            - name: side
-              value: { literal: "backend" }
             - name: payload_arity
               value: { array_length: true }
           link:
@@ -823,8 +806,6 @@ rules:
             kind: Named
             value: { path_segment: 0 }
           fields:
-            - name: side
-              value: { literal: "backend" }
             - name: payload_arity
               value: { array_length: true }
           link:
@@ -933,8 +914,6 @@ rules:
               value: { self: true }
             - name: handler
               value: { self: true }
-            - name: side
-              value: { literal: "backend" }
             - name: auto_route
               value: { literal: "true" }
           link:
@@ -959,8 +938,6 @@ rules:
               path: [{ file_stem: true }, { key_path: true }]
               join: "."
           fields:
-            - name: side
-              value: { literal: "backend" }
             - name: texts
               value: { entry_value: true }
               accumulate: { key: { locale: true }, value: { entry_value: true } }

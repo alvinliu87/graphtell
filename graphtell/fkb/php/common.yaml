@@ -24,6 +24,7 @@ id: php-common
 display_name: PHP common
 language: php
 version_hint: "*"
+side: backend
 # No detectors declared: this file is not "a detected framework", just a common layer effective for every PHP project.
 apply_without_detection: true
 
@@ -33,8 +34,12 @@ apply_without_detection: true
 # even more reliable way to drag an endpoint down than N+1 (sending SMS in a loop / querying shipping in a loop /
 # fetching remote images in a loop).
 # Only callees that **really issue a network request** are listed: `curl_*` is built into PHP;
-# `Http::*` is the HTTP client facade both frameworks have; `GuzzleHttp\Client` is common across the composer ecosystem.
+# `Http::*` is the HTTP client facade both frameworks have.
 # Matching basis: a call site matches if its full callee (`Http::get`) or its method name (`curl_exec`) hits any entry.
+#
+# `GuzzleHttp\Client::*` used to be listed here, and is not any more: it is a claim about Guzzle, so it moved
+# to `guzzle.yaml`, which is detected by `import_exists` / `call_exists` — i.e. it now fires only for projects
+# that really reach for Guzzle, instead of for every PHP project.
 external_calls:
   - "curl_exec"
   - "curl_multi_exec"
@@ -49,9 +54,6 @@ external_calls:
   - "Http::delete"
   - "Http::request"
   - "Http::send"
-  - "GuzzleHttp\\Client::request"
-  - "GuzzleHttp\\Client::get"
-  - "GuzzleHttp\\Client::post"
   - "Mail::send"
   - "Mail::raw"
   - "Mail::to"
@@ -62,16 +64,17 @@ external_calls:
 # Hitting any one of them means "a transaction boundary appears inside this method" and it is not reported — the
 # conservative direction: better to under-report (the transaction may live further out) than to report a wrapped
 # method as "not wrapped".
+#
+# Only spellings that are genuinely framework-independent belong here. `DB::transaction` (Laravel) and
+# `Db::transaction` (ThinkPHP) used to be listed, and are not any more — each is one framework's facade, so
+# they moved to `illuminate-database.yaml` and `thinkphp6.yaml` respectively.
 tx_calls:
   - "transaction"
-  - "startTrans"
   - "startTrans"
   - "beginTransaction"
   - "commit"
   - "rollBack"
   - "rollback"
-  - "DB::transaction"
-  - "Db::transaction"
 
 rules:
   # ===== P5 Synthesize: ConfigKey (cross-framework common: config() / Config::get / env) =====
@@ -93,8 +96,6 @@ rules:
           fields:
             - name: key
               value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
           link: { kind: ReadsCache, direction: incoming, confidence: 0.85 }
           confidence: 0.85
   - id: php-common-cache-predis-write
@@ -113,8 +114,6 @@ rules:
           fields:
             - name: key
               value: { arg: 0, require_literal: true }
-            - name: side
-              value: { literal: "backend" }
           link: { kind: WritesCache, direction: incoming, confidence: 0.85 }
           confidence: 0.85
   - id: php-common-config
@@ -128,9 +127,6 @@ rules:
           identity:
             kind: Named
             value: { arg: 0, require_literal: true }
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.9
 

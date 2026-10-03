@@ -14,6 +14,7 @@ id: django
 display_name: Django
 language: python
 version_hint: "4.x / 5.x"
+side: backend
 scope: framework
 
 detectors:
@@ -118,9 +119,6 @@ rules:
                 - short_name
                 - singularize
                 - trim
-          fields:
-            - name: side
-              value: { literal: "backend" }
           link: { kind: MapsTo, direction: incoming }
           confidence: 0.6
 
