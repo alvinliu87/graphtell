@@ -15,8 +15,8 @@ mod common;
 
 use std::path::Path;
 
-use gt_domain::model::ProjectConfig;
-use gt_domain::port::ProjectReader;
+use gt_domain::model::{NodeKind, ProjectConfig};
+use gt_domain::port::{GraphQuery, NodeFilter, ProjectReader};
 
 const BARE_COMPOSER: &str = r#"{ "name": "demo/app", "require": { "php": ">=8.1" } }"#;
 
@@ -254,6 +254,111 @@ public class OrderListener {
 }
 
 #[test]
+fn spring_cache_is_detected_from_its_annotation() {
+    // Like Kafka, no sample under `samples/java-projects` uses Spring Cache, so the positive case must be
+    // synthetic. The precise detector is the `org.springframework.cache.annotation.Cacheable` import; the
+    // `@Cacheable` annotation itself is the call site that the rule keys off.
+    let root = java_project(
+        "spring-cache",
+        r#"<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+        &[(
+            "src/main/java/demo/ProductService.java",
+            r#"package demo;
+
+import org.springframework.cache.annotation.Cacheable;
+
+public class ProductService {
+    @Cacheable("products")
+    public String get(long id) {
+        return "p";
+    }
+}
+"#,
+        )],
+    );
+    let got = detected_frameworks_java(&root);
+    assert!(
+        got.contains(&"spring-cache".to_string()),
+        "@Cacheable 应激活 spring-cache，实际识别：{got:?}"
+    );
+    assert!(got.contains(&"spring-boot".to_string()), "同时应识别为 spring-boot");
+}
+
+#[test]
+fn spring_jpa_is_detected_from_its_annotation() {
+    // Like Kafka / Spring Cache, no sample under `samples/java-projects` uses JPA, so the positive case must
+    // be synthetic. The precise detector is the `org.springframework.data.jpa.repository.JpaRepository` import;
+    // the `@Table` annotation is the call site the rule keys off.
+    let root = java_project(
+        "spring-jpa",
+        r#"<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+        &[
+            (
+                "src/main/java/demo/Order.java",
+                r#"package demo;
+
+import jakarta.persistence.Table;
+
+@Table(name = "eb_order")
+public class Order {
+    private Long id;
+}
+"#,
+            ),
+            (
+                "src/main/java/demo/OrderRepository.java",
+                r#"package demo;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface OrderRepository extends JpaRepository<Order, Long> {
+}
+"#,
+            ),
+        ],
+    );
+    let got = detected_frameworks_java(&root);
+    assert!(
+        got.contains(&"spring-jpa".to_string()),
+        "@Table / JpaRepository 应激活 spring-jpa，实际识别：{got:?}"
+    );
+    assert!(got.contains(&"spring-boot".to_string()), "同时应识别为 spring-boot");
+
+    // The `@Table` rule must actually materialise a `Table` node (gated, so it only fires because spring-jpa
+    // was detected above).
+    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
+    let has_order_table = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind("Table".to_string())),
+            name_contains: Some("order".to_string()),
+            limit: Some(1000),
+            offset: Some(0),
+        })
+        .expect("query")
+        .into_iter()
+        .any(|t| t.name.to_ascii_lowercase().contains("order"));
+    assert!(has_order_table, "JPA @Table 应生成 Table(eb_order) 节点");
+}
+
+#[test]
 fn mybatis_is_detected_from_the_manifest_alone() {
     // The XML-only style: mapper XML plus a starter dependency, and **no** `org.apache.ibatis` import
     // anywhere. This is the path that goes through `manifest_has`'s textual fallback — `pom.xml` is not
@@ -305,7 +410,7 @@ public class OrderController {
     );
     let got = detected_frameworks_java(&root);
     assert!(got.contains(&"spring-boot".to_string()), "应识别为 spring-boot：{got:?}");
-    for lib in ["mybatis", "spring-amqp", "spring-kafka"] {
+    for lib in ["mybatis", "spring-amqp", "spring-kafka", "spring-cache", "spring-jpa"] {
         assert!(
             !got.contains(&lib.to_string()),
             "{lib} 不该被识别（项目没有用它），实际识别：{got:?}"

@@ -86,7 +86,11 @@ rules:
   # Isomorphic to the backend's `Cache::get('k')`. The web standards `localStorage` / `sessionStorage`
   # were factored into `fkb/js/common.yaml`; this only covers uni-app's `uni.getStorageSync`.
   # The only precondition is that the parser captures the argument (a non-literal yields Unknown, rejected by `require_literal`).
-  - id: frontend-cache-read
+  # `frontend-uni-*` rather than `frontend-cache-*`: `js/common.yaml` already owns that id for
+  # `localStorage` / `sessionStorage`, and the pipeline de-duplicates rules **by id, keeping the first** —
+  # so sharing the id silently dropped whichever of the two lost, leaving a uni-app project with only one
+  # of its two cache spellings recognised.
+  - id: frontend-uni-cache-read
     phase: Synthesize
     selector:
       kind: call
@@ -105,7 +109,7 @@ rules:
           link: { kind: ReadsCache, direction: incoming }
           confidence: 0.85
 
-  - id: frontend-cache-write
+  - id: frontend-uni-cache-write
     phase: Synthesize
     selector:
       kind: call

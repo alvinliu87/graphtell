@@ -2,8 +2,8 @@
 #
 # Why it is not part of the framework file: MyBatis is a standalone ORM that happens to be commonly used
 # with Spring Boot. A Spring project may just as well use JPA / Hibernate, and then none of this applies —
-# yet the rules used to run for every project recognised as Spring Boot. The three rules even carried
-# `mybatis-*` ids inside the framework file, which is the tell that they never belonged there.
+# yet the rules used to run for every project recognised as Spring Boot. The MyBatis-Plus annotations
+# (`@TableName` / `BaseMapper`) are also hosted here, because MyBatis-Plus is just a MyBatis extension.
 #
 # How it works: `gt-pipeline::mybatis` parses the mapper XML and injects each statement as a **pseudo call
 # site** `mybatis::select|insert|update|delete(table-name)`, owned by the Mapper interface method. These rules
@@ -31,6 +31,13 @@ detectors:
     confidence: 0.95
   - kind: import_exists
     symbol: "org.apache.ibatis"
+    confidence: 0.9
+  # MyBatis-Plus (a MyBatis extension that brings the `@TableName` annotation and the `BaseMapper` generic DAO)
+  # is caught here too: its starter `mybatis-plus-boot-starter` already matches the `mybatis` manifest probe, and
+  # the annotation import below (prefix `*` match) catches annotation-only detection when no starter dependency
+  # is declared — `@TableName` lives in `com.baomidou.mybatisplus.annotation`, never as a bare package import.
+  - kind: import_exists
+    symbol: "com.baomidou.mybatisplus*"
     confidence: 0.9
 
 rules:
@@ -98,4 +105,47 @@ rules:
           along: Declares
           from: []
           to: [WritesDb]
+          confidence: 0.8
+
+  # ===== P5 Synthesize: Table (MyBatis-Plus) =====
+  # `@TableName("eb_user")` — the JPA `@Table` spelling lives in `fkb/java/spring-jpa.yaml`. Both are gated on the
+  # project actually using that persistence library, so a Spring Boot project that uses neither produces no `Table`
+  # node from these annotations.
+  - id: spring-table-name-mp
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "TableName"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5: a DAO's generic argument -> entity -> table (MyBatis-Plus) =====
+  # `interface OrderMapper extends BaseMapper<Order>`: the generic argument `Order` is the entity the DAO
+  # operates on — the parser records it as a `generic.BaseMapper` synthetic call site (`entity` = entity name).
+  # This rule builds `References` (DAO -> entity); `spring-dao-maps-to-table` (in `spring-boot.yaml`, shared by
+  # every DAO flavour) then projects along the entity's `MapsTo` into "DAO -> table".
+  # `resolve` is written on **every ValueSource**: `Action::Link` runs `ev.string(src)` and then `find_by_name`
+  # directly, so a top-level `resolve` does not participate. Both ends yield names: the start is the DAO's FQN,
+  # the end is the entity's **short name** (resolved via the short-name index).
+  - id: spring-dao-references-entity-mp
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "generic.BaseMapper|generic.Mapper"
+    binding:
+      - Link:
+          kind: References
+          from: { owner_class: true, resolve: class_const }
+          to: { entity: true, resolve: class_const }
           confidence: 0.8

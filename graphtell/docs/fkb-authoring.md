@@ -361,7 +361,7 @@ Details:
   the same file is loaded for every party, so a single value would be a lie — state it per rule there,
   if at all.
 * **Why this replaced per-rule literals**: repetition is exactly why `python/celery.yaml` and
-  `java/spring-boot.yaml` ended up declaring none at all — their Cache / Event / Queue nodes then had
+  `java/spring-boot.yaml` (Event / Queue) + `java/spring-cache.yaml` (Cache) ended up declaring none at all — their Cache / Event / Queue nodes then had
   no party evidence and vanished from every side-filtered perspective. The carried-over lesson is that
   `side` is one value per *particle* (per sub-project role), not one per rule; the whole point of the
   closed vocabulary is that a PHP producer and a Python consumer stay on the same `backend` side and

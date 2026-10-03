@@ -122,8 +122,8 @@ impl YamlKnowledgeBase {
 /// ([`IdentityKey::with_scope`]), i.e. it decides which nodes merge. Inheriting it into every kind would silently
 /// re-key nodes that were never party-aware (Column, Schedule …). This list is exactly "the kinds that already
 /// carry a `side` somewhere in the shipped knowledge", so inheritance can only fill gaps — including the real
-/// omissions it was written for: `python/celery.yaml` (Queue) and `java/spring-boot.yaml` (Cache / ConfigKey /
-/// Event / Queue) declared none, which made their nodes invisible to every side filter.
+/// omissions it was written for: `python/celery.yaml` (Queue) and `java/spring-boot.yaml` (ConfigKey / Event /
+/// Queue) + `java/spring-cache.yaml` (Cache) declared none, which made their nodes invisible to every side filter.
 const SIDE_AWARE_KINDS: &[&str] = &[
     "Cache",
     "ConfigKey",

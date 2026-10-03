@@ -1,0 +1,73 @@
+# Spring Data JPA — a **library**-level FKB, separated out of `spring-boot.yaml`.
+#
+# Why: JPA is an opt-in starter (`spring-boot-starter-data-jpa`, pulling in Hibernate); a Spring Boot project
+# may use MyBatis-Plus, or raw JDBC, or no persistence at all. The `@Table` annotation and the `JpaRepository`
+# generic DAO used to run for every project recognised as Spring Boot, materialising `Table` nodes and
+# `MapsTo` edges even when JPA was nowhere on the classpath.
+#
+# Detector note: the starter is `spring-boot-starter-data-jpa` (contains `data-jpa`); `hibernate` is a second
+# manifest spelling for projects that depend on it directly. The precise probe is the
+# `org.springframework.data.jpa.repository.JpaRepository` import — `CrudRepository` / `ListCrudRepository`
+# are the same family and covered by the rule's callee.
+
+id: spring-jpa
+display_name: Spring Data JPA
+language: java
+version_hint: "2.x / 3.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: data-jpa
+    confidence: 0.9
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: hibernate
+    confidence: 0.85
+  - kind: import_exists
+    symbol: "org.springframework.data.jpa.repository.JpaRepository"
+    confidence: 0.95
+
+rules:
+  # ===== P5 Synthesize: Table =====
+  # JPA `@Table(name = "eb_user")`. The MyBatis-Plus `@TableName` spelling lives in `fkb/java/mybatis.yaml`.
+  - id: spring-table-name-jpa
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Table"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Fqn
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - singularize
+                - trim
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.85
+
+  # ===== P5: a DAO's generic argument -> entity -> table =====
+  # `interface UserRepository extends JpaRepository<User, Long>`: the generic argument `User` is the entity it
+  # operates on — the parser records it as a `generic.JpaRepository` synthetic call site (`entity` = entity name).
+  # This rule builds `References` (DAO -> entity); `spring-dao-maps-to-table` (in `spring-boot.yaml`, shared by
+  # every DAO flavour) then projects along the entity's `MapsTo` into "DAO -> table".
+  # `resolve` is written on **every ValueSource**: `Action::Link` runs `ev.string(src)` and then `find_by_name`
+  # directly, so a top-level `resolve` does not participate. Both ends yield names: the start is the DAO's FQN,
+  # the end is the entity's **short name** (resolved via the short-name index).
+  - id: spring-dao-references-entity-jpa
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "generic.JpaRepository|generic.CrudRepository|generic.ListCrudRepository"
+    binding:
+      - Link:
+          kind: References
+          from: { owner_class: true, resolve: class_const }
+          to: { entity: true, resolve: class_const }
+          confidence: 0.8

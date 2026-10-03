@@ -1,0 +1,86 @@
+# Spring Cache — a **library**-level FKB, separated out of `spring-boot.yaml`.
+#
+# Why: Spring Cache is an opt-in starter (`spring-boot-starter-cache`); a Spring Boot project may use no
+# caching at all, or bring its own (Caffeine / Redis / Ehcache) so none of these `@Cacheable` rules apply.
+# They used to run for every project recognised as Spring Boot, materialising `Cache` nodes from the mere
+# presence of the annotations even when the cache abstraction was never on the classpath.
+#
+# Detector note: the starter is named `spring-boot-starter-cache` (contains `cache`); the precise probe is the
+# `org.springframework.cache.annotation.Cacheable` import — every cache rule keys off one of the three
+# annotations (`@Cacheable` / `@CachePut` / `@CacheEvict`), all in that package.
+
+id: spring-cache
+display_name: Spring Cache
+language: java
+version_hint: "2.x / 3.x"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: pom.xml
+    dependency: cache
+    confidence: 0.9
+  - kind: import_exists
+    symbol: "org.springframework.cache.annotation.Cacheable"
+    confidence: 0.95
+
+rules:
+  # ===== P5 Synthesize: Cache (the Spring Cache abstraction) =====
+  # `@Cacheable` reads the cache; `@CachePut` / `@CacheEvict` write / invalidate it.
+  # Annotations are modelled as call sites in the kernel (callee = annotation name), and the cache name comes
+  # from the value/value argument (arg0).
+  # The engine needs no code change for a "brand new" edge kind: `ReadsCache` / `WritesCache` are already built-in semantic edges.
+  - id: spring-cacheable
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Cacheable"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: ReadsCache, direction: incoming }
+          confidence: 0.85
+
+  - id: spring-cache-put
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "CachePut"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
+
+  - id: spring-cache-evict
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "CacheEvict"
+    binding:
+      - Synthesize:
+          node: Cache
+          identity:
+            kind: Named
+            value:
+              arg: 0
+              require_literal: true
+              normalize:
+                - trim
+          link: { kind: WritesCache, direction: incoming }
+          confidence: 0.85
