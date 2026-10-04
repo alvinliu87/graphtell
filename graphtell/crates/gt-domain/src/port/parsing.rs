@@ -54,7 +54,23 @@ pub trait LanguageParser: Send + Sync {
     fn exclude_dirs(&self) -> &'static [&'static str] {
         &[]
     }
+
+    /// Primitive / builtin type names that must NOT be treated as class references during type inference
+    /// (e.g. PHP `int` / `string`, Java `long` / `boolean`, JS `number` / `any`). The kernel knows no
+    /// language, so this lives with the parser; the default (empty) means "nothing special", and each
+    /// adapter declares its own — see [`PHP_BUILTIN_TYPES`] for the PHP set.
+    fn builtin_types(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
+
+/// PHP's primitive / builtin type names (used by [`LanguageParser::builtin_types`] for PHP and as the
+/// `NamespacePolicy` fallback when no parser is wired up). Declared once here so the kernel, the
+/// `NamespacePolicy` fallback, and the PHP parser adapter all share the same list.
+pub const PHP_BUILTIN_TYPES: &[&str] = &[
+    "int", "integer", "string", "bool", "boolean", "float", "double", "array", "void", "mixed",
+    "object", "callable", "iterable", "null", "false", "true", "self", "static", "parent", "never",
+];
 
 /// Parser registry (factory port).
 ///

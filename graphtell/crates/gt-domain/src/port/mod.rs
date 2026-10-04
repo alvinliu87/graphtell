@@ -24,7 +24,7 @@ pub use techstack::{
     TechStackAdapter, TechStackRegistry,
 };
 pub use observability::{Clock, NoopObserver, PipelineObserver, SystemClock};
-pub use parsing::{LanguageParser, ParserRegistry};
+pub use parsing::{LanguageParser, ParserRegistry, PHP_BUILTIN_TYPES};
 pub use views::ViewRegistryProvider;
 pub use persistence::{
     DiagnosticSink, EdgeDirection, GraphDelta, GraphQuery, GraphSink, GraphStats, NodeFilter,

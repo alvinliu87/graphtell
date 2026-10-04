@@ -58,6 +58,10 @@ impl LanguageParser for PhpParser {
         &["vendor"]
     }
 
+    fn builtin_types(&self) -> &'static [&'static str] {
+        gt_domain::port::PHP_BUILTIN_TYPES
+    }
+
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {
         let tree = PARSER.with(|cell| {
             let mut borrow = cell.borrow_mut();

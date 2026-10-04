@@ -238,6 +238,8 @@ pub struct NamespacePolicy {
     pub ns_separators: Vec<char>,
     /// The separator between a class and its member: PHP/C++ use `::`, Java/JS/Python use `.`.
     pub member_separator: String,
+    /// Primitive / builtin type names that are NOT class references (language-specific).
+    pub builtin_types: Vec<String>,
 }
 
 impl NamespacePolicy {
@@ -248,6 +250,11 @@ impl NamespacePolicy {
             ns_separator: seps.first().copied().unwrap_or('\\'),
             ns_separators: seps.to_vec(),
             member_separator: p.member_separator().to_string(),
+            builtin_types: p
+                .builtin_types()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 
@@ -266,6 +273,10 @@ impl NamespacePolicy {
             ns_separator: '\\',
             ns_separators: vec!['\\'],
             member_separator: "::".to_string(),
+            builtin_types: crate::port::PHP_BUILTIN_TYPES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }

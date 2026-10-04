@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 
 use gt_domain::model::{
-    Declaration, EdgeKind, FactValue, NewEdge, NewNode, NodeId, NodeKind, Phase, ProjectId,
-    ResolveAs, Severity, SourceFile, Span, SyntaxFacts,
+    Declaration, EdgeKind, FactValue, NamespacePolicy, NewEdge, NewNode, NodeId, NodeKind, Phase,
+    ProjectId, ResolveAs, Severity, SourceFile, Span, SyntaxFacts,
 };
 use gt_domain::port::{FileSystem, ParserRegistry, TechStackRegistry};
 use tracing::{debug, warn};
@@ -90,6 +90,9 @@ fn build_file(
     phase: &Phase,
     techstack: &dyn TechStackRegistry,
 ) {
+    // This phase is language-agnostic: every notation rule (namespace separator, member separator,
+    // builtin types) comes from the sub-project's `NamespacePolicy`, never hard-coded here.
+    let policy = ctx.lang_policy_for_sub(file.sub_project_id).clone();
     let span = Span::default();
     let file_node = ctx.ws.add_node(NewNode {
         id: None,
@@ -111,12 +114,15 @@ fn build_file(
     // Imports table: short name (lowercased) -> FQN (class short name maps to fully qualified name)
     let mut imports: HashMap<String, String> = HashMap::new();
     for imp in &facts.imports {
-        let fqn = imp.name.trim_start_matches('\\').to_string();
+        let fqn = imp
+            .name
+            .trim_start_matches(|c| policy.ns_separators.contains(&c))
+            .to_string();
         let short = match &imp.alias {
             Some(a) => a.clone(),
-            // Short name takes the last namespace segment: Java uses `.`, PHP uses `\`, split uniformly by either.
+            // Short name takes the last namespace segment, split on this language's separators.
             None => fqn
-                .rsplit(|c: char| c == '.' || c == '\\')
+                .rsplit(|c: char| policy.ns_separators.contains(&c))
                 .next()
                 .unwrap_or(&fqn)
                 .to_string(),
@@ -256,13 +262,14 @@ fn build_file(
                     ) else {
                         continue;
                     };
-                    if is_builtin_type(ty) {
+                    if is_builtin_type(ty, &policy) {
                         continue;
                     }
                     let fqn = resolve_type(
                         facts.namespace.as_deref(),
                         &imports,
                         ty.trim_start_matches('?'),
+                        &policy,
                     );
                     // Strip the `$` prefix from variable names uniformly, so they can be looked up by `$var`.
                     ctx.ws
@@ -301,7 +308,7 @@ fn build_file(
                     if ctx.ws.prop_type(class_fqn, prop).is_some() {
                         continue;
                     }
-                    let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls);
+                    let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls, &policy);
                     ctx.ws.set_prop_type(class_fqn, prop, &fqn);
                 }
             }
@@ -314,7 +321,7 @@ fn build_file(
                     ) else {
                         continue;
                     };
-                    let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls);
+                    let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls, &policy);
                     ctx.ws.set_local_type(&d.fqn, var, &fqn);
                 }
             }
@@ -324,7 +331,7 @@ fn build_file(
                 if let Some(owner_id) = d.parent_fqn.as_ref().and_then(|p| local.get(p).copied()) {
                     for c in list {
                         let Some(name) = c.as_str() else { continue };
-                        let fqn = resolve_type(facts.namespace.as_deref(), &imports, name);
+                        let fqn = resolve_type(facts.namespace.as_deref(), &imports, name, &policy);
                         ctx.ws.pending_links.push(crate::workspace::PendingLink {
                             from: owner_id,
                             kind: EdgeKind(EdgeKind::RESOLVES_TO.to_string()),
@@ -360,7 +367,7 @@ fn build_file(
 
     // Inheritance / implementation / trait
     for inh in &facts.inheritances {
-        let base_fqn = resolve_type(facts.namespace.as_deref(), &imports, &inh.base_name);
+        let base_fqn = resolve_type(facts.namespace.as_deref(), &imports, &inh.base_name, &policy);
         let target = ctx
             .ws
             .find_by_name(&base_fqn)
@@ -397,7 +404,7 @@ fn build_file(
                     sub_project_id: file.sub_project_id,
                     kind: NodeKind(NodeKind::CLASS.to_string()),
                     name: base_fqn
-                        .rsplit('\\')
+                        .rsplit(|c: char| policy.ns_separators.contains(&c))
                         .next()
                         .unwrap_or(&base_fqn)
                         .to_string(),
@@ -446,7 +453,7 @@ fn build_file(
     // Field-declaration type: restored to FQN via import, written into `prop_types` (so P7 can resolve `field.method()`
     // instance calls by field type, connecting the `service -> mapper -> table` call chain).
     for ft in &facts.field_types {
-        let type_fqn = resolve_type(facts.namespace.as_deref(), &imports, &ft.type_name);
+        let type_fqn = resolve_type(facts.namespace.as_deref(), &imports, &ft.type_name, &policy);
         ctx.ws.set_prop_type(&ft.class_fqn, &ft.field, &type_fqn);
     }
 
@@ -457,7 +464,7 @@ fn build_file(
             .copied()
             .or_else(|| ctx.ws.find_by_name(&call.owner_fqn))
             .or_else(|| {
-                owner_parent(&call.owner_fqn).and_then(|p| {
+                owner_parent(&call.owner_fqn, &policy.member_separator).and_then(|p| {
                     local.get(&p).copied().or_else(|| ctx.ws.find_by_name(&p))
                 })
             })
@@ -586,8 +593,8 @@ fn build_file(
 ///
 /// The member separator varies by language: PHP `::`, Java / JS `.`. Only used when **the exact FQN lookup finds no node**,
 /// so it will not wrongly slice a class FQN (`com.example.MyClass`) into a package name — that case would never reach here.
-fn owner_parent(fqn: &str) -> Option<String> {
-    let idx = fqn.rfind("::").or_else(|| fqn.rfind('.'))?;
+fn owner_parent(fqn: &str, member_separator: &str) -> Option<String> {
+    let idx = fqn.rfind(member_separator)?;
     let parent = &fqn[..idx];
     if parent.is_empty() {
         None
@@ -604,46 +611,40 @@ fn property_value(d: &Declaration) -> FactValue {
 }
 
 /// Resolve a type name written in source into a fully qualified name.
-pub fn resolve_type(ns: Option<&str>, imports: &HashMap<String, String>, name: &str) -> String {
+///
+/// The namespace notation (leading root separator, separator used inside an already-qualified name,
+/// and the joiner used to qualify a bare name against the current namespace) is **not** hard-coded:
+/// it comes from the language's `NamespacePolicy`.
+pub fn resolve_type(
+    ns: Option<&str>,
+    imports: &HashMap<String, String>,
+    name: &str,
+    policy: &NamespacePolicy,
+) -> String {
     let raw = name.trim();
-    if raw.starts_with('\\') {
-        return raw.trim_start_matches('\\').to_string();
+    if raw.starts_with(|c| policy.ns_separators.contains(&c)) {
+        return raw
+            .trim_start_matches(|c| policy.ns_separators.contains(&c))
+            .to_string();
     }
-    if raw.contains('\\') {
+    if raw.contains(|c| policy.ns_separators.contains(&c)) {
         return raw.to_string();
     }
     if let Some(fqn) = imports.get(&raw.to_ascii_lowercase()) {
         return fqn.clone();
     }
     match ns {
-        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, raw),
+        Some(ns) if !ns.is_empty() => format!("{}{}{}", ns, policy.ns_separator, raw),
         _ => raw.to_string(),
     }
 }
 
-/// Whether it is a language-builtin type (`int` / `string` / `array` …), not a class name; skipped, not participating in type inference.
-fn is_builtin_type(t: &str) -> bool {
-    matches!(
-        t.trim_start_matches('?').trim().to_ascii_lowercase().as_str(),
-        "int"
-            | "integer"
-            | "string"
-            | "bool"
-            | "boolean"
-            | "float"
-            | "double"
-            | "array"
-            | "void"
-            | "mixed"
-            | "object"
-            | "callable"
-            | "iterable"
-            | "null"
-            | "false"
-            | "true"
-            | "self"
-            | "static"
-            | "parent"
-            | "never"
-    )
+/// Whether it is a language-builtin type (`int` / `string` / `array` …), not a class name; skipped, not
+/// participating in type inference. The primitive set is language-specific and comes from `policy`.
+fn is_builtin_type(t: &str, policy: &NamespacePolicy) -> bool {
+    let t = t.trim_start_matches('?').trim().to_ascii_lowercase();
+    policy
+        .builtin_types
+        .iter()
+        .any(|b| b.eq_ignore_ascii_case(&t))
 }
