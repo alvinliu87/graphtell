@@ -1423,6 +1423,78 @@ fn js_only_rules_are_skipped_on_backend_only_project() {
     }
 }
 
+/// P12 applies `ext-call-in-loop` **without a language gate** — any stack whose FKB declares
+/// `external_calls` (php / js / python / java) gets the annotation — so the rule consuming it must not
+/// be PHP-only. While it declared `languages: [php]`, a JS / Python / Java project ran P12, produced the
+/// annotation, and then silently dropped it: no rule was ever behind it.
+///
+/// Consuming it therefore needs one copy **per stack**, each with its own `languages:` and its own id
+/// (`n1-query` precedent) — `rules/{php,js,python,java}/runtime.yaml`. This pins all four, which also
+/// pins that no copy drifted onto the wrong id: while the rule was PHP-only, a JS / Python / Java project
+/// ran P12, produced the annotation, and then silently dropped it — no rule was ever behind it.
+///
+/// Uses `temp_fixture` (no sample, so it never skips).
+#[test]
+fn ext_call_in_loop_runs_on_every_stack_that_declares_external_calls() {
+    for (language, rule_id) in [
+        ("php", "ext-call-in-loop"),
+        ("javascript", "js-ext-call-in-loop"),
+        ("python", "python-ext-call-in-loop"),
+        ("java", "java-ext-call-in-loop"),
+    ] {
+        let f = temp_fixture();
+        let pid = f.project;
+
+        f.container
+            .store
+            .apply(&GraphDelta {
+                project_id: Some(pid),
+                nodes: vec![NewNode {
+                    id: Some(NodeId(9001)),
+                    project_id: pid,
+                    sub_project_id: None,
+                    kind: NodeKind::new("CallSite"),
+                    name: "remoteCall".to_string(),
+                    fqn: None,
+                    identity: Some(IdentityKey::fqn("loadAll#remoteCall:3")),
+                    file_id: None,
+                    span: Span { start_line: 3, end_line: 3, start_byte: 0, end_byte: 0 },
+                    language: Language::new(language),
+                    phase: Phase(Phase::SYNTHESIZE.to_string()),
+                    confidence: 1.0,
+                    properties: serde_json::json!({ "in_loop": true }),
+                }],
+                annotations: vec![NewAnnotation {
+                    node_id: NodeId(9001),
+                    channel: AnnotationChannel("External".to_string()),
+                    kind: "ext-call-in-loop".into(),
+                    subkind: Some("NetworkInLoop".into()),
+                    confidence: 0.85,
+                    evidence: serde_json::json!({ "file": "src/api", "line": 3, "callee": "remoteCall" }),
+                    phase: Phase("External".to_string()),
+                    merge: MergeStrategy::Coexist,
+                }],
+                ..Default::default()
+            })
+            .expect("图应可写入");
+
+        set_stack(&f, language, &[]);
+
+        let svc = RuleService::new(
+            f.container.store.clone() as Arc<dyn Persistence>,
+            f.container.rules.clone() as Arc<dyn RuleProvider>,
+        );
+        let report = svc.check(f.project, None, false).expect("检查不应失败");
+
+        assert!(
+            report.violations.iter().any(|v| v.rule_id == rule_id),
+            "{language} 工程上 {rule_id} 规则应触发（P12 不限语言）；实际违规={:?}，not_applicable={:?}",
+            report.violations.iter().map(|v| v.rule_id.clone()).collect::<Vec<_>>(),
+            report.rules_not_applicable
+        );
+    }
+}
+
 /// Criterion validation: when not a single edge of the criterion's kind exists on the graph, the rule must **deactivate**, not run hard.
 ///
 /// This is the guard against "always-true false positives": when the graph has no `CallsHttp` edge,

@@ -1,0 +1,46 @@
+# Runtime smell: a remote call inside a loop (Java stack).
+#
+# ⚠️ The `ext-call-in-loop` annotation is produced by the P12 External phase, landing on a **CallSite** node.
+#
+# P12 deliberately carries **no language gate** — every stack whose FKB declares `external_calls` is checked
+# (here `fkb/java/common.yaml`: `getForObject` / `postForEntity` / `newCall` …) — so this rule is declared
+# once per stack, each copy with its own `languages:` and its own id (the `n1-query` precedent, whose Java
+# copy lives in `rules/java/n1-query.yaml`). It cannot live in `rules/global/`: a rule declaring no
+# `languages` must depend only on graph topology, never on an annotation a given stack may not produce —
+# enforced by `builtin_rules_are_organised_per_language`.
+#
+# The criterion needs nothing but the annotation: P12 already conjoined "inside a loop" and "the callee is
+# an external call", so the rule must not re-check `in_loop`.
+
+rules:
+  - id: java-ext-call-in-loop
+    title: External system call inside a loop
+    description: >-
+      A loop body calls an HTTP / SMS / email / RPC client (the list comes from FKB `external_calls`).
+      One network round trip costs an order of magnitude more than one database query, and amplifying it
+      N times serially is the classic cause of endpoint timeouts.
+      Typical scenes: sending an SMS per user in a loop, querying shipping tracking in a loop, pulling
+      remote images in a loop.
+      Exception: when the loop is itself a "retry on failure / idempotent compensation" scenario
+      (N is small and there is backoff), no change is needed.
+    severity: warning
+    category: performance
+    params:
+      - key: max_nodes
+        label: Candidate call-site cap
+        description: Cap on the number of CallSite nodes checked; lower it on very large codebases so one check does not get slow.
+        kind: number
+        default: 5000
+        min: 100
+        max: 200000
+    applies_to:
+      kinds: [CallSite]
+      limit: 9000000
+      languages: [java]
+    when:
+      - has_annotation: ext-call-in-loop
+    message: "External call {name} inside a loop (at {file}:{line}) — N records = N serial network round trips"
+    remediation: >-
+      Prefer a batch API from the third party (pass several ids at once); when no batch API exists, push
+      the in-loop calls onto a queue for async processing, or at least issue them concurrently with a
+      timeout — do not let N round trips block the request serially.

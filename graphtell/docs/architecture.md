@@ -340,8 +340,8 @@ adding one means adding one YAML:
 
 | Directory | Applies to | Content |
 | --- | --- | --- |
-| `rules/global/` | language-agnostic | rules depending only on **graph topology** (fan-in/out, semantic edges): the contract bridge (`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`), hot tables (`hot-table`), config-read hotspots (`config-read-hotspot`), dead tables (`dead-table`), write-only / read-only tables (`write-only-table` / `read-only-table`), high-fan-out methods (`hotspot-method`) |
-| `rules/php/` | PHP projects only | criteria depend on edges / annotations only PHP FKB produces: raw SQL execution points (`raw-sql-sink`), PII tables (`pii-table-needs-review` / `pii-table-hot`), never-triggered events / queues (`orphan-event` / `orphan-queue`), **per-row DB read / write inside a loop** (`n1-query-in-loop` / `n1-write-in-loop`, below), **external call inside a loop** (`ext-call-in-loop`), **multiple writes without a transaction** (`multi-write-without-tx`), **signature-verification quality** (`sign-compare-loose` / `sign-weak-hash`, below) |
+| `rules/global/` | language-agnostic | rules depending only on **graph topology** (fan-in/out, semantic edges): the contract bridge (`http-contract-without-handler` / `frontend-calls-missing-backend` / `backend-endpoint-never-called`), hot tables (`hot-table`), config-read hotspots (`config-read-hotspot`), dead tables (`dead-table`), write-only / read-only tables (`write-only-table` / `read-only-table`), high-fan-out methods (`hotspot-method`), the cross-language runtime smell **external call inside a loop** (`ext-call-in-loop`, consumed from the P12 annotation) |
+| `rules/php/` | PHP projects only | criteria depend on edges / annotations only PHP FKB produces: raw SQL execution points (`raw-sql-sink`), PII tables (`pii-table-needs-review` / `pii-table-hot`), never-triggered events / queues (`orphan-event` / `orphan-queue`), **per-row DB read / write inside a loop** (`n1-query-in-loop` / `n1-write-in-loop`, below), **external call inside a loop** (`ext-call-in-loop`, repeated per stack as `js-` / `python-` / `java-ext-call-in-loop`), **multiple writes without a transaction** (`multi-write-without-tx`), **signature-verification quality** (`sign-compare-loose` / `sign-weak-hash`, below) |
 | `rules/js/` | projects with a frontend sub-project | dead code on the frontend event bus (`eventbus-emitted-without-listener` / `eventbus-listened-without-emitter` / `eventbus-orphan`) -- `EventBus` and `Emits` / `ListensTo` are frontend semantics and don't exist in a backend-only project |
 
 30 rules ship built-in (of which `write-endpoint-without-auth` is `enabled: false` by default because
@@ -402,9 +402,12 @@ established facts, never judge vulnerabilities** -- the fix is left to people an
 - **`ext-call-in-loop` (external call inside a loop)**: one network round-trip costs an order of
   magnitude more than one DB query, so putting it in a loop (`curl_exec` / `Http::get` /
   `GuzzleHttp\Client::request` / `Mail::send` …) multiplies interface latency serially by N. The
-  criterion fully reuses N+1's `in_loop` fact, only swapping the verb list for `external_calls` (in
-  `fkb/php/common.yaml`, framework-agnostic). P12 `phase::external` applies the `ext-call-in-loop`
-  annotation.
+  criterion fully reuses N+1's `in_loop` fact, only swapping the verb list for `external_calls`
+  (declared per stack in `fkb/{php,js,python,java}/common.yaml`; `fkb/php/guzzle.yaml` adds the Guzzle
+  form). P12 `phase::external` applies the `ext-call-in-loop` annotation — and does so with **no language
+  gate**, so the rule consuming it is declared once per stack (`rules/{php,js,python,java}/runtime.yaml`,
+  each with its own id, the `n1-query` precedent). It cannot live in `rules/global/`: a rule declaring no
+  `languages` must depend only on graph topology, never on an annotation a given stack may not produce.
 - **`multi-write-without-tx` (multiple writes without a transaction)**: one method writes directly to
   ≥2 distinct tables (deduped `WritesDb` edge targets, counting only **direct** edges landed by P7,
   not indirect ones propagated by P8), and the method carries no transaction marker (`transaction` /

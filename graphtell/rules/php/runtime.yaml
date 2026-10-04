@@ -4,6 +4,12 @@
 # report hard facts: a remote call happens inside a loop; a method writes several times with no visible
 # transaction boundary. The fix is left to human judgement — the graph cannot see whether a batch API
 # exists or whether the transaction lives further out.
+#
+# `ext-call-in-loop` is repeated once per stack (`rules/{js,python,java}/runtime.yaml`), each copy with its
+# own `languages:` and its own id — the same shape as `n1-query` (`rules/php/n1-query.yaml` +
+# `rules/java/n1-query.yaml`). P12 itself carries no language gate, but a rule declaring **no** `languages`
+# must depend only on graph topology and never on an annotation, so this rule cannot move to
+# `rules/global/` (enforced by `builtin_rules_are_organised_per_language`).
 
 rules:
   # ⚠️ The `ext-call-in-loop` annotation is produced by the P12 External phase.
