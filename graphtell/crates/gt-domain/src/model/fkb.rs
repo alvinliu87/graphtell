@@ -700,6 +700,53 @@ pub enum RootSource {
         /// Dotted path, e.g. `connections.mysql.prefix`.
         pointer: String,
     },
+    /// Enumerate a **family of entries** in a config file and read a set of fields from each one —
+    /// e.g. every connection under `connections.*` in `config/database.php`, each contributing its own
+    /// driver and table prefix.
+    ///
+    /// This exists because a single `pointer` cannot express "there may be several of these": projects
+    /// configure read/write splitting (`mysql` / `mysql_read`) or several databases, and the connection
+    /// **name** is user-chosen — it is not always `mysql`. Which key holds the driver (`type` on
+    /// ThinkPHP, `driver` on Laravel) and which holds the prefix is framework knowledge, so it stays
+    /// here; the file format itself is the adapter's job, as with [`RootSource::Manifest`].
+    ///
+    /// The fact produced is a **list** (one record per entry), so this kind cannot be substituted into
+    /// a single `{value}` / `{<key>}` placeholder (P0 exclude rules): `facts::resolve_root_source`
+    /// returns `None` for it.
+    ManifestEntries {
+        /// Path relative to the project root, e.g. `config/database.php`.
+        manifest: String,
+        /// The key whose children are the entries, e.g. `connections`.
+        root: String,
+        /// Fields read from every entry.
+        fields: Vec<EntryField>,
+        /// Pointer, relative to the file root, giving the **default** entry's name, e.g. `default`
+        /// (`'default' => env('DB_CONNECTION', 'mysql')`).
+        #[serde(default)]
+        default_from: Option<String>,
+    },
+}
+
+/// One field read from each entry of a [`RootSource::ManifestEntries`] collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryField {
+    /// Field name in the produced record, e.g. `driver` / `prefix`.
+    pub name: String,
+    /// Pointer **relative to `root`**; `{key}` is replaced by the entry's name, so with
+    /// `root: connections` and `pointer: "{key}.prefix"` the resolved path is `connections.mysql.prefix`.
+    #[serde(default)]
+    pub pointer: Option<String>,
+    /// Take a property of the entry itself instead of a pointer value.
+    #[serde(default)]
+    pub from: Option<EntryFieldFrom>,
+}
+
+/// A property of an entry itself, as opposed to a value found under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryFieldFrom {
+    /// The entry's own name (e.g. the connection name `mysql`).
+    Key,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

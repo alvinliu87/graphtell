@@ -20,8 +20,8 @@ pub use resource::{
 };
 pub use rules::RuleProvider;
 pub use techstack::{
-    AdapterFact, DefaultTechStackRegistry, Marker, MarkerProvider, TechStackAdapter,
-    TechStackRegistry,
+    AdapterFact, DefaultTechStackRegistry, ManifestEntries, ManifestEntry, Marker, MarkerProvider,
+    TechStackAdapter, TechStackRegistry,
 };
 pub use observability::{Clock, NoopObserver, PipelineObserver, SystemClock};
 pub use parsing::{LanguageParser, ParserRegistry};

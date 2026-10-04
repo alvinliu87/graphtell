@@ -10,8 +10,10 @@
 use std::path::{Path, PathBuf};
 
 use gt_domain::error::Result;
-use gt_domain::model::{Language, MethodRefSpec, SubProject};
-use gt_domain::port::{AdapterFact, FileSystem, ParserRegistry, TechStackAdapter};
+use gt_domain::model::{EntryField, EntryFieldFrom, Language, MethodRefSpec, SubProject};
+use gt_domain::port::{
+    AdapterFact, FileSystem, ManifestEntries, ManifestEntry, ParserRegistry, TechStackAdapter,
+};
 
 /// The PHP tech-stack adapter.
 pub struct PhpTechStackAdapter;
@@ -47,6 +49,20 @@ impl TechStackAdapter for PhpTechStackAdapter {
         parsers: &dyn ParserRegistry,
     ) -> Option<(String, String)> {
         resolve_manifest_php(sub, project_root, manifest, pointer, fs, parsers)
+    }
+
+    fn read_manifest_entries(
+        &self,
+        sub: &SubProject,
+        project_root: &Path,
+        manifest: &str,
+        root: &str,
+        fields: &[EntryField],
+        default_from: Option<&str>,
+        fs: &dyn FileSystem,
+        parsers: &dyn ParserRegistry,
+    ) -> Option<ManifestEntries> {
+        resolve_manifest_entries_php(sub, project_root, manifest, root, fields, default_from, fs, parsers)
     }
 
     fn enrich_method_ref(&self, spec: &mut MethodRefSpec, sub_root: &Path, project_root: &Path) {
@@ -184,6 +200,98 @@ fn resolve_manifest_php(
     extract_php_config_default(&text, leaf).map(|s| {
         (s, format!("php config (env default): {}", abs.display()))
     })
+}
+
+/// Enumerate one family of config entries (e.g. every connection under `connections.*`) and read the
+/// declared fields from each.
+///
+/// Reuses the same tree-sitter `config_entries` flattening as [`resolve_manifest_php`]; only the
+/// selection differs — every child key of `root` becomes one entry instead of matching a single pointer.
+///
+/// The `env()`-default regex fallback runs **only when a single entry exists**: it scans raw text for the
+/// first `'<leaf>' => …` occurrence and therefore cannot be attributed to a specific entry, so with
+/// several connections it would silently copy one connection's value onto all of them.
+fn resolve_manifest_entries_php(
+    sub: &SubProject,
+    project_root: &Path,
+    manifest: &str,
+    root: &str,
+    fields: &[EntryField],
+    default_from: Option<&str>,
+    fs: &dyn FileSystem,
+    parsers: &dyn ParserRegistry,
+) -> Option<ManifestEntries> {
+    let abs = sub.root_path.join(manifest);
+    let abs = if abs.exists() { abs } else { project_root.join(manifest) };
+    if !abs.exists() {
+        return None;
+    }
+    let text = fs.read_to_string(&abs).ok()?;
+    let parser = parsers.parser_for(&Language::new(Language::PHP))?;
+    let rel = abs.to_string_lossy().replace('\\', "/");
+    let facts = parser.parse(&rel, &text).ok()?;
+
+    // The literal value at `pointer`, when the parser could evaluate it statically.
+    let literal_at = |pointer: &str| -> Option<String> {
+        facts
+            .config_entries
+            .iter()
+            .find(|e| e.key_path == pointer)
+            .and_then(|e| e.value.as_str())
+            .map(|s| s.to_string())
+    };
+
+    // Children of `root`: `connections.<name>.…` → distinct `<name>`, source order preserved.
+    let child_prefix = format!("{}.", root);
+    let mut names: Vec<String> = Vec::new();
+    for entry in &facts.config_entries {
+        let Some(rest) = entry.key_path.strip_prefix(&child_prefix) else {
+            continue;
+        };
+        let name = rest.split('.').next().unwrap_or("");
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+
+    let single = names.len() == 1;
+    let mut entries = Vec::new();
+    for name in &names {
+        let mut pairs = Vec::new();
+        for field in fields {
+            let value = match (&field.from, &field.pointer) {
+                (Some(EntryFieldFrom::Key), _) => Some(name.clone()),
+                (_, Some(pointer)) => {
+                    let full = format!("{}.{}", root, pointer.replace("{key}", name));
+                    literal_at(&full).or_else(|| {
+                        if single {
+                            let leaf = full.rsplit('.').next().unwrap_or(&full);
+                            extract_php_config_default(&text, leaf)
+                        } else {
+                            None
+                        }
+                    })
+                }
+                _ => None,
+            };
+            if let Some(v) = value {
+                pairs.push((field.name.clone(), v));
+            }
+        }
+        entries.push(ManifestEntry { key: name.clone(), fields: pairs });
+    }
+
+    let default = default_from.and_then(|pointer| {
+        literal_at(pointer).or_else(|| {
+            let leaf = pointer.rsplit('.').next().unwrap_or(pointer);
+            extract_php_config_default(&text, leaf)
+        })
+    });
+
+    Some(ManifestEntries { entries, default })
 }
 
 /// Lightweight fallback: extract the literal default from `config/database.php` source text `<leaf> => 'x'`,

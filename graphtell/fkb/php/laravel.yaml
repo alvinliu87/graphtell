@@ -78,13 +78,22 @@ root_rules:
     fallbacks:
       - app
       - src
-  # Table prefix: Laravel, like ThinkPHP, writes it in `config/database.php`; the structure is the same, so the detection can be reused directly.
-  - id: db-prefix
-    key: db_prefix
+  # Database connections: Laravel, like ThinkPHP, writes them in `config/database.php` under
+  # `connections.<name>` — the name is user-chosen (`mysql` / `pgsql` / `sqlsrv` … and a project may
+  # define several), so they are enumerated rather than hard-coding one name.
+  # Laravel spells the driver `driver`, where ThinkPHP spells it `type`; only the key name differs, and
+  # that difference is exactly what belongs in this file rather than in the kernel.
+  - id: db-connections
+    key: db_connections
     source:
-      kind: manifest
+      kind: manifest_entries
       manifest: config/database.php
-      pointer: connections.mysql.prefix
+      root: connections
+      default_from: default
+      fields:
+        - { name: name, from: key }
+        - { name: driver, pointer: "{key}.driver" }
+        - { name: prefix, pointer: "{key}.prefix" }
     confidence: 1.0
 
 # ---------------------------------------------------------------- route handler

@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
-use crate::model::{Language, MethodRefSpec, SubProject};
+use crate::model::{EntryField, Language, MethodRefSpec, SubProject};
 use crate::port::{FileSystem, ParserRegistry};
 
 /// A fact the kernel should persist into the workspace on behalf of a tech-stack adapter.
@@ -36,6 +36,24 @@ pub enum AdapterFact {
         key: String,
         value: serde_json::Value,
     },
+}
+
+/// One entry of a config collection, e.g. a single database connection.
+#[derive(Debug, Clone)]
+pub struct ManifestEntry {
+    /// The entry's own name (e.g. the connection name `mysql`).
+    pub key: String,
+    /// `(field name, value)` pairs, in the order FKB declared them. Fields that could not be
+    /// resolved are **omitted** rather than filled with a guess.
+    pub fields: Vec<(String, String)>,
+}
+
+/// A whole config collection plus, when FKB asked for it, the name of the default entry.
+#[derive(Debug, Clone, Default)]
+pub struct ManifestEntries {
+    pub entries: Vec<ManifestEntry>,
+    /// The name of the default entry, when the file declares one (`'default' => 'mysql'`).
+    pub default: Option<String>,
 }
 
 /// A single tech-stack's prepare-time knowledge for one language.
@@ -65,6 +83,25 @@ pub trait TechStackAdapter: Send + Sync {
         _fs: &dyn FileSystem,
         _parsers: &dyn ParserRegistry,
     ) -> Option<(String, String)> {
+        None
+    }
+
+    /// Enumerate a family of entries in a config file (e.g. every connection under `connections.*`)
+    /// and read the declared fields from each.
+    ///
+    /// The kernel knows neither the file format nor which keys carry the driver / prefix — both come
+    /// from FKB (`root`, `fields`), so this stays language-shaped input, format-shaped work.
+    fn read_manifest_entries(
+        &self,
+        _sub: &SubProject,
+        _project_root: &Path,
+        _manifest: &str,
+        _root: &str,
+        _fields: &[EntryField],
+        _default_from: Option<&str>,
+        _fs: &dyn FileSystem,
+        _parsers: &dyn ParserRegistry,
+    ) -> Option<ManifestEntries> {
         None
     }
 

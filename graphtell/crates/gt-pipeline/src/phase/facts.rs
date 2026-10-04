@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use gt_domain::model::{
     Detector, Language, PickStrategy, ProjectId, RootSource, SubProject, SubProjectId,
 };
-use gt_domain::port::{FileSystem, KnowledgeProvider, ParserRegistry, TechStackRegistry};
+use gt_domain::port::{
+    FileSystem, KnowledgeProvider, ManifestEntries, ParserRegistry, TechStackRegistry,
+};
 use serde_json::Value;
 
 /// Whether `dependency` is declared by the manifest at `path`.
@@ -115,7 +117,40 @@ pub fn resolve_root_source(
         RootSource::Manifest { manifest, pointer } => techstack
             .adapter_for(&sub.language)
             .and_then(|a| a.read_manifest(sub, project_root, manifest, pointer, fs, parsers)),
+        // A collection resolves to **several** records, so it cannot fill a single placeholder;
+        // list-shaped rules go through [`resolve_root_entries`] instead.
+        RootSource::ManifestEntries { .. } => None,
     }
+}
+
+/// Resolve an entry-collection [`RootSource`] (e.g. every `connections.*` in `config/database.php`).
+///
+/// Separate from [`resolve_root_source`] because the result is a **list** of records, not one value:
+/// a project may configure several database connections (read/write splitting, multiple databases) and
+/// each carries its own driver and table prefix.
+pub fn resolve_root_entries(
+    source: &RootSource,
+    project_root: &Path,
+    sub: &SubProject,
+    fs: &dyn FileSystem,
+    parsers: &dyn ParserRegistry,
+    techstack: &dyn TechStackRegistry,
+) -> Option<ManifestEntries> {
+    let RootSource::ManifestEntries { manifest, root, fields, default_from } = source else {
+        return None;
+    };
+    techstack.adapter_for(&sub.language).and_then(|a| {
+        a.read_manifest_entries(
+            sub,
+            project_root,
+            manifest,
+            root,
+            fields,
+            default_from.as_deref(),
+            fs,
+            parsers,
+        )
+    })
 }
 
 /// A stand-in `SubProject` for callers that have not persisted sub-projects yet (P0).

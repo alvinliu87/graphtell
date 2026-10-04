@@ -17,7 +17,7 @@
 # a version number would imply one file per major release, which is not how this knowledge is shaped.
 #
 # Item ids below are **local**: the loader namespaces them as `thinkphp-<local id>` (see
-# `docs/fkb-authoring.md`), so `db-prefix` here is `thinkphp-db-prefix` on the graph.
+# `docs/fkb-authoring.md`), so `db-connections` here is `thinkphp-db-connections` on the graph.
 
 id: thinkphp
 display_name: ThinkPHP
@@ -102,15 +102,27 @@ root_rules:
       - application
       - src
 
-  # Auto-detect the database table prefix: ThinkPHP writes the prefix into `config/database.php`'s
-  # `connections.<driver>.prefix`. The result is written to the `db_prefix` fact, and P3 configures
-  # table_prefixes for the whole project from it, avoiding hard-coding CRMEB's `eb_` in the generic layer.
-  - id: db-prefix
-    key: db_prefix
+  # Auto-detect the database connections: ThinkPHP declares them under `config/database.php`'s
+  # `connections.<name>`, where `<name>` is **user-chosen** (not always `mysql` — read/write splitting
+  # gives `mysql` / `mysql_read`, multi-database setups give `order` / `center`), and the driver sits in
+  # the connection's own `type` key. Enumerating them all is what keeps a project whose connection is
+  # not named `mysql` from silently losing `db_prefix` — and with it every column-level fact (measured on
+  # CRMEB: 0 columns, 0 PII annotations).
+  #
+  # `db_prefix` is then derived by the kernel: the default connection's prefix (`default` -> `mysql`),
+  # and **every** connection's non-empty prefix is merged into `table_prefixes`.
+  - id: db-connections
+    key: db_connections
     source:
-      kind: manifest
+      kind: manifest_entries
       manifest: config/database.php
-      pointer: connections.mysql.prefix
+      root: connections
+      default_from: default
+      fields:
+        - { name: name, from: key }
+        # ThinkPHP spells the driver `type`; Laravel spells it `driver` (see `laravel.yaml`).
+        - { name: driver, pointer: "{key}.type" }
+        - { name: prefix, pointer: "{key}.prefix" }
     confidence: 1.0
 
 # ---------------------------------------------------------------- route handler

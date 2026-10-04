@@ -11,8 +11,8 @@ use std::path::Path;
 use gt_domain::error::Result;
 use gt_domain::model::{
     Action, Detector, FactValue, FrameworkKnowledge, GuardAttachSpec, KnowledgeScope, Language,
-    NormalizeStep, Phase, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule, SubProjectId,
-    SynthesizedKind,
+    NormalizeStep, Phase, RootSource, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule,
+    SubProjectId, SynthesizedKind,
 };
 use gt_domain::port::{
     AdapterFact, FileSystem, KnowledgeProvider, LanguageParser, ParserRegistry, TechStackRegistry,
@@ -163,6 +163,53 @@ pub fn run(
         for id in frameworks.iter().chain(projects.iter()) {
             let Some(fk) = kb.by_id(id) else { continue };
             apply_root_rules(ctx, fk, sub, &mut facts, &phase, fs, parsers, techstack);
+            // Table prefix(es). A `db_connections` list fact covers **every** configured connection
+            // (read/write splitting, several databases): all non-empty prefixes are merged into
+            // `table_prefixes` (a Vec, deduped), and `db_prefix` records the default connection's —
+            // the single value the old `connections.mysql.prefix` rule used to hard-code, which silently
+            // cost any project whose connection is not named `mysql` its whole column-level schema.
+            if let Some(connections) = facts.get("db_connections").cloned() {
+                let default_name = connections
+                    .get("default")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let empty: Vec<Value> = Vec::new();
+                let entries = connections
+                    .get("value")
+                    .and_then(|v| v.as_array())
+                    .unwrap_or(&empty);
+                let mut prefixes = ctx.ws.table_prefixes().to_vec();
+                let mut first_non_empty: Option<String> = None;
+                let mut default_prefix: Option<String> = None;
+                for entry in entries {
+                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let prefix = entry.get("prefix").and_then(|v| v.as_str()).unwrap_or("");
+                    if prefix.is_empty() {
+                        continue;
+                    }
+                    if !prefixes.iter().any(|p| p == prefix) {
+                        prefixes.push(prefix.to_string());
+                    }
+                    if first_non_empty.is_none() {
+                        first_non_empty = Some(prefix.to_string());
+                    }
+                    if default_name.as_deref() == Some(name) {
+                        default_prefix = Some(prefix.to_string());
+                    }
+                }
+                ctx.ws.set_table_prefixes(prefixes);
+                if let Some(p) = default_prefix.or(first_non_empty) {
+                    facts.insert(
+                        "db_prefix".to_string(),
+                        json!({
+                            "value": p,
+                            "confidence": 1.0,
+                            "source": "db_connections (default connection)",
+                            "fallback_used": false,
+                        }),
+                    );
+                }
+            }
             // Auto-detect table prefix: FKB's `db_prefix` root_rule reads it from project config,
             // merged with the prefix from the project's explicit config (dedup), for P3 loading and P5 normalization.
             if let Some(v) = facts
@@ -394,6 +441,53 @@ fn apply_root_rules(
     techstack: &dyn TechStackRegistry,
 ) {
     for rule in &fk.root_rules {
+        // A collection rule yields a **list** fact (e.g. every configured DB connection), which the
+        // single-value path below cannot represent: one project may declare several connections, each
+        // with its own driver and table prefix.
+        if let RootSource::ManifestEntries { manifest, root, .. } = &rule.source {
+            let resolved = facts::resolve_root_entries(
+                &rule.source,
+                &ctx.project.root_path,
+                sub,
+                fs,
+                parsers,
+                techstack,
+            );
+            let Some(entries) = resolved else {
+                ctx.ws.diagnose(
+                    phase,
+                    "RootRuleUnresolved",
+                    gt_domain::model::Severity::Warning,
+                    format!("框架 {} 的 {} 未能解析", fk.id, rule.key),
+                    Some(sub.root_path.to_string_lossy().to_string()),
+                );
+                continue;
+            };
+            let records: Vec<Value> = entries
+                .entries
+                .iter()
+                .map(|e| {
+                    let mut m = serde_json::Map::new();
+                    m.insert("name".to_string(), Value::String(e.key.clone()));
+                    for (k, v) in &e.fields {
+                        m.insert(k.clone(), Value::String(v.clone()));
+                    }
+                    Value::Object(m)
+                })
+                .collect();
+            facts.insert(
+                rule.key.clone(),
+                json!({
+                    "value": records,
+                    "default": entries.default,
+                    "confidence": rule.confidence,
+                    "source": format!("{} {} ({} entries)", manifest, root, records.len()),
+                    "fallback_used": false,
+                }),
+            );
+            continue;
+        }
+
         // Shared with P0 (`phase::exclude`): every source kind here reads a manifest or probes a
         // directory, so the same resolution works before anything has been parsed.
         let resolved = facts::resolve_root_source(

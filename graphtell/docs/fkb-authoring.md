@@ -270,9 +270,34 @@ exclude_rules:
 ```
 
 * **Placeholders**: `{value}` is this rule's own `source`; `{<key>}` is the value of the `root_rules`
-  entry whose `key` is `<key>`. Both use the same three `source` kinds as `root_rules`
+  entry whose `key` is `<key>`. Both use the single-value `source` kinds as `root_rules`
   (`manifest_json` / `directory_exists` / `manifest`), because resolution happens in **P0, before the
   scan** — nothing has been parsed yet, so only manifests and directory probes are available.
+  `root_rules` additionally offers `manifest_entries`, which yields a **list** and therefore cannot fill
+  a placeholder.
+* **Collections (`manifest_entries`)**: enumerate every child of one key instead of reading a single
+  pointer — for the families a project may repeat, whose member **names** are user-chosen. The canonical
+  case is database connections: `config/database.php` may declare `mysql` / `mysql_read` / `order`, or
+  only `pgsql`, and the driver key is `type` on ThinkPHP but `driver` on Laravel. Which key means what is
+  framework knowledge, so it is declared here:
+
+  ```yaml
+  root_rules:
+    - id: db-connections
+      key: db_connections          # fact value = one record per connection
+      source:
+        kind: manifest_entries
+        manifest: config/database.php
+        root: connections          # enumerate children of `connections`
+        default_from: default      # which pointer names the default entry
+        fields:
+          - { name: name,   from: key }             # the entry's own name
+          - { name: driver, pointer: "{key}.type" } # `driver` on Laravel
+          - { name: prefix, pointer: "{key}.prefix" }
+  ```
+
+  `{key}` in a field pointer is replaced by the entry name. A field that cannot be resolved is
+  **omitted** rather than guessed.
 * **`fallbacks` are guesses**: each is kept only when the directory it points at really exists. A stale
   convention therefore cannot delete a directory that merely shares its name — the failure mode of an
   exclusion is always "scanned something useless", never "dropped real source code".
