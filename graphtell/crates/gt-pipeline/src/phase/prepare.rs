@@ -63,8 +63,9 @@ pub fn run(
             .filter_map(|id| kb.by_id(id))
             .find_map(|fk| fk.method_ref.clone())
         {
-            // Derive `psr4_namespaces` / `app_segments` from the tech-stack adapter (PSR-4 autoload for PHP;
-            // no controller-dir name assumed — the resolver learns the controller location from the real class FQNs).
+            // Derive `root_namespaces` / `app_segments` from the tech-stack adapter (PSR-4 autoload for PHP,
+            // the equivalent manifest for other stacks; no controller-dir name assumed — the resolver learns
+            // the controller location from the real class FQNs).
             if let Some(adapter) = techstack.adapter_for(&sub.language) {
                 adapter.enrich_method_ref(&mut spec, &sub.root_path, &project_root);
             }

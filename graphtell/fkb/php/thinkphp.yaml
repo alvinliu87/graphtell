@@ -135,7 +135,7 @@ root_rules:
 method_ref:
   method_separators: ["/"]
   hierarchy_separators: ["."]
-  # Controller location is NOT hard-coded here: `prepare` derives `psr4_namespaces` from composer's
+  # Controller location is NOT hard-coded here: `prepare` derives `root_namespaces` from composer's
   # `autoload.psr-4` and the resolver learns the real controller directory name from the graph.
   # `controller_layer_depth: 1` (default) means controllers sit one namespace segment below the app module.
   app_anchor_dir: "route"

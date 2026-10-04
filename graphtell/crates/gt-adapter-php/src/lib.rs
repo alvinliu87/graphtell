@@ -88,10 +88,10 @@ impl TechStackAdapter for PhpTechStackAdapter {
     }
 }
 
-/// Derive `psr4_namespaces` and `app_segments` for a `method_ref` spec from `composer.json`'s PSR-4
+/// Derive `root_namespaces` and `app_segments` for a `method_ref` spec from `composer.json`'s PSR-4
 /// autoload map, so the FKB never has to hard-code a controller directory name or an app-module allow-list.
 ///
-/// * `psr4_namespaces` — every PSR-4 root namespace (e.g. `app\`, `App\`). The resolver matches handlers
+/// * `root_namespaces` — every PSR-4 root namespace (e.g. `app\`, `App\`). The resolver matches handlers
 ///   against the real class FQNs under these namespaces, learning the controller directory name from the
 ///   graph itself (no `controller` / `Http/Controllers` assumption).
 /// * `app_segments` — app modules, discovered by walking each PSR-4 root for subdirectories that themselves
@@ -102,7 +102,7 @@ fn enrich_method_ref_spec(spec: &mut MethodRefSpec, sub_root: &Path, project_roo
     if roots.is_empty() {
         return;
     }
-    spec.psr4_namespaces = roots
+    spec.root_namespaces = roots
         .iter()
         .map(|(ns, _)| ns.trim_end_matches('\\').to_string())
         .collect();

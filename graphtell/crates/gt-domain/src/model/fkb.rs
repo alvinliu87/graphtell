@@ -210,8 +210,9 @@ pub enum KnowledgeScope {
 /// So "which symbol separates the method" and "how the class name is assembled" are declared by FKB; the kernel
 /// only expands the candidates per the declaration and looks them up. Where a framework would otherwise hard-code a
 /// controller *directory name* (e.g. `controller` / `Http/Controllers`), the kernel **never assumes that name**:
-/// instead it reads `composer.json`'s PSR-4 autoload (`psr4_namespaces`) and resolves the handler against the real
-/// class FQNs on the graph — see the resolver for the name-agnostic matching rule.
+/// instead it takes the stack's root namespaces (`root_namespaces`, from the tech-stack adapter's manifest) and
+/// resolves the handler against the real class FQNs on the graph — see the resolver for the name-agnostic matching
+/// rule. Namespace *separators* come from [`crate::model::NamespacePolicy`], so nothing here is PHP-shaped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MethodRefSpec {
@@ -228,11 +229,13 @@ pub struct MethodRefSpec {
     /// extra allow-list of module names to try (besides the one inferred from the route file path and the
     /// single-app shape). An empty list means "rely on path inference + single-app only".
     pub app_segments: Vec<String>,
-    /// PSR-4 root namespaces for the sub-project, derived at prepare time from `composer.json`'s `autoload.psr-4`.
+    /// Root namespaces for the sub-project, derived at prepare time from the tech-stack manifest
+    /// (PSR-4 autoload for PHP, and whatever the equivalent is for other stacks).
     ///
     /// These drive the resolver: a handler string is resolved against the real class FQNs under these namespaces,
-    /// so **no controller directory name is ever assumed**.
-    pub psr4_namespaces: Vec<String>,
+    /// so **no controller directory name is ever assumed**. Filled by [`crate::port::TechStackAdapter::enrich_method_ref`],
+    /// never written by FKB.
+    pub root_namespaces: Vec<String>,
     /// How many namespace segments sit between the (inferred) app module and the controller class itself.
     ///
     /// This is a *structural* fact (e.g. ThinkPHP puts controllers one directory below the module; Laravel's
@@ -574,7 +577,7 @@ impl Default for MethodRefSpec {
             method_separators: vec!["/".into()],
             hierarchy_separators: Vec::new(),
             app_segments: Vec::new(),
-            psr4_namespaces: Vec::new(),
+            root_namespaces: Vec::new(),
             controller_layer_depth: 1,
             app_anchor_dir: None,
             app_fallback: String::new(),

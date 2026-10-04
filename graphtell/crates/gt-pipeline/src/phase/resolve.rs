@@ -807,8 +807,8 @@ pub fn resolve_handler_target(
     }
 
     // ③ Resolve the controller class without assuming any controller *directory name*.
-    //    We only know: the PSR-4 root namespaces (from composer) + the app module (inferred from the route file
-    //    path, plus any framework-declared extras, plus the single-app shape "") + the structural fact that the
+    //    We only know: the stack's root namespaces (from the tech-stack manifest) + the app module (inferred from
+    //    the route file path, plus any framework-declared extras, plus the single-app shape "") + the structural fact that the
     //    controller sits `controller_layer_depth` namespace segments below the module. The actual directory name
     //    is learned from the real class FQNs on the graph (`resolve_controller`), so `controller` / `Http/Controllers`
     //    / anything custom all work.
@@ -824,8 +824,13 @@ pub fn resolve_handler_target(
         .collect();
 
     let class_fqn = module_candidates.iter().find_map(|m| {
-        ctx.ws
-            .resolve_controller(&controller, &spec.psr4_namespaces, m, spec.controller_layer_depth)
+        ctx.ws.resolve_controller(
+            &controller,
+            &spec.root_namespaces,
+            m,
+            spec.controller_layer_depth,
+            policy.ns_separator,
+        )
     });
 
     // ④ method first, then fall back to class (controller methods often inherit from base, requiring method existence breaks the chain)

@@ -13,6 +13,8 @@ use gt_domain::model::{
 use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
 use serde_json::{json, Value};
 
+use crate::engine::NS_SEPARATORS;
+
 /// One call site's record in the workspace.
 #[derive(Debug, Clone)]
 pub struct CallRecord {
@@ -517,7 +519,10 @@ impl GraphWorkspace {
         if let Some(fqn) = &new.fqn {
             self.by_fqn.entry(fqn.clone()).or_insert(id.get());
             if is_type_kind(new.kind.as_str()) {
-                if let Some(short) = fqn.rsplit(['\\', ':', '/']).next() {
+                // `NS_SEPARATORS` (not a hand-written `\` / `:` / `/` list): `.` is the namespace separator
+                // for Java (`com.x.User`) and Python (`app.api.users.User`), so without it their short name
+                // would be indexed as the whole FQN and never found again.
+                if let Some(short) = fqn.rsplit(NS_SEPARATORS).next() {
                     if !short.is_empty() {
                         self.by_short
                             .entry(short.to_ascii_lowercase())
@@ -729,41 +734,48 @@ impl GraphWorkspace {
     /// Resolve a `method_ref` controller reference to a real class FQN — **without assuming any controller
     /// directory name** (no `controller` / `Http/Controllers` hard-coded).
     ///
-    /// Strategy (name-agnostic, driven by `composer`'s PSR-4 namespaces + the real class FQNs on the graph):
+    /// Strategy (name-agnostic, driven by the stack's root namespaces + the real class FQNs on the graph):
     /// 1. If `controller_part` is already a fully-qualified FQN that exists on the graph, return it directly.
     ///    (Covers Laravel/ThinkPHP handlers written as full class names, e.g. `App\Http\Controllers\UserController`.)
     /// 2. Otherwise it is a short name. Look up every class whose last segment equals the controller's short name
-    ///    (the `by_short` index) and keep the ones that live under `<psr4_ns><module>\` whose remaining path is
-    ///    exactly `<controller_layer_depth> segment(s)` followed by the (hierarchy-expanded) `controller_part`.
+    ///    (the `by_short` index) and keep the ones that live under `<root_ns><ns_sep><module><ns_sep>` whose
+    ///    remaining path is exactly `<controller_layer_depth> segment(s)` followed by the (hierarchy-expanded)
+    ///    `controller_part`.
     ///    The layer *name* is never inspected — only its depth — so `controller` / `Http/Controllers` / anything
     ///    the user chose all work equally. Ambiguous matches (more than one distinct FQN under the constraints)
     ///    are rejected rather than connecting the wrong edge.
+    ///
+    /// `ns_separator` is this language's namespace separator ([`gt_domain::model::NamespacePolicy`]): the kernel
+    /// never assumes `\`, so the same rule serves PHP (`\`), Java (`.`) and whatever a stack declares.
     pub fn resolve_controller(
         &self,
         controller_part: &str,
-        psr4_namespaces: &[String],
+        root_namespaces: &[String],
         module: &str,
         controller_layer_depth: usize,
+        ns_separator: char,
     ) -> Option<String> {
         // 1. direct fully-qualified FQN
         if let Some(id) = self.find_by_name(controller_part) {
             return self.nodes.get(&id.get()).and_then(|n| n.fqn.clone());
         }
-        let class_short = controller_part.rsplit('\\').next().unwrap_or(controller_part);
+        let sep = ns_separator.to_string();
+        let class_short = controller_part.rsplit(ns_separator).next().unwrap_or(controller_part);
         let lower = class_short.to_ascii_lowercase();
         let ids = self.by_short.get(&lower)?;
-        let tail: Vec<&str> = controller_part.split('\\').collect();
+        let tail: Vec<&str> = controller_part.split(ns_separator).collect();
         if tail.is_empty() {
             return None;
         }
         let depth = controller_layer_depth.max(1);
         let mut matched: Option<String> = None;
-        for ns in psr4_namespaces {
-            let mut prefix = ns.trim_end_matches('\\').to_string();
-            prefix.push('\\');
+        for ns in root_namespaces {
+            let mut prefix = ns.trim_end_matches(ns_separator).to_string();
+            prefix.push(ns_separator);
             if !module.is_empty() {
-                prefix.push_str(&module.replace('/', "\\"));
-                prefix.push('\\');
+                // The app module comes from a route *file path*, so it arrives with `/` separators.
+                prefix.push_str(&module.replace('/', &sep));
+                prefix.push(ns_separator);
             }
             for id in ids {
                 let Some(fqn) = self.nodes.get(id).and_then(|n| n.fqn.as_deref()) else {
@@ -772,7 +784,7 @@ impl GraphWorkspace {
                 if !fqn.starts_with(&prefix) {
                     continue;
                 }
-                let rest: Vec<&str> = fqn[prefix.len()..].split('\\').collect();
+                let rest: Vec<&str> = fqn[prefix.len()..].split(ns_separator).collect();
                 // exactly `depth` layer segments between the module and the (hierarchy-expanded) controller_part
                 if rest.len() != tail.len() + depth {
                     continue;
@@ -1547,5 +1559,33 @@ pub fn synthesized_node(
         phase: phase.clone(),
         confidence,
         properties: Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::{NewNode, ProjectId};
+
+    /// The short-name index must split on **every** namespace separator, not only PHP's `\`.
+    ///
+    /// Java (`com.example.UserController`) and Python (`app.api.users.User`) use `.`; with a
+    /// hand-written `\` / `:` / `/` list their short name was indexed as the whole FQN, so
+    /// `resolve_controller` (which looks up by short name) could never find them.
+    #[test]
+    fn short_name_index_respects_every_language_separator() {
+        let mut ws = GraphWorkspace::new(ProjectId(1));
+        for fqn in [
+            r"app\admin\controller\Login",
+            "com.example.UserController",
+            "app.api.users.User",
+        ] {
+            let mut node = NewNode::new(ProjectId(1), NodeKind(NodeKind::CLASS.to_string()), "x");
+            node.fqn = Some(fqn.to_string());
+            ws.add_node(node);
+        }
+        assert!(ws.by_short.get("login").is_some(), "PHP: `\\` separator");
+        assert!(ws.by_short.get("usercontroller").is_some(), "Java: `.` separator");
+        assert!(ws.by_short.get("user").is_some(), "Python: `.` separator");
     }
 }

@@ -142,11 +142,12 @@ Two `resolve:` strategies turn a rule argument into a real graph node. Pick by t
 
 `method_ref` is **generic, not route-only**: any rule whose argument is a string that names a callable may use
 `resolve: method_ref`. It reads the per-framework `method_ref` field (`method_separators` / `hierarchy_separators` /
-`psr4_namespaces` / `controller_layer_depth` / `app_anchor_dir`) to split the string, then keeps **only** the candidate
+`controller_layer_depth` / `app_anchor_dir`) to split the string, then keeps **only** the candidate
 that **actually exists on the graph** (`find_by_name`) — so a miss yields no edge and never synthesizes a ghost node.
 
 **No controller directory name is ever assumed.** The FKB does not hard-code `controller`, `Http/Controllers`, or any
-such convention. Instead, at prepare time `psr4_namespaces` is derived from `composer.json`'s `autoload.psr-4`, and the
+such convention. Instead, at prepare time `root_namespaces` is derived from the tech-stack manifest (`composer.json`'s
+`autoload.psr-4` for PHP, its equivalent elsewhere), and the
 resolver matches the handler against the **real class FQNs on the graph** under those namespaces:
 
 * If the handler is already fully-qualified (`App\Http\Controllers\UserController`, `app\admin\controller\Login`), it
