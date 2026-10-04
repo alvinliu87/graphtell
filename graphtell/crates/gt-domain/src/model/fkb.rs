@@ -115,6 +115,9 @@ pub struct FrameworkKnowledge {
     /// the way through.
     #[serde(default)]
     pub db_verbs: Option<DbVerbsSpec>,
+    /// Signature-verification vocabulary (`sign_check`) — see [`SignCheckSpec`].
+    #[serde(default)]
+    pub sign_check: Option<SignCheckSpec>,
     /// A callee list for **external system calls** (HTTP / SMS / email / RPC): `curl_exec`, `Http::get` …
     /// declared by FKB for the "external call inside a loop" judgement (one network round trip costs far more
     /// than one query, so putting it in a loop kills an endpoint even more reliably than N+1).
@@ -558,6 +561,31 @@ pub struct DbVerbsSpec {
     /// Read verbs: `find` / `select` / `value` / `count` …
     #[serde(default)]
     pub read: Vec<String>,
+}
+
+/// The vocabulary of **signature verification** (used by P11 Sign).
+///
+/// Which calls compute or verify a signature, and which algorithms count as weak, is language and library
+/// knowledge: PHP's `hash_hmac` / `hash_equals` / `openssl_verify`, Java's `MessageDigest.getInstance`,
+/// Node's `crypto.createHash`. The kernel knows none of them — a stack that declares nothing is simply not
+/// judged ("no knowledge" → "no annotation"), which is honest, instead of silently applying PHP's vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct SignCheckSpec {
+    /// Calls that compute / verify a signature: `md5`, `hash_hmac`, `hash_equals`, `openssl_verify` …
+    pub hash_calls: Vec<String>,
+    /// Algorithms considered weak **when used for a signature** (`md5` / `sha1`).
+    pub weak_algos: Vec<String>,
+    /// A method name containing this substring also counts as signature computation (`sign` — `CreatedSign`,
+    /// `GetSign`, `makeSign`, `verifySign`). Case-insensitive.
+    pub name_contains: Option<String>,
+    /// …unless it also contains one of these. Needed because in e-commerce code `sign` is overwhelmingly
+    /// about **check-ins** (`signin` / `signup` / `signmode` / `signtype`).
+    pub name_excludes: Vec<String>,
+    /// Argument text hints that mark a call as signature-related **on their own** (`sign`).
+    pub value_hints: Vec<String>,
+    /// Argument text hints that only count when a signature comparison exists in the same function (`key=`).
+    pub value_hints_require_compare: Vec<String>,
 }
 
 /// The forwarding target of magic methods (`@method` annotations).

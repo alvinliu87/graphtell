@@ -115,6 +115,29 @@ pub fn run(
             }
             ctx.db_verbs.insert(sub.id.get(), spec);
         }
+        // Signature-verification vocabulary: which calls compute a signature and which algorithms are weak is
+        // language / library knowledge, collected the same way as the lists below — a stack that declares none
+        // is not judged.
+        //
+        // `apply_without_detection` **must** be included: the unconditional language layer (`fkb/php/common.yaml`)
+        // is where PHP's vocabulary lives, and it is never in `frameworks` because it has no detectors. Reading
+        // only `frameworks` would silently disable P11 for every PHP project.
+        if let Some(spec) = kb
+            .all()
+            .iter()
+            .filter(|fk| {
+                fk.language == sub.language
+                    && (frameworks.contains(&fk.id)
+                        || projects.contains(&fk.id)
+                        || fk.apply_without_detection)
+            })
+            .find_map(|fk| fk.sign_check.clone())
+        {
+            if ctx.sign_check_default.is_none() {
+                ctx.sign_check_default = Some(spec.clone());
+            }
+            ctx.sign_check.insert(sub.id.get(), spec);
+        }
         // These three lists are collected only from knowledge that **actually applies** to this sub-project:
         // a recognised framework / project, or the unconditional language layer (`apply_without_detection`).
         //

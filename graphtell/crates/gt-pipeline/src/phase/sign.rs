@@ -32,11 +32,21 @@
 //! gets drowned in check-ins.
 
 use gt_domain::model::{
-    AnnotationChannel, FactValue, Language, MergeStrategy, NewAnnotation, NodeId, Phase,
+    AnnotationChannel, FactValue, MergeStrategy, NewAnnotation, NodeId, Phase, SignCheckSpec,
+    SubProjectId,
 };
 use serde_json::json;
 
 use crate::context::PipelineContext;
+
+/// The signature vocabulary to judge a call site with: the sub-project's own, else the global fallback.
+///
+/// A sub-project whose language declares nothing gets `None` — P11 then judges nothing, rather than
+/// applying another stack's vocabulary (which is what a hard-coded `language == php` gate used to do).
+fn spec_for(ctx: &PipelineContext, sub: Option<SubProjectId>) -> Option<&SignCheckSpec> {
+    sub.and_then(|s| ctx.sign_check.get(&s.get()))
+        .or(ctx.sign_check_default.as_ref())
+}
 
 /// The loose-comparison annotation (rules match it via `has_annotation: weak_sign_compare`).
 const LOOSE_COMPARE: &str = "weak_sign_compare";
@@ -52,7 +62,7 @@ pub fn run(ctx: &mut PipelineContext) {
     let mut targets: Vec<(NodeId, &'static str, serde_json::Value)> = Vec::new();
 
     for cmp in ctx.ws.sign_compares.iter() {
-        let Some(calc) = find_sign_calc(&ctx.ws, cmp) else {
+        let Some(calc) = find_sign_calc(ctx, cmp) else {
             continue;
         };
         targets.push((
@@ -68,18 +78,20 @@ pub fn run(ctx: &mut PipelineContext) {
     }
 
     for call in ctx.ws.calls.iter() {
-        if call.language.0 != Language::PHP {
+        // Which algorithms are weak is declared by FKB, not assumed — and a stack that declares none is skipped.
+        let Some(spec) = spec_for(ctx, call.sub) else {
             continue;
-        }
+        };
         let Some(method) = call.method.as_deref() else {
             continue;
         };
-        if !matches!(method, "md5" | "sha1") {
+        if !spec.weak_algos.iter().any(|a| a == method) {
             continue;
         }
         let arg = call.args.first().map(arg_text).unwrap_or_default();
-        let in_sign_context = arg.to_ascii_lowercase().contains("sign")
-            || arg.to_ascii_lowercase().contains("key=")
+        let lower = arg.to_ascii_lowercase();
+        let in_sign_context = spec.value_hints.iter().any(|h| lower.contains(h))
+            || spec.value_hints_require_compare.iter().any(|h| lower.contains(h))
                 && ctx
                     .ws
                     .sign_compares
@@ -137,9 +149,10 @@ fn subkind_of(kind: &str) -> &'static str {
 ///    (beikeshop's `hashEncrypt` does not), and recognising by name alone misses the whole project.
 /// 2. Both sides are variables (`$sign == $ipay_signature`) — fall back to a hash / `*Sign()` call in the same function.
 fn find_sign_calc(
-    ws: &crate::workspace::GraphWorkspace,
+    ctx: &PipelineContext,
     cmp: &gt_domain::model::syntax::SignCompareFact,
 ) -> Option<crate::workspace::CallRecord> {
+    let ws = &ctx.ws;
     let exact = ws
         .calls
         .iter()
@@ -152,34 +165,34 @@ fn find_sign_calc(
     exact.or_else(|| {
         ws.calls
             .iter()
-            .find(|c| c.owner_fqn == cmp.owner_fqn && is_sign_calc(c))
+            .find(|c| {
+                c.owner_fqn == cmp.owner_fqn
+                    && spec_for(ctx, c.sub)
+                        .map(|s| is_sign_calc(c, s))
+                        .unwrap_or(false)
+            })
             .cloned()
     })
 }
 
-/// Whether a call site is "signature computation": a hash function, or a method whose name contains Sign (`CreatedSign` / `GetSign`).
-fn is_sign_calc(c: &crate::workspace::CallRecord) -> bool {
-    if c.language.0 != Language::PHP {
-        return false;
-    }
+/// Whether a call site is "signature computation": a declared hash / verify call, or a method whose name
+/// matches the declared naming convention (`CreatedSign` / `GetSign`) while not hitting a declared
+/// look-alike (`signin` / `signmode`). All vocabulary comes from FKB `sign_check` — none is built in.
+fn is_sign_calc(c: &crate::workspace::CallRecord, spec: &SignCheckSpec) -> bool {
     let Some(method) = c.method.as_deref() else {
         return false;
     };
-    if matches!(
-        method,
-        "md5" | "sha1" | "hash_hmac" | "hash_equals" | "openssl_verify" | "openssl_sign"
-    ) {
+    if spec.hash_calls.iter().any(|h| h == method) {
         return true;
     }
-    // A method name containing sign but not landing on a "check-in" word: `CreatedSign` / `GetSign` / `makeSign` / `verifySign`.
+    let Some(needle) = spec.name_contains.as_deref() else {
+        return false;
+    };
     let lower = method.to_ascii_lowercase();
-    if !lower.contains("sign") {
+    if !lower.contains(&needle.to_ascii_lowercase()) {
         return false;
     }
-    !(lower.contains("signtype")
-        || lower.contains("signmode")
-        || lower.contains("signin")
-        || lower.contains("signup"))
+    !spec.name_excludes.iter().any(|x| lower.contains(x))
 }
 
 fn arg_text(fv: &FactValue) -> String {
@@ -216,19 +229,68 @@ mod tests {
         }
     }
 
+    /// The PHP vocabulary, as `fkb/php/common.yaml` declares it — the same shape any other stack would write.
+    fn php_spec() -> SignCheckSpec {
+        SignCheckSpec {
+            hash_calls: vec![
+                "md5".into(),
+                "sha1".into(),
+                "hash_hmac".into(),
+                "hash_equals".into(),
+                "openssl_verify".into(),
+                "openssl_sign".into(),
+            ],
+            weak_algos: vec!["md5".into(), "sha1".into()],
+            name_contains: Some("sign".into()),
+            name_excludes: vec![
+                "signtype".into(),
+                "signmode".into(),
+                "signin".into(),
+                "signup".into(),
+            ],
+            value_hints: vec!["sign".into()],
+            value_hints_require_compare: vec!["key=".into()],
+        }
+    }
+
     #[test]
     fn recognizes_sign_calc_calls() {
-        assert!(is_sign_calc(&call("md5", vec![])));
-        assert!(is_sign_calc(&call("sha1", vec![])));
-        assert!(is_sign_calc(&call("hash_hmac", vec![])));
-        assert!(is_sign_calc(&call("openssl_verify", vec![])));
-        assert!(is_sign_calc(&call("CreatedSign", vec![])));
-        assert!(is_sign_calc(&call("GetSign", vec![])));
+        let s = php_spec();
+        assert!(is_sign_calc(&call("md5", vec![]), &s));
+        assert!(is_sign_calc(&call("sha1", vec![]), &s));
+        assert!(is_sign_calc(&call("hash_hmac", vec![]), &s));
+        assert!(is_sign_calc(&call("openssl_verify", vec![]), &s));
+        assert!(is_sign_calc(&call("CreatedSign", vec![]), &s));
+        assert!(is_sign_calc(&call("GetSign", vec![]), &s));
     }
 
     #[test]
     fn ignores_non_sign_calls() {
-        assert!(!is_sign_calc(&call("count", vec![])));
-        assert!(!is_sign_calc(&call("find", vec![])));
+        let s = php_spec();
+        assert!(!is_sign_calc(&call("count", vec![]), &s));
+        assert!(!is_sign_calc(&call("find", vec![]), &s));
+    }
+
+    /// The check-in look-alikes are declared data, so a stack that never sees them simply declares none.
+    #[test]
+    fn checkin_lookalikes_come_from_the_declaration() {
+        let s = php_spec();
+        assert!(!is_sign_calc(&call("signIn", vec![]), &s));
+        assert!(!is_sign_calc(&call("signMode", vec![]), &s));
+        // Same method, but a declaration without the look-alike list judges it as signature computation —
+        // proving the behaviour is driven by knowledge, not by a hard-coded language.
+        let mut bare = php_spec();
+        bare.name_excludes.clear();
+        assert!(is_sign_calc(&call("signIn", vec![]), &bare));
+    }
+
+    /// A stack that declares **no** vocabulary is not judged at all: PHP's `md5` must not be recognised
+    /// through it. This is what replaces the old `language == php` gate.
+    #[test]
+    fn empty_declaration_recognizes_nothing() {
+        let s = SignCheckSpec::default();
+        assert!(!is_sign_calc(&call("md5", vec![]), &s));
+        assert!(!is_sign_calc(&call("hash_hmac", vec![]), &s));
+        assert!(!is_sign_calc(&call("GetSign", vec![]), &s));
     }
 }

@@ -28,6 +28,25 @@ side: backend
 # No detectors declared: this file is not "a detected framework", just a common layer effective for every PHP project.
 apply_without_detection: true
 
+# Signature-verification vocabulary (used by the P11 Sign phase).
+#
+# "Which calls compute a signature" and "which algorithms are weak" are PHP / library knowledge, so they are
+# declared here rather than built into the kernel — a stack that declares nothing is simply not judged,
+# instead of inheriting PHP's vocabulary. Note `hash_equals` is listed as a *hash call* (it is what makes a
+# comparison constant-time) but is **not** in `weak_algos`: it is the correct form, not a weak one.
+sign_check:
+  hash_calls: [md5, sha1, hash_hmac, hash_equals, openssl_verify, openssl_sign]
+  weak_algos: [md5, sha1]
+  # `CreatedSign` / `GetSign` / `makeSign` / `verifySign` — a home-grown verifier need not be a known function.
+  name_contains: "sign"
+  # …but in e-commerce code `sign` is overwhelmingly check-ins: measured 24 of 32 "`==` comparisons
+  # containing sign" were `$sign_mode` / `$sign_last_date` / `$points_sign_enabled`.
+  name_excludes: [signtype, signmode, signin, signup]
+  # An argument mentioning `sign` is signature-related on its own; `key=` is only a hint when a signature
+  # comparison really exists in the same function.
+  value_hints: ["sign"]
+  value_hints_require_compare: ["key="]
+
 # External-system call list (used by the "external call inside a loop" judgement).
 #
 # One network round trip costs an order of magnitude more than one database query, so putting it inside a loop is an

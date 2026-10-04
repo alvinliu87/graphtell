@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use gt_domain::model::{
-    DbVerbsSpec, MethodRefSpec, Language, MagicDelegationSpec, MiddlewareCapability,
+    DbVerbsSpec, MethodRefSpec, Language, MagicDelegationSpec, MiddlewareCapability, SignCheckSpec,
     NamespacePolicy, NodeId, Phase, Project, ProjectConfig, Rule, SourceFile, SubProject,
     SubProjectId,
 };
@@ -52,6 +52,10 @@ pub struct PipelineContext {
     pub db_verbs: HashMap<i64, DbVerbsSpec>,
     /// Global fallback read / write verbs.
     pub db_verbs_default: Option<DbVerbsSpec>,
+    /// Sub-project -> signature-verification vocabulary (FKB `sign_check`).
+    pub sign_check: HashMap<i64, SignCheckSpec>,
+    /// Global fallback signature vocabulary.
+    pub sign_check_default: Option<SignCheckSpec>,
     /// Language -> namespace / member notation rules (extracted by P0 from the parser registry).
     pub lang_policies: HashMap<String, NamespacePolicy>,
     /// Fallback notation rules (used for single-language projects / unknown languages).
@@ -91,6 +95,8 @@ impl PipelineContext {
             magic_delegation_default: None,
             db_verbs: HashMap::new(),
             db_verbs_default: None,
+            sign_check: HashMap::new(),
+            sign_check_default: None,
             external_calls: Vec::new(),
             middleware_capabilities: Vec::new(),
             tx_calls: Vec::new(),
