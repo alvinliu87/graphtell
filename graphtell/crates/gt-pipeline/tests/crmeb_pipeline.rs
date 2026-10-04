@@ -110,6 +110,56 @@ fn ingest_excludes_dependency_and_asset_dirs() {
     );
 }
 
+/// What must not be scanned is **framework knowledge resolved against this project**, not a hard-coded
+/// directory name: ThinkPHP writes its cache under `runtime/`, and P0 finds it (and records how) before
+/// a single file is parsed.
+#[test]
+fn ingest_resolves_excludes_from_framework_knowledge() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let subs = b.store.list_sub_projects(b.project.id).expect("子工程可读");
+    let backend = subs
+        .iter()
+        .find(|s| s.detected_by == "composer.json")
+        .expect("后端子工程");
+    let excludes = backend
+        .facts
+        .get("excludes")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !excludes.is_empty(),
+        "ThinkPHP 知识库应解析出排除规则，实际 facts={}",
+        backend.facts
+    );
+    let globs: Vec<&str> = excludes
+        .iter()
+        .filter_map(|e| e.get("glob").and_then(|g| g.as_str()))
+        .collect();
+    assert!(
+        globs.iter().any(|g| g.contains("runtime")),
+        "runtime 缓存目录应被解析出来，实际: {globs:?}"
+    );
+    assert!(
+        globs.iter().any(|g| g.contains("public")),
+        "public 入口目录应被解析出来，实际: {globs:?}"
+    );
+
+    let files = b.store.list_files(b.project.id, None).expect("文件可读");
+    for forbidden in ["crmeb/runtime/", "crmeb/public/"] {
+        let leaked: Vec<&str> = files
+            .iter()
+            .filter(|f| f.path.contains(forbidden))
+            .map(|f| f.path.as_str())
+            .take(3)
+            .collect();
+        assert!(leaked.is_empty(), "{forbidden} 不应进入待分析集合：{leaked:?}");
+    }
+}
+
 // ---------------------------------------------------------------- P2 CfAst
 
 #[test]

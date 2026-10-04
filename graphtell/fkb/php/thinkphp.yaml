@@ -8,8 +8,8 @@
 # `config/database.php` core shape; the differences are only in a few file names and entry names:
 #   * event registry: 5.x calls it `app/tags.php` (behaviour extension), 6.x+ calls it `app/event.php`
 #   * event trigger: 5.x uses `Hook::listen`, 6.x+ uses `event()` / `Event::trigger`
-#   * framework source dir: 5.x is `thinkphp/` (**not excluded by Ingest, see the TODO at the end**),
-#     6.x+ is `vendor/topthink/framework/` (already excluded by the generic rule)
+#   * framework source dir: 5.x is `thinkphp/` (excluded by `exclude_rules.framework-src` below),
+#     6.x+ is `vendor/topthink/framework/` (already excluded by the generic dependency rule)
 #   * app root: 5.x commonly `application/`, 6.x+ is `app/` (already covered by root_rules.fallbacks)
 # These differences are **absorbed by data inside this file** (parallel selectors / dual loaders / fallbacks)
 # rather than splitting files by major version — see "when to split a knowledge base" in
@@ -24,14 +24,43 @@ display_name: ThinkPHP
 language: php
 version_hint: "5.1 / 6.x / 8.x"
 side: backend
-# NOTE: this field currently has **no effect** — Ingest (P0) runs before framework detection (P3),
-# so files cannot be filtered per FKB; what actually applies is `ProjectConfig.exclude_globs` (project level).
-# Kept here only to record the intent; it will be wired up once Ingest supports pre-detection.
-exclude_globs:
-  - "runtime/**"
-  - "public/static/**"
-  - "extend/**"
-  - "thinkphp/**"
+# What must never be scanned. Resolved in **P0** from the project's own configuration
+# (`gt-pipeline/src/phase/exclude.rs`), i.e. before a single file is parsed:
+#   * `{app_root}` / `{db_prefix}` … come from `root_rules` below — the same resolution P3 uses for
+#     AppRoot, so `runtime/` is found through the project's real app dir, not by a hard-coded name;
+#   * `{value}` comes from this rule's own `source`;
+#   * `fallbacks` are guesses: they apply only when the directory really exists, so a stale convention
+#     can never delete a directory that merely shares its name.
+# A rule that resolves to nothing is reported as an `ExcludeRuleUnresolved` diagnostic instead of
+# silently dropping — or silently keeping — a directory.
+exclude_rules:
+  # Cache / logs: ThinkPHP writes them under `runtime/`, whose location is configurable
+  # (`config/app.php` -> `runtime_path`), so it is read rather than assumed.
+  - id: runtime-dir
+    glob: "{value}/**"
+    source:
+      kind: manifest
+      manifest: config/app.php
+      pointer: runtime_path
+    fallbacks:
+      - "runtime/**"
+  # Web root + its static assets: `public/` by convention, overridable in composer.json.
+  - id: public-dir
+    glob: "{value}/**"
+    source:
+      kind: manifest_json
+      manifest: composer.json
+      pointer: extra.public-dir
+      pick: first_dir
+    fallbacks:
+      - "public/**"
+  # 5.x conventions with no configuration behind them: the extension-class directory and the
+  # framework source itself (`vendor/topthink/framework/` on 6.x+ is already excluded by the
+  # generic dependency rule).
+  - id: extend-dir
+    glob: "extend/**"
+  - id: framework-src
+    glob: "thinkphp/**"
 
 # Same as `laravel.yaml`: model relations are "code node -> code node" (bridge edges), table foreign keys
 # are "table -> table" (both ends semantic) (semantic edges). The relation APIs of the two PHP frameworks

@@ -45,7 +45,7 @@ semantic_kinds: []        # "new semantic node kinds" introduced by this FKB (mu
 scope: framework          # framework (generic) | project (project-specific, loaded only when that project is recognized)
 apply_without_detection: false  # true = applies to every sub-project of that language — rules, loaders and the
                                 # three merged lists alike (for a "language-generic layer", no framework assumptions)
-exclude_globs: ["node_modules/**", "dist/**"]
+exclude_rules: [...]     # what must not be scanned; resolved in P0 from the project's own config (§2.4)
 
 # Framework-specific conventions (those with no framework assumptions go in the language-generic layer; strong assumptions stay here):
 handler: {...}            # config for the `method_ref` resolver: how a STRING literal (e.g. a route handler 'admin.Login/login') resolves back to "class + method". Generic — not route-only; any rule may use `resolve: method_ref` on a string-literal arg.
@@ -243,6 +243,47 @@ Two consequences worth knowing:
   working.
 * **`graphtell validate` reports collisions**: a qualified id declared by two files is a warning, because
   the second declaration never runs.
+
+### 2.4 `exclude_rules`: keeping generated files out of the scan
+
+Which directories are *not* source code is framework knowledge — ThinkPHP writes its cache under
+`runtime/`, Laravel compiles Blade into `storage/framework/`, uni-app generates `unpackage/`. Those names
+are only conventions, though: a project can move `public/` to `web/`, point ThinkPHP's runtime elsewhere,
+or rename Composer's `vendor-dir`. So the knowledge base declares **rules**, and the directories are read
+from the project instead of being hard-coded:
+
+```yaml
+root_rules:
+  - id: app-root
+    key: app_root                # resolved from composer.json's autoload.psr-4
+    source: { kind: manifest_json, manifest: composer.json, pointer: autoload.psr-4, pick: shallowest_dir }
+    confidence: 1.0
+
+exclude_rules:
+  - id: runtime-dir
+    glob: "{app_root}/runtime/**"   # <- rendered from the resolved app_root, not a literal name
+    fallbacks: ["runtime/**"]
+  - id: public-dir
+    glob: "{value}/**"
+    source: { kind: manifest_json, manifest: composer.json, pointer: extra.public-dir, pick: first_dir }
+    fallbacks: ["public/**"]
+```
+
+* **Placeholders**: `{value}` is this rule's own `source`; `{<key>}` is the value of the `root_rules`
+  entry whose `key` is `<key>`. Both use the same three `source` kinds as `root_rules`
+  (`manifest_json` / `directory_exists` / `manifest`), because resolution happens in **P0, before the
+  scan** — nothing has been parsed yet, so only manifests and directory probes are available.
+* **`fallbacks` are guesses**: each is kept only when the directory it points at really exists. A stale
+  convention therefore cannot delete a directory that merely shares its name — the failure mode of an
+  exclusion is always "scanned something useless", never "dropped real source code".
+* **A rule that resolves to nothing** is reported as an `ExcludeRuleUnresolved` diagnostic. A rule that
+  would resolve to the sub-project root itself (e.g. `{app_root}/**` with `app_root = "."`) is **refused**
+  outright.
+* Globs are relative to the **sub-project root**; `/**` means "the whole subtree".
+
+The price of resolving this early: framework detection in P0 is the manifest-only subset of P3's
+(§2.1) — `import_exists` / `call_exists` need parsed code. A framework recognisable only from code
+contributes its excludes one build later, and only after P3 has seen it.
 
 ---
 

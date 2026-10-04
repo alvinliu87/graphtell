@@ -20,9 +20,11 @@ detectors:
     dependency: "@nestjs/core"
     confidence: 0.95
 
-exclude_globs:
-  - "**/node_modules/**"
-  - "**/dist/**"
+exclude_rules:
+  - id: build-output
+    glob: "dist/**"
+  - id: coverage
+    glob: "coverage/**"
 
 # ---------------------------------------------------------------- P3 loading
 loaders:

@@ -41,15 +41,20 @@ detectors:
     path: package.json
     confidence: 0.6
 
-exclude_globs:
-  - "unpackage/**"
-  - "static/**"
-  - "node_modules/**"
-  - "dist/**"
-  - "build/**"
-  - ".output/**"
-  - ".nuxt/**"
-  - ".next/**"
+exclude_rules:
+  # HBuilderX's build output — generated, and huge.
+  - id: unpackage
+    glob: "unpackage/**"
+  - id: build-output
+    glob: "dist/**"
+  - id: build-output-legacy
+    glob: "build/**"
+  - id: nuxt-output
+    glob: ".output/**"
+  - id: nuxt-cache
+    glob: ".nuxt/**"
+  - id: next-cache
+    glob: ".next/**"
 
 rules:
   # Common HTTP calls (axios / fetch / localStorage / i18n / config) were factored into

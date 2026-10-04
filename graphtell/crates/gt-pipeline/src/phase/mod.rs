@@ -4,6 +4,8 @@ pub mod annotate;
 pub mod cf_ast;
 pub mod columns;
 pub mod cors;
+pub mod exclude;
+pub mod facts;
 pub mod ingest;
 pub mod prepare;
 pub mod propagate;

@@ -44,7 +44,11 @@ pub struct ProjectPatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
-    /// Extra directory-exclude globs (layered on top of the language defaults).
+    /// Extra exclude globs (layered on top of the scanner's defaults and the ones framework knowledge
+    /// resolves in P0).
+    ///
+    /// Matched as **globs against the path relative to the project root** (`public/static/**`,
+    /// `storage/logs/**`), not as bare directory names.
     pub exclude_globs: Vec<String>,
     /// The list of locales required by the i18n coverage check.
     pub required_locales: Vec<String>,

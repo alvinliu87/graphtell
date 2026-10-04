@@ -11,13 +11,13 @@ pub mod view;
 
 pub use fkb::{
     Action, AliasSpec, AnnotateAction, AnnotateTarget, AnnotationSpec, CallContext, ChainGuardSpec,
-    ConsumerGuardSpec, ConsumerScope, DecoratorGuardSpec, Detector, GuardAttach, Direction, ExpandSpec, ExpandVariant, FanInThresholds, FieldSpec,
+    ConsumerGuardSpec, ConsumerScope, DecoratorGuardSpec, Detector, GuardAttach, Direction, ExpandSpec, ExpandVariant, ExcludeRule, FanInThresholds, FieldSpec,
     FileFormat, FrameworkKnowledge, GuardAttachSpec, MethodRefSpec, MagicDelegationSpec,
     DbVerbsSpec, MiddlewareCapability, IdentitySpec, KnowledgeScope, LinkAction, LinkSpec,
     LoaderSource, LoaderSpec, NormalizeStep, PickStrategy, Predicate, ProjectAction,
     ResolveAs, ResolveStrategy, ResolveTier, Resolution, ResolverSpec, RootRule, RootSource,
     RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule, Selector, SubkindSource,
-    SynthesizeAction, TransformSpec, ValueSource,
+    SynthesizeAction, TransformSpec, ValueSource, template_placeholders,
 };
 pub use graph::{
     AliasEntry, Annotation, Diagnostic, Edge, IdentityKey, MergeStrategy, NewAnnotation, NewEdge,

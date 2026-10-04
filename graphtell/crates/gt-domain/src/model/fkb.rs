@@ -74,8 +74,10 @@ pub struct FrameworkKnowledge {
     pub side: Option<String>,
     /// P7 dynamic-resolution declarations: which calls are container resolutions / event triggers / facade calls.
     pub resolvers: Vec<ResolverSpec>,
-    /// Additional exclusion directories (layered on top of the project / language defaults).
-    pub exclude_globs: Vec<String>,
+    /// Directories / files to keep **out of the P0 scan**, resolved from the project's own
+    /// configuration rather than from hard-coded directory names (see [`ExcludeRule`]).
+    #[serde(default)]
+    pub exclude_rules: Vec<ExcludeRule>,
     /// Scope of the knowledge base: framework-level (default) vs project-level.
     ///
     /// * `Framework`: generic framework knowledge (e.g. `thinkphp` / `laravel`), loaded by any project using that
@@ -713,6 +715,48 @@ pub enum PickStrategy {
     FirstDir,
     /// Take the mapped directory whose key name equals the given value.
     ByNamespaceKey,
+}
+
+/// One directory / file to keep **out of the scan**.
+///
+/// Declared by FKB rather than hard-coded in the kernel, because only framework knowledge knows that
+/// ThinkPHP drops its cache under `runtime/`, that Laravel compiles Blade into `storage/framework/`,
+/// or that a project may have moved `public/` to `web/`.
+///
+/// Resolution happens in **P0, before the scan**, so a rule may only use sources that need no graph —
+/// the same three [`RootSource`] kinds `root_rules` use. The glob template may reference them:
+/// * `{value}` — this rule's own `source`;
+/// * `{<key>}` — the value of the `root_rules` entry whose `key` is `<key>` (e.g. `{app_root}`).
+///
+/// Globs are relative to the **sub-project root**; a `/**` suffix means "the whole subtree".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExcludeRule {
+    pub id: String,
+    /// Glob template, e.g. `{app_root}/runtime/**`.
+    pub glob: String,
+    /// Where the value behind `{value}` comes from (e.g. `composer.json`'s `extra.public-dir`).
+    #[serde(default)]
+    pub source: Option<RootSource>,
+    /// Candidates tried in order when the template cannot be rendered. Each is kept **only when the
+    /// directory it points at really exists**, so a wrong guess can never delete real source code.
+    #[serde(default)]
+    pub fallbacks: Vec<String>,
+}
+
+/// The `{placeholder}` names a glob template references, in order of appearance and de-duplicated.
+pub fn template_placeholders(template: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('}') else { break };
+        let name = after[..end].trim().to_string();
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+        rest = &after[end + 1..];
+    }
+    out
 }
 
 /// A P3 symbol-table loader.

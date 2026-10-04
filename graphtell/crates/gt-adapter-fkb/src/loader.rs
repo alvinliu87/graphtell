@@ -106,6 +106,7 @@ impl YamlKnowledgeBase {
         }
         apply_id_namespaces(&mut fk);
         apply_side_defaults(&mut fk);
+        validate_exclude_rules(&fk);
         Ok(fk)
     }
 
@@ -114,7 +115,39 @@ impl YamlKnowledgeBase {
         let mut fk = deserialize_knowledge(text)?;
         apply_id_namespaces(&mut fk);
         apply_side_defaults(&mut fk);
+        validate_exclude_rules(&fk);
         Ok(fk)
+    }
+}
+
+/// Check that every `{placeholder}` an `exclude_rules` entry references can actually be produced.
+///
+/// A placeholder that names no `root_rules` key can never resolve at P0: the rule would silently
+/// degrade to its fallbacks, and the author would never learn why. Warn at load time — this is
+/// knowledge-authoring feedback, not a runtime error (a single bad rule must not drop the whole FKB).
+fn validate_exclude_rules(fk: &FrameworkKnowledge) {
+    if fk.exclude_rules.is_empty() {
+        return;
+    }
+    let keys: std::collections::HashSet<&str> =
+        fk.root_rules.iter().map(|r| r.key.as_str()).collect();
+    for rule in &fk.exclude_rules {
+        let templates = std::iter::once(&rule.glob).chain(rule.fallbacks.iter());
+        for template in templates {
+            for name in gt_domain::model::template_placeholders(template) {
+                if name == "value" && rule.source.is_none() {
+                    warn!(
+                        "FKB {}: exclude rule `{}` uses `{{value}}` but declares no `source`",
+                        fk.id, rule.id
+                    );
+                } else if name != "value" && !keys.contains(name.as_str()) {
+                    warn!(
+                        "FKB {}: exclude rule `{}` references `{{{name}}}`, which no root_rule produces",
+                        fk.id, rule.id
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -166,6 +199,9 @@ fn apply_id_namespaces(fk: &mut FrameworkKnowledge) {
     }
     for root in &mut fk.root_rules {
         namespace_id(&prefix, &mut root.id);
+    }
+    for rule in &mut fk.exclude_rules {
+        namespace_id(&prefix, &mut rule.id);
     }
     for resolver in &mut fk.resolvers {
         namespace_id(&prefix, &mut resolver.id);

@@ -38,10 +38,13 @@ detectors:
 # --- applies to every sub-project of the same language (open only when this file carries no strong framework assumption) ---
 # apply_without_detection: true
 
-# --- excluded directories (layered on top of the default rules) ---
-exclude_globs:
-  - "vendor/**"
-  - "node_modules/**"
+# --- directories / files that must not be scanned (resolved in P0, before the scan) ---
+# `glob` may reference this file's `root_rules` by key (`{app_root}/runtime/**`) and `{value}` from its
+# own `source`; `fallbacks` are tried in order and kept only when the directory really exists.
+# exclude_rules:
+#   - id: generated-dir
+#     glob: "{app_root}/generated/**"
+#     fallbacks: ["generated/**"]
 
 rules:
   # e.g. extract a "cache read" semantic node (remember `side`; out-of-process mediators must have it)

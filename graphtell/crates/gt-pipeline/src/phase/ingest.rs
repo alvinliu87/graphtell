@@ -10,14 +10,19 @@ use gt_domain::model::{
     Language, NewSourceFile, NewSubProject, Project, ProjectId, SourceFile, SubProject,
 };
 use gt_domain::port::{
-    FileScanner, FileSystem, Marker, MarkerProvider, ParserRegistry, ScanRequest, TechStackRegistry,
+    FileScanner, FileSystem, KnowledgeProvider, Marker, MarkerProvider, ParserRegistry, ScanRequest,
+    TechStackRegistry,
 };
 use tracing::info;
+
+use super::exclude::{self, ExcludeDiagnostic};
 
 /// The product of the Ingest phase.
 pub struct IngestResult {
     pub sub_projects: Vec<NewSubProject>,
     pub files: Vec<NewSourceFile>,
+    /// Exclusion rules that could not be resolved (a knowledge-authoring signal, not a failure).
+    pub diagnostics: Vec<ExcludeDiagnostic>,
 }
 
 /// Compute the file fingerprint.
@@ -51,6 +56,7 @@ pub fn run(
     fs: &dyn FileSystem,
     markers: &dyn MarkerProvider,
     techstack: &dyn TechStackRegistry,
+    kb: &dyn KnowledgeProvider,
 ) -> Result<IngestResult> {
     // Sub-project markers come from the tech-stack registration (`MarkerProvider`), not from a hard-coded
     // kernel table: which manifest file marks which language is tech-stack knowledge.
@@ -94,6 +100,45 @@ pub fn run(
         });
     }
 
+    // Exclusions are resolved **here** and not in P3: a framework's cache / generated directories must
+    // never reach the scan, let alone the parser. `resolve_for_sub` only reads manifests and probes
+    // directories, which is exactly what makes it usable before anything has been parsed — and the
+    // directories themselves come from the project's own configuration (see `phase::exclude`).
+    let mut exclude_globs: Vec<String> = project.config.exclude_globs.clone();
+    let mut diagnostics: Vec<ExcludeDiagnostic> = Vec::new();
+    for sub in subs.iter_mut() {
+        let resolved = exclude::resolve_for_sub(
+            &project.root_path,
+            &sub.root_path,
+            &sub.language,
+            kb,
+            fs,
+            parsers,
+            techstack,
+        );
+        // The rules are relative to the sub-project root, the scan is rooted at the project root.
+        let prefix = sub
+            .root_path
+            .strip_prefix(&project.root_path)
+            .unwrap_or(Path::new(""))
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_matches('/')
+            .to_string();
+        for glob in &resolved.globs {
+            exclude_globs.push(if prefix.is_empty() {
+                glob.clone()
+            } else {
+                format!("{prefix}/{glob}")
+            });
+        }
+        sub.facts = resolved.facts;
+        diagnostics.extend(resolved.diagnostics);
+        if !resolved.globs.is_empty() {
+            info!("Ingest: {} exclusions: {:?}", sub.name, resolved.globs);
+        }
+    }
+
     let language_extensions: Vec<(String, Vec<String>)> = parsers
         .supported_languages()
         .into_iter()
@@ -108,7 +153,7 @@ pub fn run(
         .collect();
     let request = ScanRequest {
         root: project.root_path.clone(),
-        extra_excludes: project.config.exclude_globs.clone(),
+        extra_excludes: exclude_globs,
         languages: Vec::new(),
         language_extensions,
     };
@@ -134,7 +179,7 @@ pub fn run(
         });
     }
 
-    Ok(IngestResult { sub_projects: subs, files })
+    Ok(IngestResult { sub_projects: subs, files, diagnostics })
 }
 
 /// Assign a file to the most specific sub-project.

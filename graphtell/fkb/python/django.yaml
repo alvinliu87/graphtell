@@ -27,15 +27,18 @@ detectors:
     dependency: "django"
     confidence: 0.9
 
-exclude_globs:
-  - "__pycache__/**"
-  - "*/__pycache__/**"
-  - "*/.venv/**"
-  - "*/venv/**"
+exclude_rules:
+  - id: bytecode-cache
+    glob: "**/__pycache__/**"
+  - id: virtualenv
+    glob: "**/.venv/**"
+  - id: virtualenv-plain
+    glob: "**/venv/**"
   # Django's auto-generated migration files use `migrations.CreateModel` / `AddField` (fields given as a dict,
   # not as `models.CharField` class-attribute declarations) and would re-describe the model structure, so they
   # are skipped to avoid creating noise call sites.
-  - "*/migrations/**"
+  - id: migrations
+    glob: "**/migrations/**"
 
 # `References` (model -> model) has **code nodes** at both ends and is declared as a bridge edge: it can be walked
 # along the chain for impact analysis, but is not counted in "N semantic in-edges" and is not a canvas edge (same

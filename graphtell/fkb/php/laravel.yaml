@@ -37,12 +37,26 @@ detectors:
 # composer.lock — so without this declaration their knowledge could never switch on for a Laravel project.
 provides: [illuminate-database]
 
-exclude_globs:
-  - "vendor/**"
-  - "node_modules/**"
-  - "public/**"
-  - "storage/framework/**"
-  - "storage/logs/**"
+# What must never be scanned: resolved in P0 from the project's own configuration
+# (see `fkb/php/thinkphp.yaml` for the mechanism). `storage/` is where Laravel puts compiled Blade
+# views, caches and logs — none of it is source code, and none of it is covered by the generic
+# dependency rules.
+exclude_rules:
+  - id: public-dir
+    glob: "{value}/**"
+    source:
+      kind: manifest_json
+      manifest: composer.json
+      pointer: extra.public-dir
+      pick: first_dir
+    fallbacks:
+      - "public/**"
+  - id: storage-framework
+    glob: "storage/framework/**"
+  - id: storage-logs
+    glob: "storage/logs/**"
+  - id: bootstrap-cache
+    glob: "bootstrap/cache/**"
 
 # `References` (model -> model) has **code nodes** at both ends and is declared as a bridge edge: it can be
 # walked along the chain for impact analysis, but is not counted in "N semantic in-edges" and is not a canvas

@@ -33,10 +33,12 @@ detectors:
     path: src/main/java
     confidence: 0.6
 
-exclude_globs:
-  - "target/**"
-  - "*/target/**"
-  - "*/build/**"
+exclude_rules:
+  # Maven / Gradle output. Multi-module builds nest one `target/` per module, hence the wildcard.
+  - id: maven-target
+    glob: "**/target/**"
+  - id: gradle-build
+    glob: "**/build/**"
 
 root_rules:
   - id: source-root

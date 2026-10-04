@@ -5,7 +5,7 @@ use std::time::Instant;
 use gt_domain::error::Result;
 use gt_domain::model::{
     GraphDelta, NamespacePolicy, NewSourceFile, NewSubProject, Phase, PhaseReport, Project,
-    SourceFile, SubProject, SubProjectId,
+    Severity, SourceFile, SubProject, SubProjectId,
 };
 use gt_domain::port::{
     FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider, ParserRegistry,
@@ -80,6 +80,7 @@ pub fn run(
         infra.fs(),
         infra.markers(),
         infra.techstack(),
+        infra.kb(),
     )?;
     let subs: Vec<SubProject> = infra
         .projects()
@@ -89,6 +90,14 @@ pub fn run(
     ingest::assign_files(&mut files, &subs, &project.root_path);
     ctx.sub_projects = subs.clone();
     ctx.files = files.clone();
+    // P3 rebuilds a sub-project's facts from the workspace, so the exclusions resolved here have to be
+    // seeded into the workspace too — otherwise the answer to "why is this directory missing?" is lost
+    // as soon as Prepare runs.
+    for sub in &subs {
+        if let Some(excludes) = sub.facts.get("excludes") {
+            ctx.ws.set_fact(sub.id, "excludes", excludes.clone());
+        }
+    }
     outcome.sub_projects = subs;
     outcome.files = files;
     flush(
@@ -107,6 +116,19 @@ pub fn run(
         project_id: Some(project.id),
         ..Default::default()
     })?;
+
+    // Reported **after** the reset: `reset_project` deletes the previous round's diagnostics, so
+    // anything written before it would be wiped.
+    let phase = Phase(Phase::INGEST.to_string());
+    for d in &ingested.diagnostics {
+        ctx.ws.diagnose(
+            &phase,
+            &d.code,
+            Severity::Warning,
+            &d.message,
+            d.location.clone(),
+        );
+    }
 
     // ---------------------------------------------------------- P2 CfAst
     let started = Instant::now();

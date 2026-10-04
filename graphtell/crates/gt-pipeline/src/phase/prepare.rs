@@ -6,13 +6,13 @@
 //!   / `container_bindings` / `event_listeners` / `route_list` / `nginx`
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gt_domain::error::Result;
 use gt_domain::model::{
     Action, Detector, FactValue, FrameworkKnowledge, GuardAttachSpec, KnowledgeScope, Language,
-    NormalizeStep, Phase, PickStrategy, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule,
-    SubProjectId, SynthesizedKind,
+    NormalizeStep, Phase, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule, SubProjectId,
+    SynthesizedKind,
 };
 use gt_domain::port::{
     AdapterFact, FileSystem, KnowledgeProvider, LanguageParser, ParserRegistry, TechStackRegistry,
@@ -23,6 +23,7 @@ use tracing::{debug, info, warn};
 use crate::context::PipelineContext;
 use crate::engine::{callee_matches, capture_locale, path_matches};
 use crate::normalize::strip_prefixes;
+use crate::phase::facts::{self, expand_provided, lock_has, manifest_has};
 use crate::workspace::{CallRecord, RouteGroup, RouteGuard, RouteGuardScope};
 
 /// Run Prepare.
@@ -292,37 +293,6 @@ fn detect_frameworks(
     expand_provided(hits, kb).into_iter().map(|(id, _)| id).collect()
 }
 
-/// Expand `provides`: recognising a framework recognises the component knowledge it bundles.
-///
-/// Breadth-first and cycle-safe (`seen`), and **directly detected knowledge always precedes provided
-/// knowledge** regardless of confidence — a component may declare a lower confidence than some other
-/// framework's direct hit, but "the code / manifest said so" outranks "something else said so". That
-/// ordering is what keeps a framework's own declaration of a single-valued field (`db_verbs`,
-/// `method_ref` …, all taken by `find_map`) ahead of a component's.
-fn expand_provided(
-    hits: Vec<(String, f32)>,
-    kb: &dyn KnowledgeProvider,
-) -> Vec<(String, f32)> {
-    let mut out = hits;
-    let mut seen: HashSet<String> = out.iter().map(|(id, _)| id.clone()).collect();
-    let mut i = 0;
-    while i < out.len() {
-        let (id, conf) = out[i].clone();
-        if let Some(fk) = kb.by_id(&id) {
-            for p in &fk.provides {
-                if seen.insert(p.clone()) {
-                    out.push((p.clone(), conf * PROVIDED_CONFIDENCE_DECAY));
-                }
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
-/// Confidence granted to knowledge that was merely *provided* rather than detected.
-const PROVIDED_CONFIDENCE_DECAY: f32 = 0.9;
-
 /// What the sub-project's **code** says it uses, as opposed to what its manifest says it installed.
 ///
 /// Both collections are de-duplicated while being built, so each detector costs O(distinct) rather than
@@ -411,74 +381,6 @@ fn collect_code_evidence(ctx: &PipelineContext, sub: &gt_domain::model::SubProje
     ev
 }
 
-fn manifest_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
-    if !fs.exists(path) {
-        return false;
-    }
-    let Ok(text) = fs.read_to_string(path) else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        // Besides composer.json there may also be a plain-text dependency manifest
-        return text.contains(dependency);
-    };
-    for section in ["require", "require-dev", "dependencies", "devDependencies"] {
-        if let Some(map) = v.get(section).and_then(|s| s.as_object()) {
-            for key in map.keys() {
-                if key.eq_ignore_ascii_case(dependency) || key.contains(dependency) {
-                    return true;
-                }
-            }
-        }
-    }
-    text.contains(dependency)
-}
-
-/// Whether `dependency` appears in a **lock file**: the resolved dependency closure, so it covers packages
-/// the project never declared itself.
-///
-/// Unlike [`manifest_has`], which only ever looks at hand-written declarations, this reads what was actually
-/// installed — the only manifest-shaped signal that can see a package pulled in transitively. Layouts are
-/// recognised per ecosystem; anything else (yarn.lock, poetry.lock …) falls back to a plain-text probe
-/// rather than failing to match, the same conservative direction `manifest_has` takes.
-fn lock_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
-    if !fs.exists(path) {
-        return false;
-    }
-    let Ok(text) = fs.read_to_string(path) else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return text.contains(dependency);
-    };
-    let needle = dependency.to_ascii_lowercase();
-    let mut names: Vec<String> = Vec::new();
-    // composer.lock: `packages` / `packages-dev` are arrays of `{ "name": ... }`.
-    for section in ["packages", "packages-dev"] {
-        if let Some(arr) = v.get(section).and_then(|s| s.as_array()) {
-            for p in arr {
-                if let Some(n) = p.get("name").and_then(|n| n.as_str()) {
-                    names.push(n.to_string());
-                }
-            }
-        }
-    }
-    // package-lock.json v2+: `packages` is an object keyed by install path (`node_modules/foo`).
-    if let Some(map) = v.get("packages").and_then(|s| s.as_object()) {
-        for (key, entry) in map {
-            let n = entry.get("name").and_then(|n| n.as_str()).unwrap_or(key);
-            names.push(n.trim_start_matches("node_modules/").to_string());
-        }
-    }
-    // package-lock.json v1: `dependencies` is an object keyed by package name.
-    if let Some(map) = v.get("dependencies").and_then(|s| s.as_object()) {
-        names.extend(map.keys().cloned());
-    }
-    if names
-        .iter()
-        .any(|n| n.to_ascii_lowercase() == needle || n.to_ascii_lowercase().contains(&needle))
-    {
-        return true;
-    }
-    text.contains(dependency)
-}
-
 // ---------------------------------------------------------------- AppRoot
 
 fn apply_root_rules(
@@ -492,21 +394,17 @@ fn apply_root_rules(
     techstack: &dyn TechStackRegistry,
 ) {
     for rule in &fk.root_rules {
-        let resolved = match &rule.source {
-            gt_domain::model::RootSource::ManifestJson { manifest, pointer, pick } => {
-                let path = sub.root_path.join(manifest);
-                let path = if path.exists() { path } else { ctx.project.root_path.join(manifest) };
-                resolve_manifest_pointer(&path, pointer, *pick)
-            }
-            gt_domain::model::RootSource::DirectoryExists { path } => {
-                resolve_directory_exists(&sub.root_path, path)
-            }
-            gt_domain::model::RootSource::Manifest { manifest, pointer } => techstack
-                .adapter_for(&sub.language)
-                .and_then(|a| {
-                    a.read_manifest(sub, &ctx.project.root_path, manifest, pointer, fs, parsers)
-                }),
-        };
+        // Shared with P0 (`phase::exclude`): every source kind here reads a manifest or probes a
+        // directory, so the same resolution works before anything has been parsed.
+        let resolved = facts::resolve_root_source(
+            &rule.source,
+            &sub.root_path,
+            &ctx.project.root_path,
+            sub,
+            fs,
+            parsers,
+            techstack,
+        );
 
         let (value, source, fallback_used, confidence) = match resolved {
             Some((v, src)) => (v, src, false, rule.confidence),
@@ -552,79 +450,6 @@ fn apply_root_rules(
 /// (e.g. `src/main/java`). On hit, return its **parent dir** as the source root (the semantics of `app_root` is the source root, not
 /// `src/main/java` itself). A single-module project hitting directly under the root returns `"."`; a multi-module project returns the first hit module's
 /// relative dir (e.g. `mall-admin`). Only when the whole tree can't be found do we return `None` (trigger fallback / warning).
-fn resolve_directory_exists(root: &Path, rel: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-    if parts.is_empty() {
-        return None;
-    }
-    // Hit directly under the root: source root is the sub-project root.
-    if root.join(rel).is_dir() {
-        return Some((".".to_string(), format!("directory exists: {}", rel)));
-    }
-    // Multi-module: breadth-first (prefer shallow), depth-limited to avoid scanning the whole large tree.
-    let mut queue: std::collections::VecDeque<(PathBuf, u32)> =
-        std::collections::VecDeque::from([(root.to_path_buf(), 0)]);
-    let max_depth = 5;
-    while let Some((dir, depth)) = queue.pop_front() {
-        let target = parts.iter().fold(dir.clone(), |acc, p| acc.join(p));
-        if target.is_dir() {
-            let rel_root = dir.strip_prefix(root).unwrap_or_else(|_| Path::new(""));
-            let value = if rel_root.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                rel_root.to_string_lossy().replace('\\', "/")
-            };
-            return Some((value, format!("directory exists (recursive): {}", rel)));
-        }
-        if depth < max_depth {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.is_dir() {
-                        queue.push_back((p, depth + 1));
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn resolve_manifest_pointer(
-    path: &Path,
-    pointer: &str,
-    pick: PickStrategy,
-) -> Option<(String, String)> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
-    let mut cur = &v;
-    for seg in pointer.split('.') {
-        cur = cur.get(seg)?;
-    }
-    let map = cur.as_object()?;
-    let mut candidates: Vec<(String, String)> = map
-        .iter()
-        .filter_map(|(ns, dir)| {
-            dir.as_str().map(|d| (d.trim_matches('/').to_string(), ns.clone()))
-        })
-        .filter(|(d, _)| !d.is_empty())
-        .collect();
-    if candidates.is_empty() {
-        return None;
-    }
-    candidates.sort_by_key(|(d, _)| d.matches('/').count());
-    let chosen = match pick {
-        PickStrategy::ShallowestDir | PickStrategy::ByNamespaceKey | PickStrategy::FirstDir => {
-            candidates.remove(0)
-        }
-    };
-    Some((
-        chosen.0.clone(),
-        format!("{} {} (map_dir={}/)", path.display(), pointer, chosen.0),
-    ))
-}
-
-
 
 // ---------------------------------------------------------------- loaders
 

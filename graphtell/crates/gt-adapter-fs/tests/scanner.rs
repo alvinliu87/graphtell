@@ -113,6 +113,57 @@ fn scan_infers_language_from_extension() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Excludes are matched as **globs against the path**, not as bare directory names: that is what makes
+/// framework-resolved rules (`crmeb/runtime/**`, `public/static/**`, `storage/logs/**`) expressible at
+/// all — a name has nowhere to say "only this one, at this depth".
+#[test]
+fn scan_matches_extra_excludes_as_path_globs() {
+    let root = scratch("globs");
+    write(&root, "app/controller/Index.php", "<?php");
+    write(&root, "app/generated/a/b.php", "<?php");
+    write(&root, "admin/generated/c.php", "<?php");
+    write(&root, "crmeb/service/Order.php", "<?php");
+    let files = WalkDirScanner::new(vec!["app/generated/**".into()])
+        .scan(&ScanRequest {
+            root: root.clone(),
+            extra_excludes: Vec::new(),
+            languages: Vec::new(),
+            language_extensions: Vec::new(),
+        })
+        .expect("scan");
+    let rels = rels(&files);
+    assert!(rels.contains(&"app/controller/Index.php".to_string()));
+    assert!(rels.contains(&"crmeb/service/Order.php".to_string()));
+    assert!(
+        !rels.iter().any(|r| r.starts_with("app/generated/")),
+        "app/generated 必须排除: {rels:?}"
+    );
+    assert!(
+        rels.contains(&"admin/generated/c.php".to_string()),
+        "同名目录在别的路径下必须保留: {rels:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A `dir/**` pattern must prune the whole subtree, not just its direct children.
+#[test]
+fn scan_prunes_the_whole_subtree() {
+    let root = scratch("subtree");
+    write(&root, "keep/keep.php", "<?php");
+    write(&root, "drop/a/b/c/deep.php", "<?php");
+    let files = WalkDirScanner::new(vec!["drop/**".into()])
+        .scan(&ScanRequest {
+            root: root.clone(),
+            extra_excludes: Vec::new(),
+            languages: Vec::new(),
+            language_extensions: Vec::new(),
+        })
+        .expect("scan");
+    let rels = rels(&files);
+    assert_eq!(rels, vec!["keep/keep.php".to_string()]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Unknown extensions (e.g. markdown) are not graphed.
 #[test]
 fn scan_skips_unknown_extensions() {
