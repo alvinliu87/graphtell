@@ -32,11 +32,21 @@
 use std::collections::{HashMap, HashSet};
 
 use gt_domain::model::{
-    AnnotationChannel, EdgeKind, Language, MergeStrategy, NewAnnotation, NodeId, Phase,
+    AnnotationChannel, EdgeKind, MergeStrategy, NewAnnotation, NodeId, Phase, SubProjectId,
 };
 use serde_json::json;
 
 use crate::context::PipelineContext;
+
+/// The transaction markers to judge a method with: the sub-project's own declaration, else the fallback.
+///
+/// `None` / empty means this stack declares nothing, so P13 cannot tell a transaction from an ordinary call
+/// and judges nothing — rather than reporting every multi-table write in a stack it knows nothing about.
+fn markers_for(ctx: &PipelineContext, sub: Option<SubProjectId>) -> Option<&Vec<String>> {
+    sub.and_then(|s| ctx.tx_calls.get(&s.get()))
+        .or(Some(&ctx.tx_calls_default))
+        .filter(|m| !m.is_empty())
+}
 
 /// The "multi-table write without a transaction" annotation (rules match it via `has_annotation: multi-write-without-tx`).
 const MULTI_WRITE: &str = "multi-write-without-tx";
@@ -74,7 +84,13 @@ pub fn run(ctx: &mut PipelineContext) {
     }
     let mut meta: HashMap<i64, Meta> = HashMap::new();
     for call in ctx.ws.calls.iter() {
-        if call.language.0 != Language::PHP {
+        // Transaction markers are **this sub-project's** declared knowledge. A stack that declares none is
+        // not judged at all: "no marker appeared" would otherwise be trivially true for every method, which
+        // is a false-positive flood rather than a finding. (This replaced a hard-coded `language == php`.)
+        let Some(markers) = markers_for(ctx, call.sub) else {
+            continue;
+        };
+        if markers.is_empty() {
             continue;
         }
         let entry = meta.entry(call.owner.get()).or_insert_with(|| Meta {
@@ -84,8 +100,7 @@ pub fn run(ctx: &mut PipelineContext) {
             in_tx: false,
         });
         if let Some(method) = call.method.as_deref() {
-            if ctx
-                .tx_calls
+            if markers
                 .iter()
                 .any(|p| method.eq_ignore_ascii_case(p) || call.callee.eq_ignore_ascii_case(p))
             {
@@ -142,11 +157,18 @@ pub fn run(ctx: &mut PipelineContext) {
 #[cfg(test)]
 mod tests {
     use crate::context::PipelineContext;
-    use gt_domain::model::{Project, ProjectStatus};
+    use crate::workspace::CallRecord;
+    use gt_domain::model::{
+        EdgeKind, Language, NewEdge, NodeId, Phase, Project, ProjectId, ProjectStatus, SubProjectId,
+    };
+    use super::MULTI_WRITE;
 
+    const SUB: i64 = 1;
+
+    /// A context whose sub-project declares `tx` as its transaction markers (empty = declares nothing).
     fn ctx_with(tx: Vec<&str>) -> PipelineContext {
         let mut ctx = PipelineContext::new(Project {
-            id: gt_domain::model::ProjectId(1),
+            id: ProjectId(1),
             name: "t".into(),
             root_path: "/t".into(),
             description: None,
@@ -155,16 +177,108 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         });
-        ctx.tx_calls = tx.into_iter().map(|s| s.to_string()).collect();
+        let markers: Vec<String> = tx.into_iter().map(|s| s.to_string()).collect();
+        ctx.tx_calls.insert(SUB, markers);
         ctx
+    }
+
+    /// One direct `WritesDb` edge: `method -> table`.
+    fn write(ctx: &mut PipelineContext, method: i64, table: i64) {
+        ctx.ws.add_edge(NewEdge {
+            project_id: ctx.project.id,
+            kind: EdgeKind(EdgeKind::WRITES_DB.to_string()),
+            from_id: NodeId(method),
+            to_id: NodeId(table),
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        });
+    }
+
+    fn call(ctx: &mut PipelineContext, owner: i64, method: &str) {
+        ctx.ws.calls.push(CallRecord {
+            node: NodeId(owner * 100),
+            owner: NodeId(owner),
+            owner_fqn: format!("App\\Svc::run{owner}"),
+            owner_class: None,
+            callee: method.to_string(),
+            receiver: None,
+            method: Some(method.to_string()),
+            args: Vec::new(),
+            span: gt_domain::model::Span {
+                start_line: 10,
+                end_line: 10,
+                start_byte: 0,
+                end_byte: 0,
+            },
+            file: "app/Svc.php".to_string(),
+            language: Language::new(Language::PHP),
+            sub: Some(SubProjectId::new(SUB)),
+            db_table: None,
+            in_loop: false,
+            entity: None,
+        });
+    }
+
+    fn annotated(ctx: &PipelineContext, node: i64) -> bool {
+        ctx.ws
+            .annotations()
+            .iter()
+            .any(|a| a.node_id == NodeId(node) && a.kind == MULTI_WRITE)
+    }
+
+    #[test]
+    fn multi_table_write_without_marker_is_annotated() {
+        let mut ctx = ctx_with(vec!["transaction", "commit"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+        assert!(annotated(&ctx, 10), "写两张表且无事务标记应被标注");
+    }
+
+    #[test]
+    fn marker_inside_the_method_suppresses_it() {
+        let mut ctx = ctx_with(vec!["transaction", "commit"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "save");
+        call(&mut ctx, 10, "transaction");
+        super::run(&mut ctx);
+        assert!(!annotated(&ctx, 10), "方法内出现事务标记则不应标注");
+    }
+
+    #[test]
+    fn single_table_write_is_not_annotated() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+        assert!(!annotated(&ctx, 10), "只写一张表不算多表写");
+    }
+
+    /// The point of the whole refactor: a stack that declares **no** transaction markers is not judged.
+    /// "No marker appeared" would be trivially true for every method there, i.e. a false-positive flood.
+    /// This is what replaced the hard-coded `language == php` gate.
+    #[test]
+    fn stack_without_declared_markers_is_not_judged() {
+        let mut ctx = ctx_with(vec![]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+        assert!(
+            !annotated(&ctx, 10),
+            "未声明事务标记的栈不应被判定（否则每个多表写都误报）"
+        );
     }
 
     #[test]
     fn tx_markers_are_case_insensitive() {
         let ctx = ctx_with(vec!["startTrans", "transaction"]);
-        // The predicate itself lives in run(); this only pins the case-insensitive convention of the name list
-        assert!(ctx.tx_calls.iter().any(|p| p.eq_ignore_ascii_case("STARTTRANS")));
-        assert!(ctx.tx_calls.iter().any(|p| p.eq_ignore_ascii_case("Transaction")));
-        assert!(!ctx.tx_calls.iter().any(|p| p.eq_ignore_ascii_case("save")));
+        let m = &ctx.tx_calls[&SUB];
+        assert!(m.iter().any(|p| p.eq_ignore_ascii_case("STARTTRANS")));
+        assert!(m.iter().any(|p| p.eq_ignore_ascii_case("Transaction")));
+        assert!(!m.iter().any(|p| p.eq_ignore_ascii_case("save")));
     }
 }

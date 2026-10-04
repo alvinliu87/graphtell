@@ -240,6 +240,9 @@ pub struct NamespacePolicy {
     pub ns_separators: Vec<char>,
     /// The separator between a class and its member: PHP/C++ use `::`, Java/JS/Python use `.`.
     pub member_separator: String,
+    /// How a variable reference is marked inside a string (PHP `$`; JS `` `${` ``; none for languages that
+    /// give no textual marker). Empty = "cannot tell a variable from text", and callers must not guess.
+    pub variable_prefixes: Vec<String>,
     /// Primitive / builtin type names that are NOT class references (language-specific).
     pub builtin_types: Vec<String>,
 }
@@ -254,6 +257,11 @@ impl NamespacePolicy {
             ns_separator: seps.first().copied(),
             ns_separators: seps.to_vec(),
             member_separator: p.member_separator().to_string(),
+            variable_prefixes: p
+                .variable_prefixes()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             builtin_types: p
                 .builtin_types()
                 .iter()
@@ -282,6 +290,7 @@ impl Default for NamespacePolicy {
             ns_separator: None,
             ns_separators: Vec::new(),
             member_separator: String::new(),
+            variable_prefixes: Vec::new(),
             builtin_types: Vec::new(),
         }
     }

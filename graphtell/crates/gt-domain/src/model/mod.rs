@@ -17,7 +17,7 @@ pub use fkb::{
     DbVerbsSpec, MiddlewareCapability, IdentitySpec, KnowledgeScope, LinkAction, LinkSpec,
     LoaderSource, LoaderSpec, NormalizeStep, PickStrategy, Predicate, ProjectAction,
     ResolveAs, ResolveStrategy, ResolveTier, Resolution, ResolverSpec, RootRule, RootSource,
-    SignCheckSpec,
+    SignCheckSpec, TaintSink, TaintSpec,
     RouteCallSpec, RouteGuardSpec, RouteMatchBy, Rule, Selector, SubkindSource,
     SynthesizeAction, TransformSpec, ValueSource, template_placeholders,
 };

@@ -58,6 +58,11 @@ impl LanguageParser for PhpParser {
         "::"
     }
 
+    fn variable_prefixes(&self) -> &'static [&'static str] {
+        // `$var` / `{$var}` / `"${var}"` — all three contain `$`.
+        &["$"]
+    }
+
     fn manifest_files(&self) -> &'static [&'static str] {
         &["composer.json"]
     }

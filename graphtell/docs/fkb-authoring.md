@@ -55,6 +55,8 @@ external_calls: [...]     # callees that make network requests (for "external ca
 tx_calls: [...]           # transaction boundary markers
 sign_check: {...}         # signature-verification vocabulary: which calls compute a signature, which algos
                           # are weak (P11). Language / library knowledge — see §2.1
+taint: {...}              # SQL-injection vocabulary (P9): raw-SQL sinks, where-interpolation sinks, request
+                          # sources. Language / library knowledge — see §2.1
 entry_methods: [...]      # candidate consumer entry method names (handle/fire/doJob/__invoke/run …)
 ```
 
@@ -95,6 +97,12 @@ component's — which is why `db_verbs` stays in `laravel.yaml` and not in `illu
 `external_calls`, `tx_calls` and `middleware_capabilities` are not per-framework settings — every FKB that
 applies contributes to one shared list. **"Applies" now means detected**: a recognised framework or project,
 or a knowledge base flagged `apply_without_detection`.
+
+The one exception is `tx_calls`, which is merged **per sub-project**: P13 asks "does this method open a
+transaction", and answering that needs *this stack's* notion of a transaction. A stack that declares no
+markers at all is therefore not judged (otherwise "no marker appeared" would be trivially true for every
+method — a false-positive flood, not a finding). Declaring `tx_calls` for a language is what switches P13
+on for it.
 
 So where you put an entry decides its reach:
 
@@ -169,6 +177,86 @@ Two things worth knowing:
 `name_excludes` exists because the noise gate is measured, not imagined: in e-commerce code `sign` is
 overwhelmingly **check-ins** (24 of 32 "`==` comparisons containing sign"). Keep such domain knowledge here
 — putting it in the kernel is what leaves a multi-stack tool unable to serve any second stack.
+
+#### `taint`: SQL-injection vocabulary (single-valued, follows the same detection rule)
+
+P9 Taint judges, **at the call site**, whether user input flows into a SQL string. It needs two kinds of
+vocabulary, both language / library knowledge that the kernel must not own: which callees are dangerous SQL
+sinks, and which expressions count as "request input". That is PHP's `Db::query` / `whereRaw` /
+`$_GET` / `->param(`, Java's `jdbcTemplate.query` / `request.getParameter`, Node's
+`connection.query` / `req.query`. **The kernel knows none of them** — sinks and request sources come entirely
+from this declaration.
+
+```yaml
+# fkb/php/common.yaml — the unconditional PHP layer (no framework assumption)
+taint:
+  raw_sql_sinks:                 # argument 0 is the SQL text
+    - { method: query, receiver: Db }       # receiver given = must match exactly (Db::query)
+    - { method: execute }                   # receiver omitted = fires for any receiver
+    - { method: raw }
+  where_interp_sinks: [whereRaw, whereExp]  # only "variable embedded in a string" counts as injection
+  request_sources: ["$_get", "->param(", "input(", "$_post", "$_request"]  # request-input markers (lowercased substring match)
+```
+
+Three things the engine handles for you, so the declaration stays pure vocabulary:
+
+* **A stack that declares nothing is not judged.** `taint` is taken by `find_map` like `db_verbs` /
+  `sign_check`, so the first applicable declaration wins — and with no declaration P9 emits **no** annotation
+  rather than applying another stack's ORM names. "No knowledge" means "no judgement", which is honest; the
+  `language == php` gate it replaced meant every other stack was silently skipped *and* could never be
+  supported without editing the engine.
+* **The variable marker is the parser's, not the kernel's.** Whether a reference is written `$var` (PHP) or
+  `{$var}` or `${var}` comes from the language's `variable_prefixes` (a parser fact), injected like every
+  other notation rule. A language that declares no variable marker yields nothing — the phase cannot guess
+  one.
+* **The `apply_without_detection` arm counts.** PHP's vocabulary lives in the unconditional language layer,
+  which is *never* in the detected-framework list because it declares no detectors. A merge that reads only
+  detected frameworks silently disables the phase for every PHP project — and no unit test catches that, so
+  it is pinned end-to-end in `tests/php_taint_features.rs` (the taint merge is identical to `sign_check`'s,
+  so the same guard applies).
+
+Keep such domain knowledge here — putting it in the kernel is what leaves a multi-stack tool unable to serve
+any second stack.
+
+#### `tx_calls`: transaction-boundary markers (a merged list, not single-valued)
+
+P13 Tx judges whether one method writes **>= 2 distinct tables** with no recognised transaction boundary. The
+boundary is a method-level concept, and "what opens a transaction" is language / library knowledge the kernel
+must not own: PHP's `Db::transaction` / `startTrans` / `beginTransaction`, Java's
+`transactionTemplate.execute` / `@Transactional`, Node's `sequelize.transaction` / `client.query('BEGIN')`.
+**The kernel knows none of them** — they come entirely from this declaration.
+
+```yaml
+# fkb/php/common.yaml — the unconditional PHP layer (no framework assumption)
+tx_calls:
+  - "transaction"
+  - "startTrans"
+  - "beginTransaction"
+
+# fkb/php/illuminate-database.yaml — a framework's own boundary marker
+tx_calls:
+  - "DB::transaction"
+```
+
+Three things the engine handles for you, so the declaration stays pure vocabulary:
+
+* **A stack that declares nothing is not judged.** With no markers, "no transaction boundary appeared" is
+  trivially true for every method — a false-positive flood rather than a finding. So P13 emits **no**
+  annotation for a sub-project that declares no `tx_calls`, instead of applying another stack's markers
+  (which is what the old hard-coded `language == php` gate did — silently skipping every other stack *and*
+  being impossible to extend without editing the engine).
+* **It is a merged list, not single-valued.** Unlike `sign_check` / `taint` (taken by `find_map`, first
+  applicable wins), `tx_calls` from every applicable FKB is accumulated, deduped **case-insensitively**
+  (`transaction` and `Transaction` are the same marker). So a framework layer and its language-generic layer
+  both contribute, and you do not have to centralise every marker in one file.
+* **The `apply_without_detection` arm counts.** `tx_calls` is collected in the same `kb.all()` loop, behind the
+  same `frameworks || projects || apply_without_detection` filter as `sign_check` / `taint`. PHP's vocabulary
+  lives in the unconditional language layer, which is never in `frameworks` (no detectors), so dropping that
+  arm silently disables P13 for every PHP project — pinned by the `stack_without_declared_markers_is_not_judged`
+  unit test in `crates/gt-pipeline/src/phase/tx.rs` and the shared detector-coverage check.
+
+A marker matches a call site **case-insensitively**, against either the call's method name or its callee
+(`transaction` matches both `->transaction()` and a static `Db::transaction`).
 
 ### 2.2 `method_ref` vs `class_const` (resolving references to code)
 

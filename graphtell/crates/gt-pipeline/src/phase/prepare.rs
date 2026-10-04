@@ -138,6 +138,24 @@ pub fn run(
             }
             ctx.sign_check.insert(sub.id.get(), spec);
         }
+        // SQL-injection vocabulary (P9 Taint), collected the same way and under the same
+        // `apply_without_detection` rule — see `sign_check` above for why that arm is not optional.
+        if let Some(spec) = kb
+            .all()
+            .iter()
+            .filter(|fk| {
+                fk.language == sub.language
+                    && (frameworks.contains(&fk.id)
+                        || projects.contains(&fk.id)
+                        || fk.apply_without_detection)
+            })
+            .find_map(|fk| fk.taint.clone())
+        {
+            if ctx.taint_default.is_none() {
+                ctx.taint_default = Some(spec.clone());
+            }
+            ctx.taint.insert(sub.id.get(), spec);
+        }
         // These three lists are collected only from knowledge that **actually applies** to this sub-project:
         // a recognised framework / project, or the unconditional language layer (`apply_without_detection`).
         //
@@ -167,9 +185,19 @@ pub fn run(
                     ctx.external_calls.push(c.clone());
                 }
             }
+            // Transaction markers are collected **per sub-project**, not globally: P13 needs "what does a
+            // transaction look like in *this* stack", and a stack that declares none must not be judged
+            // against another stack's markers (see `PipelineContext::tx_calls`).
             for c in &fk.tx_calls {
-                if !ctx.tx_calls.iter().any(|x| x.eq_ignore_ascii_case(c)) {
-                    ctx.tx_calls.push(c.clone());
+                let markers = ctx.tx_calls.entry(sub.id.get()).or_default();
+                if !markers.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+                    markers.push(c.clone());
+                }
+            }
+            if ctx.tx_calls_default.is_empty() {
+                let cur = ctx.tx_calls.get(&sub.id.get()).cloned().unwrap_or_default();
+                if !cur.is_empty() {
+                    ctx.tx_calls_default = cur;
                 }
             }
             // "middleware class → capability": names are framework/project conventions (`AuthTokenMiddleware`-style

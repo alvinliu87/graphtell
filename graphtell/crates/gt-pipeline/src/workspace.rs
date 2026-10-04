@@ -922,6 +922,15 @@ impl GraphWorkspace {
 
     // ------------------------------------------------------------ annotations
 
+    /// The annotations recorded so far.
+    ///
+    /// Test-visible only: several phases (P9 Taint, P11 Sign, P13 Tx) are observable **solely** through the
+    /// annotations they emit, and the in-memory workspace has no store behind it to query.
+    #[cfg(test)]
+    pub(crate) fn annotations(&self) -> &[Annotation] {
+        &self.annotations
+    }
+
     /// Annotate by merge strategy.
     pub fn annotate(&mut self, new: NewAnnotation) {
         let key = new.node_id.get();

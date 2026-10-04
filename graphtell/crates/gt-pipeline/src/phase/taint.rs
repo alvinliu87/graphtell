@@ -36,26 +36,38 @@
 use std::collections::{HashMap, HashSet};
 
 use gt_domain::model::{
-    AnnotationChannel, FactValue, Language, MergeStrategy, NewAnnotation, NodeId, Phase,
+    AnnotationChannel, FactValue, MergeStrategy, NewAnnotation, NodeId, Phase, SubProjectId,
+    TaintSpec,
 };
 use serde_json::json;
 
 use crate::context::PipelineContext;
 
-/// Raw SQL execution callees (argument 0 is the SQL text).
-fn is_raw_sql_sink(receiver: &Option<String>, method: &str) -> bool {
-    match method {
-        // `Db::query` / `Db::execute` must be Db static calls.
-        "query" | "execute" => receiver.as_deref() == Some("Db"),
-        // `whereRaw` / `whereExp` / `Db::raw` with any receiver are raw SQL.
-        "whereRaw" | "whereExp" | "raw" => true,
-        _ => false,
-    }
+/// The taint vocabulary to judge a call site with: the sub-project's own, else the global fallback.
+///
+/// `None` means this stack declares nothing, so P9 judges nothing — rather than applying another stack's
+/// ORM names (which is what the old hard-coded `language == php` gate did).
+fn spec_for(ctx: &PipelineContext, sub: Option<SubProjectId>) -> Option<&TaintSpec> {
+    sub.and_then(|s| ctx.taint.get(&s.get()))
+        .or(ctx.taint_default.as_ref())
+}
+
+/// Raw SQL execution callees (argument 0 is the SQL text) — **declared by FKB**, not built in.
+fn is_raw_sql_sink(spec: &TaintSpec, receiver: &Option<String>, method: &str) -> bool {
+    spec.raw_sql_sinks.iter().any(|s| {
+        s.method == method
+            && match s.receiver.as_deref() {
+                // A receiver given in the declaration must match exactly (ThinkPHP's `Db::query`);
+                // omitted = "raw SQL however it is reached" (`whereRaw` / `raw`).
+                Some(r) => receiver.as_deref() == Some(r),
+                None => true,
+            }
+    })
 }
 
 /// In the where family, "condition-string interpolation" is the injection form (whereLike uses parameterised escaping, skip it).
-fn is_where_interp_sink(method: &str) -> bool {
-    matches!(method, "where" | "whereOr")
+fn is_where_interp_sink(spec: &TaintSpec, method: &str) -> bool {
+    spec.where_interp_sinks.iter().any(|m| m == method)
 }
 
 pub fn run(ctx: &mut PipelineContext) {
@@ -80,16 +92,23 @@ pub fn run(ctx: &mut PipelineContext) {
     // Collect call sites to annotate first, to avoid a conflict between `ctx.ws.calls`'s immutable borrow and `annotate`'s mutable borrow.
     let mut targets: Vec<(NodeId, String, String, String)> = Vec::new();
     for call in ctx.ws.calls.iter() {
-        // For now this heuristic is only for PHP (callee naming and string-interpolation semantics follow PHP).
-        if call.language.0 != Language::PHP {
+        // Which callees are SQL sinks, and which expressions read user input, is FKB knowledge — a stack
+        // that declares none is skipped instead of being judged with another stack's vocabulary.
+        let Some(spec) = spec_for(ctx, call.sub) else {
+            continue;
+        };
+        // How this language writes a variable reference comes from its parser (PHP `$`, JS `${` …).
+        // With no marker there is nothing to look for, so the phase cannot judge this call site.
+        let prefixes = &ctx.lang_policy_for_sub(call.sub).variable_prefixes;
+        if prefixes.is_empty() {
             continue;
         }
         let method = match &call.method {
             Some(m) => m.as_str(),
             None => continue,
         };
-        let is_raw = is_raw_sql_sink(&call.receiver, method);
-        let is_where = is_where_interp_sink(method);
+        let is_raw = is_raw_sql_sink(spec, &call.receiver, method);
+        let is_where = is_where_interp_sink(spec, method);
         if !is_raw && !is_where {
             continue;
         }
@@ -99,20 +118,20 @@ pub fn run(ctx: &mut PipelineContext) {
             Some(a) => a,
             None => continue,
         };
-        if !arg_has_user_var(sql_arg) {
+        if !arg_has_user_var(sql_arg, prefixes) {
             continue;
         }
 
         // The where family only recognises "a variable embedded in a string / SQL expression" (a bare variable like `->where($cond)`
         // needs Tier-2 inter-procedural argument-source tracing, this phase does not false-positive on it); raw SQL execution classes count bare variables as high-risk too.
-        if is_where && !arg_is_embedded(sql_arg) {
+        if is_where && !arg_is_embedded(sql_arg, prefixes) {
             continue;
         }
 
-        let vars = var_names_in(&arg_text(sql_arg));
+        let vars = var_names_in(&arg_text(sql_arg), prefixes);
         let proven = vars
             .iter()
-            .any(|v| reaches_request(&index, call.owner_fqn.as_str(), v));
+            .any(|v| reaches_request(spec, &index, call.owner_fqn.as_str(), v, prefixes));
         // When the argument has no resolvable variable (e.g. forms other than `$this->alias . '.uid'`), keep the original criterion.
         let unknown = !vars.is_empty() && !proven;
 
@@ -164,41 +183,30 @@ pub fn run(ctx: &mut PipelineContext) {
 /// The maximum depth of backward tracing (guards against cycles like `$a = $b; $b = $a;` and over-long chains).
 const TRACE_DEPTH: u8 = 4;
 
-/// Request-source features: the presence of any means the expression reads user input.
-///
-/// The list is deliberately conservative (only framework / superglobal parameter-taking forms), and `$request` counts too —
-/// it is a Request object when injected. Better a miss (caught by `rules_silent`) than misjudging a config read as user input.
-const REQUEST_SOURCES: &[&str] = &[
-    "$_get",
-    "$_post",
-    "$_request",
-    "$_cookie",
-    "$_files",
-    "request()",
-    "request::",
-    "$request",
-    "->param(",
-    "->input(",
-    "->get(",
-    "->post(",
-    "->all(",
-    "->only(",
-    "->except(",
-    "input(",
-];
-
 /// Whether a variable (within the **same function**, along the assignment chain) ultimately comes from request input.
-fn reaches_request(index: &HashMap<(&str, &str), Vec<&str>>, owner_fqn: &str, var: &str) -> bool {
+///
+/// `request_sources` is declared by FKB (framework / superglobal parameter-taking forms). The list is
+/// deliberately conservative, and `$request` counts too — it is a Request object when injected. Better a
+/// miss (caught by `rules_silent`) than misjudging a config read as user input.
+fn reaches_request(
+    spec: &TaintSpec,
+    index: &HashMap<(&str, &str), Vec<&str>>,
+    owner_fqn: &str,
+    var: &str,
+    prefixes: &[String],
+) -> bool {
     let mut seen: HashSet<String> = HashSet::new();
-    trace_var(index, owner_fqn, var, TRACE_DEPTH, &mut seen)
+    trace_var(spec, index, owner_fqn, var, TRACE_DEPTH, &mut seen, prefixes)
 }
 
 fn trace_var(
+    spec: &TaintSpec,
     index: &HashMap<(&str, &str), Vec<&str>>,
     owner_fqn: &str,
     var: &str,
     depth: u8,
     seen: &mut HashSet<String>,
+    prefixes: &[String],
 ) -> bool {
     if depth == 0 || !seen.insert(var.to_string()) {
         return false;
@@ -209,11 +217,11 @@ fn trace_var(
     };
     for rhs in rhss {
         let lower = rhs.to_ascii_lowercase();
-        if REQUEST_SOURCES.iter().any(|s| lower.contains(s)) {
+        if spec.request_sources.iter().any(|s| lower.contains(s)) {
             return true;
         }
-        for next in var_names_in(rhs) {
-            if trace_var(index, owner_fqn, &next, depth - 1, seen) {
+        for next in var_names_in(rhs, prefixes) {
+            if trace_var(spec, index, owner_fqn, &next, depth - 1, seen, prefixes) {
                 return true;
             }
         }
@@ -221,26 +229,29 @@ fn trace_var(
     false
 }
 
-/// Extract variable names from text (`$sql` / `{$sql}`), without `$`, skipping `$this`.
-fn var_names_in(text: &str) -> Vec<String> {
+/// Extract variable names from text (`$sql` / `{$sql}`), without the language's variable prefix, skipping `$this`.
+fn var_names_in(text: &str, prefixes: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let bytes = text.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$' {
-            let start = i + 1;
-            let mut j = start;
-            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-                j += 1;
+    while i < text.len() {
+        let Some(p) = prefixes.iter().find(|p| text[i..].starts_with(p.as_str())) else {
+            i += 1;
+            continue;
+        };
+        let start = i + p.len();
+        let rest = &text[start..];
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            let len = name.len();
+            // `$this` is the object itself, never user input.
+            if name != "this" && !out.iter().any(|n| *n == name) {
+                out.push(name);
             }
-            if j > start {
-                let name = &text[start..j];
-                if name != "this" && !out.iter().any(|n| n == name) {
-                    out.push(name.to_string());
-                }
-                i = j;
-                continue;
-            }
+            i = start + len;
+            continue;
         }
         i += 1;
     }
@@ -251,22 +262,24 @@ fn var_names_in(text: &str) -> Vec<String> {
 ///
 /// Only obvious variable references are recognised, to avoid misjudging `$` appearing in other contexts (e.g. `Db::` namespace separator,
 /// a literal inside `Env::get`).
-fn arg_has_user_var(fv: &FactValue) -> bool {
+fn arg_has_user_var(fv: &FactValue, prefixes: &[String]) -> bool {
     match fv {
-        FactValue::String(s) => s.contains("${"),
-        FactValue::Unknown(Some(t)) => text_has_var(t),
+        // A literal string that still carries an interpolation marker (`"${x}"` on PHP).
+        FactValue::String(s) => prefixes.iter().any(|p| s.contains(&format!("{p}{{"))),
+        FactValue::Unknown(Some(t)) => text_has_var(t, prefixes),
         _ => false,
     }
 }
 
 /// Whether a variable is "embedded in a string / SQL expression" (rather than a bare variable passed as its own argument).
-fn arg_is_embedded(fv: &FactValue) -> bool {
+fn arg_is_embedded(fv: &FactValue, prefixes: &[String]) -> bool {
     let t = match fv {
         FactValue::String(s) => s.as_str(),
         FactValue::Unknown(Some(t)) => t.as_str(),
         _ => return false,
     };
-    text_has_var(t) && (t.contains('\'') || t.contains('"') || contains_sql_keyword(t))
+    text_has_var(t, prefixes)
+        && (t.contains('\'') || t.contains('"') || contains_sql_keyword(t, prefixes))
 }
 
 /// Whether the text contains a "variable reference" (`$var` / `{$var}`); `$this` does not count.
@@ -274,42 +287,35 @@ fn arg_is_embedded(fv: &FactValue) -> bool {
 /// `$this` is the object itself, never user input. Counting it would make a **parameterised** write like
 /// `->where($this->alias . '.uid', $uid)` be judged as injection (the condition string does "have a variable", but that variable is a
 /// property whose value is a bound parameter) — measured on CRMEB, this was the entire source of the 29 residual `sql-injection-where-interp` cases.
-fn text_has_var(t: &str) -> bool {
-    let bytes = t.as_bytes();
+fn text_has_var(t: &str, prefixes: &[String]) -> bool {
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$' {
-            if let Some(name) = var_name_at(t, i + 1) {
-                if name != "this" {
-                    return true;
-                }
-                i += 1 + name.len();
-                continue;
-            }
-            // The `{$var}` form.
-            if bytes.get(i + 1) == Some(&b'{') {
+    while i < t.len() {
+        let Some(p) = prefixes.iter().find(|p| t[i..].starts_with(p.as_str())) else {
+            i += 1;
+            continue;
+        };
+        let after = &t[i + p.len()..];
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            if name != "this" {
                 return true;
             }
+            i += p.len() + name.len();
+            continue;
+        }
+        // The `{$var}` form.
+        if after.starts_with('{') {
+            return true;
         }
         i += 1;
     }
     false
 }
 
-/// Read a variable name from `text[start..]` (letters / digits / underscore).
-fn var_name_at(text: &str, start: usize) -> Option<&str> {
-    let bytes = text.as_bytes();
-    let mut j = start;
-    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-        j += 1;
-    }
-    if j == start {
-        return None;
-    }
-    text.get(start..j)
-}
-
-fn contains_sql_keyword(t: &str) -> bool {
+fn contains_sql_keyword(t: &str, prefixes: &[String]) -> bool {
     const KW: &[&str] = &[
         "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "REPLACE",
         "WHERE", "FROM", "SHOW", "SET", "INTO", "VALUES", "JOIN", "ORDER", "GROUP", "HAVING",
@@ -317,7 +323,7 @@ fn contains_sql_keyword(t: &str) -> bool {
     ];
     // Strip variable references (`$where`, `{$table}`) first: a variable name is just an identifier, not SQL syntax,
     // otherwise `$where` would be misjudged as embedding a WHERE clause because its name contains "where" (root cause of the BaseDao.php:580 false positive).
-    let cleaned = strip_var_refs(t);
+    let cleaned = strip_var_refs(t, prefixes);
     let up = cleaned.to_uppercase();
     // Keywords must appear as whole words (compare exactly after splitting on non-alphanumerics), to avoid substring false hits.
     KW.iter()
@@ -325,37 +331,29 @@ fn contains_sql_keyword(t: &str) -> bool {
 }
 
 /// Remove variable references (`$var` / `{$var}`) from text, replaced with a space placeholder.
-fn strip_var_refs(t: &str) -> String {
+fn strip_var_refs(t: &str, prefixes: &[String]) -> String {
     let mut out = String::with_capacity(t.len());
-    let mut chars = t.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '$' {
-            // Skip the variable name itself
-            while let Some(&nc) = chars.peek() {
-                if nc.is_ascii_alphanumeric() || nc == '_' {
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            out.push(' ');
-        } else if c == '{' && chars.peek() == Some(&'$') {
-            // Strip the whole `{$var}` interpolation
-            chars.next();
-            while let Some(&nc) = chars.peek() {
-                if nc.is_ascii_alphanumeric() || nc == '_' {
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            if chars.peek() == Some(&'}') {
-                chars.next();
-            }
-            out.push(' ');
-        } else {
-            out.push(c);
+    let mut i = 0;
+    let chars: Vec<char> = t.chars().collect();
+    while i < chars.len() {
+        let rest: String = chars[i..].iter().collect();
+        let Some(p) = prefixes.iter().find(|p| rest.starts_with(p.as_str())) else {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        };
+        // Skip the variable name itself.
+        let mut j = i + p.chars().count();
+        while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+            j += 1;
         }
+        // Strip the whole `{$var}` interpolation when the prefix sat inside braces.
+        if i > 0 && chars[i - 1] == '{' && j < chars.len() && chars[j] == '}' {
+            j += 1;
+            out.pop(); // drop the already-emitted `{`
+        }
+        out.push(' ');
+        i = j;
     }
     out
 }
@@ -372,49 +370,112 @@ fn arg_text(fv: &FactValue) -> String {
 mod tests {
     use super::*;
 
+    /// The variable marker is **this language's** (PHP `$`), injected like every other notation rule — not
+    /// built into the scanner.
+    fn php_prefixes() -> Vec<String> {
+        vec!["$".to_string()]
+    }
+
     #[test]
     fn detects_var_in_interpolated_string() {
-        assert!(text_has_var("CONCAT(',',roles,',') LIKE '%,$roles,%'"));
-        assert!(text_has_var("SHOW FULL COLUMNS FROM `{$table}` WHERE Field = '{$field}'"));
-        assert!(text_has_var("\"DROP TABLE `\" . $info->table_name . \"`"));
-        assert!(text_has_var("$findSql"));
+        let p = php_prefixes();
+        assert!(text_has_var("CONCAT(',',roles,',') LIKE '%,$roles,%'", &p));
+        assert!(text_has_var(
+            "SHOW FULL COLUMNS FROM `{$table}` WHERE Field = '{$field}'",
+            &p
+        ));
+        assert!(text_has_var(
+            "\"DROP TABLE `\" . $info->table_name . \"`",
+            &p
+        ));
+        assert!(text_has_var("$findSql", &p));
     }
 
     #[test]
     fn ignores_namespace_and_literals() {
-        assert!(!text_has_var("Db::query"));
-        assert!(!text_has_var("Env::get('database.prefix')"));
-        assert!(!text_has_var("status"));
+        let p = php_prefixes();
+        assert!(!text_has_var("Db::query", &p));
+        assert!(!text_has_var("Env::get('database.prefix')", &p));
+        assert!(!text_has_var("status", &p));
+    }
+
+    /// A language that declares **no** variable marker yields nothing: the phase cannot guess one. This is
+    /// what replaces the old `language == php` gate.
+    #[test]
+    fn no_declared_marker_finds_no_variable() {
+        let p: Vec<String> = Vec::new();
+        assert!(!text_has_var("CONCAT(',',roles,',') LIKE '%,$roles,%'", &p));
+        assert!(var_names_in("$sql", &p).is_empty());
     }
 
     #[test]
     fn embedded_recognizes_string_but_not_bare_var() {
+        let p = php_prefixes();
         let embedded = FactValue::Unknown(Some(
             "CONCAT(',',roles,',') LIKE '%,$roles,%'".to_string(),
         ));
-        assert!(arg_is_embedded(&embedded));
+        assert!(arg_is_embedded(&embedded, &p));
         let bare = FactValue::Unknown(Some("$cond".to_string()));
-        assert!(!arg_is_embedded(&bare));
+        assert!(!arg_is_embedded(&bare, &p));
     }
 
     /// Regression: the array-parameterised write `->where($where)` must not be misjudged because the variable name contains a SQL keyword
     /// (BaseDao.php:580, `$where` uppercased contains "WHERE").
     #[test]
     fn bare_var_named_like_keyword_is_not_embedded() {
+        let p = php_prefixes();
         for name in ["$where", "$order", "$limit", "$group", "$values", "$map"] {
             let bare = FactValue::Unknown(Some(name.to_string()));
-            assert!(!arg_is_embedded(&bare), "{name} must not be judged as embedded SQL");
+            assert!(
+                !arg_is_embedded(&bare, &p),
+                "{name} must not be judged as embedded SQL"
+            );
         }
         // After the variable name is stripped, the real SQL fragment can still be matched by keyword / quote
         let kw_only_in_var = FactValue::Unknown(Some("$orderBy . ' LIMIT 1'".to_string()));
-        assert!(arg_is_embedded(&kw_only_in_var));
+        assert!(arg_is_embedded(&kw_only_in_var, &p));
     }
 
     #[test]
     fn strip_var_refs_removes_vars_and_interpolation() {
-        assert_eq!(strip_var_refs("$where"), " ");
-        assert_eq!(strip_var_refs("{$table}"), " ");
-        assert_eq!(strip_var_refs("a.$order.b"), "a. .b");
-        assert_eq!(strip_var_refs("LIKE '%$kw%'"), "LIKE '% %'");
+        let p = php_prefixes();
+        assert_eq!(strip_var_refs("$where", &p), " ");
+        assert_eq!(strip_var_refs("{$table}", &p), " ");
+        assert_eq!(strip_var_refs("a.$order.b", &p), "a. .b");
+        assert_eq!(strip_var_refs("LIKE '%$kw%'", &p), "LIKE '% %'");
+    }
+
+    /// Sinks and request sources are declared data: an empty declaration (`TaintSpec::default()`) must not
+    /// recognise ThinkPHP's `Db::query` — that is the whole point of moving the vocabulary to FKB.
+    #[test]
+    fn sinks_come_from_the_declaration_not_the_kernel() {
+        let empty = TaintSpec::default();
+        assert!(!is_raw_sql_sink(
+            &empty,
+            &Some("Db".to_string()),
+            "query"
+        ));
+        assert!(!is_where_interp_sink(&empty, "whereRaw"));
+
+        let php = TaintSpec {
+            raw_sql_sinks: vec![
+                gt_domain::model::TaintSink {
+                    method: "query".into(),
+                    receiver: Some("Db".into()),
+                },
+                gt_domain::model::TaintSink {
+                    method: "whereRaw".into(),
+                    receiver: None,
+                },
+            ],
+            where_interp_sinks: vec!["where".into(), "whereOr".into()],
+            request_sources: vec!["$_get".into(), "->param(".into()],
+        };
+        assert!(is_raw_sql_sink(&php, &Some("Db".to_string()), "query"));
+        // A receiver-bound sink must not fire for another receiver: `->query()` is not `Db::query`.
+        assert!(!is_raw_sql_sink(&php, &Some("Model".to_string()), "query"));
+        // A sink declared without a receiver fires for any receiver.
+        assert!(is_raw_sql_sink(&php, &Some("Model".to_string()), "whereRaw"));
+        assert!(is_where_interp_sink(&php, "where"));
     }
 }

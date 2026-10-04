@@ -118,6 +118,9 @@ pub struct FrameworkKnowledge {
     /// Signature-verification vocabulary (`sign_check`) — see [`SignCheckSpec`].
     #[serde(default)]
     pub sign_check: Option<SignCheckSpec>,
+    /// SQL-injection vocabulary (`taint`) — see [`TaintSpec`].
+    #[serde(default)]
+    pub taint: Option<TaintSpec>,
     /// A callee list for **external system calls** (HTTP / SMS / email / RPC): `curl_exec`, `Http::get` …
     /// declared by FKB for the "external call inside a loop" judgement (one network round trip costs far more
     /// than one query, so putting it in a loop kills an endpoint even more reliably than N+1).
@@ -561,6 +564,36 @@ pub struct DbVerbsSpec {
     /// Read verbs: `find` / `select` / `value` / `count` …
     #[serde(default)]
     pub read: Vec<String>,
+}
+
+/// One raw-SQL sink: a method name, optionally bound to a receiver (`Db::query` — `query` alone would
+/// match any `->query()`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaintSink {
+    pub method: String,
+    /// `None` = any receiver (`whereRaw` / `whereExp` / `raw` are SQL however they are reached).
+    #[serde(default)]
+    pub receiver: Option<String>,
+}
+
+/// The vocabulary of **SQL injection** (used by P9 Taint).
+///
+/// Which ORM methods execute raw SQL, and which expressions read user input, is framework / library
+/// knowledge — ThinkPHP's `Db::query` and `whereRaw`, PHP's superglobals, a framework's `input()`. The
+/// kernel knows none of them. A stack that declares nothing gets **no** taint judgement, which is honest:
+/// "does this argument contain a variable" is not answerable without knowing how the language writes one
+/// (that part comes from the parser, via `NamespacePolicy::variable_prefixes`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct TaintSpec {
+    /// Methods that execute raw SQL (argument 0 is the SQL text).
+    pub raw_sql_sinks: Vec<TaintSink>,
+    /// Methods whose **condition string** interpolation is the injection form (`where` / `whereOr`).
+    pub where_interp_sinks: Vec<String>,
+    /// Text features meaning "this expression reads user input" (case-insensitive substring of an
+    /// assignment's right-hand side).
+    pub request_sources: Vec<String>,
 }
 
 /// The vocabulary of **signature verification** (used by P11 Sign).

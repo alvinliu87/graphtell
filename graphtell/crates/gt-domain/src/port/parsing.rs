@@ -22,6 +22,13 @@ pub trait LanguageParser: Send + Sync {
     /// Namespace separator (there may be several, e.g. PHP's `\` and Python's `.`).
     fn namespace_separator(&self) -> &'static [char];
 
+    /// How this language writes a **variable reference inside a string** — the prefixes that mark one
+    /// (PHP `$x` / `{$x}` / `${x}`, JS template `` `${x}` ``, …). Empty means "this language gives no
+    /// textual marker", so a reader cannot tell a variable from ordinary text and must not guess.
+    fn variable_prefixes(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Member separator: the symbol between a class and its methods / properties.
     ///
     /// PHP and C++ use `::`, while Java / JS / Python use `.`. **Required, not defaulted**: a default would

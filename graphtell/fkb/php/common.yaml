@@ -47,6 +47,44 @@ sign_check:
   value_hints: ["sign"]
   value_hints_require_compare: ["key="]
 
+# SQL-injection vocabulary (used by the P9 Taint phase).
+#
+# Which ORM methods run raw SQL and which expressions read user input is framework / PHP knowledge, so it is
+# declared here rather than built into the kernel — a stack that declares nothing gets no taint judgement.
+# (How a variable is *written* is not here: that is parser notation, `LanguageParser::variable_prefixes`.)
+taint:
+  # Argument 0 is the SQL text. `receiver` binds a sink to a receiver — bare `query` would match any
+  # `->query()` — while omitting it means "raw SQL however it is reached".
+  raw_sql_sinks:
+    - { method: query, receiver: Db }
+    - { method: execute, receiver: Db }
+    - { method: whereRaw }
+    - { method: whereExp }
+    - { method: raw }
+  # In the where family the injection form is "a variable embedded in the condition string"
+  # (`whereLike` uses parameterised escaping, so it is deliberately not listed).
+  where_interp_sinks: [where, whereOr]
+  # Deliberately conservative: only framework / superglobal parameter-taking forms. `$request` counts too —
+  # it is a Request object when injected. Better a miss (caught by `rules_silent`) than misjudging a config
+  # read as user input.
+  request_sources:
+    - "$_get"
+    - "$_post"
+    - "$_request"
+    - "$_cookie"
+    - "$_files"
+    - "request()"
+    - "request::"
+    - "$request"
+    - "->param("
+    - "->input("
+    - "->get("
+    - "->post("
+    - "->all("
+    - "->only("
+    - "->except("
+    - "input("
+
 # External-system call list (used by the "external call inside a loop" judgement).
 #
 # One network round trip costs an order of magnitude more than one database query, so putting it inside a loop is an

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use gt_domain::model::{
     DbVerbsSpec, MethodRefSpec, Language, MagicDelegationSpec, MiddlewareCapability, SignCheckSpec,
+    TaintSpec,
     NamespacePolicy, NodeId, Phase, Project, ProjectConfig, Rule, SourceFile, SubProject,
     SubProjectId,
 };
@@ -56,6 +57,10 @@ pub struct PipelineContext {
     pub sign_check: HashMap<i64, SignCheckSpec>,
     /// Global fallback signature vocabulary.
     pub sign_check_default: Option<SignCheckSpec>,
+    /// Sub-project -> SQL-injection vocabulary (FKB `taint`).
+    pub taint: HashMap<i64, TaintSpec>,
+    /// Global fallback taint vocabulary.
+    pub taint_default: Option<TaintSpec>,
     /// Language -> namespace / member notation rules (extracted by P0 from the parser registry).
     pub lang_policies: HashMap<String, NamespacePolicy>,
     /// Fallback notation rules (used for single-language projects / unknown languages).
@@ -64,8 +69,15 @@ pub struct PipelineContext {
     pub external_calls: Vec<String>,
     /// The "middleware class -> capability" mapping (FKB `middleware_capabilities`); likewise merged globally.
     pub middleware_capabilities: Vec<MiddlewareCapability>,
-    /// Transaction-boundary markers (FKB `tx_calls`); same again, merged globally.
-    pub tx_calls: Vec<String>,
+    /// Sub-project -> transaction-boundary markers (FKB `tx_calls`).
+    ///
+    /// Kept **per sub-project** (unlike `external_calls`): P13 asks "does this method open a transaction",
+    /// and answering that requires knowing what a transaction looks like *in this stack*. With a single
+    /// global list, a stack that declares no markers would still be judged against another stack's, so
+    /// every multi-table write in it would be reported — a false-positive flood, not a measurement.
+    pub tx_calls: HashMap<i64, Vec<String>>,
+    /// Global fallback transaction markers.
+    pub tx_calls_default: Vec<String>,
     /// Sub-project -> candidate consumer entry method names (FKB `entry_methods`).
     pub entry_methods: HashMap<i64, Vec<String>>,
     /// Global fallback entry method names (taken from the first framework declaring `entry_methods`).
@@ -97,9 +109,12 @@ impl PipelineContext {
             db_verbs_default: None,
             sign_check: HashMap::new(),
             sign_check_default: None,
+            taint: HashMap::new(),
+            taint_default: None,
             external_calls: Vec::new(),
             middleware_capabilities: Vec::new(),
-            tx_calls: Vec::new(),
+            tx_calls: HashMap::new(),
+            tx_calls_default: Vec::new(),
             lang_policies: HashMap::new(),
             lang_policy_default: NamespacePolicy::default(),
             entry_methods: HashMap::new(),
