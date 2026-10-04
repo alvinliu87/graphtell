@@ -17,7 +17,7 @@
 //! confirmed fact "a remote call happens inside a loop", and the fix is left to a human (batch API / merged
 //! request / push it onto a queue).
 
-use gt_domain::model::{AnnotationChannel, Language, MergeStrategy, NewAnnotation, NodeId, Phase};
+use gt_domain::model::{AnnotationChannel, MergeStrategy, NewAnnotation, NodeId, Phase};
 use serde_json::json;
 
 use crate::context::PipelineContext;
@@ -31,7 +31,11 @@ pub fn run(ctx: &mut PipelineContext) {
     let mut targets: Vec<(NodeId, String, u32, String)> = Vec::new();
 
     for call in ctx.ws.calls.iter() {
-        if call.language.0 != Language::PHP || !call.in_loop {
+        // Language-agnostic: which callees count as external system calls comes entirely from FKB's
+        // `external_calls` (merged globally, cross-framework small), so the kernel must not gate on a
+        // specific language — otherwise a Java/JS/Python project that declares its external calls in FKB
+        // would never be checked. The FKB list being empty already short-circuits via `is_external_call`.
+        if !call.in_loop {
             continue;
         }
         if !is_external_call(ctx, &call.callee, call.method.as_deref()) {
@@ -79,7 +83,8 @@ fn is_external_call(ctx: &PipelineContext, callee: &str, method: Option<&str>) -
 mod tests {
     use super::*;
     use crate::context::PipelineContext;
-    use gt_domain::model::ProjectStatus;
+    use crate::workspace::CallRecord;
+    use gt_domain::model::{Language, NodeId, ProjectStatus, Span};
 
     fn ctx_with(calls: Vec<&str>) -> PipelineContext {
         let mut ctx = PipelineContext::new(gt_domain::model::Project {
@@ -108,5 +113,51 @@ mod tests {
     fn empty_fkb_list_matches_nothing() {
         let ctx = ctx_with(vec![]);
         assert!(!is_external_call(&ctx, "curl_exec", Some("curl_exec")));
+    }
+
+    /// The PHP-only gate was removed: in-loop external calls must be caught for **any** language whose
+    /// FKB declares `external_calls`, not just PHP. This locks that behaviour so the restriction can't
+    /// silently creep back.
+    #[test]
+    fn detects_in_loop_external_calls_across_languages() {
+        let mut ctx = ctx_with(vec!["curl_exec", "fetch"]);
+        let mk = |id: i64, lang: &str, callee: &str, method: &str, in_loop: bool| CallRecord {
+            node: NodeId::new(id),
+            owner: NodeId::new(0),
+            owner_fqn: "C".into(),
+            owner_class: None,
+            callee: callee.into(),
+            receiver: None,
+            method: Some(method.into()),
+            args: vec![],
+            db_table: None,
+            in_loop,
+            entity: None,
+            span: Span::default(),
+            file: "src".into(),
+            sub: None,
+            language: Language::new(lang),
+        };
+        // In-loop external calls across three stacks — all must be flagged (no language gate).
+        ctx.ws.calls.push(mk(1, "php", "curl_exec", "curl_exec", true));
+        ctx.ws.calls.push(mk(2, "typescript", "fetch", "fetch", true));
+        ctx.ws.calls.push(mk(3, "python", "fetch", "fetch", true));
+        // Negative cases: not in a loop, and in-loop but not an external call.
+        ctx.ws.calls.push(mk(4, "python", "fetch", "fetch", false));
+        ctx.ws.calls.push(mk(5, "php", "Db::name", "name", true));
+
+        run(&mut ctx);
+
+        assert_eq!(
+            ctx.ws.annotation_count(),
+            3,
+            "3 个跨语言、循环内的外部调用应被捕获"
+        );
+        assert!(ctx.ws.has_annotation(NodeId::new(1), EXT_IN_LOOP));
+        assert!(ctx.ws.has_annotation(NodeId::new(2), EXT_IN_LOOP));
+        assert!(ctx.ws.has_annotation(NodeId::new(3), EXT_IN_LOOP));
+        // The two negative cases must NOT be annotated.
+        assert!(!ctx.ws.has_annotation(NodeId::new(4), EXT_IN_LOOP));
+        assert!(!ctx.ws.has_annotation(NodeId::new(5), EXT_IN_LOOP));
     }
 }

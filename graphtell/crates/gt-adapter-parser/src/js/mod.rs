@@ -123,6 +123,7 @@ impl LanguageParser for JsFrontendParser {
             src,
             facts: &mut facts,
             path,
+            loop_depth: 0,
         };
         let root = tree.root_node();
         let file_owner = ctx.path;
@@ -136,6 +137,11 @@ struct Ctx<'a> {
     src: &'a str,
     facts: &'a mut SyntaxFacts,
     path: &'a str,
+    /// How many levels of `for` / `while` loop body we are nested in (same semantics as the PHP / Python
+    /// parsers): a depth rather than a boolean, so after an inner loop exits the outer one's remaining
+    /// statements still count as inside a loop. Used to populate `CallSiteFact.in_loop` for the
+    /// "external call inside a loop" judgement (P12), which is language-agnostic.
+    loop_depth: u32,
 }
 
 /// The shape of an HTTP call (decides how url / method are read out of the handle).
@@ -171,6 +177,16 @@ impl HttpStyle {
 ///   than the `File`), so `CallsHttp` also originates from a front-end function.
 /// * `class`: the FQN of the class currently being entered (used for method ownership).
 fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
+    // Collect a call / construction wherever it syntactically appears — as a statement, an argument, a
+    // variable-initialiser value (`const x = f()`), a `for`-of iterable (`for (… of g())`), or a `while`
+    // condition. Previously only calls that were a *named child* of the walked node were picked up, so those
+    // boundary positions were silently missed (P12 could not flag them). Handling the node itself here and
+    // letting the generic `_ =>` arm recurse into children collects each call exactly once.
+    match node.kind() {
+        "call_expression" => collect_invocation(node, ctx, owner, false),
+        "new_expression" => collect_invocation(node, ctx, owner, true),
+        _ => {}
+    }
     let mut c = node.walk();
     let mut pending: Vec<Node> = Vec::new();
     for child in node.named_children(&mut c) {
@@ -215,14 +231,26 @@ fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
                     }
                 }
             }
-            "call_expression" => {
-                collect_invocation(child, ctx, owner, false);
-                // Keep drilling down to capture nested calls inside arguments (e.g. `axios.post(buildUrl())`).
-                walk(child, ctx, owner, class);
-            }
-            "new_expression" => {
-                collect_invocation(child, ctx, owner, true);
-                walk(child, ctx, owner, class);
+            // `call_expression` / `new_expression` are handled at the top of `walk` (so a call reached as a
+            // variable-initialiser value or `for`-of iterable is collected too, not just as a statement child),
+            // and the generic `_ =>` arm below recurses into their arguments for nested calls.
+            // Loop statements: only calls inside the **body** count as "inside the loop" (same as PHP /
+            // Python) — a call in the iterable / condition runs once, not per iteration. Bump `loop_depth`
+            // for the body child only, then recurse into every child so init / condition calls are still
+            // collected (just not flagged as in-loop).
+            "for_statement" | "for_in_statement" | "for_of_statement" | "while_statement"
+            | "do_statement" => {
+                let body_id = child.child_by_field_name("body").map(|b| b.id());
+                let mut cc = child.walk();
+                for sub in child.named_children(&mut cc) {
+                    if Some(sub.id()) == body_id {
+                        ctx.loop_depth += 1;
+                        walk(sub, ctx, owner, class);
+                        ctx.loop_depth -= 1;
+                    } else {
+                        walk(sub, ctx, owner, class);
+                    }
+                }
             }
             _ => walk(child, ctx, owner, class),
         }
@@ -802,8 +830,7 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
         args,
         span: span_of(call, ctx.src),
         db_table: None,
-        // Loop statements are not recognised on the JS side yet — a missing fact beats a wrong one (the rule is gated by language and only runs on PHP).
-        in_loop: false,
+        in_loop: ctx.loop_depth > 0,
         entity: None,
     });
 }
@@ -1287,6 +1314,46 @@ mod tests {
             })
             .unwrap_or_default();
         (c.callee_text.clone(), url, method)
+    }
+
+    /// Only calls inside the loop **body** count as in_loop: a call in the iterable / condition runs once, not
+    /// per iteration (same trade-off as the PHP / Python parsers).
+    /// Calls reached via field positions (variable-initialiser value, `for`-of iterable) are collected too,
+    /// and only calls inside the loop **body** count as in_loop: `countAll()` (declarator init) and `fetchPage()`
+    /// (for-of iterable) run once, so must be collected but `in_loop = false`; `db.query` / `db.flush` are in bodies.
+    #[test]
+    fn loop_body_marks_call_sites() {
+        let facts = parse_src(
+            r#"function run(items) {
+    const total = countAll();
+    const page = fetchPage();
+    for (const u of items) {
+        db.query(u);
+    }
+    for (const v of getMore()) {
+        db.save(v);
+    }
+    while (more()) {
+        db.flush();
+    }
+}"#,
+        );
+        let find = |callee: &str| facts.call_sites.iter().find(|c| c.callee_text == callee);
+        // Calls reached via field positions (declarator initialiser / for-of iterable / while condition) are
+        // collected...
+        assert!(find("countAll").is_some(), "declarator-initialiser call is collected");
+        assert!(find("fetchPage").is_some(), "declarator-initialiser call is collected");
+        assert!(find("getMore").is_some(), "for-of iterable call is collected");
+        assert!(find("more").is_some(), "while-condition call is collected");
+        // ...but only calls inside the loop **body** count as in_loop; an initialiser / iterable / condition runs
+        // once per loop, so must be collected as NOT in a loop body.
+        assert!(!find("countAll").unwrap().in_loop);
+        assert!(!find("fetchPage").unwrap().in_loop);
+        assert!(!find("getMore").unwrap().in_loop, "for-of iterable call is not in a loop body");
+        assert!(!find("more").unwrap().in_loop, "while-condition call is not in a loop body");
+        assert!(find("db.query").unwrap().in_loop);
+        assert!(find("db.save").unwrap().in_loop);
+        assert!(find("db.flush").unwrap().in_loop);
     }
 
     /// Decorators -> call sites (the basis of NestJS routes): same mechanism as Java annotations / Python decorators.

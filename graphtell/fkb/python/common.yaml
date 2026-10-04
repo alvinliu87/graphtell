@@ -49,3 +49,24 @@ rules:
                 - trim
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.85
+
+# External-system call list (used by the "external call inside a loop" judgement, P12).
+#
+# One network round trip costs an order of magnitude more than one database query, so putting it inside a loop
+# drags an endpoint down even more reliably than N+1. Matching: a call site matches if its full callee
+# (`requests.get`) or its method name (`get`) hits any entry. We list the libraries' canonical, module-level
+# call forms so they match precisely and never misfire on an ordinary `get`/`post` method of a model / DAO.
+external_calls:
+  - "requests.get"
+  - "requests.post"
+  - "requests.put"
+  - "requests.delete"
+  - "requests.patch"
+  - "requests.head"
+  - "requests.options"
+  - "httpx.get"
+  - "httpx.post"
+  - "httpx.put"
+  - "httpx.delete"
+  - "httpx.patch"
+  - "urllib.request.urlopen"

@@ -1,0 +1,39 @@
+# Java language-common knowledge (cross-framework, not tied to one framework)
+#
+# Design: this FKB declares `apply_without_detection: true`, so **its rules apply to sub-projects of the same
+# language whether the project is detected as Spring Boot / a plain Java service / another Java framework** —
+# semantics shared across frameworks (outbound HTTP / RPC calls) are written once, and adding a framework needs
+# no copy-paste.
+#
+# Note: `external_calls` (used by the "external call inside a loop" judgement, P12) is declared here because
+# outbound HTTP/RPC clients are a language-level concern, not specific to one framework. The Java parser reports
+# the *method* name of a call site (the receiver is the variable name, which varies per project), so we list the
+# **distinctive** method names of the standard clients rather than full callees:
+#   * RestTemplate:           getForObject / getForEntity / postForObject / postForEntity / exchange
+#   * WebClient (Reactor):    retrieve
+#   * OkHttp:                 newCall / sendAsync
+#   * java.net.http.HttpClient: sendAsync
+
+id: java-common
+display_name: Java common
+language: java
+version_hint: "*"
+side: backend
+# No detectors declared: this file is not "a detected framework", just a common layer effective for every Java project.
+apply_without_detection: true
+
+# External-system call list (used by the "external call inside a loop" judgement, P12).
+#
+# One network round trip costs an order of magnitude more than one database query, so putting it inside a loop
+# drags an endpoint down even more reliably than N+1. Matching: a call site matches if its method name hits any
+# entry. We list the **distinctive** method names of the standard Java HTTP/RPC clients so they match precisely
+# and never misfire on an ordinary `get` / `post` / `send` method of a model / DAO.
+external_calls:
+  - "getForObject"
+  - "getForEntity"
+  - "postForObject"
+  - "postForEntity"
+  - "exchange"
+  - "retrieve"
+  - "newCall"
+  - "sendAsync"

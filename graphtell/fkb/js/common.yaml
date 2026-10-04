@@ -170,3 +170,18 @@ rules:
             - kind: frontend.called
               confidence: 0.9
           merge: Coexist
+
+# External-system call list (used by the "external call inside a loop" judgement, P12).
+#
+# One network round trip costs an order of magnitude more than one database query, so putting it inside a loop
+# drags an endpoint down even more reliably than N+1. Matching: a call site matches if its full callee
+# (`axios` / `fetch` / `http.request`) or its method name (`XMLHttpRequest`) hits any entry. We list the
+# de-facto standard HTTP clients common across front-end frameworks (axios / fetch / node http); `uni.request`
+# lives in `uni-app.yaml` as a uni-app-specific spelling.
+external_calls:
+  - "axios"
+  - "fetch"
+  - "request"
+  - "http.request"
+  - "https.request"
+  - "XMLHttpRequest"
