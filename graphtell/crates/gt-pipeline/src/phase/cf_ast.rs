@@ -645,8 +645,10 @@ pub fn resolve_type(
     if let Some(fqn) = imports.get(&raw.to_ascii_lowercase()) {
         return fqn.clone();
     }
-    match ns {
-        Some(ns) if !ns.is_empty() => format!("{}{}{}", ns, policy.ns_separator, raw),
+    match (ns, policy.ns_separator) {
+        // Without this language's namespace separator the name cannot be qualified — leave it as written
+        // rather than joining with another stack's separator.
+        (Some(ns), Some(sep)) if !ns.is_empty() => format!("{}{}{}", ns, sep, raw),
         _ => raw.to_string(),
     }
 }

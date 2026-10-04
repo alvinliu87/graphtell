@@ -67,6 +67,25 @@ impl MarkerProvider for DefaultMarkerProvider {
                 language: Language::new(Language::PYTHON),
                 role: "backend".into(),
             },
+            // A Python project is not required to adopt `pyproject.toml`: most Django / Flask apps in the wild
+            // still ship only `requirements.txt` (or `setup.py` / `Pipfile`). Listing only `pyproject.toml`
+            // left such sub-projects at language `unknown`, which silently disabled every language-gated step
+            // — including the notation rules (`NamespacePolicy`) that P7 needs to split a qualified name.
+            Marker {
+                file: "requirements.txt".into(),
+                language: Language::new(Language::PYTHON),
+                role: "backend".into(),
+            },
+            Marker {
+                file: "setup.py".into(),
+                language: Language::new(Language::PYTHON),
+                role: "backend".into(),
+            },
+            Marker {
+                file: "Pipfile".into(),
+                language: Language::new(Language::PYTHON),
+                role: "backend".into(),
+            },
         ]
     }
 }
@@ -250,6 +269,11 @@ mod tests {
             ("Cargo.toml", "rust", "backend"),
             ("go.mod", "go", "backend"),
             ("pyproject.toml", "python", "backend"),
+            // Same language, several ecosystems: a project that ships only `requirements.txt` (or `setup.py` /
+            // `Pipfile`) must still be recognised as Python, not left at `unknown`.
+            ("requirements.txt", "python", "backend"),
+            ("setup.py", "python", "backend"),
+            ("Pipfile", "python", "backend"),
         ];
         for (file, lang, role) in expected {
             let m = markers

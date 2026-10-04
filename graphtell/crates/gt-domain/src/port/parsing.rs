@@ -24,19 +24,20 @@ pub trait LanguageParser: Send + Sync {
 
     /// Member separator: the symbol between a class and its methods / properties.
     ///
-    /// PHP and C++ use `::`, while Java / JS / Python use `.`.
-    fn member_separator(&self) -> &'static str {
-        "::"
-    }
+    /// PHP and C++ use `::`, while Java / JS / Python use `.`. **Required, not defaulted**: a default would
+    /// mean one language's notation (`::` was the old default) silently leaks into every parser that forgets
+    /// to declare its own.
+    fn member_separator(&self) -> &'static str;
 
     /// Join a namespace with an identifier into a fully qualified name.
     fn join_namespace(&self, ns: &str, name: &str) -> String {
-        let sep = self.namespace_separator().first().copied().unwrap_or('\\');
         let ns = ns.trim_end_matches(|c| self.namespace_separator().contains(&c));
-        if ns.is_empty() {
-            name.to_string()
-        } else {
-            format!("{}{}{}", ns, sep, name)
+        match self.namespace_separator().first().copied() {
+            _ if ns.is_empty() => name.to_string(),
+            Some(sep) => format!("{}{}{}", ns, sep, name),
+            // No separator declared for this language: the name cannot be qualified — leave it as written
+            // rather than joining with another stack's separator.
+            None => name.to_string(),
         }
     }
 
@@ -58,19 +59,11 @@ pub trait LanguageParser: Send + Sync {
     /// Primitive / builtin type names that must NOT be treated as class references during type inference
     /// (e.g. PHP `int` / `string`, Java `long` / `boolean`, JS `number` / `any`). The kernel knows no
     /// language, so this lives with the parser; the default (empty) means "nothing special", and each
-    /// adapter declares its own — see [`PHP_BUILTIN_TYPES`] for the PHP set.
+    /// adapter declares its own list **inside its own crate** — no language's vocabulary belongs here.
     fn builtin_types(&self) -> &'static [&'static str] {
         &[]
     }
 }
-
-/// PHP's primitive / builtin type names (used by [`LanguageParser::builtin_types`] for PHP and as the
-/// `NamespacePolicy` fallback when no parser is wired up). Declared once here so the kernel, the
-/// `NamespacePolicy` fallback, and the PHP parser adapter all share the same list.
-pub const PHP_BUILTIN_TYPES: &[&str] = &[
-    "int", "integer", "string", "bool", "boolean", "float", "double", "array", "void", "mixed",
-    "object", "callable", "iterable", "null", "false", "true", "self", "static", "parent", "never",
-];
 
 /// Parser registry (factory port).
 ///

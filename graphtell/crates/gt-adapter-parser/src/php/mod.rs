@@ -33,6 +33,14 @@ thread_local! {
     static PARSER: RefCell<Option<Parser>> = const { RefCell::new(None) };
 }
 
+/// PHP's primitive / builtin type names — PHP vocabulary, so it lives in the PHP adapter, not in the
+/// language-neutral core (`gt-domain`). `int` / `string` / `array` … must not be treated as class
+/// references during type inference.
+const PHP_BUILTIN_TYPES: &[&str] = &[
+    "int", "integer", "string", "bool", "boolean", "float", "double", "array", "void", "mixed",
+    "object", "callable", "iterable", "null", "false", "true", "self", "static", "parent", "never",
+];
+
 impl LanguageParser for PhpParser {
     fn language(&self) -> Language {
         Language::new(Language::PHP)
@@ -59,7 +67,7 @@ impl LanguageParser for PhpParser {
     }
 
     fn builtin_types(&self) -> &'static [&'static str] {
-        gt_domain::port::PHP_BUILTIN_TYPES
+        PHP_BUILTIN_TYPES
     }
 
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {

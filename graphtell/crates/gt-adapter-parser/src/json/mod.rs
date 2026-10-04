@@ -45,6 +45,12 @@ impl LanguageParser for JsonParser {
         &['.']
     }
 
+    /// JSON has no classes and therefore no member notation; declared explicitly rather than inheriting a
+    /// default, so no language's spelling (`::`) leaks in.
+    fn member_separator(&self) -> &'static str {
+        "."
+    }
+
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {
         let value: serde_json::Value = match serde_json::from_str(source) {
             Ok(v) => v,

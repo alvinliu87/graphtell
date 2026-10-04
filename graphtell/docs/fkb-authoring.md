@@ -53,6 +53,8 @@ db_verbs: {read: [...], write: [...]}   # model CRUD verbs -> read / write class
 magic_delegation: {...}   # @method annotation + __call forwarding to some property
 external_calls: [...]     # callees that make network requests (for "external call inside a loop" detection)
 tx_calls: [...]           # transaction boundary markers
+sign_check: {...}         # signature-verification vocabulary: which calls compute a signature, which algos
+                          # are weak (P11). Language / library knowledge — see §2.1
 entry_methods: [...]      # candidate consumer entry method names (handle/fire/doJob/__invoke/run …)
 ```
 
@@ -85,7 +87,7 @@ provides: [illuminate-database]
 
 Recognising `laravel` then recognises `illuminate-database` too, transitively and cycle-safely. Directly
 detected knowledge always ranks **above** provided knowledge regardless of confidence, so a framework's own
-declaration of a single-valued field (`db_verbs`, `method_ref`, all taken by `find_map`) still wins over a
+declaration of a single-valued field (`db_verbs`, `method_ref`, `sign_check`, all taken by `find_map`) still wins over a
 component's — which is why `db_verbs` stays in `laravel.yaml` and not in `illuminate-database.yaml`.
 
 #### The three merged lists follow detection
@@ -130,6 +132,43 @@ See `fkb/php/guzzle.yaml` for a worked example. Note what it does **not** do: ra
 `apply_without_detection` to skip detection entirely, it lets the code decide — an unconditional FKB applies
 its rules to every project of that language, which is only safe for knowledge that is genuinely universal
 (see `php/common.yaml`).
+
+#### `sign_check`: signature vocabulary (single-valued, but follows the same detection rule)
+
+P11 Sign judges **how** a signature is verified, not *whether* — the latter cannot be judged on the graph,
+because an SDK's `verify()` is not scanned (it lives in `vendor` / in a Maven dependency), so "no verify call
+on the call chain" holds for every callback and is a 100% false positive. What *can* be judged locally is
+"how the signature is compared" and "which algorithm produced it", and that needs vocabulary: which calls
+compute or verify a signature, and which algorithms are weak. That is language and library knowledge — PHP's
+`hash_hmac` / `hash_equals` / `openssl_verify`, Java's `MessageDigest.getInstance`, Node's
+`crypto.createHash`. **The kernel knows none of them.**
+
+```yaml
+# fkb/php/common.yaml — the unconditional PHP layer (no framework assumption)
+sign_check:
+  hash_calls: [md5, sha1, hash_hmac, hash_equals, openssl_verify, openssl_sign]
+  weak_algos: [md5, sha1]      # weak *for a signature*; hash_equals is the correct form, not a weak one
+  name_contains: "sign"        # CreatedSign / GetSign / makeSign / verifySign
+  name_excludes: [signtype, signmode, signin, signup]
+  value_hints: ["sign"]                  # an argument mentioning sign is signature-related on its own
+  value_hints_require_compare: ["key="]  # …only when a signature comparison exists in the same function
+```
+
+Two things worth knowing:
+
+* **A stack that declares nothing is not judged.** `sign_check` is taken by `find_map` like `db_verbs` /
+  `method_ref`, so the first applicable declaration wins — and with no declaration P11 emits **no**
+  annotation rather than applying another stack's vocabulary. "No knowledge" means "no judgement", which is
+  honest; the `language == php` gate it replaced meant every other stack was silently skipped *and* could
+  never be supported without editing the engine.
+* **The `apply_without_detection` arm counts.** PHP's vocabulary lives in the unconditional language layer,
+  which is *never* in the detected-framework list because it declares no detectors. A merge that reads only
+  detected frameworks silently disables the phase for every PHP project — and no unit test catches that, so
+  it is pinned end-to-end in `tests/php_sign_features.rs` (which also asserts the phase really annotates).
+
+`name_excludes` exists because the noise gate is measured, not imagined: in e-commerce code `sign` is
+overwhelmingly **check-ins** (24 of 32 "`==` comparisons containing sign"). Keep such domain knowledge here
+— putting it in the kernel is what leaves a multi-stack tool unable to serve any second stack.
 
 ### 2.2 `method_ref` vs `class_const` (resolving references to code)
 

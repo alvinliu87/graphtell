@@ -730,10 +730,14 @@ fn resolve_class_node(
     let mut s = raw
         .trim_start_matches(|c: char| policy.ns_separators.contains(&c))
         .to_string();
-    // `Foo::class` (PHP) / `Foo.class` (Java): the suffix is `<member separator>class`.
-    let class_literal = format!("{}class", policy.member_separator);
-    if let Some(stripped) = s.strip_suffix(&class_literal) {
-        s = stripped.to_string();
+    // `Foo::class` (PHP) / `Foo.class` (Java): the suffix is `<member separator>class`. Only applied when the
+    // language actually declares one — with an empty separator the suffix would degenerate to a bare `class`
+    // and bite off the tail of any name ending in it.
+    if !policy.member_separator.is_empty() {
+        let class_literal = format!("{}class", policy.member_separator);
+        if let Some(stripped) = s.strip_suffix(&class_literal) {
+            s = stripped.to_string();
+        }
     }
     ctx.ws.find_by_name(&s).or_else(|| {
         ctx.ws
@@ -832,10 +836,12 @@ pub fn resolve_handler_target(
     // ② controller-internal hierarchy chars → namespace separator
     //    e.g. ThinkPHP's `v1.agent.AgentManage` → `v1\agent\AgentManage`
     let mut controller = controller_part.to_string();
-    let ns_sep = policy.ns_separator.to_string();
-    for sep in &spec.hierarchy_separators {
-        if !sep.is_empty() {
-            controller = controller.replace(sep.as_str(), &ns_sep);
+    if let Some(ns_sep_char) = policy.ns_separator {
+        let ns_sep = ns_sep_char.to_string();
+        for sep in &spec.hierarchy_separators {
+            if !sep.is_empty() {
+                controller = controller.replace(sep.as_str(), &ns_sep);
+            }
         }
     }
 

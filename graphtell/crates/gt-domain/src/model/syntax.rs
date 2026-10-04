@@ -232,8 +232,10 @@ pub struct SignCompareFact {
 /// cannot reach the parser registry, but they all have the pipeline context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespacePolicy {
-    /// The preferred namespace separator (used for **joining**).
-    pub ns_separator: char,
+    /// The preferred namespace separator (used for **joining**); `None` when this language's notation is
+    /// unknown — there is no neutral default to fall back on, so callers must skip the join instead of
+    /// guessing one stack's separator.
+    pub ns_separator: Option<char>,
     /// Every possible namespace separator (for normalisation and **matching tolerance**).
     pub ns_separators: Vec<char>,
     /// The separator between a class and its member: PHP/C++ use `::`, Java/JS/Python use `.`.
@@ -247,7 +249,9 @@ impl NamespacePolicy {
     pub fn from_parser(p: &dyn crate::port::LanguageParser) -> Self {
         let seps = p.namespace_separator();
         Self {
-            ns_separator: seps.first().copied().unwrap_or('\\'),
+            // No `unwrap_or('\\')`: a parser that declares no separator means "unknown", and defaulting to
+            // PHP's would hand every other stack PHP's notation.
+            ns_separator: seps.first().copied(),
             ns_separators: seps.to_vec(),
             member_separator: p.member_separator().to_string(),
             builtin_types: p
@@ -263,27 +267,23 @@ impl NamespacePolicy {
         format!("{}{}{}", class_fqn, self.member_separator, member)
     }
 
-    /// PHP style (`\` and `::`).
-    ///
-    /// **The fallback when no language strategy is wired up**, equivalent to what the kernel hard-coded before
-    /// the refactor. Once `LanguageParser` is fully wired in, the normal path should go through
-    /// [`Self::from_parser`].
-    pub fn php() -> Self {
-        Self {
-            ns_separator: '\\',
-            ns_separators: vec!['\\'],
-            member_separator: "::".to_string(),
-            builtin_types: crate::port::PHP_BUILTIN_TYPES
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-        }
-    }
 }
 
 impl Default for NamespacePolicy {
+    /// "No language strategy wired up" — and therefore **no notation knowledge**, not PHP's.
+    ///
+    /// This used to be `Self::php()`, which meant every unrecognised language silently inherited PHP's
+    /// `\` namespace separator, `::` member separator and builtin-type list. For a multi-stack tool that is
+    /// the wrong default twice over: it misreads other stacks (a Java FQN is never split on `\`) and it hides
+    /// the real problem (a parser not being wired in) behind plausible-looking output. Empty means every
+    /// consumer sees "unknown" and skips the notation-dependent step, which is honest and visible.
     fn default() -> Self {
-        Self::php()
+        Self {
+            ns_separator: None,
+            ns_separators: Vec::new(),
+            member_separator: String::new(),
+            builtin_types: Vec::new(),
+        }
     }
 }
 

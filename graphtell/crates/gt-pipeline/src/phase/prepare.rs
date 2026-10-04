@@ -3875,6 +3875,16 @@ mod tests {
             frameworks: vec!["thinkphp".into()],
             facts: serde_json::Value::Object(Default::default()),
         };
+        // This test is about PHP's own spelling (`think\facade\Db`), so it must state PHP's notation
+        // explicitly: `NamespacePolicy::default()` is deliberately **empty** ("no language wired up"), not
+        // silently PHP. Relying on the old PHP default would have made this test pass for the wrong reason.
+        use gt_domain::model::NamespacePolicy;
+        use gt_domain::port::ParserRegistry;
+        let parsers = gt_adapter_parser::DefaultParserRegistry::new();
+        let php = parsers
+            .parser_for(&Language::new(Language::PHP))
+            .expect("php parser is registered");
+        ctx.lang_policy_default = NamespacePolicy::from_parser(php);
         let params = json!({ "exact_table_receivers": ["Db"], "table_methods": ["name"] });
         let run = |ctx: &mut PipelineContext, receiver: &str, table: &str| {
             ctx.ws.calls.clear();

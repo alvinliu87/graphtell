@@ -750,12 +750,17 @@ impl GraphWorkspace {
         root_namespaces: &[String],
         module: &str,
         controller_layer_depth: usize,
-        ns_separator: char,
+        // This language's namespace separator; `None` = the notation is unknown, in which case only an
+        // already fully-qualified name can be resolved (assembling one from a module + hierarchy needs it).
+        ns_separator: Option<char>,
     ) -> Option<String> {
         // 1. direct fully-qualified FQN
         if let Some(id) = self.find_by_name(controller_part) {
             return self.nodes.get(&id.get()).and_then(|n| n.fqn.clone());
         }
+        let Some(ns_separator) = ns_separator else {
+            return None;
+        };
         let sep = ns_separator.to_string();
         let class_short = controller_part.rsplit(ns_separator).next().unwrap_or(controller_part);
         let lower = class_short.to_ascii_lowercase();

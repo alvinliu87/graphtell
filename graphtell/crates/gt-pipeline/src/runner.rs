@@ -62,11 +62,10 @@ pub fn run(
                 .insert(lang.as_str().to_string(), NamespacePolicy::from_parser(p));
         }
     }
-    if let Some(first) = infra.parsers().supported_languages().first() {
-        if let Some(p) = infra.parsers().parser_for(first) {
-            ctx.lang_policy_default = NamespacePolicy::from_parser(p);
-        }
-    }
+    // No `lang_policy_default` assignment here on purpose: it used to be "whatever language registered
+    // first", which hands an unrelated stack's notation (`\`, `::`) to every language the registry does not
+    // cover — the same class of bug as the old PHP-hard-coded default, only non-deterministic. Uncovered
+    // languages now keep the empty policy, i.e. "notation unknown", and skip the steps that need it.
 
     // ---------------------------------------------------------- P0 Ingest
     let started = Instant::now();
