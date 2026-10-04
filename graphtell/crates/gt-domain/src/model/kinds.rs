@@ -81,6 +81,7 @@ declare_open_kind! { NodeKind => "Graph node kinds (syntax nodes + synthetic nod
     // still stores `Class`, so nothing needs rebuilding).
     EVENT_HANDLER = "EventHandler" => "event / queue handler (a listener / consumer class)",
     CACHE      = "Cache"       => "cache node (an out-of-process mediator)",
+    HEADER_ASSIGNMENT = "HeaderAssignment" => "response-header assignment (e.g. `$header['Access-Control-Allow-Origin'] = ...`); promotes a parse fact into a matchable node so rules can judge it",
     TOPIC      = "Topic"       => "message-topic node (an out-of-process mediator)",
     SCHEDULE   = "Schedule"    => "scheduled-job node (cron / scheduler)",
     // Front-end route node: the page routes declared by uni-app's `pages.json`, isomorphic to the backend

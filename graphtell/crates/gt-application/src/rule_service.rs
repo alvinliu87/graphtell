@@ -617,6 +617,9 @@ fn eval(p: &CheckPredicate, node: &Node, facts: &Facts, params: &ParamValues) ->
         CheckPredicate::PropertyIs { name, value } => property_value(node, name)
             .map(|v| v.eq_ignore_ascii_case(value))
             .unwrap_or(false),
+        CheckPredicate::PropertyContains { name, substring } => property_value(node, name)
+            .map(|v| v.to_lowercase().contains(&substring.to_lowercase()))
+            .unwrap_or(false),
         CheckPredicate::PropertyMissing(name) => property_value(node, name).is_none(),
         CheckPredicate::NoCapability(caps) => {
             !caps.iter().any(|c| facts.has_capability(node.id, c))

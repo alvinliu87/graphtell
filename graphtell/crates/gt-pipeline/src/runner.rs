@@ -16,7 +16,7 @@ use tracing::{error, info};
 
 use crate::context::PipelineContext;
 use crate::phase::{
-    annotate, cf_ast, cors, external, guard, ingest, prepare, propagate, resolve, sign, taint, tx,
+    annotate, cf_ast, external, guard, ingest, prepare, propagate, resolve, sign, taint, tx,
 };
 
 /// The set of infrastructure a pipeline needs (dependency inversion: injected by the composition root).
@@ -235,12 +235,6 @@ pub fn run(
     let started = Instant::now();
     observer.on_phase_start(project.id, &phase);
     taint::run(&mut ctx);
-    flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
-
-    let phase = Phase("Cors".to_string());
-    let started = Instant::now();
-    observer.on_phase_start(project.id, &phase);
-    cors::run(&mut ctx);
     flush(infra.graph(), &mut ctx, &mut outcome, &phase, started, observer, project.id)?;
 
     let phase = Phase("Sign".to_string());

@@ -553,13 +553,25 @@ fn build_file(
         });
     }
 
-    // CORS header-assignment fact: add the file path, so `phase::cors` aligns with the call site by (file, line).
+    // Response-header assignments (e.g. `$header['Access-Control-Allow-Origin'] = ...`): promote the parse
+    // fact into a graph node so an FKB rule can judge it (reflected CORS) without the kernel hard-coding any
+    // language. Which assignments count is decided by the parser (per-language); the kernel only materialises
+    // the fact. The rule matches on `key` (the header name) and `rhs` (the assigned expression).
     for h in &facts.header_assignments {
-        ctx.ws.header_assignments.push(gt_domain::model::syntax::HeaderAssignFact {
-            key: h.key.clone(),
-            rhs_snippet: h.rhs_snippet.clone(),
-            file: file.path.clone(),
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id,
+            sub_project_id: file.sub_project_id,
+            kind: NodeKind::from(NodeKind::HEADER_ASSIGNMENT),
+            name: h.rhs_snippet.clone(),
+            fqn: None,
+            identity: None,
+            file_id: Some(file.id),
             span: h.span,
+            language: file.language.clone(),
+            phase: phase.clone(),
+            confidence: 1.0,
+            properties: serde_json::json!({ "key": h.key, "rhs": h.rhs_snippet }),
         });
     }
 

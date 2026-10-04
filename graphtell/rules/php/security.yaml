@@ -246,15 +246,27 @@ rules:
       The response header Access-Control-Allow-Origin is set directly to the request's Origin (or the whole
       Access-Control-Allow-Origin header is assembled from a variable). That treats requests from any site as
       same-origin and (often together with `Access-Control-Allow-Credentials: true`) leaks user credentials —
-      a high-risk CORS configuration. Judged by the P10 Cors phase.
+      a high-risk CORS configuration. Judged by an FKB rule over the call site / header-assignment graph
+      (no kernel CORS phase), so the matched literals live here and not in Rust.
     severity: error
     category: security
     applies_to:
-      kinds: [CallSite]
+      kinds: [CallSite, HeaderAssignment]
       limit: 9000000
       languages: [php]
     when:
-      - has_annotation: cors_origin_reflect
+      - any_of:
+          # Form two: a header() call whose argument embeds the CORS header and a variable (e.g. header("Access-Control-Allow-Origin: " . $origin)).
+          - all_of:
+              - name_contains: "header"
+              - property_contains: { name: snippet, substring: "access-control-allow-origin" }
+              - property_contains: { name: snippet, substring: "$" }
+          # Form one: an assignment to the Allow-Origin header whose right-hand side reads the request origin
+          # (e.g. $header['Access-Control-Allow-Origin'] = app()->request->header('origin')). The parser only
+          # emits HeaderAssignment facts for the Allow-Origin header, so `key` is always that header.
+          - all_of:
+              - property_is: { name: key, value: "access-control-allow-origin" }
+              - property_contains: { name: rhs, substring: "origin" }
     message: "Access-Control-Allow-Origin is set to the request Origin (at {file}:{line}) — reflected origin, credential-level cross-origin leak"
     remediation: >-
       Use a fixed allowlist of origins, or do "compare against the allowlist and echo back" per request;

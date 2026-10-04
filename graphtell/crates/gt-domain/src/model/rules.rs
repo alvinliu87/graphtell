@@ -488,6 +488,9 @@ pub enum CheckPredicate {
     NoAnnotation(String),
     /// A node property equals the given value (e.g. `side = frontend`).
     PropertyIs { name: String, value: String },
+    /// A node property contains the given substring (case-insensitive). Useful for matching a call-site's
+    /// `snippet` / a fact node's `rhs` against a literal without enumerating exact values.
+    PropertyContains { name: String, substring: String },
     /// The node lacks the given property.
     PropertyMissing(String),
     /// The scope chain lacks the given capability (e.g. `Authentication` / `RateLimiting`).

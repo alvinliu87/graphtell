@@ -10,7 +10,7 @@ use gt_domain::model::{
     Language, MergeStrategy, NewAnnotation, NewEdge, NewNode, Node, NodeId, NodeKind, Phase,
     ProjectId, Severity, Span, SubProjectId, SynthesizedKind,
 };
-use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
+use gt_domain::model::syntax::{SignCompareFact, VariableAssignFact};
 use serde_json::{json, Value};
 
 use crate::engine::NS_SEPARATORS;
@@ -191,8 +191,6 @@ pub struct GraphWorkspace {
     /// Hence register alongside it when P2 builds call sites (only calls with args take space).
     chained: HashMap<(String, u32), Vec<(String, Vec<String>)>>,
     pub configs: Vec<ConfigRecord>,
-    /// CORS header assignments (fed by `cf_ast` from parse facts), for `phase::cors` to judge the reflected origin.
-    pub header_assignments: Vec<HeaderAssignFact>,
     /// Signature-value equality comparison (fed by `cf_ast` from parse facts), for `phase::sign` to judge signature quality.
     pub sign_compares: Vec<SignCompareFact>,
     pub inherits: Vec<InheritRecord>,
@@ -294,7 +292,6 @@ impl GraphWorkspace {
             calls: Vec::new(),
             chained: HashMap::new(),
             configs: Vec::new(),
-            header_assignments: Vec::new(),
             sign_compares: Vec::new(),
             inherits: Vec::new(),
             pending_links: Vec::new(),
