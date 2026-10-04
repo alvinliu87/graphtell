@@ -493,6 +493,47 @@ rules:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A loader key the kernel does not read must be a **load error**, not a silent no-op.
+    ///
+    /// `format:` used to exist on `File` / `Glob` and was never consumed (the parser is chosen by the
+    /// file's extension), and the retired `exclude_globs` sat in FKB exactly the same way. Without
+    /// `deny_unknown_fields` both would still parse today and go on looking effective.
+    #[test]
+    fn loader_source_rejects_fields_the_kernel_never_reads() {
+        let dir = std::env::temp_dir().join(format!(
+            "gt-fkb-loader-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let source = |extra: &str| {
+            format!(
+                "id: k\ndisplay_name: K\nlanguage: php\nloaders:\n  - id: event-listeners\n    table: event_listeners\n    from:\n      kind: file\n      path: \"{{app_root}}/event.php\"\n{extra}"
+            )
+        };
+
+        let bad = dir.join("bad.yaml");
+        std::fs::write(&bad, source("      format: php\n")).unwrap();
+        assert!(
+            YamlKnowledgeBase::load_file(&bad).is_err(),
+            "内核不读取的 `format:` 必须被拒绝（否则它会一直看起来生效）"
+        );
+
+        let good = dir.join("good.yaml");
+        std::fs::write(&good, source("")).unwrap();
+        assert!(
+            YamlKnowledgeBase::load_file(&good).is_ok(),
+            "去掉该字段后应正常解析"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn side_of_first_synth(fk: &FrameworkKnowledge) -> Option<String> {
         for rule in &fk.rules {
             for action in &rule.binding {

@@ -32,12 +32,17 @@ detectors:
     path: bin/console
     confidence: 0.6
 
-exclude_globs:
-  - "vendor/**"
-  - "node_modules/**"
-  - "var/cache/**"
-  - "var/log/**"
-  - "public/**"
+exclude_rules:
+  - id: vendor
+    glob: "vendor/**"
+  - id: node-modules
+    glob: "node_modules/**"
+  - id: var-cache
+    glob: "var/cache/**"
+  - id: var-log
+    glob: "var/log/**"
+  - id: public-dir
+    glob: "public/**"
 
 rules:
   # ===== P5 Synthesize: routes (#[Route] / #[Get] … on controller methods) =====

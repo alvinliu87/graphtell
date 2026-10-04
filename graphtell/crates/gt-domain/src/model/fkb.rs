@@ -20,8 +20,12 @@ use super::kinds::{AnnotationChannel, EdgeKind, NodeKind, Phase, SynthesizedKind
 use crate::model::kinds::Language;
 
 /// One framework's knowledge.
+///
+/// `deny_unknown_fields`: a key the model does not have is a key the kernel cannot read. Silently
+/// ignoring it (the serde default) is how a field like the retired `exclude_globs` / `format` can sit
+/// in FKB for months looking effective while doing nothing — so an unknown key is a load error instead.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FrameworkKnowledge {
     pub id: String,
     pub display_name: String,
@@ -821,7 +825,7 @@ pub struct LoaderSpec {
 /// with no per-loader declaration. (A `format:` field used to exist here but was never read; declaring
 /// something the kernel does not consume silently misleads FKB authors, so it was removed.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LoaderSource {
     /// Read a single file and take values by key_path.
     File {

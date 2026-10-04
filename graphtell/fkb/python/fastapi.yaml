@@ -44,11 +44,15 @@ detectors:
 bridge_edge_kinds:
   - DependsOn
 
-exclude_globs:
-  - "__pycache__/**"
-  - "*/__pycache__/**"
-  - "*/.venv/**"
-  - "*/venv/**"
+exclude_rules:
+  - id: pycache
+    glob: "__pycache__/**"
+  - id: nested-pycache
+    glob: "*/__pycache__/**"
+  - id: dot-venv
+    glob: "*/.venv/**"
+  - id: nested-venv
+    glob: "*/venv/**"
 
 root_rules:
   - id: app-root

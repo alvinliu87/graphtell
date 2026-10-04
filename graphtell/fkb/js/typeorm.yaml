@@ -20,9 +20,11 @@ detectors:
     dependency: "typeorm"
     confidence: 0.95
 
-exclude_globs:
-  - "**/node_modules/**"
-  - "**/dist/**"
+exclude_rules:
+  - id: node-modules
+    glob: "**/node_modules/**"
+  - id: dist
+    glob: "**/dist/**"
 
 # ★ `semantic_kinds: [Column]` / `semantic_edge_kinds: [HasColumn]` are **deliberately not declared** here.
 #

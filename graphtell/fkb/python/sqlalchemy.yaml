@@ -27,11 +27,15 @@ detectors:
     dependency: "sqlalchemy"
     confidence: 0.9
 
-exclude_globs:
-  - "__pycache__/**"
-  - "*/__pycache__/**"
-  - "*/.venv/**"
-  - "*/venv/**"
+exclude_rules:
+  - id: pycache
+    glob: "__pycache__/**"
+  - id: nested-pycache
+    glob: "*/__pycache__/**"
+  - id: dot-venv
+    glob: "*/.venv/**"
+  - id: nested-venv
+    glob: "*/venv/**"
 
 rules:
   # ===== P6 AnnotatePost: Table (SQLAlchemy declarative mapping) =====

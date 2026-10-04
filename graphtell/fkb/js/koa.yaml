@@ -35,10 +35,13 @@ detectors:
     dependency: koa
     confidence: 0.8
 
-exclude_globs:
-  - "node_modules/**"
-  - "dist/**"
-  - "build/**"
+exclude_rules:
+  - id: node-modules
+    glob: "node_modules/**"
+  - id: dist
+    glob: "dist/**"
+  - id: build
+    glob: "build/**"
 
 rules:
   # ===== P5 Synthesize: HTTP contract (route) =====
