@@ -629,13 +629,7 @@ fn run_loader(
     fk: &FrameworkKnowledge,
     techstack: &dyn TechStackRegistry,
 ) -> Result<()> {
-    let app_root = ctx
-        .ws
-        .get_fact(sub.id, "app_root")
-        .and_then(|v| v.get("value"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("app")
-        .to_string();
+    let app_root = app_root_of(ctx, sub);
 
     match &loader.from {
         gt_domain::model::LoaderSource::File { path, key_path, .. } => {
@@ -2383,7 +2377,7 @@ pub fn expand(path: &str, app_root: &str) -> String {
 /// Resolve the project's app-root directory name, falling back to `app` when `root_rules` has not
 /// produced an `app_root` fact (or it is not a string). Used to expand the `{app_root}` placeholder
 /// in loader `path` / `paths` declarations — the app directory is a project decision, never hard-coded.
-fn app_root_of(ctx: &PipelineContext, sub: &gt_domain::model::SubProject) -> String {
+pub(crate) fn app_root_of(ctx: &PipelineContext, sub: &gt_domain::model::SubProject) -> String {
     ctx.ws
         .get_fact(sub.id, "app_root")
         .and_then(|v| v.get("value"))

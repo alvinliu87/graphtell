@@ -1,6 +1,7 @@
-//! P4 Annotate-Pre / P6 Annotate-Post.
+//! P4 Annotate-Pre / P5 Synthesize / P6 Annotate-Post.
 //!
-//! * **Pre** selectors act on **source code** (call sites / config entries / inheritance)
+//! * **Pre / Synthesize** selectors act on **source code** (call sites / config entries / inheritance;
+//!   Synthesize additionally sees inheritance)
 //! * **Post** selectors act on **graph nodes** — a capability unique to P6: aggregates like fan_in or `texts`
 //!   coverage are only accurate by P6.
 
@@ -27,21 +28,6 @@ pub fn run_synthesize(ctx: &mut PipelineContext) {
 pub fn run_post(ctx: &mut PipelineContext) {
     let phase = Phase(Phase::ANNOTATE_POST.to_string());
     let rules_by_sub = collect_rules(ctx, &phase);
-    let app_root_by_sub: HashMap<i64, String> = ctx
-        .sub_projects
-        .iter()
-        .map(|s| {
-            (
-                s.id.get(),
-                ctx.ws
-                    .get_fact(s.id, "app_root")
-                    .and_then(|v| v.get("value"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("app")
-                    .to_string(),
-            )
-        })
-        .collect();
 
     // Group by node_kind to avoid walking the whole graph
     let mut by_kind: HashMap<String, Vec<Rule>> = HashMap::new();
@@ -80,13 +66,7 @@ pub fn run_post(ctx: &mut PipelineContext) {
     }
 
     for (id, sub, rules) in targets {
-        let app_root = sub.map(|s| app_root_by_sub.get(&s.get()).cloned().unwrap_or_default());
         for rule in &rules {
-            // A config-file selector is expanded by app_root before matching in the Post phase
-            if let Selector::ConfigEntry { file: Some(f), .. } = &rule.selector {
-                let _ = (f, &app_root);
-                continue;
-            }
             if !matches_node(&rule.selector, id, &ctx.ws) {
                 continue;
             }
@@ -123,24 +103,19 @@ fn sub_relative(ctx: &PipelineContext, sub: Option<SubProjectId>, file: &str) ->
     file.strip_prefix(&prefix).unwrap_or(file).to_string()
 }
 
+/// `sub-project id -> app-root directory`, resolved once per phase so `{app_root}` expansion inside
+/// hot loops does not re-read the fact. Shares `prepare::app_root_of`, including its `app` fallback.
+fn app_root_map(ctx: &PipelineContext) -> HashMap<i64, String> {
+    ctx.sub_projects
+        .iter()
+        .map(|s| (s.id.get(), crate::phase::prepare::app_root_of(ctx, s)))
+        .collect()
+}
+
 /// Run one phase's rules against call sites and config entries.
 fn apply_source_rules(ctx: &mut PipelineContext, phase: &Phase) {
     let rules_by_sub = collect_rules(ctx, phase);
-    let app_root_by_sub: HashMap<i64, String> = ctx
-        .sub_projects
-        .iter()
-        .map(|s| {
-            (
-                s.id.get(),
-                ctx.ws
-                    .get_fact(s.id, "app_root")
-                    .and_then(|v| v.get("value"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("app")
-                    .to_string(),
-            )
-        })
-        .collect();
+    let app_root_by_sub = app_root_map(ctx);
 
     let calls = std::mem::take(&mut ctx.ws.calls);
     for call in &calls {
@@ -169,7 +144,7 @@ fn apply_source_rules(ctx: &mut PipelineContext, phase: &Phase) {
                     let app_root = sub
                         .and_then(|s| app_root_by_sub.get(&s.get()).cloned())
                         .unwrap_or_else(|| "app".to_string());
-                    f.replace("{app_root}", &app_root)
+                    crate::phase::prepare::expand(f, &app_root)
                 }
                 None => String::new(),
             };
