@@ -104,12 +104,13 @@ impl WalkDirScanner {
     /// Directories are additionally probed with a synthetic child (`a/b` -> `a/b/__probe__`): a pattern
     /// written `dir/**` means "the whole subtree", and without the probe it would match nothing for the
     /// directory itself, so the walker would descend into a tree it was told to skip.
-    fn is_excluded(&self, relative: &str) -> bool {
+    fn is_excluded(&self, relative: &str, extra: Option<&GlobSet>) -> bool {
         if relative.is_empty() {
             return false;
         }
-        self.excludes.is_match(relative)
-            || self.excludes.is_match(format!("{relative}/__probe__"))
+        let probe = format!("{relative}/__probe__");
+        let hit = |set: &GlobSet| set.is_match(relative) || set.is_match(&probe);
+        hit(&self.excludes) || extra.map_or(false, hit)
     }
 }
 
@@ -175,6 +176,16 @@ impl FileScanner for WalkDirScanner {
             )));
         }
 
+        // Per-scan exclusions: what P0 resolved from framework knowledge plus the project's own globs.
+        // They are known **only here** — the scanner is constructed once per process, long before any
+        // scan, so they cannot live in the set `new()` builds; carrying them on the request is the whole
+        // point of `ScanRequest.extra_excludes`.
+        let extra = if request.extra_excludes.is_empty() {
+            None
+        } else {
+            Some(build_set(request.extra_excludes.clone()))
+        };
+
         // **Must be sorted by file name**: `readdir` order depends on the filesystem and can differ between runs.
         // Ingestion order in turn decides a batch of P2 "first come, first served" results (which same-named class
         // registers first in `by_fqn`, whose FQN the global `imports` symbol table records); a change of order makes
@@ -194,13 +205,13 @@ impl FileScanner for WalkDirScanner {
             };
             let relative = relative_of(root, entry.path());
             if entry.file_type().is_dir() {
-                if entry.depth() > 0 && self.is_excluded(&relative) {
+                if entry.depth() > 0 && self.is_excluded(&relative, extra.as_ref()) {
                     walker.skip_current_dir();
                 }
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            if is_asset_file(&name) || self.is_excluded(&relative) {
+            if is_asset_file(&name) || self.is_excluded(&relative, extra.as_ref()) {
                 continue;
             }
             let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -251,7 +262,7 @@ impl FileScanner for WalkDirScanner {
                 Err(_) => continue,
             };
             if entry.file_type().is_dir() {
-                if entry.depth() > 0 && self.is_excluded(&relative_of(root, entry.path())) {
+                if entry.depth() > 0 && self.is_excluded(&relative_of(root, entry.path()), None) {
                     walker.skip_current_dir();
                 }
                 continue;

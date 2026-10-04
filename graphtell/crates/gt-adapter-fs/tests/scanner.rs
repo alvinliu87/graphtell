@@ -197,6 +197,8 @@ fn scan_respects_language_filter() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// The patterns passed to the **constructor** are honoured (the scanner is built once per process).
+/// The per-scan channel is a separate thing — see `scan_honours_the_requests_extra_excludes`.
 #[test]
 fn scan_respects_extra_excludes() {
     let root = scratch("extra");
@@ -216,6 +218,65 @@ fn scan_respects_extra_excludes() {
         !rels.iter().any(|r| r.starts_with("secret/")),
         "extra_excludes 应生效"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `ScanRequest.extra_excludes` must be honoured — not only the patterns given at construction.
+///
+/// This field is the **only** channel P0 has: `ingest::run` puts the framework's resolved globs plus the
+/// project's own there, while the scanner is constructed once per process, long before any scan. A scanner
+/// that consulted only its constructor's patterns silently dropped every FKB-resolved exclusion, so
+/// framework caches / generated directories were parsed as source.
+///
+/// The directories below are picked because they are in neither `DEFAULT_EXCLUDE_GLOBS` nor `ASSET_GLOBS`,
+/// so a built-in default cannot make this pass for the wrong reason.
+#[test]
+fn scan_honours_the_requests_extra_excludes() {
+    let root = scratch("request-extra");
+    write(&root, "app/code.php", "<?php");
+    write(&root, "storage/framework/cache/x.php", "<?php");
+    write(&root, "bootstrap/cache/y.php", "<?php");
+
+    let request = |extra: Vec<String>| ScanRequest {
+        root: root.clone(),
+        extra_excludes: extra,
+        languages: Vec::new(),
+        language_extensions: Vec::new(),
+    };
+
+    // Control: with no per-scan excludes these are scanned, so the assertions below can only pass because
+    // of the request field.
+    let before = rels(
+        &WalkDirScanner::new(Vec::new())
+            .scan(&request(Vec::new()))
+            .expect("scan"),
+    );
+    assert!(
+        before.contains(&"storage/framework/cache/x.php".to_string()),
+        "前提：未传排除时应被扫到，否则这条测试测不到点上：{before:?}"
+    );
+
+    let after = rels(
+        &WalkDirScanner::new(Vec::new())
+            .scan(&request(vec![
+                "storage/framework/**".to_string(),
+                "bootstrap/cache/**".to_string(),
+            ]))
+            .expect("scan"),
+    );
+    assert!(
+        after.contains(&"app/code.php".to_string()),
+        "正常源文件应保留：{after:?}"
+    );
+    assert!(
+        !after.contains(&"storage/framework/cache/x.php".to_string()),
+        "请求里的排除应生效：{after:?}"
+    );
+    assert!(
+        !after.contains(&"bootstrap/cache/y.php".to_string()),
+        "请求里的排除应生效：{after:?}"
+    );
+
     let _ = std::fs::remove_dir_all(&root);
 }
 

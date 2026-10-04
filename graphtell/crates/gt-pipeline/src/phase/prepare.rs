@@ -2564,11 +2564,30 @@ fn split_columns(body: &str) -> Vec<String> {
 }
 
 fn push_column(out: &mut Vec<String>, raw: &str) {
-    let line = raw.trim().trim_end_matches(',');
-    if line.is_empty() || line.starts_with("--") || line.starts_with('#') {
+    // A `--` / `#` comment carries no comma, so it lands in the **same segment** as the field that follows
+    // it. Judging the segment as a whole would skip that real field along with the comment, so the
+    // definition is taken from the first line that actually is one.
+    let line = raw
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with("--") && !l.starts_with('#'))
+        .unwrap_or("")
+        .trim_end_matches(',');
+    if line.is_empty() {
         return;
     }
     let upper = line.to_ascii_uppercase();
+    // Constraint lines are not columns — but only when the keyword ends at a **word boundary**:
+    // `unique_id` / `check_time` / `index_sort` / `foreign_id` are ordinary column names that merely start
+    // with a keyword, and dropping them costs the column its `Column` node (hence any PII annotation).
+    let is_constraint = |kw: &str| {
+        upper.starts_with(kw)
+            && upper[kw.len()..]
+                .chars()
+                .next()
+                .map(|c| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(true)
+    };
     for kw in [
         "PRIMARY KEY",
         "KEY ",
@@ -2580,7 +2599,7 @@ fn push_column(out: &mut Vec<String>, raw: &str) {
         "CHECK",
         "SPATIAL",
     ] {
-        if upper.starts_with(kw) {
+        if is_constraint(kw) {
             return;
         }
     }
@@ -2647,6 +2666,9 @@ mod tests {
 
     use super::{detect_frameworks, expand_provided, lock_has, manifest_has, CodeEvidence};
     use super::{load_declared_middleware, PipelineContext};
+    use super::{
+        declared_mw_path_matches, norm_class, parse_create_tables, short_callee, split_callee,
+    };
     use std::collections::HashMap;
     use serde_json::json;
 
@@ -4073,4 +4095,143 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------- the SQL DDL parser
+    //
+    // Hand-rolled, and the only source of `Column` nodes for schema files: a mis-split field list silently
+    // drops a column (no Column node, so no PII / annotation can ever land on it), while a table-level
+    // constraint line taken for a column invents one.
+
+    #[test]
+    fn ddl_parses_every_create_table_with_its_columns() {
+        let sql = "CREATE TABLE IF NOT EXISTS `eb_user` (\n  `id` int(11) NOT NULL,\n  `name` varchar(32) NOT NULL,\n  PRIMARY KEY (`id`)\n);\nCREATE TABLE \"eb_order\" (\n  id int,\n  price decimal(10,2) NOT NULL,\n  KEY `idx_price` (`price`)\n);";
+        let tables = parse_create_tables(sql);
+
+        assert_eq!(
+            tables.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
+            vec!["eb_user".to_string(), "eb_order".to_string()],
+            "应解析出两张表并剥掉引号：{tables:?}"
+        );
+        assert_eq!(
+            tables[0].1,
+            vec!["id".to_string(), "name".to_string()],
+            "`PRIMARY KEY` 不是列：{:?}",
+            tables[0].1
+        );
+        assert_eq!(
+            tables[1].1,
+            vec!["id".to_string(), "price".to_string()],
+            "`KEY idx_price` 不是列：{:?}",
+            tables[1].1
+        );
+    }
+
+    /// A comma inside parentheses (`decimal(10,2)`) or inside a string literal (`DEFAULT 'x,y'`) belongs to
+    /// the field definition — splitting on it would truncate the column list.
+    #[test]
+    fn ddl_does_not_split_on_commas_inside_parens_or_strings() {
+        let tables = parse_create_tables(
+            "CREATE TABLE t (a decimal(10,2) NOT NULL, b varchar(8) DEFAULT 'x,y', c int)",
+        );
+
+        assert_eq!(
+            tables[0].1,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "括号与字符串里的逗号不应切分字段：{:?}",
+            tables[0].1
+        );
+    }
+
+    /// Comment lines are not columns, and a plain field still is.
+    #[test]
+    fn ddl_skips_comment_lines() {
+        let tables = parse_create_tables(
+            "CREATE TABLE t (\n  -- a comment\n  id int,\n  # another\n  name varchar(8)\n)",
+        );
+
+        assert_eq!(
+            tables[0].1,
+            vec!["id".to_string(), "name".to_string()],
+            "注释行不应成为列：{:?}",
+            tables[0].1
+        );
+    }
+
+    /// A column whose **name merely starts with** a constraint keyword is still a column — `unique_id`,
+    /// `check_time`, `index_sort`, `foreign_id` are ordinary names, and dropping them costs the column its
+    /// `Column` node (hence any PII / annotation on it).
+    #[test]
+    fn ddl_keeps_columns_named_after_a_constraint_keyword() {
+        let tables = parse_create_tables(
+            "CREATE TABLE t (\n  unique_id varchar(32) NOT NULL,\n  check_time int,\n  index_sort int,\n  foreign_id int,\n  PRIMARY KEY (`unique_id`)\n)",
+        );
+
+        assert_eq!(
+            tables[0].1,
+            vec![
+                "unique_id".to_string(),
+                "check_time".to_string(),
+                "index_sort".to_string(),
+                "foreign_id".to_string(),
+            ],
+            "以约束关键字开头的合法列名必须保留：{:?}",
+            tables[0].1
+        );
+    }
+
+    // ------------------------------------------------------- name normalisation helpers
+
+    /// Alias tables / route guards go through several rounds of JSON and text escaping, so
+    /// `Illuminate\\Session\\X` (doubled separators) must fold to one per level — otherwise a declared
+    /// middleware never matches (measured on laravel10: the whole table came out empty).
+    #[test]
+    fn norm_class_collapses_repeated_separators() {
+        assert_eq!(
+            norm_class(r"Illuminate\\Session\\Middleware\\X"),
+            r"Illuminate\Session\Middleware\X"
+        );
+        assert_eq!(
+            norm_class(r"\App\Http\Middleware\Auth"),
+            r"App\Http\Middleware\Auth"
+        );
+        assert_eq!(norm_class("Plain"), "Plain");
+    }
+
+    #[test]
+    fn callee_helpers_split_at_the_last_separator() {
+        assert_eq!(
+            split_callee("Http::get"),
+            (Some("Http".to_string()), Some("get".to_string()))
+        );
+        assert_eq!(
+            split_callee("$db->query"),
+            (Some("$db".to_string()), Some("query".to_string()))
+        );
+        assert_eq!(split_callee("curl_exec"), (None, None), "无接收者时两个分量都是 None");
+
+        assert_eq!(short_callee(r"App\Http\Middleware\Auth"), "Auth");
+        assert_eq!(short_callee("org.springframework.Boot"), "Boot");
+        assert_eq!(short_callee("plain"), "plain");
+    }
+
+    /// A declared middleware's `path` matches as a **suffix** of the file's path, with `*` for one segment.
+    #[test]
+    fn declared_middleware_path_matches_as_a_suffix() {
+        assert!(declared_mw_path_matches("app/Http/Middleware", "app/Http/Middleware"));
+        assert!(
+            declared_mw_path_matches("Http/Middleware", "app/Http/Middleware"),
+            "应按路径后缀匹配"
+        );
+        assert!(
+            declared_mw_path_matches("app/*/Middleware", "app/Http/Middleware"),
+            "* 通配一段"
+        );
+        assert!(
+            !declared_mw_path_matches("app/Http/Middleware", "Http/Middleware"),
+            "路径比模式短时不应匹配"
+        );
+        assert!(
+            !declared_mw_path_matches("app/Http", "app/Http/Middleware"),
+            "模式必须是路径的后缀"
+        );
+    }
 }

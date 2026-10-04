@@ -379,6 +379,7 @@ mod tests {
 
     use gt_adapter_fs::StdFileSystem;
     use gt_adapter_techstack::JsTechStackAdapter;
+    use gt_domain::model::{FileId, SubProjectId};
     use gt_domain::port::DefaultTechStackRegistry;
 
     /// `refine_role` consults the tech-stack adapter as a fallback, so the tests inject the JS adapter
@@ -474,5 +475,202 @@ mod tests {
         .unwrap();
         assert_eq!(role("frontend", &dir), "frontend:mobile");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------- fingerprint
+    //
+    // The regression this function exists for: it used to be `hash("path:file-size")`, which never read
+    // the content — so "changed one line but the byte count is unchanged" went undetected, and incremental
+    // updates silently missed changes while the user believed the graph was up to date.
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gt-ingest-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Equal byte size, different content -> **different** fingerprint. Without this, incremental rebuilds
+    /// miss real edits (worse than no incrementality, because it looks up to date).
+    #[test]
+    fn fingerprint_changes_when_content_changes_at_the_same_size() {
+        let dir = scratch("fp");
+        let fs = StdFileSystem::new();
+        let p = dir.join("a.php");
+
+        std::fs::write(&p, "$a = 1;\n").unwrap();
+        let before = fingerprint(&fs, &p, "a.php:8");
+        std::fs::write(&p, "$b = 1;\n").unwrap();
+        let after = fingerprint(&fs, &p, "a.php:8");
+
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().len(),
+            8,
+            "前提：两次写入字节数必须相同，否则这条测试没测到点上"
+        );
+        assert_ne!(before, after, "字节数相同但内容不同，指纹必须不同");
+
+        // Reordering statements keeps the size, so a size-based hash misses it too.
+        std::fs::write(&p, "$a = 1;\n$b = 2;\n").unwrap();
+        let ordered = fingerprint(&fs, &p, "x");
+        std::fs::write(&p, "$b = 2;\n$a = 1;\n").unwrap();
+        let swapped = fingerprint(&fs, &p, "x");
+        assert_ne!(ordered, swapped, "仅调换语句顺序也必须改变指纹");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Identical content -> identical fingerprint, or every rebuild looks "changed".
+    #[test]
+    fn fingerprint_is_stable_for_identical_content() {
+        let dir = scratch("fp-stable");
+        let fs = StdFileSystem::new();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        std::fs::write(&a, "same content").unwrap();
+        std::fs::write(&b, "same content").unwrap();
+
+        assert_eq!(
+            fingerprint(&fs, &a, "a:12"),
+            fingerprint(&fs, &b, "b:12"),
+            "内容相同则指纹必须相同"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unreadable / deleted files degrade to the `path:size` fallback — Ingest must not abort on them.
+    #[test]
+    fn fingerprint_falls_back_to_path_and_size_when_unreadable() {
+        let fs = StdFileSystem::new();
+        let missing = std::path::Path::new("/definitely/not/here.php");
+        assert_eq!(
+            fingerprint(&fs, missing, "fallback:9"),
+            hash("fallback:9"),
+            "读不到时应退化为 path:size 指纹"
+        );
+    }
+
+    // ------------------------------------------------------- assign_files
+    //
+    // Multi-module ownership: which sub-project a file belongs to decides which FKB applies to it, so a
+    // wrong bucket silently applies the wrong framework's knowledge.
+
+    fn sub(id: i64, root: &Path) -> SubProject {
+        SubProject {
+            id: SubProjectId(id),
+            project_id: ProjectId::new(1),
+            name: format!("sub{id}"),
+            root_path: root.to_path_buf(),
+            language: Language::new(Language::PHP),
+            role: "backend".to_string(),
+            detected_by: "composer.json".to_string(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        }
+    }
+
+    fn file(id: i64, path: &str) -> SourceFile {
+        SourceFile {
+            id: FileId(id),
+            project_id: ProjectId::new(1),
+            sub_project_id: None,
+            path: path.to_string(),
+            language: Language::new(Language::PHP),
+            size_bytes: 0,
+            content_hash: String::new(),
+        }
+    }
+
+    /// The **most specific** (longest matching) sub-project wins — otherwise a nested module falls into the
+    /// outer bucket and multi-module projects collapse into one.
+    #[test]
+    fn file_goes_to_the_most_specific_sub_project() {
+        let root = Path::new("/p");
+        let subs = vec![sub(1, &root.join("app")), sub(2, &root.join("app/admin"))];
+        let mut files = vec![file(1, "app/admin/Controller.php")];
+
+        assign_files(&mut files, &subs, root);
+
+        assert_eq!(
+            files[0].sub_project_id,
+            Some(SubProjectId(2)),
+            "应归到更具体的 app/admin，而不是外层的 app"
+        );
+    }
+
+    /// The prefix match must stop at a `/` boundary: `app` must not claim `application/...`.
+    #[test]
+    fn prefix_match_stops_at_a_path_boundary() {
+        let root = Path::new("/p");
+        let subs = vec![sub(1, &root.join("app"))];
+
+        let mut files = vec![file(1, "application/Model.php")];
+        assign_files(&mut files, &subs, root);
+        assert_eq!(
+            files[0].sub_project_id,
+            None,
+            "`app` 不该匹配 `application/`（前缀必须停在 / 边界）"
+        );
+
+        let mut files = vec![file(2, "app/Model.php")];
+        assign_files(&mut files, &subs, root);
+        assert_eq!(files[0].sub_project_id, Some(SubProjectId(1)), "自己目录下的文件仍应归属");
+    }
+
+    /// Outside every sub-project root -> unassigned, never "nearest by proximity".
+    #[test]
+    fn file_outside_every_sub_project_stays_unassigned() {
+        let root = Path::new("/p");
+        let subs = vec![sub(1, &root.join("app"))];
+        let mut files = vec![file(1, "docs/readme.md")];
+
+        assign_files(&mut files, &subs, root);
+
+        assert_eq!(files[0].sub_project_id, None);
+    }
+
+    /// A sub-project sitting **at the project root** (empty relative prefix) owns every file.
+    #[test]
+    fn root_sub_project_claims_every_file() {
+        let root = Path::new("/p");
+        let subs = vec![sub(1, root)];
+        let mut files = vec![file(1, "anywhere/deep/File.php")];
+
+        assign_files(&mut files, &subs, root);
+
+        assert_eq!(files[0].sub_project_id, Some(SubProjectId(1)));
+    }
+
+    // ------------------------------------------------------- validate_root / sub_name
+
+    #[test]
+    fn validate_root_accepts_a_directory_and_rejects_the_rest() {
+        let dir = scratch("root");
+        assert_eq!(
+            validate_root(&dir).expect("合法目录应通过"),
+            std::fs::canonicalize(&dir).unwrap(),
+            "应返回规范化后的路径"
+        );
+
+        let missing = dir.join("nope");
+        let err = validate_root(&missing).expect_err("不存在的路径应报错");
+        assert!(err.to_string().contains("does not exist"), "实际：{err}");
+
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = validate_root(&file).expect_err("文件不是目录应报错");
+        assert!(err.to_string().contains("not a directory"), "实际：{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sub_name_is_root_at_the_project_root_and_dashed_below_it() {
+        let root = Path::new("/p");
+        assert_eq!(sub_name(ProjectId::new(1), root, root), "root");
+        assert_eq!(
+            sub_name(ProjectId::new(1), root, Path::new("/p/app/admin")),
+            "app-admin"
+        );
     }
 }

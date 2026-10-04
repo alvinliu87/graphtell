@@ -417,5 +417,165 @@ mod tests {
             edge.confidence
         );
     }
+
+    /// Seed helper: `(source --kind--> target)` staged for propagation.
+    fn seed(ctx: &mut PipelineContext, source: NodeId, target: NodeId, kind: &str, confidence: f32) {
+        ctx.propagation_seeds.push(PropSeed {
+            source,
+            target,
+            kind: kind.to_string(),
+            confidence,
+            sub: None,
+            phase: Phase("Synthesize".into()),
+        });
+    }
+
+    // ------------------------------------------------------- the `MapsTo` suppression rule
+    //
+    // A caller that really reads / writes the table must not also carry "merely maps to it": once a
+    // propagated `ReadsDb` / `WritesDb` exists for the same (from, to), the propagated `MapsTo` is dropped.
+    // Downstream (views, rules) reads the difference as "the action really happens here" vs "just a mapping".
+
+    #[test]
+    fn maps_to_is_dropped_where_the_same_pair_really_reads_the_table() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let table = add_node(&mut ctx, "Table", "user");
+
+        calls(&mut ctx, mid, leaf);
+        seed(&mut ctx, leaf, table, "MapsTo", 1.0);
+        seed(&mut ctx, leaf, table, "ReadsDb", 1.0);
+
+        super::run(&mut ctx);
+
+        assert!(has_edge(&ctx, mid, table, EdgeKind::READS_DB), "真实读表的边应保留");
+        assert!(
+            !has_edge(&ctx, mid, table, EdgeKind::MAPS_TO),
+            "同一 (from,to) 已真实读表，传播来的 MapsTo 应被抑制"
+        );
+    }
+
+    /// Control for the one above: the suppression must not degenerate into "never propagate MapsTo".
+    #[test]
+    fn maps_to_survives_when_the_pair_has_no_read_or_write() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let table = add_node(&mut ctx, "Table", "user");
+
+        calls(&mut ctx, mid, leaf);
+        seed(&mut ctx, leaf, table, "MapsTo", 1.0);
+
+        super::run(&mut ctx);
+
+        assert!(
+            has_edge(&ctx, mid, table, EdgeKind::MAPS_TO),
+            "没有读写时 MapsTo 仍应上抛"
+        );
+    }
+
+    // ------------------------------------------------------- who may join the chain
+
+    /// Only methods / functions are action emitters: a class node sitting in the call chain must not end up
+    /// carrying a semantic edge — hanging one on a class is exactly what this phase avoids.
+    #[test]
+    fn only_methods_and_functions_join_the_propagation_chain() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let cls = add_node(&mut ctx, "Class", "app\\Wrapper");
+        let func = add_node(&mut ctx, "Function", "app\\helper");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls(&mut ctx, cls, leaf);
+        calls(&mut ctx, func, leaf);
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.85);
+
+        super::run(&mut ctx);
+
+        assert!(
+            has_edge(&ctx, func, queue, EdgeKind::PUBLISHES_TO),
+            "Function 是 action 节点，应参与传播"
+        );
+        assert!(
+            !has_edge(&ctx, cls, queue, EdgeKind::PUBLISHES_TO),
+            "Class 不是 action 节点，不应被挂上传播来的语义边"
+        );
+    }
+
+    // ------------------------------------------------------- one edge, every root cause
+
+    /// Two different emitters reaching the same caller collapse into **one** edge that records both root
+    /// causes, so downstream can still tell why the edge is there.
+    #[test]
+    fn one_propagated_edge_carries_every_root_cause() {
+        let mut ctx = test_ctx();
+        let leaf_a = add_method(&mut ctx, "app\\A::run");
+        let leaf_b = add_method(&mut ctx, "app\\B::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls(&mut ctx, top, leaf_a);
+        calls(&mut ctx, top, leaf_b);
+        seed(&mut ctx, leaf_a, queue, "PublishesTo", 0.85);
+        seed(&mut ctx, leaf_b, queue, "PublishesTo", 0.85);
+
+        super::run(&mut ctx);
+
+        let edges: Vec<_> = ctx
+            .ws
+            .edges()
+            .iter()
+            .filter(|e| {
+                e.from_id == top && e.to_id == queue && e.kind.as_str() == EdgeKind::PUBLISHES_TO
+            })
+            .collect();
+        assert_eq!(edges.len(), 1, "同一 (from,to,kind) 只应有一条边：{edges:?}");
+
+        let props = &edges[0].properties;
+        assert_eq!(props.get("via").and_then(|v| v.as_str()), Some("propagate"));
+        let sources = props
+            .get("seed_sources")
+            .and_then(|v| v.as_array())
+            .expect("seed_sources 应是数组");
+        assert_eq!(sources.len(), 2, "两个根因都应记录：{sources:?}");
+    }
+
+    // ------------------------------------------------------- the `indirect` flag
+
+    /// Both environment-read kinds are flagged `indirect` (`ReadsCache` is covered by the decay tests
+    /// above, this pins `ReadsConfig` too), while an action that really happens is not.
+    #[test]
+    fn both_environment_read_kinds_are_flagged_indirect() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let config = add_node(&mut ctx, "ConfigKey", "app.debug");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls_conf(&mut ctx, mid, leaf, 1.0);
+        seed(&mut ctx, leaf, config, "ReadsConfig", 0.9);
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.9);
+
+        super::run(&mut ctx);
+
+        let flag = |to: NodeId, kind: &str| {
+            ctx.ws
+                .edges()
+                .iter()
+                .find(|e| e.from_id == mid && e.to_id == to && e.kind.as_str() == kind)
+                .and_then(|e| e.properties.get("indirect").cloned())
+        };
+        assert_eq!(
+            flag(config, "ReadsConfig"),
+            Some(serde_json::json!(true)),
+            "ReadsConfig 也应标记 indirect"
+        );
+        assert_eq!(
+            flag(queue, "PublishesTo"),
+            None,
+            "真实发生的动作不应标记 indirect"
+        );
+    }
 }
 
