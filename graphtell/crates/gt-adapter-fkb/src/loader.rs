@@ -429,10 +429,10 @@ rules:
 
     /// The single most valuable guard: `load_dir` **silently skips** any corrupt / un-deserialisable file
     /// (warn + continue, loader.rs:80), and `common/mod.rs` only checks `!is_empty()`. A typo'd enum variant
-    /// in one FKB file (the historical `kind: manifest_php` miss) therefore loses knowledge with zero test
-    /// signal. Here we load the **real** `fkb/` tree file-by-file and fail loudly if any file cannot parse,
-    /// and also catch duplicate `id`s (the loader does not dedupe within one dir, so a duplicate would be
-    /// silently dropped downstream in the global rule collection).
+    /// in one FKB file (e.g. the removed legacy tag `kind: manifest_php`) therefore loses knowledge with
+    /// zero test signal. Here we load the **real** `fkb/` tree file-by-file and fail loudly if any file
+    /// cannot parse, and also catch duplicate `id`s (the loader does not dedupe within one dir, so a
+    /// duplicate would be silently dropped downstream in the global rule collection).
     #[test]
     fn every_real_fkb_file_parses_and_ids_are_unique() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb");

@@ -694,10 +694,6 @@ pub enum RootSource {
     /// Read a value from a project manifest / config file (e.g. ThinkPHP's `config/database.php`) by
     /// dotted pointer. The *interpretation* of the file format is delegated to the tech-stack adapter
     /// (`TechStackAdapter::read_manifest`), so the kernel knows no language-specific file format.
-    ///
-    /// `manifest_php` is kept as a deserialization alias: existing FKB data still spells the PHP-specific
-    /// tag, and it keeps loading unchanged while new data can adopt the language-agnostic `manifest`.
-    #[serde(alias = "manifest_php")]
     Manifest {
         /// Path relative to the project root, e.g. `config/database.php`.
         manifest: String,
@@ -1157,8 +1153,8 @@ impl Default for SynthesizeAction {
             modifiers: Vec::new(),
             alias: None,
             expand: None,
-            }
-            }
+        }
+    }
 }
 
 /// The identity spec of a synthesised node.
@@ -1578,20 +1574,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// `RootSource::Manifest` keeps `manifest_php` as a deserialization alias so existing FKB data (which still
-    /// spells the PHP-specific tag) keeps loading. Dropping the alias would make the *entire* FKB fail to
-    /// deserialize — `app_root` / `db_prefix` / `method_ref` all lost — so this is pinned directly, not only via
-    /// the sample-dependent gt-pipeline integration tests.
+    /// `RootSource::Manifest` is language-agnostic; the PHP-specific legacy tag `manifest_php` was
+    /// **removed** (no backward compatibility). Unknown tags must fail **loudly** at deserialization —
+    /// the FKB loader silently skips unparseable files, so a still-accepted legacy tag would instead
+    /// surface as silently lost knowledge (`app_root` / `db_prefix` / `method_ref` all gone).
     #[test]
-    fn root_source_manifest_accepts_both_alias_and_new_tag() {
-        let as_alias: RootSource = serde_json::from_value(json!({
-            "kind": "manifest_php",
-            "manifest": "config/database.php",
-            "pointer": "connections.mysql.prefix"
-        }))
-        .expect("manifest_php alias must deserialize");
-        assert!(matches!(as_alias, RootSource::Manifest { .. }));
-
+    fn root_source_manifest_deserializes_and_legacy_php_tag_is_rejected() {
         let as_new: RootSource = serde_json::from_value(json!({
             "kind": "manifest",
             "manifest": "config/database.php",
@@ -1599,6 +1587,16 @@ mod tests {
         }))
         .expect("language-agnostic manifest tag must deserialize");
         assert!(matches!(as_new, RootSource::Manifest { .. }));
+
+        let legacy = serde_json::from_value::<RootSource>(json!({
+            "kind": "manifest_php",
+            "manifest": "config/database.php",
+            "pointer": "connections.mysql.prefix"
+        }));
+        assert!(
+            legacy.is_err(),
+            "legacy manifest_php tag must be rejected, not silently accepted"
+        );
     }
 
     #[test]
