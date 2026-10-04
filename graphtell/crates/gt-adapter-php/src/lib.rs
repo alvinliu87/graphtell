@@ -118,8 +118,6 @@ impl TechStackAdapter for PhpTechStackAdapter {
             // migration loader reuses this same id and is dispatched by `sub.language` — no PHP-specific name
             // leaks into the kernel or the FKB.
             "migration_schema" => load_migration_schema(params, project_root, table_prefixes),
-            // Backwards-compatible alias kept during the transition; new FKBs should declare `migration_schema`.
-            "php_migration_schema" => load_migration_schema(params, project_root, table_prefixes),
             // Unknown to PHP: let the kernel's generic (params-driven) built-in loaders handle it.
             _ => Ok(Vec::new()),
         }
@@ -892,7 +890,7 @@ mod tests {
 
     /// The kernel routes any unmatched built-in loader id to the tech-stack adapter by `sub.language`. The
     /// `migration_schema` id must therefore be stack-agnostic — this test pins that the PHP adapter handles the
-    /// generic name (not only the legacy `php_migration_schema`), so a FKB can declare `migration_schema` for
+    /// generic name (there is no PHP-only alias left), so a FKB can declare `migration_schema` for
     /// any stack and let that stack's adapter own the format-specific parsing.
     #[test]
     fn migration_schema_generic_loader_id_routes_to_parser() {

@@ -311,7 +311,7 @@ fn prepare_loads_authoritative_symbol_tables() {
     assert!(cols > 5, "user 表应解析出多列，实际 {cols}");
 }
 
-/// `php_config_keys` must collect config keys only from declared accessors — not from a blanket
+/// `config_keys` must collect config keys only from declared accessors — not from a blanket
 /// `::get` suffix, and not leak project helpers into the framework FKB.
 #[test]
 fn prepare_config_keys_come_from_declared_accessors_not_route_paths() {

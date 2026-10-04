@@ -352,9 +352,11 @@ Consequences worth knowing:
   renamed id fails as "the symbol table is quietly empty", which surfaces far downstream (e.g. zero
   `Column` nodes). Always pin a loader with an end-to-end test, and check the negative case (a bogus
   id must make that test fail) before trusting it.
-* **Deprecated aliases exist, don't add new ones.** `php_db_schema` / `php_config_keys` /
-  `php_migration_schema` are accepted as aliases so older knowledge bases keep loading; new files use
-  the neutral spelling.
+* **There is exactly one spelling — no aliases.** `php_db_schema` / `php_config_keys` /
+  `php_migration_schema` were deprecated and have since been **removed**; the neutral id is the only id
+  the kernel or any adapter recognises. Consequence: renaming a loader id in the engine is a breaking
+  change for every knowledge file, so grep the whole `fkb/` tree first (and keep an end-to-end test on
+  the loader — a stale name is only a logged no-op).
 * If a loader's parsing is genuinely language-neutral (SQL install scripts, nginx config), it belongs
   to the kernel — with a neutral id and everything it needs declared in `params`.
 

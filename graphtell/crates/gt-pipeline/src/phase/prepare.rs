@@ -832,12 +832,11 @@ fn run_builtin(
     techstack: &dyn TechStackRegistry,
 ) {
     match name {
-        // Neutral ids (`db_schema` / `config_keys`): neither loader knows a language — the SQL install
-        // script is SQL, and "which receivers / accessors name a table or a config key" is declared by
-        // FKB `params`. The `php_*` spellings are kept as deprecated aliases so FKB written before the
-        // rename keeps loading instead of silently collecting nothing.
-        "db_schema" | "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
-        "config_keys" | "php_config_keys" => load_config_keys(ctx, params, sub),
+        // Neutral ids: neither loader knows a language — the SQL install script is SQL, and "which receivers
+        // / accessors name a table or a config key" is declared by FKB `params`. Every other id falls through
+        // to the tech-stack adapter below, so the kernel owns **no** language-specific loader name.
+        "db_schema" => load_schema(ctx, params, sub, project_root, phase),
+        "config_keys" => load_config_keys(ctx, params, sub),
         // Generic alias loader: file / block marker / separator all declared by FKB `params`, bound to no language.
         "middleware_aliases" => load_middleware_aliases(ctx, sub, project_root, params),
         // Generic declarative-middleware loader: file name / key / scope all declared by FKB `params`,
@@ -1069,7 +1068,7 @@ fn merge_schema_columns(
     ctx.ws.put_symbol(ctx.project.id, "schema", table, value);
 }
 
-/// Collect config keys (`php_config_keys`).
+/// Collect config keys (`config_keys`).
 ///
 /// Which callables read configuration is **stack knowledge** and comes from `params`; there is no
 /// built-in default list. That used to be different: the default spelled out one product's own helpers
@@ -3630,7 +3629,7 @@ mod tests {
     /// A built-in loader whose name is **not** a kernel-neutral id (a stack-specific one, e.g. a Java adapter's
     /// own loader) must be delegated to the tech-stack adapter matching the sub-project's language — `run_builtin`
     /// must not gate on a hard-coded PHP name. This locks the `other => run_adapter_loader` routing that replaced
-    /// the explicit `php_migration_schema` arm (now the language-agnostic `migration_schema` id, whose
+    /// the explicit PHP-only arm (the id is now the language-agnostic `migration_schema`, whose
     /// format-specific parsing lives in each stack's own adapter).
     #[test]
     fn non_php_builtin_loader_routes_to_adapter() {
@@ -3746,7 +3745,7 @@ mod tests {
     /// End-to-end pin for the language-agnostic `migration_schema` id: FKB declares it (see
     /// `fkb/php/illuminate-database.yaml`), the kernel delegates it to the tech-stack adapter matched by
     /// `sub.language`, and the PHP adapter's migration parser turns `database/migrations/*.php` into `schema`
-    /// symbol-table rows. Guards the rename away from the PHP-only `php_migration_schema` spelling.
+    /// symbol-table rows. Guards the language-agnostic `migration_schema` spelling — no PHP-only alias remains.
     #[test]
     fn migration_schema_loader_writes_schema_table() {
         use gt_domain::model::{

@@ -103,9 +103,10 @@ fn unknown_loader_id_is_empty() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The legacy PHP-only spelling must keep working so already-declared FKBs don't silently lose their schema.
+/// A stack-prefixed spelling must NOT be recognised: the id is language-agnostic, so there is exactly one
+/// name for this loader. Accepting an alias is how a rename silently survives in old knowledge files.
 #[test]
-fn legacy_php_migration_schema_alias_still_loads() {
+fn stack_prefixed_loader_id_is_not_recognised() {
     let root = std::env::temp_dir().join(format!("phpad_mig_alias_{}", std::process::id()));
     let mig = root.join("database/migrations");
     std::fs::create_dir_all(&mig).unwrap();
@@ -127,17 +128,9 @@ fn legacy_php_migration_schema_alias_still_loads() {
             &[],
         )
         .expect("load ok");
-    let tables: Vec<String> = facts
-        .iter()
-        .filter_map(|f| match f {
-            AdapterFact::Schema { table, .. } => Some(table.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        tables,
-        vec!["users".to_string()],
-        "旧 id `php_migration_schema` 应继续工作: {tables:?}"
+    assert!(
+        facts.is_empty(),
+        "栈前缀 id `php_migration_schema` 不应再被识别（已彻底移除别名）: {facts:?}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
