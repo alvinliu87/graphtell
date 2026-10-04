@@ -177,7 +177,7 @@ loaders:
       #   `$middlewareAliases`** (the 10.x skeleton measured is the latter; recognising only the former loses the whole table);
       # * only that block is taken: in the same file, `web` / `api` under `$middlewareGroups` are **group names**, not middleware names.
       params:
-        paths: ["app/Http/Kernel.php", "Http/Kernel.php"]
+        paths: ["{app_root}/Http/Kernel.php", "Http/Kernel.php"]
         markers: ["$middlewareAliases", "$routeMiddleware"]
         end: "];"
         separator: "=>"

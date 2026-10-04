@@ -807,10 +807,10 @@ fn run_builtin(
         }
         "php_config_keys" => load_config_keys(ctx, params, sub),
         // Generic alias loader: file / block marker / separator all declared by FKB `params`, bound to no language.
-        "middleware_aliases" => load_middleware_aliases(ctx, project_root, params),
+        "middleware_aliases" => load_middleware_aliases(ctx, sub, project_root, params),
         // Generic declarative-middleware loader: file name / key / scope all declared by FKB `params`,
         // merge the declared class list into `route_list`'s `guards`, nodes + edges unified by P14.
-        "declared_middleware" => load_declared_middleware(ctx, project_root, params),
+        "declared_middleware" => load_declared_middleware(ctx, sub, project_root, params),
         // Generic route-guard loader: recognition logic comes entirely from FKB's `route_guards` declaration, no framework hard-coded.
         "routes" => {
             if let Some(spec) = fk.route_guards.as_ref() {
@@ -1008,29 +1008,49 @@ fn merge_schema_columns(
     ctx.ws.put_symbol(ctx.project.id, "schema", table, value);
 }
 
+/// Collect config keys (`php_config_keys`).
+///
+/// Which callables read configuration is **stack knowledge** and comes from `params`; there is no
+/// built-in default list. That used to be different: the default spelled out one product's own helpers
+/// (`sys_config` / `sys_config_all`), so every stack that merely forgot to declare `accessors` silently
+/// inherited them. "No knowledge declared" now means "no keys collected", which is honest.
+///
+/// The same applies to `suffixes`: a blanket `::get` matched `Route::get('api/goods/detail')` — measured
+/// on CRMEB, 791 route registrations against 141 real `Config::get` / `Env::get` reads, i.e. the config
+/// table filled up with URL paths.
 fn load_config_keys(ctx: &mut PipelineContext, params: &Value, _sub: &gt_domain::model::SubProject) {
     let accessors: Vec<String> = params
         .get("accessors")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_else(|| {
-            vec![
-                "sys_config".into(),
-                "sys_config_all".into(),
-                "config".into(),
-                "env".into(),
-                "Env::get".into(),
-            ]
-        });
+        .unwrap_or_default();
     let suffixes: Vec<String> = params
         .get("suffixes")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_else(|| vec!["::get".into()]);
-    let mut found: Vec<(String, String, u32)> = Vec::new();
+        .unwrap_or_default();
+    if accessors.is_empty() && suffixes.is_empty() {
+        return;
+    }
+    // Where a key lives and whether it can change at runtime differ per accessor — `sys_config` reads a
+    // settings table, `config()` reads a file, `env()` reads the environment. Both are stack knowledge,
+    // so they are declared next to the accessors rather than hard-coded for every key.
+    let default_storage = params
+        .get("storage")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Database");
+    let default_mutable = params
+        .get("mutable")
+        .and_then(|v| v.as_str())
+        .unwrap_or("RuntimeMutable");
+    let by_accessor = params.get("by_accessor");
+
+    let mut found: Vec<(String, String, String, String, u32)> = Vec::new();
     for call in ctx.ws.calls.iter() {
-        let is_config = accessors
+        let matched = accessors
             .iter()
-            .any(|a| call.callee.eq_ignore_ascii_case(a))
-            || suffixes.iter().any(|s| call.callee.ends_with(s));
+            .find(|a| call.callee.eq_ignore_ascii_case(a))
+            .cloned();
+        let is_config =
+            matched.is_some() || suffixes.iter().any(|s| call.callee.ends_with(s));
         if !is_config {
             continue;
         }
@@ -1040,16 +1060,32 @@ fn load_config_keys(ctx: &mut PipelineContext, params: &Value, _sub: &gt_domain:
         if key.is_empty() || key.contains(' ') {
             continue;
         }
-        found.push((key.clone(), call.file.clone(), call.span.start_line));
+        let (storage, mutable) = matched
+            .as_deref()
+            .and_then(|a| by_accessor.and_then(|m| m.get(a)))
+            .map(|o| {
+                (
+                    o.get("storage").and_then(|v| v.as_str()).unwrap_or(default_storage),
+                    o.get("mutable").and_then(|v| v.as_str()).unwrap_or(default_mutable),
+                )
+            })
+            .unwrap_or((default_storage, default_mutable));
+        found.push((
+            key.clone(),
+            storage.to_string(),
+            mutable.to_string(),
+            call.file.clone(),
+            call.span.start_line,
+        ));
     }
-    for (key, file, line) in found {
+    for (key, storage, mutable, file, line) in found {
         ctx.ws.put_symbol(
             ctx.project.id,
             "config_keys",
             &key,
             json!({
-                "storage": "Database",
-                "mutable": "RuntimeMutable",
+                "storage": storage,
+                "mutable": mutable,
                 "value_type": "string",
                 "file": file,
                 "line": line,
@@ -1704,14 +1740,25 @@ fn extract_decorator_guards(
 /// So FKB gives `paths` / `markers` (**multiple, tried one by one**) / `end` / `separator` / `extensions`,
 /// the kernel only does "scan fixed syntax by declaration" -- same as `load_nginx`:
 /// **better only recognize fixed syntax than introduce a whole parser**.
-fn load_middleware_aliases(ctx: &mut PipelineContext, project_root: &Path, params: &Value) {
+fn load_middleware_aliases(
+    ctx: &mut PipelineContext,
+    sub: &gt_domain::model::SubProject,
+    project_root: &Path,
+    params: &Value,
+) {
+    let app_root = app_root_of(ctx, sub);
     let strs = |k: &str| -> Vec<String> {
         params
             .get(k)
             .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
             .unwrap_or_default()
     };
-    let paths = strs("paths");
+    // The app directory is resolved by `root_rules` (`app_root`), not hard-coded — a project whose
+    // psr-4 maps the app namespace to `application/` (ThinkPHP 5.x) or `src/` would otherwise be missed.
+    let paths: Vec<String> = strs("paths")
+        .into_iter()
+        .map(|p| p.replace("{app_root}", &app_root))
+        .collect();
     if paths.is_empty() {
         return;
     }
@@ -1967,8 +2014,8 @@ fn load_nginx(
 /// `nginx_config`, the kernel only does "scan fixed syntax by declaration", knows no framework / la
 ///
 /// Middleware is often registered in a **file**, not via a route call `->middleware()`:
-/// * ThinkPHP global: `app/middleware.php` returns a bare class array `return [A::class, B::class];`;
-/// * ThinkPHP multi-app: `app/<app>/config/route.php`'s `'middleware' => [A::class, ...]`.
+/// * ThinkPHP global: `{app_root}/middleware.php` returns a bare class array `return [A::class, B::class];`;
+/// * ThinkPHP multi-app: `{app_root}/<app>/config/route.php`'s `'middleware' => [A::class, ...]`.
 /// These writings produce no route-call chain, so `guard_attach` can't recognize them, `route_list`'s `guards` is entirely empty,
 /// and the graph has no middleware at all (likeadmin is typical).
 ///
@@ -1980,16 +2027,28 @@ fn load_nginx(
 ///
 /// # params
 /// * `paths`: files to scan (suffix match, supports `**/X`). `per_app` supports a single `*` wildcard segment
-///   (e.g. `app/*/config/route.php`), the matched `*` segment is the app name.
+///   (e.g. `{app_root}/*/config/route.php`), the matched `*` segment is the app name. The `{app_root}`
+///   placeholder is expanded from the `root_rules`-resolved app directory.
 /// * `key`: optional. The key the declared array lives under; when omitted, take the first `[...]` array of the whole file
 ///   (i.e. `return [A::class, ...];` form).
 /// * `scope`: `global` (hang on all routes, default) or `per_app` (only on routes whose name contains the `/<app>` prefix,
 ///   `prefix` is `/<app>`, extracted from the `*` wildcard segment of `paths`).
-fn load_declared_middleware(ctx: &mut PipelineContext, project_root: &Path, params: &Value) {
-    let paths = params
+fn load_declared_middleware(
+    ctx: &mut PipelineContext,
+    sub: &gt_domain::model::SubProject,
+    project_root: &Path,
+    params: &Value,
+) {
+    let app_root = app_root_of(ctx, sub);
+    // The app directory is resolved by `root_rules` (`app_root`), not hard-coded — a project whose
+    // psr-4 maps the app namespace to `application/` (ThinkPHP 5.x) or `src/` would otherwise be missed.
+    let paths: Vec<String> = params
         .get("paths")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.replace("{app_root}", &app_root))
+        .collect();
     if paths.is_empty() {
         return;
     }
@@ -2141,8 +2200,8 @@ fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
 
 /// Path suffix match (align at end), supports `*` wildcard segment (matches exactly one path segment).
 ///
-/// For `declared_middleware`'s `paths`: declaring `app/*/config/route.php` hits
-/// `server/app/adminapi/config/route.php` (no matter how many dir layers under project_root), unlike `engine::path_matches`
+/// For `declared_middleware`'s `paths`: declaring `{app_root}/*/config/route.php` hits
+/// `server/{app_root}/adminapi/config/route.php` (no matter how many dir layers under project_root), unlike `engine::path_matches`
 /// which requires the pattern to match from the start — auto-route projects' app dirs often hide in `server/app/<app>` subdirs.
 /// Without `*` degenerates to plain suffix equality.
 fn declared_mw_path_matches(pattern: &str, path: &str) -> bool {
@@ -2321,6 +2380,18 @@ pub fn expand(path: &str, app_root: &str) -> String {
     path.replace("{app_root}", app_root)
 }
 
+/// Resolve the project's app-root directory name, falling back to `app` when `root_rules` has not
+/// produced an `app_root` fact (or it is not a string). Used to expand the `{app_root}` placeholder
+/// in loader `path` / `paths` declarations — the app directory is a project decision, never hard-coded.
+fn app_root_of(ctx: &PipelineContext, sub: &gt_domain::model::SubProject) -> String {
+    ctx.ws
+        .get_fact(sub.id, "app_root")
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("app")
+        .to_string()
+}
+
 /// For test use.
 pub fn _sub_id(id: SubProjectId) -> SubProjectId {
     id
@@ -2357,11 +2428,13 @@ mod tests {
     use crate::workspace::{CallRecord, GraphWorkspace};
 
     use super::{detect_frameworks, expand_provided, lock_has, CodeEvidence};
+    use super::{load_declared_middleware, PipelineContext};
     use std::collections::HashMap;
+    use serde_json::json;
     use gt_domain::model::{
         ChainGuardSpec, ConsumerGuardSpec, ConsumerScope, Detector, FactValue, FrameworkKnowledge,
-        GuardAttach, GuardAttachSpec, KnowledgeScope, Language, NodeId, ProjectId, RouteCallSpec,
-        RouteGuardSpec, RouteMatchBy, Span, SubProject, SubProjectId,
+        GuardAttach, GuardAttachSpec, KnowledgeScope, Language, NodeId, Project, ProjectId,
+        ProjectStatus, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Span, SubProject, SubProjectId,
     };
 
     /// ThinkPHP 6's `route_guards` declaration (minimal set equivalent to `fkb/php/thinkphp.yaml`), for test reuse.
@@ -2623,6 +2696,69 @@ mod tests {
         assert!(collect_route_guards(&tp6_spec(), &calls).is_empty());
         assert_eq!(guard_arg_text(&FactValue::Int(60)), Some("60".into()));
         assert_eq!(guard_arg_text(&FactValue::Null), None);
+    }
+
+    /// `declared_middleware`'s `paths` must honour the `root_rules`-resolved `app_root`, not a hard-coded
+    /// `app/` — a ThinkPHP 5.x project whose psr-4 maps the app namespace to `application/` would otherwise
+    /// never be scanned, silently losing every declarative middleware.
+    #[test]
+    fn declared_middleware_respects_app_root_fact_not_hardcoded_app() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "backend".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            language: Language("php".into()),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec!["thinkphp".into()],
+            facts: serde_json::Value::Object(Default::default()),
+        };
+        // Not `app/` — this project's app directory is `application/` (ThinkPHP 5.x convention).
+        ctx.ws
+            .set_fact(sub.id, "app_root", json!({ "value": "application" }));
+
+        let dir = std::env::temp_dir().join(format!("gt_mw_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("application"));
+        std::fs::write(
+            dir.join("application").join("middleware.php"),
+            "<?php\nreturn [\n    App\\Foo::class,\n    App\\Bar::class,\n];",
+        )
+        .unwrap();
+
+        // `app/middleware.php` would not exist; only `{app_root}/middleware.php` (expanded to
+        // `application/middleware.php`) should match.
+        let params = json!({ "paths": ["{app_root}/middleware.php"], "scope": "global" });
+        load_declared_middleware(&mut ctx, &sub, &dir, &params);
+
+        let sym = ctx
+            .ws
+            .get_symbol("declared_middleware", "global_0")
+            .expect("declared middleware should be recorded under the resolved app dir");
+        let classes: Vec<String> = sym
+            .get("classes")
+            .and_then(|c| c.as_array())
+            .unwrap_or(&Vec::new())
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            classes,
+            vec!["App\\Foo".to_string(), "App\\Bar".to_string()],
+            "must resolve middleware from the `{{app_root}}`-expanded path, not a hard-coded `app/`"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Express positional-arg style: `app.get('/x', mw1, mw2, handler)` — args after path are all middleware.

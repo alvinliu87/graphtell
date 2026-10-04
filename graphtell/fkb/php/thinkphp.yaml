@@ -220,10 +220,24 @@ loaders:
     from:
       kind: builtin
       name: php_config_keys
-      # Config accessors: ThinkPHP uses `sys_config` / `config`, Laravel uses `config` / `env`.
+      # Config accessors — the **framework / library** spellings only: ThinkPHP's global `config()` helper
+      # and its `Config` / `Env` facades, plus `env()`. Project-level helpers do **not** belong here:
+      # CRMEB's `sys_config()` is defined in its own `crmeb/app/common.php` and is declared by the project
+      # knowledge base (`fkb/projects/crmeb.yaml`), not by ThinkPHP.
+      #
+      # `suffixes` is deliberately **not** used: a blanket `::get` also matches `Route::get()` (which takes
+      # a URL path) and every `CacheService::get()` / `Arr::get()` — measured on CRMEB, 791 route paths
+      # against 141 real config reads. The facades are named explicitly instead.
       params:
-        accessors: ["sys_config", "sys_config_all", "config", "env", "Env::get"]
-        suffixes: ["::get"]
+        # `config()` / `env()` are bare function calls; `Config::get` / `Env::get` are facade calls.
+        accessors: ["config", "env", "Config::get", "Env::get"]
+        # Default for every accessor above, overridden per accessor by `by_accessor`.
+        storage: File
+        mutable: RuntimeMutable
+        by_accessor:
+          # `.env` / the environment: fixed for the lifetime of the process, not a runtime setting.
+          env: { storage: Env, mutable: DeployTime }
+          Env::get: { storage: Env, mutable: DeployTime }
   # I18n (lang/<locale>/*.php)
   - id: i18n
     table: i18n
@@ -250,7 +264,7 @@ loaders:
       kind: builtin
       name: declared_middleware
       params:
-        paths: ["app/middleware.php"]
+        paths: ["{app_root}/middleware.php"]
         scope: global
   - id: middleware-per-app
     table: route_list
@@ -258,7 +272,7 @@ loaders:
       kind: builtin
       name: declared_middleware
       params:
-        paths: ["app/*/config/route.php"]
+        paths: ["{app_root}/*/config/route.php"]
         key: middleware
         scope: per_app
   # Nginx config is **not** declared here any more: it is deployment infrastructure, not a ThinkPHP concern,

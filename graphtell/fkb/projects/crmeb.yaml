@@ -65,6 +65,22 @@ magic_delegation:
   property: dao
   confidence: 0.7
 
+# CRMEB's own settings accessors: `sys_config()` is defined in **this project's** `crmeb/app/common.php`
+# (guarded by `function_exists`), it is not a ThinkPHP API — so it is declared here rather than in
+# `fkb/php/thinkphp.yaml`. The loader feeds the same `config_keys` symbol table the framework loader
+# writes to, which is what gives the `sys-config` rule below its `storage` / `value_type` / `mutable`
+# fields: these keys live in the store's settings **table** and are editable at runtime.
+loaders:
+  - id: config-keys
+    table: config_keys
+    from:
+      kind: builtin
+      name: php_config_keys
+      params:
+        accessors: ["sys_config", "sys_config_all"]
+        storage: Database
+        mutable: RuntimeMutable
+
 rules:
   # ===== P5 Synthesize: ConfigKey =====
   # CRMEB's own `sys_config()` / `sys_config_all()`, which read the store's settings table.

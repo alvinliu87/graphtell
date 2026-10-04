@@ -311,6 +311,52 @@ fn prepare_loads_authoritative_symbol_tables() {
     assert!(cols > 5, "user 表应解析出多列，实际 {cols}");
 }
 
+/// `php_config_keys` must collect config keys only from declared accessors — not from a blanket
+/// `::get` suffix, and not leak project helpers into the framework FKB.
+#[test]
+fn prepare_config_keys_come_from_declared_accessors_not_route_paths() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let rows = b
+        .store
+        .list_symbols(b.project.id, "config_keys")
+        .expect("config_keys 可读");
+    assert!(!rows.is_empty(), "应采集到配置键");
+
+    // 1) The old blanket `suffixes: ["::get"]` matched `Route::get('api/goods/detail')` — 791 route
+    //    registrations against 141 real config reads on CRMEB. No key here may look like a URL path.
+    let route_like: Vec<&str> = rows
+        .iter()
+        .map(|r| r.key.as_str())
+        .filter(|k| k.contains('/'))
+        .collect();
+    assert!(
+        route_like.is_empty(),
+        "路由路径不应被当成配置键：{:?}",
+        &route_like[..route_like.len().min(5)]
+    );
+
+    // 2) CRMEB's own helper `sys_config()` belongs to the **project** FKB, not ThinkPHP; its keys must
+    //    still be collected (the framework FKB no longer lists it).
+    let from_db = rows
+        .iter()
+        .filter(|r| r.value.get("storage").and_then(|v| v.as_str()) == Some("Database"))
+        .count();
+    assert!(
+        from_db > 0,
+        "sys_config 等数据库存储配置键应被项目级 loader 采集"
+    );
+
+    // 3) Framework accessors (`env` / `Env::get`) carry `storage: Env`, distinct from file config.
+    let from_env = rows
+        .iter()
+        .filter(|r| r.value.get("storage").and_then(|v| v.as_str()) == Some("Env"))
+        .count();
+    assert!(from_env > 0, "env 配置键应标记为 Env 存储");
+}
+
 #[test]
 fn prepare_parses_sql_columns_without_being_cut_by_parentheses() {
     let Some(b) = built() else {
