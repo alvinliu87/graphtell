@@ -61,7 +61,7 @@ pub fn resolve_for_sub(
     parsers: &dyn ParserRegistry,
     techstack: &dyn TechStackRegistry,
 ) -> SubExcludes {
-    let ids = facts::detect_without_code(kb, fs, sub_root, project_root, language);
+    let ids = facts::detect_without_code(kb, fs, sub_root, project_root, language, techstack);
     // The tech-stack adapter only reads `root_path` / `language` to locate a manifest, so the
     // stand-in id is never observed anywhere.
     let sub = facts::provisional_sub(sub_root, language);

@@ -15,78 +15,76 @@ use gt_domain::model::{
     Detector, Language, PickStrategy, ProjectId, RootSource, SubProject, SubProjectId,
 };
 use gt_domain::port::{
-    FileSystem, KnowledgeProvider, ManifestEntries, ParserRegistry, TechStackRegistry,
+    FileSystem, KnowledgeProvider, ManifestEntries, ParserRegistry, TechStackAdapter,
+    TechStackRegistry,
 };
 use serde_json::Value;
 
 /// Whether `dependency` is declared by the manifest at `path`.
 ///
-/// Recognises the common dependency sections (`require` / `dependencies` …); anything else degrades to
-/// a plain-text probe rather than failing to match — missing a framework is worse than mistaking one.
-pub fn manifest_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
-    if !fs.exists(path) {
-        return false;
-    }
-    let Ok(text) = fs.read_to_string(path) else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        // Besides composer.json there may also be a plain-text dependency manifest
-        return text.contains(dependency);
-    };
-    for section in ["require", "require-dev", "dependencies", "devDependencies"] {
-        if let Some(map) = v.get(section).and_then(|s| s.as_object()) {
-            for key in map.keys() {
-                if key.eq_ignore_ascii_case(dependency) || key.contains(dependency) {
-                    return true;
-                }
-            }
-        }
-    }
-    text.contains(dependency)
+/// **Which sections hold dependencies is ecosystem knowledge**: composer.json uses `require` /
+/// `require-dev`, package.json uses `dependencies` / `devDependencies` … so it is asked of the
+/// tech-stack adapter ([`TechStackAdapter::manifest_dependencies`]), never hard-coded here. An
+/// ecosystem with no adapter (or one that does not recognise the file) degrades to a plain-text
+/// probe rather than failing to match — missing a framework is worse than mistaking one.
+pub fn manifest_has(
+    path: &Path,
+    dependency: &str,
+    fs: &dyn FileSystem,
+    techstack: &dyn TechStackRegistry,
+    language: &Language,
+) -> bool {
+    declared_in(path, dependency, fs, techstack, language, |a, name, text| {
+        a.manifest_dependencies(name, text)
+    })
 }
 
 /// Whether `dependency` appears in a **lock file**: the resolved dependency closure, so it covers packages
 /// the project never declared itself.
 ///
 /// Unlike [`manifest_has`], which only ever looks at hand-written declarations, this reads what was actually
-/// installed — the only manifest-shaped signal that can see a package pulled in transitively. Layouts are
-/// recognised per ecosystem; anything else (yarn.lock, poetry.lock …) falls back to a plain-text probe
-/// rather than failing to match, the same conservative direction `manifest_has` takes.
-pub fn lock_has(path: &Path, dependency: &str, fs: &dyn FileSystem) -> bool {
+/// installed — the only manifest-shaped signal that can see a package pulled in transitively. The lock
+/// layout (composer.lock's `packages[]`, package-lock's `packages{}` keyed by `node_modules/…`, its v1
+/// `dependencies{}` …) is ecosystem knowledge, so it is asked of the tech-stack adapter
+/// ([`TechStackAdapter::lock_dependencies`]); anything else (yarn.lock, poetry.lock …) falls back to a
+/// plain-text probe rather than failing to match, the same conservative direction `manifest_has` takes.
+pub fn lock_has(
+    path: &Path,
+    dependency: &str,
+    fs: &dyn FileSystem,
+    techstack: &dyn TechStackRegistry,
+    language: &Language,
+) -> bool {
+    declared_in(path, dependency, fs, techstack, language, |a, name, text| {
+        a.lock_dependencies(name, text)
+    })
+}
+
+/// Shared body of [`manifest_has`] / [`lock_has`]: ask the ecosystem for the declared names, then fall
+/// back to a whole-file text probe (the conservative direction: over-detect, never under-detect).
+fn declared_in(
+    path: &Path,
+    dependency: &str,
+    fs: &dyn FileSystem,
+    techstack: &dyn TechStackRegistry,
+    language: &Language,
+    names_of: impl Fn(&dyn TechStackAdapter, &str, &str) -> Option<Vec<String>>,
+) -> bool {
     if !fs.exists(path) {
         return false;
     }
     let Ok(text) = fs.read_to_string(path) else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return text.contains(dependency);
-    };
-    let needle = dependency.to_ascii_lowercase();
-    let mut names: Vec<String> = Vec::new();
-    // composer.lock: `packages` / `packages-dev` are arrays of `{ "name": ... }`.
-    for section in ["packages", "packages-dev"] {
-        if let Some(arr) = v.get(section).and_then(|s| s.as_array()) {
-            for p in arr {
-                if let Some(n) = p.get("name").and_then(|n| n.as_str()) {
-                    names.push(n.to_string());
-                }
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if let Some(adapter) = techstack.adapter_for(language) {
+        if let Some(names) = names_of(adapter, file_name, &text) {
+            let needle = dependency.to_ascii_lowercase();
+            if names.iter().any(|n| {
+                let n = n.to_ascii_lowercase();
+                n == needle || n.contains(&needle)
+            }) {
+                return true;
             }
         }
-    }
-    // package-lock.json v2+: `packages` is an object keyed by install path (`node_modules/foo`).
-    if let Some(map) = v.get("packages").and_then(|s| s.as_object()) {
-        for (key, entry) in map {
-            let n = entry.get("name").and_then(|n| n.as_str()).unwrap_or(key);
-            names.push(n.trim_start_matches("node_modules/").to_string());
-        }
-    }
-    // package-lock.json v1: `dependencies` is an object keyed by package name.
-    if let Some(map) = v.get("dependencies").and_then(|s| s.as_object()) {
-        names.extend(map.keys().cloned());
-    }
-    if names
-        .iter()
-        .any(|n| n.to_ascii_lowercase() == needle || n.to_ascii_lowercase().contains(&needle))
-    {
-        return true;
     }
     text.contains(dependency)
 }
@@ -275,6 +273,7 @@ pub fn detect_without_code(
     sub_root: &Path,
     project_root: &Path,
     language: &Language,
+    techstack: &dyn TechStackRegistry,
 ) -> Vec<String> {
     let mut hits: Vec<(String, f32)> = Vec::new();
     for fk in kb.all() {
@@ -286,12 +285,12 @@ pub fn detect_without_code(
         for d in &fk.detectors {
             let ok = match d {
                 Detector::ManifestDependency { manifest, dependency, .. } => {
-                    manifest_has(&sub_root.join(manifest), dependency, fs)
-                        || manifest_has(&project_root.join(manifest), dependency, fs)
+                    manifest_has(&sub_root.join(manifest), dependency, fs, techstack, language)
+                        || manifest_has(&project_root.join(manifest), dependency, fs, techstack, language)
                 }
                 Detector::LockDependency { lock, dependency, .. } => {
-                    lock_has(&sub_root.join(lock), dependency, fs)
-                        || lock_has(&project_root.join(lock), dependency, fs)
+                    lock_has(&sub_root.join(lock), dependency, fs, techstack, language)
+                        || lock_has(&project_root.join(lock), dependency, fs, techstack, language)
                 }
                 Detector::FileExists { path, .. } => {
                     sub_root.join(path).exists() || project_root.join(path).exists()

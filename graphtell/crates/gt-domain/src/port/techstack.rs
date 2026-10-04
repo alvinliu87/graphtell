@@ -65,6 +65,32 @@ pub trait TechStackAdapter: Send + Sync {
     /// The language this adapter is responsible for.
     fn language(&self) -> Language;
 
+    /// Whether this adapter also serves `language` beyond [`TechStackAdapter::language`].
+    ///
+    /// Needed because one ecosystem spans several language tags: the JavaScript adapter serves
+    /// `typescript` too, and a language tag must not silently degrade an ecosystem to "no adapter".
+    fn serves(&self, language: &Language) -> bool {
+        *language == self.language()
+    }
+
+    /// The dependency names declared by one of this stack's **manifest** files (e.g. composer.json's
+    /// `require` / `require-dev` keys).
+    ///
+    /// `None` means "this stack does not recognise that file" — the kernel then falls back to a
+    /// plain-text probe, so an ecosystem without an adapter degrades to over-detection rather than
+    /// to silence (missing a framework is worse than mistaking one).
+    fn manifest_dependencies(&self, _file_name: &str, _text: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    /// The dependency names in one of this stack's **lock** files — the resolved closure, so it
+    /// covers packages the project never declared itself.
+    ///
+    /// Same `None` contract as [`TechStackAdapter::manifest_dependencies`].
+    fn lock_dependencies(&self, _file_name: &str, _text: &str) -> Option<Vec<String>> {
+        None
+    }
+
     /// PSR-4 (or equivalent) namespace → directory roots for this ecosystem, derived from its
     /// package manifest (e.g. composer.json `autoload.psr-4`). The kernel never assumes a hard-coded
     /// directory name like `Http/Controllers` / `controller`.
@@ -172,10 +198,7 @@ impl Default for DefaultTechStackRegistry {
 
 impl TechStackRegistry for DefaultTechStackRegistry {
     fn adapter_for(&self, language: &Language) -> Option<&dyn TechStackAdapter> {
-        self.adapters
-            .iter()
-            .find(|a| a.language() == *language)
-            .map(|a| a.as_ref())
+        self.adapters.iter().find(|a| a.serves(language)).map(|a| a.as_ref())
     }
 }
 

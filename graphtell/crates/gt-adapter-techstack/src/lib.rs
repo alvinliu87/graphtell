@@ -98,6 +98,40 @@ impl TechStackAdapter for JsTechStackAdapter {
     fn sub_project_kind(&self, dir: &Path, fs: &dyn FileSystem) -> Option<String> {
         detect_frontend_kind_via_config(dir, fs).map(|k| k.to_string())
     }
+
+    /// One ecosystem, several language tags: a `.ts` sub-project must not lose its adapter
+    /// (which would silently degrade dependency detection to a whole-file text probe).
+    fn serves(&self, language: &Language) -> bool {
+        matches!(language.as_str(), Language::JAVASCRIPT | Language::TYPESCRIPT)
+    }
+
+    fn manifest_dependencies(&self, file_name: &str, text: &str) -> Option<Vec<String>> {
+        if file_name != "package.json" {
+            return None;
+        }
+        let pkg: serde_json::Value = serde_json::from_str(text).ok()?;
+        Some(collect_deps(&pkg))
+    }
+
+    fn lock_dependencies(&self, file_name: &str, text: &str) -> Option<Vec<String>> {
+        if file_name != "package-lock.json" {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        let mut names: Vec<String> = Vec::new();
+        // v2+: `packages` is an object keyed by install path (`node_modules/foo`).
+        if let Some(map) = v.get("packages").and_then(|s| s.as_object()) {
+            for (key, entry) in map {
+                let n = entry.get("name").and_then(|n| n.as_str()).unwrap_or(key);
+                names.push(n.trim_start_matches("node_modules/").to_string());
+            }
+        }
+        // v1: `dependencies` is an object keyed by package name.
+        if let Some(map) = v.get("dependencies").and_then(|s| s.as_object()) {
+            names.extend(map.keys().cloned());
+        }
+        Some(names)
+    }
 }
 
 /// Read `package.json` and similar config to recognise the frontend framework, covering misses caused by

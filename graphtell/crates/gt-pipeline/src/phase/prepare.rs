@@ -44,13 +44,28 @@ pub fn run(
         // Framework-level + project-level knowledge recognized separately: project-level loads only when that sub-project is recognized as the corresponding project,
         // its rules only enter `rules_by_sub` (not `ctx.frameworks`, not global), never leaking into other projects.
         let evidence = collect_code_evidence(ctx, sub);
-        let frameworks =
-            detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Framework, &evidence);
+        let frameworks = detect_frameworks(
+            kb,
+            fs,
+            sub,
+            &project_root,
+            KnowledgeScope::Framework,
+            &evidence,
+            techstack,
+        );
         info!("sub-project {} recognized framework: {:?}", sub.name, frameworks);
         detected_frameworks.extend(frameworks.iter().cloned());
         ctx.frameworks.insert(sub.id.get(), frameworks.clone());
 
-        let projects = detect_frameworks(kb, fs, sub, &project_root, KnowledgeScope::Project, &evidence);
+        let projects = detect_frameworks(
+            kb,
+            fs,
+            sub,
+            &project_root,
+            KnowledgeScope::Project,
+            &evidence,
+            techstack,
+        );
         if !projects.is_empty() {
             info!("sub-project {} recognized project knowledge: {:?}", sub.name, projects);
         }
@@ -301,6 +316,7 @@ fn detect_frameworks(
     project_root: &Path,
     scope: KnowledgeScope,
     evidence: &CodeEvidence,
+    techstack: &dyn TechStackRegistry,
 ) -> Vec<String> {
     let mut hits: Vec<(String, f32)> = Vec::new();
     for fk in kb.all() {
@@ -315,16 +331,16 @@ fn detect_frameworks(
             let ok = match d {
                 Detector::ManifestDependency { manifest, dependency, .. } => {
                     let path = sub.root_path.join(manifest);
-                    manifest_has(&path, dependency, fs)
-                        || manifest_has(&project_root.join(manifest), dependency, fs)
+                    manifest_has(&path, dependency, fs, techstack, &sub.language)
+                        || manifest_has(&project_root.join(manifest), dependency, fs, techstack, &sub.language)
                 }
                 Detector::FileExists { path, .. } => {
                     sub.root_path.join(path).exists() || project_root.join(path).exists()
                 }
                 Detector::LockDependency { lock, dependency, .. } => {
                     let path = sub.root_path.join(lock);
-                    lock_has(&path, dependency, fs)
-                        || lock_has(&project_root.join(lock), dependency, fs)
+                    lock_has(&path, dependency, fs, techstack, &sub.language)
+                        || lock_has(&project_root.join(lock), dependency, fs, techstack, &sub.language)
                 }
                 Detector::ImportExists { symbol, .. } => evidence.imports(symbol),
                 Detector::CallExists { callee, .. } => evidence.calls(callee),
@@ -2422,10 +2438,18 @@ mod tests {
     use super::{collect_route_guards, guard_arg_text};
     use crate::workspace::{CallRecord, GraphWorkspace};
 
-    use super::{detect_frameworks, expand_provided, lock_has, CodeEvidence};
+    use super::{detect_frameworks, expand_provided, lock_has, manifest_has, CodeEvidence};
     use super::{load_declared_middleware, PipelineContext};
     use std::collections::HashMap;
     use serde_json::json;
+
+    /// Dependency / lock layouts are ecosystem knowledge, so these tests need a real registry:
+    /// composer.json / composer.lock are read by the PHP adapter, package-lock.json by the JS one.
+    fn techstack() -> gt_domain::port::DefaultTechStackRegistry {
+        gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()))
+    }
     use gt_domain::model::{
         ChainGuardSpec, ConsumerGuardSpec, ConsumerScope, Detector, FactValue, FrameworkKnowledge,
         GuardAttach, GuardAttachSpec, KnowledgeScope, Language, NodeId, Project, ProjectId,
@@ -3269,7 +3293,8 @@ mod tests {
                 vec![Detector::CallExists { callee: "Redis::get".into(), confidence: 0.9 }],
             ),
         ]);
-        let hits = detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev, &techstack());
         assert_eq!(hits, vec!["guzzle".to_string()], "只激活代码里真用到的库");
 
         // And the alias spelling — `use GuzzleHttp\Client as G;` — records the same FQN, so it too fires.
@@ -3279,7 +3304,7 @@ mod tests {
         )]);
         let ev2 = evidence(&[], &[("GuzzleHttp\\Client::request", None, None)]);
         assert_eq!(
-            detect_frameworks(&kb2, &NoFs, &sub, root, KnowledgeScope::Framework, &ev2),
+            detect_frameworks(&kb2, &NoFs, &sub, root, KnowledgeScope::Framework, &ev2, &techstack()),
             vec!["guzzle".to_string()]
         );
     }
@@ -3315,14 +3340,18 @@ mod tests {
                 .into(),
         )]));
         // None of these are in the app's own composer.json — that is the whole point.
-        assert!(lock_has(&lock, "illuminate/database", &fs));
-        assert!(lock_has(&lock, "guzzlehttp/guzzle", &fs));
-        assert!(lock_has(&lock, "phpunit/phpunit", &fs), "packages-dev 也算");
-        assert!(!lock_has(&lock, "spatie/laravel-permission", &fs));
+        let ts = techstack();
+        let php = Language::new(Language::PHP);
+        assert!(lock_has(&lock, "illuminate/database", &fs, &ts, &php));
+        assert!(lock_has(&lock, "guzzlehttp/guzzle", &fs, &ts, &php));
+        assert!(lock_has(&lock, "phpunit/phpunit", &fs, &ts, &php), "packages-dev 也算");
+        assert!(!lock_has(&lock, "spatie/laravel-permission", &fs, &ts, &php));
         assert!(!lock_has(
             &std::path::PathBuf::from("/p/other.lock"),
             "illuminate/database",
-            &fs
+            &fs,
+            &ts,
+            &php
         ));
     }
 
@@ -3334,7 +3363,13 @@ mod tests {
             v2.clone(),
             r#"{"packages": {"node_modules/express": {"version": "4.18.0"}, "": {"name": "app"}}}"#.into(),
         )]));
-        assert!(lock_has(&v2, "express", &fs), "key 去掉 node_modules/ 前缀后应命中");
+        let ts = techstack();
+        let js = Language::new(Language::JAVASCRIPT);
+        assert!(lock_has(&v2, "express", &fs, &ts, &js), "key 去掉 node_modules/ 前缀后应命中");
+        // A TypeScript sub-project must not lose the JS adapter (`serves`), or npm layouts would
+        // silently degrade to the whole-file text probe.
+        let ts_lang = Language::new(Language::TYPESCRIPT);
+        assert!(lock_has(&v2, "express", &fs, &ts, &ts_lang), "typescript 也由 JS adapter 承担");
 
         // v1: an object keyed by package name under `dependencies`.
         let v1 = std::path::PathBuf::from("/q/package-lock.json");
@@ -3342,7 +3377,34 @@ mod tests {
             v1.clone(),
             r#"{"dependencies": {"koa": {"version": "2.14.0"}}}"#.into(),
         )]));
-        assert!(lock_has(&v1, "koa", &fs1));
+        assert!(lock_has(&v1, "koa", &fs1, &ts, &js));
+    }
+
+    /// The dependency sections are read by the **ecosystem's** adapter; an ecosystem with none
+    /// (Java's `pom.xml`, Python's `requirements.txt` …) must still match, via the whole-file text
+    /// probe — degrading to silence would silently drop every framework of that stack.
+    #[test]
+    fn manifest_dependency_uses_the_adapter_then_falls_back_to_text() {
+        let ts = techstack();
+        let composer = std::path::PathBuf::from("/p/composer.json");
+        let pom = std::path::PathBuf::from("/j/pom.xml");
+        let fs = MemFs(HashMap::from([
+            (
+                composer.clone(),
+                r#"{"require": {"topthink/framework": "^6"}, "replace": {"nothing/x": "*"}}"#.into(),
+            ),
+            (pom.clone(), "<dependency><artifactId>spring-boot</artifactId></dependency>".into()),
+        ]));
+
+        let php = Language::new(Language::PHP);
+        assert!(manifest_has(&composer, "topthink/framework", &fs, &ts, &php));
+        assert!(!manifest_has(&composer, "laravel/framework", &fs, &ts, &php));
+
+        let java = Language::new(Language::JAVA);
+        assert!(
+            manifest_has(&pom, "spring-boot", &fs, &ts, &java),
+            "没有 adapter 的生态必须退回文本探测，而不是静默失效"
+        );
     }
 
     #[test]

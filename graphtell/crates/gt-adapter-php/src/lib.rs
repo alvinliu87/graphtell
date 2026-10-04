@@ -39,6 +39,33 @@ impl TechStackAdapter for PhpTechStackAdapter {
         psr4_roots(sub_root, project_root)
     }
 
+    fn manifest_dependencies(&self, file_name: &str, text: &str) -> Option<Vec<String>> {
+        if file_name != "composer.json" {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        Some(keys_of(&v, &["require", "require-dev"]))
+    }
+
+    fn lock_dependencies(&self, file_name: &str, text: &str) -> Option<Vec<String>> {
+        if file_name != "composer.lock" {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        let mut out = Vec::new();
+        // `packages` / `packages-dev` are arrays of `{ "name": ... }`.
+        for section in ["packages", "packages-dev"] {
+            if let Some(arr) = v.get(section).and_then(|s| s.as_array()) {
+                for p in arr {
+                    if let Some(n) = p.get("name").and_then(|n| n.as_str()) {
+                        out.push(n.to_string());
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
     fn read_manifest(
         &self,
         sub: &SubProject,
@@ -131,6 +158,17 @@ fn enrich_method_ref_spec(spec: &mut MethodRefSpec, sub_root: &Path, project_roo
     if !modules.is_empty() {
         spec.app_segments = modules;
     }
+}
+
+/// Collect the keys of several object sections of a JSON value (a manifest's dependency sections).
+fn keys_of(v: &serde_json::Value, sections: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for section in sections {
+        if let Some(obj) = v.get(section).and_then(|s| s.as_object()) {
+            out.extend(obj.keys().cloned());
+        }
+    }
+    out
 }
 
 /// Read `composer.json`'s `autoload.psr-4` (preferring the sub-project root, falling back to the project root)
