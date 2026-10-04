@@ -311,6 +311,53 @@ The price of resolving this early: framework detection in P0 is the manifest-onl
 (§2.1) — `import_exists` / `call_exists` need parsed code. A framework recognisable only from code
 contributes its excludes one build later, and only after P3 has seen it.
 
+### 2.5 `loaders`: built-in loader ids are language-agnostic
+
+A P3 loader fills one authoritative symbol table (`schema` / `config_keys` / `i18n` / `facade_map` /
+`middleware_aliases` …). Its source can be a built-in parser:
+
+```yaml
+loaders:
+  - id: migration-schema
+    table: schema                 # which symbol table it writes
+    from:
+      kind: builtin
+      name: migration_schema      # <-- language-agnostic id
+      params:                     # framework-specific paths / spellings live HERE
+        paths: ["database/migrations"]
+        extensions: ["php"]
+```
+
+**Rule: the built-in `name` never carries a language or ecosystem prefix** — write `migration_schema`,
+not `php_migration_schema`. The id says **what** is produced; **how** it is parsed belongs to the
+tech-stack adapter.
+
+Why:
+
+* The kernel owns only a handful of neutral ids (`db_schema`, `config_keys`, `declared_middleware`,
+  `routes`, `nginx_config` — see `prepare.rs::run_builtin`). **Every other id is delegated to the
+  tech-stack adapter matched by `sub.language`** (`other => run_adapter_loader`). That single arm is
+  what keeps the kernel language-free: adding a stack never means touching `run_builtin`.
+* A name one stack claims is therefore reusable by another: `migration_schema` means "DB migrations ->
+  `schema` rows". PHP's adapter parses Laravel / ThinkPHP `Schema::create`; a Java or Node adapter
+  reuses the same name and parses Flyway / Liquibase / TypeORM. No second id, no kernel branch.
+* The language-specific part is `params`, not `name`. That is why the same loader is declared once per
+  framework file (see the header comment of `fkb/php/common.yaml`): the paths and spellings differ, the
+  id does not.
+
+Consequences worth knowing:
+
+* **A typo loads nothing, and says so only in the log.** An id no stack's adapter recognises is a
+  logged no-op (`Ok(vec![])`), not an error — it never falls back to another language's parser. So a
+  renamed id fails as "the symbol table is quietly empty", which surfaces far downstream (e.g. zero
+  `Column` nodes). Always pin a loader with an end-to-end test, and check the negative case (a bogus
+  id must make that test fail) before trusting it.
+* **Deprecated aliases exist, don't add new ones.** `php_db_schema` / `php_config_keys` /
+  `php_migration_schema` are accepted as aliases so older knowledge bases keep loading; new files use
+  the neutral spelling.
+* If a loader's parsing is genuinely language-neutral (SQL install scripts, nginx config), it belongs
+  to the kernel — with a neutral id and everything it needs declared in `params`.
+
 ---
 
 ## 3. A rule = phase + selector + action

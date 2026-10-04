@@ -1,7 +1,7 @@
 //! PHP migration → schema loader integration test (public surface only).
 //!
 //! Mirrors the gt-pipeline/tests dual-rail style: a synthetic temp project, no external sample. It guards the
-//! `php_migration_schema` loader that turns Laravel / ThinkPHP `.php` migrations into `Schema` facts — the
+//! `migration_schema` loader that turns Laravel / ThinkPHP `.php` migrations into `Schema` facts — the
 //! *only* source of `Column` facts for PHP (ORM models declare no fields). A regression here means the schema
 //! symbol table is empty and no column is ever materialised (measured on CRMEB: 0 columns, 0 PII annotations).
 
@@ -46,7 +46,7 @@ fn migration_loader_emits_stripped_schema_facts() {
     let adapter = PhpTechStackAdapter::new();
     let facts = adapter
         .load(
-            "php_migration_schema",
+            "migration_schema",
             &serde_json::json!({ "prefixes": ["eb_"] }),
             &sub(root.clone()),
             &root,
@@ -100,5 +100,44 @@ fn unknown_loader_id_is_empty() {
         )
         .expect("load ok (empty)");
     assert!(facts.is_empty(), "未知 loader 应返回空向量而非报错");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The legacy PHP-only spelling must keep working so already-declared FKBs don't silently lose their schema.
+#[test]
+fn legacy_php_migration_schema_alias_still_loads() {
+    let root = std::env::temp_dir().join(format!("phpad_mig_alias_{}", std::process::id()));
+    let mig = root.join("database/migrations");
+    std::fs::create_dir_all(&mig).unwrap();
+    std::fs::write(
+        mig.join("2019_01_01_create_users.php"),
+        "<?php\nSchema::create('eb_users', function ($table) {\n    $table->id();\n});",
+    )
+    .unwrap();
+
+    let adapter = PhpTechStackAdapter::new();
+    let facts = adapter
+        .load(
+            "php_migration_schema",
+            &serde_json::json!({ "prefixes": ["eb_"] }),
+            &sub(root.clone()),
+            &root,
+            &StdFileSystem::new(),
+            &DefaultParserRegistry::new(),
+            &[],
+        )
+        .expect("load ok");
+    let tables: Vec<String> = facts
+        .iter()
+        .filter_map(|f| match f {
+            AdapterFact::Schema { table, .. } => Some(table.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tables,
+        vec!["users".to_string()],
+        "旧 id `php_migration_schema` 应继续工作: {tables:?}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -113,7 +113,12 @@ impl TechStackAdapter for PhpTechStackAdapter {
         table_prefixes: &[String],
     ) -> Result<Vec<AdapterFact>> {
         match loader_id {
-            // Parse Laravel / ThinkPHP `.php` migration files into schema facts.
+            // Generic, language-agnostic loader id: parse the project's DB-migration files into schema facts.
+            // Each tech-stack adapter owns the format-specific parsing, so a Java/Flyway or Node/TypeORM
+            // migration loader reuses this same id and is dispatched by `sub.language` — no PHP-specific name
+            // leaks into the kernel or the FKB.
+            "migration_schema" => load_migration_schema(params, project_root, table_prefixes),
+            // Backwards-compatible alias kept during the transition; new FKBs should declare `migration_schema`.
             "php_migration_schema" => load_migration_schema(params, project_root, table_prefixes),
             // Unknown to PHP: let the kernel's generic (params-driven) built-in loaders handle it.
             _ => Ok(Vec::new()),
@@ -883,5 +888,38 @@ mod tests {
         assert_eq!(strip_prefixes("eb_user", &p), "user");
         assert_eq!(strip_prefixes("eb_eb_store_order", &p), "store_order");
         assert_eq!(strip_prefixes("no_prefix_here", &p), "no_prefix_here");
+    }
+
+    /// The kernel routes any unmatched built-in loader id to the tech-stack adapter by `sub.language`. The
+    /// `migration_schema` id must therefore be stack-agnostic — this test pins that the PHP adapter handles the
+    /// generic name (not only the legacy `php_migration_schema`), so a FKB can declare `migration_schema` for
+    /// any stack and let that stack's adapter own the format-specific parsing.
+    #[test]
+    fn migration_schema_generic_loader_id_routes_to_parser() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_migschema_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("database/migrations"));
+        std::fs::write(
+            dir.join("database/migrations/2019_01_01_create_users.php"),
+            "<?php\nSchema::create('users', function (Blueprint $table) {\n    $table->id();\n    $table->string('name');\n});",
+        )
+        .unwrap();
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let params = serde_json::json!({});
+        let facts = adapter()
+            .load("migration_schema", &params, &sub, &dir, &fs, &parsers, &[])
+            .unwrap();
+        let table = facts.iter().find_map(|f| match f {
+            AdapterFact::Schema { table, .. } => Some(table.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            table.as_deref(),
+            Some("users"),
+            "generic `migration_schema` id must reach the PHP migration parser"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

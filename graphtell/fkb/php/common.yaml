@@ -16,7 +16,7 @@
 #
 # The loaders still listed in the framework files are there for a different reason: their `params` are
 # framework-specific paths and spellings. `db_schema` needs to know the framework's table receivers
-# (`Db::name` vs `DB::table`), `php_migration_schema` needs the migrations directory, `config_keys` the
+# (`Db::name` vs `DB::table`), `migration_schema` needs the migrations directory, `config_keys` the
 # config layout — values that differ per framework, so each declares its own copy. Factoring them out would
 # need the params to become variables, which the schema does not have yet.
 

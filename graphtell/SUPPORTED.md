@@ -271,8 +271,10 @@ so any project with SQL install scripts automatically gets field-level graph nod
 carries table-name scope (`user.email`), so same-named columns (`id` / `created`) count separately per
 table.
 
-**Laravel's columns come from the migration loader** (`php_migration_schema`, scanning `Schema::create`
-/ `Schema::table` in `database/migrations/*.php`). Both loaders write the same `schema` table and take
+**Laravel's columns come from the migration loader** (`migration_schema`, scanning `Schema::create`
+/ `Schema::table` in `database/migrations/*.php`). The id is language-agnostic: the kernel delegates any
+loader it does not own to the tech-stack adapter matching the sub-project's language, so a Java / Node
+stack reuses the same `migration_schema` name and parses its own migration format. Both loaders write the same `schema` table and take
 a **union** internally -- otherwise the later one would overwrite the earlier one wholesale (loader
 order isn't guaranteed).
 

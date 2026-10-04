@@ -69,7 +69,10 @@ loaders:
     table: schema
     from:
       kind: builtin
-      name: php_migration_schema
+      # Language-agnostic id: the kernel delegates any built-in name it does not own to the tech-stack adapter
+      # matching the sub-project's language, so PHP's migration parser lives in `gt-adapter-php` and a Java /
+      # Node stack reuses this same name with its own format parser.
+      name: migration_schema
       params:
         paths: ["database/migrations"]
         extensions: ["php"]

@@ -18,7 +18,7 @@ use gt_domain::port::{
     AdapterFact, FileSystem, KnowledgeProvider, LanguageParser, ParserRegistry, TechStackRegistry,
 };
 use serde_json::{json, Value};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::context::PipelineContext;
 use crate::engine::{callee_matches, path_matches};
@@ -837,11 +837,6 @@ fn run_builtin(
         // FKB `params`. The `php_*` spellings are kept as deprecated aliases so FKB written before the
         // rename keeps loading instead of silently collecting nothing.
         "db_schema" | "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
-        // PHP migration parsing is tech-stack-specific (Laravel `Schema::create` / `$table->col()`); the
-        // concrete logic lives in the tech-stack adapter, which returns schema facts for the kernel to merge.
-        "php_migration_schema" => {
-            run_adapter_loader(ctx, techstack, sub, project_root, fs, parsers, name, params)
-        }
         "config_keys" | "php_config_keys" => load_config_keys(ctx, params, sub),
         // Generic alias loader: file / block marker / separator all declared by FKB `params`, bound to no language.
         "middleware_aliases" => load_middleware_aliases(ctx, sub, project_root, params),
@@ -855,7 +850,12 @@ fn run_builtin(
             }
         }
         "nginx_config" => load_nginx(ctx, sub, project_root, fs),
-        other => debug!("unknown built-in loader: {other}"),
+        // Any built-in loader the kernel does not own — e.g. `migration_schema`, whose id is language-agnostic but
+        // whose format-specific parsing lives in each stack's adapter — is delegated to the tech-stack adapter
+        // that matches `sub.language` — the kernel must not hard-code one language's loader names. The adapter
+        // returns `Ok(vec![])` for ids it does not handle, so a built-in name no stack claims is a no-op (logged)
+        // rather than silently adopting PHP behaviour.
+        other => run_adapter_loader(ctx, techstack, sub, project_root, fs, parsers, other, params),
     }
 }
 
@@ -3625,6 +3625,207 @@ mod tests {
             ctx.ws.get_symbol("schema", "eb_user").is_some(),
             "FKB 声明后应采集到表名"
         );
+    }
+
+    /// A built-in loader whose name is **not** a kernel-neutral id (a stack-specific one, e.g. a Java adapter's
+    /// own loader) must be delegated to the tech-stack adapter matching the sub-project's language — `run_builtin`
+    /// must not gate on a hard-coded PHP name. This locks the `other => run_adapter_loader` routing that replaced
+    /// the explicit `php_migration_schema` arm (now the language-agnostic `migration_schema` id, whose
+    /// format-specific parsing lives in each stack's own adapter).
+    #[test]
+    fn non_php_builtin_loader_routes_to_adapter() {
+        use gt_domain::model::{
+            FrameworkKnowledge, Language, Phase, Project, ProjectId, ProjectStatus, SubProject,
+            SubProjectId,
+        };
+        use gt_domain::port::{AdapterFact, TechStackAdapter, TechStackRegistry};
+
+        struct MockAdapter;
+        impl TechStackAdapter for MockAdapter {
+            fn language(&self) -> Language {
+                Language::new(Language::JAVA)
+            }
+            fn load(
+                &self,
+                loader_id: &str,
+                _params: &serde_json::Value,
+                _sub: &gt_domain::model::SubProject,
+                _project_root: &std::path::Path,
+                _fs: &dyn gt_domain::port::FileSystem,
+                _parsers: &dyn gt_domain::port::ParserRegistry,
+                _table_prefixes: &[String],
+            ) -> gt_domain::error::Result<Vec<AdapterFact>> {
+                if loader_id == "mock_schema" {
+                    Ok(vec![AdapterFact::Schema {
+                        table: "mock_table".into(),
+                        columns: vec!["id".into()],
+                        source: "mock.php".into(),
+                    }])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+        }
+
+        struct MockRegistry;
+        impl TechStackRegistry for MockRegistry {
+            fn adapter_for(&self, language: &Language) -> Option<&dyn TechStackAdapter> {
+                if language.0.as_str() == Language::JAVA {
+                    static A: MockAdapter = MockAdapter;
+                    Some(&A)
+                } else {
+                    None
+                }
+            }
+        }
+
+        struct EmptyParsers;
+        impl gt_domain::port::ParserRegistry for EmptyParsers {
+            fn parser_for(&self, _: &Language) -> Option<&dyn gt_domain::port::LanguageParser> {
+                None
+            }
+            fn language_for_extension(&self, _: &str) -> Option<Language> {
+                None
+            }
+            fn supported_languages(&self) -> Vec<Language> {
+                Vec::new()
+            }
+        }
+
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "backend".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            language: Language::new(Language::JAVA),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec![],
+            facts: serde_json::Value::Object(Default::default()),
+        };
+        let fk = FrameworkKnowledge {
+            id: "x".into(),
+            display_name: "x".into(),
+            language: Language::new(Language::JAVA),
+            ..Default::default()
+        };
+        let registry = MockRegistry;
+        let parsers = EmptyParsers;
+        let fs = NoFs;
+
+        super::run_builtin(
+            &mut ctx,
+            "mock_schema",
+            &json!({}),
+            &sub,
+            std::path::Path::new("/t"),
+            &fs,
+            &parsers,
+            &Phase(Phase::PREPARE.to_string()),
+            &[],
+            &fk,
+            &registry,
+        );
+
+        assert!(
+            ctx.ws.get_symbol("schema", "mock_table").is_some(),
+            "non-PHP stack-specific builtin loader must reach the adapter and land its facts"
+        );
+    }
+
+    /// End-to-end pin for the language-agnostic `migration_schema` id: FKB declares it (see
+    /// `fkb/php/illuminate-database.yaml`), the kernel delegates it to the tech-stack adapter matched by
+    /// `sub.language`, and the PHP adapter's migration parser turns `database/migrations/*.php` into `schema`
+    /// symbol-table rows. Guards the rename away from the PHP-only `php_migration_schema` spelling.
+    #[test]
+    fn migration_schema_loader_writes_schema_table() {
+        use gt_domain::model::{
+            FrameworkKnowledge, Language, Phase, Project, ProjectId, ProjectStatus, SubProject,
+            SubProjectId,
+        };
+
+        struct NoParsers;
+        impl gt_domain::port::ParserRegistry for NoParsers {
+            fn parser_for(&self, _: &Language) -> Option<&dyn gt_domain::port::LanguageParser> {
+                None
+            }
+            fn language_for_extension(&self, _: &str) -> Option<Language> {
+                None
+            }
+            fn supported_languages(&self) -> Vec<Language> {
+                Vec::new()
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("gt_mig_schema_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("database/migrations")).unwrap();
+        std::fs::write(
+            dir.join("database/migrations/2019_01_01_create_users.php"),
+            "<?php\nSchema::create('users', function (Blueprint $table) {\n    $table->id();\n    $table->string('email');\n});",
+        )
+        .unwrap();
+
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: dir.clone(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "backend".into(),
+            root_path: dir.clone(),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec!["laravel".into()],
+            facts: serde_json::Value::Object(Default::default()),
+        };
+        let fk = FrameworkKnowledge {
+            id: "x".into(),
+            display_name: "x".into(),
+            language: Language::new(Language::PHP),
+            ..Default::default()
+        };
+        let registry = techstack();
+        let parsers = NoParsers;
+        let fs = NoFs;
+
+        super::run_builtin(
+            &mut ctx,
+            "migration_schema",
+            &json!({ "paths": ["database/migrations"], "extensions": ["php"] }),
+            &sub,
+            &dir,
+            &fs,
+            &parsers,
+            &Phase(Phase::PREPARE.to_string()),
+            &[],
+            &fk,
+            &registry,
+        );
+
+        assert!(
+            ctx.ws.get_symbol("schema", "users").is_some(),
+            "FKB 声明的 `migration_schema` 必须经 PHP adapter 解析迁移并落入 schema 符号表"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `exact_table_receivers` matches the receiver's **last namespace segment**, so `Db` / `think\facade\Db`
