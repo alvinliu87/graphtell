@@ -1443,3 +1443,315 @@ fn is_function_node(ctx: &PipelineContext, id: NodeId) -> bool {
         .map(|n| n.kind.as_str() == NodeKind::FUNCTION)
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_adapter_fkb::YamlKnowledgeBase;
+    use gt_domain::model::{
+        DbVerbsSpec, Language, MagicDelegationSpec, NewEdge, NewNode, Project, ProjectConfig,
+        ProjectId, ProjectStatus, Span,
+    };
+
+    fn new_ctx() -> PipelineContext {
+        PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            description: None,
+            config: ProjectConfig::default(),
+            status: ProjectStatus::Created,
+            created_at: 0,
+            updated_at: 0,
+        })
+    }
+
+    fn add_node(ctx: &mut PipelineContext, kind: &str, name: &str) -> NodeId {
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind(kind.to_string()),
+            name: name.to_string(),
+            fqn: Some(name.to_string()),
+            identity: None,
+            file_id: None,
+            span: Span::default(),
+            language: Language::default(),
+            phase: Phase("CfAst".into()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        })
+    }
+
+    fn maps_to(ctx: &mut PipelineContext, class: NodeId, table: NodeId) {
+        ctx.ws.add_edge(NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind(EdgeKind::MAPS_TO.to_string()),
+            from_id: class,
+            to_id: table,
+            phase: Phase("Synthesize".into()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        });
+    }
+
+    fn has_edge(ctx: &PipelineContext, from: NodeId, to: NodeId, kind: &str) -> bool {
+        ctx.ws
+            .edges()
+            .iter()
+            .any(|e| e.from_id == from && e.to_id == to && e.kind.as_str() == kind)
+    }
+
+    fn locator(owner: NodeId, call_node: NodeId, owner_fqn: &str) -> Locator {
+        Locator {
+            owner,
+            call_node,
+            owner_fqn: owner_fqn.to_string(),
+            strategy: ResolveStrategy::VariableType,
+            raw: String::new(),
+            receiver: None,
+            method: None,
+            consumer: None,
+            file: "app/x.php".to_string(),
+            line: 10,
+            sub: None,
+        }
+    }
+
+    // ------------------------------------------------------- A. pure helpers
+
+    /// Which separator splits controller from method is **FKB's** call (ThinkPHP `/`, Laravel `@` / `::`,
+    /// Rails `#`), tried in the declared order.
+    #[test]
+    fn split_handler_tries_the_declared_separators_in_order() {
+        assert_eq!(
+            split_handler("Login/appleLogin", &["/".to_string(), "@".to_string()]),
+            ("Login".to_string(), "appleLogin".to_string())
+        );
+        assert_eq!(
+            split_handler("Login@appleLogin", &["@".to_string()]),
+            ("Login".to_string(), "appleLogin".to_string())
+        );
+        // An empty separator must be skipped — splitting on "" would cut at position 0.
+        assert_eq!(
+            split_handler("Login", &["".to_string(), "/".to_string()]),
+            ("Login".to_string(), String::new()),
+            "空分隔符应跳过；都不命中时返回 (raw, \"\")"
+        );
+    }
+
+    fn method_ref(anchor: Option<&str>, fallback: &str) -> MethodRefSpec {
+        MethodRefSpec {
+            method_separators: vec!["/".to_string()],
+            hierarchy_separators: vec![".".to_string()],
+            app_segments: Vec::new(),
+            root_namespaces: Vec::new(),
+            controller_layer_depth: 1,
+            app_anchor_dir: anchor.map(|s| s.to_string()),
+            app_fallback: fallback.to_string(),
+        }
+    }
+
+    /// `{app}` comes from the route file path: the directory **one level above** the anchor.
+    #[test]
+    fn route_app_segment_takes_the_dir_above_the_anchor() {
+        assert_eq!(
+            route_app_segment("app/api/route/pc.php", &method_ref(Some("route"), "")),
+            "api"
+        );
+        // Anchor at the very front has nothing above it -> fallback.
+        assert_eq!(
+            route_app_segment("route/pc.php", &method_ref(Some("route"), "admin")),
+            "admin"
+        );
+        // No anchor declared -> fallback.
+        assert_eq!(
+            route_app_segment("app/api/pc.php", &method_ref(None, "admin")),
+            "admin"
+        );
+        // Neither anchor nor fallback -> the first path segment.
+        assert_eq!(
+            route_app_segment("app/api/pc.php", &method_ref(None, "")),
+            "app"
+        );
+    }
+
+    #[test]
+    fn owner_class_fqn_strips_the_last_member_separator() {
+        assert_eq!(owner_class_fqn(r"app\Service::run", "::"), r"app\Service");
+        assert_eq!(owner_class_fqn("org.x.Service.run", "."), "org.x.Service");
+        assert_eq!(
+            owner_class_fqn("plain", "::"),
+            "plain",
+            "没有分隔符时原样返回"
+        );
+    }
+
+    // ------------------------------------------------------- B. DB verb vocabulary
+
+    /// The read / write vocabulary comes from FKB (`db_verbs`), is matched case-insensitively, and a stack
+    /// that declares nothing is simply not judged.
+    #[test]
+    fn db_verbs_come_from_fkb_and_are_case_insensitive() {
+        let mut ctx = new_ctx();
+        ctx.db_verbs_default = Some(DbVerbsSpec {
+            read: vec!["select".to_string(), "find".to_string()],
+            write: vec!["insert".to_string(), "save".to_string()],
+        });
+        let owner = add_node(&mut ctx, "Method", r"app\M::run");
+        let call = add_node(&mut ctx, "CallSite", "select");
+        let loc = locator(owner, call, r"app\M::run");
+
+        assert_eq!(
+            is_db_verb(&ctx, &loc, "FiNd").map(|(k, _)| k.as_str().to_string()),
+            Some(EdgeKind::READS_DB.to_string())
+        );
+        assert_eq!(
+            is_db_verb(&ctx, &loc, "SAVE").map(|(k, _)| k.as_str().to_string()),
+            Some(EdgeKind::WRITES_DB.to_string())
+        );
+        assert!(
+            is_db_verb(&ctx, &loc, "delete").is_none(),
+            "未声明的动词不算 DB 动作"
+        );
+
+        ctx.db_verbs_default = Some(DbVerbsSpec {
+            read: Vec::new(),
+            write: Vec::new(),
+        });
+        assert!(
+            is_db_verb(&ctx, &loc, "select").is_none(),
+            "空声明不应判定任何东西"
+        );
+    }
+
+    // ------------------------------------------------------- C. laying the DB action edge
+
+    /// A read verb on a type that `MapsTo` a table lays `ReadsDb`; a method that is not a verb lays nothing.
+    #[test]
+    fn classify_db_action_lays_the_edge_on_the_mapped_type() {
+        let mut ctx = new_ctx();
+        ctx.db_verbs_default = Some(DbVerbsSpec {
+            read: vec!["select".to_string()],
+            write: Vec::new(),
+        });
+        let table = add_node(&mut ctx, "Table", "user");
+        let model = add_node(&mut ctx, "Class", r"app\model\User");
+        maps_to(&mut ctx, model, table);
+
+        let owner = add_node(&mut ctx, "Method", r"app\model\User::select");
+        let call = add_node(&mut ctx, "CallSite", "select");
+        let loc = locator(owner, call, r"app\model\User::select");
+        classify_db_action(&mut ctx, &loc, r"app\model\User", "select");
+        assert!(
+            has_edge(&ctx, owner, table, EdgeKind::READS_DB),
+            "映射到表的类型上出现读动词应落 ReadsDb"
+        );
+
+        // Not a declared verb -> nothing.
+        let mut plain = new_ctx();
+        plain.db_verbs_default = Some(DbVerbsSpec {
+            read: vec!["select".to_string()],
+            write: Vec::new(),
+        });
+        let t2 = add_node(&mut plain, "Table", "user");
+        let m2 = add_node(&mut plain, "Class", r"app\model\User");
+        maps_to(&mut plain, m2, t2);
+        let o2 = add_node(&mut plain, "Method", r"app\model\User::toArray");
+        let c2 = add_node(&mut plain, "CallSite", "toArray");
+        let loc2 = locator(o2, c2, r"app\model\User::toArray");
+        classify_db_action(&mut plain, &loc2, r"app\model\User", "toArray");
+        assert!(
+            !has_edge(&plain, o2, t2, EdgeKind::READS_DB),
+            "非 DB 动词不应落边"
+        );
+    }
+
+    // ------------------------------------------------------- D. magic-method delegation
+
+    /// `UserServices` has **no** `MapsTo` of its own; `getList` is an `@method` forwarded by `__call` to
+    /// `$this->dao` (a `UserDao`, which does map to the table). Without the FKB-declared
+    /// `magic_delegation.property` the "… -> Services -> Dao -> table" chain breaks at the Services hop.
+    ///
+    /// This declaration lives **only** in `fkb/projects/crmeb.yaml`, whose sole test (`crmeb_pipeline.rs`)
+    /// is sample-gated — the real FKB is loaded here so the path has always-on coverage.
+    fn delegation_ctx(delegation: Option<MagicDelegationSpec>) -> (PipelineContext, NodeId, NodeId, NodeId) {
+        let mut ctx = new_ctx();
+        ctx.db_verbs_default = Some(DbVerbsSpec {
+            read: vec!["getList".to_string()],
+            write: Vec::new(),
+        });
+        ctx.magic_delegation_default = delegation;
+        let table = add_node(&mut ctx, "Table", "user");
+        let dao = add_node(&mut ctx, "Class", r"app\dao\UserDao");
+        maps_to(&mut ctx, dao, table);
+        // The Services class's `dao` property is typed (constructor injection).
+        ctx.ws
+            .set_prop_type(r"app\services\UserServices", "dao", r"app\dao\UserDao");
+        let owner = add_node(&mut ctx, "Method", r"app\services\UserServices::getList");
+        let call = add_node(&mut ctx, "CallSite", "getList");
+        (ctx, owner, call, table)
+    }
+
+    #[test]
+    fn magic_delegation_bridges_the_services_hop_to_the_dao_table() {
+        let fkb_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/projects/crmeb.yaml");
+        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
+            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+        let spec = real_fk
+            .magic_delegation
+            .clone()
+            .expect("crmeb FKB 应声明 magic_delegation");
+
+        let (mut ctx, owner, call, table) = delegation_ctx(Some(spec));
+        let loc = locator(owner, call, r"app\services\UserServices::getList");
+        classify_db_action(&mut ctx, &loc, r"app\services\UserServices", "getList");
+        assert!(
+            has_edge(&ctx, owner, table, EdgeKind::READS_DB),
+            "经 magic_delegation 应通过 dao 的类型找到表（否则 Services 这一跳断链）"
+        );
+    }
+
+    /// Control for the one above: without the declaration, the Services hop has no table of its own and
+    /// nothing is laid — so the delegation, not some other path, is what produced the edge.
+    #[test]
+    fn without_the_declaration_the_services_hop_finds_no_table() {
+        let (mut ctx, owner, call, table) = delegation_ctx(None);
+        let loc = locator(owner, call, r"app\services\UserServices::getList");
+        classify_db_action(&mut ctx, &loc, r"app\services\UserServices", "getList");
+        assert!(
+            !has_edge(&ctx, owner, table, EdgeKind::READS_DB),
+            "没有 magic_delegation 声明时不该落边"
+        );
+    }
+
+    // ------------------------------------------------------- E. handler resolution
+
+    /// A fully-qualified handler hits its node directly (after trimming this language's namespace
+    /// separators — trimming a hard-coded `\` would miss it on every other stack).
+    #[test]
+    fn resolve_handler_target_hits_a_known_name_and_misses_an_unknown_one() {
+        let mut ctx = new_ctx();
+        let cls = add_node(&mut ctx, "Class", r"app\api\controller\Login");
+
+        assert_eq!(
+            resolve_handler_target(
+                &ctx,
+                r"app\api\controller\Login",
+                "app/api/route/pc.php",
+                None,
+                None
+            )
+            .map(|(id, _)| id),
+            Some(cls),
+            "已知名字应直接命中"
+        );
+        assert!(
+            resolve_handler_target(&ctx, "NoSuch/Nope", "app/api/route/pc.php", None, None).is_none(),
+            "解析不到时应返回 None（不猜）"
+        );
+    }
+}
