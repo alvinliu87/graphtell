@@ -189,6 +189,38 @@ For example, `AppRoot` resolution (`autoload.psr-4` in `composer.json`):
  "fallback_used": false}
 ```
 
+#### The core's default must be **empty**, never one stack's
+
+"Nothing hardcoded" is only true if the **fallback** knows no language either. A stack-specific constant is
+bad; a stack-specific *default* is worse, because it fires exactly where nobody is looking (no parser wired,
+no knowledge declared) and returns plausible-looking output instead of an honest empty result.
+
+The rule: **knowledge that differs per stack has no neutral default — when it is missing, the step is
+skipped.** Where it has landed so far:
+
+| Where | The wrong default | Now |
+|---|---|---|
+| `NamespacePolicy` | `Default` = PHP (`\` + `::` + PHP builtin types) | empty = "notation unknown"; `ns_separator` is `Option<char>` |
+| `LanguageParser::member_separator()` | defaulted to `"::"` | **required** — a parser that forgets it fails to compile |
+| primitive / builtin types | `PHP_BUILTIN_TYPES` lived in `gt-domain::port` | each parser declares its own list inside its own crate |
+| P11 Sign vocabulary | PHP function names + a `language == php` gate | FKB `sign_check`; a stack declaring none is not judged |
+| built-in loader ids | a `php_migration_schema` arm in `run_builtin` | language-agnostic id, dispatched to the tech-stack adapter |
+| P7 name resolution | `trim_start_matches('\\')` / `split("::")` | separators from `lang_policy_for_sub(sub)` |
+
+Two corollaries that have already cost real bugs:
+
+* **"Unknown" must be visible, not silently substituted.** `runner.rs` used to fall back to "whichever
+  parser registered first" (alphabetically `java`), which is what kept a Python project shipping only
+  `requirements.txt` — sub-project language `unknown` — working *by accident*. The fix was the cause (the
+  marker list now covers `requirements.txt` / `setup.py` / `Pipfile`), not restoring a lucky default.
+* **A test that passes because of a default passes for the wrong reason.** When `NamespacePolicy`'s default
+  stopped being PHP, a unit test broke: it exercised PHP spelling (`think\facade\Db`) without ever stating
+  the language. The fix was to inject the policy in the test, not to restore the default.
+
+Where such knowledge belongs: **notation and parser facts → the language adapter** (`gt-adapter-parser`,
+`gt-adapter-php`); **vocabulary and conventions → FKB** (the framework file, or the unconditional language
+layer `fkb/<lang>/common.yaml` with `apply_without_detection: true`).
+
 ### 4. Diagnostics are a first-class product
 
 `UnresolvedLink` (a route pointing at a non-existent handler → runtime 500),
