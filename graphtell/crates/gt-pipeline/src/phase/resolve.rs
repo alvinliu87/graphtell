@@ -5,7 +5,7 @@
 //! | tier | source                                  | confidence |
 //! | ---- | ----------------------------------- | --- |
 //! | L1   | literal FQN `make(StoreOrderServices::class)` | 1.0 |
-//! | L2   | container registry `provider.php`                | 0.95 |
+//! | L2   | container registry (file declared by FKB)        | 0.95 |
 //! | L3   | alias index (Facade / event name / getter)           | 0.85 |
 //! | L4   | convention (namespace join, class-name inference)                    | 0.8  |
 //! | L5   | constant propagation                                | 0.6  |
@@ -204,7 +204,7 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
     if method.is_empty() {
         return Resolution::unknown("无方法名".to_string());
     }
-    let type_fqn = receiver_type_fqn(ctx, &loc.owner_fqn, recv);
+    let type_fqn = receiver_type_fqn(ctx, &loc.owner_fqn, recv, loc.sub);
     let Some(type_fqn) = type_fqn else {
         return Resolution::unknown(format!("接收者 {recv} 的类型未知"));
     };
@@ -239,12 +239,18 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
     if magic.is_none() && is_db_verb(ctx, loc, method).is_some() {
         classify_db_action(ctx, loc, &type_fqn, method);
     }
-    magic.unwrap_or_else(|| Resolution::unknown(format!("{type_fqn}::{method} 未找到")))
+    // The member separator in the message is this language's, so a Java / JS sub-project does not get a
+    // PHP-shaped `Class::method` string.
+    let member_sep = ctx.lang_policy_for_sub(loc.sub).member_separator.clone();
+    magic.unwrap_or_else(|| {
+        Resolution::unknown(format!("{type_fqn}{member_sep}{method} 未找到"))
+    })
 }
 
-/// Take the "class part" of an FQN like `app\model\User::login`.
-fn owner_class_fqn(owner_fqn: &str) -> String {
-    match owner_fqn.rfind("::") {
+/// Take the "class part" of a method FQN: `app\model\User::login` → `app\model\User`.
+/// The class / member separator is this language's (`::` for PHP, `.` for Java / JS), never assumed.
+fn owner_class_fqn(owner_fqn: &str, member_sep: &str) -> String {
+    match owner_fqn.rfind(member_sep) {
         Some(i) => owner_fqn[..i].to_string(),
         None => owner_fqn.to_string(),
     }
@@ -360,14 +366,21 @@ fn classify_db_action(
     let Some((kind, _)) = is_db_verb(ctx, loc, method) else {
         return;
     };
-    let mut candidates: Vec<String> = vec![type_fqn.to_string(), owner_class_fqn(&loc.owner_fqn)];
+    let member_sep = ctx.lang_policy_for_sub(loc.sub).member_separator.clone();
+    let mut candidates: Vec<String> = vec![
+        type_fqn.to_string(),
+        owner_class_fqn(&loc.owner_fqn, &member_sep),
+    ];
     if let Some(spec) = loc
         .sub
         .and_then(|s| ctx.magic_delegation.get(&s.get()).cloned())
         .or_else(|| ctx.magic_delegation_default.clone())
     {
         if !spec.property.is_empty() {
-            for t in [type_fqn.to_string(), owner_class_fqn(&loc.owner_fqn)] {
+            for t in [
+                type_fqn.to_string(),
+                owner_class_fqn(&loc.owner_fqn, &member_sep),
+            ] {
                 if let Some(dep) = ctx.ws.prop_type(&t, &spec.property) {
                     candidates.push(dep.to_string());
                 }
@@ -596,7 +609,11 @@ fn kind_label(kind: &EdgeKind) -> &'static str {
 
 /// Container resolution: L1 literal → L2 registry → L4 convention → L6 intersect with the class universe.
 fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
-    let raw = loc.raw.trim_start_matches('\\');
+    // The namespace separator is this sub-project language's (`\` for PHP, `.` for Java / JS …), never assumed:
+    // a container id is written in the project's own notation, so hard-coding `\` silently resolves nothing for
+    // every other stack.
+    let ns = ctx.lang_policy_for_sub(loc.sub).ns_separators.clone();
+    let raw = loc.raw.trim_start_matches(|c: char| ns.contains(&c));
 
     // L1: literal FQN
     if let Some(id) = ctx.ws.find_by_name(raw) {
@@ -614,7 +631,7 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
             .get("value")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
-            .trim_start_matches('\\')
+            .trim_start_matches(|c: char| ns.contains(&c))
             .to_string();
         if !target.is_empty() {
             if let Some(id) = ctx
@@ -629,7 +646,9 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
                 return Resolution::resolved(
                     ResolveTier::Registry,
                     id,
-                    format!("provider.php 绑定 {raw} → {target}"),
+                    // The registry file name is whatever FKB declared (`provider.php` on ThinkPHP, a service
+                    // container config elsewhere) — the kernel only knows "a container binding".
+                    format!("容器绑定 {raw} → {target}"),
                 );
             }
             return Resolution::unknown(format!("间接绑定 {raw} → {target}"));
@@ -637,8 +656,8 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
         return Resolution::unknown(format!("闭包绑定 {raw}"));
     }
 
-    // L4: convention (FQN string)
-    if raw.contains('\\') {
+    // L4: convention (FQN string) — "looks qualified" means it contains **this language's** namespace separator.
+    if raw.contains(|c: char| ns.contains(&c)) {
         if let Some(id) = ctx.ws.find_by_name(raw) {
             return Resolution::resolved(ResolveTier::Convention, id, format!("约定 {raw}"));
         }
@@ -664,7 +683,7 @@ fn resolve_event(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
                 "EventTriggerUnresolved",
                 Severity::Warning,
                 format!(
-                    "event('{}') 未找到注册的事件节点 —— 若 event.php 里该键为空数组，\
+                    "event('{}') 未找到注册的事件节点 —— 若事件注册表中该键为空数组，\
                      监听器会被整体误判为死代码",
                     loc.raw
                 ),
@@ -688,7 +707,7 @@ fn resolve_event_listen(ctx: &mut PipelineContext, loc: &Locator) -> Resolution 
                 "EventListenUnresolved",
                 Severity::Warning,
                 format!(
-                    "Event::listen('{}', …) 未找到对应事件节点 —— 该事件未在 event.php 注册，\
+                    "Event::listen('{}', …) 未找到对应事件节点 —— 该事件未在事件注册表注册，\
                      监听器仍可经 `listener` 标注识别，但无法精确挂到具体事件",
                     loc.raw
                 ),
@@ -699,10 +718,21 @@ fn resolve_event_listen(ctx: &mut PipelineContext, loc: &Locator) -> Resolution 
     }
 }
 
-/// Resolve a literal like `Foo::class` / `\App\X` into an in-graph class node.
-fn resolve_class_node(ctx: &PipelineContext, raw: &str, file: Option<&str>) -> Option<NodeId> {
-    let mut s = raw.trim_start_matches('\\').to_string();
-    if let Some(stripped) = s.strip_suffix("::class") {
+/// Resolve a class literal into an in-graph class node: PHP `Foo::class` / `\App\X`, Java `Foo.class`.
+/// Both the namespace separator and the class-literal suffix come from this sub-project's language.
+fn resolve_class_node(
+    ctx: &PipelineContext,
+    raw: &str,
+    file: Option<&str>,
+    sub: Option<SubProjectId>,
+) -> Option<NodeId> {
+    let policy = ctx.lang_policy_for_sub(sub);
+    let mut s = raw
+        .trim_start_matches(|c: char| policy.ns_separators.contains(&c))
+        .to_string();
+    // `Foo::class` (PHP) / `Foo.class` (Java): the suffix is `<member separator>class`.
+    let class_literal = format!("{}class", policy.member_separator);
+    if let Some(stripped) = s.strip_suffix(&class_literal) {
         s = stripped.to_string();
     }
     ctx.ws.find_by_name(&s).or_else(|| {
@@ -714,7 +744,8 @@ fn resolve_class_node(ctx: &PipelineContext, raw: &str, file: Option<&str>) -> O
 
 /// Facade: query the FacadeMap loaded by P3.
 fn resolve_facade(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
-    let receiver = loc.raw.trim_start_matches('\\');
+    let ns = ctx.lang_policy_for_sub(loc.sub).ns_separators.clone();
+    let receiver = loc.raw.trim_start_matches(|c: char| ns.contains(&c));
     let Some(entry) = ctx.ws.get_symbol("facade_map", receiver).cloned() else {
         return Resolution::unknown(format!("非门面调用 {receiver}"));
     };
@@ -782,7 +813,9 @@ pub fn resolve_handler_target(
     // Namespace / member separator comes from the language strategy (PHP `\` + `::`, Java `.` + `.`)
     let policy = ctx.lang_policy_for_sub(sub).clone();
 
-    let raw = raw.trim_start_matches('\\');
+    // `policy` already carries this language's separators — use it here too (trimming with a hard-coded `\`
+    // would silently miss a fully qualified name on every other stack).
+    let raw = raw.trim_start_matches(|c: char| policy.ns_separators.contains(&c));
     if let Some(id) = ctx.ws.find_by_name(raw) {
         return Some((id, "完全限定名直接命中"));
     }
@@ -915,7 +948,9 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
         if let Some(event_id) = res.candidates.first() {
             match loc.consumer.as_deref() {
                 Some(consumer) => {
-                    if let Some(listener_id) = resolve_class_node(ctx, consumer, Some(&loc.file)) {
+                    if let Some(listener_id) =
+                        resolve_class_node(ctx, consumer, Some(&loc.file), loc.sub)
+                    {
                         ctx.ws.add_edge(NewEdge {
                             project_id: ctx.project.id,
                             kind: EdgeKind(EdgeKind::HANDLED_BY.to_string()),
@@ -1083,7 +1118,7 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
             }
         }
         if let Some(recv) = call.receiver.as_deref() {
-            if let Some(type_fqn) = receiver_type_fqn(ctx, &call.owner_fqn, recv) {
+            if let Some(type_fqn) = receiver_type_fqn(ctx, &call.owner_fqn, recv, call.sub) {
                 let cid = ctx.ws.find_by_name(&type_fqn).or_else(|| {
                     ctx.ws
                         .resolve_name_at(call.owner, &type_fqn)
@@ -1116,9 +1151,19 @@ fn resolve_calls(ctx: &mut PipelineContext, phase: &Phase) {
 /// Resolve the call receiver's type FQN:
 /// * `$this->prop` → property type (walk back up the inheritance chain, if `WechatServices` not found look at the parent);
 /// * `$var` → the param type of the owning method.
-fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Option<String> {
+fn receiver_type_fqn(
+    ctx: &PipelineContext,
+    owner_fqn: &str,
+    recv: &str,
+    sub: Option<SubProjectId>,
+) -> Option<String> {
+    // `Class::method` / `Class.method` — the member separator comes from this sub-project's language, as does
+    // the namespace separator trimmed below. Hard-coding PHP's notation silently resolves nothing elsewhere.
+    let policy = ctx.lang_policy_for_sub(sub);
+    let member_sep = policy.member_separator.clone();
+    let ns = policy.ns_separators.clone();
     if recv == "$this" {
-        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        let class_fqn = owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
         return if class_fqn.is_empty() {
             None
         } else {
@@ -1126,7 +1171,7 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
         };
     }
     if recv == "static" || recv == "self" {
-        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        let class_fqn = owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
         return if class_fqn.is_empty() {
             None
         } else {
@@ -1136,7 +1181,7 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
     // `parent::method()`: the receiver type is "the direct parent of the class defining this method", letting the
     // `Model --MapsTo--> Table` class-level semantic edge surface along the call chain (paired with the target resolution above).
     if recv == "parent" {
-        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        let class_fqn = owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
         if !class_fqn.is_empty() {
             if let Some(p) = ctx.ws.parents_of(class_fqn).into_iter().next() {
                 return Some(p);
@@ -1145,9 +1190,12 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
         return None;
     }
     if let Some(inner) = recv.strip_prefix("(new ") {
-        let class = inner.trim_end_matches(')').trim().trim_start_matches('\\');
+        let class = inner
+            .trim_end_matches(')')
+            .trim()
+            .trim_start_matches(|c: char| ns.contains(&c));
         if class == "static" || class == "self" || class.is_empty() {
-            let c = owner_fqn.split("::").next().unwrap_or("");
+            let c = owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
             return if c.is_empty() { None } else { Some(c.to_string()) };
         }
         if !class.is_empty() && ctx.ws.find_by_name(class).is_some() {
@@ -1167,11 +1215,11 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
                 }
             }
         }
-        let c = owner_fqn.split("::").next().unwrap_or("");
+        let c = owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
         return if c.is_empty() { None } else { Some(c.to_string()) };
     }
     if let Some(prop) = recv.strip_prefix("$this->") {
-        let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+        let class_fqn = owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
         let mut cur = Some(class_fqn.to_string());
         let mut visited: HashSet<String> = HashSet::new();
         while let Some(c) = cur {
@@ -1195,7 +1243,7 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
             return Some(resolve_impl(ctx, &s));
         }
         if var == "model" {
-            let class_fqn = owner_fqn.split("::").next().unwrap_or("");
+            let class_fqn = owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
             if !class_fqn.is_empty() {
                 return Some(class_fqn.to_string());
             }
@@ -1207,7 +1255,7 @@ fn receiver_type_fqn(ctx: &PipelineContext, owner_fqn: &str, recv: &str) -> Opti
         }
         // Java field (bare identifier): infer from the field type of the owning class (incl. parent)
         // `service.mapper.findX()` where `mapper` is an `@Autowired` injected field.
-        let class_fqn = owner_class_of(owner_fqn);
+        let class_fqn = owner_class_of(owner_fqn, &member_sep);
         let mut cur = Some(class_fqn);
         let mut visited: HashSet<String> = HashSet::new();
         while let Some(c) = cur {
@@ -1250,11 +1298,10 @@ fn resolve_impl(ctx: &PipelineContext, type_fqn: &str) -> String {
 }
 
 /// From a "method FQN" take the owning class FQN: Java `pkg.Class.method` → `pkg.Class`,
-/// PHP `Class::method` → `Class`。
-fn owner_class_of(owner_fqn: &str) -> String {
+/// PHP `Class::method` → `Class`. Which separator separates them is this language's, never assumed.
+fn owner_class_of(owner_fqn: &str, member_sep: &str) -> String {
     owner_fqn
-        .rsplit_once('.')
-        .or_else(|| owner_fqn.rsplit_once("::"))
+        .rsplit_once(member_sep)
         .map(|(c, _)| c.to_string())
         .unwrap_or_else(|| owner_fqn.to_string())
 }
@@ -1273,22 +1320,26 @@ fn file_import_of(ctx: &PipelineContext, owner: NodeId, short: &str) -> Option<S
 }
 
 fn resolve_call_target(ctx: &PipelineContext, call: &CallRecord) -> Option<NodeId> {
-    // 1) `Class::method` (static / facade): receiver is a class name (not a variable)
+    // Notation comes from this call site's language: PHP `Class::method` + `\App\X`, Java `pkg.Class.method`.
+    let policy = ctx.lang_policy_for_sub(call.sub);
+    let member_sep = policy.member_separator.clone();
+    let ns = policy.ns_separators.clone();
+    // 1) `Class<member_sep>method` (static / facade): receiver is a class name (not a variable)
     if let Some(recv) = &call.receiver {
         if !recv.starts_with('$') {
             let m = call.method.as_deref().unwrap_or("");
             if m.is_empty() {
                 return None;
             }
-            let recv = recv.trim_start_matches('\\');
+            let recv = recv.trim_start_matches(|c: char| ns.contains(&c));
             let recv = if recv == "parent" {
-                let owner_class = call.owner_fqn.split("::").next().unwrap_or("");
+                let owner_class = call.owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
                 match ctx.ws.parents_of(owner_class).into_iter().next() {
                     Some(p) => p,
                     None => return None,
                 }
             } else if recv == "self" || recv == "static" {
-                let owner_class = call.owner_fqn.split("::").next().unwrap_or("");
+                let owner_class = call.owner_fqn.split(member_sep.as_str()).next().unwrap_or("");
                 if owner_class.is_empty() {
                     return None;
                 }
