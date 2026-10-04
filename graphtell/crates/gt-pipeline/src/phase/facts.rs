@@ -368,6 +368,7 @@ const PROVIDED_CONFIDENCE_DECAY: f32 = 0.9;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gt_domain::model::FrameworkKnowledge;
 
     #[test]
     fn manifest_pointer_reads_a_plain_string() {
@@ -417,5 +418,146 @@ mod tests {
             None,
             "没有适配器声明约定的栈不猜"
         );
+    }
+
+    // ------------------------------------------------------- resolve_directory_exists
+    //
+    // Shared by every `directory_exists` root rule — `fkb/python/fastapi.yaml` probes `app` and
+    // `fkb/java/spring-boot.yaml` probes `src/main/java`. Both feed `app_root`, which in turn feeds the
+    // `{app_root}` placeholder of exclude globs, so a wrong value silently mis-aims the whole scan.
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gt-facts-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The value is the **parent** of the marker path — the source root, not the marker directory itself.
+    /// A single-module project that hits directly under the root therefore yields `"."`.
+    #[test]
+    fn directory_exists_returns_the_parent_dir_as_the_source_root() {
+        let root = scratch_dir("direct");
+        std::fs::create_dir_all(root.join("app")).unwrap();
+
+        let (value, why) = resolve_directory_exists(&root, "app").expect("app 存在，应命中");
+        assert_eq!(value, ".", "单模块直命中时源码根就是子工程根");
+        assert!(why.contains("directory exists"), "溯源应说明依据，实际：{why}");
+    }
+
+    /// Multi-module: the **shallowest** hit module wins (breadth-first), and the value is the module dir —
+    /// never the marker path itself.
+    #[test]
+    fn directory_exists_prefers_the_shallowest_module() {
+        let root = scratch_dir("shallow");
+        std::fs::create_dir_all(root.join("mall-admin/src/main/java")).unwrap();
+        std::fs::create_dir_all(root.join("deep/x/y/src/main/java")).unwrap();
+
+        let (value, _) = resolve_directory_exists(&root, "src/main/java").expect("应有命中");
+        assert_eq!(value, "mall-admin", "应返回最浅命中模块的目录，实际：{value}");
+    }
+
+    /// The probe is depth-limited (a large repo must not be walked whole); one level past the limit the
+    /// marker is not found, which is what sends the caller to its fallback / diagnostic.
+    #[test]
+    fn directory_exists_is_depth_limited() {
+        let hit = scratch_dir("depth-hit");
+        std::fs::create_dir_all(hit.join("d1/d2/d3/d4/d5/app")).unwrap();
+        assert_eq!(
+            resolve_directory_exists(&hit, "app").map(|(v, _)| v),
+            Some("d1/d2/d3/d4/d5".to_string()),
+            "深度上限内的命中应被找到"
+        );
+
+        let miss = scratch_dir("depth-miss");
+        std::fs::create_dir_all(miss.join("d1/d2/d3/d4/d5/d6/app")).unwrap();
+        assert_eq!(
+            resolve_directory_exists(&miss, "app"),
+            None,
+            "超过深度上限应放弃探测并返回 None"
+        );
+    }
+
+    /// Nothing found -> `None` (never a guess), so the rule's fallback is what fires.
+    #[test]
+    fn directory_exists_returns_none_when_the_tree_has_no_marker() {
+        let root = scratch_dir("miss");
+        std::fs::create_dir_all(root.join("app/models")).unwrap();
+        assert_eq!(resolve_directory_exists(&root, "src/main/java"), None);
+    }
+
+    /// A relative path with no real segments is not a probe at all.
+    #[test]
+    fn directory_exists_rejects_an_empty_path() {
+        let root = scratch_dir("empty");
+        assert_eq!(resolve_directory_exists(&root, ""), None);
+        assert_eq!(resolve_directory_exists(&root, "///"), None);
+    }
+
+    // ------------------------------------------------------- expand_provided
+    //
+    // Real FKB uses this (`fkb/php/laravel.yaml: provides: [illuminate-database]`), and the **order** it
+    // produces decides which framework's declaration wins for single-valued fields (`db_verbs`,
+    // `method_ref` … are taken with `find_map`).
+
+    struct StaticKb(Vec<FrameworkKnowledge>);
+
+    impl KnowledgeProvider for StaticKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> {
+            self.0.iter().collect()
+        }
+        fn by_id(&self, id: &str) -> Option<&FrameworkKnowledge> {
+            self.0.iter().find(|fk| fk.id == id)
+        }
+    }
+
+    fn fk(id: &str, provides: &[&str]) -> FrameworkKnowledge {
+        FrameworkKnowledge {
+            id: id.to_string(),
+            provides: provides.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Directly detected knowledge must stay **ahead** of provided knowledge regardless of confidence.
+    #[test]
+    fn provided_knowledge_comes_after_every_direct_hit() {
+        let kb = StaticKb(vec![fk("framework", &["comp"]), fk("comp", &[]), fk("other", &[])]);
+        let got = expand_provided(vec![("framework".into(), 0.5), ("other".into(), 0.4)], &kb);
+
+        let order: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["framework", "other", "comp"],
+            "直接检出的知识必须全部排在 provided 之前：{order:?}"
+        );
+    }
+
+    /// Provided confidence decays (0.9x) and does so transitively, so a second-hand component ranks below
+    /// a first-hand one.
+    #[test]
+    fn provided_confidence_decays_and_is_transitive() {
+        let kb = StaticKb(vec![fk("a", &["b"]), fk("b", &["c"]), fk("c", &[])]);
+        let got = expand_provided(vec![("a".into(), 1.0)], &kb);
+
+        let conf = |id: &str| got.iter().find(|(i, _)| i == id).map(|(_, c)| *c);
+        assert_eq!(conf("a"), Some(1.0), "直接检出不衰减");
+        assert_eq!(conf("b"), Some(0.9), "一级 provided 衰减一次");
+        assert!(
+            (conf("c").unwrap_or_default() - 0.81).abs() < 1e-6,
+            "二级 provided 应再衰减一次，实际：{:?}",
+            conf("c")
+        );
+        assert_eq!(got.len(), 3, "展开应传递：{got:?}");
+    }
+
+    /// A `provides` cycle must terminate and must never duplicate an entry.
+    #[test]
+    fn provided_cycles_terminate_without_duplicates() {
+        let kb = StaticKb(vec![fk("a", &["b"]), fk("b", &["a"])]);
+        let got = expand_provided(vec![("a".into(), 1.0)], &kb);
+
+        let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"], "环应终止且不重复：{ids:?}");
     }
 }

@@ -158,3 +158,152 @@ fn real_laravel_fkb_root_rules_resolve_without_fallback() {
     assert_php_root_rules(&root, "laravel");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ------------------------------------------------- `directory_exists` root rules
+//
+// The two shipped FKBs whose `app_root` comes from a **directory probe** rather than a manifest pointer:
+// `fkb/python/fastapi.yaml` probes `app`, `fkb/java/spring-boot.yaml` probes `src/main/java`. That path
+// goes through `facts::resolve_directory_exists`, whose value is the **parent** of the marker path — so a
+// single-module project that hits directly under the root resolves to `"."`.
+//
+// `fallback_used == false` and the `source` text are load-bearing here: fastapi's fallback is literally
+// `app`, so if the probe failed the fallback could hand back a value that looks plausible. Only "not the
+// fallback" proves the `directory_exists` source itself resolved (exactly the trap the PHP cases above hit,
+// where a broken `pointer` still yielded `app_root == "app"` via the fallback).
+
+fn synthetic_root(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-root-{}-{}-{}",
+        tag,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (rel, body) in files {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&path, body).expect("write");
+    }
+    dir
+}
+
+/// Assert that a real FKB's `directory_exists` root rule resolved `app_root`.
+fn assert_app_root_probed_from_a_directory(
+    root: &std::path::Path,
+    language: &str,
+    framework: &str,
+    expected: &str,
+) {
+    let Some(b) = common::graph_with_root(root, ProjectConfig::default()) else {
+        panic!("the synthetic {framework} project graph build should succeed");
+    };
+    let subs = b
+        .store
+        .list_sub_projects(b.project.id)
+        .expect("sub-projects readable");
+    let sub = subs.iter().find(|s| s.language.as_str() == language).unwrap_or_else(|| {
+        panic!(
+            "a {language} sub-project must exist, got: {:?}",
+            subs.iter().map(|s| s.language.as_str()).collect::<Vec<_>>()
+        )
+    });
+
+    assert!(
+        sub.frameworks.contains(&framework.to_string()),
+        "应识别出 {framework}，实际：{:?}",
+        sub.frameworks
+    );
+
+    let facts: Value = serde_json::from_value(sub.facts.clone()).unwrap_or(Value::Null);
+    let app_root = facts
+        .get("app_root")
+        .unwrap_or_else(|| panic!("{framework} 的真实 FKB 应解析出 app_root 事实，实际 facts={facts}"));
+
+    assert_eq!(
+        app_root.get("value").and_then(|v| v.as_str()),
+        Some(expected),
+        "{framework} 的 app_root 应来自 directory_exists 探针"
+    );
+    assert_eq!(
+        app_root.get("fallback_used").and_then(|v| v.as_bool()),
+        Some(false),
+        "探针命中后不应走兜底目录（否则无法区分是探针还是兜底生效）"
+    );
+    let source = app_root
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        source.contains("directory exists"),
+        "app_root 的 source 必须记录 directory exists，实际：{source}"
+    );
+}
+
+#[test]
+fn real_fastapi_fkb_app_root_comes_from_a_directory_probe() {
+    // Detected on `requirements.txt` (a textual containment match), and `app_root` is the probe of `app`.
+    let root = synthetic_root(
+        "fastapi",
+        &[
+            ("requirements.txt", "fastapi>=0.100\nuvicorn\n"),
+            (
+                "app/main.py",
+                r#"from fastapi import FastAPI
+
+app = FastAPI()
+
+
+@app.get("/orders")
+def list_orders():
+    return []
+"#,
+            ),
+        ],
+    );
+    assert_app_root_probed_from_a_directory(&root, "python", "fastapi", ".");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn real_spring_boot_fkb_source_root_comes_from_a_directory_probe() {
+    // Detected on `pom.xml`; `fkb/java/spring-boot.yaml`'s `source-root` probes `src/main/java`.
+    let root = synthetic_root(
+        "spring",
+        &[
+            (
+                "pom.xml",
+                r#"<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+            ),
+            (
+                "src/main/java/demo/App.java",
+                r#"package demo;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class App {
+    public static void main(String[] args) {
+        SpringApplication.run(App.class, args);
+    }
+}
+"#,
+            ),
+        ],
+    );
+    assert_app_root_probed_from_a_directory(&root, "java", "spring-boot", ".");
+    let _ = std::fs::remove_dir_all(&root);
+}

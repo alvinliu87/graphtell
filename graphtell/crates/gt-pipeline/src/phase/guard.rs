@@ -339,7 +339,8 @@ pub fn run(ctx: &mut PipelineContext) {
 mod tests {
     use super::*;
     use crate::context::PipelineContext;
-    use gt_domain::model::{IdentityKey, NewNode, ProjectId, ProjectStatus};
+    use gt_adapter_fkb::YamlKnowledgeBase;
+    use gt_domain::model::{IdentityKey, MiddlewareCapability, NewNode, ProjectId, ProjectStatus};
 
     fn project() -> gt_domain::model::Project {
         gt_domain::model::Project {
@@ -481,5 +482,281 @@ mod tests {
         );
         run(&mut ctx);
         assert!(guarded_by(&ctx).is_empty(), "类不在图里就不该有边");
+    }
+
+    // ------------------------------------------------------- P5.5 `run_capabilities`
+    //
+    // The **only** producer of the `Capability` channel (and of `auth.optional`). Downstream, rules read
+    // that channel; when it is empty the rule **deactivates** (see `rules_and_recall.rs`), so a silent
+    // stop here reads as "no endpoint lacks auth", not as "not analysed".
+
+    fn caps(specs: &[(&str, &str)]) -> Vec<MiddlewareCapability> {
+        specs
+            .iter()
+            .map(|(m, c)| MiddlewareCapability {
+                matches: (*m).into(),
+                capability: (*c).into(),
+            })
+            .collect()
+    }
+
+    /// `(kind, channel)` of every annotation on a node.
+    fn stamped(ctx: &PipelineContext, id: NodeId) -> Vec<(String, String)> {
+        ctx.ws
+            .annotations_of(id)
+            .into_iter()
+            .map(|a| (a.kind.clone(), a.channel.0.clone()))
+            .collect()
+    }
+
+    fn has(ctx: &PipelineContext, id: NodeId, kind: &str, channel: &str) -> bool {
+        stamped(ctx, id)
+            .iter()
+            .any(|(k, ch)| k.as_str() == kind && ch.as_str() == channel)
+    }
+
+    #[test]
+    fn capability_is_stamped_from_the_mounted_middleware() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("AuthToken", "Authentication")]);
+        let c = add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": r"app\api\middleware\AuthTokenMiddleware" }]),
+        );
+
+        run_capabilities(&mut ctx);
+
+        assert!(
+            has(&ctx, c, "Authentication", AnnotationChannel::CAPABILITY),
+            "挂载 AuthTokenMiddleware 应打出 Authentication 能力，实际：{:?}",
+            stamped(&ctx, c)
+        );
+    }
+
+    /// Matching is a case-insensitive **substring** test against the class's short name (the part after
+    /// the last `\` / `/`), so a spec written in another case still matches.
+    #[test]
+    fn capability_matching_is_case_insensitive_on_the_short_name() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("authtoken", "Authentication")]);
+        let c = add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": r"app\api\middleware\AuthTokenMiddleware" }]),
+        );
+
+        run_capabilities(&mut ctx);
+
+        assert!(
+            has(&ctx, c, "Authentication", AnnotationChannel::CAPABILITY),
+            "小写 spec 仍应匹配短名 AuthTokenMiddleware，实际：{:?}",
+            stamped(&ctx, c)
+        );
+    }
+
+    /// "Mounted but explicitly optional" must NOT be claimed as a capability: it is recorded separately
+    /// as `auth.optional` — the "prefer missing over guessing" direction.
+    #[test]
+    fn optional_mount_stamps_auth_optional_instead_of_the_capability() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("AuthToken", "Authentication")]);
+        let c = add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": r"app\api\middleware\AuthTokenMiddleware", "arg": "false" }]),
+        );
+
+        run_capabilities(&mut ctx);
+
+        assert!(
+            has(&ctx, c, OPTIONAL_AUTH, AnnotationChannel::FKB_MARK),
+            "显式可选的挂载应打 auth.optional，实际：{:?}",
+            stamped(&ctx, c)
+        );
+        assert!(
+            !ctx.ws.has_annotation(c, "Authentication"),
+            "可选挂载不能被当作已具备该能力：{:?}",
+            stamped(&ctx, c)
+        );
+    }
+
+    /// No match, and no vocabulary at all: stamp nothing. An empty `Capability` channel is what
+    /// deactivates the downstream rule, so it must never be filled with a guess.
+    #[test]
+    fn unmatched_middleware_and_empty_vocabulary_stamp_nothing() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("AuthToken", "Authentication")]);
+        let c = add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": r"app\middleware\Cors" }]),
+        );
+        run_capabilities(&mut ctx);
+        assert!(
+            stamped(&ctx, c).is_empty(),
+            "未命中就不该打任何标注：{:?}",
+            stamped(&ctx, c)
+        );
+
+        // An empty vocabulary short-circuits before the symbol table is consulted at all.
+        let mut bare = PipelineContext::new(project());
+        let c2 = add_contract(&mut bare, "GET /y");
+        put_row(
+            &mut bare,
+            "GET /y",
+            serde_json::json!([{ "class": "AuthTokenMiddleware" }]),
+        );
+        run_capabilities(&mut bare);
+        assert!(
+            stamped(&bare, c2).is_empty(),
+            "没有能力词汇时应直接返回：{:?}",
+            stamped(&bare, c2)
+        );
+    }
+
+    // ------------------------------------------------------- P14 synthesis of declared middleware
+    //
+    // A mounted middleware that is not in the graph may still be **declared** by FKB
+    // (`middleware_classes`, fed by `fkb/php/laravel.yaml` and `fkb/php/spatie-permission.yaml`). Then a
+    // `Middleware` node is materialised instead of the mount being dropped.
+
+    fn declare_middleware(ctx: &mut PipelineContext, key: &str, class: &str, capability: Option<&str>) {
+        let mut v = serde_json::json!({ "class": class });
+        if let Some(c) = capability {
+            v["capability"] = serde_json::json!(c);
+        }
+        ctx.ws.put_symbol(ProjectId::new(1), "middleware_classes", key, v);
+    }
+
+    #[test]
+    fn fkb_declared_middleware_is_materialised_as_a_middleware_node() {
+        let mut ctx = PipelineContext::new(project());
+        add_contract(&mut ctx, "GET /x");
+        declare_middleware(
+            &mut ctx,
+            "Authenticate",
+            r"app\Http\Middleware\Authenticate",
+            Some("Authentication"),
+        );
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": "Authenticate" }]),
+        );
+
+        run(&mut ctx);
+
+        let got = guarded_by(&ctx);
+        assert_eq!(got.len(), 1, "应建成一条 PassesThrough 边：{got:?}");
+        assert_eq!(got[0].1, "Authenticate", "应按短名建节点：{got:?}");
+
+        let id = ctx
+            .ws
+            .find_by_name("Authenticate")
+            .expect("合成的中间件节点应可按名找到");
+        let node = ctx.ws.node(id).expect("节点应存在");
+        assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE, "应建成 Middleware 语义节点");
+        assert_eq!(
+            node.properties.get("declared_by").and_then(|v| v.as_str()),
+            Some("fkb"),
+            "应标记 declared_by=fkb：{:?}",
+            node.properties
+        );
+        assert_eq!(
+            node.properties.get("capability").and_then(|v| v.as_str()),
+            Some("Authentication"),
+            "capability 应来自 FKB 声明：{:?}",
+            node.properties
+        );
+        assert!(
+            (node.confidence - 1.0).abs() < 1e-6,
+            "FKB 声明的节点 confidence 应为 1.0，实际 {}",
+            node.confidence
+        );
+    }
+
+    /// Synthesis authorised but the middleware declared nowhere: still built, but at lower confidence
+    /// and **without** `declared_by` — the graph must not claim FKB authorised it.
+    #[test]
+    fn authorized_but_undeclared_middleware_is_synthesized_at_lower_confidence() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.ws.synthesize_unresolved_guards = true;
+        add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": r"vendor\Some\Middleware" }]),
+        );
+
+        run(&mut ctx);
+
+        let got = guarded_by(&ctx);
+        assert_eq!(got.len(), 1, "授权合成后应建成一条边：{got:?}");
+        let id = ctx
+            .ws
+            .find_by_name(&got[0].1)
+            .expect("合成节点应可按名找到");
+        let node = ctx.ws.node(id).expect("节点应存在");
+        assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE);
+        assert!(
+            node.properties.get("declared_by").is_none(),
+            "未被 FKB 声明就不该标 declared_by：{:?}",
+            node.properties
+        );
+        assert!(
+            (node.confidence - 0.9).abs() < 1e-6,
+            "未声明的合成节点 confidence 应为 0.9，实际 {}",
+            node.confidence
+        );
+    }
+
+    // ------------------------------------------------------- the shipped FKB's vocabulary
+
+    /// `fkb/php/laravel.yaml` declares six `middleware_capabilities`. A typo in any `matches` string would
+    /// silently stop stamping that capability, and an empty `Capability` channel deactivates the
+    /// downstream rule — so nothing else would notice.
+    #[test]
+    fn real_laravel_fkb_capabilities_are_stamped_on_the_contract() {
+        let fkb_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/php/laravel.yaml");
+        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
+            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+        assert!(
+            !real_fk.middleware_capabilities.is_empty(),
+            "laravel FKB 应声明 middleware_capabilities"
+        );
+
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = real_fk.middleware_capabilities.clone();
+        let c = add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([
+                { "class": r"app\Http\Middleware\Authenticate" },
+                { "class": r"app\Http\Middleware\ValidateSignature" },
+                { "class": r"app\Http\Middleware\ThrottleRequests" },
+            ]),
+        );
+
+        run_capabilities(&mut ctx);
+
+        let got = stamped(&ctx, c);
+        for capability in ["Authentication", "SignedRequest", "RateLimiting"] {
+            assert!(
+                has(&ctx, c, capability, AnnotationChannel::CAPABILITY),
+                "真实 FKB 应打出 {capability} 能力，实际：{got:?}"
+            );
+        }
+        assert!(
+            !ctx.ws.has_annotation(c, OPTIONAL_AUTH),
+            "没有可选参数时不应打 auth.optional：{got:?}"
+        );
     }
 }
