@@ -133,7 +133,7 @@ pub fn run(
     // ---------------------------------------------------------- P2 CfAst
     let started = Instant::now();
     observer.on_phase_start(project.id, &Phase(Phase::CF_AST.to_string()));
-    cf_ast::run(&mut ctx, infra.parsers(), infra.fs());
+    cf_ast::run(&mut ctx, infra.parsers(), infra.fs(), infra.techstack());
     flush(
         infra.graph(),
         &mut ctx,

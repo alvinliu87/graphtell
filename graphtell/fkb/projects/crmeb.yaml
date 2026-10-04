@@ -75,7 +75,7 @@ loaders:
     table: config_keys
     from:
       kind: builtin
-      name: php_config_keys
+      name: config_keys
       params:
         accessors: ["sys_config", "sys_config_all"]
         storage: Database

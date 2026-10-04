@@ -39,6 +39,12 @@ impl TechStackAdapter for PhpTechStackAdapter {
         psr4_roots(sub_root, project_root)
     }
 
+    fn i18n_path_patterns(&self) -> Vec<String> {
+        // `lang/` is ThinkPHP's (and Laravel 9+'s) location; Laravel ≤8 keeps them under
+        // `resources/lang/`. Which directory a stack uses is stack knowledge, so it lives here.
+        vec!["lang/{locale}/".into(), "resources/lang/{locale}/".into()]
+    }
+
     fn manifest_dependencies(&self, file_name: &str, text: &str) -> Option<Vec<String>> {
         if file_name != "composer.json" {
             return None;

@@ -91,6 +91,16 @@ pub trait TechStackAdapter: Send + Sync {
         None
     }
 
+    /// Where the **locale** sits in an i18n file's path: `前缀{locale}后缀` templates, prefix and suffix
+    /// matched **literally** (no wildcards) — so write `lang/{locale}/` rather than `lang/{locale}/*.php`.
+    ///
+    /// Tried in order, first match wins — so the directory form must precede the flat-file form
+    /// (`src/locales/{locale}/` before `src/locales/{locale}.json`). Empty means "this stack has no i18n
+    /// path convention", and no locale is stamped (better absent than guessed).
+    fn i18n_path_patterns(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// PSR-4 (or equivalent) namespace → directory roots for this ecosystem, derived from its
     /// package manifest (e.g. composer.json `autoload.psr-4`). The kernel never assumes a hard-coded
     /// directory name like `Http/Controllers` / `controller`.

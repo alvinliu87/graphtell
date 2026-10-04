@@ -182,6 +182,9 @@ loaders:
         end: "];"
         separator: "=>"
         extensions: ["php"]
+        # PHP's class-reference syntax: `App\Http\Middleware\Authenticate::class`.
+        class_suffix: "::class"
+        require_namespace: true
   # Laravel 11's `bootstrap/app.php`: `->withMiddleware(fn ($m) => $m->alias([...]))` registers
   # **application-level custom aliases** (framework defaults are in `default-aliases` below).
   # Writes to the same `middleware_aliases` table as `middleware-aliases` above, so load order between
@@ -198,6 +201,8 @@ loaders:
         end: "];"
         separator: "=>"
         extensions: ["php"]
+        class_suffix: "::class"
+        require_namespace: true
   # Framework default middleware aliases (in Laravel 11 registered by
   # `Illuminate\Foundation\Configuration\Middleware::defaultAliases()`, whose source lives in `vendor/` and is not
   # ingested). This is a **framework fact** (taken from the framework's 11.x source, confidence 1.0) and lets

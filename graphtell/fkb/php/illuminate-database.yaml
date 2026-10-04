@@ -51,16 +51,19 @@ loaders:
     table: schema
     from:
       kind: builtin
-      name: php_db_schema
+      name: db_schema
       params:
-        table_receivers: ["Db", "\\Db", "Query", "Model"]
+        table_receivers: ["Query", "Model"]
+        # `Db` / `DB` is matched on its **last namespace segment** (`DB`, `Illuminate\Support\Facades\DB`),
+        # case-insensitively and never as a substring — `DbHelper` must not be mistaken for the query builder.
+        exact_table_receivers: ["Db"]
         table_methods: ["name", "table"]
 
   # Database migrations (`database/migrations/*.php`) — **the main source of Laravel columns**.
   # PHP ORM models do not declare fields; columns only exist in migrations. And `$table->string('email')`
   # sits inside a closure whose owner is the closure, so FKB cannot tell which table it belongs to — only
   # the loader can parse it directly.
-  # Writes to the same `schema` table as `php_db_schema` above; the loader takes a **union** internally, so
+  # Writes to the same `schema` table as `db_schema` above; the loader takes a **union** internally, so
   # load order does not matter.
   - id: migration-schema
     table: schema

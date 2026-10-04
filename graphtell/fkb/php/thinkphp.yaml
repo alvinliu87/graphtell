@@ -203,20 +203,23 @@ loaders:
     table: schema
     from:
       kind: builtin
-      name: php_db_schema
+      name: db_schema
       # Table-name recognition: ThinkPHP uses `Db::name` / `Model` / `Query`, the same shape as Laravel.
       # The match strings are declared by FKB `params` (not hard-coded in the kernel) — note that
       # `php/common.yaml` with `apply_without_detection` only contributes rules and runs no loader,
       # so this framework still has to declare them here.
       params:
-        table_receivers: ["Db", "\\Db", "Query", "Model"]
+        table_receivers: ["Query", "Model"]
+        # `Db` is matched on its **last namespace segment** (`Db` / `think\facade\Db`), never as a
+        # substring — `DbHelper` / `MyDb` must not be mistaken for the query builder.
+        exact_table_receivers: ["Db"]
         table_methods: ["name", "table"]
   # Config-key authoritative source
   - id: config-keys
     table: config_keys
     from:
       kind: builtin
-      name: php_config_keys
+      name: config_keys
       # Config accessors — the **framework / library** spellings only: ThinkPHP's global `config()` helper
       # and its `Config` / `Env` facades, plus `env()`. Project-level helpers do **not** belong here:
       # CRMEB's `sys_config()` is defined in its own `crmeb/app/common.php` and is declared by the project
@@ -262,6 +265,14 @@ loaders:
       params:
         paths: ["{app_root}/middleware.php"]
         scope: global
+        # PHP array-literal syntax: `[ … ]`, `key => value`, `//` comments, `X::class` references.
+        # Declared here because it is stack syntax — the kernel knows none of these characters.
+        open: "["
+        close: "]"
+        separator: "=>"
+        comment: "//"
+        class_suffix: "::class"
+        extensions: ["php"]
   - id: middleware-per-app
     table: route_list
     from:
@@ -271,6 +282,12 @@ loaders:
         paths: ["{app_root}/*/config/route.php"]
         key: middleware
         scope: per_app
+        open: "["
+        close: "]"
+        separator: "=>"
+        comment: "//"
+        class_suffix: "::class"
+        extensions: ["php"]
   # Nginx config is **not** declared here any more: it is deployment infrastructure, not a ThinkPHP concern,
   # and it now lives in `fkb/universal/nginx.yaml`, where every stack gets it — Laravel included.
 

@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
 use crate::context::PipelineContext;
-use crate::engine::{callee_matches, capture_locale, path_matches};
+use crate::engine::{callee_matches, path_matches};
 use crate::normalize::strip_prefixes;
 use crate::phase::facts::{self, expand_provided, lock_has, manifest_has};
 use crate::workspace::{CallRecord, RouteGroup, RouteGuard, RouteGuardScope};
@@ -694,7 +694,16 @@ fn run_loader(
             }
         }
         gt_domain::model::LoaderSource::Glob { pattern, locale_regex, .. } => {
-            load_i18n(ctx, loader, pattern, project_root, fs, parsers, locale_regex.as_deref());
+            load_i18n(
+                ctx,
+                loader,
+                pattern,
+                project_root,
+                fs,
+                parsers,
+                locale_regex.as_deref(),
+                techstack,
+            );
         }
         gt_domain::model::LoaderSource::Inline { rows } => {
             for row in rows {
@@ -740,6 +749,7 @@ fn load_i18n(
     fs: &dyn FileSystem,
     parsers: &dyn ParserRegistry,
     locale_regex: Option<&str>,
+    techstack: &dyn TechStackRegistry,
 ) {
     let files: Vec<gt_domain::model::SourceFile> = ctx.files.clone();
 
@@ -747,6 +757,10 @@ fn load_i18n(
         if !path_matches(pattern, &file.path) {
             continue;
         }
+        // ① FKB's own `locale_regex` wins (it is the most specific, and it can name any capture group);
+        // ② otherwise the **stack's** path convention (`lang/{locale}/*.php`, `locales/{locale}/*.json` …)
+        // as declared by its tech-stack adapter. A stack that declares neither yields no locale — the
+        // i18n table then simply has no entries for it, rather than guessing one.
         let locale = match locale_regex {
             Some(re) => match regex::Regex::new(re) {
                 Ok(re) => re
@@ -755,7 +769,15 @@ fn load_i18n(
                     .map(|m| m.as_str().to_string()),
                 Err(_) => None,
             },
-            None => capture_locale("lang/{locale}/*.php", &file.path),
+            None => None,
+        };
+        let fallback_to_stack = locale.is_none() && locale_regex.is_none();
+        let locale = match locale {
+            Some(l) => Some(l),
+            None if fallback_to_stack => {
+                facts::locale_of_path(&file.path, &file.language, techstack)
+            }
+            None => None,
         };
         let Some(locale) = locale else { continue };
         let abs = project_root.join(&file.path);
@@ -810,13 +832,17 @@ fn run_builtin(
     techstack: &dyn TechStackRegistry,
 ) {
     match name {
-        "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
+        // Neutral ids (`db_schema` / `config_keys`): neither loader knows a language — the SQL install
+        // script is SQL, and "which receivers / accessors name a table or a config key" is declared by
+        // FKB `params`. The `php_*` spellings are kept as deprecated aliases so FKB written before the
+        // rename keeps loading instead of silently collecting nothing.
+        "db_schema" | "php_db_schema" => load_schema(ctx, params, sub, project_root, phase),
         // PHP migration parsing is tech-stack-specific (Laravel `Schema::create` / `$table->col()`); the
         // concrete logic lives in the tech-stack adapter, which returns schema facts for the kernel to merge.
         "php_migration_schema" => {
             run_adapter_loader(ctx, techstack, sub, project_root, fs, parsers, name, params)
         }
-        "php_config_keys" => load_config_keys(ctx, params, sub),
+        "config_keys" | "php_config_keys" => load_config_keys(ctx, params, sub),
         // Generic alias loader: file / block marker / separator all declared by FKB `params`, bound to no language.
         "middleware_aliases" => load_middleware_aliases(ctx, sub, project_root, params),
         // Generic declarative-middleware loader: file name / key / scope all declared by FKB `params`,
@@ -885,7 +911,7 @@ fn apply_adapter_fact(ctx: &mut PipelineContext, fact: AdapterFact) {
 fn load_schema(
     ctx: &mut PipelineContext,
     params: &Value,
-    _sub: &gt_domain::model::SubProject,
+    sub: &gt_domain::model::SubProject,
     project_root: &Path,
     _phase: &Phase,
 ) {
@@ -911,14 +937,35 @@ fn load_schema(
         }
     }
 
+    // Which receivers / methods name a table is **stack knowledge** and comes from `params` — there is no
+    // built-in default list (it used to spell out PHP's `Db` / `Query` / `Model`, which silently applied
+    // PHP conventions to every stack that merely forgot to declare them). "Nothing declared" now means
+    // "nothing collected", and it is logged rather than passed over silently.
     let table_receivers: Vec<String> = params
         .get("table_receivers")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_else(|| vec!["Db".into(), "\\Db".into(), "Query".into(), "Model".into()]);
+        .unwrap_or_default();
+    // Receivers that must match **exactly** (on their last namespace segment) instead of as a substring,
+    // e.g. `Db` — a substring match would also swallow `DbHelper` / `MyDb`.
+    let exact_table_receivers: Vec<String> = params
+        .get("exact_table_receivers")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_default();
     let table_methods: Vec<String> = params
         .get("table_methods")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_else(|| vec!["name".into(), "table".into()]);
+        .unwrap_or_default();
+    if table_methods.is_empty()
+        || (table_receivers.is_empty() && exact_table_receivers.is_empty())
+    {
+        warn!(
+            "built-in loader `db_schema` declares no table_receivers / table_methods — no table names collected \
+             (declare them in FKB `params`; which receivers name a table is stack knowledge)"
+        );
+        return;
+    }
+    // The namespace separator is this language's (`\` for PHP, `.` for Java …), never assumed.
+    let ns_separators = ctx.lang_policy_for_sub(Some(sub.id)).ns_separators.clone();
     let mut found: Vec<(String, String)> = Vec::new();
     for call in ctx.ws.calls.iter() {
         // Only name()/table() with DB semantics count as table names:
@@ -927,16 +974,19 @@ fn load_schema(
             .receiver
             .as_deref()
             .map(|raw| {
-                let r = raw.trim_start_matches('\\');
+                let r = raw.trim_start_matches(|c| ns_separators.contains(&c));
+                // `Db` must match `Db` and `think\facade\Db` — but never `DbHelper`.
+                let last = r.rsplit(|c| ns_separators.contains(&c)).next().unwrap_or(r);
                 table_receivers.iter().any(|p| {
-                    if p.starts_with('\\') {
-                        r.ends_with(p)
-                    } else if p.eq_ignore_ascii_case("Db") {
-                        r.eq_ignore_ascii_case(p)
+                    // A pattern written with a leading separator (`\Db`) means "match the tail".
+                    if p.starts_with(|c| ns_separators.contains(&c)) {
+                        r.ends_with(p.trim_start_matches(|c| ns_separators.contains(&c)))
                     } else {
                         r.contains(p)
                     }
-                })
+                }) || exact_table_receivers
+                    .iter()
+                    .any(|p| last.eq_ignore_ascii_case(p.trim_start_matches(|c| ns_separators.contains(&c))))
             })
             .unwrap_or(false);
         let is_table_call = call
@@ -1774,21 +1824,30 @@ fn load_middleware_aliases(
         return;
     }
     let markers = strs("markers");
-    let end = params
-        .get("end")
-        .and_then(|v| v.as_str())
-        .unwrap_or("];")
-        .to_string();
-    let separator = params
-        .get("separator")
-        .and_then(|v| v.as_str())
-        .unwrap_or("=>")
-        .to_string();
-    let mut exts = strs("extensions");
-    if exts.is_empty() {
-        exts.push("php".into());
+    // How the alias block ends, how a key is separated from its class, and which files to scan are all
+    // **stack knowledge** (PHP's `];` / `=>` / `.php`), so FKB declares them — there is no built-in
+    // default any more (a default would silently apply one stack's syntax to every other).
+    let end = params.get("end").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let separator = params.get("separator").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let exts = strs("extensions");
+    if end.is_empty() || separator.is_empty() || exts.is_empty() {
+        warn!(
+            "built-in loader `middleware_aliases` needs `end` / `separator` / `extensions` in `params` \
+             (they are stack syntax, not kernel defaults)"
+        );
+        return;
     }
     let exts: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
+    // Suffix marking a class reference (`::class` in PHP; empty where a bare identifier is used).
+    let class_suffix = params
+        .get("class_suffix")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    // Whether a value must contain a namespace separator to count as a class (PHP's `App\Http\X`).
+    let require_namespace = params.get("require_namespace").and_then(Value::as_bool).unwrap_or(false);
+    // The namespace separator is this language's, never assumed.
+    let separators = ctx.lang_policy_for_sub(Some(sub.id)).ns_separators.clone();
 
     for (path, text) in scan_text_files(project_root, &exts) {
         // Both `**/X` and `X` match by "path ends with this".
@@ -1811,15 +1870,17 @@ fn load_middleware_aliases(
                 continue;
             };
             let key = key.trim().trim_matches('\'').trim_matches('"').trim();
-            let class = rest
-                .trim()
-                .trim_end_matches(',')
-                .trim()
-                .trim_end_matches("::class")
-                .trim()
-                .trim_start_matches('\\')
-                .trim();
-            if key.is_empty() || class.is_empty() || !class.contains('\\') {
+            let mut class = rest.trim().trim_end_matches(',').trim();
+            if !class_suffix.is_empty() {
+                if let Some(c) = class.strip_suffix(&class_suffix) {
+                    class = c.trim();
+                }
+            }
+            let class = class.trim_start_matches(|c| separators.contains(&c)).trim();
+            if key.is_empty() || class.is_empty() {
+                continue;
+            }
+            if require_namespace && !class.contains(|c| separators.contains(&c)) {
                 continue;
             }
             ctx.ws.put_symbol(
@@ -1840,13 +1901,19 @@ const MIDDLEWARE_ALIASES: &str = "middleware_aliases";
 /// One with a namespace separator is treated as already a class name (`app\api\middleware\AuthToken` / `AuthToken::class`),
 /// returned as-is; otherwise look up the alias table. When not found, **return the original name** (`throttle:60`-style param-bearing aliases
 /// store `throttle` in the table, here look up again by the part before the colon).
-fn resolve_guard_class(ctx: &PipelineContext, raw: &str, alias_table: Option<&str>) -> Option<String> {
+fn resolve_guard_class(
+    ctx: &PipelineContext,
+    raw: &str,
+    alias_table: Option<&str>,
+    separators: &[char],
+) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }
-    if raw.contains('\\') || raw.contains('/') {
-        return Some(raw.trim_start_matches('\\').to_string());
+    // A namespace separator (this language's) means it is already a class name, not an alias.
+    if raw.contains(|c| separators.contains(&c)) || raw.contains('/') {
+        return Some(raw.trim_start_matches(|c| separators.contains(&c)).to_string());
     }
     let base = raw.split(':').next().unwrap_or(raw).trim();
     let table = alias_table.unwrap_or(MIDDLEWARE_ALIASES);
@@ -1861,7 +1928,7 @@ fn resolve_guard_class(ctx: &PipelineContext, raw: &str, alias_table: Option<&st
         return Some(entry.to_string());
     }
     // Don't fabricate when not found: return None, let the caller skip (better missing than guessed).
-    if raw.contains('\\') {
+    if raw.contains(|c| separators.contains(&c)) {
         Some(raw.to_string())
     } else {
         None
@@ -1882,7 +1949,7 @@ fn guard_arg_text(v: &FactValue) -> Option<String> {
 fn load_routes(
     ctx: &mut PipelineContext,
     spec: &RouteGuardSpec,
-    _sub: &gt_domain::model::SubProject,
+    sub: &gt_domain::model::SubProject,
     contract_steps: &[NormalizeStep],
 ) {
     if ctx.ws.route_groups.is_empty() {
@@ -1970,8 +2037,13 @@ fn load_routes(
         let guards: Vec<RouteGuard> = guards
             .into_iter()
             .map(|g| RouteGuard {
-                class: resolve_guard_class(ctx, &g.class, alias_table)
-                    .unwrap_or_else(|| g.class.clone()),
+                class: resolve_guard_class(
+                    ctx,
+                    &g.class,
+                    alias_table,
+                    &ctx.lang_policy_for_sub(Some(sub.id)).ns_separators,
+                )
+                .unwrap_or_else(|| g.class.clone()),
                 arg: g.arg,
             })
             .collect();
@@ -2068,13 +2140,18 @@ fn load_declared_middleware(
         .get("scope")
         .and_then(Value::as_str)
         .unwrap_or("global");
-    let mut exts = params
+    let exts = params
         .get("extensions")
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
         .unwrap_or_default();
-    if exts.is_empty() {
-        exts.push("php".into());
-    }
+    // The array *syntax* is stack knowledge (PHP's `[ … ]` / `=>` / `//` / `::class`), declared by FKB.
+    let Some(syn) = ArraySyntax::from_params(params, &ctx.lang_policy_for_sub(Some(sub.id)).ns_separators) else {
+        warn!(
+            "built-in loader `declared_middleware` needs `open` / `close` / `extensions` in `params` \
+             (they are stack syntax, not kernel defaults)"
+        );
+        return;
+    };
     let exts: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
 
     let mut idx: u32 = 0;
@@ -2085,7 +2162,7 @@ fn load_declared_middleware(
         if !hit {
             continue;
         }
-        let classes = extract_middleware_classes(&text, key.as_deref());
+        let classes = extract_middleware_classes(&text, key.as_deref(), &syn);
         if classes.is_empty() {
             continue;
         }
@@ -2133,10 +2210,77 @@ fn load_declared_middleware(
 ///   (skip quotes / whitespace) to count as an assignment key, avoiding hitting a namespace.
 /// * otherwise: take the first `[ ... ]` array of the whole file (i.e. `return [A::class, ...];` form).
 /// Each line takes `X::class` (strip `//` comments, trailing comma, leading `\`), get the normalized FQN.
-fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
+/// The **syntax of the declared array**, all of it stack knowledge (`[ … ]` / `=>` / `//` / `::class`
+/// for PHP) and therefore declared by FKB — the kernel knows none of these characters.
+struct ArraySyntax {
+    open: char,
+    close: char,
+    /// Separates a key from its value (`=>` in PHP, `:` in JSON-ish syntaxes).
+    pair_separator: String,
+    /// Starts a line comment; empty means "no comment syntax declared".
+    comment: String,
+    /// Suffix marking a class reference (`::class` in PHP; empty where a bare identifier is used).
+    class_suffix: String,
+    /// This language's namespace separators, used to strip a leading one (`\App\X` -> `App\X`).
+    separators: Vec<char>,
+}
+
+impl ArraySyntax {
+    fn from_params(params: &Value, separators: &[char]) -> Option<Self> {
+        let single = |k: &str| {
+            params
+                .get(k)
+                .and_then(Value::as_str)
+                .and_then(|s| s.chars().next())
+        };
+        let open = single("open")?;
+        let close = single("close")?;
+        let strs = |k: &str| {
+            params
+                .get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let exts: Vec<String> = params
+            .get("extensions")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+            .unwrap_or_default();
+        if exts.is_empty() {
+            return None;
+        }
+        Some(Self {
+            open,
+            close,
+            pair_separator: strs("separator"),
+            comment: strs("comment"),
+            class_suffix: strs("class_suffix"),
+            separators: separators.to_vec(),
+        })
+    }
+
+    /// Index of the `close` that balances the `open` at index 0 of `s`.
+    fn matching_close(&self, s: &str) -> Option<usize> {
+        let mut depth = 0i32;
+        for (i, b) in s.as_bytes().iter().enumerate() {
+            if *b == self.open as u8 {
+                depth += 1;
+            } else if *b == self.close as u8 {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+}
+
+fn extract_middleware_classes(text: &str, key: Option<&str>, syn: &ArraySyntax) -> Vec<String> {
     let block = match key {
         Some(k) => {
-            // Find "key => [": iterate all hits, take the one with `=>` immediately after.
+            // Find "<key><pair_separator><open>": iterate all hits, take the one with the separator
+            // immediately after the key.
             let mut from = 0;
             let mut found: Option<usize> = None;
             while let Some(rel) = text[from..].find(k) {
@@ -2144,7 +2288,7 @@ fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
                 let rest = &text[abs + k.len()..];
                 let after = rest
                     .trim_start_matches(|c: char| c == '\'' || c == '"' || c.is_whitespace());
-                if after.starts_with("=>") {
+                if syn.pair_separator.is_empty() || after.starts_with(&syn.pair_separator) {
                     found = Some(abs);
                     break;
                 }
@@ -2153,11 +2297,14 @@ fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
             match found {
                 Some(idx) => {
                     let after = &text[idx + k.len()..];
-                    let after = after.trim_start().strip_prefix("=>").unwrap_or(after);
-                    match after.find('[') {
+                    let after = after
+                        .trim_start()
+                        .strip_prefix(syn.pair_separator.as_str())
+                        .unwrap_or(after);
+                    match after.find(syn.open) {
                         Some(open) => {
                             let rest = &after[open..];
-                            match rest.find(']') {
+                            match syn.matching_close(rest) {
                                 Some(close) => rest[1..close].to_string(),
                                 None => return Vec::new(),
                             }
@@ -2168,42 +2315,51 @@ fn extract_middleware_classes(text: &str, key: Option<&str>) -> Vec<String> {
                 None => return Vec::new(),
             }
         }
-        None => match text.find('[') {
-            Some(open) => {
-                let bytes = text.as_bytes();
-                let mut depth = 0i32;
-                let mut close = None;
-                for i in open..text.len() {
-                    if bytes[i] == b'[' {
-                        depth += 1;
-                    } else if bytes[i] == b']' {
-                        depth -= 1;
-                        if depth == 0 {
-                            close = Some(i);
-                            break;
-                        }
-                    }
-                }
-                match close {
-                    Some(c) => text[open + 1..c].to_string(),
-                    None => return Vec::new(),
-                }
-            }
+        None => match text.find(syn.open) {
+            Some(open) => match syn.matching_close(&text[open..]) {
+                Some(close) => text[open + 1..open + close].to_string(),
+                None => return Vec::new(),
+            },
             None => return Vec::new(),
         },
     };
     let mut out = Vec::new();
     for line in block.lines() {
-        let line = line.split("//").next().unwrap_or(line).trim();
-        let line = line.trim_end_matches(',').trim();
+        let line = if syn.comment.is_empty() {
+            line
+        } else {
+            line.split(&syn.comment).next().unwrap_or(line)
+        };
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Some(c) = line.strip_suffix("::class") {
-            let c = c.trim().trim_start_matches('\\').trim();
-            if !c.is_empty() {
-                out.push(c.to_string());
+        // A `key <separator> value` entry: only the value side names a class (a bare array entry has
+        // no separator and is taken whole).
+        let value = match line.split_once(&syn.pair_separator) {
+            Some((_, v)) if !syn.pair_separator.is_empty() => v.trim(),
+            _ => line,
+        };
+        let value = value
+            .trim_end_matches(',')
+            .trim()
+            .trim_matches('\'')
+            .trim_matches('"')
+            .trim();
+        if value.is_empty() {
+            continue;
+        }
+        let c = if syn.class_suffix.is_empty() {
+            value
+        } else {
+            match value.strip_suffix(&syn.class_suffix) {
+                Some(c) => c,
+                None => continue,
             }
+        };
+        let c = c.trim().trim_start_matches(|c| syn.separators.contains(&c)).trim();
+        if !c.is_empty() {
+            out.push(c.to_string());
         }
     }
     out
@@ -2435,8 +2591,9 @@ fn dedup_rules(rules: Vec<Rule>) -> Vec<Rule> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_route_guards, guard_arg_text};
+    use super::{collect_route_guards, guard_arg_text, load_schema};
     use crate::workspace::{CallRecord, GraphWorkspace};
+    use gt_domain::model::Phase;
 
     use super::{detect_frameworks, expand_provided, lock_has, manifest_has, CodeEvidence};
     use super::{load_declared_middleware, PipelineContext};
@@ -2757,7 +2914,17 @@ mod tests {
 
         // `app/middleware.php` would not exist; only `{app_root}/middleware.php` (expanded to
         // `application/middleware.php`) should match.
-        let params = json!({ "paths": ["{app_root}/middleware.php"], "scope": "global" });
+        // The array syntax is declared, not assumed: PHP's `[ … ]` / `=>` / `//` / `::class`.
+        let params = json!({
+            "paths": ["{app_root}/middleware.php"],
+            "scope": "global",
+            "open": "[",
+            "close": "]",
+            "separator": "=>",
+            "comment": "//",
+            "class_suffix": "::class",
+            "extensions": ["php"],
+        });
         load_declared_middleware(&mut ctx, &sub, &dir, &params);
 
         let sym = ctx
@@ -3405,6 +3572,190 @@ mod tests {
             manifest_has(&pom, "spring-boot", &fs, &ts, &java),
             "没有 adapter 的生态必须退回文本探测，而不是静默失效"
         );
+    }
+
+    /// `db_schema` keeps **no** built-in receiver / method list: which receivers name a table is stack
+    /// knowledge, declared by FKB `params`. It used to default to PHP's `Db` / `Query` / `Model`, which
+    /// silently applied PHP conventions to every stack that merely forgot to declare them.
+    #[test]
+    fn db_schema_collects_nothing_without_declared_receivers() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "backend".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec!["thinkphp".into()],
+            facts: serde_json::Value::Object(Default::default()),
+        };
+        // Exactly the shape the old PHP default would have matched.
+        ctx.ws
+            .calls
+            .push(call("app/a.php", "Db", "name", vec![FactValue::String("eb_user".into())], 1, 1, 10, 30));
+
+        load_schema(&mut ctx, &json!({}), &sub, std::path::Path::new("/t"), &Phase(Phase::PREPARE.to_string()));
+        assert!(
+            ctx.ws.get_symbol("schema", "eb_user").is_none(),
+            "未声明 table_receivers / table_methods 时不应采集任何表名"
+        );
+
+        // Declared by FKB (as thinkphp.yaml / illuminate-database.yaml do) → collected.
+        ctx.ws.calls.clear();
+        ctx.ws.calls.push(call("app/a.php", "Db", "name", vec![FactValue::String("eb_user".into())], 1, 1, 10, 30));
+        load_schema(
+            &mut ctx,
+            &json!({ "table_receivers": ["Db"], "table_methods": ["name"] }),
+            &sub,
+            std::path::Path::new("/t"),
+            &Phase(Phase::PREPARE.to_string()),
+        );
+        assert!(
+            ctx.ws.get_symbol("schema", "eb_user").is_some(),
+            "FKB 声明后应采集到表名"
+        );
+    }
+
+    /// `exact_table_receivers` matches the receiver's **last namespace segment**, so `Db` / `think\facade\Db`
+    /// count while `DbHelper` does not — the substring form (`table_receivers`) would swallow the latter.
+    #[test]
+    fn db_schema_exact_receivers_match_the_last_segment_only() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "backend".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec!["thinkphp".into()],
+            facts: serde_json::Value::Object(Default::default()),
+        };
+        let params = json!({ "exact_table_receivers": ["Db"], "table_methods": ["name"] });
+        let run = |ctx: &mut PipelineContext, receiver: &str, table: &str| {
+            ctx.ws.calls.clear();
+            ctx.ws
+                .calls
+                .push(call("app/a.php", receiver, "name", vec![FactValue::String(table.into())], 1, 1, 10, 30));
+            load_schema(ctx, &params, &sub, std::path::Path::new("/t"), &Phase(Phase::PREPARE.to_string()));
+            ctx.ws.get_symbol("schema", table).is_some()
+        };
+
+        assert!(run(&mut ctx, "Db", "t_users"), "裸 `Db` 应命中");
+        assert!(run(&mut ctx, "think\\facade\\Db", "t_ns"), "命名空间下的 `Db` 应命中（末段相同）");
+        assert!(run(&mut ctx, "DB", "t_upper"), "大小写不敏感");
+        assert!(!run(&mut ctx, "DbHelper", "t_junk"), "`DbHelper` 不该被当成查询构造器");
+    }
+
+    /// The array syntax (`[ … ]` / `=>` / `//` / `::class`) used to be hard-coded, so only PHP-shaped
+    /// declarations could ever be read. It is declared by FKB now: the same loader must read a
+    /// completely different syntax when FKB says so.
+    #[test]
+    fn declared_middleware_reads_whatever_array_syntax_fkb_declares() {
+        let dir = std::env::temp_dir().join(format!("gt_mw_syntax_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "backend".into(),
+            root_path: dir.clone(),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec!["thinkphp".into()],
+            facts: serde_json::Value::Object(Default::default()),
+        };
+        let ctx_of = || PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: dir.clone(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+
+        // ① PHP array literal.
+        std::fs::write(
+            dir.join("app/middleware.php"),
+            "<?php\nreturn [\n    App\\Foo::class,\n    App\\Bar::class, // trailing comment\n];",
+        )
+        .unwrap();
+        let mut ctx = ctx_of();
+        load_declared_middleware(
+            &mut ctx,
+            &sub,
+            &dir,
+            &json!({
+                "paths": ["app/middleware.php"],
+                "open": "[", "close": "]", "separator": "=>", "comment": "//",
+                "class_suffix": "::class", "extensions": ["php"],
+            }),
+        );
+        assert_eq!(
+            ctx.ws
+                .get_symbol("declared_middleware", "global_0")
+                .and_then(|v| v.get("classes"))
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.as_str()),
+            Some("App\\Foo"),
+            "PHP 数组字面量应照声明解析"
+        );
+
+        // ② A different stack's syntax: `{}` blocks, `:` pairs, `#` comments, quoted values.
+        std::fs::write(
+            dir.join("app/middleware.conf"),
+            "{\n  \"a\": \"Acme\\Foo\",\n  \"b\": \"Acme\\Bar\" # trailing\n}",
+        )
+        .unwrap();
+        let mut ctx2 = ctx_of();
+        load_declared_middleware(
+            &mut ctx2,
+            &sub,
+            &dir,
+            &json!({
+                "paths": ["app/middleware.conf"],
+                "open": "{", "close": "}", "separator": ":", "comment": "#",
+                "extensions": ["conf"],
+            }),
+        );
+        let classes: Vec<String> = ctx2
+            .ws
+            .get_symbol("declared_middleware", "global_0")
+            .and_then(|v| v.get("classes").cloned())
+            .and_then(|c| serde_json::from_value::<Vec<String>>(c).ok())
+            .unwrap_or_default();
+        assert_eq!(
+            classes,
+            vec!["Acme\\Foo".to_string(), "Acme\\Bar".to_string()],
+            "非 PHP 语法也应照声明解析"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

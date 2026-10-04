@@ -105,6 +105,19 @@ impl TechStackAdapter for JsTechStackAdapter {
         matches!(language.as_str(), Language::JAVASCRIPT | Language::TYPESCRIPT)
     }
 
+    fn i18n_path_patterns(&self) -> Vec<String> {
+        // Directory forms first: `src/locales/en/translation.json` must yield `en`, not
+        // `en/translation` — the flat-file forms are the fallback for one-file-per-locale layouts.
+        vec![
+            "locales/{locale}/".into(),
+            "src/locales/{locale}/".into(),
+            "public/locales/{locale}/".into(),
+            "src/i18n/{locale}/".into(),
+            "locales/{locale}.json".into(),
+            "src/locales/{locale}.json".into(),
+        ]
+    }
+
     fn manifest_dependencies(&self, file_name: &str, text: &str) -> Option<Vec<String>> {
         if file_name != "package.json" {
             return None;

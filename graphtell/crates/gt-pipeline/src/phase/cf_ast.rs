@@ -13,13 +13,18 @@ use gt_domain::model::{
     Declaration, EdgeKind, FactValue, NewEdge, NewNode, NodeId, NodeKind, Phase, ProjectId,
     ResolveAs, Severity, SourceFile, Span, SyntaxFacts,
 };
-use gt_domain::port::{FileSystem, ParserRegistry};
+use gt_domain::port::{FileSystem, ParserRegistry, TechStackRegistry};
 use tracing::{debug, warn};
 
 use crate::context::PipelineContext;
 
 /// Run CfAst.
-pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn FileSystem) {
+pub fn run(
+    ctx: &mut PipelineContext,
+    parsers: &dyn ParserRegistry,
+    fs: &dyn FileSystem,
+    techstack: &dyn TechStackRegistry,
+) {
     let phase = Phase(Phase::CF_AST.to_string());
     let project_id = ctx.project.id;
     let root = ctx.project.root_path.clone();
@@ -39,7 +44,7 @@ pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn Fil
         let Some(parser) = parsers.parser_for(&file.language) else {
             *unsupported.entry(file.language.as_str().to_string()).or_insert(0) += 1;
             // Degrade instead of dropping: still build the **File node**.
-            build_file(ctx, project_id, &file, &SyntaxFacts::default(), &phase);
+            build_file(ctx, project_id, &file, &SyntaxFacts::default(), &phase, techstack);
             continue;
         };
         let facts: SyntaxFacts = match parser.parse(&file.path, &source) {
@@ -49,7 +54,7 @@ pub fn run(ctx: &mut PipelineContext, parsers: &dyn ParserRegistry, fs: &dyn Fil
                 continue;
             }
         };
-        build_file(ctx, project_id, &file, &facts, &phase);
+        build_file(ctx, project_id, &file, &facts, &phase, techstack);
     }
 
     // Report **per language** aggregated (not per file, to avoid flooding).
@@ -83,6 +88,7 @@ fn build_file(
     file: &SourceFile,
     facts: &SyntaxFacts,
     phase: &Phase,
+    techstack: &dyn TechStackRegistry,
 ) {
     let span = Span::default();
     let file_node = ctx.ws.add_node(NewNode {
@@ -524,7 +530,7 @@ fn build_file(
     }
 
     // Config entries (`return [...]`-style files)
-    let locale = crate::engine::capture_locale("lang/{locale}/*.php", &file.path);
+    let locale = crate::phase::facts::locale_of_path(&file.path, &file.language, techstack);
     let file_stem = std::path::Path::new(&file.path)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string());

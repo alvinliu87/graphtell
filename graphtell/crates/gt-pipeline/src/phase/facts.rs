@@ -89,6 +89,24 @@ fn declared_in(
     text.contains(dependency)
 }
 
+/// The locale of an i18n file, taken from the **stack's** path convention
+/// ([`TechStackAdapter::i18n_path_patterns`]).
+///
+/// Which directory holds the translations and which path segment is the locale differ per ecosystem
+/// (`lang/zh-cn/*.php` vs `src/locales/en/translation.json`), so none of that is written here;
+/// a stack that declares nothing simply has no locale stamped.
+pub fn locale_of_path(
+    path: &str,
+    language: &Language,
+    techstack: &dyn TechStackRegistry,
+) -> Option<String> {
+    let adapter = techstack.adapter_for(language)?;
+    adapter
+        .i18n_path_patterns()
+        .iter()
+        .find_map(|p| crate::engine::capture_locale(p, path))
+}
+
 /// Resolve one [`RootSource`] to `(value, provenance)`.
 ///
 /// Each kind deliberately only needs a manifest or a directory: that is what lets P0 use this too.
@@ -363,5 +381,41 @@ mod tests {
         let got = resolve_manifest_pointer(&path, "extra.public-dir", PickStrategy::FirstDir, &fs);
         assert_eq!(got.map(|(v, _)| v), Some("web".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The i18n path convention is the **stack's**, not the kernel's: `lang/{locale}/*.php` used to be
+    /// hard-coded, so a JS project's `src/locales/en/…` got no locale at all (and i18n coverage was
+    /// silently wrong). A stack that declares nothing must yield `None`, never a guess.
+    #[test]
+    fn locale_comes_from_the_stacks_own_path_convention() {
+        let ts = gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()));
+        let php = Language::new(Language::PHP);
+        let js = Language::new(Language::JAVASCRIPT);
+
+        assert_eq!(
+            locale_of_path("lang/zh-cn/messages.php", &php, &ts),
+            Some("zh-cn".to_string())
+        );
+        assert_eq!(
+            locale_of_path("resources/lang/en/auth.php", &php, &ts),
+            Some("en".to_string()),
+            "Laravel ≤8 的语言包在 resources/lang/ 下"
+        );
+        assert_eq!(
+            locale_of_path("src/locales/en/translation.json", &js, &ts),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            locale_of_path("src/locales/en.json", &js, &ts),
+            Some("en".to_string()),
+            "一个语言一个文件的布局也要认"
+        );
+        assert_eq!(
+            locale_of_path("src/main/resources/messages.properties", &Language::new(Language::JAVA), &ts),
+            None,
+            "没有适配器声明约定的栈不猜"
+        );
     }
 }
