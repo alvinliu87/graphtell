@@ -234,6 +234,7 @@ fn probe_dir(glob: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gt_adapter_fkb::YamlKnowledgeBase;
     use gt_domain::model::{Detector, PickStrategy, RootRule, RootSource};
 
     struct StaticKb(Vec<FrameworkKnowledge>);
@@ -303,6 +304,19 @@ mod tests {
         let parsers = gt_adapter_parser::DefaultParserRegistry::new();
         let ts = techstack();
         resolve_for_sub(root, root, &Language::new("php"), kb, &fs, &parsers, &ts)
+    }
+
+    /// Resolve exclude rules against a **real** `KnowledgeProvider` (e.g. the shipped FKB), reusing the
+    /// same synthetic-fs / parser / techstack stack as `resolve_sync`.
+    fn resolve_real(
+        root: &Path,
+        language: &Language,
+        kb: &dyn KnowledgeProvider,
+        ts: &dyn TechStackRegistry,
+    ) -> SubExcludes {
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let parsers = gt_adapter_parser::DefaultParserRegistry::new();
+        resolve_for_sub(root, root, language, kb, &fs, &parsers, ts)
     }
 
     /// The whole point: `runtime/` is found **through the resolved `app_root`**, not by its name.
@@ -417,6 +431,196 @@ mod tests {
         )]);
         let got = resolve_sync(&root, &kb);
         assert_eq!(got.globs, vec!["thinkphp/**".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// End-to-end guard for the **real shipped FKB** — the 5 unit tests above inject a hand-built
+    /// `StaticKb`, so a typo / dangling placeholder in the real `fkb/php/thinkphp.yaml` `exclude_rules`
+    /// would never be caught there. And `ingest` treats an unresolved rule as a non-fatal diagnostic,
+    /// so it would also slip past the full-pipeline sample tests. Here we load the real FKB and resolve
+    /// its rules against a synthetic-but-realistic ThinkPHP tree, then assert every rule resolves (zero
+    /// diagnostics) and produces exactly the expected globs.
+    ///
+    /// `runtime/` is materialised (not `config/app.php`) so `runtime-dir` resolves via its fallback —
+    /// the manifest-source path is already pinned by `glob_is_rendered_from_the_resolved_app_root`.
+    #[test]
+    fn real_thinkphp_fkb_exclude_rules_resolve_without_diagnostics() {
+        let root = scratch("real-fkb");
+        write(
+            &root,
+            "composer.json",
+            r#"{"require": {"topthink/framework": "^6"}, "autoload": {"psr-4": {"app\\": "app/"}}, "extra": {"public-dir": "public"}}"#,
+        );
+        for d in ["runtime", "public", "app", "extend", "thinkphp"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+
+        let fkb_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/php/thinkphp.yaml");
+        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
+            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+        let kb = StaticKb(vec![real_fk]);
+
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let parsers = gt_adapter_parser::DefaultParserRegistry::new();
+        let ts = techstack();
+        let got = resolve_for_sub(
+            &root,
+            &root,
+            &Language::new("php"),
+            &kb,
+            &fs,
+            &parsers,
+            &ts,
+        );
+
+        assert!(
+            got.diagnostics.is_empty(),
+            "真实 FKB 排除规则不应有未解析项: {:?}",
+            got.diagnostics
+        );
+        for expected in [
+            "extend/**",
+            "public/**",
+            "runtime/**",
+            "thinkphp/**",
+        ] {
+            assert!(
+                got.globs.iter().any(|g| g == expected),
+                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                got.globs
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Real-FKB guard for a **JS/TS** framework: `fkb/js/nestjs.yaml`'s `exclude_rules` are all static
+    /// globs (`dist/**`, `coverage/**`), so they resolve with no manifest source and no fallback dir. This
+    /// pins that a real non-PHP FKB parses and its rules survive end-to-end — the hand-built `StaticKb`
+    /// unit tests never exercise a real JS/TS FKB.
+    #[test]
+    fn real_nestjs_fkb_exclude_rules_resolve_without_diagnostics() {
+        let root = scratch("real-fkb-nestjs");
+        write(
+            &root,
+            "package.json",
+            r#"{"name": "svc", "dependencies": {"@nestjs/core": "^10", "typescript": "^5"}}"#,
+        );
+
+        let fkb_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/js/nestjs.yaml");
+        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
+            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+        let kb = StaticKb(vec![real_fk]);
+
+        // JS adapter registered for faithful detection; the plain-text fallback in `detect_without_code`
+        // would also match `@nestjs/core`, so detection is robust either way.
+        let ts = gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()));
+        let got = resolve_real(&root, &Language::new("javascript"), &kb, &ts);
+
+        assert!(
+            got.diagnostics.is_empty(),
+            "真实 FKB 排除规则不应有未解析项: {:?}",
+            got.diagnostics
+        );
+        for expected in ["coverage/**", "dist/**"] {
+            assert!(
+                got.globs.iter().any(|g| g == expected),
+                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                got.globs
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Real-FKB guard for a **Python** framework: `fkb/python/django.yaml`'s `exclude_rules` are all static
+    /// globs (`**/__pycache__/**`, `**/.venv/**`, `**/venv/**`, `**/migrations/**`). Detection keys off
+    /// `requirements.txt` containing `django`; there is no Python tech-stack adapter, so `detect_without_code`
+    /// falls back to a plain-text probe — exactly the real pipeline's behaviour, and enough for the static
+    /// globs to resolve.
+    #[test]
+    fn real_django_fkb_exclude_rules_resolve_without_diagnostics() {
+        let root = scratch("real-fkb-django");
+        write(&root, "requirements.txt", "django==5.0\n");
+
+        let fkb_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/python/django.yaml");
+        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
+            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+        let kb = StaticKb(vec![real_fk]);
+
+        // No Python adapter exists, so detection relies on the plain-text probe — faithful to the real
+        // pipeline; the PHP adapter registered here is irrelevant but harmless.
+        let ts = gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()));
+        let got = resolve_real(&root, &Language::new("python"), &kb, &ts);
+
+        assert!(
+            got.diagnostics.is_empty(),
+            "真实 FKB 排除规则不应有未解析项: {:?}",
+            got.diagnostics
+        );
+        for expected in [
+            "**/__pycache__/**",
+            "**/.venv/**",
+            "**/venv/**",
+            "**/migrations/**",
+        ] {
+            assert!(
+                got.globs.iter().any(|g| g == expected),
+                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                got.globs
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Real-FKB guard for **Laravel** — the one framework whose `exclude_rules` mix a `manifest_json`
+    /// source (`public-dir` reads `composer.json`'s `extra.public-dir`) with static globs
+    /// (`storage/framework/**`, `storage/logs/**`, `bootstrap/cache/**`). This pins that the real FKB's
+    /// *manifest-sourced* rule resolves end-to-end (not just the static/fallback paths the thinkphp and
+    /// nestjs/django tests exercise), with zero diagnostics.
+    #[test]
+    fn real_laravel_fkb_exclude_rules_resolve_without_diagnostics() {
+        let root = scratch("real-fkb-laravel");
+        write(
+            &root,
+            "composer.json",
+            r#"{"require": {"laravel/framework": "^10"}, "autoload": {"psr-4": {"App\\": "app/"}}, "extra": {"public-dir": "public"}}"#,
+        );
+
+        let fkb_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/php/laravel.yaml");
+        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
+            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+        let kb = StaticKb(vec![real_fk]);
+
+        let ts = techstack();
+        let got = resolve_real(&root, &Language::new("php"), &kb, &ts);
+
+        assert!(
+            got.diagnostics.is_empty(),
+            "真实 FKB 排除规则不应有未解析项: {:?}",
+            got.diagnostics
+        );
+        for expected in [
+            "bootstrap/cache/**",
+            "public/**",
+            "storage/framework/**",
+            "storage/logs/**",
+        ] {
+            assert!(
+                got.globs.iter().any(|g| g == expected),
+                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                got.globs
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
