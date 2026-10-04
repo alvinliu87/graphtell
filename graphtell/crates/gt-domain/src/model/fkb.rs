@@ -218,7 +218,7 @@ pub enum KnowledgeScope {
 /// resolves the handler against the real class FQNs on the graph — see the resolver for the name-agnostic matching
 /// rule. Namespace *separators* come from [`crate::model::NamespacePolicy`], so nothing here is PHP-shaped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MethodRefSpec {
     /// Separators between controller and method inside the handler string (tried in order, the first one that splits wins).
     pub method_separators: Vec<String>,
@@ -261,6 +261,7 @@ pub struct MethodRefSpec {
 /// (`app\api\middleware\AuthTokenMiddleware` vs `app\kefuapi\middleware\KefuAuthTokenMiddleware`), yet the
 /// semantics are expressed by the name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MiddlewareCapability {
     /// A fragment that must be **contained** in the middleware class short name, e.g. `AuthToken` / `Throttle`.
     pub matches: String,
@@ -277,7 +278,7 @@ pub struct MiddlewareCapability {
 /// * `decorator`: `@UseGuards(X)` / `@login_required` / `@PreAuthorize` sits on **the same method** as the route
 ///   it decorates, associated by `owner_fqn` (NestJS / Python / Spring).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RouteGuardSpec {
     /// Route-definition call patterns (several allowed: e.g. ThinkPHP's `Route::`, Express's `app` / `router`,
     /// NestJS's `@Get` decorator).
@@ -309,7 +310,7 @@ pub struct RouteGuardSpec {
 
 /// One route-definition call recognition pattern.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RouteCallSpec {
     /// Match target:
     /// * `by = receiver` (default): `call.receiver` (case-insensitive) **containing** this string matches
@@ -363,7 +364,7 @@ pub enum RouteMatchBy {
 
 /// Guard attachment model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GuardAttachSpec {
     /// Chained: `Route::get(path)->middleware(X)`.
     Chain(ChainGuardSpec),
@@ -412,7 +413,7 @@ impl Default for GuardAttach {
 /// Which routes it applies to is decided by the **arguments** of `forRoutes`, and the module -> controller -> route
 /// mapping is unknowable to the kernel, so the "scope" must be declared by FKB (see [`ConsumerScope`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ConsumerGuardSpec {
     /// The consumer variable name (default `consumer`).
     pub receiver: String,
@@ -454,7 +455,7 @@ impl Default for ConsumerGuardSpec {
 
 /// Chained guard: `Route::get(path)->middleware(X)`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChainGuardSpec {
     /// The member method name that attaches the guard (e.g. `middleware`).
     pub method: String,
@@ -468,7 +469,7 @@ pub struct ChainGuardSpec {
 
 /// Decorator / annotation guard: associated by `owner_fqn`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DecoratorGuardSpec {
     /// The callee list of route decorators / annotations (e.g. `app.route` / `@Get` / `@GetMapping`).
     /// Compared verbatim against the parser's callee output (the TS parser prefixes decorators with `@`); case-insensitive.
@@ -549,7 +550,7 @@ fn default_zero() -> usize {
 
 /// The read / write verb list of a data model (method names, case-insensitive).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DbVerbsSpec {
     /// Write verbs: `save` / `insert` / `update` / `delete` …
     #[serde(default)]
@@ -561,7 +562,7 @@ pub struct DbVerbsSpec {
 
 /// The forwarding target of magic methods (`@method` annotations).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MagicDelegationSpec {
     /// Name of the property to forward to (e.g. CRMEB's `dao`). Its type is inferred from how the property is injected, per the existing rules.
     pub property: String,
@@ -591,7 +592,7 @@ impl Default for MethodRefSpec {
 
 /// A framework recognition signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Detector {
     /// A dependency exists in the manifest file.
     ManifestDependency {
@@ -673,6 +674,7 @@ fn default_conf() -> f32 {
 ///
 /// Example: resolving `AppRoot = "app"` from `autoload.psr-4` in `composer.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RootRule {
     pub id: String,
     /// The fact key produced, e.g. `app_root`.
@@ -686,7 +688,7 @@ pub struct RootRule {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RootSource {
     /// Read a value from a JSON manifest by pointer.
     ManifestJson {
@@ -736,6 +738,7 @@ pub enum RootSource {
 
 /// One field read from each entry of a [`RootSource::ManifestEntries`] collection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EntryField {
     /// Field name in the produced record, e.g. `driver` / `prefix`.
     pub name: String,
@@ -780,6 +783,7 @@ pub enum PickStrategy {
 ///
 /// Globs are relative to the **sub-project root**; a `/**` suffix means "the whole subtree".
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExcludeRule {
     pub id: String,
     /// Glob template, e.g. `{app_root}/runtime/**`.
@@ -811,6 +815,7 @@ pub fn template_placeholders(template: &str) -> Vec<String> {
 
 /// A P3 symbol-table loader.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoaderSpec {
     pub id: String,
     /// Output symbol-table name: `schema` / `config_keys` / `i18n` / `facade_map` / `route_list`, etc.
@@ -852,6 +857,7 @@ pub enum LoaderSource {
 
 /// One rule: in a given phase, run a set of actions against the matched targets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     pub id: String,
     pub phase: Phase,
@@ -883,7 +889,7 @@ impl Rule {
 
 /// A selector: decides what a rule acts on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Selector {
     /// A call site, e.g. `Db::name('store_order')`.
     Call {
@@ -937,7 +943,7 @@ pub enum Selector {
 
 /// A predicate (a `where` condition).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Predicate {
     /// The target (class) has a given property.
     HasProperty(String),
@@ -1003,7 +1009,7 @@ pub enum Predicate {
 
 /// A binding action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
 pub enum Action {
     /// Tag an annotation.
     Annotate(AnnotateAction),
@@ -1016,7 +1022,7 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AnnotateAction {
     /// The phase in which it is expected to run (Pre / Post). Skipped when the rule's phase differs from this.
     pub phase: Option<Phase>,
@@ -1048,7 +1054,7 @@ impl Default for AnnotateAction {
 
 /// Annotation target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum AnnotateTarget {
     /// The node the selector matched directly.
     Matched,
@@ -1068,7 +1074,7 @@ impl Default for AnnotateTarget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AnnotationSpec {
     pub kind: String,
     pub subkind: Option<SubkindSource>,
@@ -1093,7 +1099,7 @@ impl Default for AnnotationSpec {
 
 /// Where a subkind comes from: a literal / an authoritative symbol table / a computed value / a fan_in grade.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SubkindSource {
     Literal(String),
     FromSymbolTable {
@@ -1109,6 +1115,7 @@ pub enum SubkindSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FanInThresholds {
     pub high: u64,
     pub medium: u64,
@@ -1122,7 +1129,7 @@ pub struct FanInThresholds {
 
 /// A synthesis action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SynthesizeAction {
     /// Node kind (an open string, e.g. `Table` / `HttpContract` / `Event` / `Queue` / `Cache` / `Topic`).
     ///
@@ -1152,7 +1159,7 @@ pub struct SynthesizeAction {
 
 /// An expansion table: one call -> N semantic nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExpandSpec {
     pub variants: Vec<ExpandVariant>,
     /// Allowlist source: the argument array of a chained call with this name **on the same statement line**
@@ -1172,6 +1179,7 @@ impl Default for ExpandSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
+#[serde(deny_unknown_fields)]
 pub struct ExpandVariant {
     /// Action name (corresponding to the names written in `only` / `except`).
     pub name: String,
@@ -1204,7 +1212,7 @@ impl Default for SynthesizeAction {
 /// **`identity` is the core of the whole Synthesize phase**: as long as three different rules compute the same
 /// identity, their output merges idempotently into one node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct IdentitySpec {
     /// `Fqn` / `Named` / `ContractId`。
     pub kind: SynthesizedKind,
@@ -1228,6 +1236,7 @@ pub struct IdentitySpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
+#[serde(deny_unknown_fields)]
 pub struct FieldSpec {
     pub name: String,
     pub value: Option<ValueSource>,
@@ -1238,12 +1247,14 @@ pub struct FieldSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccumulateSpec {
     pub key: ValueSource,
     pub value: ValueSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SymbolFieldSpec {
     pub table: String,
     pub field: String,
@@ -1254,6 +1265,7 @@ pub struct SymbolFieldSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
+#[serde(deny_unknown_fields)]
 pub struct LinkSpec {
     pub kind: EdgeKind,
     /// Source of the edge's other end (e.g. a handler string).
@@ -1290,6 +1302,7 @@ pub enum Direction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
+#[serde(deny_unknown_fields)]
 pub struct AliasSpec {
     pub namespace: String,
     pub key: ValueSource,
@@ -1298,7 +1311,7 @@ pub struct AliasSpec {
 
 /// A value source (structured, for convenient YAML authoring).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ValueSource {
     /// The n-th argument.
     pub arg: Option<usize>,
@@ -1395,7 +1408,7 @@ pub struct ValueSource {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TransformSpec {
     pub snake_plural: Option<bool>,
     pub snake: Option<bool>,
@@ -1421,7 +1434,7 @@ pub enum ResolveAs {
 
 /// A normalisation step (the key to idempotent identity merging).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NormalizeStep {
     StripPrefix(Vec<String>),
     Lower,
@@ -1462,6 +1475,7 @@ pub enum NormalizeStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
+#[serde(deny_unknown_fields)]
 pub struct LinkAction {
     pub kind: EdgeKind,
     pub from: Option<ValueSource>,

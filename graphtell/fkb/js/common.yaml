@@ -159,8 +159,8 @@ rules:
     selector:
       kind: node
       node_kind: HttpContract
-    where:
-      - has_incoming: CallsHttp
+      where:
+        - has_incoming: CallsHttp
     binding:
       - Annotate:
           phase: Post

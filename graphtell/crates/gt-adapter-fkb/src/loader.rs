@@ -534,6 +534,49 @@ rules:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Same guard one level down: a `where:` written **on the rule** instead of inside `selector` is not
+    /// a rejected shape — it is silently ignored, and the rule then fires on every node of that kind.
+    /// (`fkb/js/common.yaml` shipped exactly this: `mark-called` marked every HttpContract as
+    /// `frontend.called` instead of only the ones with an incoming `CallsHttp` edge.)
+    #[test]
+    fn rule_rejects_unknown_fields() {
+        let base = "id: k\ndisplay_name: K\nlanguage: php\nrules:\n  - id: mark-called\n    phase: AnnotatePost\n    selector:\n      kind: node\n      node_kind: HttpContract\n";
+        let dir = std::env::temp_dir().join(format!(
+            "gt-fkb-rule-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let bad = dir.join("bad.yaml");
+        std::fs::write(
+            &bad,
+            format!("{base}    where:\n      - has_incoming: CallsHttp\n    binding: []\n"),
+        )
+        .unwrap();
+        assert!(
+            YamlKnowledgeBase::load_file(&bad).is_err(),
+            "规则层的 `where:` 必须被拒绝（否则规则会无条件命中）"
+        );
+
+        let good = dir.join("good.yaml");
+        std::fs::write(
+            &good,
+            format!("{base}      where:\n        - has_incoming: CallsHttp\n    binding: []\n"),
+        )
+        .unwrap();
+        assert!(
+            YamlKnowledgeBase::load_file(&good).is_ok(),
+            "写进 selector 的 `where:` 应正常解析"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn side_of_first_synth(fk: &FrameworkKnowledge) -> Option<String> {
         for rule in &fk.rules {
             for action in &rule.binding {

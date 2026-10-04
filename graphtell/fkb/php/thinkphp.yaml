@@ -392,9 +392,9 @@ rules:
           target: matched
           annotations:
             - kind: config.storage
-              from_symbol_table: { table: config_keys, field: storage }
+              subkind: { from_symbol_table: { table: config_keys, field: storage } }
             - kind: config.mutability
-              from_symbol_table: { table: config_keys, field: mutable }
+              subkind: { from_symbol_table: { table: config_keys, field: mutable } }
           merge: MaxByKind
   - id: public-endpoint
     phase: AnnotatePost
@@ -424,7 +424,7 @@ rules:
           target: matched
           annotations:
             - kind: i18n.missing_locale
-              computed: missing_locales
+              subkind: { computed: missing_locales }
               confidence: 1.0
           merge: MaxByKind
   # ===== P4 Annotate-Pre: taint semantics =====
