@@ -816,6 +816,10 @@ pub struct LoaderSpec {
     pub confidence: f32,
 }
 
+/// Which parser is used is decided by the **file's extension** (`LanguageParser` registry), not by a
+/// format field — so a `.php` config array, a `.json` and a `.yml` are each parsed by their own parser
+/// with no per-loader declaration. (A `format:` field used to exist here but was never read; declaring
+/// something the kernel does not consume silently misleads FKB authors, so it was removed.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LoaderSource {
@@ -824,8 +828,6 @@ pub enum LoaderSource {
         path: String,
         #[serde(default)]
         key_path: Option<String>,
-        #[serde(default)]
-        format: FileFormat,
     },
     /// Read in bulk by glob (e.g. `lang/*/*.php`); capture groups can extract the locale.
     Glob {
@@ -833,8 +835,6 @@ pub enum LoaderSource {
         /// Regex that extracts the locale from a path capture group (the first capture group).
         #[serde(default)]
         locale_regex: Option<String>,
-        #[serde(default)]
-        format: FileFormat,
     },
     /// A constant table declared inline by FKB (e.g. FacadeMap — given by framework knowledge, not guessed).
     Inline { rows: Vec<Value> },
@@ -844,18 +844,6 @@ pub enum LoaderSource {
         #[serde(default)]
         params: Value,
     },
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileFormat {
-    Php,
-    Json,
-    Yaml,
-    Sql,
-    Text,
-    #[default]
-    Auto,
 }
 
 /// One rule: in a given phase, run a set of actions against the matched targets.

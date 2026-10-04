@@ -182,7 +182,6 @@ loaders:
     from:
       kind: file
       path: "{app_root}/provider.php"
-      format: php
   # Event listener registry: app/event.php (6.x+ shape)
   - id: event-listeners
     table: event_listeners
@@ -190,7 +189,6 @@ loaders:
       kind: file
       path: "{app_root}/event.php"
       key_path: listen
-      format: php
   # Behaviour extension registry: app/tags.php (**5.x shape**).
   # TP5 calls events "behaviours (Behavior)"; the registry is `tags.php` and is **flat**
   # (`'sms_send' => [Listener::class]`), with no 6.x-style outer `listen` key.
@@ -200,7 +198,6 @@ loaders:
     from:
       kind: file
       path: "{app_root}/tags.php"
-      format: php
   # Database schema (collected from SQL install scripts / table names in the source)
   - id: db-schema
     table: schema
@@ -245,7 +242,6 @@ loaders:
       kind: glob
       pattern: "lang/*/*.php"
       locale_regex: "lang/([^/]+)/"
-      format: php
   # Route table (collected from Route:: calls) — the recognition logic is declared by `route_guards` below.
   - id: route-list
     table: route_list
