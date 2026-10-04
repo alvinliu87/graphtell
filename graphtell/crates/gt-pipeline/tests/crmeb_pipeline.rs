@@ -575,6 +575,103 @@ fn annotate_post_marks_login_entrypoints() {
     assert!(tagged, "含 login 的端点应被标记为 entrypoint.login");
 }
 
+// ---------------------------------------------------------------- P9 Taint
+// P9 Taint was recently made language-agnostic: its SQL-sink vocabulary and request sources come from the
+// FKB `taint:` declaration (replacing a hard-coded `language == php` gate), and the variable marker comes
+// from the parser's `variable_prefixes`. On a real sample this pins the whole chain — if the FKB vocabulary
+// or the prefix plumbing regresses, the engine silently emits nothing and a synthetic test may still pass
+// (it injects its own markers), so the regression only shows up here.
+#[test]
+fn taint_flags_sql_injection_on_real_sample() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let all = b
+        .store
+        .annotations_of_project(b.project.id)
+        .expect("标注可读");
+    let kinds: std::collections::HashSet<String> = all.values().flatten().map(|a| a.kind.clone()).collect();
+    for k in [
+        "tainted_raw",
+        "tainted_where",
+        "tainted_raw_unknown",
+        "tainted_where_unknown",
+    ] {
+        if kinds.contains(k) {
+            eprintln!("CRMEB taint annotation present: {k}");
+        }
+    }
+    assert!(
+        kinds.iter().any(|k| {
+            k == "tainted_raw" || k == "tainted_where" || k == "tainted_raw_unknown" || k == "tainted_where_unknown"
+        }),
+        "CRMEB 应至少有一次 SQL 注入标注（tainted_raw / tainted_where / ...），实际标注种类：{:?}",
+        kinds
+    );
+}
+
+// ---------------------------------------------------------------- P11 SignCheck
+// P11 SignCheck (signature verification) was made language-agnostic via the FKB `sign_check:` declaration
+// (replacing a hard-coded `language == php` gate): which calls compute a signature, which comparison is a
+// "loose" signature comparison, and which hash algorithms are weak all come from FKB. This pins the whole
+// chain on a real sample — a synthetic test injects its own vocabulary and may still pass after a regression,
+// so the failure only surfaces here.
+#[test]
+fn sign_check_flags_weak_signature_on_real_sample() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let all = b
+        .store
+        .annotations_of_project(b.project.id)
+        .expect("标注可读");
+    let kinds: std::collections::HashSet<String> =
+        all.values().flatten().map(|a| a.kind.clone()).collect();
+    for k in ["weak_sign_compare", "weak_sign_hash"] {
+        if kinds.contains(k) {
+            eprintln!("CRMEB sign_check annotation present: {k}");
+        }
+    }
+    assert!(
+        kinds.iter().any(|k| k == "weak_sign_compare" || k == "weak_sign_hash"),
+        "CRMEB 应至少有一次签名相关标注（weak_sign_compare / weak_sign_hash），实际标注种类：{:?}",
+        kinds
+    );
+}
+
+// ---------------------------------------------------------------- P13 Tx
+// P13 Tx (transaction-boundary) was made language-agnostic via the FKB `tx_calls:` declaration (replacing a
+// hard-coded `language == php` gate): the method names that open a transaction come entirely from FKB. This
+// pins the chain on a real sample — a synthetic test injects its own markers and may still pass after a
+// regression, so the failure only surfaces here.
+#[test]
+fn tx_flags_multi_write_without_tx_on_real_sample() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let all = b
+        .store
+        .annotations_of_project(b.project.id)
+        .expect("标注可读");
+    let kinds: std::collections::HashSet<String> =
+        all.values().flatten().map(|a| a.kind.clone()).collect();
+    assert!(
+        kinds.contains("multi-write-without-tx"),
+        "CRMEB 应至少出现一次 multi-write-without-tx 标注，实际标注种类：{:?}",
+        kinds
+    );
+    let subkinds: Vec<&str> = all
+        .values()
+        .flatten()
+        .filter(|a| a.kind == "multi-write-without-tx")
+        .filter_map(|a| a.subkind.as_deref())
+        .collect();
+    eprintln!("CRMEB multi-write-without-tx subkinds: {subkinds:?}");
+}
+
 // ---------------------------------------------------------------- P7 Resolve
 
 #[test]

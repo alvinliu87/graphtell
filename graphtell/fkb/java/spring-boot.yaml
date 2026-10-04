@@ -348,3 +348,21 @@ db_verbs:
   read: ["findById", "findAll", "findAllById", "getById", "getOne", "getReferenceById",
          "count", "existsById", "selectById", "selectList", "selectOne", "selectPage",
          "selectByMap", "selectCount", "list", "page"]
+
+# ===== P13 Tx: transaction-boundary markers (language / library knowledge, not the kernel's) =====
+# A method that writes >= 2 distinct tables with no transaction boundary is a partial-write risk
+# (`multi-write-without-tx`). The boundary is opened by these calls. The kernel knows none of them — they
+# come entirely from this declaration, mirroring `fkb/php/common.yaml`'s `tx_calls:` (that file replaced a
+# hard-coded `language == php` gate; the kernel is now stack-agnostic and only the vocabulary is per-stack).
+#
+# Matching is case-insensitive against the call's method name OR its callee (see `tx.rs`):
+# `entityManager.getTransaction().begin()` matches on method `begin`; `…().commit()` matches on `commit`;
+# Hibernate's `session.beginTransaction()` matches on `beginTransaction`. NOTE: the declarative `@Transactional`
+# annotation is **not** captured by the analyzer, so only programmatic transaction calls are recognised here —
+# the same limitation the PHP `common.yaml` `tx_calls:` documents (over-broad is safe: an extra in-transaction
+# mark can only *suppress* a finding, never fabricate one).
+tx_calls:
+  - "begin"
+  - "commit"
+  - "rollback"
+  - "beginTransaction"

@@ -81,6 +81,11 @@ impl LanguageParser for JavaParser {
         "."
     }
 
+    /// Java field injection (`@Autowired Repository<User> repo`) uses bare identifiers.
+    fn bare_field_receivers(&self) -> bool {
+        true
+    }
+
     fn manifest_files(&self) -> &'static [&'static str] {
         &["pom.xml", "build.gradle", "build.gradle.kts"]
     }

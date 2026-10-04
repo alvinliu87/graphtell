@@ -109,6 +109,11 @@ impl LanguageParser for PythonParser {
         "."
     }
 
+    /// Python field access (`self`, `Model.objects`) uses bare identifiers.
+    fn bare_field_receivers(&self) -> bool {
+        true
+    }
+
     fn manifest_files(&self) -> &'static [&'static str] {
         &["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"]
     }

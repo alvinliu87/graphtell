@@ -68,6 +68,11 @@ impl LanguageParser for JsFrontendParser {
         "."
     }
 
+    /// JS/TS field injection (`@InjectRepository(User) repo`) uses bare identifiers.
+    fn bare_field_receivers(&self) -> bool {
+        true
+    }
+
     fn manifest_files(&self) -> &'static [&'static str] {
         &["package.json"]
     }
@@ -351,18 +356,56 @@ fn superclass_of(class_node: Node, src: &str) -> Option<String> {
 }
 
 /// Take the text of a field / parameter type annotation (`svc: UserService` -> `UserService`).
+///
+/// TypeORM repository injection (`@InjectRepository(UserEntity) private repo: Repository<UserEntity>`) is
+/// unwrapped to the **entity** (`UserEntity`), not the repository type, so P7 can resolve `repo.save(x)` to
+/// the entity's table via its `MapsTo` edge — exactly like Java's `JpaRepository<User>` -> `User`. Only
+/// `Repository` / `MongoRepository` generics are unwrapped; unrelated generics (`Promise<User>`, `Array<User>`)
+/// keep their declared text.
 fn type_annotation_of(node: Node, src: &str) -> Option<String> {
     let mut c = node.walk();
     for child in node.named_children(&mut c) {
         if child.kind() == "type_annotation" {
             let mut t = child.walk();
             for inner in child.named_children(&mut t) {
-                if matches!(
-                    inner.kind(),
-                    "type_identifier" | "predefined_type" | "nested_type_identifier" | "generic_type"
-                ) {
-                    return Some(text(inner, src).to_string());
+                match inner.kind() {
+                    "type_identifier" | "predefined_type" | "nested_type_identifier" => {
+                        return Some(text(inner, src).to_string());
+                    }
+                    "generic_type" => {
+                        if let Some(entity) = unwrap_repository_generic(inner, src) {
+                            return Some(entity);
+                        }
+                        return Some(text(inner, src).to_string());
+                    }
+                    _ => {}
                 }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the entity type parameter of a TypeORM repository generic:
+/// `Repository<UserEntity>` / `MongoRepository<OrderEntity>` -> `UserEntity`.
+fn unwrap_repository_generic(node: Node, src: &str) -> Option<String> {
+    let mut c = node.walk();
+    let mut base: Option<String> = None;
+    for child in node.named_children(&mut c) {
+        if child.kind() == "type_identifier" {
+            base = Some(text(child, src).to_string());
+            break;
+        }
+    }
+    if !matches!(base.as_deref(), Some("Repository") | Some("MongoRepository")) {
+        return None;
+    }
+    let mut c2 = node.walk();
+    for child in node.named_children(&mut c2) {
+        if child.kind() == "type_arguments" {
+            let mut a = child.walk();
+            for arg in child.named_children(&mut a) {
+                return Some(text(arg, src).to_string());
             }
         }
     }
@@ -776,12 +819,18 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
                     Some(prop.clone()),
                     HttpStyle::Member(prop.to_ascii_uppercase()),
                 ),
-                _ => (
-                    format!("{}.{}", obj.as_deref().unwrap_or(""), prop),
-                    obj.clone(),
-                    Some(prop),
-                    HttpStyle::Other,
-                ),
+                _ => {
+                    let raw = obj.as_deref().unwrap_or("");
+                    // NestJS / TypeORM DI: `this.repo.save(x)` — strip the `this.` so the kernel's
+                    // variable-type resolver sees the bare field name (`repo`) it recorded via `prop_type`.
+                    let recv = raw.strip_prefix("this.").unwrap_or(raw);
+                    (
+                        format!("{raw}.{prop}"),
+                        Some(recv.to_string()),
+                        Some(prop),
+                        HttpStyle::Other,
+                    )
+                }
             }
         }
         Some(f) => {

@@ -70,6 +70,17 @@ pub trait LanguageParser: Send + Sync {
     fn builtin_types(&self) -> &'static [&'static str] {
         &[]
     }
+
+    /// Whether instance-field access uses **bare identifiers** (no `$` / `@` textual marker), so a bare
+    /// receiver (`repo`, `self`, `Order.objects`) is a field / instance access the `variable_type`
+    /// resolver should consider.
+    ///
+    /// PHP injects via `$this->prop` (marked with `$`), so it is `false`. Java / JS / Python use bare
+    /// identifiers, so they are `true`. The kernel gates the P7 `VariableType` resolver on this flag
+    /// instead of hard-coding `language == java / javascript / python`.
+    fn bare_field_receivers(&self) -> bool {
+        false
+    }
 }
 
 /// Parser registry (factory port).

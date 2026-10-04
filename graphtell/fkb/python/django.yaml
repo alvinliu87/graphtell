@@ -248,3 +248,29 @@ rules:
             # because functions are not in the short-name index, the full FQN is required for `find_by_name` to hit.
             to: { entity: true, resolve: class_const }
           confidence: 0.7
+
+# ===== P7 resolvers: route Django ORM calls through variable-type resolution =====
+# `Order.objects.create(...)` / `self.save()` — the receiver resolves to the model class (via the
+# `models.Model` inheritance -> `Table` `MapsTo` edge), and the verb is classified by `db_verbs` below.
+# Mirrors `fkb/java/spring-boot.yaml`'s `autowired-call`; the kernel is stack-agnostic and gates this
+# on the language's `bare_field_receivers` policy, not a hard-coded language check.
+resolvers:
+  - id: django-orm-call
+    call: "*->*"
+    strategy: variable_type
+
+# ===== P7 db_verbs: Django ORM CRUD verbs -> read / write classification =====
+# Only verbs that really hit the database are listed; query builders (`where` / `order_by`) are excluded.
+db_verbs:
+  write: ["save", "create", "update", "delete", "bulk_create", "save_all", "update_or_create"]
+  read: ["get", "filter", "all", "first", "last", "count", "exists", "latest", "earliest",
+         "values", "values_list"]
+
+# ===== P13 Tx: transaction-boundary markers (library vocabulary, not kernel knowledge) =====
+# A method that writes >= 2 distinct tables with no transaction boundary is a partial-write risk
+# (`multi-write-without-tx`). The boundary is opened by `transaction.atomic()` — both the
+# `@transaction.atomic` decorator and the `with transaction.atomic():` context manager surface the call
+# site with method `atomic`, which this marker matches case-insensitively. Over-broad is safe: an extra
+# in-transaction mark can only *suppress* a finding.
+tx_calls:
+  - "atomic"

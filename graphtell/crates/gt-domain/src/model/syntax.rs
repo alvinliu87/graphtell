@@ -245,6 +245,9 @@ pub struct NamespacePolicy {
     pub variable_prefixes: Vec<String>,
     /// Primitive / builtin type names that are NOT class references (language-specific).
     pub builtin_types: Vec<String>,
+    /// Whether instance-field receivers are bare identifiers (no `$` / `@` marker). Drives the P7
+    /// `VariableType` resolver gate so the kernel needs no `language == …` hard-coding.
+    pub bare_field_receivers: bool,
 }
 
 impl NamespacePolicy {
@@ -267,6 +270,7 @@ impl NamespacePolicy {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            bare_field_receivers: p.bare_field_receivers(),
         }
     }
 
@@ -292,6 +296,7 @@ impl Default for NamespacePolicy {
             member_separator: String::new(),
             variable_prefixes: Vec::new(),
             builtin_types: Vec::new(),
+            bare_field_receivers: false,
         }
     }
 }

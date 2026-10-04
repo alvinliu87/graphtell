@@ -162,3 +162,59 @@ rules:
           from: [MapsTo]
           to: [MapsTo]
           confidence: 0.7
+
+# ===== P13 Tx: transaction-boundary markers (language / library knowledge, not the kernel's) =====
+# A method that writes >= 2 distinct tables with no transaction boundary is a partial-write risk
+# (`multi-write-without-tx`). The boundary is opened by these ORM calls. The kernel knows none of them
+# — they come entirely from this declaration, mirroring `fkb/php/common.yaml`'s `tx_calls:` (that file
+# replaced a hard-coded `language == php` gate; the kernel is now stack-agnostic and only the vocabulary
+# is per-stack).
+#
+# Matching is case-insensitive against the call's method name OR its callee (see `tx.rs`): `dataSource.transaction(…)`
+# matches on method `transaction`; `queryRunner.startTransaction()` matches on `startTransaction`. Over-broad here
+# is safe — an extra in-transaction mark can only *suppress* a finding, never fabricate one.
+tx_calls:
+  - "transaction"
+  - "startTransaction"
+
+# ===== P2 DbVerbs: which repository / entity-manager calls read or write the database =====
+# Single-valued (the pipeline takes the first FKB that declares it), so it stays in the framework file, not the
+# language-common layer — a project that is not TypeORM never gets these verbs. The verb list is a framework-API
+# convention; the kernel knows none of these names. `resolve.rs` turns a matching call into a `WritesDb` / `ReadsDb`
+# edge whose target Table comes from the receiver type's `MapsTo` (the `@Entity` → Table edge built by this file's
+# `entity` rule). So `userRepo.save(user)` → `WritesDb → user` only if the analyzer resolves `Repository<UserEntity>`
+# to `UserEntity`; if it cannot, the verb is recognised but the table target is missing and the edge is not laid.
+db_verbs:
+  write:
+    - "save"
+    - "insert"
+    - "update"
+    - "delete"
+    - "remove"
+    - "softRemove"
+    - "recover"
+    - "increment"
+    - "decrement"
+  read:
+    - "find"
+    - "findOne"
+    - "findOneBy"
+    - "findBy"
+    - "findAndCount"
+    - "findAndCountBy"
+    - "count"
+    - "countBy"
+    - "query"
+    - "createQueryBuilder"
+
+# ===== P7 resolver: route `repo.method()` through variable-type resolution =====
+# Mirrors Java's `autowired-call`. The `call` pattern `*->*` matches **any** call site — the `*` is a wildcard
+# for both receiver and method in the kernel's `alt_matches`; `*.` would NOT match (the kernel treats `.` as a
+# literal, not a separator), so `->` is used, the same as Java. The kernel then only emits a `WritesDb` /
+# `ReadsDb` edge when the method is a db verb (from `db_verbs` above) AND the receiver type maps to a table (the
+# `@Entity` → Table `MapsTo` built by this file). So the resolver is broad on purpose: non-db / untyped calls
+# resolve to nothing and produce no edge.
+resolvers:
+  - id: repo-call
+    call: "*->*"
+    strategy: variable_type

@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gt_domain::model::{
-    AnnotationChannel, EdgeKind, FactValue, MethodRefSpec, Language, MergeStrategy, NewAnnotation,
+    AnnotationChannel, EdgeKind, FactValue, MethodRefSpec, MergeStrategy, NewAnnotation,
     NewEdge, NodeId, NodeKind, Phase, ResolveStrategy, ResolveTier, Resolution, Severity,
     SubProjectId,
 };
@@ -90,8 +90,12 @@ pub fn run(ctx: &mut PipelineContext, kb: &dyn KnowledgeProvider) {
                 else {
                     continue;
                 };
-                let is_java = call.language.as_str() == Language::JAVA;
-                if (!recv.starts_with('$') && !recv.starts_with("(new ") && !is_java)
+                // Bare (non-`$`, non-`(new `) receivers are field/instance accesses only on stacks whose
+                // field notation uses bare identifiers (Java / JS / Python). Stacks that mark fields with a
+                // prefix (PHP's `$`) set this to `false`, so this reads the language policy instead of
+                // hard-coding `language == java / javascript`.
+                let bare_field = ctx.lang_policy_for_sub(call.sub).bare_field_receivers;
+                if (!recv.starts_with('$') && !recv.starts_with("(new ") && !bare_field)
                     || method.is_empty()
                 {
                     continue;
@@ -1272,6 +1276,33 @@ fn receiver_type_fqn(
                 return Some(resolve_impl(ctx, &ty));
             }
             cur = ctx.ws.parents_of(&c).into_iter().next();
+        }
+        // Generic dotted-receiver head reduction: `ClassName.objects` -> `ClassName`, used by Django ORM
+        // (`Model.objects.create(...)`) and any stack where a receiver is a class followed by a static /
+        // manager accessor that is not a typed field. The full dotted receiver is not a known type/field,
+        // so fall back to its head (resolved via imports). Language-agnostic: it only triggers when the
+        // whole receiver failed to resolve, never on a bare field.
+        if let Some(pos) = recv.rfind(member_sep.as_str()) {
+            let head = &recv[..pos];
+            if !head.is_empty() {
+                if ctx.ws.find_by_name(head).is_some() {
+                    return Some(head.to_string());
+                }
+                for scope in [owner_fqn.to_string(), owner_class_of(owner_fqn, &member_sep)] {
+                    if let Some(id) = ctx.ws.find_by_name(&scope) {
+                        if let Some(fqn) = file_import_of(ctx, id, head) {
+                            if ctx.ws.find_by_name(&fqn).is_some() {
+                                return Some(fqn);
+                            }
+                        }
+                        if let Some(fqn) = ctx.ws.resolve_name_at(id, head) {
+                            if ctx.ws.find_by_name(&fqn).is_some() {
+                                return Some(fqn);
+                            }
+                        }
+                    }
+                }
+            }
         }
         None
     }
