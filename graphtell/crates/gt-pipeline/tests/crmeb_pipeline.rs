@@ -164,8 +164,11 @@ fn ingest_resolves_excludes_from_framework_knowledge() {
 
 #[test]
 fn cf_ast_builds_syntax_nodes_and_call_sites() {
+    // Runs for real when the CRMEB sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
+    // CfAst's always-on structural coverage now lives in `cf_ast_structure.rs`, so a missing
+    // sample here is a plain skip, not a fake-green gap.
     let Some(b) = built() else {
-        eprintln!("{}", common::skip_reason());
+        eprintln!("skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
         return;
     };
     let stats = b.store.stats(b.project.id).expect("统计可读");
@@ -190,8 +193,11 @@ fn cf_ast_builds_syntax_nodes_and_call_sites() {
 
 #[test]
 fn cf_ast_resolves_php_namespace_and_fqn() {
+    // Runs for real when the CRMEB sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
+    // CfAst's always-on structural coverage now lives in `cf_ast_structure.rs`, so a missing
+    // sample here is a plain skip, not a fake-green gap.
     let Some(b) = built() else {
-        eprintln!("{}", common::skip_reason());
+        eprintln!("skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
         return;
     };
     let nodes = b
@@ -216,8 +222,11 @@ fn cf_ast_resolves_php_namespace_and_fqn() {
 
 #[test]
 fn cf_ast_follows_model_inheritance_chain() {
+    // Runs for real when the CRMEB sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
+    // CfAst's always-on structural coverage now lives in `cf_ast_structure.rs`, so a missing
+    // sample here is a plain skip, not a fake-green gap.
     let Some(b) = built() else {
-        eprintln!("{}", common::skip_reason());
+        eprintln!("skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
         return;
     };
     // StoreOrder extends BaseModel extends think\Model — the leaf is in vendor (excluded),
