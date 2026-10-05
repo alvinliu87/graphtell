@@ -561,4 +561,104 @@ mod tests {
         got.sort_unstable();
         assert_eq!(got, vec!["backend", "external", "frontend"]);
     }
+
+    // ===== `ViewRegistry` lookup: the side-aware "click to switch" resolution (a `Cache` node must land on the
+    // frontend `local_storage` perspective, not the backend `cache` one) and the plain by-id / by-kind maps. =====
+
+    fn p_spec(id: &str, kind: &str, side: Option<&str>) -> PerspectiveSpec {
+        PerspectiveSpec {
+            id: id.into(),
+            label: id.into(),
+            node_kind: Some(kind.into()),
+            side: side.map(|s| s.to_string()),
+            ..PerspectiveSpec::default()
+        }
+    }
+
+    #[test]
+    fn view_registry_by_id_and_view_for_kind() {
+        let mut reg = ViewRegistry::default();
+        reg.perspectives.push(p_spec("cache", "Cache", Some("backend")));
+        reg.node_views.insert("Cache".into(), "cache".into());
+
+        assert_eq!(reg.by_id("cache").map(|p| p.id.as_str()), Some("cache"));
+        assert!(reg.by_id("missing").is_none());
+        assert_eq!(reg.view_for_kind("Cache").map(|p| p.id.as_str()), Some("cache"));
+        assert!(reg.view_for_kind("Unknown").is_none(), "node_views 未覆盖的 kind 不切换");
+    }
+
+    /// `view_for_kind_and_side` prefers a perspective whose `side` matches the node, then falls back to the
+    /// single `node_views` mapping. This is what keeps a shared `Cache` kind split correctly into
+    /// backend `cache` vs frontend `local_storage`.
+    #[test]
+    fn view_for_kind_and_side_prefers_matching_side_then_falls_back() {
+        let mut reg = ViewRegistry::default();
+        reg.perspectives.push(p_spec("cache", "Cache", Some("backend")));
+        reg.perspectives.push(p_spec("local_storage", "Cache", Some("frontend")));
+        reg.node_views.insert("Cache".into(), "cache".into());
+
+        assert_eq!(
+            reg.view_for_kind_and_side("Cache", Some("frontend")).map(|p| p.id.as_str()),
+            Some("local_storage"),
+            "side 优先：frontend 节点应切到 local_storage，而非 node_views 映射的 cache"
+        );
+        assert_eq!(reg.view_for_kind_and_side("Cache", Some("backend")).map(|p| p.id.as_str()), Some("cache"));
+        assert_eq!(reg.view_for_kind_and_side("Cache", None).map(|p| p.id.as_str()), Some("cache"), "无 side 回退到 node_views");
+        // node_views 没覆盖、也没给出 side 的 kind：即便存在同名 node_kind 的 perspective，无 side 不命中。
+        assert!(reg.view_for_kind_and_side("Table", None).is_none());
+    }
+
+    // ===== The enums round-trip their snake_case spelling; `GroupBy::Property` is the newtype form. =====
+
+    #[test]
+    fn view_mode_and_layout_serde_roundtrip() {
+        assert_eq!(serde_json::from_value::<ViewMode>(json!("object")).unwrap(), ViewMode::Object);
+        assert_eq!(serde_json::from_value::<ViewMode>(json!("aggregate")).unwrap(), ViewMode::Aggregate);
+        for (j, l) in [
+            ("radial", LayoutMode::Radial),
+            ("layered", LayoutMode::Layered),
+            ("spine", LayoutMode::Spine),
+            ("compound", LayoutMode::Compound),
+            ("matrix", LayoutMode::Matrix),
+            ("er", LayoutMode::Er),
+        ] {
+            assert_eq!(serde_json::from_value::<LayoutMode>(json!(j)).unwrap(), l);
+            // round-trip preserves the tag.
+            let out = serde_json::to_value(l).unwrap();
+            assert_eq!(serde_json::from_value::<LayoutMode>(out).unwrap(), l);
+        }
+    }
+
+    #[test]
+    fn group_by_serde_roundtrip_includes_property() {
+        assert_eq!(serde_json::from_value::<GroupBy>(json!("node_kind")).unwrap(), GroupBy::NodeKind);
+        assert_eq!(serde_json::from_value::<GroupBy>(json!("sub_project")).unwrap(), GroupBy::SubProject);
+        let p: GroupBy = serde_json::from_value(json!({ "property": "domain" })).unwrap();
+        assert_eq!(p, GroupBy::Property("domain".into()));
+        assert_eq!(serde_json::to_value(GroupBy::Property("domain".into())).unwrap(), json!({ "property": "domain" }));
+    }
+
+    // ===== Struct defaults: `PerspectiveSpec` defaults to Object mode / Radial layout / depth 2; an empty
+    // `ViewRegistry` resolves nothing. =====
+
+    #[test]
+    fn perspective_spec_defaults() {
+        let d = PerspectiveSpec::default();
+        assert_eq!(d.mode, ViewMode::Object);
+        assert_eq!(d.layout, LayoutMode::Radial);
+        assert_eq!(d.depth, 2);
+        assert!(d.side.is_none());
+        assert!(d.side_any.is_none());
+        assert!(d.node_kind.is_none());
+        assert!(d.collapsed_kinds.is_empty());
+    }
+
+    #[test]
+    fn view_registry_default_is_empty() {
+        let d = ViewRegistry::default();
+        assert!(d.perspectives.is_empty());
+        assert!(d.node_views.is_empty());
+        assert!(d.by_id("x").is_none());
+        assert!(d.view_for_kind("Any").is_none());
+    }
 }

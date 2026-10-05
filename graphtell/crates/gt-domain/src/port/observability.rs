@@ -44,3 +44,22 @@ impl Clock for SystemClock {
             .unwrap_or(0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards the one piece of runtime behaviour in this port: `now_millis` must return epoch **millis**, not
+    /// seconds and not `0`. The `unwrap_or(0)` fallback means a broken clock could silently regress to `0`, and a
+    /// copy-paste of `as_secs()` would be off by 1000× — both are caught here.
+    #[test]
+    fn system_clock_returns_recent_epoch_millis() {
+        let now = SystemClock.now_millis();
+        assert!(now > 0, "时钟不应静默返回 0");
+        // 2023-01-01 in millis; below this it is either seconds or a regression.
+        assert!(
+            now > 1_672_531_200_000,
+            "now_millis 应返回毫秒级纪元时间，而非秒或 0: {now}"
+        );
+    }
+}

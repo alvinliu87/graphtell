@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use gt_adapter_fs::WalkDirScanner;
-use gt_adapter_fs::system::normalize;
+use gt_adapter_fs::system::{normalize, StdFileSystem};
 use gt_domain::model::Language;
 use gt_domain::port::{FileScanner, ScanRequest, ScannedFile};
 
@@ -363,4 +363,92 @@ fn scan_errors_on_missing_root() {
         language_extensions: Vec::new(),
     });
     assert!(res.is_err(), "根目录不存在时 scan 应返回错误");
+}
+
+/// The parser-registry map (`ScanRequest.language_extensions`) is the **preferred** language source: it shares a
+/// source with the sub-project marker table, so "a Go sub-project is detected but no `.go` file is scanned" cannot
+/// happen. Every other test passes an empty map, so this pins the map path — using an extension the fallback table
+/// does NOT know, which can only be resolved through the map.
+#[test]
+fn scan_language_extensions_map_is_the_preferred_channel() {
+    let root = scratch("langmap");
+    write(&root, "svc/main.go", "package main");
+    write(&root, "gen/code.unknownext", "x"); // unknown to `language_of_extension`
+
+    // Control: empty map -> the unknown extension is skipped (fallback yields `None`).
+    let without = WalkDirScanner::new(Vec::new())
+        .scan(&ScanRequest {
+            root: root.clone(),
+            extra_excludes: Vec::new(),
+            languages: Vec::new(),
+            language_extensions: Vec::new(),
+        })
+        .expect("scan");
+    assert!(
+        !rels(&without).contains(&"gen/code.unknownext".to_string()),
+        "前提：map 为空时未知扩展名应被跳过"
+    );
+
+    // With the map declaring it, the file is scanned and tagged with the map's language; the fallback still
+    // resolves known extensions (`.go`).
+    let map = vec![("customlang".to_string(), vec!["unknownext".to_string()])];
+    let with = WalkDirScanner::new(Vec::new())
+        .scan(&ScanRequest {
+            root: root.clone(),
+            extra_excludes: Vec::new(),
+            languages: Vec::new(),
+            language_extensions: map,
+        })
+        .expect("scan");
+    let lang_of = |r: &str| with.iter().find(|f| f.relative == r).map(|f| f.language.as_str().to_string());
+    assert_eq!(lang_of("gen/code.unknownext").as_deref(), Some("customlang"));
+    assert_eq!(lang_of("svc/main.go").as_deref(), Some("go"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Exclude globs are compiled case-insensitively: `Vendor/` / `DIST/` are the same mistake in every ecosystem, and a
+/// scan exclusion that fails to fire costs a whole directory of noise. The default globs are lowercase, so this
+/// exercises the case-insensitive matching against a capitalised directory.
+#[test]
+fn scan_excludes_are_case_insensitive() {
+    let root = scratch("ci");
+    write(&root, "Vendor/lib.php", "<?php"); // matches `**/vendor/**`
+    write(&root, "DIST/bundle.js", "x"); // matches `**/dist/**`
+    write(&root, "app/code.php", "<?php");
+    let rels = rels(&scan_all(&root));
+    assert!(rels.contains(&"app/code.php".to_string()), "业务源码必须保留");
+    assert!(
+        !rels.iter().any(|r| r.to_lowercase().starts_with("vendor/")),
+        "Vendor/ 应被排除（大小写不敏感）"
+    );
+    assert!(
+        !rels.iter().any(|r| r.to_lowercase().starts_with("dist/")),
+        "DIST/ 应被排除（大小写不敏感）"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The thin `std::fs` wrappers behind `FileSystem`: existence / dir-ness / read / length, plus the read error
+/// mapping to `DomainError` (no panic on a missing path).
+#[test]
+fn std_file_system_basic_ops() {
+    use gt_domain::port::FileSystem;
+
+    let root = scratch("fs");
+    let file = root.join("f.txt");
+    std::fs::write(&file, "hello").unwrap();
+    let dir = root.join("d");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let fs = StdFileSystem::new();
+    assert!(fs.exists(&file));
+    assert!(fs.exists(&dir));
+    assert!(!fs.exists(&root.join("missing")));
+    assert!(fs.is_dir(&dir));
+    assert!(!fs.is_dir(&file));
+    assert_eq!(fs.read_to_string(&file).unwrap(), "hello");
+    assert_eq!(fs.len(&file).unwrap(), 5);
+    assert!(fs.read_to_string(&root.join("nope")).is_err(), "读缺失文件应返回错误而非 panic");
+    assert!(fs.len(&root.join("nope")).is_err());
+    let _ = std::fs::remove_dir_all(&root);
 }

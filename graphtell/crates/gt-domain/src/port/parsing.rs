@@ -99,3 +99,124 @@ pub trait ParserRegistry: Send + Sync {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SyntaxFacts;
+
+    // Minimal `LanguageParser` stubs so the trait's default `join_*` methods can be exercised. Only the
+    // required (non-defaulted) methods are implemented; the constant defaults are left to the trait.
+    struct PhpLikeParser;
+    impl LanguageParser for PhpLikeParser {
+        fn language(&self) -> Language {
+            Language::new("php")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["php"]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &['\\']
+        }
+        fn member_separator(&self) -> &'static str {
+            "::"
+        }
+    }
+
+    struct JsLikeParser;
+    impl LanguageParser for JsLikeParser {
+        fn language(&self) -> Language {
+            Language::new("javascript")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["js", "ts"]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &['.']
+        }
+        fn member_separator(&self) -> &'static str {
+            "."
+        }
+    }
+
+    /// A parser that declares **no** namespace separator: `join_namespace` must then leave the name as written
+    /// rather than leaking another stack's separator.
+    struct BareParser;
+    impl LanguageParser for BareParser {
+        fn language(&self) -> Language {
+            Language::new("unknown")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &[]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &[]
+        }
+        fn member_separator(&self) -> &'static str {
+            "."
+        }
+    }
+
+    #[test]
+    fn join_namespace_handles_separator_and_empty_ns() {
+        let p = PhpLikeParser;
+        assert_eq!(p.join_namespace("app\\services\\order", "StoreOrderDao"), "app\\services\\order\\StoreOrderDao");
+        // A trailing separator is stripped before joining, so the result is identical.
+        assert_eq!(p.join_namespace("app\\services\\order\\", "StoreOrderDao"), "app\\services\\order\\StoreOrderDao");
+        // Empty namespace yields just the name.
+        assert_eq!(p.join_namespace("", "Foo"), "Foo");
+        assert_eq!(p.join_namespace("app", "Foo"), "app\\Foo");
+    }
+
+    /// No separator declared -> the name is returned unchanged (never joined with a foreign separator).
+    #[test]
+    fn join_namespace_without_separator_returns_name() {
+        let p = BareParser;
+        assert_eq!(p.join_namespace("ns", "Foo"), "Foo");
+    }
+
+    #[test]
+    fn join_member_uses_the_languages_member_separator() {
+        assert_eq!(PhpLikeParser.join_member("app\\Foo", "bar"), "app\\Foo::bar");
+        assert_eq!(JsLikeParser.join_member("com.Foo", "bar"), "com.Foo.bar");
+    }
+
+    // A registry over the two stubs above, to exercise the default `language_for_extension`.
+    struct StubRegistry {
+        php: PhpLikeParser,
+        js: JsLikeParser,
+    }
+    impl ParserRegistry for StubRegistry {
+        fn parser_for(&self, language: &Language) -> Option<&dyn LanguageParser> {
+            if *language == Language::new("php") {
+                Some(&self.php)
+            } else if *language == Language::new("javascript") {
+                Some(&self.js)
+            } else {
+                None
+            }
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![Language::new("php"), Language::new("javascript")]
+        }
+    }
+
+    /// Extension lookup is case-insensitive and stops at the first language whose parser lists the extension.
+    #[test]
+    fn language_for_extension_is_case_insensitive_and_first_match() {
+        let reg = StubRegistry { php: PhpLikeParser, js: JsLikeParser };
+        assert_eq!(reg.language_for_extension("php"), Some(Language::new("php")));
+        assert_eq!(reg.language_for_extension("PHP"), Some(Language::new("php")), "大小写不敏感");
+        assert_eq!(reg.language_for_extension("ts"), Some(Language::new("javascript")), "ts 归属 javascript");
+        assert!(reg.language_for_extension("unknownext").is_none(), "未知扩展名返回 None");
+    }
+}
