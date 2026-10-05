@@ -129,7 +129,6 @@ fn transitive_callers(
     callers: &HashMap<i64, Vec<(i64, f32)>>,
     ctx: &PipelineContext,
 ) -> Vec<(i64, f32)> {
-    let mut out: Vec<(i64, f32)> = Vec::new();
     let mut best: HashMap<i64, f32> = HashMap::new();
     let mut stack = vec![(src, 1.0f32)];
     best.insert(src, 1.0);
@@ -139,23 +138,38 @@ fn transitive_callers(
         };
         for (c, econf) in next {
             let path_conf = cur_conf * *econf;
-            // Skip if already visited and the current path isn't better; otherwise update the best and keep going up.
+            // Skip if already visited and the current path isn't better; otherwise record the best product and keep going up.
             if let Some(prev) = best.get(c) {
                 if *prev >= path_conf {
                     continue;
                 }
             }
             best.insert(*c, path_conf);
-            // Only include and continue up when the caller is a method / function; other nodes (class / file) don't enter the propagation chain.
+            // Only continue traversing up when the caller is a method / function; other nodes (class / file) don't enter the propagation chain.
             let is_site = ctx
                 .ws
                 .node(NodeId(*c))
                 .map(|n| is_action_site(n.kind.as_str()))
                 .unwrap_or(false);
             if is_site {
-                out.push((*c, path_conf));
                 stack.push((*c, path_conf));
             }
+        }
+    }
+    // Materialize from `best` so each caller appears exactly once with its highest accumulated confidence:
+    // a caller reachable via multiple call paths keeps the strongest path, not the first one pushed during traversal.
+    let mut out = Vec::new();
+    for (c, conf) in best {
+        if c == src {
+            continue;
+        }
+        let is_site = ctx
+            .ws
+            .node(NodeId(c))
+            .map(|n| is_action_site(n.kind.as_str()))
+            .unwrap_or(false);
+        if is_site {
+            out.push((c, conf));
         }
     }
     out
@@ -175,7 +189,7 @@ fn is_action_site(kind: &str) -> bool {
 ///
 /// Note: numeric decay does not use a fixed coefficient — a deterministic call chain (edge confidence 1.0) stays un-decayed on product,
 /// only inferred / dynamic calls (edge confidence <1.0) decay naturally. Here we only set the `indirect` flag.
-const DECAYED_KINDS: &[&str] = &[EdgeKind::READS_CONFIG, "ReadsCache"];
+const DECAYED_KINDS: &[&str] = &[EdgeKind::READS_CONFIG, EdgeKind::READS_CACHE];
 
 /// Compute a propagated edge's confidence and "is-indirect" flag.
 ///
@@ -575,6 +589,171 @@ mod tests {
             flag(queue, "PublishesTo"),
             None,
             "真实发生的动作不应标记 indirect"
+        );
+    }
+
+    // ------------------------------------------------------- pure leaves (lock the contract directly)
+
+    /// `is_action_site` is the gate that decides who may join the chain; pin it so a future change can't
+    /// silently start hanging semantic edges on classes / tables.
+    #[test]
+    fn is_action_site_accepts_only_methods_and_functions() {
+        assert!(is_action_site("Method"));
+        assert!(is_action_site("Function"));
+        assert!(!is_action_site("Class"));
+        assert!(!is_action_site("Table"));
+        assert!(!is_action_site("Queue"));
+        assert!(!is_action_site("File"));
+        assert!(!is_action_site(""));
+    }
+
+    /// `propagated` is the single place that decides (a) confidence = seed × path product and (b) which kinds
+    /// become `indirect`. A regression here would change every propagated edge's weight or indirect flag.
+    #[test]
+    fn propagated_computes_confidence_and_indirect_flag() {
+        // confidence = base × path_conf
+        assert_eq!(propagated("PublishesTo", 0.9, 0.5), (0.45, false));
+        assert_eq!(propagated("ReadsDb", 0.8, 1.0), (0.8, false));
+        // environment reads are flagged indirect
+        assert_eq!(propagated("ReadsCache", 0.9, 1.0), (0.9, true));
+        assert_eq!(propagated("ReadsConfig", 0.9, 0.5), (0.45, true));
+        // actions that really happen are never indirect
+        assert_eq!(propagated("WritesDb", 1.0, 1.0).1, false);
+        assert_eq!(propagated("PublishesTo", 1.0, 1.0).1, false);
+    }
+
+    // ------------------------------------------------------- the multi-path (highest-confidence) rule
+
+    /// A caller reached from the seed via two call paths must keep the strongest (highest confidence product)
+    /// path, not the first one discovered during traversal — this is the contract documented on `transitive_callers`.
+    #[test]
+    fn transitive_callers_keeps_highest_confidence_path() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid1 = add_method(&mut ctx, "app\\Mid1::run");
+        let mid2 = add_method(&mut ctx, "app\\Mid2::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+
+        // top reaches leaf via two paths: leaf→mid1→top (1.0·1.0) and leaf→mid2→top (0.5·0.5).
+        let callers: std::collections::HashMap<i64, Vec<(i64, f32)>> =
+            std::collections::HashMap::from([
+                (leaf.get(), vec![(mid1.get(), 1.0), (mid2.get(), 0.5)]),
+                (mid1.get(), vec![(top.get(), 1.0)]),
+                (mid2.get(), vec![(top.get(), 0.5)]),
+            ]);
+
+        let reach = transitive_callers(leaf.get(), &callers, &ctx);
+        let top_conf = reach
+            .iter()
+            .find(|(c, _)| *c == top.get())
+            .map(|(_, conf)| *conf);
+        assert_eq!(top_conf, Some(1.0), "top 应保留最强路径 1.0，而非较弱的 0.25");
+        let count = reach.iter().filter(|(c, _)| *c == top.get()).count();
+        assert_eq!(count, 1, "同一 caller 不应重复出现");
+    }
+
+    // ------------------------------------------------------- early-return / no-op guards
+
+    /// With no seeds, `run` must do nothing (no panic, no edges) — otherwise a stale workspace could get
+    /// bogus propagation edges on a re-run.
+    #[test]
+    fn run_is_noop_when_there_are_no_seeds() {
+        let mut ctx = test_ctx();
+        let a = add_method(&mut ctx, "app\\A::run");
+        let b = add_method(&mut ctx, "app\\B::run");
+        calls(&mut ctx, a, b);
+        super::run(&mut ctx);
+        let propagated = ctx
+            .ws
+            .edges()
+            .iter()
+            .any(|e| e.properties.get("via") == Some(&serde_json::json!("propagate")));
+        assert!(!propagated, "无 seed 时不应新增任何传播边（已有的 Calls 边应保留）");
+    }
+
+    /// A seed exists, but nothing calls its source: propagation only targets *callers*, so the source itself
+    /// must never receive an edge, and nothing else appears.
+    #[test]
+    fn run_does_not_emit_edge_for_a_seed_with_no_callers() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.85);
+        super::run(&mut ctx);
+        assert!(
+            !has_edge(&ctx, leaf, queue, EdgeKind::PUBLISHES_TO),
+            "seed 的 source 自身不应被挂边（只向 caller 传播）"
+        );
+        assert_eq!(ctx.ws.edges().len(), 0, "没有 caller，不应新增任何边");
+    }
+
+    // ------------------------------------------------------- the `MapsTo` suppression also covers WritesDb
+
+    /// The suppression rule (line: `READS_DB || WRITES_DB`) must drop a propagated `MapsTo` when the same
+    /// (from, to) really *writes* the table too — not just when it reads. Without this, a writer would also
+    /// carry a misleading "merely maps to it" edge.
+    #[test]
+    fn writes_db_also_suppresses_maps_to_for_the_same_pair() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let table = add_node(&mut ctx, "Table", "order");
+
+        calls(&mut ctx, mid, leaf);
+        seed(&mut ctx, leaf, table, "MapsTo", 1.0);
+        seed(&mut ctx, leaf, table, "WritesDb", 1.0);
+
+        super::run(&mut ctx);
+
+        assert!(has_edge(&ctx, mid, table, EdgeKind::WRITES_DB), "真实写表的边应保留");
+        assert!(
+            !has_edge(&ctx, mid, table, EdgeKind::MAPS_TO),
+            "同一 (from,to) 已真实写表，传播来的 MapsTo 应被抑制"
+        );
+    }
+
+    // ------------------------------------------------------- root-cause bookkeeping
+
+    /// When several emitters reach the same caller, the single collapsed edge records every root cause, and
+    /// `seed_source` is the minimum root-cause id (the `seed_sources` array is ascending) so downstream can
+    /// tell "why this edge" deterministically.
+    #[test]
+    fn seed_source_records_minimum_root_cause_id() {
+        let mut ctx = test_ctx();
+        let leaf_a = add_method(&mut ctx, "app\\A::run");
+        let leaf_b = add_method(&mut ctx, "app\\B::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls(&mut ctx, top, leaf_a);
+        calls(&mut ctx, top, leaf_b);
+        // `leaf_a` is added first, so it gets the smaller node id and is the minimum root cause.
+        seed(&mut ctx, leaf_a, queue, "PublishesTo", 0.85);
+        seed(&mut ctx, leaf_b, queue, "PublishesTo", 0.85);
+
+        super::run(&mut ctx);
+
+        let edge = ctx
+            .ws
+            .edges()
+            .iter()
+            .find(|e| {
+                e.from_id == top
+                    && e.to_id == queue
+                    && e.kind.as_str() == EdgeKind::PUBLISHES_TO
+            })
+            .expect("应有一条传播边");
+        let sources = edge
+            .properties
+            .get("seed_sources")
+            .and_then(|v| v.as_array())
+            .expect("seed_sources 应是数组");
+        assert_eq!(sources.len(), 2, "两个根因都应记录");
+        assert!(sources[0].as_i64() < sources[1].as_i64(), "seed_sources 应升序");
+        assert_eq!(
+            edge.properties.get("seed_source").and_then(|v| v.as_i64()),
+            sources[0].as_i64(),
+            "seed_source 应为最小根因 id"
         );
     }
 }

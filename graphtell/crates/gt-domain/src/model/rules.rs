@@ -848,4 +848,237 @@ mod tests {
         let raw = r.render("users", "Table", None, None, None, None);
         assert!(raw.contains("{param:min_fan_in}"), "actual copy: {raw}");
     }
+
+    // ===== Gaps the original 5 tests left open: numeric-param resolution, `requirements` derivation
+    // (the defense against "negative predicate trivially true"), `referenced_params` / `applies_to_env`,
+    // `CheckRule` defaults, predicate round-trips (incl. the CORS `property_contains`), and
+    // `Violation` <-> `Diagnostic` round-trip. =====
+
+    /// `NumOrParam`: a `$key` is a reference, a bare number is a literal; a reference resolves against the
+    /// parameter table (number / numeric-string), and degrades to 0 when missing. The scope default cap is 20_000.
+    #[test]
+    fn num_or_param_resolves_against_the_table() {
+        let num: NumOrParam = serde_json::from_value(json!(50)).unwrap();
+        assert!(matches!(num, NumOrParam::Num(50)));
+        let param: NumOrParam = serde_json::from_value(json!("$threshold")).unwrap();
+        assert!(matches!(param, NumOrParam::Param(ref k) if k == "threshold"));
+
+        let mut table = ParamValues::new();
+        table.insert("threshold".into(), json!(80));
+        assert_eq!(resolve_num(&param, &table), 80);
+        // A numeric string in the table still counts.
+        table.insert("threshold".into(), json!("120"));
+        assert_eq!(resolve_num(&param, &table), 120);
+        // Missing reference degrades to 0 (the silent-zero trap surface elsewhere, not here).
+        assert_eq!(resolve_num(&param, &ParamValues::new()), 0);
+
+        // The 20_000 cap is the *serde* default (used when `limit` is omitted from YAML); `Default::default()` of
+        // the struct gives 0, so the documented cap only kicks in through deserialization.
+        let scope: RuleScope = serde_json::from_value(json!({})).unwrap();
+        assert!(matches!(scope.limit, NumOrParam::Num(20_000)), "缺省 limit 经 serde 默认 20000");
+        assert!(matches!(RuleScope::default().limit, NumOrParam::Num(0)), "derive Default 给 0（仅 serde 路径吃 default_scope_limit）");
+    }
+
+    /// `CheckRule` defaults: `severity = warning`, `category = general`, `enabled = true`, and an omitted
+    /// `applies_to` gives an empty scope with the default limit.
+    #[test]
+    fn check_rule_defaults() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r1", "title": "Rule", "message": "broken {name}"
+        }))
+        .expect("minimal CheckRule must deserialize (message is required)");
+        assert_eq!(r.severity, Severity::Warning);
+        assert_eq!(r.category, "general");
+        assert!(r.enabled);
+        assert!(r.applies_to.kinds.is_empty());
+        assert!(matches!(r.applies_to.limit, NumOrParam::Num(0)), "省略 applies_to ⇒ RuleScope::default()，limit=0；20000 需显式空 applies_to: {{}}");
+        assert_eq!(r.code(), "rule:r1");
+    }
+
+    /// `requirements()` derives the graph facts a predicate depends on — recursively through `AllOf` / `AnyOf` /
+    /// `Not` — so a rule that mentions an edge / annotation / capability the graph lacks can be skipped instead of
+    /// reporting trivially-true false positives. Case-insensitive and de-duplicated.
+    #[test]
+    fn requirements_derive_edges_annotations_capabilities_recursively() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r",
+            "title": "T",
+            "message": "m",
+            "when": [
+                { "all_of": [
+                    { "no_incoming": "Triggers" },
+                    { "has_annotation": "pii" }
+                ]},
+                { "any_of": [
+                    { "no_capability": ["Authentication", "RateLimiting"] }
+                ]},
+                { "not": { "has_outgoing": "callshttp" } }
+            ]
+        }))
+        .unwrap();
+        let req = r.requirements();
+        assert!(req.edges.iter().any(|e| e.eq_ignore_ascii_case("Triggers")));
+        assert!(req.edges.iter().any(|e| e.eq_ignore_ascii_case("CallsHttp")), "Not 不减 polarity，仍收集");
+        assert!(req.annotations.iter().any(|a| a.eq_ignore_ascii_case("pii")));
+        assert!(req.capabilities.iter().any(|c| c.eq_ignore_ascii_case("Authentication")));
+        assert!(req.capabilities.iter().any(|c| c.eq_ignore_ascii_case("RateLimiting")));
+        assert!(!req.is_empty());
+    }
+
+    /// `referenced_params` walks `applies_to` (name_contains, limit) then `when`, de-duplicating while preserving
+    /// first-seen order; `undeclared_params` is the subset not declared in `params`.
+    #[test]
+    fn referenced_and_undeclared_params_walk_scope_and_when() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r",
+            "title": "T",
+            "message": "m",
+            "params": [ { "key": "declared", "label": "L", "kind": "number", "default": 1 },
+                        { "key": "a", "label": "A", "kind": "string", "default": "" } ],
+            "applies_to": { "name_contains": "$a", "limit": "$b" },
+            "when": [
+                { "all_of": [ { "fan_in_gte": "$a" }, { "name_contains": "$c" } ] }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(r.referenced_params(), vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(r.undeclared_params(), vec!["b".to_string(), "c".to_string()], "只有 declared 被声明");
+    }
+
+    /// `applies_to_env` is "a match exists" (multi-language projects), case-insensitive, on both the language and
+    /// framework allowlists; empty allowlist means language-agnostic.
+    #[test]
+    fn applies_to_env_is_any_match_and_case_insensitive() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r", "title": "T", "message": "m",
+            "applies_to": { "languages": ["php"], "frameworks": ["thinkphp"] }
+        }))
+        .unwrap();
+
+        assert!(r.applies_to_env(&["php".into(), "javascript".into()], &["thinkphp".into()]),
+            "PHP 子项目存在即命中");
+        assert!(r.applies_to_env(&["PHP".into()], &["ThinkPHP".into()]), "大小写不敏感");
+        assert!(!r.applies_to_env(&["java".into()], &["thinkphp".into()]), "语言不匹配则跳过");
+        assert!(!r.applies_to_env(&["php".into()], &["laravel".into()]), "框架不匹配则跳过");
+
+        // Empty allowlist = language-agnostic, always applicable.
+        let any: CheckRule = serde_json::from_value(json!({ "id": "r", "title": "T", "message": "m" })).unwrap();
+        assert!(any.applies_to_env(&[], &[]));
+    }
+
+    /// `CheckPredicate` round-trips its snake_case tags, including the `property_contains` variant added for the
+    /// CORS detection; `$param` references become `StrOrParam::Param` / `NumOrParam::Param`.
+    #[test]
+    fn check_predicate_roundtrips_tags_and_param_refs() {
+        let k: CheckPredicate = serde_json::from_value(json!({ "kind_in": ["Table", "View"] })).unwrap();
+        assert!(matches!(k, CheckPredicate::KindIn(ref v) if v.len() == 2));
+
+        // CORS: `property_contains { name, substring }`.
+        let pc: CheckPredicate = serde_json::from_value(json!({
+            "property_contains": { "name": "rhs", "substring": "origin" }
+        }))
+        .unwrap();
+        assert!(matches!(pc, CheckPredicate::PropertyContains { name, substring }
+            if name == "rhs" && substring == "origin"));
+
+        let nc: CheckPredicate = serde_json::from_value(json!({ "name_contains": "$needle" })).unwrap();
+        assert!(matches!(nc, CheckPredicate::NameContains(StrOrParam::Param(ref k)) if k == "needle"));
+
+        let fi: CheckPredicate = serde_json::from_value(json!({ "fan_in_gte": "$t" })).unwrap();
+        assert!(matches!(fi, CheckPredicate::FanInGte(NumOrParam::Param(ref k)) if k == "t"));
+
+        let all: CheckPredicate = serde_json::from_value(json!({
+            "all_of": [ { "no_incoming": "HandledBy" }, { "has_annotation": "pii" } ]
+        }))
+        .unwrap();
+        assert!(matches!(all, CheckPredicate::AllOf(_)));
+
+        let not: CheckPredicate = serde_json::from_value(json!({ "not": { "has_outgoing": "X" } })).unwrap();
+        assert!(matches!(not, CheckPredicate::Not(_)));
+    }
+
+    /// `Violation` round-trips through `to_diagnostic` / `from_diagnostic`, and the basic copy placeholders
+    /// (`{name}` / `{kind}` / `{fqn}` / `{identity}` / `{file}` / `{line}`) render.
+    #[test]
+    fn violation_diagnostic_roundtrip_and_location() {
+        let v = Violation {
+            project_id: ProjectId(1),
+            rule_id: "r1".into(),
+            title: "T".into(),
+            category: "c".into(),
+            severity: Severity::Error,
+            node_id: NodeId(7),
+            node_name: "users".into(),
+            node_kind: "Table".into(),
+            message: "table {name} ({kind}) at {file}:{line}".into(),
+            remediation: Some("add index".into()),
+            file: Some("a.php".into()),
+            line: Some(10),
+            sub_project_id: Some(SubProjectId(2)),
+        };
+        assert_eq!(v.code(), "rule:r1");
+        assert_eq!(v.location().as_deref(), Some("a.php:10"));
+
+        let d = v.to_diagnostic();
+        assert_eq!(d.code, "rule:r1");
+        assert_eq!(d.payload.get("rule_id").and_then(|x| x.as_str()), Some("r1"));
+
+        let back = Violation::from_diagnostic(&d).expect("diagnostic must rebuild the violation");
+        assert_eq!(back.node_id, NodeId(7));
+        assert_eq!(back.rule_id, "r1");
+        assert_eq!(back.file.as_deref(), Some("a.php"));
+        assert_eq!(back.line, Some(10));
+        assert_eq!(back.sub_project_id, Some(SubProjectId(2)));
+    }
+
+    /// The violation copy placeholders (`{name}` / `{kind}` / `{fqn}` / `{identity}` / `{file}` / `{line}`)
+    /// are substituted by `CheckRule::render` (location info comes from the matched node).
+    #[test]
+    fn check_rule_render_fills_node_placeholders() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r",
+            "title": "T",
+            "message": "node {name} kind {kind} fqn {fqn} id {identity} at {file}:{line}"
+        }))
+        .unwrap();
+        let out = r.render("orders", "Table", Some("db.orders"), Some("POST /api/orders"), Some("a.php"), Some(12));
+        assert!(out.contains("node orders"));
+        assert!(out.contains("kind Table"));
+        assert!(out.contains("fqn db.orders"));
+        assert!(out.contains("id POST /api/orders"));
+        assert!(out.contains("at a.php:12"));
+        // Missing optional fields degenerate to empty strings.
+        let bare = r.render("orders", "Table", None, None, None, None);
+        assert!(bare.contains("fqn  "));
+        assert!(bare.contains("at "));
+    }
+
+    /// `CheckReport::sort_violations` orders by severity desc, then rule id, then node name — for reproducible output.
+    #[test]
+    fn check_report_sorts_by_severity_then_rule() {
+        let mut rep = CheckReport {
+            project_id: ProjectId(1),
+            ..Default::default()
+        };
+        rep.violations.push(Violation {
+            project_id: ProjectId(1), rule_id: "b".into(), title: "B".into(), category: "c".into(),
+            severity: Severity::Warning, node_id: NodeId(2), node_name: "n2".into(), node_kind: "K".into(),
+            message: "m".into(), remediation: None, file: None, line: None, sub_project_id: None,
+        });
+        rep.violations.push(Violation {
+            project_id: ProjectId(1), rule_id: "a".into(), title: "A".into(), category: "c".into(),
+            severity: Severity::Error, node_id: NodeId(1), node_name: "n1".into(), node_kind: "K".into(),
+            message: "m".into(), remediation: None, file: None, line: None, sub_project_id: None,
+        });
+        rep.violations.push(Violation {
+            project_id: ProjectId(1), rule_id: "c".into(), title: "C".into(), category: "c".into(),
+            severity: Severity::Warning, node_id: NodeId(3), node_name: "n3".into(), node_kind: "K".into(),
+            message: "m".into(), remediation: None, file: None, line: None, sub_project_id: None,
+        });
+        rep.sort_violations();
+        // Error ("a") first, then the two Warnings in rule-id order ("b" then "c").
+        assert_eq!(rep.violations[0].rule_id, "a");
+        assert_eq!(rep.violations[1].rule_id, "b");
+        assert_eq!(rep.violations[2].rule_id, "c");
+    }
 }

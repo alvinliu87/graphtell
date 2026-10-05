@@ -302,3 +302,500 @@ fn flush(
 
 /// Exported for external reference, to avoid an unused warning.
 pub fn _assert_types(_: Option<NewSubProject>, _: Option<NewSourceFile>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::error::DomainError;
+    use gt_domain::model::{
+        AnnotationChannel, EdgeKind, FrameworkKnowledge, MergeStrategy, NewAnnotation, NewEdge,
+        NewNode, NodeId, NodeKind, ProjectConfig, ProjectId, ProjectStatus, Severity, Span,
+    };
+    use gt_domain::port::{
+        DefaultResourceAdapterRegistry, DefaultTechStackRegistry, FileScanner, LanguageParser,
+        Marker, PipelineObserver, ScanRequest, ScannedFile,
+    };
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    // ---------------------------------------------------------------- fixtures
+
+    fn project(full_pipeline: bool) -> Project {
+        Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            // `ingest::validate_root` canonicalises the path for real, so this must exist.
+            root_path: std::env::temp_dir(),
+            description: None,
+            config: ProjectConfig {
+                full_pipeline,
+                ..Default::default()
+            },
+            status: ProjectStatus::Created,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn ctx() -> PipelineContext {
+        PipelineContext::new(project(true))
+    }
+
+    fn add_node(ctx: &mut PipelineContext, fqn: &str) -> NodeId {
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind("Method".to_string()),
+            name: fqn.to_string(),
+            fqn: Some(fqn.to_string()),
+            identity: None,
+            file_id: None,
+            span: Span::default(),
+            language: gt_domain::model::Language::new("java"),
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: Value::Null,
+        })
+    }
+
+    fn edge(from: NodeId, to: NodeId) -> NewEdge {
+        NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind("Calls".to_string()),
+            from_id: from,
+            to_id: to,
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: Value::Null,
+        }
+    }
+
+    /// (nodes, edges, annotations, aliases, diagnostics, reset_project) of every applied delta.
+    #[derive(Default)]
+    struct FakeSink {
+        applied: Mutex<Vec<(usize, usize, usize, usize, usize, bool)>>,
+        fail: bool,
+    }
+
+    impl FakeSink {
+        fn applied(&self) -> Vec<(usize, usize, usize, usize, usize, bool)> {
+            self.applied.lock().unwrap().clone()
+        }
+    }
+
+    impl GraphSink for FakeSink {
+        fn apply(&self, delta: &GraphDelta) -> Result<()> {
+            if self.fail {
+                return Err(DomainError::NotFound("sink is down".into()));
+            }
+            self.applied.lock().unwrap().push((
+                delta.nodes.len(),
+                delta.edges.len(),
+                delta.annotations.len(),
+                delta.aliases.len(),
+                delta.diagnostics.len(),
+                delta.reset_project,
+            ));
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeObserver {
+        starts: Mutex<Vec<String>>,
+        ends: Mutex<Vec<String>>,
+    }
+
+    impl FakeObserver {
+        fn starts(&self) -> Vec<String> {
+            self.starts.lock().unwrap().clone()
+        }
+        fn ends(&self) -> Vec<String> {
+            self.ends.lock().unwrap().clone()
+        }
+    }
+
+    impl PipelineObserver for FakeObserver {
+        fn on_phase_start(&self, _: ProjectId, phase: &Phase) {
+            self.starts.lock().unwrap().push(phase.0.clone());
+        }
+        fn on_phase_end(&self, _: ProjectId, report: &PhaseReport) {
+            self.ends.lock().unwrap().push(report.phase.clone());
+        }
+    }
+
+    // ---------------------------------------------------------------- `flush()`
+
+    #[test]
+    fn flush_reports_every_count_the_delta_carries() {
+        let mut ctx = ctx();
+        let a = add_node(&mut ctx, "com.x.A");
+        let b = add_node(&mut ctx, "com.x.B");
+        ctx.ws.add_edge(edge(a, b));
+        ctx.ws.annotate(NewAnnotation {
+            node_id: a,
+            channel: AnnotationChannel("FkbMark".to_string()),
+            kind: "pii".to_string(),
+            subkind: None,
+            confidence: 1.0,
+            evidence: Value::Null,
+            phase: Phase("Test".to_string()),
+            merge: MergeStrategy::Coexist,
+        });
+        let sink = FakeSink::default();
+        let obs = FakeObserver::default();
+        let mut outcome = PipelineOutcome::default();
+        assert!(outcome.reports.is_empty());
+
+        flush(
+            &sink,
+            &mut ctx,
+            &mut outcome,
+            &Phase(Phase::CF_AST.to_string()),
+            Instant::now(),
+            &obs,
+            ProjectId(1),
+        )
+        .unwrap();
+
+        let r = &outcome.reports[0];
+        assert_eq!(r.phase, Phase::CF_AST);
+        assert_eq!(r.nodes_created, 2);
+        assert_eq!(r.edges_created, 1);
+        assert_eq!(r.annotations_created, 1);
+        assert_eq!(r.aliases_created, 0);
+        // The observer sees exactly the report that is recorded.
+        assert_eq!(obs.ends(), vec![Phase::CF_AST.to_string()]);
+        // ...and one delta reaches the sink.
+        assert_eq!(sink.applied().len(), 1);
+    }
+
+    #[test]
+    fn flush_carries_the_phase_diagnostics() {
+        let mut ctx = ctx();
+        let phase = Phase(Phase::CF_AST.to_string());
+        ctx.ws.diagnose(
+            &phase,
+            "AmbiguousFqn",
+            Severity::Warning,
+            "two candidates",
+            Some("app/A.php:1".to_string()),
+        );
+        let sink = FakeSink::default();
+        let mut outcome = PipelineOutcome::default();
+
+        flush(
+            &sink,
+            &mut ctx,
+            &mut outcome,
+            &phase,
+            Instant::now(),
+            &FakeObserver::default(),
+            ProjectId(1),
+        )
+        .unwrap();
+
+        let diags = &outcome.reports[0].diagnostics;
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "AmbiguousFqn");
+        // They must reach the sink too, not only the report.
+        assert_eq!(sink.applied()[0].4, 1);
+    }
+
+    /// The delta is *taken*, so the next phase starts from zero instead of re-reporting the same nodes.
+    #[test]
+    fn flush_drains_the_workspace() {
+        let mut ctx = ctx();
+        add_node(&mut ctx, "com.x.A");
+        let sink = FakeSink::default();
+        let obs = FakeObserver::default();
+        let mut outcome = PipelineOutcome::default();
+
+        for phase in [Phase::CF_AST, Phase::PREPARE] {
+            flush(
+                &sink,
+                &mut ctx,
+                &mut outcome,
+                &Phase(phase.to_string()),
+                Instant::now(),
+                &obs,
+                ProjectId(1),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(outcome.reports.len(), 2);
+        assert_eq!(outcome.reports[0].nodes_created, 1);
+        assert_eq!(
+            outcome.reports[1].nodes_created, 0,
+            "第二个阶段不应重复上报同一批节点"
+        );
+        assert_eq!(
+            obs.ends(),
+            vec![Phase::CF_AST.to_string(), Phase::PREPARE.to_string()]
+        );
+    }
+
+    /// A failed persist aborts the run: no report is recorded and the observer is not told the phase ended.
+    #[test]
+    fn flush_propagates_a_sink_failure() {
+        let mut ctx = ctx();
+        add_node(&mut ctx, "com.x.A");
+        let sink = FakeSink {
+            fail: true,
+            ..Default::default()
+        };
+        let obs = FakeObserver::default();
+        let mut outcome = PipelineOutcome::default();
+
+        let res = flush(
+            &sink,
+            &mut ctx,
+            &mut outcome,
+            &Phase(Phase::CF_AST.to_string()),
+            Instant::now(),
+            &obs,
+            ProjectId(1),
+        );
+
+        assert!(res.is_err());
+        assert!(outcome.reports.is_empty(), "持久化失败不应记入报告");
+        assert!(obs.ends().is_empty(), "不应通知观察者阶段已完成");
+        assert!(sink.applied().is_empty());
+    }
+
+    /// `flush` must never set `reset_project`: wiping the graph is a deliberate one-off call made by `run`
+    /// before the first phase, not something every phase flush does.
+    #[test]
+    fn flush_never_resets_the_project() {
+        let mut ctx = ctx();
+        add_node(&mut ctx, "com.x.A");
+        let sink = FakeSink::default();
+        let mut outcome = PipelineOutcome::default();
+
+        flush(
+            &sink,
+            &mut ctx,
+            &mut outcome,
+            &Phase(Phase::CF_AST.to_string()),
+            Instant::now(),
+            &FakeObserver::default(),
+            ProjectId(1),
+        )
+        .unwrap();
+
+        assert!(!sink.applied()[0].5, "flush 不得清空项目图");
+    }
+
+    // ---------------------------------------------------------------- `run()` orchestration
+    //
+    // The phases themselves are exercised end to end (with real adapters) by `crates/gt-pipeline/tests`.
+    // What is pinned here is the **orchestration**: which phases run, in which order, and that a partial
+    // pipeline stops after P3.
+
+    struct StubFs;
+    impl FileSystem for StubFs {
+        fn exists(&self, _: &Path) -> bool {
+            true
+        }
+        fn is_dir(&self, _: &Path) -> bool {
+            true
+        }
+        fn read_to_string(&self, _: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+        fn len(&self, _: &Path) -> Result<u64> {
+            Ok(0)
+        }
+    }
+
+    struct StubScanner;
+    impl FileScanner for StubScanner {
+        fn scan(&self, _: &ScanRequest) -> Result<Vec<ScannedFile>> {
+            Ok(Vec::new())
+        }
+        fn find_markers(&self, _: &Path, _: &[&str], _: usize) -> Result<Vec<PathBuf>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// No parser registered: `run` must then leave every language's notation policy empty rather than
+    /// defaulting to some other stack's (see the comment above `lang_policy_default`).
+    struct StubParsers;
+    impl ParserRegistry for StubParsers {
+        fn parser_for(&self, _: &gt_domain::model::Language) -> Option<&dyn LanguageParser> {
+            None
+        }
+        fn supported_languages(&self) -> Vec<gt_domain::model::Language> {
+            Vec::new()
+        }
+    }
+
+    struct StubMarkers;
+    impl MarkerProvider for StubMarkers {
+        fn markers(&self) -> Vec<Marker> {
+            Vec::new()
+        }
+    }
+
+    struct StubKb;
+    impl KnowledgeProvider for StubKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> {
+            Vec::new()
+        }
+        fn by_id(&self, _: &str) -> Option<&FrameworkKnowledge> {
+            None
+        }
+    }
+
+    struct StubProjects;
+    impl ProjectWriter for StubProjects {
+        fn create_project(&self, _: gt_domain::model::NewProject) -> Result<Project> {
+            Err(DomainError::NotFound("not used by run".into()))
+        }
+        fn update_project(
+            &self,
+            _: ProjectId,
+            _: gt_domain::model::ProjectPatch,
+        ) -> Result<Project> {
+            Err(DomainError::NotFound("not used by run".into()))
+        }
+        fn delete_project(&self, _: ProjectId) -> Result<()> {
+            Ok(())
+        }
+        fn set_project_status(&self, _: ProjectId, _: ProjectStatus) -> Result<()> {
+            Ok(())
+        }
+        fn replace_sub_projects(
+            &self,
+            _: ProjectId,
+            _: Vec<NewSubProject>,
+        ) -> Result<Vec<SubProject>> {
+            Ok(Vec::new())
+        }
+        fn update_sub_project_facts(&self, _: SubProjectId, _: Value) -> Result<()> {
+            Ok(())
+        }
+        fn set_sub_project_frameworks(&self, _: SubProjectId, _: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+        fn replace_files(&self, _: ProjectId, _: Vec<NewSourceFile>) -> Result<Vec<SourceFile>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct StubInfra {
+        graph: FakeSink,
+        techstack: DefaultTechStackRegistry,
+        resources: DefaultResourceAdapterRegistry,
+    }
+
+    impl StubInfra {
+        fn new(graph: FakeSink) -> Self {
+            Self {
+                graph,
+                techstack: DefaultTechStackRegistry::new(),
+                resources: DefaultResourceAdapterRegistry::new(),
+            }
+        }
+    }
+
+    impl PipelineInfrastructure for StubInfra {
+        fn fs(&self) -> &dyn FileSystem {
+            &StubFs
+        }
+        fn scanner(&self) -> &dyn FileScanner {
+            &StubScanner
+        }
+        fn parsers(&self) -> &dyn ParserRegistry {
+            &StubParsers
+        }
+        fn techstack(&self) -> &dyn TechStackRegistry {
+            &self.techstack
+        }
+        fn markers(&self) -> &dyn MarkerProvider {
+            &StubMarkers
+        }
+        fn resources(&self) -> &dyn ResourceAdapterRegistry {
+            &self.resources
+        }
+        fn kb(&self) -> &dyn KnowledgeProvider {
+            &StubKb
+        }
+        fn projects(&self) -> &dyn ProjectWriter {
+            &StubProjects
+        }
+        fn graph(&self) -> &dyn GraphSink {
+            &self.graph
+        }
+    }
+
+    fn phases(outcome: &PipelineOutcome) -> Vec<String> {
+        outcome.reports.iter().map(|r| r.phase.clone()).collect()
+    }
+
+    /// `full_pipeline: false` means "Ingest + CfAst only" — but Prepare still runs, because its framework
+    /// detection is what the partial run is for.
+    #[test]
+    fn run_stops_after_prepare_for_a_partial_pipeline() {
+        let infra = StubInfra::new(FakeSink::default());
+        let obs = FakeObserver::default();
+
+        let outcome = run(&project(false), &infra, &obs).unwrap();
+
+        assert_eq!(
+            phases(&outcome),
+            vec![Phase::INGEST.to_string(), Phase::CF_AST.to_string(), Phase::PREPARE.to_string()],
+            "非完整流水线应止于 P3"
+        );
+        assert_eq!(obs.starts(), phases(&outcome));
+        assert_eq!(obs.ends(), phases(&outcome));
+    }
+
+    /// The full orchestration order, including `GuardCapability` riding immediately after Synthesize.
+    #[test]
+    fn run_walks_every_phase_in_order() {
+        let infra = StubInfra::new(FakeSink::default());
+        let obs = FakeObserver::default();
+
+        let outcome = run(&project(true), &infra, &obs).unwrap();
+
+        assert_eq!(
+            phases(&outcome),
+            vec![
+                Phase::INGEST.to_string(),
+                Phase::CF_AST.to_string(),
+                Phase::PREPARE.to_string(),
+                Phase::ANNOTATE_PRE.to_string(),
+                Phase::SYNTHESIZE.to_string(),
+                // Capabilities are guarded as soon as the semantic nodes exist.
+                "GuardCapability".to_string(),
+                Phase::ANNOTATE_POST.to_string(),
+                Phase::RESOLVE.to_string(),
+                Phase::PROPAGATE.to_string(),
+                "Taint".to_string(),
+                "Sign".to_string(),
+                "External".to_string(),
+                "Tx".to_string(),
+                "Guard".to_string(),
+            ]
+        );
+        // The observer is notified of every phase, start and end, in the same order.
+        assert_eq!(obs.starts(), phases(&outcome));
+        assert_eq!(obs.ends(), phases(&outcome));
+    }
+
+    /// A sink that rejects a phase aborts the whole run instead of continuing with an unpersisted graph.
+    #[test]
+    fn run_aborts_when_a_phase_cannot_be_persisted() {
+        let infra = StubInfra::new(FakeSink {
+            fail: true,
+            ..Default::default()
+        });
+
+        let res = run(&project(true), &infra, &FakeObserver::default());
+
+        assert!(res.is_err(), "持久化失败必须中断流水线");
+    }
+}

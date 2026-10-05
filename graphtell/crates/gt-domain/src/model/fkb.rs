@@ -1748,4 +1748,550 @@ mod tests {
         assert_eq!(rule.confidence, 0.9);
         assert!(rule.fallbacks.is_empty());
     }
+
+    // ===== Below: the gaps the original 3 tests left open — language scoping, template placeholders,
+    // the guard-attach normaliser, detector confidence, the resolution ladder and the declared defaults. =====
+
+    fn rule(languages: Option<Vec<&str>>) -> Rule {
+        Rule {
+            id: "r".into(),
+            phase: Phase("AnnotatePre".into()),
+            selector: Selector::Node {
+                node_kind: None,
+                r#where: Vec::new(),
+            },
+            binding: Vec::new(),
+            confidence: 1.0,
+            languages: languages.map(|l| l.into_iter().map(Language::new).collect()),
+        }
+    }
+
+    /// With no per-rule `languages`, the rule inherits the language of the FKB that declared it — and a
+    /// language-agnostic FKB (`*`) applies everywhere.
+    #[test]
+    fn rule_applies_to_inherits_the_fkb_language() {
+        let inherited = rule(None);
+        assert!(inherited.applies_to(&Language::new("php"), &Language::new("php")));
+        assert!(!inherited.applies_to(&Language::new("php"), &Language::new("java")));
+        // A cross-language FKB declares `*`.
+        assert!(inherited.applies_to(&Language::new("*"), &Language::new("java")));
+    }
+
+    /// A declared `languages` list is authoritative: it overrides the FKB's language entirely (in both
+    /// directions), and the `*` sentinel means "every language".
+    #[test]
+    fn rule_applies_to_lets_the_rule_override_the_fkb_language() {
+        let php_only = rule(Some(vec!["php"]));
+        assert!(php_only.applies_to(&Language::new("php"), &Language::new("php")));
+        // The FKB says java, but the rule restricts itself to php — a java sub-project must be skipped.
+        assert!(!php_only.applies_to(&Language::new("java"), &Language::new("java")));
+        // ...and the reverse: the sub-project is php even though the FKB is not.
+        assert!(php_only.applies_to(&Language::new("java"), &Language::new("php")));
+
+        let any = rule(Some(vec!["*"]));
+        assert!(any.applies_to(&Language::new("php"), &Language::new("java")));
+        assert!(any.applies_to(&Language::new("php"), &Language::new("python")));
+    }
+
+    /// Glob templates reference `{placeholder}` names; they are collected in order of appearance, trimmed and
+    /// de-duplicated, and a malformed template must not panic.
+    #[test]
+    fn template_placeholders_in_order_deduped_and_trimmed() {
+        assert_eq!(
+            template_placeholders("src/{module}/{layer}.ts"),
+            vec!["module".to_string(), "layer".to_string()]
+        );
+        // Repeats collapse.
+        assert_eq!(template_placeholders("src/{module}/{module}.ts"), vec!["module".to_string()]);
+        // Surrounding spaces are trimmed, empty names skipped.
+        assert_eq!(template_placeholders("{ a }/{}"), vec!["a".to_string()]);
+        // No placeholders at all.
+        assert!(template_placeholders("src/main.ts").is_empty());
+        assert!(template_placeholders("").is_empty());
+        // Unterminated `{` stops the scan instead of panicking.
+        assert!(template_placeholders("src/{module").is_empty());
+        assert!(template_placeholders("src/{").is_empty());
+    }
+
+    #[test]
+    fn guard_attach_specs_normalises_one_and_many() {
+        assert_eq!(GuardAttach::default().specs().len(), 1, "默认 = 单个 positional");
+        assert!(matches!(
+            GuardAttach::default(),
+            GuardAttach::One(GuardAttachSpec::Positional)
+        ));
+        assert_eq!(GuardAttach::Many(Vec::new()).specs().len(), 0);
+        let two = GuardAttach::Many(vec![
+            GuardAttachSpec::Positional,
+            GuardAttachSpec::Consumer(ConsumerGuardSpec::default()),
+        ]);
+        assert_eq!(two.specs().len(), 2);
+    }
+
+    /// `guard_attach` is untagged, so one framework can declare a single model or several without breaking
+    /// existing FKBs.
+    #[test]
+    fn guard_attach_deserializes_a_single_value_or_a_list() {
+        let one: GuardAttach = serde_json::from_value(json!({ "kind": "positional" }))
+            .expect("a single model must deserialize");
+        assert!(matches!(one, GuardAttach::One(_)));
+        assert_eq!(one.specs().len(), 1);
+
+        let many: GuardAttach = serde_json::from_value(json!([
+            { "kind": "positional" },
+            { "kind": "consumer" }
+        ]))
+        .expect("a list of models must deserialize");
+        assert!(matches!(many, GuardAttach::Many(_)));
+        assert_eq!(many.specs().len(), 2);
+    }
+
+    /// Every variant carries its own confidence, defaulting to 0.9 — a new variant silently inheriting the
+    /// last match arm is exactly what the accessor exists to prevent.
+    #[test]
+    fn detector_confidence_is_declared_per_variant() {
+        assert_eq!(
+            Detector::ManifestDependency { manifest: "composer.json".into(), dependency: "x/y".into(), confidence: 0.4 }
+                .confidence(),
+            0.4
+        );
+        assert_eq!(
+            Detector::FileExists { path: "artisan".into(), confidence: 0.5 }.confidence(),
+            0.5
+        );
+        assert_eq!(
+            Detector::ImportExists { symbol: "GuzzleHttp".into(), confidence: 0.6 }.confidence(),
+            0.6
+        );
+        assert_eq!(
+            Detector::LockDependency { lock: "composer.lock".into(), dependency: "x/y".into(), confidence: 0.7 }
+                .confidence(),
+            0.7
+        );
+        assert_eq!(
+            Detector::CallExists { callee: "Db::query".into(), confidence: 0.8 }.confidence(),
+            0.8
+        );
+
+        // Omitted in YAML -> the 0.9 default.
+        let from_yaml: Detector = serde_json::from_value(json!({ "kind": "file_exists", "path": "artisan" })).unwrap();
+        assert!((from_yaml.confidence() - 0.9).abs() < 1e-6);
+        let explicit: Detector = serde_json::from_value(json!({ "kind": "call_exists", "callee": "Db::query", "confidence": 0.5 })).unwrap();
+        assert!((explicit.confidence() - 0.5).abs() < 1e-6);
+    }
+
+    /// The ladder is **not** monotonic in the level number — L6 (intersection with the finite universe of
+    /// 203 tables) is trusted more than L5 (constant propagation) — but Exact is the ceiling and Unknown the floor.
+    #[test]
+    fn resolve_tier_base_confidence_ladder() {
+        assert_eq!(ResolveTier::Exact.base_confidence(), 1.0);
+        assert_eq!(ResolveTier::Registry.base_confidence(), 0.95);
+        assert_eq!(ResolveTier::Alias.base_confidence(), 0.85);
+        assert_eq!(ResolveTier::Convention.base_confidence(), 0.8);
+        assert_eq!(ResolveTier::ConstProp.base_confidence(), 0.6);
+        assert_eq!(ResolveTier::Intersection.base_confidence(), 0.7);
+        assert_eq!(ResolveTier::Unknown.base_confidence(), 0.3);
+
+        assert!(
+            ResolveTier::Intersection.base_confidence() > ResolveTier::ConstProp.base_confidence(),
+            "L6 比 L5 更可信（有限全集求交 vs 常量传播）"
+        );
+        for t in [
+            ResolveTier::Unknown,
+            ResolveTier::ConstProp,
+            ResolveTier::Intersection,
+            ResolveTier::Convention,
+            ResolveTier::Alias,
+            ResolveTier::Registry,
+        ] {
+            assert!(t.base_confidence() < ResolveTier::Exact.base_confidence());
+            assert!(t.base_confidence() > ResolveTier::Unknown.base_confidence() || t == ResolveTier::Unknown);
+        }
+    }
+
+    #[test]
+    fn resolution_unknown_and_resolved() {
+        let u = Resolution::unknown("no candidate");
+        assert_eq!(u.tier, ResolveTier::Unknown);
+        assert!(u.candidates.is_empty(), "未解析 = 没有候选");
+        assert!((u.confidence - ResolveTier::Unknown.base_confidence()).abs() < 1e-6);
+        assert_eq!(u.evidence, "no candidate");
+
+        let r = Resolution::resolved(ResolveTier::Alias, crate::model::ids::NodeId(7), "facade_map");
+        assert_eq!(r.tier, ResolveTier::Alias);
+        assert_eq!(r.candidates, vec![crate::model::ids::NodeId(7)]);
+        assert!((r.confidence - 0.85).abs() < 1e-6, "置信度取该层的基础值");
+        assert_eq!(r.evidence, "facade_map");
+    }
+
+    /// The NestJS convention is the default, so an FKB only names the exceptions.
+    #[test]
+    fn consumer_guard_spec_defaults_match_the_nestjs_convention() {
+        let d = ConsumerGuardSpec::default();
+        assert_eq!(d.receiver, "consumer");
+        assert_eq!(d.apply_method, "apply");
+        assert_eq!(d.for_routes_method, "forRoutes");
+        assert_eq!(d.wildcards, vec!["*".to_string()]);
+        assert_eq!(d.scope, ConsumerScope::Directory);
+        assert_eq!(ConsumerScope::default(), ConsumerScope::Directory);
+
+        // An empty declaration gets the same defaults.
+        let from_yaml: ConsumerGuardSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(from_yaml.receiver, "consumer");
+        assert_eq!(from_yaml.for_routes_method, "forRoutes");
+        assert_eq!(from_yaml.scope, ConsumerScope::Directory);
+
+        // Unknown keys are rejected rather than ignored.
+        assert!(serde_json::from_value::<ConsumerGuardSpec>(json!({ "nope": 1 })).is_err());
+    }
+
+    #[test]
+    fn annotate_defaults_are_the_expected_neutral_values() {
+        let a = AnnotateAction::default();
+        assert_eq!(a.channel.0, AnnotationChannel::FKB_MARK);
+        assert!(matches!(a.target, AnnotateTarget::Matched));
+        assert!(matches!(a.merge, MergeStrategy::MaxByKind));
+        assert!(a.annotations.is_empty());
+        assert!(a.phase.is_none(), "未声明相位 = 随规则所在相位执行");
+        assert!(a.confidence_scale.is_none());
+        assert!(a.scope.is_none());
+        assert!(a.r#where.is_empty());
+
+        assert!(matches!(AnnotateTarget::default(), AnnotateTarget::Matched));
+
+        let s = AnnotationSpec::default();
+        assert!((s.confidence - 1.0).abs() < 1e-6, "未声明置信度时不衰减");
+        assert!(s.kind.is_empty());
+        assert!(s.subkind.is_none());
+        assert!(s.channel.is_none());
+        assert!(s.severity.is_none());
+        assert!(s.evidence.is_none());
+    }
+
+    #[test]
+    fn synthesize_and_expand_defaults_are_empty_and_unknown() {
+        let s = SynthesizeAction::default();
+        assert_eq!(s.node.as_str(), NodeKind::UNKNOWN, "节点类型必须由 FKB 声明");
+        assert!((s.confidence - 0.9).abs() < 1e-6);
+        assert!(s.subtype.is_none());
+        assert!(s.fields.is_empty());
+        assert!(s.link.is_none());
+        assert!(s.alias.is_none());
+        assert!(s.expand.is_none());
+        assert!(s.modifiers.is_empty());
+
+        let e = ExpandSpec::default();
+        assert!(e.variants.is_empty(), "没有变体 = 不展开（合成单个节点）");
+        assert!(e.only.is_none());
+        assert!(e.except.is_none());
+    }
+
+    #[test]
+    fn magic_delegation_and_method_ref_defaults() {
+        let m = MagicDelegationSpec::default();
+        assert!(m.property.is_empty(), "转发目标属性必须由 FKB 声明");
+        assert!((m.confidence - 0.7).abs() < 1e-6, "注解声明应低于精确命中");
+
+        let r = MethodRefSpec::default();
+        assert_eq!(r.method_separators, vec!["/".to_string()], "ThinkPHP 的 `Login/appleLogin` 约定");
+        assert_eq!(r.controller_layer_depth, 1);
+        assert!(r.hierarchy_separators.is_empty());
+        assert!(r.root_namespaces.is_empty());
+        assert!(r.app_segments.is_empty());
+        assert!(r.app_anchor_dir.is_none());
+        assert!(r.app_fallback.is_empty());
+    }
+
+    // ===== Dead-field defense (`deny_unknown_fields`): an unknown key is a key the kernel cannot read,
+    // so it must fail loudly at load time instead of silently vanishing. These are the regression nets
+    // for the retired `exclude_globs` / `format` / rule-level `where` incidents. =====
+
+    /// `FrameworkKnowledge` is the top-level container: a key it does not have is knowledge the kernel
+    /// will never consult. The retired `exclude_globs` (now `exclude_rules`) must not be accepted under
+    /// its old name — otherwise the exclusion would silently stop working.
+    #[test]
+    fn framework_knowledge_rejects_unknown_keys_and_defaults_scope() {
+        let fk: FrameworkKnowledge = serde_json::from_value(json!({
+            "id": "tp",
+            "display_name": "ThinkPHP",
+            "language": "php"
+        }))
+        .expect("minimal FKB must deserialize with struct defaults");
+        assert_eq!(fk.id, "tp");
+        assert_eq!(fk.scope, KnowledgeScope::Framework, "scope 默认 framework");
+        assert!(!fk.apply_without_detection, "apply_without_detection 默认 false");
+        assert!(fk.provides.is_empty());
+        assert!(fk.side.is_none());
+        assert!(fk.detectors.is_empty());
+        assert!(fk.rules.is_empty());
+
+        // Explicit scope / side / provides round-trip.
+        let fk2: FrameworkKnowledge = serde_json::from_value(json!({
+            "id": "crmeb",
+            "display_name": "CRMEB",
+            "language": "php",
+            "scope": "project",
+            "side": "backend",
+            "provides": ["thinkphp"]
+        }))
+        .expect("explicit scope/side/provides must deserialize");
+        assert_eq!(fk2.scope, KnowledgeScope::Project);
+        assert_eq!(fk2.side.as_deref(), Some("backend"));
+        assert_eq!(fk2.provides, vec!["thinkphp".to_string()]);
+
+        // A retired / misspelled key must be rejected, not ignored.
+        assert!(
+            serde_json::from_value::<FrameworkKnowledge>(json!({
+                "id": "tp",
+                "display_name": "ThinkPHP",
+                "language": "php",
+                "exclude_globs": ["vendor/**"]
+            }))
+            .is_err(),
+            "retired exclude_globs must be rejected by deny_unknown_fields"
+        );
+        assert!(
+            serde_json::from_value::<FrameworkKnowledge>(json!({
+                "id": "tp",
+                "display_name": "ThinkPHP",
+                "language": "php",
+                "format": "php"
+            }))
+            .is_err(),
+            "never-read `format` key must be rejected"
+        );
+    }
+
+    /// The rule layer must never accept a `where:` written at the rule level (it belongs inside the
+    /// `selector`). A JavaScript FKB once had `where:` here and silently mislabelled every HTTP contract
+    /// as `frontend.called` — pinned now.
+    #[test]
+    fn rule_rejects_unknown_fields_at_rule_level() {
+        assert!(
+            serde_json::from_value::<Rule>(json!({
+                "id": "r",
+                "phase": "AnnotatePre",
+                "selector": { "kind": "node" },
+                "where": [{ "has_property": "x" }]
+            }))
+            .is_err(),
+            "rule-level `where` must be rejected (it belongs in the selector)"
+        );
+
+        // A well-formed rule with selector + binding + per-rule languages round-trips.
+        // `Action` is externally tagged (no `kind` tag), so each binding is `{ "Annotate": { ... } }`.
+        let r: Rule = serde_json::from_value(json!({
+            "id": "r",
+            "phase": "AnnotatePre",
+            "selector": {
+                "kind": "node",
+                "node_kind": "Class",
+                "where": [{ "has_property": "dao" }]
+            },
+            "binding": [
+                { "Annotate": { "channel": "fkb_mark", "annotations": [] } }
+            ],
+            "languages": ["php"]
+        }))
+        .expect("well-formed rule must deserialize");
+        assert!(matches!(r.selector, Selector::Node { .. }));
+        assert_eq!(r.confidence, 0.9, "Rule 默认置信度 0.9");
+        assert!(r.applies_to(&Language::new("java"), &Language::new("php")));
+        assert!(!r.applies_to(&Language::new("java"), &Language::new("java")));
+    }
+
+    /// `Selector` is a tagged enum: an unknown `kind` must be rejected, and a `node` selector carrying
+    /// `where` predicates must round-trip.
+    #[test]
+    fn selector_rejects_unknown_kind_and_node_roundtrips() {
+        assert!(
+            serde_json::from_value::<Selector>(json!({ "kind": "bogus" })).is_err(),
+            "unknown selector kind must be rejected"
+        );
+        let s: Selector = serde_json::from_value(json!({
+            "kind": "node",
+            "node_kind": "Class",
+            "where": [
+                { "has_property": "dao" },
+                { "name_matches": "Service" },
+                { "fan_in_gte": 5 }
+            ]
+        }))
+        .expect("node selector must deserialize");
+        match s {
+            Selector::Node { node_kind, r#where } => {
+                assert_eq!(node_kind.as_ref().map(|k| k.as_str()), Some("Class"));
+                assert_eq!(r#where.len(), 3);
+            }
+            _ => panic!("expected a Node selector"),
+        }
+    }
+
+    /// `Predicate` is the leaf condition: a misspelled variant field must be rejected rather than produce a
+    /// silently-empty condition that matches nothing (or everything).
+    #[test]
+    fn predicate_deny_unknown_fields_and_roundtrips() {
+        assert!(
+            serde_json::from_value::<Predicate>(json!({ "has_property": "x", "bogus": 1 })).is_err(),
+            "extra field on a predicate must be rejected"
+        );
+        assert!(
+            serde_json::from_value::<Predicate>(json!({ "kind": "has_property", "0": "x" })).is_err(),
+            "tuple variant must not be wrapped under `kind`"
+        );
+
+        let p: Predicate = serde_json::from_value(json!({ "has_property": "dao" })).unwrap();
+        assert!(matches!(p, Predicate::HasProperty(ref s) if s == "dao"));
+        let a: Predicate = serde_json::from_value(json!({ "arg_starts_with": { "arg": 0, "prefix": "crontab" } })).unwrap();
+        assert!(matches!(a, Predicate::ArgStartsWith { arg: 0, prefix } if prefix == "crontab"));
+    }
+
+    /// The `exclude_rules` redesign replaced the dead `exclude_globs`: an FKB still using `exclude_globs`
+    /// must error, while a valid `ExcludeRule` (with `source` + `fallbacks`) round-trips.
+    #[test]
+    fn exclude_rule_rejects_dead_exclude_globs_and_roundtrips() {
+        assert!(
+            serde_json::from_value::<ExcludeRule>(json!({
+                "id": "e",
+                "glob": "{app_root}/runtime/**",
+                "exclude_globs": ["vendor/**"]
+            }))
+            .is_err(),
+            "retired exclude_globs must be rejected on ExcludeRule"
+        );
+        let e: ExcludeRule = serde_json::from_value(json!({
+            "id": "runtime",
+            "glob": "{app_root}/runtime/**",
+            "source": { "kind": "directory_exists", "path": "app" },
+            "fallbacks": ["vendor", "runtime"]
+        }))
+        .expect("valid ExcludeRule must deserialize");
+        assert_eq!(e.id, "runtime");
+        assert!(e.source.is_some());
+        assert_eq!(e.fallbacks, vec!["vendor".to_string(), "runtime".to_string()]);
+        // Minimal: only id + glob are required.
+        let min: ExcludeRule = serde_json::from_value(json!({ "id": "x", "glob": "a/**" })).unwrap();
+        assert!(min.source.is_none());
+        assert!(min.fallbacks.is_empty());
+    }
+
+    /// Every detector variant must deserialise under its snake_case tag and default its confidence to 0.9
+    /// when omitted.
+    #[test]
+    fn detector_variants_deserialize_with_default_confidence() {
+        let md: Detector = serde_json::from_value(json!({
+            "kind": "manifest_dependency", "manifest": "composer.json", "dependency": "topthink/framework"
+        })).unwrap();
+        assert!(matches!(md, Detector::ManifestDependency { .. }));
+        assert!((md.confidence() - 0.9).abs() < 1e-6);
+
+        let cases: Vec<Value> = vec![
+            json!({ "kind": "file_exists", "path": "artisan" }),
+            json!({ "kind": "import_exists", "symbol": "think\\facade\\Db" }),
+            json!({ "kind": "lock_dependency", "lock": "composer.lock", "dependency": "x/y" }),
+            json!({ "kind": "call_exists", "callee": "Db::query" }),
+        ];
+        for c in cases {
+            let d: Detector = serde_json::from_value(c).expect("detector variant must deserialize");
+            assert!((d.confidence() - 0.9).abs() < 1e-6, "variant default conf");
+        }
+    }
+
+    /// `RouteCallSpec` defaults: `path_arg = 0`, `handler_arg = None`, `by = receiver`; verb-method keys are
+    /// lower-cased and values upper-cased on the way in.
+    #[test]
+    fn route_call_spec_defaults_and_verb_normalisation() {
+        let d: RouteCallSpec = serde_json::from_value(json!({ "receiver": "Route" })).unwrap();
+        assert_eq!(d.path_arg, 0);
+        assert!(d.handler_arg.is_none());
+        assert_eq!(d.by, RouteMatchBy::Receiver);
+        assert!(!d.receiver_ends_with);
+        assert!(!d.accept_identifier);
+
+        let v: RouteCallSpec = serde_json::from_value(json!({
+            "receiver": "Route",
+            "by": "callee",
+            "verb_methods": { "get": "get", "any": "any" },
+            "path_arg": 1,
+            "handler_arg": 2
+        }))
+        .unwrap();
+        assert_eq!(v.by, RouteMatchBy::Callee);
+        assert_eq!(v.path_arg, 1);
+        assert_eq!(v.handler_arg, Some(2));
+        // `verb_methods` round-trips verbatim; key/value normalisation (lowercase key, uppercase verb)
+        // happens at lookup time, not on deserialization.
+        assert_eq!(v.verb_methods.get("get").map(String::as_str), Some("get"));
+        assert_eq!(v.verb_methods.get("any").map(String::as_str), Some("any"));
+    }
+
+    /// The small classification enums all round-trip their snake_case tags; this guards against a rename
+    /// silently changing the on-disk FKB spelling.
+    #[test]
+    fn small_enums_roundtrip_snake_case() {
+        assert_eq!(serde_json::from_value::<KnowledgeScope>(json!("project")).unwrap(), KnowledgeScope::Project);
+        assert_eq!(serde_json::from_value::<KnowledgeScope>(json!("framework")).unwrap(), KnowledgeScope::Framework);
+
+        assert_eq!(serde_json::from_value::<RouteMatchBy>(json!("callee")).unwrap(), RouteMatchBy::Callee);
+        assert_eq!(serde_json::from_value::<RouteMatchBy>(json!("receiver")).unwrap(), RouteMatchBy::Receiver);
+
+        assert_eq!(serde_json::from_value::<ConsumerScope>(json!("all")).unwrap(), ConsumerScope::All);
+        assert_eq!(serde_json::from_value::<ConsumerScope>(json!("explicit_only")).unwrap(), ConsumerScope::ExplicitOnly);
+        assert_eq!(serde_json::from_value::<ConsumerScope>(json!("directory")).unwrap(), ConsumerScope::Directory);
+
+        assert_eq!(serde_json::from_value::<ResolveStrategy>(json!("event_listen")).unwrap(), ResolveStrategy::EventListen);
+        assert_eq!(serde_json::from_value::<ResolveStrategy>(json!("variable_type")).unwrap(), ResolveStrategy::VariableType);
+        assert_eq!(serde_json::from_value::<ResolveStrategy>(json!("handler")).unwrap(), ResolveStrategy::Handler);
+
+        assert_eq!(serde_json::from_value::<PickStrategy>(json!("shallowest_dir")).unwrap(), PickStrategy::ShallowestDir);
+        assert_eq!(serde_json::from_value::<PickStrategy>(json!("by_namespace_key")).unwrap(), PickStrategy::ByNamespaceKey);
+
+        assert_eq!(serde_json::from_value::<EntryFieldFrom>(json!("key")).unwrap(), EntryFieldFrom::Key);
+    }
+
+    /// `LoaderSpec` + `LoaderSource` round-trip; the source is a tagged enum so each `kind` must parse.
+    #[test]
+    fn loader_spec_and_source_roundtrip() {
+        for src in [
+            json!({ "kind": "builtin", "name": "php_db_schema" }),
+            json!({ "kind": "file", "path": "config/app.php", "key_path": "aliases" }),
+            json!({ "kind": "glob", "pattern": "lang/*/*.php", "locale_regex": "lang/([a-z]+)/" }),
+            json!({ "kind": "inline", "rows": [ { "k": "v" } ] }),
+        ] {
+            let ls: LoaderSpec = serde_json::from_value(json!({
+                "id": "l", "table": "schema", "from": src
+            }))
+            .unwrap_or_else(|e| panic!("loader spec must deserialize: {e}"));
+            assert_eq!(ls.table, "schema");
+            assert!((ls.confidence - 0.9).abs() < 1e-6, "LoaderSpec 默认置信度");
+        }
+    }
+
+    /// `RootSource::ManifestEntries` (the multi-connection form) carries its `fields` and round-trips;
+    /// `EntryField` requires `name` and defaults `pointer` / `from`.
+    #[test]
+    fn root_source_manifest_entries_roundtrips() {
+        let rs: RootSource = serde_json::from_value(json!({
+            "kind": "manifest_entries",
+            "manifest": "config/database.php",
+            "root": "connections",
+            "fields": [
+                { "name": "driver", "pointer": "{key}.driver" },
+                { "name": "name", "from": "key" }
+            ],
+            "default_from": "default"
+        }))
+        .expect("ManifestEntries must deserialize");
+        match rs {
+            RootSource::ManifestEntries { root, fields, default_from, .. } => {
+                assert_eq!(root, "connections");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "driver");
+                assert_eq!(fields[0].pointer.as_deref(), Some("{key}.driver"));
+                assert_eq!(fields[1].from, Some(EntryFieldFrom::Key));
+                assert_eq!(default_from.as_deref(), Some("default"));
+            }
+            _ => panic!("expected ManifestEntries"),
+        }
+    }
 }

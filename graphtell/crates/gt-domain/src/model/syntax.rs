@@ -359,3 +359,138 @@ impl Default for FactValue {
         FactValue::Null
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Language;
+    use crate::port::LanguageParser;
+
+    // ===== `FactValue`: the statically-evaluable literal, carried through every parser as `tag = "t"`,
+    // `content = "v"`. The tag/content form must round-trip for every variant, and the accessors must agree
+    // with the documented semantics. =====
+
+    #[test]
+    fn fact_value_serde_roundtrips_every_variant() {
+        for v in [
+            FactValue::String("x".into()),
+            FactValue::ClassConst("Foo".into()),
+            FactValue::Int(5),
+            FactValue::Float(1.5),
+            FactValue::Bool(true),
+            FactValue::Null,
+            FactValue::Unknown(Some("var".into())),
+            FactValue::Unknown(None),
+            FactValue::Array(vec![
+                ("k".into(), FactValue::String("v".into())),
+                ("n".into(), FactValue::Int(3)),
+            ]),
+        ] {
+            let json = serde_json::to_value(&v).expect("serializable");
+            let back: FactValue = serde_json::from_value(json).expect("round-trips");
+            assert_eq!(back, v);
+        }
+        // Unit variant serializes without a content wrapper.
+        assert_eq!(
+            serde_json::to_value(FactValue::Null).unwrap(),
+            serde_json::json!({ "t": "Null" })
+        );
+    }
+
+    #[test]
+    fn fact_value_as_str_only_for_text_variants() {
+        assert_eq!(FactValue::String("x".into()).as_str(), Some("x"));
+        assert_eq!(FactValue::ClassConst("Foo".into()).as_str(), Some("Foo"));
+        assert!(FactValue::Int(1).as_str().is_none());
+        assert!(FactValue::Bool(true).as_str().is_none());
+        assert!(FactValue::Null.as_str().is_none());
+        assert!(FactValue::Array(vec![]).as_str().is_none());
+        assert!(FactValue::Unknown(Some("v".into())).as_str().is_none());
+    }
+
+    #[test]
+    fn fact_value_array_helpers_ignore_keys_and_non_arrays() {
+        let arr = FactValue::Array(vec![
+            ("a".into(), FactValue::Int(1)),
+            ("b".into(), FactValue::String("two".into())),
+        ]);
+        assert_eq!(arr.array_len(), 2);
+        assert_eq!(arr.array_values().len(), 2);
+        assert!(matches!(arr.array_values()[1], FactValue::String(_)));
+        // Non-array values degrade to empty, not a panic.
+        assert_eq!(FactValue::Int(1).array_len(), 0);
+        assert!(FactValue::Int(1).array_values().is_empty());
+    }
+
+    /// `get` matches by exact key OR by a key wrapped in single / double quotes — config entries come from PHP
+    /// (`'listen.order'`) and JSON (`"listen.order"`) alike, and the trim is what lets one lookup hit both.
+    #[test]
+    fn fact_value_get_trims_quotes_and_matches_keys() {
+        let arr = FactValue::Array(vec![
+            ("'k1'".into(), FactValue::Int(1)),
+            ("\"k2\"".into(), FactValue::Int(2)),
+            ("k3".into(), FactValue::Int(3)),
+        ]);
+        assert_eq!(arr.get("k1"), Some(&FactValue::Int(1)), "single-quote trimmed");
+        assert_eq!(arr.get("k2"), Some(&FactValue::Int(2)), "double-quote trimmed");
+        assert_eq!(arr.get("k3"), Some(&FactValue::Int(3)), "exact match");
+        assert!(arr.get("missing").is_none());
+        // A non-array has no keys.
+        assert!(FactValue::String("x".into()).get("k1").is_none());
+    }
+
+    // ===== `NamespacePolicy`: notation rules, derived from a parser. The `Default` is deliberately empty (no
+    // PHP fallback) so an unwired language is visible, not misread. =====
+
+    #[test]
+    fn namespace_policy_default_is_empty_not_php() {
+        let d = NamespacePolicy::default();
+        assert!(d.ns_separator.is_none(), "未知语言没有任何命名空间分隔符");
+        assert!(d.ns_separators.is_empty());
+        assert!(d.member_separator.is_empty());
+        assert!(d.variable_prefixes.is_empty());
+        assert!(d.builtin_types.is_empty());
+        assert!(!d.bare_field_receivers);
+    }
+
+    #[test]
+    fn join_member_uses_the_member_separator() {
+        let php = NamespacePolicy {
+            member_separator: "::".into(),
+            ..NamespacePolicy::default()
+        };
+        assert_eq!(php.join_member("App\\Foo", "bar"), "App\\Foo::bar");
+
+        let java = NamespacePolicy {
+            member_separator: ".".into(),
+            ..NamespacePolicy::default()
+        };
+        assert_eq!(java.join_member("com.Foo", "bar"), "com.Foo.bar");
+    }
+
+    /// `from_parser` wires the notation rules straight from the port — the kernel reads them, never the language.
+    struct FakeParser;
+    impl LanguageParser for FakeParser {
+        fn language(&self) -> Language { Language::new("php") }
+        fn extensions(&self) -> &'static [&'static str] { &["php"] }
+        fn parse(&self, _path: &str, _src: &str) -> crate::error::Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] { &['\\', '.'] }
+        fn member_separator(&self) -> &'static str { "::" }
+        fn variable_prefixes(&self) -> &'static [&'static str] { &["$"] }
+        fn builtin_types(&self) -> &'static [&'static str] { &["int", "string"] }
+        fn bare_field_receivers(&self) -> bool { true }
+    }
+
+    #[test]
+    fn namespace_policy_from_parser_maps_port_fields() {
+        let p = NamespacePolicy::from_parser(&FakeParser);
+        assert_eq!(p.ns_separator, Some('\\'), "取第一个命名空间分隔符");
+        assert_eq!(p.ns_separators, vec!['\\', '.']);
+        assert_eq!(p.member_separator, "::");
+        assert_eq!(p.variable_prefixes, vec!["$".to_string()]);
+        assert_eq!(p.builtin_types, vec!["int".to_string(), "string".to_string()]);
+        assert!(p.bare_field_receivers);
+    }
+}

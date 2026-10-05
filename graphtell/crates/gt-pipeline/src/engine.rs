@@ -1331,7 +1331,10 @@ pub fn _assert_language(_l: &Language) {}
 mod tests {
     use super::*;
     use crate::workspace::GraphWorkspace;
-    use gt_domain::model::{Language, NodeId, ProjectId, Span};
+    use gt_domain::model::{
+        AnnotateAction, AnnotationSpec, FanInThresholds, Language, NewNode, NodeId, NodeKind,
+        Phase, Project, ProjectAction, ProjectConfig, ProjectId, ProjectStatus, Span,
+    };
 
     fn call_record(receiver: Option<&str>, method: Option<&str>, callee: &str) -> CallRecord {
         CallRecord {
@@ -1472,6 +1475,960 @@ mod tests {
         // The main source (arg0, no args) cannot be taken; fall back to owner_class.
         let value = ev.string(&vs).or_else(|| ev2.string(&fb));
         assert_eq!(value, Some("app\\services\\Foo".to_string()));
+    }
+
+    // ===== Below: the gaps the original 6 tests left open — callee pattern forms, path / locale
+    // helpers, FQN normalisation, entry-method resolution, predicate evaluation and binding execution. =====
+
+    fn ctx() -> PipelineContext {
+        PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            config: ProjectConfig::default(),
+            status: ProjectStatus::Created,
+            created_at: 0,
+            updated_at: 0,
+        })
+    }
+
+    fn node(ctx: &mut PipelineContext, kind: &str, name: &str, fqn: &str) -> NodeId {
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind::from(kind),
+            name: name.to_string(),
+            fqn: Some(fqn.to_string()),
+            identity: None,
+            file_id: None,
+            span: Span::default(),
+            language: Language::default(),
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        })
+    }
+
+    fn policy_with(member_separator: &str, ns: Vec<char>) -> NamespacePolicy {
+        NamespacePolicy {
+            member_separator: member_separator.to_string(),
+            ns_separators: ns,
+            ..Default::default()
+        }
+    }
+
+    // ---------------------------------------------------------------- callee patterns
+
+    #[test]
+    fn callee_matches_alternatives_and_method_lists() {
+        // `|` alternatives, each trimmed; empty segments are ignored.
+        assert!(callee_matches(
+            "Db::name | Cache::get",
+            "Db::name",
+            Some("Db"),
+            Some("name")
+        ));
+        assert!(callee_matches(
+            "Db::name |",
+            "Db::name",
+            Some("Db"),
+            Some("name")
+        ));
+        assert!(!callee_matches(
+            "Cache::get",
+            "Db::name",
+            Some("Db"),
+            Some("name")
+        ));
+        assert!(
+            !callee_matches("", "Db::name", Some("Db"), Some("name")),
+            "空模式没有任何候选项，不应匹配"
+        );
+
+        // `A::{b,c}` method lists.
+        assert!(callee_matches(
+            "Db::{name,table}",
+            "Db::name",
+            Some("Db"),
+            Some("name")
+        ));
+        assert!(callee_matches(
+            "Db::{name,table}",
+            "Db::table",
+            Some("Db"),
+            Some("table")
+        ));
+        assert!(!callee_matches(
+            "Db::{name,table}",
+            "Db::insert",
+            Some("Db"),
+            Some("insert")
+        ));
+        // A receiver that does not match short-circuits the whole list.
+        assert!(!callee_matches(
+            "Cache::{name}",
+            "Db::name",
+            Some("Db"),
+            Some("name")
+        ));
+        // Without a method there is nothing to match against the list.
+        assert!(!callee_matches(
+            "Db::{name}",
+            "Db::name",
+            Some("Db"),
+            None
+        ));
+    }
+
+    #[test]
+    fn callee_matches_arrow_single_colon_and_bare_method_forms() {
+        assert!(callee_matches(
+            "Db->name",
+            "Db->name",
+            Some("Db"),
+            Some("name")
+        ));
+        // Single-colon form: `*:dispatch` = any receiver, method `dispatch`.
+        assert!(callee_matches(
+            "*:dispatch",
+            "->dispatch",
+            Some("$this"),
+            Some("dispatch")
+        ));
+        assert!(!callee_matches(
+            "*:dispatch",
+            "->save",
+            Some("$this"),
+            Some("save")
+        ));
+        // A bare pattern matches the method name first, then the callee / its `::suffix`.
+        assert!(callee_matches("save", "Foo::save", Some("Foo"), Some("save")));
+        assert!(callee_matches(
+            "Foo::save",
+            "Foo::save",
+            Some("Foo"),
+            Some("save")
+        ));
+        assert!(!callee_matches(
+            "insert",
+            "Foo::save",
+            Some("Foo"),
+            Some("save")
+        ));
+        // Case-insensitive throughout.
+        assert!(callee_matches(
+            "DB::NAME",
+            "Db::name",
+            Some("Db"),
+            Some("name")
+        ));
+        assert!(callee_matches("save", "Foo::SAVE", Some("Foo"), Some("SAVE")));
+    }
+
+    #[test]
+    fn callee_matches_wildcards_and_receiver_tail_matching() {
+        assert!(callee_matches(
+            "*::get",
+            "Cache::get",
+            Some("Cache"),
+            Some("get")
+        ));
+        assert!(callee_matches(
+            "Db::*",
+            "Db::anything",
+            Some("Db"),
+            Some("anything")
+        ));
+        assert!(!callee_matches(
+            "*::get",
+            "Cache::set",
+            Some("Cache"),
+            Some("set")
+        ));
+        // Umbrella tail match: `Queue` matches `think\facade\Queue`.
+        assert!(callee_matches(
+            "Queue::push",
+            "think\\facade\\Queue::push",
+            Some("think\\facade\\Queue"),
+            Some("push")
+        ));
+        // A leading namespace separator is folded away (PHP `\App\Db`).
+        assert!(callee_matches(
+            "App\\Db::name",
+            "App\\Db::name",
+            Some("\\App\\Db"),
+            Some("name")
+        ));
+        // A different umbrella does not match.
+        assert!(!callee_matches(
+            "Queue::push",
+            "Cache::push",
+            Some("Cache"),
+            Some("push")
+        ));
+    }
+
+    // ---------------------------------------------------------------- path / locale
+
+    #[test]
+    fn path_matches_expands_locale_and_handles_wildcards() {
+        // `{locale}` becomes a `*` and therefore never participates in matching.
+        assert!(path_matches("lang/{locale}.php", "lang/zh-cn.php"));
+        assert!(path_matches("lang/{locale}.php", "lang/en-us.php"));
+        assert!(path_matches("*.php", "app/deep/x.php"));
+        assert!(path_matches("lang/*", "lang/zh-cn"));
+        assert!(path_matches("", "anything"), "空模式匹配一切");
+        // A pattern without `*` is a **suffix** match (paths are given from the project root).
+        assert!(path_matches("config/app.php", "crmeb/config/app.php"));
+        // A pattern that does contain `*` is anchored at its first segment, so a deeper path fails.
+        assert!(
+            !path_matches("lang/*", "crmeb/lang/zh-cn"),
+            "带通配符的模式按首段锚定（与非通配符的后缀匹配不同）"
+        );
+        assert!(!path_matches("*.php", "x.php.bak"), "末段必须真的是路径结尾");
+    }
+
+    #[test]
+    fn capture_locale_extracts_only_the_placeholder_segment() {
+        assert_eq!(
+            capture_locale("lang/{locale}.php", "lang/zh-cn.php"),
+            Some("zh-cn".to_string())
+        );
+        // With no suffix the segment runs up to the next `/`.
+        assert_eq!(
+            capture_locale("lang/{locale}", "lang/zh-cn/group.php"),
+            Some("zh-cn".to_string())
+        );
+        assert_eq!(
+            capture_locale("lang/{locale}", "lang/zh-cn"),
+            Some("zh-cn".to_string())
+        );
+        // The prefix must match and the suffix must actually be present.
+        assert_eq!(capture_locale("lang/{locale}.php", "other/zh-cn.php"), None);
+        assert_eq!(capture_locale("lang/{locale}.php", "lang/zh-cn"), None);
+        // No placeholder at all -> nothing to capture.
+        assert_eq!(capture_locale("lang/zh-cn.php", "lang/zh-cn.php"), None);
+    }
+
+    // ---------------------------------------------------------------- schema / FQN normalisation
+
+    #[test]
+    fn column_matches_and_schema_columns() {
+        assert!(column_matches("user_id", "id"));
+        assert!(column_matches("USER_ID", "id"));
+        assert!(
+            !column_matches("identity", "id"),
+            "`identity` 不是 `id` 列：只有 `_id` 结尾才算"
+        );
+
+        let mut ctx = ctx();
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "schema",
+            "user",
+            serde_json::json!({ "columns": ["id", "user_id", "name"] }),
+        );
+        assert_eq!(
+            schema_columns(&ctx.ws, "schema", "user"),
+            Some(vec![
+                "id".to_string(),
+                "user_id".to_string(),
+                "name".to_string()
+            ])
+        );
+        assert_eq!(schema_columns(&ctx.ws, "schema", "nope"), None);
+        // A `columns` key that is not an array yields no columns rather than panicking.
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "schema",
+            "bad",
+            serde_json::json!({ "columns": "x" }),
+        );
+        assert_eq!(schema_columns(&ctx.ws, "schema", "bad"), Some(vec![]));
+    }
+
+    /// The original value is tried **first**, so nothing that already matched is changed.
+    #[test]
+    fn fqn_variants_folds_separators_and_keeps_the_original_first() {
+        assert_eq!(
+            fqn_variants("app\\common\\X"),
+            vec!["app\\common\\X".to_string()]
+        );
+        // A string literal escapes the separator into two characters: fold them.
+        assert_eq!(
+            fqn_variants("app\\\\common\\\\X"),
+            vec![
+                "app\\\\common\\\\X".to_string(),
+                "app\\common\\X".to_string()
+            ]
+        );
+        // A leading separator (global-namespace form) is offered as an extra candidate.
+        assert_eq!(
+            fqn_variants("\\app\\X"),
+            vec!["\\app\\X".to_string(), "app\\X".to_string()]
+        );
+        let v = fqn_variants("\\\\a\\\\b");
+        assert_eq!(v[0], "\\\\a\\\\b");
+        assert!(v.iter().all(|x| !x.is_empty()));
+        let mut seen = std::collections::HashSet::new();
+        assert!(v.iter().all(|x| seen.insert(x.clone())), "候选不应重复");
+    }
+
+    // ---------------------------------------------------------------- entry methods / target resolution
+
+    #[test]
+    fn entry_methods_for_prefers_the_sub_project_then_the_default() {
+        let mut ctx = ctx();
+        ctx.entry_methods
+            .insert(1, vec!["handle".to_string(), "fire".to_string()]);
+        ctx.entry_methods_default = vec!["__invoke".to_string()];
+
+        assert_eq!(
+            entry_methods_for(&ctx, Some(SubProjectId::new(1))),
+            vec!["handle".to_string(), "fire".to_string()]
+        );
+        // A sub-project that declares none falls back to the global list.
+        assert_eq!(
+            entry_methods_for(&ctx, Some(SubProjectId::new(2))),
+            vec!["__invoke".to_string()]
+        );
+        assert_eq!(
+            entry_methods_for(&ctx, None),
+            vec!["__invoke".to_string()]
+        );
+    }
+
+    /// Consumer resolution: FKB's `entry_methods` beats the built-in convention list, an explicitly given
+    /// method beats both, and the class itself is the last resort.
+    #[test]
+    fn find_target_node_prefers_the_declared_entry_method() {
+        let mut ctx = ctx();
+        let cls = node(&mut ctx, "Class", "SendMsg", "app\\Job\\SendMsg");
+        let handle = node(&mut ctx, "Method", "handle", "app\\Job\\SendMsg::handle");
+        let fire = node(&mut ctx, "Method", "fire", "app\\Job\\SendMsg::fire");
+        let policy = policy_with("::", vec!['\\']);
+        let kind = EdgeKind("HandledBy".to_string());
+
+        assert_eq!(
+            find_target_node(
+                &ctx,
+                "app\\Job\\SendMsg",
+                &kind,
+                None,
+                &["handle".to_string()],
+                &policy
+            ),
+            Some(handle)
+        );
+        // An explicit method (array-style handler `[Ctrl::class, 'fire']`) outranks the entry list.
+        assert_eq!(
+            find_target_node(
+                &ctx,
+                "app\\Job\\SendMsg",
+                &kind,
+                Some("fire"),
+                &["handle".to_string()],
+                &policy
+            ),
+            Some(fire)
+        );
+        // None of the declared entries exists -> degrade to the class itself.
+        assert_eq!(
+            find_target_node(
+                &ctx,
+                "app\\Job\\SendMsg",
+                &kind,
+                None,
+                &["execute".to_string()],
+                &policy
+            ),
+            Some(cls)
+        );
+        assert_eq!(
+            find_target_node(
+                &ctx,
+                "app\\Nope",
+                &kind,
+                None,
+                &["handle".to_string()],
+                &policy
+            ),
+            None
+        );
+    }
+
+    /// The member separator comes from the language policy: `com.x.Job.handle`, never a hard-coded `::`.
+    #[test]
+    fn find_target_node_tolerates_escaped_fqns_and_uses_the_policy_separator() {
+        let mut ctx = ctx();
+        node(&mut ctx, "Class", "SendMsg", "app\\Job\\SendMsg");
+        let handle = node(&mut ctx, "Method", "handle", "app\\Job\\SendMsg::handle");
+        let policy = policy_with("::", vec!['\\']);
+        let kind = EdgeKind("HandledBy".to_string());
+
+        // The string-literal form arrives with the separator escaped into two characters.
+        assert_eq!(
+            find_target_node(
+                &ctx,
+                "app\\\\Job\\\\SendMsg",
+                &kind,
+                None,
+                &["handle".to_string()],
+                &policy
+            ),
+            Some(handle)
+        );
+        // The global-namespace form carries a leading separator.
+        assert_eq!(
+            find_target_node(
+                &ctx,
+                "\\app\\Job\\SendMsg",
+                &kind,
+                None,
+                &["handle".to_string()],
+                &policy
+            ),
+            Some(handle)
+        );
+
+        let java = policy_with(".", vec!['.']);
+        node(&mut ctx, "Class", "Job", "com.x.Job");
+        let jhandle = node(&mut ctx, "Method", "handle", "com.x.Job.handle");
+        assert_eq!(
+            find_target_node(
+                &ctx,
+                "com.x.Job",
+                &kind,
+                None,
+                &["handle".to_string()],
+                &java
+            ),
+            Some(jhandle)
+        );
+    }
+
+    // ---------------------------------------------------------------- selectors + predicates
+
+    #[test]
+    fn matches_node_gates_on_kind_and_predicates() {
+        let mut ctx = ctx();
+        let m = node(&mut ctx, "Method", "createOrder", "app\\Svc::createOrder");
+
+        assert!(!matches_node(
+            &Selector::Node {
+                node_kind: Some(NodeKind::from("Class")),
+                r#where: vec![]
+            },
+            m,
+            &ctx.ws
+        ));
+        assert!(!matches_node(
+            &Selector::Node {
+                node_kind: None,
+                r#where: vec![]
+            },
+            NodeId(9999),
+            &ctx.ws
+        ));
+        // A selector of another kind never matches a node.
+        assert!(!matches_node(
+            &Selector::Call {
+                callee: None,
+                r#where: vec![]
+            },
+            m,
+            &ctx.ws
+        ));
+
+        let hit = Selector::Node {
+            node_kind: Some(NodeKind::from("Method")),
+            r#where: vec![Predicate::NameMatches("order".to_string())],
+        };
+        assert!(matches_node(&hit, m, &ctx.ws));
+        let miss = Selector::Node {
+            node_kind: Some(NodeKind::from("Method")),
+            r#where: vec![Predicate::NameMatches("zzz".to_string())],
+        };
+        assert!(!matches_node(&miss, m, &ctx.ws));
+    }
+
+    #[test]
+    fn eval_predicate_node_forms() {
+        let mut ctx = ctx();
+        let n = node(&mut ctx, "Method", "createOrder", "app\\Svc::createOrder");
+        // `property_is` reads the node's JSON, `has_property` reads the recorded class-property defaults.
+        ctx.ws
+            .patch_properties(n, serde_json::json!({ "in_loop": true, "tier": "hot" }));
+        ctx.ws
+            .record_property(n, "table", FactValue::String("orders".to_string()));
+        let ev = Evaluator::new(&ctx.ws, MatchCtx::Node(n));
+
+        assert!(eval_predicate(
+            &Predicate::HasProperty("table".to_string()),
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        assert!(!eval_predicate(
+            &Predicate::HasProperty("nope".to_string()),
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        // A JSON **boolean** compares equal to the `"true"` the rule writes.
+        assert!(eval_predicate(
+            &Predicate::PropertyIs {
+                name: "in_loop".to_string(),
+                value: "true".to_string()
+            },
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        assert!(!eval_predicate(
+            &Predicate::PropertyIs {
+                name: "in_loop".to_string(),
+                value: "false".to_string()
+            },
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        assert!(eval_predicate(
+            &Predicate::PropertyIs {
+                name: "tier".to_string(),
+                value: "hot".to_string()
+            },
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        // Name / FQN substring matching is case-insensitive.
+        assert!(eval_predicate(
+            &Predicate::FqnMatches("APP\\SVC".to_string()),
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        assert!(eval_predicate(
+            &Predicate::NameNotIn(vec!["other".to_string()]),
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        assert!(!eval_predicate(
+            &Predicate::NameNotIn(vec!["createorder".to_string()]),
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+        // fan_in is edge-based: no in-edges yet.
+        assert!(!eval_predicate(
+            &Predicate::FanInGte(1),
+            n,
+            Some(MatchCtx::Node(n)),
+            &ctx.ws,
+            &ev
+        ));
+    }
+
+    /// Call / config predicates are context-sensitive: outside their context they are false, not "unknown".
+    #[test]
+    fn eval_predicate_call_and_config_forms() {
+        let ws = GraphWorkspace::new(ProjectId(1));
+        let mut rec = call_record(Some("Route"), Some("get"), "Route::get");
+        rec.args = vec![FactValue::String("crontab/run".to_string())];
+        let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
+
+        assert!(eval_predicate(
+            &Predicate::ArgCount(1),
+            rec.node,
+            Some(MatchCtx::Call(&rec)),
+            &ws,
+            &ev
+        ));
+        assert!(!eval_predicate(
+            &Predicate::ArgCount(2),
+            rec.node,
+            Some(MatchCtx::Call(&rec)),
+            &ws,
+            &ev
+        ));
+        assert!(eval_predicate(
+            &Predicate::ArgStartsWith {
+                arg: 0,
+                prefix: "crontab/".to_string()
+            },
+            rec.node,
+            Some(MatchCtx::Call(&rec)),
+            &ws,
+            &ev
+        ));
+        assert!(!eval_predicate(
+            &Predicate::ArgStartsWith {
+                arg: 0,
+                prefix: "api/".to_string()
+            },
+            rec.node,
+            Some(MatchCtx::Call(&rec)),
+            &ws,
+            &ev
+        ));
+        assert!(!eval_predicate(
+            &Predicate::ArgCount(1),
+            rec.node,
+            Some(MatchCtx::Node(rec.node)),
+            &ws,
+            &ev
+        ));
+        assert!(!eval_predicate(
+            &Predicate::ArgCount(1),
+            rec.node,
+            None,
+            &ws,
+            &ev
+        ));
+
+        // `entry_arity_gte` admits only **array-valued** config entries, dropping the scalar leaves that
+        // PHP array expansion leaves alongside their parent.
+        let cfg = ConfigRecord {
+            file: "app/event.php".to_string(),
+            key_path: "listen.evt".to_string(),
+            value: FactValue::Array(vec![
+                ("0".to_string(), FactValue::String("a".to_string())),
+                ("1".to_string(), FactValue::String("b".to_string())),
+            ]),
+            span: Span::default(),
+            sub: None,
+            locale: None,
+            file_stem: None,
+        };
+        let ev2 = Evaluator::new(&ws, MatchCtx::Config(&cfg));
+        assert!(eval_predicate(
+            &Predicate::EntryArityGte(2),
+            rec.node,
+            Some(MatchCtx::Config(&cfg)),
+            &ws,
+            &ev2
+        ));
+        let scalar = ConfigRecord {
+            value: FactValue::String("x".to_string()),
+            ..cfg.clone()
+        };
+        let ev3 = Evaluator::new(&ws, MatchCtx::Config(&scalar));
+        assert!(!eval_predicate(
+            &Predicate::EntryArityGte(1),
+            rec.node,
+            Some(MatchCtx::Config(&scalar)),
+            &ws,
+            &ev3
+        ));
+    }
+
+    // ---------------------------------------------------------------- binding execution
+
+    #[test]
+    fn resolve_subkind_literal_fan_in_and_missing_locales() {
+        let mut ctx = ctx();
+        let n = node(&mut ctx, "Method", "run", "app\\Svc::run");
+
+        assert_eq!(
+            resolve_subkind(
+                &ctx,
+                &Some(SubkindSource::Literal("raw".to_string())),
+                n,
+                MatchCtx::Node(n)
+            ),
+            Some("raw".to_string())
+        );
+        assert_eq!(resolve_subkind(&ctx, &None, n, MatchCtx::Node(n)), None);
+
+        // fan_in grading with the built-in labels.
+        let low = FanInThresholds {
+            high: 10,
+            medium: 5,
+            low_label: None,
+            medium_label: None,
+            high_label: None,
+        };
+        assert_eq!(
+            resolve_subkind(
+                &ctx,
+                &Some(SubkindSource::FromFanIn { thresholds: low }),
+                n,
+                MatchCtx::Node(n)
+            ),
+            Some("low".to_string())
+        );
+        let other = node(&mut ctx, "Method", "caller", "app\\Svc::caller");
+        ctx.ws.add_edge(NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind("Calls".to_string()),
+            from_id: other,
+            to_id: n,
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        });
+        assert_eq!(ctx.ws.fan_in(n), 1);
+        let high = FanInThresholds {
+            high: 1,
+            medium: 1,
+            low_label: None,
+            medium_label: None,
+            high_label: None,
+        };
+        assert_eq!(
+            resolve_subkind(
+                &ctx,
+                &Some(SubkindSource::FromFanIn { thresholds: high }),
+                n,
+                MatchCtx::Node(n)
+            ),
+            Some("high".to_string())
+        );
+
+        // `missing_locales` reports what is absent — and nothing once it is complete.
+        let i18n = node(&mut ctx, "I18nKey", "k", "i18n:k");
+        ctx.ws.patch_properties(
+            i18n,
+            serde_json::json!({ "texts": { "zh-cn": "x" }, "required_locales": ["zh-cn", "en-us"] }),
+        );
+        assert_eq!(
+            resolve_subkind(
+                &ctx,
+                &Some(SubkindSource::Computed("missing_locales".to_string())),
+                i18n,
+                MatchCtx::Node(n)
+            ),
+            Some("en-us".to_string())
+        );
+        ctx.ws.patch_properties(
+            i18n,
+            serde_json::json!({ "texts": { "zh-cn": "x", "en-us": "y" } }),
+        );
+        assert_eq!(
+            resolve_subkind(
+                &ctx,
+                &Some(SubkindSource::Computed("missing_locales".to_string())),
+                i18n,
+                MatchCtx::Node(n)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn exec_binding_annotate_composes_confidence_and_gates_on_phase() {
+        let mut ctx = ctx();
+        let m = node(&mut ctx, "Method", "run", "app\\Svc::run");
+        let action = Action::Annotate(AnnotateAction {
+            target: AnnotateTarget::Matched,
+            annotations: vec![AnnotationSpec {
+                kind: "pii".to_string(),
+                confidence: 0.5,
+                ..Default::default()
+            }],
+            confidence_scale: Some(0.5),
+            ..Default::default()
+        });
+        let rule = Rule {
+            id: "r".to_string(),
+            phase: Phase("AnnotatePre".to_string()),
+            selector: Selector::Node {
+                node_kind: None,
+                r#where: vec![],
+            },
+            binding: vec![action],
+            confidence: 0.8,
+            languages: None,
+        };
+        let mut last = None;
+        exec_binding(
+            &mut ctx,
+            &rule,
+            MatchCtx::Node(m),
+            m,
+            m,
+            None,
+            &Phase("AnnotatePre".to_string()),
+            &mut last,
+        );
+
+        let got = ctx.ws.annotations_of(m);
+        assert_eq!(got.len(), 1);
+        // spec.confidence * rule.confidence * confidence_scale = 0.5 * 0.8 * 0.5
+        assert!(
+            (got[0].confidence - 0.2).abs() < 1e-6,
+            "置信度应为 0.5*0.8*0.5=0.2，实际 {}",
+            got[0].confidence
+        );
+        assert_eq!(got[0].evidence["hook"], serde_json::json!("r"));
+
+        // An action declared for the other phase is skipped outright.
+        let post = Action::Annotate(AnnotateAction {
+            phase: Some(Phase("Post".to_string())),
+            target: AnnotateTarget::Matched,
+            annotations: vec![AnnotationSpec {
+                kind: "leak".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let rule2 = Rule {
+            id: "r2".to_string(),
+            phase: Phase("AnnotatePre".to_string()),
+            selector: Selector::Node {
+                node_kind: None,
+                r#where: vec![],
+            },
+            binding: vec![post],
+            confidence: 1.0,
+            languages: None,
+        };
+        exec_binding(
+            &mut ctx,
+            &rule2,
+            MatchCtx::Node(m),
+            m,
+            m,
+            None,
+            &Phase("AnnotatePre".to_string()),
+            &mut last,
+        );
+        assert!(
+            !ctx.ws.has_annotation(m, "leak"),
+            "声明为 Post 的动作不应在 Pre 阶段执行"
+        );
+    }
+
+    /// An `@last` reference with nothing synthesised yet resolves to no target: the rule must say so
+    /// (diagnostic) instead of silently dropping the annotation.
+    #[test]
+    fn exec_binding_diagnoses_an_unresolvable_annotate_target() {
+        let mut ctx = ctx();
+        let m = node(&mut ctx, "Method", "run", "app\\Svc::run");
+        let action = Action::Annotate(AnnotateAction {
+            target: AnnotateTarget::SynthesizedRef("@last".to_string()),
+            annotations: vec![AnnotationSpec {
+                kind: "x".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let rule = Rule {
+            id: "r".to_string(),
+            phase: Phase("AnnotatePre".to_string()),
+            selector: Selector::Node {
+                node_kind: None,
+                r#where: vec![],
+            },
+            binding: vec![action],
+            confidence: 1.0,
+            languages: None,
+        };
+        let mut last = None;
+        exec_binding(
+            &mut ctx,
+            &rule,
+            MatchCtx::Node(m),
+            m,
+            m,
+            None,
+            &Phase("AnnotatePre".to_string()),
+            &mut last,
+        );
+        assert!(
+            ctx.ws.annotations_of(m).is_empty(),
+            "目标解析不到时不应产生注解"
+        );
+        // Once a node has been synthesised the same target resolves to it.
+        let synth = node(&mut ctx, "Queue", "q", "queue:q");
+        last = Some(synth);
+        exec_binding(
+            &mut ctx,
+            &rule,
+            MatchCtx::Node(m),
+            m,
+            m,
+            None,
+            &Phase("AnnotatePre".to_string()),
+            &mut last,
+        );
+        assert!(ctx.ws.has_annotation(synth, "x"), "有 @last 时应落到该节点");
+    }
+
+    /// `Project` exists for one-to-many: every `along` out-edge yields its own edge, and a self-reference
+    /// carries no information.
+    #[test]
+    fn exec_project_builds_one_edge_per_out_edge_and_skips_self_loops() {
+        let mut ctx = ctx();
+        let a = node(&mut ctx, "Class", "A", "app\\A");
+        let t1 = node(&mut ctx, "Table", "t1", "t1");
+        let t2 = node(&mut ctx, "Table", "t2", "t2");
+        let maps_to = |from: NodeId, to: NodeId| NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind("MapsTo".to_string()),
+            from_id: from,
+            to_id: to,
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        };
+        ctx.ws.add_edge(maps_to(a, t1));
+        ctx.ws.add_edge(maps_to(a, t2));
+        ctx.ws.add_edge(maps_to(a, a));
+
+        let p = ProjectAction {
+            kind: EdgeKind("WritesDb".to_string()),
+            along: EdgeKind("MapsTo".to_string()),
+            from: vec![],
+            to: vec![],
+            confidence: None,
+        };
+        let rule = Rule {
+            id: "r".to_string(),
+            phase: Phase("AnnotatePre".to_string()),
+            selector: Selector::Node {
+                node_kind: None,
+                r#where: vec![],
+            },
+            binding: vec![],
+            confidence: 0.9,
+            languages: None,
+        };
+        exec_project(&mut ctx, &rule, &p, a, &Phase("AnnotatePre".to_string()));
+
+        let written: Vec<(i64, i64)> = ctx
+            .ws
+            .edges()
+            .iter()
+            .filter(|e| e.kind.as_str() == "WritesDb")
+            .map(|e| (e.from_id.get(), e.to_id.get()))
+            .collect();
+        assert_eq!(
+            written,
+            vec![(a.get(), t1.get()), (a.get(), t2.get())],
+            "每条 along 出边投影一条，自环跳过"
+        );
+        assert!(
+            ctx.ws
+                .edges()
+                .iter()
+                .filter(|e| e.kind.as_str() == "WritesDb")
+                .all(|e| (e.confidence - 0.9).abs() < 1e-6),
+            "未声明置信度时取规则的置信度"
+        );
     }
 }
 

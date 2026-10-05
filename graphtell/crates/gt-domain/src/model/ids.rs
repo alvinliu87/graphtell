@@ -45,3 +45,33 @@ declare_ids! {
     NodeId       => "graph node",
     EdgeId       => "graph edge",
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two invariants the macro cannot state itself, but that callers silently rely on.
+    ///
+    /// Everything else the macro generates (`new` / `get` / `From` / `Display` / `Ord`) is guaranteed by
+    /// the derives — the one thing a test *cannot* cover is "a `FileId` never reaches a `NodeId` slot",
+    /// which is a compile-time property.
+    #[test]
+    fn default_is_the_none_sentinel_and_ids_serialize_as_bare_integers() {
+        // `Default` is derived while `NONE` is hand-written, so nothing keeps them in sync: if either
+        // moved, "a default-constructed id" would stop meaning "no id".
+        assert_eq!(NodeId::default(), NodeId::NONE);
+        assert_eq!(NodeId::default().get(), 0);
+        assert!(NodeId::default().is_none());
+        assert_eq!(SubProjectId::default(), SubProjectId::NONE);
+        assert!(!NodeId::new(1).is_none());
+
+        // A newtype serialises **transparently** (`42`, not `{"0": 42}`) — persisted ids and API
+        // responses depend on that shape.
+        assert_eq!(
+            serde_json::to_value(NodeId(42)).unwrap(),
+            serde_json::json!(42)
+        );
+        let back: NodeId = serde_json::from_value(serde_json::json!(42)).unwrap();
+        assert_eq!(back, NodeId(42));
+    }
+}

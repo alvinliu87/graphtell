@@ -159,8 +159,10 @@ mod tests {
     use crate::context::PipelineContext;
     use crate::workspace::CallRecord;
     use gt_domain::model::{
-        EdgeKind, Language, NewEdge, NodeId, Phase, Project, ProjectId, ProjectStatus, SubProjectId,
+        Annotation, EdgeKind, Language, NewEdge, NodeId, Phase, Project, ProjectId, ProjectStatus,
+        SubProjectId,
     };
+    use serde_json::json;
     use super::MULTI_WRITE;
 
     const SUB: i64 = 1;
@@ -280,5 +282,339 @@ mod tests {
         assert!(m.iter().any(|p| p.eq_ignore_ascii_case("STARTTRANS")));
         assert!(m.iter().any(|p| p.eq_ignore_ascii_case("Transaction")));
         assert!(!m.iter().any(|p| p.eq_ignore_ascii_case("save")));
+    }
+
+    // ===== Below: the gaps the original 5 tests left open — the `via: propagate` exclusion, the
+    // `tx_calls_default` fallback, case-insensitive matching inside `run()`, and the annotation contract. =====
+
+    /// A `WritesDb` edge flagged `via: propagate` (P8's call-chain propagation) must NOT be counted as a
+    /// direct write — otherwise "called two writing services" would be mis-read as "this method wrote two
+    /// tables". This is the documented core of the predicate.
+    #[test]
+    fn propagated_writes_do_not_count_as_direct() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        // One DIRECT write to table 20, plus one INDIRECT (propagated) write to table 21.
+        write(&mut ctx, 10, 20);
+        ctx.ws.add_edge(NewEdge {
+            project_id: ctx.project.id,
+            kind: EdgeKind(EdgeKind::WRITES_DB.to_string()),
+            from_id: NodeId(10),
+            to_id: NodeId(21),
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: json!({ "via": "propagate" }),
+        });
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+        // Only ONE direct table -> below the MIN_TABLES(2) threshold -> must not be flagged.
+        assert!(!annotated(&ctx, 10), "间接传播写库边不应计入直写表数");
+    }
+
+    /// Two direct writes plus an extra propagated write still count as a multi-table write.
+    #[test]
+    fn direct_writes_still_count_with_indirect_extra() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21); // two direct tables
+        ctx.ws.add_edge(NewEdge {
+            project_id: ctx.project.id,
+            kind: EdgeKind(EdgeKind::WRITES_DB.to_string()),
+            from_id: NodeId(10),
+            to_id: NodeId(22),
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: json!({ "via": "propagate" }),
+        });
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+        assert!(annotated(&ctx, 10), "两张直写表 + 一条间接边仍应被标注");
+    }
+
+    /// The global `tx_calls_default` is consulted when a sub-project declares nothing of its own.
+    fn ctx_with_default(tx: Vec<&str>) -> PipelineContext {
+        let mut ctx = ctx_with(vec![]); // no per-sub markers
+        ctx.tx_calls.clear(); // drop the empty per-sub entry so the default is actually consulted
+        ctx.tx_calls_default = tx.into_iter().map(|s| s.to_string()).collect();
+        ctx
+    }
+
+    #[test]
+    fn default_markers_judge_when_sub_declares_none() {
+        let mut ctx = ctx_with_default(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+        // default markers apply; no marker call -> still flagged
+        assert!(annotated(&ctx, 10), "子项目未声明时回退默认事务标记词表");
+    }
+
+    #[test]
+    fn default_marker_inside_method_suppresses_it() {
+        let mut ctx = ctx_with_default(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "transaction");
+        super::run(&mut ctx);
+        assert!(!annotated(&ctx, 10), "默认词表中的标记出现即抑制");
+    }
+
+    /// `run()` matches transaction markers case-insensitively: the declaration may be `startTrans`, the call
+    /// site spelled `STARTTRANS`.
+    #[test]
+    fn marker_match_is_case_insensitive_in_run() {
+        let mut ctx = ctx_with(vec!["startTrans"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "STARTTRANS");
+        super::run(&mut ctx);
+        assert!(!annotated(&ctx, 10), "标记大小写无关匹配应在 run() 中生效");
+    }
+
+    /// The annotation's contract: kind / subkind / channel / confidence / evidence are fixed.
+    #[test]
+    fn annotation_carries_partial_write_risk_contract() {
+        let mut ctx = ctx_with(vec!["transaction", "commit"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+
+        let a = ctx
+            .ws
+            .annotations()
+            .iter()
+            .find(|a| a.node_id == NodeId(10) && a.kind == MULTI_WRITE)
+            .expect("expected a multi-write-without-tx annotation");
+        assert_eq!(a.subkind.as_deref(), Some("PartialWriteRisk"));
+        assert_eq!(a.channel.0, "Tx");
+        assert!((a.confidence - 0.75).abs() < 1e-3);
+        assert_eq!(a.evidence["tables"], json!(2));
+        assert_eq!(a.evidence["owner_fqn"], json!("App\\Svc::run10"));
+    }
+
+    // ===== Below: the marker-lookup semantics (`markers_for`) and the remaining `run()` gates =====
+
+    /// A call site the parser split into callee text + method, on an explicit line / file / sub-project.
+    fn call_at(
+        ctx: &mut PipelineContext,
+        owner: i64,
+        callee: &str,
+        method: &str,
+        line: u32,
+        file: &str,
+        sub: Option<i64>,
+    ) {
+        ctx.ws.calls.push(CallRecord {
+            node: NodeId(owner * 100 + line as i64),
+            owner: NodeId(owner),
+            owner_fqn: format!("App\\Svc::run{owner}"),
+            owner_class: None,
+            callee: callee.to_string(),
+            receiver: None,
+            method: Some(method.to_string()),
+            args: Vec::new(),
+            span: gt_domain::model::Span {
+                start_line: line,
+                end_line: line,
+                start_byte: 0,
+                end_byte: 0,
+            },
+            file: file.to_string(),
+            language: Language::new(Language::PHP),
+            sub: sub.map(SubProjectId::new),
+            db_table: None,
+            in_loop: false,
+            entity: None,
+        });
+    }
+
+    fn annotation_of(ctx: &PipelineContext, node: i64) -> Option<&Annotation> {
+        ctx.ws
+            .annotations()
+            .iter()
+            .find(|a| a.node_id == NodeId(node) && a.kind == MULTI_WRITE)
+    }
+
+    /// `markers_for` **replaces** rather than merges: once the sub-project declares its own (non-empty) list,
+    /// the global fallback stops participating.
+    #[test]
+    fn sub_markers_replace_the_default_rather_than_merging() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        ctx.tx_calls_default = vec!["commit".to_string()];
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        // `commit` is only in the default list, which this sub does not consult.
+        call(&mut ctx, 10, "commit");
+
+        super::run(&mut ctx);
+
+        assert!(
+            annotated(&ctx, 10),
+            "子项目有自己的标记词表时，默认词表不参与（不合并）"
+        );
+    }
+
+    /// The subtle half of `markers_for`: a sub-project that is **present but empty** declares "this stack has
+    /// no transaction markers", so it must NOT fall back to the global default — only a *missing* entry does
+    /// (see `default_markers_judge_when_sub_declares_none`).
+    #[test]
+    fn an_empty_per_sub_declaration_does_not_fall_back_to_the_default() {
+        let mut ctx = ctx_with(vec![]); // sub 1 present, but declares nothing
+        ctx.tx_calls_default = vec!["transaction".to_string()];
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "save");
+
+        super::run(&mut ctx);
+
+        assert!(
+            !annotated(&ctx, 10),
+            "显式声明为空的栈不回落到默认词表：声明为空就是『该栈没有事务概念』"
+        );
+    }
+
+    /// Call sites that carry no sub-project fall back to the global markers.
+    #[test]
+    fn call_sites_without_a_sub_use_the_default_markers() {
+        let mut ctx = ctx_with_default(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call_at(&mut ctx, 10, "save", "save", 10, "app/Svc.php", None);
+
+        super::run(&mut ctx);
+
+        assert!(annotated(&ctx, 10), "无 sub 的调用点应按默认词表判定");
+    }
+
+    /// A declaration may name the **qualified** call (`Db::startTrans`); matching must consider the callee text
+    /// and not only the split-off method name.
+    #[test]
+    fn marker_matches_the_qualified_callee_text() {
+        let mut ctx = ctx_with(vec!["Db::startTrans"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        // method is `startTrans`, which does NOT equal the declared marker — only the callee text does.
+        call_at(
+            &mut ctx,
+            10,
+            "Db::startTrans",
+            "startTrans",
+            10,
+            "app/Svc.php",
+            Some(SUB),
+        );
+
+        super::run(&mut ctx);
+
+        assert!(
+            !annotated(&ctx, 10),
+            "限定名调用文本也应匹配事务标记"
+        );
+    }
+
+    /// Only `WritesDb` builds the table set: reading two tables is not a partial-write risk.
+    #[test]
+    fn only_writes_db_edges_count_toward_the_threshold() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        for t in [20, 21] {
+            ctx.ws.add_edge(NewEdge {
+                project_id: ctx.project.id,
+                kind: EdgeKind(EdgeKind::READS_DB.to_string()),
+                from_id: NodeId(10),
+                to_id: NodeId(t),
+                phase: Phase("Test".to_string()),
+                confidence: 1.0,
+                properties: serde_json::Value::Null,
+            });
+        }
+        call(&mut ctx, 10, "save");
+
+        super::run(&mut ctx);
+
+        assert!(!annotated(&ctx, 10), "只读不算多表写");
+    }
+
+    /// With no call site at all the phase cannot know whether a marker appears, so it stays silent —
+    /// the conservative direction the module documents.
+    #[test]
+    fn method_without_any_call_site_is_not_judged() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        // No `call(...)` at all.
+
+        super::run(&mut ctx);
+
+        assert!(
+            !annotated(&ctx, 10),
+            "没有任何调用点就无法得知是否出现事务标记，应保守跳过"
+        );
+    }
+
+    /// The judgement is per method: a marker in one method must not clear another method's finding.
+    #[test]
+    fn methods_are_judged_independently() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call(&mut ctx, 10, "save"); // no marker -> hit
+        write(&mut ctx, 11, 20);
+        write(&mut ctx, 11, 21);
+        call(&mut ctx, 11, "save");
+        call(&mut ctx, 11, "transaction"); // marker -> suppressed
+
+        super::run(&mut ctx);
+
+        assert!(annotated(&ctx, 10), "无标记的方法应被标注");
+        assert!(!annotated(&ctx, 11), "有标记的方法不应被标注（不串味）");
+    }
+
+    /// The evidence points at the **earliest** call site of the method, wherever it was registered in the list.
+    #[test]
+    fn evidence_points_at_the_earliest_call_site() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call_at(&mut ctx, 10, "save", "save", 42, "app/later.php", Some(SUB));
+        call_at(&mut ctx, 10, "check", "check", 7, "app/early.php", Some(SUB));
+
+        super::run(&mut ctx);
+
+        let a = annotation_of(&ctx, 10).expect("expected a multi-write-without-tx annotation");
+        assert_eq!(a.evidence["line"], json!(7), "行号应取最早的调用点");
+        assert_eq!(a.evidence["file"], json!("app/early.php"));
+    }
+
+    /// `tables` reports the real count, not the threshold.
+    #[test]
+    fn table_count_in_evidence_is_the_real_count() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        write(&mut ctx, 10, 22);
+        call(&mut ctx, 10, "save");
+
+        super::run(&mut ctx);
+
+        let a = annotation_of(&ctx, 10).expect("expected a multi-write-without-tx annotation");
+        assert_eq!(a.evidence["tables"], json!(3), "证据应记录真实表数，而非阈值");
+    }
+
+    /// A method whose call sites all belong to a stack that declares no markers is not judged, even when
+    /// another sub-project does declare them — the lookup is per call site's sub, not global.
+    #[test]
+    fn multi_write_is_skipped_when_the_call_sites_belong_to_a_stack_without_markers() {
+        let mut ctx = ctx_with(vec!["transaction"]); // only sub 1 declares markers
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call_at(&mut ctx, 10, "save", "save", 10, "app/Svc.php", Some(2));
+
+        super::run(&mut ctx);
+
+        assert!(
+            !annotated(&ctx, 10),
+            "调用点所属栈未声明标记词表时不应判定"
+        );
     }
 }

@@ -430,4 +430,132 @@ mod tests {
             "大写 MD5 与 md5 是同一次调用，应同样被判定"
         );
     }
+
+    fn loose_hits(ctx: &PipelineContext, node: NodeId) -> usize {
+        ctx.ws
+            .annotations_of(node)
+            .iter()
+            .filter(|a| a.kind == LOOSE_COMPARE)
+            .count()
+    }
+
+    // ------------------------------------------------------- the loose-comparison path (untested so far)
+
+    /// The phase's other annotation: a loose `==` / `!=` comparing a computed signature against the incoming
+    /// one lands a `weak_sign_compare` annotation on the signature-computation call site — and only there.
+    #[test]
+    fn loose_compare_annotates_the_sign_computation_call_site() {
+        let mut ctx = new_ctx();
+        let mut cmp = compare("App\\Pay::respond");
+        cmp.left = "md5($body.$secret)".into();
+        cmp.right = "$_SERVER['HTTP_KWAISIGN']".into();
+        cmp.operator = "!=".into();
+        ctx.ws.sign_compares.push(cmp);
+
+        let mut calc = call("md5", vec![FactValue::String("body.secret".into())]);
+        calc.owner_fqn = "App\\Pay::respond".into();
+        ctx.ws.calls.push(calc.clone());
+
+        run(&mut ctx);
+        assert_eq!(loose_hits(&ctx, calc.node), 1, "松比较应标注到签名计算调用点");
+        assert_eq!(
+            weak_hits(&ctx, calc.node),
+            0,
+            "该参数不含签名提示，不应同时判弱哈希"
+        );
+    }
+
+    /// A loose comparison whose signature-computation call site cannot be located produces no annotation —
+    /// the phase must not claim "verified correctly" on a comparison it can't tie to a computation.
+    #[test]
+    fn loose_compare_with_no_calc_call_site_annotates_nothing() {
+        let mut ctx = new_ctx();
+        let mut cmp = compare("App\\Pay::respond");
+        cmp.left = "$sign".into();
+        cmp.right = "$ipay_signature".into();
+        ctx.ws.sign_compares.push(cmp);
+        // an unrelated call in the same function, no signature computation
+        let mut other = call("count", vec![]);
+        other.owner_fqn = "App\\Pay::respond".into();
+        ctx.ws.calls.push(other);
+
+        run(&mut ctx);
+        assert_eq!(
+            loose_hits(&ctx, NodeId(1)),
+            0,
+            "无可定位的签名计算时不该标注"
+        );
+    }
+
+    // ------------------------------------------------------- find_sign_calc (the landing-point resolver)
+
+    /// Level 1: one side of the comparison is itself a call (`$this->hashEncrypt($str) == ...`) — take that
+    /// call site directly, even when the function is a home-grown verifier not in the hash vocabulary.
+    #[test]
+    fn find_sign_calc_takes_the_call_site_named_in_the_comparison() {
+        let mut ctx = new_ctx();
+        let owner = "App\\Pay::respond";
+        let mut calc = call("hashEncrypt", vec![]);
+        calc.owner_fqn = owner.into();
+        ctx.ws.calls.push(calc.clone());
+
+        let mut cmp = compare(owner);
+        cmp.left = "$this->hashEncrypt($str)".into();
+        cmp.right = "$signVerify".into();
+        assert_eq!(
+            find_sign_calc(&ctx, &cmp).map(|c| c.node),
+            Some(calc.node),
+            "比较一侧本身是调用时直接取该调用点"
+        );
+    }
+
+    /// Level 2: both sides are variables (`$sign == $ipay_signature`) — fall back to a `*Sign()` call in the
+    /// same function body (the noise gate that keeps check-ins from drowning the signal).
+    #[test]
+    fn find_sign_calc_falls_back_to_a_sign_calc_in_the_same_function() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        let owner = "App\\Pay::respond";
+        let mut cmp = compare(owner);
+        cmp.left = "$sign".into();
+        cmp.right = "$ipay_signature".into();
+
+        let mut calc = call("CreatedSign", vec![]);
+        calc.owner_fqn = owner.into();
+        ctx.ws.calls.push(calc.clone());
+        assert_eq!(
+            find_sign_calc(&ctx, &cmp).map(|c| c.node),
+            Some(calc.node),
+            "两侧都是变量时回落到同函数内的签名计算调用"
+        );
+    }
+
+    /// When neither a named call nor a same-function sign calc exists, no landing point.
+    #[test]
+    fn find_sign_calc_returns_none_when_no_sign_calc_exists() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        let owner = "App\\Pay::respond";
+        let mut cmp = compare(owner);
+        cmp.left = "$sign".into();
+        cmp.right = "$ipay_signature".into();
+
+        let mut other = call("count", vec![]);
+        other.owner_fqn = owner.into();
+        ctx.ws.calls.push(other);
+        assert!(
+            find_sign_calc(&ctx, &cmp).is_none(),
+            "既无比较中命名的调用也无同函数签名计算时返回 None"
+        );
+    }
+
+    // ------------------------------------------------------- arg_text (evidence snippet builder)
+
+    #[test]
+    fn arg_text_extracts_string_and_unknown_but_blanks_other_values() {
+        assert_eq!(arg_text(&FactValue::String("abc".into())), "abc");
+        assert_eq!(arg_text(&FactValue::Unknown(Some("x".into()))), "x");
+        assert_eq!(arg_text(&FactValue::Int(5)), "");
+        assert_eq!(arg_text(&FactValue::Null), "");
+    }
 }

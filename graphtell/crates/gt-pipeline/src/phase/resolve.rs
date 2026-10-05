@@ -1447,6 +1447,7 @@ fn is_function_node(ctx: &PipelineContext, id: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::InheritRecord;
     use gt_adapter_fkb::YamlKnowledgeBase;
     use gt_domain::model::{
         DbVerbsSpec, Language, MagicDelegationSpec, NewEdge, NewNode, Project, ProjectConfig,
@@ -1752,6 +1753,129 @@ mod tests {
         assert!(
             resolve_handler_target(&ctx, "NoSuch/Nope", "app/api/route/pc.php", None, None).is_none(),
             "解析不到时应返回 None（不猜）"
+        );
+    }
+
+    // ------------------------------------------------------- F. more pure helpers (untouched leaves)
+
+    /// `owner_class_of` is the language-agnostic "method FQN → owning class" splitter used by the variable-type
+    /// and dotted-receiver resolvers; pin the separator handling so a future "always split on `::`" can't creep in.
+    #[test]
+    fn owner_class_of_splits_on_the_given_member_separator() {
+        assert_eq!(owner_class_of("pkg.Class.method", "."), "pkg.Class");
+        assert_eq!(owner_class_of(r"Class::method", "::"), "Class");
+        assert_eq!(owner_class_of("a.b.c", "."), "a.b");
+        assert_eq!(
+            owner_class_of("plain", "::"),
+            "plain",
+            "没有分隔符时原样返回"
+        );
+    }
+
+    /// `fact_to_string` builds the textual evidence (DB table / config key / route); string and class-const
+    /// literals pass through, everything else degrades to a Debug string rather than panicking.
+    #[test]
+    fn fact_to_string_passes_through_string_and_class_const() {
+        assert_eq!(fact_to_string(&FactValue::String("x".into())), "x");
+        assert_eq!(fact_to_string(&FactValue::ClassConst("Y".into())), "Y");
+        assert!(
+            !fact_to_string(&FactValue::Int(5)).is_empty(),
+            "非字符串也应产出可读文本，不 panic"
+        );
+    }
+
+    /// `kind_label` renders the human-readable DB-edge direction (used by views / rules); unknown kinds are empty.
+    #[test]
+    fn kind_label_renders_read_and_write() {
+        assert_eq!(kind_label(&EdgeKind(EdgeKind::WRITES_DB.to_string())), "写");
+        assert_eq!(kind_label(&EdgeKind(EdgeKind::READS_DB.to_string())), "读");
+        assert_eq!(kind_label(&EdgeKind("Calls".to_string())), "");
+    }
+
+    // ------------------------------------------------------- G. interface → impl resolution
+
+    /// `resolve_impl` turns an injected interface type into the impl class where the DB call really lives
+    /// (Spring `@Autowired` field); a plain / unknown type passes through unchanged.
+    #[test]
+    fn resolve_impl_maps_interface_to_its_impl_class() {
+        let mut ctx = new_ctx();
+        let iface = add_node(&mut ctx, "Interface", "app\\repo\\UserRepo");
+        let _impl = add_node(&mut ctx, "Class", "app\\repo\\UserRepoImpl");
+        ctx.ws.inherits.push(InheritRecord {
+            child: iface,
+            child_fqn: "app\\repo\\UserRepoImpl".into(),
+            base: "app\\repo\\UserRepo".into(),
+            kind: EdgeKind("Implements".to_string()),
+            sub: None,
+            file: "app/x.php".into(),
+            span: Span::default(),
+        });
+        assert_eq!(
+            resolve_impl(&ctx, "app\\repo\\UserRepo"),
+            "app\\repo\\UserRepoImpl",
+            "接口应解析到实现类"
+        );
+        assert_eq!(
+            resolve_impl(&ctx, "app\\repo\\Whatever"),
+            "app\\repo\\Whatever",
+            "非接口 / 未知类型应原样返回"
+        );
+    }
+
+    // ------------------------------------------------------- H. free-function node detection
+
+    #[test]
+    fn is_function_node_detects_free_functions_only() {
+        let mut ctx = new_ctx();
+        let func = add_node(&mut ctx, "Function", "helper");
+        let meth = add_node(&mut ctx, "Method", "m");
+        assert!(is_function_node(&ctx, func), "Function 节点应判为真");
+        assert!(!is_function_node(&ctx, meth), "Method 节点应判为假");
+        assert!(!is_function_node(&ctx, NodeId(99999)), "未知节点应判为假");
+    }
+
+    // ------------------------------------------------------- I. core call-target resolver
+
+    /// A static `Class<sep>method` call resolves straight to the method node (the literal-FQN tier), while a
+    /// variable receiver is deliberately left unresolved (better a missing edge than a wrong one).
+    #[test]
+    fn resolve_call_target_hits_static_class_method_and_skips_variable_receiver() {
+        let mut ctx = new_ctx();
+        let target = add_node(&mut ctx, "Method", r"app\Service::run");
+        let owner = add_node(&mut ctx, "Method", r"app\Ctrl::index");
+
+        let static_call = CallRecord {
+            node: target,
+            owner,
+            owner_fqn: r"app\Ctrl::index".into(),
+            owner_class: None,
+            callee: String::new(),
+            receiver: Some(r"app\Service".into()),
+            method: Some("run".into()),
+            args: vec![],
+            db_table: None,
+            in_loop: false,
+            entity: None,
+            span: Span::default(),
+            file: "app/x.php".into(),
+            sub: None,
+            language: Language::default(),
+        };
+        assert_eq!(
+            resolve_call_target(&ctx, &static_call),
+            Some(target),
+            "静态 Class::method 应解析到方法节点"
+        );
+
+        let var_call = CallRecord {
+            receiver: Some("$this".into()),
+            method: Some("run".into()),
+            ..static_call.clone()
+        };
+        assert_eq!(
+            resolve_call_target(&ctx, &var_call),
+            None,
+            "变量接收者不应被解析（宁可缺边也不错边）"
         );
     }
 }

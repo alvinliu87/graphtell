@@ -177,6 +177,7 @@ declare_open_kind! { EdgeKind => "Graph edge kinds (open and extensible)";
     READS_DB      = "ReadsDb"       => "reads the database",
     WRITES_DB     = "WritesDb"      => "writes the database",
     WRITES_CACHE  = "WritesCache"   => "writes the cache",
+    READS_CACHE   = "ReadsCache"    => "reads the cache",
     MAPS_TO       = "MapsTo"        => "a model maps to a table",
     HAS_COLUMN    = "HasColumn"     => "owns a column (table / model -> column)",
     READS_CONFIG  = "ReadsConfig"   => "reads config",
@@ -218,7 +219,7 @@ impl EdgeKind {
         Self::EMITS,
         Self::LISTENS_TO,
         Self::PASSES_THROUGH,
-        "ReadsCache",
+        Self::READS_CACHE,
     ];
 
     /// Bridge edges (discovered connectors between semantic and syntax): `HandledBy` (contract -> handler),
@@ -492,5 +493,102 @@ mod tests {
 
         register_annotation_kinds(vec!["entrypoint.login".to_string()]);
         assert!(extra_annotation_kinds().contains(&"entrypoint.login".to_string()));
+    }
+
+    /// The constants and the classification lists must agree.
+    ///
+    /// `SEMANTIC` used to carry a bare `"ReadsCache"` literal with no constant behind it, so renaming either
+    /// side produced no compile-time signal — the two could drift silently.
+    #[test]
+    fn edge_kind_constants_agree_with_the_classification_lists() {
+        for k in [
+            EdgeKind::TRIGGERS,
+            EdgeKind::PUBLISHES_TO,
+            EdgeKind::READS_DB,
+            EdgeKind::WRITES_DB,
+            EdgeKind::WRITES_CACHE,
+            EdgeKind::READS_CACHE,
+            EdgeKind::READS_CONFIG,
+            EdgeKind::MAPS_TO,
+        ] {
+            assert!(EdgeKind::from(k).is_semantic(), "{k} 应在语义边列表里");
+            assert!(is_semantic_edge(k));
+        }
+        for k in [EdgeKind::HANDLED_BY, EdgeKind::CALLS_HTTP, EdgeKind::HAS_COLUMN] {
+            assert!(EdgeKind::from(k).is_bridge(), "{k} 应在桥接边列表里");
+        }
+        // A bridge edge is deliberately **not** semantic, and vice versa.
+        assert!(!EdgeKind::from(EdgeKind::HANDLED_BY).is_semantic());
+        assert!(!EdgeKind::from(EdgeKind::READS_DB).is_bridge());
+    }
+
+    /// The node-kind half of the same OCP mechanism the two tests above cover for edges / annotations:
+    /// a kind FKB declares becomes first-class without a kernel change.
+    ///
+    /// Note the registries are **process-global** and tests run in parallel, so the kind registered here must
+    /// be unique to this test and assertions may only claim *membership*, never exact contents.
+    #[test]
+    fn node_kind_registry_extends_classification() {
+        // Built-in first-class semantic nodes: recognised without any registration.
+        assert!(NodeKind::from(NodeKind::TABLE).is_semantic());
+        assert!(NodeKind::from(NodeKind::EVENT).is_semantic());
+        assert!(NodeKind::from(NodeKind::MIDDLEWARE).is_semantic());
+        // Syntax nodes are never semantic in themselves.
+        assert!(!NodeKind::from(NodeKind::CLASS).is_semantic());
+        assert!(!NodeKind::from(NodeKind::METHOD).is_semantic());
+        assert!(!NodeKind::from(NodeKind::CALL_SITE).is_semantic());
+
+        // A brand-new kind: unrecognised first, first-class after registration.
+        let fresh = NodeKind("InvoiceBatch".to_string());
+        assert!(!fresh.is_semantic());
+        register_semantic_kinds(vec!["InvoiceBatch".to_string()]);
+        assert!(fresh.is_semantic());
+        assert!(extra_semantic_kinds().contains(&"InvoiceBatch".to_string()));
+    }
+
+    /// `Default` is macro-generated for the open kinds but **derived** for `Language`, so the two mean
+    /// different things — and neither is "the same as the UNKNOWN constant" in `Language`'s case.
+    #[test]
+    fn defaults_differ_between_open_kinds_and_language() {
+        assert_eq!(NodeKind::default(), NodeKind::from(NodeKind::UNKNOWN));
+        assert_eq!(NodeKind::default().as_str(), "Unknown");
+        assert_eq!(EdgeKind::default(), EdgeKind::from(EdgeKind::UNKNOWN));
+
+        // `Language::default()` is the **empty** string, which is not `Language::UNKNOWN`.
+        assert_eq!(Language::default().as_str(), "");
+        assert_ne!(Language::default(), Language::new(Language::UNKNOWN));
+        assert_eq!(Language::new(Language::UNKNOWN).as_str(), "unknown");
+
+        // `is_php` compares exactly (values come from parsers, which already normalise case).
+        assert!(Language::new("php").is_php());
+        assert!(!Language::new("PHP").is_php());
+    }
+
+    /// `#[serde(transparent)]`: every kind and the language serialize as a bare string, not an object —
+    /// persisted rows and API responses depend on that shape.
+    #[test]
+    fn kinds_serialize_as_bare_strings_and_compare_case_insensitively_on_request() {
+        assert_eq!(
+            serde_json::to_value(NodeKind::from("Table")).unwrap(),
+            serde_json::json!("Table")
+        );
+        assert_eq!(
+            serde_json::to_value(EdgeKind::from("ReadsDb")).unwrap(),
+            serde_json::json!("ReadsDb")
+        );
+        assert_eq!(
+            serde_json::to_value(Language::new("php")).unwrap(),
+            serde_json::json!("php")
+        );
+        let back: NodeKind = serde_json::from_value(serde_json::json!("Table")).unwrap();
+        assert_eq!(back, NodeKind::from("Table"));
+        let back: Language = serde_json::from_value(serde_json::json!("java")).unwrap();
+        assert_eq!(back, Language::new("java"));
+
+        // `is` is exact; `eq_ignore_ascii_case` is the one FKB should use (it writes lower case).
+        assert!(NodeKind::from("Table").is("Table"));
+        assert!(!NodeKind::from("Table").is("table"));
+        assert!(NodeKind::from("Table").eq_ignore_ascii_case("table"));
+        assert!(!NodeKind::from("Table").eq_ignore_ascii_case("tabl"));
     }
 }

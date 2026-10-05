@@ -370,7 +370,11 @@ fn arg_text(fv: &FactValue) -> String {
 mod tests {
     use super::*;
     use crate::context::PipelineContext;
-    use gt_domain::model::{Project, ProjectConfig, ProjectId, ProjectStatus, TaintSink};
+    use crate::workspace::CallRecord;
+    use gt_domain::model::syntax::VariableAssignFact;
+    use gt_domain::model::{
+        Language, Project, ProjectConfig, ProjectId, ProjectStatus, Span, TaintSink,
+    };
     use std::collections::HashMap;
 
     /// The variable marker is **this language's** (PHP `$`), injected like every other notation rule — not
@@ -632,5 +636,393 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         })
+    }
+
+    // ===== `run()` end-to-end: the decision backbone itself, previously uncovered =====
+
+    /// A context wired the way a real PHP run is: FKB-declared vocabulary + the parser-declared `$` marker.
+    fn php_ctx() -> PipelineContext {
+        let mut ctx = tctx();
+        ctx.taint_default = Some(taint_spec());
+        ctx.lang_policy_default.variable_prefixes = php_prefixes();
+        ctx
+    }
+
+    /// Register a call site on node `at`, split into receiver / method as the parser would.
+    fn push_call(
+        ctx: &mut PipelineContext,
+        at: i64,
+        owner_fqn: &str,
+        callee: &str,
+        receiver: Option<&str>,
+        method: &str,
+        args: Vec<FactValue>,
+        sub: Option<i64>,
+    ) {
+        ctx.ws.calls.push(CallRecord {
+            node: NodeId(at),
+            owner: NodeId(at),
+            owner_fqn: owner_fqn.to_string(),
+            owner_class: None,
+            callee: callee.to_string(),
+            receiver: receiver.map(str::to_string),
+            method: Some(method.to_string()),
+            args,
+            db_table: None,
+            in_loop: false,
+            entity: None,
+            span: Span::default(),
+            file: "app/Svc.php".to_string(),
+            sub: sub.map(SubProjectId::new),
+            language: Language::new(Language::PHP),
+        });
+    }
+
+    /// One assignment fact: the link backward tracing walks.
+    fn assign(ctx: &mut PipelineContext, owner_fqn: &str, var: &str, rhs: &str) {
+        ctx.ws.variable_assignments.push(VariableAssignFact {
+            var: var.to_string(),
+            rhs: rhs.to_string(),
+            owner_fqn: owner_fqn.to_string(),
+            file: "app/Svc.php".to_string(),
+            span: Span::default(),
+        });
+    }
+
+    fn kinds(ctx: &PipelineContext, at: i64) -> Vec<String> {
+        ctx.ws
+            .annotations_of(NodeId(at))
+            .iter()
+            .map(|a| a.kind.clone())
+            .collect()
+    }
+
+    /// A raw-SQL sink whose variable really comes from the request: the confirmed (`tainted_raw`) path,
+    /// with the full annotation shape downstream rules read.
+    #[test]
+    fn run_confirms_raw_sql_traced_to_a_request_source() {
+        let mut ctx = php_ctx();
+        assign(
+            &mut ctx,
+            "App\\Svc::run",
+            "table",
+            "request()->param('table')",
+        );
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::Unknown(Some(
+                "SHOW COLUMNS FROM `{$table}`".into(),
+            ))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(kinds(&ctx, 1), vec!["tainted_raw".to_string()]);
+        let ann = &ctx.ws.annotations_of(NodeId(1))[0];
+        assert_eq!(ann.channel, AnnotationChannel("Taint".to_string()));
+        assert_eq!(ann.subkind.as_deref(), Some("SqlInjection"));
+        assert_eq!(ann.phase, Phase("Taint".to_string()));
+        assert!(
+            (ann.confidence - 0.9).abs() < f32::EPSILON,
+            "置信度应为 0.9"
+        );
+        assert_eq!(ann.evidence["callee"], "Db::query");
+        assert_eq!(ann.evidence["sql"], "SHOW COLUMNS FROM `{$table}`");
+    }
+
+    /// A bare variable (`Db::query($sql)`) needs no embedding for a raw sink, and is confirmed once its
+    /// assignment traces back to input.
+    #[test]
+    fn run_confirms_bare_variable_when_its_assignment_comes_from_request() {
+        let mut ctx = php_ctx();
+        assign(&mut ctx, "App\\Svc::run", "sql", "input('sql')");
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::Unknown(Some("$sql".into()))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(kinds(&ctx, 1), vec!["tainted_raw".to_string()]);
+    }
+
+    /// The measured CRMEB case: `$execSql` comes from a local file shipped with the release package, so it must
+    /// be demoted to `..._unknown` rather than reported as a confirmed critical.
+    #[test]
+    fn run_demotes_raw_sql_of_unproven_source_to_unknown() {
+        let mut ctx = php_ctx();
+        assign(
+            &mut ctx,
+            "App\\Svc::run",
+            "sql",
+            "file_get_contents(dirname(__DIR__) . '/sql/install.sql')",
+        );
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::Unknown(Some("$sql".into()))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(
+            kinds(&ctx, 1),
+            vec!["tainted_raw_unknown".to_string()],
+            "来源不可追溯时只能降级为 unknown，不能当作已确认的 critical"
+        );
+    }
+
+    /// The where family: only "a variable embedded in the condition string" is judged; a bare variable is left
+    /// to Tier-2 instead of being false-positived here. Both branches of the same sink in one call to `run`.
+    #[test]
+    fn run_flags_embedded_where_condition_and_skips_bare_variable() {
+        let mut ctx = php_ctx();
+        assign(&mut ctx, "App\\Svc::run", "roles", "input('roles')");
+        // Embedded, and its source is the request -> confirmed.
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "where",
+            None,
+            "where",
+            vec![FactValue::Unknown(Some(
+                "CONCAT(',',roles,',') LIKE '%,$roles,%'".into(),
+            ))],
+            None,
+        );
+        // Embedded, but built from config -> demoted.
+        assign(&mut ctx, "App\\Svc::other", "kw", "Config::get('kw')");
+        push_call(
+            &mut ctx,
+            2,
+            "App\\Svc::other",
+            "where",
+            None,
+            "where",
+            vec![FactValue::Unknown(Some("name LIKE '%$kw%'".into()))],
+            None,
+        );
+        // A bare variable is not "embedded": no annotation at all.
+        assign(&mut ctx, "App\\Svc::third", "cond", "input('cond')");
+        push_call(
+            &mut ctx,
+            3,
+            "App\\Svc::third",
+            "where",
+            None,
+            "where",
+            vec![FactValue::Unknown(Some("$cond".into()))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(kinds(&ctx, 1), vec!["tainted_where".to_string()]);
+        assert_eq!(kinds(&ctx, 2), vec!["tainted_where_unknown".to_string()]);
+        assert!(
+            kinds(&ctx, 3).is_empty(),
+            "裸变量交给 Tier-2，本阶段不误报"
+        );
+    }
+
+    /// The two "cannot judge" gates: no declared vocabulary, and no declared variable marker. Both must stay
+    /// silent instead of borrowing another stack's knowledge.
+    #[test]
+    fn run_judges_nothing_without_declared_vocabulary_or_marker() {
+        let mut ctx = php_ctx();
+        assign(&mut ctx, "App\\Svc::run", "table", "input('table')");
+        // A stack that declares no SQL vocabulary at all.
+        ctx.taint_default = None;
+        // ...and one whose parser declares no variable marker.
+        ctx.lang_policy_default.variable_prefixes.clear();
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::Unknown(Some(
+                "SHOW COLUMNS FROM `{$table}`".into(),
+            ))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert!(
+            kinds(&ctx, 1).is_empty(),
+            "没有 sink 词汇 / 变量标记时不应判断，更不应借用别的栈的词汇"
+        );
+    }
+
+    /// Non-sink callees and argless sink calls must never be annotated.
+    #[test]
+    fn run_ignores_non_sink_calls_and_sinks_without_arguments() {
+        let mut ctx = php_ctx();
+        assign(&mut ctx, "App\\Svc::run", "table", "input('table')");
+        // `Db::name` is a declared sink's sibling, not a sink itself.
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::name",
+            Some("Db"),
+            "name",
+            vec![FactValue::Unknown(Some("$table".into()))],
+            None,
+        );
+        // A declared sink called with no argument at all.
+        push_call(
+            &mut ctx,
+            2,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![],
+            None,
+        );
+        // A declared sink whose argument carries no variable reference.
+        push_call(
+            &mut ctx,
+            3,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::Unknown(Some("SELECT * FROM user".into()))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert!(kinds(&ctx, 1).is_empty(), "非 sink 调用不应标注");
+        assert!(kinds(&ctx, 2).is_empty(), "无参数的 sink 不应标注");
+        assert!(kinds(&ctx, 3).is_empty(), "参数中没有变量就不是注入");
+    }
+
+    /// A sub-project's own vocabulary **replaces** the global default (it is not merged with it), so a stack
+    /// that declares `execute` never inherits the default's `Db::query`.
+    #[test]
+    fn run_uses_the_sub_projects_own_vocabulary_not_the_default() {
+        let mut ctx = php_ctx();
+        ctx.taint.insert(
+            7,
+            TaintSpec {
+                raw_sql_sinks: vec![TaintSink {
+                    method: "execute".into(),
+                    receiver: None,
+                }],
+                request_sources: vec!["input(".into()],
+                ..Default::default()
+            },
+        );
+        assign(&mut ctx, "App\\Svc::run", "sql", "input('sql')");
+        // sub 7 declares `execute`.
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::execute",
+            Some("Db"),
+            "execute",
+            vec![FactValue::Unknown(Some("$sql".into()))],
+            Some(7),
+        );
+        // `Db::query` only exists in the global default, which this sub does not fall back to.
+        push_call(
+            &mut ctx,
+            2,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::Unknown(Some("$sql".into()))],
+            Some(7),
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(kinds(&ctx, 1), vec!["tainted_raw".to_string()]);
+        assert!(
+            kinds(&ctx, 2).is_empty(),
+            "子项目有自己的词汇时不应再回落到默认词汇"
+        );
+    }
+
+    /// Documented fallback: an argument that clearly interpolates something but yields **no resolvable variable
+    /// name** (`"${x}"`) leaves backward tracing nothing to walk, so the pre-P10 criterion is kept — flagged,
+    /// not demoted to `..._unknown`.
+    #[test]
+    fn run_keeps_the_original_criterion_when_no_variable_name_resolves() {
+        let mut ctx = php_ctx();
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::String("DROP TABLE ${x}".into())],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(kinds(&ctx, 1), vec!["tainted_raw".to_string()]);
+    }
+
+    // ===== remaining pure leaves =====
+
+    /// `var_names_in` feeds the whole backward trace: it must resolve names without the marker, de-duplicate,
+    /// and never treat `$this` as user input.
+    #[test]
+    fn var_names_in_resolves_dedups_and_skips_this() {
+        let p = php_prefixes();
+        assert_eq!(var_names_in("$sql", &p), vec!["sql"]);
+        assert_eq!(
+            var_names_in("FROM `{$table}` WHERE x = {$field}", &p),
+            vec!["table", "field"]
+        );
+        assert_eq!(
+            var_names_in("$a . $b . $a", &p),
+            vec!["a", "b"],
+            "同一变量只应出现一次"
+        );
+        assert!(
+            var_names_in("$this->alias . '.uid'", &p).is_empty(),
+            "$this 是对象自身，不是用户输入"
+        );
+        assert!(var_names_in("no variables here", &p).is_empty());
+        // The `${x}` form yields no resolvable name — that is the fallback exercised above.
+        assert!(var_names_in("${x}", &p).is_empty());
+    }
+
+    /// `arg_text` is what lands in the annotation's evidence: only textual facts carry SQL text.
+    #[test]
+    fn arg_text_reads_string_and_unknown_only() {
+        assert_eq!(arg_text(&FactValue::String("SELECT 1".into())), "SELECT 1");
+        assert_eq!(arg_text(&FactValue::Unknown(Some("$x".into()))), "$x");
+        assert_eq!(arg_text(&FactValue::Unknown(None)), "");
+        assert_eq!(arg_text(&FactValue::Int(1)), "");
     }
 }

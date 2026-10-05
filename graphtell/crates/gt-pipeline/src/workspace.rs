@@ -1599,4 +1599,475 @@ mod tests {
         assert!(ws.by_short.get("usercontroller").is_some(), "Java: `.` separator");
         assert!(ws.by_short.get("user").is_some(), "Python: `.` separator");
     }
+
+    // ===== Below: the gaps the single original test left open — node indexing, idempotent synthesis,
+    // side accumulation, edges / fan counts, name resolution, inheritance, route ranges, chained index. =====
+
+    // (`new_ws`, not `ws`: several tests rebind `ws` per sub-case, which would shadow the helper.)
+    fn new_ws() -> GraphWorkspace {
+        GraphWorkspace::new(ProjectId(1))
+    }
+
+    fn new_node(kind: &str, name: &str, fqn: Option<&str>) -> NewNode {
+        let mut n = NewNode::new(ProjectId(1), NodeKind(kind.to_string()), name);
+        n.fqn = fqn.map(|s| s.to_string());
+        n
+    }
+
+    fn synth(kind: &str, identity: IdentityKey, confidence: f32, props: Value) -> NewNode {
+        let mut n = synthesized_node(
+            ProjectId(1),
+            kind,
+            identity,
+            None,
+            &Phase("Test".to_string()),
+            confidence,
+            &Language::new("php"),
+            Span::default(),
+        );
+        n.properties = props;
+        n
+    }
+
+    fn edge(from: NodeId, to: NodeId, kind: &str) -> NewEdge {
+        NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind(kind.to_string()),
+            from_id: from,
+            to_id: to,
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: Value::Null,
+        }
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    // ---------------------------------------------------------------- nodes
+
+    #[test]
+    fn add_node_indexes_by_fqn_short_name_and_table() {
+        let mut ws = new_ws();
+        let cls = ws.add_node(new_node("Class", "User", Some("app\\model\\User")));
+        ws.add_node(new_node("Method", "run", Some("app\\model\\User::run")));
+        let table = ws.add_node(new_node("Table", "user", None));
+
+        assert_eq!(ws.find_by_name("app\\model\\User"), Some(cls));
+        assert_eq!(
+            ws.resolve_short_name("User"),
+            Some("app\\model\\User".to_string())
+        );
+        assert!(
+            ws.by_short.get("run").is_none(),
+            "方法 / 函数不进短名索引，否则 `config` 这类高频名会污染解析"
+        );
+        // A synthesized Table has no FQN and is looked up by name.
+        assert_eq!(ws.find_table_by_name("user"), Some(table));
+        assert_eq!(ws.nodes_of_kind("Class").len(), 1);
+
+        // A repeated FQN does not create a second index entry: the first registration wins.
+        let dup = ws.add_node(new_node("Class", "User2", Some("app\\model\\User")));
+        assert_ne!(dup, cls, "add_node 本身不幂等（幂等合成走 get_or_create_synthesized）");
+        assert_eq!(ws.find_by_name("app\\model\\User"), Some(cls));
+
+        // Every node reaches the delta with its id back-filled.
+        let delta = ws.take_delta();
+        assert_eq!(delta.nodes.len(), 4);
+        assert!(delta.nodes.iter().all(|n| n.id.is_some()));
+    }
+
+    #[test]
+    fn patch_properties_merges_and_records_every_patch() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("Class", "A", Some("A")));
+
+        ws.patch_properties(n, json!({ "x": 1, "o": { "a": 1 } }));
+        ws.patch_properties(n, json!({ "o": { "b": 2 }, "x": 9 }));
+
+        let props = &ws.node(n).unwrap().properties;
+        assert_eq!(props["x"], json!(9), "顶层键后者覆盖");
+        assert_eq!(props["o"]["a"], json!(1), "嵌套对象应合并而非整体覆盖");
+        assert_eq!(props["o"]["b"], json!(2));
+
+        // Nodes already in the delta carry their properties; later patches are separate upserts.
+        assert_eq!(ws.take_delta().property_patches.len(), 2);
+    }
+
+    // ---------------------------------------------------------------- idempotent synthesis
+
+    /// Same identity builds only one node: confidence takes the max and properties merge.
+    #[test]
+    fn get_or_create_synthesized_is_idempotent_and_merges() {
+        let mut ws = new_ws();
+        let id = IdentityKey::named("store_order");
+        let (a, created_a) = ws.get_or_create_synthesized(synth("Table", id.clone(), 0.6, json!({ "from": "db_name" })));
+        let (b, created_b) = ws.get_or_create_synthesized(synth("Table", id.clone(), 0.9, json!({ "from": "model" })));
+
+        assert!(created_a);
+        assert!(!created_b);
+        assert_eq!(a, b, "同一身份必须复用同一节点");
+        assert_eq!(ws.node_count(), 1);
+        let node = ws.node(a).unwrap();
+        assert!((node.confidence - 0.9).abs() < 1e-6, "置信度取较大值");
+        assert_eq!(node.properties["from"], json!("model"), "后来者覆盖同名属性");
+    }
+
+    /// A backend auto-route (`ANY` / `RULE`) must converge with the frontend's concrete method onto one
+    /// contract-bridge node — otherwise "frontend caller ↔ backend handler" lands on two nodes.
+    #[test]
+    fn get_or_create_synthesized_converges_wildcard_and_concrete_contracts() {
+        let mut ws = new_ws();
+        let (any, c1) = ws.get_or_create_synthesized(synth(
+            "HttpContract",
+            IdentityKey::contract("ANY", "/user/login"),
+            1.0,
+            Value::Null,
+        ));
+        let (post, c2) = ws.get_or_create_synthesized(synth(
+            "HttpContract",
+            IdentityKey::contract("POST", "/user/login"),
+            1.0,
+            Value::Null,
+        ));
+        assert_eq!(any, post, "已存在通配方法时应复用");
+        assert!(c1 && !c2);
+
+        // The other direction: a concrete method registered first, the wildcard arrives later.
+        let mut ws = new_ws();
+        let (get, c3) = ws.get_or_create_synthesized(synth(
+            "HttpContract",
+            IdentityKey::contract("GET", "/a"),
+            1.0,
+            Value::Null,
+        ));
+        let (rule, c4) = ws.get_or_create_synthesized(synth(
+            "HttpContract",
+            IdentityKey::contract("RULE", "/a"),
+            1.0,
+            Value::Null,
+        ));
+        assert_eq!(get, rule);
+        assert!(c3 && !c4);
+
+        // Two concrete methods on one path are different contracts and stay apart.
+        let mut ws = new_ws();
+        let (p, _) = ws.get_or_create_synthesized(synth(
+            "HttpContract",
+            IdentityKey::contract("POST", "/b"),
+            1.0,
+            Value::Null,
+        ));
+        let (g, _) = ws.get_or_create_synthesized(synth(
+            "HttpContract",
+            IdentityKey::contract("GET", "/b"),
+            1.0,
+            Value::Null,
+        ));
+        assert_ne!(p, g, "POST 与 GET 不是同一个契约");
+    }
+
+    /// `scope` folds into the merge key, so the frontend's and the backend's `token` stay two nodes.
+    #[test]
+    fn get_or_create_synthesized_keeps_scoped_identities_apart() {
+        let mut ws = new_ws();
+        let (fe, _) = ws.get_or_create_synthesized(synth(
+            "Cache",
+            IdentityKey::named_scoped("token", "frontend"),
+            1.0,
+            Value::Null,
+        ));
+        let (be, _) = ws.get_or_create_synthesized(synth(
+            "Cache",
+            IdentityKey::named_scoped("token", "backend"),
+            1.0,
+            Value::Null,
+        ));
+        assert_ne!(fe, be);
+        assert_eq!(ws.node(fe).unwrap().properties["__x"], Value::Null);
+        assert_eq!(
+            ws.node(fe).unwrap().name,
+            "token",
+            "scope 只影响合并键，不影响显示名"
+        );
+        assert_eq!(ws.node(be).unwrap().name, "token");
+    }
+
+    /// `sides` is a sorted set (order-independent) and `side` is only the derived display label:
+    /// one party ⇒ that party, several ⇒ `bridge`.
+    #[test]
+    fn record_side_accumulates_into_a_bridge_label() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("HttpContract", "x", None));
+
+        ws.record_side(n, "backend");
+        assert_eq!(ws.node(n).unwrap().properties["side"], json!("backend"));
+        assert_eq!(ws.node(n).unwrap().properties["sides"], json!(["backend"]));
+
+        ws.record_side(n, "frontend");
+        assert_eq!(ws.node(n).unwrap().properties["side"], json!("bridge"));
+        assert_eq!(
+            ws.node(n).unwrap().properties["sides"],
+            json!(["backend", "frontend"]),
+            "集合有序，结果与写入顺序无关"
+        );
+
+        // Re-recording the same side, or an empty one, changes nothing.
+        ws.record_side(n, "frontend");
+        ws.record_side(n, "");
+        assert_eq!(ws.node(n).unwrap().properties["sides"], json!(["backend", "frontend"]));
+        assert_eq!(ws.node(n).unwrap().properties["side"], json!("bridge"));
+    }
+
+    // ---------------------------------------------------------------- edges
+
+    #[test]
+    fn add_edge_dedupes_by_kind_and_endpoints_and_counts_fan() {
+        let mut ws = new_ws();
+        let a = ws.add_node(new_node("Method", "a", Some("A::a")));
+        let b = ws.add_node(new_node("Method", "b", Some("B::b")));
+
+        assert!(ws.add_edge(edge(a, b, "Calls")));
+        assert!(!ws.add_edge(edge(a, b, "Calls")), "同一 (kind,from,to) 只应有一条边");
+        assert!(ws.add_edge(edge(a, b, "Extends")), "不同 kind 可以共存");
+        // Direction matters.
+        assert!(ws.add_edge(edge(b, a, "Calls")));
+
+        assert_eq!(ws.edge_count(), 3);
+        assert_eq!(ws.out_edges_of(a).len(), 2);
+        assert_eq!(ws.fan_out(a), 2);
+        assert_eq!(ws.fan_in(b), 2, "a->b 两条不同 kind 都算入度");
+        assert_eq!(ws.fan_in(a), 1);
+        let z = ws.add_node(new_node("Method", "z", Some("Z::z")));
+        assert_eq!(ws.fan_out(z), 0);
+    }
+
+    #[test]
+    fn follow_walks_a_kind_chain_and_stops_when_broken() {
+        let mut ws = new_ws();
+        let a = ws.add_node(new_node("Class", "a", Some("A")));
+        let b = ws.add_node(new_node("Class", "b", Some("B")));
+        let c = ws.add_node(new_node("Class", "c", Some("C")));
+        ws.add_edge(edge(a, b, "MapsTo"));
+        ws.add_edge(edge(b, c, "MapsTo"));
+
+        assert_eq!(ws.follow(a, &[]), Some(a), "空链 = 不投影");
+        assert_eq!(ws.follow(a, &["MapsTo".to_string()]), Some(b));
+        assert_eq!(
+            ws.follow(a, &["MapsTo".to_string(), "MapsTo".to_string()]),
+            Some(c)
+        );
+        assert_eq!(ws.follow(a, &["Nope".to_string()]), None, "断链返回 None");
+        assert_eq!(ws.follow(c, &["MapsTo".to_string()]), None);
+    }
+
+    // ---------------------------------------------------------------- name resolution
+
+    /// Ambiguous short names are **rejected**, not guessed: the candidate order depends on insertion order,
+    /// and guessing hung `Model --MapsTo--> Table` on unrelated controllers.
+    #[test]
+    fn resolve_short_name_rejects_ambiguous_candidates() {
+        let mut ws = new_ws();
+        ws.add_node(new_node("Class", "User", Some("app\\model\\User")));
+        assert_eq!(
+            ws.resolve_short_name("User"),
+            Some("app\\model\\User".to_string())
+        );
+        // A leading `\` (global-namespace form) is trimmed before the lookup.
+        assert_eq!(
+            ws.resolve_short_name("\\User"),
+            Some("app\\model\\User".to_string())
+        );
+
+        // Two distinct FQNs share the short name -> ambiguous.
+        ws.add_node(new_node("Class", "User", Some("app\\admin\\User")));
+        assert_eq!(ws.resolve_short_name("User"), None);
+
+        // Unknown short name.
+        assert_eq!(ws.resolve_short_name("Nope"), None);
+    }
+
+    /// The table node's name may differ from the raw literal (`goods` → `good`), and prefixes are stripped.
+    #[test]
+    fn find_table_by_name_normalises_before_lookup() {
+        let mut ws = new_ws();
+        ws.set_table_prefixes(vec!["eb_".to_string()]);
+        let good = ws.add_node(new_node("Table", "good", None));
+        let order = ws.add_node(new_node("Table", "store_order", None));
+
+        assert_eq!(ws.find_table_by_name("good"), Some(good));
+        assert_eq!(ws.find_table_by_name("goods"), Some(good), "goods -> singularize -> good");
+        assert_eq!(ws.find_table_by_name("eb_store_order"), Some(order), "剥离前缀后再查");
+        assert_eq!(ws.find_table_by_name("STORE_ORDER"), Some(order), "大小写不敏感兜底");
+        assert_eq!(ws.find_table_by_name("nope"), None);
+        assert_eq!(ws.find_table_by_name(""), None);
+    }
+
+    #[test]
+    fn strip_table_prefix_uses_the_configured_prefixes() {
+        let mut ws = new_ws();
+        assert_eq!(ws.strip_table_prefix("eb_store_order"), "eb_store_order", "未配置前缀时原样返回");
+        ws.set_table_prefixes(vec!["eb_".to_string()]);
+        assert_eq!(ws.strip_table_prefix("eb_store_order"), "store_order");
+        assert_eq!(ws.strip_table_prefix("store_order"), "store_order");
+    }
+
+    // ---------------------------------------------------------------- inheritance
+
+    #[test]
+    fn record_supertype_maintains_both_directions() {
+        let mut ws = new_ws();
+        ws.record_supertype("app\\StoreOrder", "app\\BaseModel");
+        ws.record_supertype("app\\StoreOrder", "app\\Contract");
+
+        assert_eq!(ws.parents_of("app\\StoreOrder"), vec!["app\\BaseModel".to_string(), "app\\Contract".to_string()]);
+        assert_eq!(ws.children_of("app\\BaseModel"), vec!["app\\StoreOrder".to_string()]);
+        assert!(ws.parents_of("app\\Nope").is_empty());
+        assert!(ws.children_of("app\\Nope").is_empty());
+    }
+
+    /// Transitive, umbrella-name aware (`Model` matches `think\Model`), and cycle-safe.
+    #[test]
+    fn has_supertype_walks_transitively_and_survives_cycles() {
+        let mut ws = new_ws();
+        ws.record_supertype("app\\StoreOrder", "app\\BaseModel");
+        ws.record_supertype("app\\BaseModel", "think\\Model");
+
+        assert!(ws.has_supertype("app\\StoreOrder", "BaseModel"), "直接基类");
+        assert!(ws.has_supertype("app\\StoreOrder", "Model"), "跨层 + 伞形尾匹配");
+        assert!(!ws.has_supertype("app\\StoreOrder", "Controller"));
+
+        // A cycle must terminate rather than loop forever.
+        ws.record_supertype("app\\A", "app\\B");
+        ws.record_supertype("app\\B", "app\\A");
+        assert!(!ws.has_supertype("app\\A", "Model"));
+        // An empty base name matches nothing.
+        assert!(!ws.has_supertype("app\\A", ""));
+    }
+
+    #[test]
+    fn subtypes_bfs_respects_depth_and_node_caps() {
+        let mut ws = new_ws();
+        ws.record_supertype("A", "Base");
+        ws.record_supertype("A1", "A");
+        ws.record_supertype("A2", "A");
+
+        let all = ws.subtypes_bfs("Base", 10, 100);
+        assert_eq!(sorted(all.clone()), vec!["A".to_string(), "A1".to_string(), "A2".to_string()]);
+        // The root itself is never part of the result.
+        assert!(!all.contains(&"Base".to_string()));
+        // Depth cap: only the direct children.
+        assert_eq!(sorted(ws.subtypes_bfs("Base", 1, 100)), vec!["A".to_string()]);
+        // Node cap: the walk stops once the budget is spent.
+        assert_eq!(ws.subtypes_bfs("Base", 10, 2).len(), 2);
+        assert!(ws.subtypes_bfs("Nope", 10, 100).is_empty());
+    }
+
+    // ---------------------------------------------------------------- route ranges
+
+    /// Outer group first, joined outer-to-inner; a repeated registration of the same range counts once.
+    #[test]
+    fn route_group_prefix_nests_outer_to_inner() {
+        let mut ws = new_ws();
+        ws.add_route_groups(vec![
+            RouteGroup { file: "r.php".into(), start_line: 1, end_line: 100, prefix: "v2".into() },
+            RouteGroup { file: "r.php".into(), start_line: 10, end_line: 50, prefix: "inner".into() },
+            // Loaders re-walk every call site per sub-project, so this duplicate must not double up.
+            RouteGroup { file: "r.php".into(), start_line: 1, end_line: 100, prefix: "v2".into() },
+        ]);
+
+        assert_eq!(ws.route_group_prefix("r.php", 20), "v2/inner");
+        assert_eq!(ws.route_group_prefix("r.php", 90), "v2");
+        assert_eq!(ws.route_group_prefix("r.php", 200), "", "落在所有分组之外");
+        assert_eq!(ws.route_group_prefix("other.php", 20), "", "按文件隔离");
+    }
+
+    /// Outer-first, and a same-named guard declared by the **inner** scope wins.
+    #[test]
+    fn route_guards_let_the_inner_scope_override_the_outer() {
+        let mut ws = new_ws();
+        // Registered inner-first on purpose: the result must not depend on registration order.
+        ws.add_route_guard_scopes(vec![
+            RouteGuardScope {
+                file: "r.php".into(),
+                start_line: 10,
+                end_line: 20,
+                guards: vec![RouteGuard { class: "app\\Auth".into(), arg: Some("false".into()) }],
+            },
+            RouteGuardScope {
+                file: "r.php".into(),
+                start_line: 1,
+                end_line: 100,
+                guards: vec![
+                    RouteGuard { class: "app\\Auth".into(), arg: Some("true".into()) },
+                    RouteGuard { class: "app\\Log".into(), arg: None },
+                ],
+            },
+        ]);
+
+        let got = ws.route_guards("r.php", 15);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].class, "app\\Auth", "外层在前");
+        assert_eq!(got[0].arg.as_deref(), Some("false"), "内层覆盖外层");
+        assert!(got.iter().any(|g| g.class == "app\\Log"));
+
+        // Outside every scope: no guards at all.
+        assert!(ws.route_guards("r.php", 500).is_empty());
+    }
+
+    // ---------------------------------------------------------------- chained call index
+
+    /// `Route::resource(...)->except(['read'])` is parsed as another call site **on the same line**; the
+    /// index is keyed by (file, line) and only string arguments count.
+    #[test]
+    fn index_chained_and_chained_strings_are_keyed_by_file_and_line() {
+        let mut ws = new_ws();
+        ws.index_chained(
+            "r.php",
+            10,
+            Some("except"),
+            &[FactValue::Array(vec![
+                ("0".into(), FactValue::String("read".into())),
+                ("1".into(), FactValue::String("update".into())),
+            ])],
+        );
+        ws.index_chained("r.php", 10, Some("only"), &[FactValue::String("index".into())]);
+        ws.index_chained("r.php", 11, Some("except"), &[FactValue::String("other".into())]);
+        // Non-string arguments contribute nothing at all.
+        ws.index_chained("r.php", 12, Some("except"), &[FactValue::Int(1)]);
+
+        assert_eq!(
+            ws.chained_strings("r.php", 10, "except"),
+            vec!["read".to_string(), "update".to_string()]
+        );
+        assert_eq!(ws.chained_strings("r.php", 10, "only"), vec!["index".to_string()]);
+        assert!(ws.chained_strings("r.php", 10, "missing").is_empty());
+        assert!(ws.chained_strings("r.php", 11, "only").is_empty(), "行号参与索引");
+        assert!(ws.chained_strings("r.php", 12, "except").is_empty(), "非字符串参数不索引");
+        assert!(ws.chained_strings("other.php", 10, "except").is_empty());
+    }
+
+    // ---------------------------------------------------------------- delta / diagnostics
+
+    /// Both are **drains**: a phase must not re-report what the previous one already persisted.
+    #[test]
+    fn take_delta_and_remaining_diagnostics_drain() {
+        let mut ws = new_ws();
+        ws.add_node(new_node("Class", "A", Some("A")));
+        ws.diagnose(
+            &Phase("Test".to_string()),
+            "SomeCode",
+            Severity::Warning,
+            "message",
+            None,
+        );
+
+        assert_eq!(ws.take_delta().nodes.len(), 1);
+        assert!(ws.take_delta().nodes.is_empty(), "delta 取出后应清空");
+
+        assert_eq!(ws.remaining_diagnostics().len(), 1);
+        assert!(ws.remaining_diagnostics().is_empty(), "诊断取出后应清空");
+    }
 }
