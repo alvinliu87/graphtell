@@ -662,3 +662,379 @@ fn is_builtin_type(t: &str, policy: &NamespacePolicy) -> bool {
         .iter()
         .any(|b| b.eq_ignore_ascii_case(&t))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use gt_domain::error::Result as DomainResult;
+    use gt_domain::model::{
+        CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, ImportFact, InheritanceFact,
+        Language, NamespacePolicy, NodeKind, Project, ProjectId, ProjectStatus, SourceFile, FileId,
+        Span, SyntaxFacts,
+    };
+    use gt_domain::port::{FileSystem, LanguageParser, ParserRegistry, TechStackRegistry};
+
+    use crate::context::PipelineContext;
+
+    // ---- pure helpers ------------------------------------------------------
+
+    /// A PHP-style notation policy; also the default used by the `run`-level harness below.
+    fn php_policy() -> NamespacePolicy {
+        NamespacePolicy {
+            ns_separator: Some('\\'),
+            ns_separators: vec!['\\'],
+            member_separator: "::".to_string(),
+            variable_prefixes: vec!["$".to_string()],
+            builtin_types: vec![
+                "int".into(),
+                "string".into(),
+                "array".into(),
+                "bool".into(),
+                "float".into(),
+                "void".into(),
+            ],
+            bare_field_receivers: false,
+        }
+    }
+
+    #[test]
+    fn resolve_type_leading_separator_is_stripped() {
+        let policy = php_policy();
+        let empty: HashMap<String, String> = HashMap::new();
+        // `\Foo\Bar` -> `Foo\Bar` (leading root separator must be normalised away)
+        let r = super::resolve_type(None, &empty, "\\Foo\\Bar", &policy);
+        assert_eq!(r, "Foo\\Bar");
+    }
+
+    #[test]
+    fn resolve_type_already_qualified_returns_as_is() {
+        let policy = php_policy();
+        let empty: HashMap<String, String> = HashMap::new();
+        // an already-qualified name is returned verbatim — and this check happens *before* the
+        // import lookup, so it must not be swallowed by an import miss.
+        let r = super::resolve_type(None, &empty, "App\\Foo", &policy);
+        assert_eq!(r, "App\\Foo");
+    }
+
+    #[test]
+    fn resolve_type_import_alias_is_case_insensitive() {
+        let policy = php_policy();
+        let mut imports: HashMap<String, String> = HashMap::new();
+        imports.insert("user".to_string(), "App\\User".to_string());
+        // short name lookup is keyed lower-cased; the source may write any casing.
+        assert_eq!(super::resolve_type(None, &imports, "User", &policy), "App\\User");
+        assert_eq!(super::resolve_type(None, &imports, "uSeR", &policy), "App\\User");
+    }
+
+    #[test]
+    fn resolve_type_unqualified_is_namespace_joined() {
+        let policy = php_policy();
+        let empty: HashMap<String, String> = HashMap::new();
+        // bare name in a namespace is qualified with the language's separator.
+        let r = super::resolve_type(Some("App"), &empty, "Foo", &policy);
+        assert_eq!(r, "App\\Foo");
+    }
+
+    #[test]
+    fn resolve_type_no_namespace_and_no_import_returns_raw() {
+        let policy = php_policy();
+        let empty: HashMap<String, String> = HashMap::new();
+        // no import, no namespace -> leaf as written (must not invent a separator).
+        assert_eq!(super::resolve_type(None, &empty, "Foo", &policy), "Foo");
+        assert_eq!(super::resolve_type(Some(""), &empty, "Foo", &policy), "Foo");
+    }
+
+    #[test]
+    fn owner_parent_returns_class_segment() {
+        assert_eq!(
+            super::owner_parent("App\\Order::pay", "::"),
+            Some("App\\Order".to_string())
+        );
+    }
+
+    #[test]
+    fn owner_parent_none_when_no_member_separator() {
+        // a class FQN without the member separator yields no parent.
+        assert_eq!(super::owner_parent("App\\Order", "::"), None);
+    }
+
+    /// `is_builtin_type` must strip the nullable `?` prefix and match case-insensitively against the
+    /// policy's primitive set — otherwise `?string` / `INT` would be wrongly treated as a class name and
+    /// pulled into type inference.
+    #[test]
+    fn is_builtin_type_strips_nullable_and_is_case_insensitive() {
+        let policy = php_policy();
+        assert!(super::is_builtin_type("string", &policy));
+        assert!(super::is_builtin_type("?string", &policy), "可空前缀 ? 应被剥离");
+        assert!(super::is_builtin_type("INT", &policy), "大小写不敏感");
+        assert!(super::is_builtin_type(" Array ", &policy), "前后空白应被 trim");
+        assert!(!super::is_builtin_type("DateTime", &policy), "非内建类型不应命中");
+        assert!(!super::is_builtin_type("?CustomType", &policy));
+    }
+
+    /// `property_value` pulls the `default` field out of a declaration's `extra` into a `FactValue`, and
+    /// falls back to `Null` when it is absent or not a valid `FactValue`.
+    #[test]
+    fn property_value_reads_default_or_null() {
+        let with_default = Declaration {
+            kind: NodeKind(NodeKind::PROPERTY.to_string()),
+            name: "x".into(),
+            fqn: "C::x".into(),
+            parent_fqn: None,
+            span: Span::default(),
+            // `default` is a `FactValue`, so it must be FactValue-shaped json (internally tagged).
+            extra: serde_json::json!({ "default": { "t": "Int", "v": 42 } }),
+        };
+        let expected =
+            serde_json::from_value::<FactValue>(serde_json::json!({ "t": "Int", "v": 42 })).unwrap();
+        assert_eq!(super::property_value(&with_default), expected, "应读取 default 字段");
+
+        let no_default = Declaration {
+            kind: NodeKind(NodeKind::PROPERTY.to_string()),
+            name: "y".into(),
+            fqn: "C::y".into(),
+            parent_fqn: None,
+            span: Span::default(),
+            extra: serde_json::Value::Null,
+        };
+        assert_eq!(
+            super::property_value(&no_default),
+            FactValue::Null,
+            "无 default 应回退 Null"
+        );
+    }
+
+    // ---- build_file via `run` (stub parser + in-memory fs) -----------------
+
+    struct StubParser {
+        facts: SyntaxFacts,
+    }
+    impl LanguageParser for StubParser {
+        fn language(&self) -> Language {
+            Language::new("php")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["php"]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> DomainResult<SyntaxFacts> {
+            Ok(self.facts.clone())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &['\\']
+        }
+        fn member_separator(&self) -> &'static str {
+            "::"
+        }
+    }
+
+    struct StubRegistry {
+        parser: StubParser,
+    }
+    impl ParserRegistry for StubRegistry {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            Some(&self.parser)
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![Language::new("php")]
+        }
+    }
+
+    struct MemFs {
+        source: String,
+    }
+    impl FileSystem for MemFs {
+        fn exists(&self, _: &std::path::Path) -> bool {
+            true
+        }
+        fn is_dir(&self, _: &std::path::Path) -> bool {
+            false
+        }
+        fn read_to_string(&self, _: &std::path::Path) -> DomainResult<String> {
+            Ok(self.source.clone())
+        }
+        fn len(&self, _: &std::path::Path) -> DomainResult<u64> {
+            Ok(self.source.len() as u64)
+        }
+    }
+
+    struct NoTechStack;
+    impl TechStackRegistry for NoTechStack {
+        fn adapter_for(&self, _: &Language) -> Option<&dyn gt_domain::port::TechStackAdapter> {
+            None
+        }
+    }
+
+    /// Drive `run` over a single in-memory file whose parser always returns `facts`.
+    fn run_on(facts: SyntaxFacts) -> PipelineContext {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        ctx.lang_policy_default = php_policy();
+        ctx.files.push(SourceFile {
+            id: FileId(1),
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            path: "app/Order.php".into(),
+            language: Language::new("php"),
+            size_bytes: 10,
+            content_hash: "x".into(),
+        });
+        let registry = StubRegistry {
+            parser: StubParser { facts },
+        };
+        let fs = MemFs {
+            source: "<?php".into(),
+        };
+        let tech = NoTechStack;
+        super::run(&mut ctx, &registry, &fs, &tech);
+        ctx
+    }
+
+    #[test]
+    fn build_file_creates_class_method_and_declares_edge() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::METHOD.to_string()),
+                name: "pay".into(),
+                fqn: "app\\Order::pay".into(),
+                parent_fqn: Some("app\\Order".into()),
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+        ];
+        facts.call_sites = vec![CallSiteFact {
+            owner_fqn: "app\\Order::pay".into(),
+            owner_class: None,
+            callee_text: "Db::name".into(),
+            receiver: None,
+            method: None,
+            args: vec![],
+            span: Span::default(),
+            snippet: None,
+            db_table: None,
+            in_loop: false,
+            entity: None,
+        }];
+        let ctx = run_on(facts);
+        let class = ctx.ws.find_by_name("app\\Order").expect("class node");
+        let method = ctx
+            .ws
+            .find_by_name("app\\Order::pay")
+            .expect("method node");
+        let has_declares = ctx.ws.edges().iter().any(|e| {
+            e.from_id == class && e.to_id == method && e.kind.as_str() == EdgeKind::DECLARES
+        });
+        assert!(has_declares, "Class must DECLARES its method");
+        assert_eq!(ctx.ws.calls.len(), 1, "one call site must be recorded");
+    }
+
+    #[test]
+    fn build_file_namespace_node_is_deduped() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        // Two namespace declarations with the same FQN — only one node must be materialised.
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::NAMESPACE.to_string()),
+                name: "app".into(),
+                fqn: "app".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            };
+            2
+        ];
+        let ctx = run_on(facts);
+        let ns_count = ctx
+            .ws
+            .node_ids()
+            .iter()
+            .filter(|id| {
+                ctx.ws
+                    .node(**id)
+                    .map(|n| n.kind.as_str() == NodeKind::NAMESPACE)
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(ns_count, 1, "duplicate namespace FQN must dedup to one node");
+        assert!(ctx.ws.find_by_name("app").is_some());
+    }
+
+    #[test]
+    fn build_file_missing_base_class_gets_placeholder() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![Declaration {
+            kind: NodeKind(NodeKind::CLASS.to_string()),
+            name: "Order".into(),
+            fqn: "app\\Order".into(),
+            parent_fqn: None,
+            span: Span::default(),
+            extra: serde_json::Value::Null,
+        }];
+        facts.inheritances = vec![InheritanceFact {
+            child_fqn: "app\\Order".into(),
+            base_name: "BaseModel".into(),
+            kind: EdgeKind(EdgeKind::EXTENDS.to_string()),
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        // `BaseModel` is not in the graph -> resolved to `app\BaseModel` and a placeholder node is recorded.
+        let base = ctx
+            .ws
+            .find_by_name("app\\BaseModel")
+            .expect("missing base class must get a placeholder node");
+        let order = ctx.ws.find_by_name("app\\Order").expect("child class");
+        let has_extends = ctx.ws.edges().iter().any(|e| {
+            e.from_id == order && e.to_id == base && e.kind.as_str() == EdgeKind::EXTENDS
+        });
+        assert!(has_extends, "child must EXTENDS the placeholder base");
+    }
+
+    #[test]
+    fn build_file_import_table_lowercases_short_name() {
+        let mut facts = SyntaxFacts::default();
+        facts.imports = vec![ImportFact {
+            alias: None,
+            name: "app\\dao\\OrderDao".into(),
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        // short name takes the last `\`-segment and is stored lower-cased.
+        assert!(
+            ctx.ws.get_symbol("imports", "orderdao").is_some(),
+            "import short name must be lower-cased in the symbol table"
+        );
+    }
+
+    #[test]
+    fn build_file_config_entries_pushed() {
+        let mut facts = SyntaxFacts::default();
+        facts.config_entries = vec![ConfigEntryFact {
+            key_path: "listen.order".into(),
+            value: FactValue::Null,
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        assert_eq!(ctx.ws.configs.len(), 1, "config entry must be pushed to ws.configs");
+        assert_eq!(ctx.ws.configs[0].key_path, "listen.order");
+    }
+}

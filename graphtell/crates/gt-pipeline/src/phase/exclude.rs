@@ -623,4 +623,47 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    // ---- pure-helper direct tests: `render` / `sanitize` / `probe_dir` ----
+    // The integration tests above only exercise these three through `resolve_for_sub`, so their
+    // silent-failure branches (render -> None, sanitize -> traversal / whole-root refusal) are left
+    // unpinned. These tests isolate them with no fs / kb.
+
+    /// `render` must return `None` — never a half-rendered string — when a placeholder is
+    /// unresolvable; otherwise the rule would silently exclude a directory literally named
+    /// `{app_root}` (i.e. nothing).
+    #[test]
+    fn render_returns_none_when_placeholder_unresolved() {
+        let values = std::collections::HashMap::<String, String>::new();
+        assert!(render("{app_root}/runtime/**", &values).is_none());
+    }
+
+    /// `render` substitutes a known placeholder and leaves the rest of the template intact.
+    #[test]
+    fn render_substitutes_known_placeholder() {
+        let mut values = std::collections::HashMap::<String, String>::new();
+        values.insert("app_root".to_string(), "app".to_string());
+        assert_eq!(
+            render("{app_root}/runtime/**", &values),
+            Some("app/runtime/**".to_string())
+        );
+    }
+
+    /// `sanitize` refuses path traversal, a bare `**` (whole subtree), and a glob whose directory
+    /// collapses to the sub-project root — while still normalising `./x/` -> `x`.
+    #[test]
+    fn sanitize_rejects_traversal_wildcard_and_root() {
+        assert!(sanitize("a/../b").is_err()); // path traversal
+        assert!(sanitize("**").is_err()); // whole subtree
+        assert!(sanitize("**/**").is_err()); // directory collapses to root
+        assert_eq!(sanitize("./x/"), Ok("x".to_string())); // normalisation
+    }
+
+    /// `probe_dir` returns `None` for a bare file pattern (single segment, e.g. `*.log`) and the
+    /// parent directory for a multi-segment glob.
+    #[test]
+    fn probe_dir_none_for_single_segment_glob() {
+        assert_eq!(probe_dir("*.log"), None);
+        assert_eq!(probe_dir("a/b/**"), Some("a/b".to_string()));
+    }
 }

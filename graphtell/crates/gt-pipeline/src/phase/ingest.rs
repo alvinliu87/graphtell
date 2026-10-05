@@ -377,10 +377,18 @@ pub fn validate_root(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    use std::sync::Mutex;
+
     use gt_adapter_fs::StdFileSystem;
     use gt_adapter_techstack::JsTechStackAdapter;
-    use gt_domain::model::{FileId, SubProjectId};
-    use gt_domain::port::DefaultTechStackRegistry;
+    use gt_domain::model::{
+        ExcludeRule, FileId, FrameworkKnowledge, ProjectConfig, ProjectStatus, SubProjectId,
+        SyntaxFacts,
+    };
+    use gt_domain::port::{
+        DefaultTechStackRegistry, KnowledgeProvider, LanguageParser, MarkerProvider, ParserRegistry,
+        ScanRequest, ScannedFile,
+    };
 
     /// `refine_role` consults the tech-stack adapter as a fallback, so the tests inject the JS adapter
     /// (recognition of `react-native` / uni-app lives in `gt-adapter-techstack`, not in the kernel).
@@ -672,5 +680,252 @@ mod tests {
             sub_name(ProjectId::new(1), root, Path::new("/p/app/admin")),
             "app-admin"
         );
+    }
+
+    // ------------------------------------------------------- marker_of (pure)
+    //
+    // The only untested pure fn: maps a discovered marker file name to (language, tier, detected_by).
+    // `detected_by` keeps the **configured** marker name (its original case), and an unknown marker
+    // falls back to ("unknown", "unknown", filename) — both silent-failure-prone if the case-insensitive
+    // match is ever broken.
+
+    /// Marker name matching is ascii-case-insensitive, and `detected_by` is the configured marker name
+    /// (preserving its case), not the on-disk filename.
+    #[test]
+    fn marker_of_matches_case_insensitively() {
+        let known = vec![Marker {
+            file: "composer.json".into(),
+            language: Language::new("php"),
+            role: "backend".into(),
+        }];
+        // On-disk name is upper-cased; the configured name stays lower-cased.
+        assert_eq!(
+            marker_of(Path::new("/x/COMPOSER.JSON"), &known),
+            ("php".to_string(), "backend".to_string(), "composer.json".to_string())
+        );
+    }
+
+    /// A filename that matches no known marker yields the unknown triple, with the filename as detected_by.
+    #[test]
+    fn marker_of_unknown_falls_back_to_unknown() {
+        let known = vec![Marker {
+            file: "composer.json".into(),
+            language: Language::new("php"),
+            role: "backend".into(),
+        }];
+        assert_eq!(
+            marker_of(Path::new("/x/random.txt"), &known),
+            (
+                "unknown".to_string(),
+                "unknown".to_string(),
+                "random.txt".to_string()
+            )
+        );
+    }
+
+    // ------------------------------------------------------- run (integration, stub ports)
+    //
+    // The orchestration that wires markers -> sub-projects -> exclude globs -> scan -> fingerprint is only
+    // exercised here. Two glue branches are otherwise never reached: the no-marker root fallback and the
+    // sub-project-relative prefixing of framework exclude globs.
+
+    struct StubScanner {
+        markers: Vec<PathBuf>,
+        scanned: Vec<ScannedFile>,
+        last_request: Mutex<Option<ScanRequest>>,
+    }
+    impl FileScanner for StubScanner {
+        fn scan(&self, request: &ScanRequest) -> Result<Vec<ScannedFile>> {
+            *self.last_request.lock().unwrap() = Some(request.clone());
+            Ok(self.scanned.clone())
+        }
+        fn find_markers(
+            &self,
+            _root: &Path,
+            _names: &[&str],
+            _max_depth: usize,
+        ) -> Result<Vec<PathBuf>> {
+            Ok(self.markers.clone())
+        }
+    }
+
+    struct StubParser;
+    impl LanguageParser for StubParser {
+        fn language(&self) -> Language {
+            Language::new("php")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["php"]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> gt_domain::error::Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &['\\']
+        }
+        fn member_separator(&self) -> &'static str {
+            "::"
+        }
+    }
+
+    struct StubRegistry {
+        parser: StubParser,
+    }
+    impl ParserRegistry for StubRegistry {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            Some(&self.parser)
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![Language::new("php")]
+        }
+    }
+
+    struct StubMarkers {
+        markers: Vec<Marker>,
+    }
+    impl MarkerProvider for StubMarkers {
+        fn markers(&self) -> Vec<Marker> {
+            self.markers.clone()
+        }
+    }
+
+    struct StaticKb(Vec<FrameworkKnowledge>);
+    impl KnowledgeProvider for StaticKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> {
+            self.0.iter().collect()
+        }
+        fn by_id(&self, id: &str) -> Option<&FrameworkKnowledge> {
+            self.0.iter().find(|fk| fk.id == id)
+        }
+    }
+
+    fn project_at(root: &Path) -> Project {
+        Project {
+            id: ProjectId::new(1),
+            name: "demo".into(),
+            root_path: root.to_path_buf(),
+            description: None,
+            config: ProjectConfig::default(),
+            status: ProjectStatus::Created,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// With no marker at all the project root becomes a single `unknown` sub-project detected via
+    /// `fallback:root` — and the scan still runs.
+    #[test]
+    fn run_falls_back_to_root_sub_project_when_no_marker() {
+        let root = scratch("run-nomarker");
+        let project = project_at(&root);
+
+        let scanner = StubScanner {
+            markers: vec![],
+            scanned: vec![],
+            last_request: Mutex::new(None),
+        };
+        let parsers = StubRegistry { parser: StubParser };
+        let markers = StubMarkers { markers: vec![] };
+        let kb = StaticKb(vec![]);
+
+        let res = run(
+            &project,
+            &scanner,
+            &parsers,
+            &StdFileSystem::new(),
+            &markers,
+            &DefaultTechStackRegistry::new(),
+            &kb,
+        )
+        .expect("run ok");
+
+        assert_eq!(res.sub_projects.len(), 1, "无 marker 应退化为单根子项目");
+        let sub = &res.sub_projects[0];
+        assert_eq!(sub.root_path, root, "退化子项目根应等于项目根");
+        assert_eq!(sub.role, "unknown");
+        assert_eq!(sub.detected_by, "fallback:root");
+        assert_eq!(sub.name, "demo");
+        assert_eq!(sub.language, Language::new(Language::UNKNOWN));
+        assert!(scanner.last_request.lock().unwrap().is_some(), "scan 仍应被调用");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A framework's exclude glob (relative to the sub-project root) must be re-prefixed with the
+    /// sub-project's path before reaching the scan, otherwise the cache dir is silently never excluded.
+    #[test]
+    fn run_prefixes_exclude_globs_with_sub_project_path() {
+        let root = scratch("run-prefix");
+        let sub_dir = root.join("app");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        // The scanned file must exist on disk so the content fingerprint can read it.
+        let src = sub_dir.join("Controller.php");
+        std::fs::write(&src, "<?php\n").unwrap();
+
+        let mut project = project_at(&root);
+        project.config.exclude_globs = vec!["public/**".into()];
+
+        let scanner = StubScanner {
+            markers: vec![sub_dir.join("composer.json")],
+            scanned: vec![ScannedFile {
+                path: src.clone(),
+                relative: "app/Controller.php".into(),
+                language: Language::new("php"),
+                size_bytes: 6,
+            }],
+            last_request: Mutex::new(None),
+        };
+        let parsers = StubRegistry { parser: StubParser };
+        let markers = StubMarkers {
+            markers: vec![Marker {
+                file: "composer.json".into(),
+                language: Language::new("php"),
+                role: "backend".into(),
+            }],
+        };
+        // A framework that applies unconditionally to php (no manifest needed) and declares a static exclude glob.
+        let kb = StaticKb(vec![FrameworkKnowledge {
+            id: "tp".into(),
+            display_name: "TP".into(),
+            language: Language::new("php"),
+            apply_without_detection: true,
+            exclude_rules: vec![ExcludeRule {
+                id: "cache".into(),
+                glob: "runtime/**".into(),
+                source: None,
+                fallbacks: vec![],
+            }],
+            ..Default::default()
+        }]);
+
+        let res = run(
+            &project,
+            &scanner,
+            &parsers,
+            &StdFileSystem::new(),
+            &markers,
+            &DefaultTechStackRegistry::new(),
+            &kb,
+        )
+        .expect("run ok");
+
+        assert_eq!(res.sub_projects.len(), 1, "应识别出一个子项目");
+        assert_eq!(res.sub_projects[0].root_path, sub_dir);
+        assert_eq!(res.sub_projects[0].role, "backend");
+
+        let req = scanner.last_request.lock().unwrap();
+        let req = req.as_ref().expect("scan invoked");
+        assert!(
+            req.extra_excludes.contains(&"public/**".to_string()),
+            "用户配置 glob 应原样保留：{:?}",
+            req.extra_excludes
+        );
+        assert!(
+            req.extra_excludes.contains(&"app/runtime/**".to_string()),
+            "框架 glob 应按子项目前缀拼接：{:?}",
+            req.extra_excludes
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

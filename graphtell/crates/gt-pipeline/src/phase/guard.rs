@@ -759,4 +759,151 @@ mod tests {
             "没有可选参数时不应打 auth.optional：{got:?}"
         );
     }
+
+    // ------------------------------------------------------- branch gaps
+    //
+    // The 10 tests above cover the principal paths; these pin branches that are otherwise only reached
+    // indirectly (or not at all).
+
+    /// A route references a middleware by its **short name** while the class node sits under its FQN.
+    /// `run` must resolve the short name (`resolve_short_name`) and still promote the found class node —
+    /// the direct `find_by_name` hit used by `links_contract_to_middleware` never exercises this.
+    #[test]
+    fn promotes_middleware_referenced_by_short_name() {
+        let mut ctx = PipelineContext::new(project());
+        add_contract(&mut ctx, "GET /x");
+        let mw = add_class(&mut ctx, r"app\Http\Middleware\Authenticate");
+        // Route names it by the short name, not the FQN.
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": "Authenticate" }]),
+        );
+
+        run(&mut ctx);
+
+        let node = ctx.ws.node(mw).expect("类节点应仍在");
+        assert_eq!(
+            node.kind.as_str(),
+            NodeKind::MIDDLEWARE,
+            "短名回退找到的类节点应被晋升为 Middleware"
+        );
+        assert_eq!(
+            guarded_by(&ctx),
+            vec![(
+                "GET /x".to_string(),
+                r"app\Http\Middleware\Authenticate".to_string()
+            )]
+        );
+    }
+
+    /// A spec that matches BOTH an optional mount (`arg: "false"`) and a mandatory mount (`arg: "true"`)
+    /// of the same capability must stamp the capability, not `auth.optional` — "when ALL hits are optional"
+    /// is decided by `any`, so one mandatory hit carries the day.
+    #[test]
+    fn mixed_optional_and_mandatory_mount_stamps_capability() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("Auth", "Authentication")]);
+        let c = add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([
+                { "class": "OptionalAuth", "arg": "false" },
+                { "class": "MandatoryAuth", "arg": "true" },
+            ]),
+        );
+
+        run_capabilities(&mut ctx);
+
+        assert!(
+            has(&ctx, c, "Authentication", AnnotationChannel::CAPABILITY),
+            "存在一个强制挂载就该打能力，实际：{:?}",
+            stamped(&ctx, c)
+        );
+        assert!(
+            !has(&ctx, c, OPTIONAL_AUTH, AnnotationChannel::FKB_MARK),
+            "不应因为另有可选挂载就改打 auth.optional，实际：{:?}",
+            stamped(&ctx, c)
+        );
+    }
+
+    /// A middleware resolved to a **callable** (METHOD / FUNCTION) target is only promoted to `Middleware`
+    /// when synthesis is allowed; the edge is laid either way. The class-promotion test uses a CLASS, so
+    /// this `is_callable` branch (line 311) is otherwise unexercised.
+    #[test]
+    fn callable_middleware_is_promoted_only_when_synthesis_allowed() {
+        let mut ctx = PipelineContext::new(project());
+        add_contract(&mut ctx, "GET /x");
+        let mut n = NewNode::new(
+            ProjectId::new(1),
+            NodeKind(NodeKind::METHOD.to_string()),
+            "makeMiddleware",
+        );
+        n.fqn = Some("makeMiddleware".into());
+        let m = ctx.ws.add_node(n);
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": "makeMiddleware" }]),
+        );
+
+        // Without synthesis: edge laid, but the METHOD node keeps its kind.
+        run(&mut ctx);
+        assert_eq!(guarded_by(&ctx).len(), 1, "边应照常建立");
+        assert_eq!(
+            ctx.ws.node(m).unwrap().kind.as_str(),
+            NodeKind::METHOD,
+            "未授权时方法节点不应被晋升"
+        );
+
+        // With synthesis: the METHOD node is promoted to Middleware.
+        let mut ctx2 = PipelineContext::new(project());
+        ctx2.ws.synthesize_unresolved_guards = true;
+        add_contract(&mut ctx2, "GET /x");
+        let mut n2 = NewNode::new(
+            ProjectId::new(1),
+            NodeKind(NodeKind::METHOD.to_string()),
+            "makeMiddleware",
+        );
+        n2.fqn = Some("makeMiddleware".into());
+        let m2 = ctx2.ws.add_node(n2);
+        put_row(
+            &mut ctx2,
+            "GET /x",
+            serde_json::json!([{ "class": "makeMiddleware" }]),
+        );
+        run(&mut ctx2);
+        assert_eq!(
+            ctx2.ws.node(m2).unwrap().kind.as_str(),
+            NodeKind::MIDDLEWARE,
+            "授权时方法节点应被晋升为 Middleware"
+        );
+    }
+
+    // `row_guards` is the pure parser of a guard row; only reached indirectly above, so pin its shape:
+    // short name after the last `\` / `/`, trimmed, empty class skipped, `arg` taken when present.
+    #[test]
+    fn row_guards_extracts_short_name_and_arg() {
+        let v = serde_json::json!({
+            "guards": [
+                { "class": r"app\api\middleware\AuthTokenMiddleware", "arg": "true" },
+                { "class": "/var/www/AllowOrigin", "arg": null },
+                { "class": "  ", "arg": "x" },          // empty after trim -> dropped
+                { "class": "PlainName" },               // no arg -> None
+            ]
+        });
+        let got = row_guards(&v);
+        assert_eq!(
+            got,
+            vec![
+                ("AuthTokenMiddleware".to_string(), Some("true".to_string())),
+                ("AllowOrigin".to_string(), None),
+                ("PlainName".to_string(), None),
+            ],
+            "短名/trim/空跳过/arg 解析应如预期：{got:?}"
+        );
+        // Missing `guards` key yields nothing.
+        assert!(row_guards(&serde_json::json!({ "handler": "C@m" })).is_empty());
+    }
 }

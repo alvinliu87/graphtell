@@ -176,18 +176,27 @@ pub fn matches_call(sel: &Selector, rec: &CallRecord, ws: &GraphWorkspace) -> bo
 }
 
 /// Whether a config entry matches the selector (supports `{locale}` placeholders and `*` wildcards in `file`).
+///
+/// `app_root` is the sub-project's app-root directory (see `prepare::app_root_of`); the `file` pattern's
+/// `{app_root}` placeholder is expanded against it *here* so the matching is identical to the expansion done
+/// in `apply_source_rules` — otherwise a `{app_root}` selector would pass the outer gate but be re-checked
+/// unexpanded inside `matches_config` and never fire.
 pub fn matches_config(
     sel: &Selector,
     rec: &ConfigRecord,
     node: NodeId,
     ws: &GraphWorkspace,
+    app_root: &str,
 ) -> bool {
     let (file_pat, key_pat, preds) = match sel {
         Selector::ConfigEntry { file, key_path, r#where } => (file, key_path, r#where),
         _ => return false,
     };
     if let Some(pat) = file_pat {
-        if !path_matches(pat, &rec.file) {
+        // Must expand `{app_root}` the same way `apply_source_rules` does; `path_matches` only handles
+        // `{locale}` → `*`, not `{app_root}`.
+        let expanded = crate::phase::prepare::expand(pat, app_root);
+        if !path_matches(&expanded, &rec.file) {
             return false;
         }
     }

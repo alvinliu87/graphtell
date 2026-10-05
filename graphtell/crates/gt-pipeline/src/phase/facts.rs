@@ -560,4 +560,120 @@ mod tests {
         let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b"], "环应终止且不重复：{ids:?}");
     }
+
+    // ---- under-covered branch tests ----
+    // `resolve_root_source` / `detect_without_code` / `manifest_has` are exercised *indirectly* via
+    // `exclude::resolve_for_sub`, but the three branches below never get a direct, isolated pin.
+
+    /// `resolve_manifest_pointer` must pick the **shallowest** directory when the pointer lands on a
+    /// namespace map (psr-4 style): that value becomes `app_root`, and a wrong pick silently mis-aims the
+    /// whole scan. `ShallowestDir` / `ByNamespaceKey` / `FirstDir` currently share the exact "take the
+    /// first (shallowest) candidate" behaviour — pinned here as the documented status quo.
+    #[test]
+    fn manifest_pointer_picks_shallowest_dir_from_a_map() {
+        let dir = std::env::temp_dir().join(format!("gt-facts-map-{}-{}", std::process::id(), "x"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("composer.json");
+        std::fs::write(
+            &path,
+            r#"{"autoload": {"psr-4": {"app\\": "app/", "admin\\": "a/b/c/"}}}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+
+        assert_eq!(
+            resolve_manifest_pointer(&path, "autoload.psr-4", PickStrategy::ShallowestDir, &fs)
+                .map(|(v, _)| v),
+            Some("app".to_string()),
+            "最浅候选 app/ 应胜出，而非 a/b/c/"
+        );
+        assert_eq!(
+            resolve_manifest_pointer(&path, "autoload.psr-4", PickStrategy::ByNamespaceKey, &fs)
+                .map(|(v, _)| v),
+            Some("app".to_string()),
+            "ByNamespaceKey 当前与 ShallowestDir 行为一致（取最浅）"
+        );
+        // A map whose directories all trim to empty yields no candidate.
+        let empty = dir.join("empty.json");
+        std::fs::write(&empty, r#"{"autoload": {"psr-4": {"x\\": "/"}}}"#).unwrap();
+        assert!(
+            resolve_manifest_pointer(&empty, "autoload.psr-4", PickStrategy::FirstDir, &fs).is_none(),
+            "目录被 trim 成空后应无候选"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `detect_without_code` must apply the language gate: a PHP framework is detected for `php` (and for
+    /// `UNKNOWN`, where the gate lifts) but NOT for `javascript`. Breaking the gate would silently
+    /// mis-detect frameworks across languages.
+    #[test]
+    fn detect_without_code_respects_language_gate() {
+        let kb = StaticKb(vec![FrameworkKnowledge {
+            id: "tp".into(),
+            language: Language::new("php"),
+            detectors: vec![Detector::ManifestDependency {
+                manifest: "composer.json".into(),
+                dependency: "topthink/framework".into(),
+                confidence: 0.95,
+            }],
+            ..Default::default()
+        }]);
+        let root = scratch_dir("detect-gate");
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{"require": {"topthink/framework": "^6"}}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        // Empty registry -> `manifest_has` falls back to a plain-text probe, which still matches.
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+
+        let php = detect_without_code(&kb, &fs, &root, &root, &Language::new("php"), &ts);
+        assert!(php.contains(&"tp".to_string()), "php 应检出 tp，实际：{php:?}");
+
+        let js = detect_without_code(&kb, &fs, &root, &root, &Language::new("javascript"), &ts);
+        assert!(!js.contains(&"tp".to_string()), "javascript 不应检出 php 框架，实际：{js:?}");
+
+        let unk = detect_without_code(
+            &kb,
+            &fs,
+            &root,
+            &root,
+            &Language::new(Language::UNKNOWN),
+            &ts,
+        );
+        assert!(unk.contains(&"tp".to_string()), "UNKNOWN 应解除语言门，实际：{unk:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With no tech-stack adapter (empty registry), `manifest_has` must still match via the conservative
+    /// whole-file text probe, and must return `false` for a missing file or an absent dependency.
+    #[test]
+    fn manifest_has_falls_back_to_plain_text_probe() {
+        let root = scratch_dir("mh-fallback");
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{"require": {"topthink/framework": "^6"}}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let php = Language::new("php");
+
+        assert!(
+            manifest_has(&root.join("composer.json"), "topthink/framework", &fs, &ts, &php),
+            "含依赖串应命中（降级为纯文本匹配）"
+        );
+        assert!(
+            !manifest_has(&root.join("composer.json"), "laravel/framework", &fs, &ts, &php),
+            "不含的依赖串不应命中"
+        );
+        assert!(
+            !manifest_has(&root.join("missing.json"), "topthink/framework", &fs, &ts, &php),
+            "文件不存在应直接 false"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

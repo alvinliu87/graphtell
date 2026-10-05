@@ -94,3 +94,143 @@ pub fn materialize(ctx: &mut PipelineContext) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gt_domain::model::{
+        IdentityKey, Language, NewNode, NodeId, NodeKind, Phase, Project, ProjectId, ProjectStatus,
+        Span,
+    };
+    use serde_json::json;
+
+    use crate::context::PipelineContext;
+    use crate::workspace::synthesized_node;
+
+    fn ctx_with_project() -> PipelineContext {
+        PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        })
+    }
+
+    fn put_schema(ctx: &mut PipelineContext, table: &str, cols: &[&str]) {
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "schema",
+            table,
+            json!({ "columns": cols }),
+        );
+    }
+
+    fn add_table(ctx: &mut PipelineContext, identity_value: &str) -> NodeId {
+        let phase = Phase(Phase::ANNOTATE_POST.to_string());
+        let (id, _) = ctx.ws.get_or_create_synthesized(synthesized_node(
+            ProjectId(1),
+            "Table",
+            IdentityKey::named(identity_value),
+            None,
+            &phase,
+            0.9,
+            &Language::new("php"),
+            Span::default(),
+        ));
+        id
+    }
+
+    /// Identity values of every `Column` node in the graph.
+    fn column_identities(ctx: &PipelineContext) -> Vec<String> {
+        ctx.ws
+            .node_ids()
+            .iter()
+            .filter_map(|id| {
+                let n = ctx.ws.node(*id)?;
+                if n.kind.as_str() == "Column" {
+                    n.identity.as_ref().map(|i| i.value.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn has_column_count(ctx: &PipelineContext) -> usize {
+        ctx.ws
+            .edges()
+            .iter()
+            .filter(|e| e.kind.as_str() == "HasColumn")
+            .count()
+    }
+
+    #[test]
+    fn materialize_plural_fallback_finds_columns() {
+        // Table node is named `user` but the DDL key is `users` — the plural fallback must still find columns.
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "users", &["id", "phone"]);
+        super::materialize(&mut ctx);
+        let cols = column_identities(&ctx);
+        assert_eq!(cols.len(), 2, "user must pull 2 columns from plural `users`");
+        assert!(cols.contains(&"user.id".to_string()));
+        assert!(cols.contains(&"user.phone".to_string()));
+        assert_eq!(has_column_count(&ctx), 2);
+    }
+
+    #[test]
+    fn materialize_columns_scoped_per_table() {
+        // The same column name (`id`) in two tables must stay two distinct nodes, not merge.
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        add_table(&mut ctx, "order");
+        put_schema(&mut ctx, "users", &["id"]);
+        put_schema(&mut ctx, "orders", &["id"]);
+        super::materialize(&mut ctx);
+        let cols = column_identities(&ctx);
+        assert_eq!(cols.len(), 2, "same column name across tables must not merge");
+        assert!(cols.contains(&"user.id".to_string()));
+        assert!(cols.contains(&"order.id".to_string()));
+        assert_eq!(has_column_count(&ctx), 2);
+    }
+
+    #[test]
+    fn materialize_no_schema_no_columns() {
+        // A table with no DDL/schema entry must produce no columns (better missing than guessed).
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "ghost");
+        super::materialize(&mut ctx);
+        assert_eq!(column_identities(&ctx).len(), 0);
+        assert_eq!(has_column_count(&ctx), 0);
+    }
+
+    #[test]
+    fn materialize_identity_value_preferred_over_name() {
+        // Display name `UserModel` differs from the schema identity `user`; resolution must use `identity.value`.
+        let mut ctx = ctx_with_project();
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind(NodeKind::TABLE.to_string()),
+            name: "UserModel".into(),
+            fqn: None,
+            identity: Some(IdentityKey::named("user")),
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase(Phase::ANNOTATE_POST.to_string()),
+            confidence: 0.9,
+            properties: serde_json::Value::Null,
+        });
+        // Only `users` exists; if `name` were used the lookup `UserModel`/`UserModels` would miss.
+        put_schema(&mut ctx, "users", &["id"]);
+        super::materialize(&mut ctx);
+        let cols = column_identities(&ctx);
+        assert_eq!(cols.len(), 1, "columns must resolve via identity.value, not display name");
+        assert_eq!(cols[0], "user.id");
+    }
+}

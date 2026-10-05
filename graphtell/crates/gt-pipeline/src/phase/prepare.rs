@@ -2669,6 +2669,12 @@ mod tests {
     use super::{
         declared_mw_path_matches, norm_class, parse_create_tables, short_callee, split_callee,
     };
+    use super::{
+        expand, load_config_keys, load_i18n, load_middleware_aliases, load_nginx, load_routes,
+        resolve_guard_class,
+    };
+    use gt_adapter_fs::StdFileSystem;
+    use gt_domain::port::{LanguageParser, ParserRegistry};
     use std::collections::HashMap;
     use serde_json::json;
 
@@ -2680,9 +2686,11 @@ mod tests {
             .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()))
     }
     use gt_domain::model::{
-        ChainGuardSpec, ConsumerGuardSpec, ConsumerScope, Detector, FactValue, FrameworkKnowledge,
-        GuardAttach, GuardAttachSpec, KnowledgeScope, Language, NodeId, Project, ProjectId,
-        ProjectStatus, RouteCallSpec, RouteGuardSpec, RouteMatchBy, Span, SubProject, SubProjectId,
+        ChainGuardSpec, ConfigEntryFact, ConsumerGuardSpec, ConsumerScope, Detector, FactValue,
+        FileId, FrameworkKnowledge, GuardAttach, GuardAttachSpec, KnowledgeScope, Language,
+        LoaderSource, LoaderSpec, NodeId, NormalizeStep, Project, ProjectId, ProjectStatus,
+        RouteCallSpec, RouteGuardSpec, RouteMatchBy, SourceFile, Span, SubProject, SubProjectId,
+        SyntaxFacts,
     };
 
     /// ThinkPHP 6's `route_guards` declaration (minimal set equivalent to `fkb/php/thinkphp.yaml`), for test reuse.
@@ -4233,5 +4241,415 @@ mod tests {
             !declared_mw_path_matches("app/Http", "app/Http/Middleware"),
             "模式必须是路径的后缀"
         );
+    }
+
+    // ------------------------------------------------------- the two remaining untested pure leaves
+    //
+    // `expand` is the `{app_root}` placeholder substitution every loader `paths`/`path` declaration relies on;
+    // if it regresses, route / nginx paths silently resolve against the wrong directory.
+    #[test]
+    fn expand_substitutes_app_root_placeholder() {
+        assert_eq!(expand("{app_root}/routes", "application"), "application/routes");
+        assert_eq!(
+            expand("app/routes", "application"),
+            "app/routes",
+            "无占位符应原样保留"
+        );
+        assert_eq!(expand("{app_root}", ""), "", "空 app_root 也应正确替换");
+    }
+
+    /// `resolve_guard_class` turns a mount arg alias (`auth`) back into a class, passes a class literal
+    /// through untouched, and never fabricates when the alias is unknown — `load_routes` builds the
+    /// `route_list` guards from exactly this, so a regression silently mis-links (or invents) middleware.
+    #[test]
+    fn resolve_guard_class_resolves_alias_and_passthrough() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        // alias table "mw": auth -> App\Auth
+        ctx.ws
+            .symbols
+            .entry("mw".into())
+            .or_default()
+            .insert("auth".into(), json!({ "class": r"App\Auth" }));
+
+        let sep = &['\\'];
+        // alias with no separator -> resolved from the table
+        assert_eq!(
+            resolve_guard_class(&ctx, "auth", Some("mw"), sep),
+            Some(r"App\Auth".into()),
+            "别名应查表还原为类"
+        );
+        // already a class name (contains a separator) -> returned as-is, trimmed
+        assert_eq!(
+            resolve_guard_class(&ctx, r"\App\Http\Auth", Some("mw"), sep),
+            Some(r"App\Http\Auth".into()),
+            "含命名空间分隔符的按原样返回并 trim"
+        );
+        // empty -> None
+        assert_eq!(resolve_guard_class(&ctx, "  ", Some("mw"), sep), None, "空串返回 None");
+        // unknown alias, no separator -> None (never fabricate)
+        assert_eq!(
+            resolve_guard_class(&ctx, "unknown", Some("mw"), sep),
+            None,
+            "未知别名不臆造"
+        );
+    }
+
+    // ------------------------------------------------------- the untested built-in loaders
+    //
+    // `load_schema` / `load_declared_middleware` are covered; these five reach disk / the call graph and had
+    // no direct test, so a regression in any of them silently produces an empty symbol table.
+
+    /// A `config()` / `Config::get` call with a static key becomes a `config_keys` symbol; keys with a space
+    /// are dropped (they cannot be a real config key and would pollute the table).
+    #[test]
+    fn load_config_keys_records_accessor_calls_as_config_symbols() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let f = "config/sys.php";
+        ctx.ws.calls = vec![
+            call(
+                f,
+                "Config",
+                "get",
+                vec![FactValue::String("sys.site_name".into())],
+                3,
+                3,
+                10,
+                40,
+            ),
+            call(
+                f,
+                "Config",
+                "get",
+                vec![FactValue::String("has space".into())],
+                4,
+                4,
+                50,
+                60,
+            ),
+        ];
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "backend".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            language: Language("php".into()),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec![],
+            facts: json!({}),
+        };
+        load_config_keys(
+            &mut ctx,
+            &json!({ "suffixes": ["::get"], "storage": "Database", "mutable": "EnvFixed" }),
+            &sub,
+        );
+        let key = ctx
+            .ws
+            .get_symbol("config_keys", "sys.site_name")
+            .expect("应写入 config_keys 符号");
+        assert_eq!(key["storage"], json!("Database"));
+        assert_eq!(key["mutable"], json!("EnvFixed"));
+        assert_eq!(key["value_type"], json!("string"));
+        assert_eq!(key["file"], json!(f));
+        assert!(
+            ctx.ws.get_symbol("config_keys", "has space").is_none(),
+            "含空格的 key 不应写入"
+        );
+    }
+
+    /// nginx `server_name` / `root` / `location` are scanned into a `nginx` symbol keyed by file path.
+    #[test]
+    fn load_nginx_parses_server_name_root_and_locations() {
+        let dir = std::env::temp_dir().join(format!("gt_nginx_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(
+            dir.join("site.conf"),
+            "server_name example.com;\nroot /var/www/html;\nlocation /api { proxy_pass x; }\n",
+        )
+        .unwrap();
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: dir.clone(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "web".into(),
+            root_path: dir.clone(),
+            language: Language("conf".into()),
+            role: "web".into(),
+            detected_by: "x".into(),
+            frameworks: vec![],
+            facts: json!({}),
+        };
+        load_nginx(&mut ctx, &sub, &dir, &StdFileSystem::new());
+        let sym = ctx
+            .ws
+            .get_symbol("nginx", "site.conf")
+            .expect("应写入 nginx 符号");
+        assert_eq!(sym["server_name"], json!("example.com"));
+        assert_eq!(sym["root"], json!("/var/www/html"));
+        assert_eq!(sym["locations"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `middleware_aliases` scans a `key => Class::class` file (syntax declared by FKB, not hard-coded) into
+    /// the alias table; the `{app_root}` placeholder expands from the `root_rules`-resolved app directory.
+    #[test]
+    fn load_middleware_aliases_reads_key_class_pairs() {
+        let dir = std::env::temp_dir().join(format!("gt_mwalias_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("application"));
+        std::fs::write(
+            dir.join("application/mw.php"),
+            "<?php return [\n  'auth' => App\\Auth::class,\n  'throttle' => App\\Throttle::class,\n];\n",
+        )
+        .unwrap();
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: dir.clone(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "backend".into(),
+            root_path: dir.clone(),
+            language: Language("php".into()),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec![],
+            facts: json!({}),
+        };
+        // Not `app/` — this project's app directory is `application/` (ThinkPHP 5.x convention).
+        ctx.ws
+            .set_fact(sub.id, "app_root", json!({ "value": "application" }));
+        load_middleware_aliases(
+            &mut ctx,
+            &sub,
+            &dir,
+            &json!({
+                "paths": ["{app_root}/mw.php"],
+                "end": "];",
+                "separator": "=>",
+                "extensions": ["php"],
+                "class_suffix": "::class",
+            }),
+        );
+        let table = ctx
+            .ws
+            .symbols
+            .get("middleware_aliases")
+            .expect("应写入别名表");
+        assert_eq!(
+            table
+                .get("auth")
+                .and_then(|v| v.get("class"))
+                .and_then(|c| c.as_str()),
+            Some("App\\Auth"),
+            "auth 别名还原为 App\\Auth"
+        );
+        assert_eq!(
+            table
+                .get("throttle")
+                .and_then(|v| v.get("class"))
+                .and_then(|c| c.as_str()),
+            Some("App\\Throttle")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `load_routes` turns the call graph into `route_list` entries, resolving each mounted guard's class
+    /// (here a class literal, whose namespace separators must survive intact).
+    #[test]
+    fn load_routes_builds_route_list_with_resolved_guards() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        let f = "app/api/route/user.php";
+        // `Route::get('info')` and `->middleware(AuthTokenMiddleware::class, false)` share byte range 10.
+        ctx.ws.calls = vec![
+            call(f, "Route", "get", vec![FactValue::String("info".into())], 7, 7, 10, 60),
+            call(
+                f,
+                "Route",
+                "middleware",
+                vec![
+                    class(r"app\api\middleware\AuthTokenMiddleware"),
+                    FactValue::Bool(false),
+                ],
+                7,
+                8,
+                10,
+                90,
+            ),
+        ];
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "backend".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            language: Language("php".into()),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec![],
+            facts: json!({}),
+        };
+        let steps: Vec<NormalizeStep> = Vec::new();
+        load_routes(&mut ctx, &tp6_spec(), &sub, &steps);
+        // Bare route (no group prefix) -> key is `METHOD path` with no leading slash; the slash only
+        // appears once a route-group prefix is inserted by `route_group_prefix`.
+        let route = ctx
+            .ws
+            .get_symbol("route_list", "GET info")
+            .expect("应写出 route_list 符号");
+        assert_eq!(route["handler"], json!(""));
+        let guards = route["guards"].as_array().expect("应有守卫");
+        assert_eq!(guards.len(), 1, "应解析出 1 个路由守卫");
+        assert_eq!(
+            guards[0]["class"],
+            json!(r"app\api\middleware\AuthTokenMiddleware"),
+            "守卫类应原样保留（含命名空间）"
+        );
+        assert_eq!(guards[0]["arg"], json!("false"));
+    }
+
+    /// i18n files under `lang/<locale>/*` are parsed into locale-keyed `i18n` symbols (`{stem}.{key_path}`).
+    struct I18nParser;
+    impl LanguageParser for I18nParser {
+        fn language(&self) -> Language {
+            Language::new("php")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["php"]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> gt_domain::error::Result<SyntaxFacts> {
+            Ok(SyntaxFacts {
+                config_entries: vec![ConfigEntryFact {
+                    key_path: "hello".into(),
+                    value: FactValue::String("Hi".into()),
+                    span: Span {
+                        start_line: 0,
+                        end_line: 0,
+                        start_byte: 0,
+                        end_byte: 0,
+                    },
+                }],
+                ..Default::default()
+            })
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &['\\']
+        }
+        fn member_separator(&self) -> &'static str {
+            "::"
+        }
+    }
+
+    struct I18nRegistry {
+        parser: I18nParser,
+    }
+    impl ParserRegistry for I18nRegistry {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            Some(&self.parser)
+        }
+        fn language_for_extension(&self, ext: &str) -> Option<Language> {
+            if ext == "php" {
+                Some(Language::new("php"))
+            } else {
+                None
+            }
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![Language::new("php")]
+        }
+    }
+
+    #[test]
+    fn load_i18n_builds_locale_keyed_symbols() {
+        let dir = std::env::temp_dir().join(format!("gt_i18n_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("lang/en"));
+        let p = "lang/en/messages.php";
+        std::fs::write(dir.join(p), "<?php return ['hello' => 'Hi'];").unwrap();
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: dir.clone(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        ctx.files = vec![SourceFile {
+            id: FileId::new(1),
+            project_id: ProjectId::new(1),
+            sub_project_id: None,
+            path: p.into(),
+            language: Language("php".into()),
+            size_bytes: 1,
+            content_hash: "x".into(),
+        }];
+        let loader = LoaderSpec {
+            id: "i18n".into(),
+            table: "i18n".into(),
+            from: LoaderSource::File {
+                path: "".into(),
+                key_path: None,
+            },
+            confidence: 1.0,
+        };
+        load_i18n(
+            &mut ctx,
+            &loader,
+            "lang/*/*",
+            &dir,
+            &StdFileSystem::new(),
+            &I18nRegistry { parser: I18nParser },
+            Some(r"(en|zh)"),
+            &gt_domain::port::DefaultTechStackRegistry::new(),
+        );
+        let sym = ctx
+            .ws
+            .get_symbol("i18n", "messages.hello")
+            .expect("应写出 i18n 符号");
+        assert_eq!(sym["texts"]["en"], json!("Hi"), "en 区域文本应写入");
+        assert_eq!(sym["file"], json!(p));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

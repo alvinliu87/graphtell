@@ -160,4 +160,41 @@ mod tests {
         assert!(!ctx.ws.has_annotation(NodeId::new(4), EXT_IN_LOOP));
         assert!(!ctx.ws.has_annotation(NodeId::new(5), EXT_IN_LOOP));
     }
+
+    // ---- `is_external_call` branch tests ----
+    // The integration test above never reaches the `method`-only path or the case-insensitive match,
+    // yet both are the documented headline behaviour (full callee *or* method name, ascii-case-insensitively).
+
+    /// A call counts as external when the *method* name matches FKB even though the full callee does not
+    /// (e.g. `Foo::curl_exec` with method `curl_exec`). This is the path the cross-language test skips.
+    #[test]
+    fn method_name_matches_when_callee_differs() {
+        let ctx = ctx_with(vec!["curl_exec", "send"]);
+        // method matches a FKB entry, even though the full callee does not.
+        assert!(is_external_call(&ctx, "Foo::curl_exec", Some("curl_exec")));
+        assert!(is_external_call(&ctx, "Mailer::send", Some("send")));
+        // callee matches a FKB entry fully, independent of method.
+        assert!(is_external_call(&ctx, "curl_exec", Some("whatever")));
+    }
+
+    /// Matching is ascii-case-insensitive for both the full callee and the method name. Someone turning
+    /// `eq_ignore_ascii_case` into `==` would silently stop catching these — this pins it.
+    #[test]
+    fn matching_is_case_insensitive() {
+        let ctx = ctx_with(vec!["curl_exec"]);
+        assert!(is_external_call(&ctx, "CURL_EXEC", None));
+        assert!(is_external_call(&ctx, "Curl_Exec", Some("Curl_Exec")));
+
+        let ctx = ctx_with(vec!["Http::get"]);
+        assert!(is_external_call(&ctx, "http::GET", None));
+        assert!(is_external_call(&ctx, "HTTP::get", Some("GET")));
+    }
+
+    /// When neither the callee nor the method matches — including a `None` method — the call is not external.
+    #[test]
+    fn no_match_when_method_absent_or_unrelated() {
+        let ctx = ctx_with(vec!["curl_exec"]);
+        assert!(!is_external_call(&ctx, "Foo::x", None));
+        assert!(!is_external_call(&ctx, "Foo::x", Some("y")));
+    }
 }
