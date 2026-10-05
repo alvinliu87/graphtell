@@ -369,6 +369,9 @@ fn arg_text(fv: &FactValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::PipelineContext;
+    use gt_domain::model::{Project, ProjectConfig, ProjectId, ProjectStatus, TaintSink};
+    use std::collections::HashMap;
 
     /// The variable marker is **this language's** (PHP `$`), injected like every other notation rule — not
     /// built into the scanner.
@@ -477,5 +480,157 @@ mod tests {
         // A sink declared without a receiver fires for any receiver.
         assert!(is_raw_sql_sink(&php, &Some("Model".to_string()), "whereRaw"));
         assert!(is_where_interp_sink(&php, "where"));
+    }
+
+    // ===== Below: coverage for `run()`'s backbone — backward trace, arg marker, keyword, spec resolution =====
+
+    fn taint_spec() -> TaintSpec {
+        TaintSpec {
+            raw_sql_sinks: vec![TaintSink {
+                method: "query".into(),
+                receiver: Some("Db".into()),
+            }],
+            where_interp_sinks: vec!["where".into()],
+            request_sources: vec!["input(".into(), "request()".into(), "->param(".into()],
+        }
+    }
+
+    /// Backward tracing along the same-function assignment chain.
+    #[test]
+    fn reaches_request_follows_assignment_chain() {
+        let spec = taint_spec();
+        let p = php_prefixes();
+        let mut idx: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+
+        // Direct request source.
+        idx.insert(("f", "id"), vec!["input('id')"]);
+        assert!(reaches_request(&spec, &idx, "f", "id", &p));
+
+        // A config read is NOT a request source — conservative miss, not a false critical.
+        idx.insert(("f", "cfg"), vec!["Config::get('x')"]);
+        assert!(!reaches_request(&spec, &idx, "f", "cfg", &p));
+
+        // Transitive: `$b = $a; $a = input('x')`.
+        idx.insert(("f", "a"), vec!["input('x')"]);
+        idx.insert(("f", "b"), vec!["$a"]);
+        assert!(reaches_request(&spec, &idx, "f", "b", &p));
+
+        // A parameter (no assignment record) is treated as "no request source seen".
+        assert!(!reaches_request(&spec, &HashMap::new(), "f", "param", &p));
+    }
+
+    #[test]
+    fn reaches_request_breaks_cycles_and_respects_depth() {
+        let spec = taint_spec();
+        let p = php_prefixes();
+        let mut idx: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+
+        // Cycle `$a = $b; $b = $a` must terminate (no infinite loop) and report false.
+        idx.insert(("f", "a"), vec!["$b"]);
+        idx.insert(("f", "b"), vec!["$a"]);
+        assert!(!reaches_request(&spec, &idx, "f", "a", &p));
+
+        // `$this` is the object itself, never user input — must not be traced as a variable.
+        idx.insert(("f", "x"), vec!["$this->db"]);
+        assert!(!reaches_request(&spec, &idx, "f", "x", &p));
+
+        // Depth guard: a chain longer than TRACE_DEPTH(4) hops is not fully followed.
+        idx.insert(("f", "v0"), vec!["input('x')"]);
+        idx.insert(("f", "v1"), vec!["$v0"]);
+        idx.insert(("f", "v2"), vec!["$v1"]);
+        idx.insert(("f", "v3"), vec!["$v2"]);
+        idx.insert(("f", "v4"), vec!["$v3"]);
+        idx.insert(("f", "v5"), vec!["$v4"]);
+        assert!(!reaches_request(&spec, &idx, "f", "v5", &p));
+    }
+
+    /// `arg_has_user_var` distinguishes an interpolated / bare variable from a namespace separator or plain SQL.
+    #[test]
+    fn arg_has_user_var_marks_variables_not_separators() {
+        let p = php_prefixes();
+        assert!(arg_has_user_var(&FactValue::String("a ${x} b".into()), &p));
+        assert!(arg_has_user_var(&FactValue::Unknown(Some("$x".into())), &p));
+        // `Db::` namespace separator (no `{`) must not be mistaken for a variable.
+        assert!(!arg_has_user_var(&FactValue::String("Db::query".into()), &p));
+        // A plain SQL literal carries no variable.
+        assert!(!arg_has_user_var(&FactValue::Unknown(Some("SELECT 1".into())), &p));
+        assert!(!arg_has_user_var(&FactValue::String("SELECT 1".into()), &p));
+        assert!(!arg_has_user_var(&FactValue::Int(1), &p));
+    }
+
+    /// Whole-word SQL keyword after stripping variable references (the BaseDao `$where` false-positive fix).
+    #[test]
+    fn contains_sql_keyword_is_whole_word_after_stripping() {
+        let p = php_prefixes();
+        assert!(contains_sql_keyword("WHERE x = 1", &p));
+        // A variable name merely containing a keyword must not match.
+        assert!(!contains_sql_keyword("$where", &p));
+        // The real keyword survives once the variable name is stripped.
+        assert!(contains_sql_keyword("$orderBy . ' LIMIT 1'", &p));
+        // Substring inside another word must not match.
+        assert!(!contains_sql_keyword("WHEREAS something", &p));
+        assert!(!contains_sql_keyword("$foo . $bar", &p));
+    }
+
+    /// `spec_for` prefers a sub-project's own taint vocabulary, then the global default, then none.
+    #[test]
+    fn spec_for_prefers_sub_then_default_then_none() {
+        let mut ctx = tctx();
+        let sub_spec = TaintSpec {
+            raw_sql_sinks: vec![TaintSink {
+                method: "custom".into(),
+                receiver: None,
+            }],
+            ..Default::default()
+        };
+        let default_spec = TaintSpec {
+            raw_sql_sinks: vec![TaintSink {
+                method: "query".into(),
+                receiver: Some("Db".into()),
+            }],
+            ..Default::default()
+        };
+        ctx.taint.insert(7, sub_spec);
+        ctx.taint_default = Some(default_spec);
+
+        assert_eq!(
+            spec_for(&ctx, Some(SubProjectId::new(7)))
+                .unwrap()
+                .raw_sql_sinks[0]
+                .method,
+            "custom"
+        );
+        // Missing sub falls back to the default.
+        assert_eq!(
+            spec_for(&ctx, Some(SubProjectId::new(99)))
+                .unwrap()
+                .raw_sql_sinks[0]
+                .method,
+            "query"
+        );
+        // `None` sub also uses the default.
+        assert_eq!(
+            spec_for(&ctx, None).unwrap().raw_sql_sinks[0].method,
+            "query"
+        );
+
+        // Both missing -> the phase judges nothing.
+        let empty = tctx();
+        assert!(spec_for(&empty, Some(SubProjectId::new(5))).is_none());
+        assert!(spec_for(&empty, None).is_none());
+    }
+
+    /// Minimal `PipelineContext` for the `spec_for` unit test.
+    fn tctx() -> PipelineContext {
+        PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            description: None,
+            config: ProjectConfig::default(),
+            status: ProjectStatus::Created,
+            created_at: 0,
+            updated_at: 0,
+        })
     }
 }
