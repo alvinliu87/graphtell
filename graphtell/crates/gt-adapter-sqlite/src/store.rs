@@ -1739,6 +1739,135 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::{EdgeKind, NewEdge, NewNode, NodeKind};
+    use gt_domain::port::{GraphQuery, GraphSink};
+
+    fn store() -> SqliteStore {
+        SqliteStore::in_memory().expect("in-memory store")
+    }
+
+    // ---- pure helpers ----
+
+    /// `name_contains` is matched with `LIKE`, so `%` / `_` / `\` in a user query must be escaped — otherwise
+    /// searching `a_b` silently matches `axb`. The backslash is replaced **first**, or the escapes themselves
+    /// would be doubled.
+    #[test]
+    fn like_escape_neutralises_wildcards() {
+        assert_eq!(like_escape("a_b"), "a\\_b");
+        assert_eq!(like_escape("100%"), "100\\%");
+        assert_eq!(like_escape("a\\b"), "a\\\\b", "反斜杠必须先转义，否则会被再加一层");
+        assert_eq!(like_escape("plain"), "plain");
+    }
+
+    /// Config patches are merged **deeply**: nested objects merge key by key, while scalars and arrays replace.
+    /// A `null` patch is a no-op — that is what makes "patch with nothing" safe.
+    #[test]
+    fn merge_into_merges_nested_objects_but_replaces_scalars() {
+        let mut base = serde_json::json!({ "a": 1, "nested": { "x": 1, "y": 2 }, "list": [1, 2] });
+        merge_into(&mut base, &serde_json::json!({ "a": 9, "nested": { "y": 20, "z": 30 }, "list": [3] }));
+        assert_eq!(base["a"], 9, "标量应被覆盖");
+        assert_eq!(base["nested"]["x"], 1, "嵌套对象应逐键合并，未提及的键保留");
+        assert_eq!(base["nested"]["y"], 20);
+        assert_eq!(base["nested"]["z"], 30, "新增键应加入");
+        assert_eq!(base["list"], serde_json::json!([3]), "数组应整体替换，不做合并");
+
+        // null is a no-op; a non-object patch replaces the base outright.
+        let mut b2 = serde_json::json!({ "a": 1 });
+        merge_into(&mut b2, &Value::Null);
+        assert_eq!(b2, serde_json::json!({ "a": 1 }), "null 补丁应为无操作");
+        merge_into(&mut b2, &serde_json::json!(5));
+        assert_eq!(b2, serde_json::json!(5));
+    }
+
+    /// Two on-disk spellings coexist: the new full-JSON form (with `scope`) and the legacy flat `kind:value`.
+    #[test]
+    fn identity_from_key_reads_both_spellings() {
+        let json = identity_from_key(r#"{"kind":"table","value":"users","scope":"db1"}"#)
+            .expect("JSON 形式应解析");
+        assert_eq!(json.value, "users");
+        assert_eq!(json.scope.as_deref(), Some("db1"), "JSON 形式必须保留 scope");
+
+        let flat = identity_from_key("table:users").expect("旧格式应解析");
+        assert_eq!(flat.kind.as_str(), "table");
+        assert_eq!(flat.value, "users");
+        assert!(flat.scope.is_none(), "旧格式没有 scope");
+
+        let named = identity_from_key("SomeClass").expect("裸名字应解析");
+        assert_eq!(named.value, "SomeClass");
+    }
+
+    #[test]
+    fn severity_label_and_status_parse_are_total() {
+        assert_eq!(severity_label(Severity::Critical), "critical");
+        assert_eq!(severity_label(Severity::Error), "error");
+        assert_eq!(severity_label(Severity::Warning), "warning");
+        assert_eq!(severity_label(Severity::Info), "info");
+
+        assert!(matches!(parse_status("indexing"), ProjectStatus::Indexing));
+        assert!(matches!(parse_status("ready"), ProjectStatus::Ready));
+        assert!(matches!(parse_status("failed"), ProjectStatus::Failed));
+        assert!(
+            matches!(parse_status("who-knows"), ProjectStatus::Created),
+            "未知状态应退化为 Created，而不是报错"
+        );
+    }
+
+    // ---- database invariants ----
+
+    fn node(pid: ProjectId, id: i64, name: &str) -> NewNode {
+        NewNode {
+            id: Some(NodeId(id)),
+            ..NewNode::new(pid, NodeKind::new("Class"), name)
+        }
+    }
+
+    /// Re-running the pipeline (`reset_project`) must **replace** the graph, not append — this is the contract
+    /// behind the watch-driven whole-DB rebuild.
+    #[test]
+    fn reset_project_replaces_graph_data() {
+        let s = store();
+        let pid = ProjectId::new(1);
+        let mut first = GraphDelta::new(pid);
+        first.nodes.push(node(pid, 1, "A"));
+        first.nodes.push(node(pid, 2, "B"));
+        s.apply(&first).unwrap();
+        assert_eq!(s.stats(pid).unwrap().nodes, 2);
+
+        let mut second = GraphDelta::new(pid);
+        second.reset_project = true;
+        second.nodes.push(node(pid, 3, "C"));
+        s.apply(&second).unwrap();
+        let stats = s.stats(pid).unwrap();
+        assert_eq!(stats.nodes, 1, "重建后应只剩新节点，而不是累积: {stats:?}");
+    }
+
+    /// The foreign keys to `nodes` must really cascade: without them "the node is gone but the edge remains" is
+    /// undetectable (a concurrent build once left 36k edges with 0 nodes, which still looked like a success).
+    #[test]
+    fn edges_cascade_when_their_nodes_are_deleted() {
+        let s = store();
+        let pid = ProjectId::new(1);
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(node(pid, 1, "A"));
+        d.nodes.push(node(pid, 2, "B"));
+        d.edges.push(NewEdge::new(pid, EdgeKind::new("Calls"), NodeId(1), NodeId(2)));
+        s.apply(&d).unwrap();
+        let before = s.stats(pid).unwrap();
+        assert_eq!((before.nodes, before.edges), (2, 1), "{before:?}");
+
+        // A rebuild clears the nodes; the edges must go with them.
+        let mut reset = GraphDelta::new(pid);
+        reset.reset_project = true;
+        s.apply(&reset).unwrap();
+        let after = s.stats(pid).unwrap();
+        assert_eq!(after.nodes, 0);
+        assert_eq!(after.edges, 0, "边必须随节点级联删除，否则留下不可检测的脏数据: {after:?}");
+    }
+}
+
 // ---------------------------------------------------------------- project-level rule config
 
 impl RuleConfigStore for SqliteStore {

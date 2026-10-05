@@ -3957,8 +3957,8 @@ mod tests {
     use super::*;
     use gt_domain::error::DomainError;
     use gt_domain::model::{
-        Edge, EdgeId, EdgeKind, IdentityKey, Language, Node, NodeId, NodeKind, Phase, ProjectId,
-        Span,
+        Edge, EdgeId, EdgeKind, FileId, IdentityKey, Language, Node, NodeId, NodeKind, Phase,
+        ProjectId, Span,
     };
     use gt_domain::port::FileSystem;
     use std::collections::HashMap;
@@ -5436,5 +5436,102 @@ mod tests {
             co > cn && cd > cn,
             "噪声节点应明显低于目标节点：cn={cn} co={co} cd={cd}"
         );
+    }
+
+    // ---- merged_aliases ----
+
+    /// `merged_aliases(None)` returns exactly the built-in table — no project overrides means no additions/drops.
+    #[test]
+    fn merged_aliases_without_root_is_builtin_only() {
+        let base = builtin_aliases();
+        let got = merged_aliases(None);
+        assert_eq!(got.len(), base.len(), "无 root 时不应增减别名组");
+        for (k, v) in &base {
+            let g = got.iter().find(|(z, _)| z == k).expect("builtin key must survive");
+            assert_eq!(g.1, *v, "builtin 值不应被改动: {k}");
+        }
+    }
+
+    /// A project alias file sharing a built-in key must *merge* (dedup) into that group, not append a duplicate group.
+    #[test]
+    fn merged_aliases_augments_existing_builtin_key_without_dup() {
+        let base = builtin_aliases();
+        let key = &base[0].0; // a real built-in key
+        let dir = std::env::temp_dir().join(format!("gt_alias_it_{}", std::process::id()));
+        let cfg = dir.join(".graphtell");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let text = serde_json::json!({ key.clone(): ["__extra_alias_term__"] }).to_string();
+        std::fs::write(cfg.join("aliases.json"), text).unwrap();
+
+        let got = merged_aliases(Some(&dir));
+        let group = got.iter().find(|(z, _)| z == key).expect("组应存在");
+        let extra = group.1.iter().filter(|e| *e == "__extra_alias_term__").count();
+        assert_eq!(extra, 1, "项目别名应并入现有组且不重复");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A project alias file with a brand-new key (absent from the built-in table) must append a new group verbatim.
+    #[test]
+    fn merged_aliases_adds_new_group() {
+        let key = "__brand_new_alias_group__"; // sentinel: must not collide with any built-in key
+        assert!(
+            !builtin_aliases().iter().any(|(z, _)| z == key),
+            "测试哨兵 key 不应与内置别名冲突"
+        );
+        let dir = std::env::temp_dir().join(format!("gt_alias_it2_{}", std::process::id()));
+        let cfg = dir.join(".graphtell");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let text = serde_json::json!({ key: ["reconcile", "Reconciliation"] }).to_string();
+        std::fs::write(cfg.join("aliases.json"), text).unwrap();
+
+        let got = merged_aliases(Some(&dir));
+        let rec = got.iter().find(|(z, _)| z == key).expect("新组应被追加");
+        assert_eq!(rec.1, vec!["reconcile".to_string(), "Reconciliation".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A corrupted `.graphtell/aliases.json` must NOT panic and must fall back to the built-in table — a bad project
+    /// config must never break recall.
+    #[test]
+    fn merged_aliases_corrupt_json_falls_back_to_builtin() {
+        let dir = std::env::temp_dir().join(format!("gt_alias_it3_{}", std::process::id()));
+        let cfg = dir.join(".graphtell");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("aliases.json"), "{ this is not valid json").unwrap();
+
+        let base = builtin_aliases();
+        let got = merged_aliases(Some(&dir)); // must not panic
+        assert_eq!(got.len(), base.len(), "损坏配置应回退到内置表（组数不变）");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- is_vector_kind ----
+
+    /// Excluded noise kinds are never vector-encoded (recall would otherwise degrade to line-by-line matching).
+    #[test]
+    fn is_vector_kind_excludes_noise_kinds() {
+        assert!(
+            !is_vector_kind(&tnode(1, "CallSite", "x", None, None)),
+            "排除的噪声 kind 不应向量化"
+        );
+    }
+
+    /// A `Method`/`Function` is vector-eligible only with a source location; synthetic nodes without `file_id` are skipped.
+    #[test]
+    fn is_vector_kind_method_needs_source_file() {
+        assert!(
+            !is_vector_kind(&tnode(2, "Method", "m", None, None)),
+            "无源码位置的合成 Method 不应向量化"
+        );
+        let mut n = tnode(3, "Method", "m", None, None);
+        n.file_id = Some(FileId::new(7));
+        assert!(is_vector_kind(&n), "有源码位置的 Method 应向量化");
+    }
+
+    /// Business/structural kinds (Class/Table) are vector-eligible by default.
+    #[test]
+    fn is_vector_kind_business_kinds_are_vectorizable() {
+        assert!(is_vector_kind(&tnode(4, "Class", "C", None, None)));
+        assert!(is_vector_kind(&tnode(5, "Table", "T", None, None)));
     }
 }

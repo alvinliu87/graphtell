@@ -162,4 +162,52 @@ mod tests {
         assert_eq!(path, None);
         assert_eq!(line, Some(7));
     }
+
+    /// A syntax node with `start_line == 0` resolves to a real path but no line — the `> 0` guard in the file_id
+    /// branch must not surface a bogus line 0 in the frontend jump.
+    #[test]
+    fn syntax_node_with_zero_start_line_has_path_but_no_line() {
+        let mut n = tnode(6, "Method", "f", None, None);
+        n.file_id = Some(FileId::new(7));
+        // Span::default() has start_line == 0; do not override it.
+        let files = HashMap::from([(7i64, "app/Order.php".to_string())]);
+        let (path, line) = node_location(&n, &files, Some(Path::new("/root")));
+        assert_eq!(path, Some("/root/app/Order.php".to_string()));
+        assert_eq!(line, None, "start_line=0 不应暴露 line");
+    }
+
+    /// Malformed `locations` (here a string, not an array) must degrade to `(None, None)` rather than panic/assume.
+    #[test]
+    fn non_array_locations_is_none() {
+        let mut n = tnode(7, "Table", "x", None, Some("Table:x"));
+        n.properties = serde_json::json!({ "locations": "oops" });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, None);
+        assert_eq!(line, None);
+    }
+
+    #[test]
+    fn empty_locations_array_is_none() {
+        let mut n = tnode(8, "Table", "x", None, Some("Table:x"));
+        n.properties = serde_json::json!({ "locations": [] });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, None);
+        assert_eq!(line, None);
+    }
+
+    /// Only the *first* synthetic location is used (the doc contract). A bug that merged locations would send the
+    /// jump to the wrong file.
+    #[test]
+    fn synthetic_uses_only_first_location() {
+        let mut n = tnode(9, "Table", "x", None, Some("Table:x"));
+        n.properties = serde_json::json!({
+            "locations": [
+                { "file": "sql/a.sql", "line": 1 },
+                { "file": "sql/b.sql", "line": 2 }
+            ]
+        });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, Some("/root/sql/a.sql".to_string()));
+        assert_eq!(line, Some(1), "只取第一条 location");
+    }
 }

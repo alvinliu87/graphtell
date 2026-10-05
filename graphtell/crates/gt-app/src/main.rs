@@ -652,3 +652,69 @@ fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gt_main_it_{}_{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // ---- collect_yaml: real recursion + extension filtering ----
+
+    #[test]
+    fn collect_yaml_finds_all_extensions_recursively() {
+        let dir = temp_root("collect");
+        std::fs::write(dir.join("a.yaml"), b"").unwrap();
+        std::fs::write(dir.join("b.yml"), b"").unwrap();
+        std::fs::write(dir.join("c.YAML"), b"").unwrap(); // case-insensitive
+        std::fs::write(dir.join("d.YML"), b"").unwrap();
+        std::fs::write(dir.join("e.txt"), b"").unwrap(); // excluded
+        std::fs::write(dir.join("f.json"), b"").unwrap(); // excluded
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/g.yaml"), b"").unwrap();
+        std::fs::write(dir.join("sub/h.md"), b"").unwrap();
+        let mut out = Vec::new();
+        collect_yaml(&dir, &mut out);
+        assert_eq!(out.len(), 5, "应递归收集 *.yaml/*.yml（含大小写变体），排除其他扩展名");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn collect_yaml_handles_missing_dir_gracefully() {
+        let dir = std::env::temp_dir().join(format!("gt_main_it_{}_missing", std::process::id()));
+        let mut out = Vec::new();
+        collect_yaml(&dir, &mut out); // must not panic on a non-existent root
+        assert!(out.is_empty());
+    }
+
+    // ---- validate_fkbs: exit-code guards (CI runs `graphtell validate` and fails on non-zero) ----
+
+    #[test]
+    fn validate_fkbs_errors_on_missing_dir() {
+        let dir = std::env::temp_dir().join(format!("gt_main_it_{}_no_fkb", std::process::id()));
+        assert!(validate_fkbs(&dir).is_err(), "不存在的 FKB 目录必须 bail（非零退出）");
+    }
+
+    #[test]
+    fn validate_fkbs_ok_on_empty_dir() {
+        let dir = temp_root("empty_fkb");
+        assert!(validate_fkbs(&dir).is_ok(), "空目录（无 yaml）应返回 Ok");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_fkbs_errors_on_unparseable_yaml() {
+        let dir = temp_root("broken_fkb");
+        std::fs::write(dir.join("bad.yaml"), b"key: [unclosed").unwrap();
+        assert!(
+            validate_fkbs(&dir).is_err(),
+            "解析失败的 FKB 文件必须使 validate 返回 Err（CI 非零退出）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

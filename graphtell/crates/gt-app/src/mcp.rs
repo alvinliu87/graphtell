@@ -559,7 +559,10 @@ fn decode_chunked(s: &str) -> String {
             Some(i) => &rest[..i],
             None => break,
         };
-        let size = match line.split(';').next().unwrap_or("").trim().parse::<usize>() {
+        // HTTP/1.1 chunk size is **hexadecimal** (RFC 7230 §4.1). Parsing it as decimal breaks every chunk whose
+        // size contains a-f (e.g. `d` = 13) and mis-sizes every chunk >= 16 (e.g. `10` = 16 bytes, not 10),
+        // which silently truncates the recall Markdown returned to the IDE.
+        let size = match usize::from_str_radix(line.split(';').next().unwrap_or("").trim(), 16) {
             Ok(n) if n > 0 => n,
             _ => break,
         };
@@ -571,4 +574,292 @@ fn decode_chunked(s: &str) -> String {
         rest = &after[size + 2..];
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The base never connects in these tests: only the non-network code paths are exercised.
+    fn bridge() -> McpBridge {
+        McpBridge::new("http://127.0.0.1:5177".to_string(), 1)
+    }
+
+    // ---- parse_base: resident-service address parsing ----
+
+    #[test]
+    fn parse_base_accepts_common_forms() {
+        assert_eq!(
+            parse_base("http://127.0.0.1:5177").unwrap(),
+            ("127.0.0.1".to_string(), 5177)
+        );
+        assert_eq!(
+            parse_base("http://127.0.0.1:5177/").unwrap(),
+            ("127.0.0.1".to_string(), 5177),
+            "尾部斜杠应被忽略"
+        );
+        assert_eq!(
+            parse_base("127.0.0.1:5177").unwrap(),
+            ("127.0.0.1".to_string(), 5177),
+            "缺省 scheme 也应可用"
+        );
+        assert_eq!(parse_base("localhost:8080").unwrap(), ("localhost".to_string(), 8080));
+    }
+
+    #[test]
+    fn parse_base_rejects_malformed_addresses() {
+        assert!(parse_base("127.0.0.1").is_err(), "缺端口必须报错");
+        assert!(parse_base("http://127.0.0.1:notaport").is_err());
+        assert!(parse_base("http://127.0.0.1:99999").is_err(), "端口溢出 u16 必须报错");
+    }
+
+    // ---- decode_chunked ----
+
+    #[test]
+    fn decode_chunked_joins_chunks() {
+        assert_eq!(decode_chunked("5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n"), "Hello World");
+    }
+
+    /// HTTP/1.1 chunk size is **hexadecimal** (RFC 7230 §4.1): `d` = 13, `10` = 16.
+    /// Parsing it as decimal silently breaks every chunk containing a-f and mis-sizes every chunk >= 16.
+    #[test]
+    fn decode_chunked_uses_hexadecimal_chunk_size() {
+        assert_eq!(decode_chunked("d\r\nHello, World!\r\n0\r\n\r\n"), "Hello, World!");
+        assert_eq!(
+            decode_chunked("10\r\n0123456789abcdef\r\n0\r\n\r\n"),
+            "0123456789abcdef",
+            "`10` 是 16 字节，不是 10"
+        );
+        assert_eq!(decode_chunked("A\r\n0123456789\r\n0\r\n\r\n"), "0123456789", "大写十六进制同样合法");
+    }
+
+    #[test]
+    fn decode_chunked_skips_chunk_extensions() {
+        assert_eq!(decode_chunked("5;ext=1\r\nHello\r\n0\r\n\r\n"), "Hello");
+    }
+
+    #[test]
+    fn decode_chunked_is_safe_on_empty_and_malformed() {
+        assert_eq!(decode_chunked(""), "");
+        assert_eq!(decode_chunked("garbage"), "", "无 CRLF 时不应 panic");
+        assert_eq!(decode_chunked("5\r\nHi\r\n"), "", "声明长度超出实际内容时应安全中断");
+    }
+
+    // ---- handle: the JSON-RPC protocol layer (no network) ----
+
+    #[test]
+    fn handle_replies_parse_error_for_invalid_json() {
+        let r = bridge().handle("not json").expect("解析错误也要回复");
+        assert_eq!(r["jsonrpc"], "2.0");
+        assert_eq!(r["error"]["code"].as_i64(), Some(-32700));
+    }
+
+    #[test]
+    fn handle_replies_method_not_found() {
+        let r = bridge()
+            .handle(r#"{"jsonrpc":"2.0","id":7,"method":"nope"}"#)
+            .unwrap();
+        assert_eq!(r["id"].as_i64(), Some(7), "错误响应必须回带原 id");
+        assert_eq!(r["error"]["code"].as_i64(), Some(-32601));
+    }
+
+    #[test]
+    fn handle_sends_no_reply_for_notifications() {
+        assert!(
+            bridge()
+                .handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .is_none(),
+            "通知（无 id）不应回包"
+        );
+    }
+
+    #[test]
+    fn handle_initialize_and_ping() {
+        let b = bridge();
+        let init = b
+            .handle(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
+            .unwrap();
+        assert_eq!(init["result"]["protocolVersion"].as_str(), Some("2024-11-05"));
+        assert_eq!(init["result"]["serverInfo"]["name"].as_str(), Some("graphtell"));
+        let ping = b.handle(r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#).unwrap();
+        assert_eq!(ping["result"], json!({}));
+    }
+
+    #[test]
+    fn handle_tools_list_exposes_the_five_tools() {
+        let r = bridge()
+            .handle(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#)
+            .unwrap();
+        let names: Vec<&str> = r["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "recall_code",
+                "compose_prompt",
+                "check_compliance",
+                "list_violations",
+                "warmup_status"
+            ]
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_unknown_tool_is_error_without_network() {
+        let r = bridge()
+            .handle(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"no_such_tool"}}"#)
+            .unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown tool"));
+    }
+
+    // ---- recall quality metadata ----
+
+    #[test]
+    fn extract_quality_defaults_to_high_when_absent() {
+        assert_eq!(extract_quality("{}"), ("high".to_string(), 1.0, Vec::new()));
+        assert_eq!(extract_quality("not json"), ("high".to_string(), 1.0, Vec::new()));
+        assert_eq!(
+            extract_quality(r#"{"data":{}}"#),
+            ("high".to_string(), 1.0, Vec::new())
+        );
+    }
+
+    #[test]
+    fn extract_quality_reads_tier_confidence_and_missing_terms() {
+        let (q, c, m) =
+            extract_quality(r#"{"data":{"quality":"low","confidence":0.42,"missing_terms":["库存","扣减"]}}"#);
+        assert_eq!(q, "low");
+        assert_eq!(c, 0.42);
+        assert_eq!(m, vec!["库存".to_string(), "扣减".to_string()]);
+    }
+
+    #[test]
+    fn extract_quality_ignores_non_string_terms() {
+        let (_, _, m) = extract_quality(r#"{"data":{"missing_terms":["ok",1,null]}}"#);
+        assert_eq!(m, vec!["ok".to_string()]);
+    }
+
+    #[test]
+    fn extract_warmup_note_only_when_warming_and_not_warmed() {
+        assert_eq!(extract_warmup_note("{}"), "");
+        assert_eq!(
+            extract_warmup_note(r#"{"data":{"warmup":{"warmed":true,"warming":true,"done":5,"total":10}}}"#),
+            "",
+            "已预热完成时不应再提示"
+        );
+        assert_eq!(
+            extract_warmup_note(r#"{"data":{"warmup":{"warmed":false,"warming":false}}}"#),
+            ""
+        );
+        let note = extract_warmup_note(r#"{"data":{"warmup":{"warmed":false,"warming":true,"done":3,"total":9}}}"#);
+        assert!(note.contains("3/9"), "预热中应带上进度: {note}");
+        assert!(note.contains("cold path"), "预热中应提示质量偏弱");
+    }
+
+    #[test]
+    fn with_quality_guidance_only_hints_never_drops_markdown() {
+        let md = "# ctx".to_string();
+        assert_eq!(
+            with_quality_guidance(md.clone(), "high", 1.0, &[]),
+            md,
+            "高质量应原样返回"
+        );
+        assert_eq!(
+            with_quality_guidance(md.clone(), "weird", 0.1, &[]),
+            md,
+            "未知档位不应改动"
+        );
+        let low = with_quality_guidance(md.clone(), "low", 0.42, &["库存".to_string()]);
+        assert!(low.starts_with("# ctx"), "低质量也绝不能丢弃已召回内容");
+        assert!(low.contains("Recall quality low"));
+        assert!(low.contains("0.42"));
+        assert!(low.contains("`库存`"));
+        let med = with_quality_guidance(md.clone(), "medium", 0.7, &[]);
+        assert!(med.contains("Recall quality medium"));
+        assert!(med.contains("no usable feature terms"), "缺失词为空时应给占位提示");
+    }
+
+    // ---- response extraction / formatting ----
+
+    #[test]
+    fn extract_markdown_and_prompt_surface_service_errors() {
+        assert_eq!(
+            extract_markdown(r##"{"ok":true,"data":{"markdown":"# MD"}}"##).unwrap(),
+            "# MD"
+        );
+        assert!(extract_markdown(r#"{"ok":false,"error":"boom"}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("boom"));
+        assert!(extract_markdown(r#"{"ok":true}"#).is_err(), "缺 data 应报错");
+        assert!(extract_markdown(r#"{"ok":true,"data":{}}"#).is_err(), "缺 markdown 应报错");
+        assert_eq!(extract_prompt(r#"{"ok":true,"data":{"prompt":"P"}}"#).unwrap(), "P");
+        assert!(extract_prompt(r#"{"ok":false}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown error"));
+    }
+
+    #[test]
+    fn format_violation_fills_defaults_for_missing_fields() {
+        assert_eq!(
+            format_violation(&json!({"severity":"error","rule_id":"r1","file":"a.php","line":12,"message":"m"})),
+            "[error] r1 a.php:12 — m\n"
+        );
+        assert_eq!(format_violation(&json!({})), "[?] ? -:0 — \n");
+    }
+
+    #[test]
+    fn format_violations_reports_empty_as_no_violations() {
+        let (out, err) = format_violations(
+            r#"{"ok":true,"data":[{"severity":"warning","rule_id":"x","file":"f","line":1,"message":"m"}]}"#,
+        );
+        assert!(!err);
+        assert!(out.contains("Violations (1 in total)"));
+        assert!(out.contains("[warning] x f:1 — m"));
+        let (out, err) = format_violations(r#"{"ok":true,"data":null}"#);
+        assert!(!err, "无违规不是错误");
+        assert_eq!(out, "No violations");
+        assert!(format_violations(r#"{"ok":false,"error":"e"}"#).1, "服务失败应标记为错误");
+    }
+
+    #[test]
+    fn format_warmup_covers_all_three_states() {
+        let (out, err) =
+            format_warmup(r#"{"ok":true,"data":{"warmed":true,"warming":false,"done":10,"total":10}}"#);
+        assert!(!err);
+        assert!(out.contains("warm-up finished"));
+        let (out, _) =
+            format_warmup(r#"{"ok":true,"data":{"warmed":false,"warming":true,"done":2,"total":8}}"#);
+        assert!(out.contains("2/8"));
+        let (out, _) = format_warmup(r#"{"ok":true,"data":{"warmed":false,"warming":false}}"#);
+        assert!(out.contains("not warmed"));
+        let (out, err) = format_warmup(r#"{"ok":true}"#);
+        assert!(!err);
+        assert_eq!(out, "No warm-up status");
+        assert!(format_warmup(r#"{"ok":false}"#).1, "服务失败应标记为错误");
+    }
+
+    #[test]
+    fn format_check_summarizes_severity_and_violations() {
+        let (out, err) = format_check(
+            r#"{"ok":true,"data":{"rules_run":5,"duration_ms":42,"by_severity":{"error":2,"warning":1},"violations":[{"severity":"error","rule_id":"r","file":"f.php","line":3,"message":"m"}]}}"#,
+        );
+        assert!(!err);
+        assert!(out.contains("ran 5 rules in 42ms"));
+        assert!(out.contains("error=2"));
+        assert!(out.contains("warning=1"));
+        assert!(out.contains("critical=0"), "未出现的级别应记 0");
+        assert!(out.contains("[error] r f.php:3 — m"));
+        assert!(format_check(r#"{"ok":true}"#).1, "缺 data 应标记为错误");
+        assert!(format_check(r#"{"ok":false}"#).1);
+    }
 }

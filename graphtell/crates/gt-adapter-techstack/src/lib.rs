@@ -444,4 +444,77 @@ mod tests {
             Language::JAVASCRIPT
         );
     }
+
+    /// One ecosystem, several language tags: a `.ts` sub-project must keep this adapter, otherwise dependency
+    /// detection silently degrades to a whole-file text probe.
+    #[test]
+    fn js_adapter_also_serves_typescript() {
+        let a = JsTechStackAdapter::new();
+        assert!(a.serves(&Language::new(Language::JAVASCRIPT)));
+        assert!(a.serves(&Language::new(Language::TYPESCRIPT)), "TS 子项目不能丢失适配器");
+        assert!(!a.serves(&Language::new(Language::PHP)));
+        assert!(!a.serves(&Language::new("python")));
+    }
+
+    /// **Directory forms must come before flat forms**: `src/locales/en/translation.json` has to yield `en`,
+    /// not `en/translation`. The flat forms are only the fallback for one-file-per-locale layouts.
+    #[test]
+    fn i18n_patterns_put_directory_forms_first() {
+        let pats = JsTechStackAdapter::new().i18n_path_patterns();
+        assert_eq!(
+            pats,
+            vec![
+                "locales/{locale}/".to_string(),
+                "src/locales/{locale}/".to_string(),
+                "public/locales/{locale}/".to_string(),
+                "src/i18n/{locale}/".to_string(),
+                "locales/{locale}.json".to_string(),
+                "src/locales/{locale}.json".to_string(),
+            ]
+        );
+        let first_flat = pats
+            .iter()
+            .position(|p| !p.ends_with('/'))
+            .expect("应存在扁平形式");
+        assert!(
+            pats[..first_flat].iter().all(|p| p.ends_with('/')),
+            "所有目录形式必须排在扁平形式之前: {pats:?}"
+        );
+    }
+
+    /// `dependencies` / `devDependencies` / `peerDependencies` all count — a framework installed as a peer
+    /// dependency is still in use.
+    #[test]
+    fn collect_deps_covers_all_three_dependency_fields() {
+        let pkg = serde_json::json!({
+            "dependencies": { "react": "^18" },
+            "devDependencies": { "@dcloudio/uni-mp-weixin": "^2" },
+            "peerDependencies": { "react-native": "*" }
+        });
+        let deps = collect_deps(&pkg);
+        assert!(deps.contains(&"react".to_string()), "{deps:?}");
+        assert!(deps.contains(&"@dcloudio/uni-mp-weixin".to_string()), "devDependencies 应计入: {deps:?}");
+        assert!(deps.contains(&"react-native".to_string()), "peerDependencies 应计入: {deps:?}");
+
+        // A non-object section or a missing one is ignored rather than erroring.
+        assert!(collect_deps(&serde_json::json!({ "dependencies": [] })).is_empty());
+        assert!(collect_deps(&serde_json::json!({})).is_empty());
+    }
+
+    /// Every mini-program compiler target must be recognised, and matching is case-insensitive (the check runs
+    /// over the lowercased document, so `MP-WEIXIN` in a hand-edited manifest still counts).
+    #[test]
+    fn manifest_has_mp_target_recognises_every_platform() {
+        for t in [
+            "mp-weixin", "mp-alipay", "mp-toutiao", "mp-baidu", "mp-qq", "mp-360",
+            "mp-kuaishou", "mp-jd", "mp-lark", "mp-xhs", "mp-qsn",
+        ] {
+            assert!(
+                manifest_has_mp_target(&serde_json::json!({ "app": { t: {} } })),
+                "目标 `{t}` 应被识别为小程序"
+            );
+        }
+        assert!(manifest_has_mp_target(&serde_json::json!({ "x": "MP-WEIXIN" })), "应大小写不敏感");
+        assert!(!manifest_has_mp_target(&serde_json::json!({ "h5": {} })), "纯 h5 不是小程序");
+    }
 }

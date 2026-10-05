@@ -81,3 +81,107 @@ pub fn require_parser<'a>(
         DomainError::Unsupported(format!("Language not supported yet: {}", language))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::SyntaxFacts;
+
+    struct StubParser {
+        lang: String,
+        exts: &'static [&'static str],
+    }
+
+    impl LanguageParser for StubParser {
+        fn language(&self) -> Language {
+            Language::new(self.lang.clone())
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            self.exts
+        }
+        fn parse(&self, _path: &str, _source: &str) -> Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &[]
+        }
+        fn member_separator(&self) -> &'static str {
+            "."
+        }
+    }
+
+    /// `new()` registers each parser **only if it constructs** (`if let Ok(p)`), so a parser that fails to build
+    /// disappears silently — this is the guard that a language never quietly goes missing.
+    #[test]
+    fn registry_registers_every_expected_language() {
+        let reg = DefaultParserRegistry::new();
+        let langs: Vec<String> = reg
+            .supported_languages()
+            .iter()
+            .map(|l| l.as_str().to_string())
+            .collect();
+        for want in ["php", "java", "python", "javascript", "typescript", "json"] {
+            assert!(langs.iter().any(|l| l == want), "缺少语言 `{want}`: {langs:?}");
+        }
+        let mut sorted = langs.clone();
+        sorted.sort();
+        assert_eq!(langs, sorted, "supported_languages 必须有序（顺序会传到上层枚举）");
+    }
+
+    #[test]
+    fn parser_for_returns_none_for_unknown_language() {
+        let reg = DefaultParserRegistry::new();
+        assert!(reg.parser_for(&Language::new("cobol")).is_none());
+    }
+
+    #[test]
+    fn require_parser_reports_unsupported_language() {
+        let reg = DefaultParserRegistry::new();
+        assert!(require_parser(&reg, &Language::new(Language::PHP)).is_ok());
+        let err = require_parser(&reg, &Language::new("cobol"))
+            .err()
+            .expect("未知语言应返回 Err");
+        assert!(
+            matches!(err, DomainError::Unsupported(_)),
+            "未知语言必须报 Unsupported，而不是泛化错误"
+        );
+        assert!(format!("{err}").contains("cobol"), "错误信息应带上语言名: {err}");
+    }
+
+    /// Registering is keyed by language: a new language is added, and re-registering an existing one
+    /// **replaces** it (that is what makes the registry extensible without touching upper layers).
+    #[test]
+    fn register_adds_a_language_and_overrides_an_existing_one() {
+        let mut reg = DefaultParserRegistry::new();
+        reg.register(Box::new(StubParser { lang: "cobol".into(), exts: &[".cbl"] }));
+        assert_eq!(
+            reg.parser_for(&Language::new("cobol"))
+                .and_then(|p| p.extensions().first().copied()),
+            Some(".cbl")
+        );
+
+        reg.register(Box::new(StubParser { lang: "php".into(), exts: &[".stub"] }));
+        let same = reg.parser_for(&Language::new(Language::PHP));
+        assert_eq!(
+            same.and_then(|p| p.extensions().first().copied()),
+            Some(".stub"),
+            "同语言重复注册应覆盖，而不是被忽略"
+        );
+    }
+
+    /// TypeScript is served by the **frontend** parser (same tree-sitter grammar family), so `ts` / `tsx` must
+    /// resolve — a language that is declared but has no parser is invisible to the whole pipeline.
+    #[test]
+    fn typescript_is_served_by_the_frontend_parser() {
+        let reg = DefaultParserRegistry::new();
+        let ts = reg
+            .parser_for(&Language::new(Language::TYPESCRIPT))
+            .expect("typescript 应有解析器");
+        assert!(ts.extensions().contains(&"ts"), "扩展名应含 ts: {:?}", ts.extensions());
+        assert!(ts.extensions().contains(&"tsx"));
+        let js = reg
+            .parser_for(&Language::new(Language::JAVASCRIPT))
+            .expect("javascript 应有解析器");
+        assert!(js.extensions().contains(&"js"));
+    }
+}

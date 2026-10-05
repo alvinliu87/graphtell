@@ -636,3 +636,340 @@ fn eval(p: &CheckPredicate, node: &Node, facts: &Facts, params: &ParamValues) ->
         CheckPredicate::Not(inner) => !eval(inner, node, facts, params),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::{
+        AnnotationChannel, EdgeId, EdgeKind, IdentityKey, Language, NumOrParam, Phase,
+        RuleRequirements, Severity, Span, StrOrParam,
+    };
+    use gt_domain::port::RuleProvider;
+    use gt_adapter_sqlite::SqliteStore;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use serde_json::json;
+
+    // ---- builders ----
+
+    fn node(id: i64, kind: &str, name: &str) -> Node {
+        Node {
+            id: NodeId::new(id),
+            project_id: ProjectId::new(1),
+            sub_project_id: None,
+            kind: NodeKind::new(kind),
+            name: name.to_string(),
+            fqn: None,
+            identity: None,
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: Value::Null,
+        }
+    }
+
+    fn edge(kind: &str, from: i64, to: i64) -> Edge {
+        Edge {
+            id: EdgeId::new(0),
+            project_id: ProjectId::new(1),
+            kind: EdgeKind::new(kind),
+            from_id: NodeId::new(from),
+            to_id: NodeId::new(to),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: Value::Null,
+        }
+    }
+
+    fn ann(channel: &str, kind: &str) -> Annotation {
+        Annotation {
+            id: 0,
+            node_id: NodeId::new(0),
+            channel: AnnotationChannel::from(channel),
+            kind: kind.to_string(),
+            subkind: None,
+            confidence: 1.0,
+            evidence: Value::Null,
+            phase: Phase::new("Synthesize"),
+        }
+    }
+
+    fn facts(
+        annotations: HashMap<i64, Vec<Annotation>>,
+        incoming: HashMap<i64, Vec<Edge>>,
+        outgoing: HashMap<i64, Vec<Edge>>,
+        files: HashMap<i64, String>,
+    ) -> Facts {
+        Facts {
+            annotations,
+            incoming,
+            outgoing,
+            files,
+            root: None,
+        }
+    }
+
+    fn empty_params() -> ParamValues {
+        ParamValues::new()
+    }
+
+    // ---- eval: node-shape predicates ----
+
+    #[test]
+    fn eval_kind_in_matches_set() {
+        let n = node(1, "Class", "User");
+        assert!(eval(&CheckPredicate::KindIn(vec!["Class".into()]), &n, &Facts::default(), &empty_params()));
+        assert!(!eval(&CheckPredicate::KindIn(vec!["Method".into()]), &n, &Facts::default(), &empty_params()));
+    }
+
+    #[test]
+    fn eval_name_contains_is_case_insensitive() {
+        let n = node(1, "Method", "getUserOrders");
+        assert!(eval(&CheckPredicate::NameContains(StrOrParam::Str("GETUSERORDERS".into())), &n, &Facts::default(), &empty_params()));
+        assert!(!eval(&CheckPredicate::NameContains(StrOrParam::Str("zzz".into())), &n, &Facts::default(), &empty_params()));
+    }
+
+    #[test]
+    fn eval_name_starts_with() {
+        let n = node(1, "Method", "getUserOrders");
+        assert!(eval(&CheckPredicate::NameStartsWith(StrOrParam::Str("getUser".into())), &n, &Facts::default(), &empty_params()));
+        assert!(!eval(&CheckPredicate::NameStartsWith(StrOrParam::Str("Orders".into())), &n, &Facts::default(), &empty_params()));
+    }
+
+    #[test]
+    fn eval_fqn_contains_and_missing() {
+        let mut n = node(1, "Class", "User");
+        n.fqn = Some("App\\Service\\UserSvc".into());
+        assert!(eval(&CheckPredicate::FqnContains(StrOrParam::Str("usersvc".into())), &n, &Facts::default(), &empty_params()));
+        let no_fqn = node(2, "Class", "User");
+        assert!(!eval(&CheckPredicate::FqnContains(StrOrParam::Str("usersvc".into())), &no_fqn, &Facts::default(), &empty_params()));
+    }
+
+    #[test]
+    fn eval_identity_contains() {
+        let mut n = node(1, "HttpContract", "order");
+        n.identity = Some(IdentityKey::fqn("POST /api/order".to_string()));
+        assert!(eval(&CheckPredicate::IdentityContains(StrOrParam::Str("post /api".into())), &n, &Facts::default(), &empty_params()));
+        assert!(!eval(&CheckPredicate::IdentityContains(StrOrParam::Str("DELETE".into())), &n, &Facts::default(), &empty_params()));
+    }
+
+    #[test]
+    fn eval_text_contains_spans_name_fqn_identity() {
+        let mut n = node(1, "Class", "OrderService");
+        n.fqn = Some("App\\Order".into());
+        n.identity = Some(IdentityKey::fqn("svc.order".to_string()));
+        assert!(eval(&CheckPredicate::TextContains(StrOrParam::Str("orderservice".into())), &n, &Facts::default(), &empty_params()));
+        assert!(eval(&CheckPredicate::TextContains(StrOrParam::Str("app\\order".into())), &n, &Facts::default(), &empty_params()));
+        assert!(eval(&CheckPredicate::TextContains(StrOrParam::Str("svc.order".into())), &n, &Facts::default(), &empty_params()));
+    }
+
+    #[test]
+    fn eval_has_and_no_annotation() {
+        let n = node(1, "Class", "User");
+        let mut a: HashMap<i64, Vec<Annotation>> = HashMap::new();
+        a.insert(n.id.get(), vec![ann(AnnotationChannel::FKB_MARK, "pii")]);
+        let f = facts(a, HashMap::new(), HashMap::new(), HashMap::new());
+        assert!(eval(&CheckPredicate::HasAnnotation("pii".into()), &n, &f, &empty_params()));
+        assert!(!eval(&CheckPredicate::HasAnnotation("auth".into()), &n, &f, &empty_params()));
+        assert!(eval(&CheckPredicate::NoAnnotation("auth".into()), &n, &f, &empty_params()));
+        assert!(!eval(&CheckPredicate::NoAnnotation("pii".into()), &n, &f, &empty_params()));
+    }
+
+    #[test]
+    fn eval_property_predicates() {
+        let mut n = node(1, "Class", "User");
+        n.properties = json!({ "role": "admin", "side": "Frontend" });
+        let f = Facts::default();
+        assert!(eval(&CheckPredicate::PropertyIs { name: "role".into(), value: "admin".into() }, &n, &f, &empty_params()));
+        assert!(!eval(&CheckPredicate::PropertyIs { name: "role".into(), value: "user".into() }, &n, &f, &empty_params()));
+        assert!(eval(&CheckPredicate::PropertyContains { name: "side".into(), substring: "FRONT".into() }, &n, &f, &empty_params()));
+        assert!(eval(&CheckPredicate::PropertyMissing("missing".into()), &n, &f, &empty_params()));
+        assert!(!eval(&CheckPredicate::PropertyMissing("role".into()), &n, &f, &empty_params()));
+    }
+
+    #[test]
+    fn eval_no_capability_negates_present_capability() {
+        let n = node(1, "Class", "Order");
+        let mut a: HashMap<i64, Vec<Annotation>> = HashMap::new();
+        a.insert(n.id.get(), vec![ann(AnnotationChannel::CAPABILITY, "Authentication")]);
+        let f = facts(a, HashMap::new(), HashMap::new(), HashMap::new());
+        assert!(!eval(&CheckPredicate::NoCapability(vec!["Authentication".into()]), &n, &f, &empty_params()), "有该能力时 NoCapability 应为 false");
+        assert!(eval(&CheckPredicate::NoCapability(vec!["RateLimiting".into()]), &n, &f, &empty_params()), "缺该能力时 NoCapability 应为 true");
+        assert!(eval(&CheckPredicate::NoCapability(vec!["Authentication".into()]), &node(2, "Class", "Guest"), &Facts::default(), &empty_params()));
+    }
+
+    // ---- eval: edge / fan-in-out (semantic filter) ----
+
+    #[test]
+    fn eval_fan_in_counts_only_semantic_edges() {
+        let n = node(1, "Method", "m");
+        let mut inc: HashMap<i64, Vec<Edge>> = HashMap::new();
+        inc.insert(n.id.get(), vec![edge("ReadsDb", 99, n.id.get()), edge("Calls", 98, n.id.get())]);
+        let f = facts(HashMap::new(), inc, HashMap::new(), HashMap::new());
+        assert!(eval(&CheckPredicate::FanInGte(NumOrParam::Num(1)), &n, &f, &empty_params()), "一条语义入边 → fan_in=1");
+        assert!(!eval(&CheckPredicate::FanInGte(NumOrParam::Num(2)), &n, &f, &empty_params()), "非语义入边不计入 → fan_in 仍为 1");
+        assert!(eval(&CheckPredicate::HasIncoming("ReadsDb".into()), &n, &f, &empty_params()));
+        assert!(eval(&CheckPredicate::NoIncoming("HandledBy".into()), &n, &f, &empty_params()));
+    }
+
+    #[test]
+    fn eval_fan_out_and_outgoing() {
+        let n = node(1, "Method", "m");
+        let mut out: HashMap<i64, Vec<Edge>> = HashMap::new();
+        out.insert(n.id.get(), vec![edge("WritesDb", n.id.get(), 7), edge("Calls", n.id.get(), 8)]);
+        let f = facts(HashMap::new(), HashMap::new(), out, HashMap::new());
+        assert!(eval(&CheckPredicate::FanOutGte(NumOrParam::Num(1)), &n, &f, &empty_params()));
+        assert!(!eval(&CheckPredicate::FanOutGte(NumOrParam::Num(2)), &n, &f, &empty_params()), "非语义出边不计入 fan_out");
+        assert!(eval(&CheckPredicate::HasOutgoing("WritesDb".into()), &n, &f, &empty_params()));
+        assert!(eval(&CheckPredicate::NoOutgoing("Triggers".into()), &n, &f, &empty_params()));
+    }
+
+    #[test]
+    fn eval_combinators_all_any_not() {
+        let n = node(1, "Class", "UserService");
+        let all = CheckPredicate::AllOf(vec![
+            CheckPredicate::KindIn(vec!["Class".into()]),
+            CheckPredicate::NameContains(StrOrParam::Str("service".into())),
+        ]);
+        assert!(eval(&all, &n, &Facts::default(), &empty_params()));
+        let any = CheckPredicate::AnyOf(vec![
+            CheckPredicate::KindIn(vec!["Method".into()]),
+            CheckPredicate::NameContains(StrOrParam::Str("service".into())),
+        ]);
+        assert!(eval(&any, &n, &Facts::default(), &empty_params()));
+        assert!(eval(&CheckPredicate::Not(Box::new(CheckPredicate::KindIn(vec!["Method".into()]))), &n, &Facts::default(), &empty_params()));
+        assert!(!eval(&CheckPredicate::Not(Box::new(CheckPredicate::KindIn(vec!["Class".into()]))), &n, &Facts::default(), &empty_params()));
+    }
+
+    #[test]
+    fn matches_all_empty_when_is_always_true() {
+        assert!(matches_all(&[], &node(1, "Class", "X"), &Facts::default(), &empty_params()), "空 when = 范围内全部命中");
+    }
+
+    #[test]
+    fn matches_all_requires_every_predicate() {
+        let n = node(1, "Class", "UserService");
+        let when = vec![
+            CheckPredicate::KindIn(vec!["Class".into()]),
+            CheckPredicate::NameContains(StrOrParam::Str("nope".into())),
+        ];
+        assert!(!matches_all(&when, &n, &Facts::default(), &empty_params()));
+    }
+
+    // ---- ProjectEnv::missing_requirement ----
+
+    #[test]
+    fn missing_requirement_blocks_when_graph_lacks_fact() {
+        let env = ProjectEnv {
+            languages: vec!["php".into()],
+            frameworks: vec!["thinkphp".into()],
+            edge_kinds: vec!["ReadsDb".into()],
+            annotation_kinds: vec![
+                ("FkbMark".into(), "pii".into()),
+                ("Capability".into(), "Authentication".into()),
+            ],
+        };
+        assert!(env.missing_requirement(&RuleRequirements { edges: vec!["ReadsDb".into()], ..Default::default() }).is_none());
+        assert!(env.missing_requirement(&RuleRequirements { annotations: vec!["pii".into()], ..Default::default() }).is_none());
+        // A capability on the channel exists → the requirement is satisfied (it checks the *channel*, not the
+        // specific capability name — so any Capability-channel annotation clears it).
+        assert!(env.missing_requirement(&RuleRequirements { capabilities: vec!["Authentication".into()], ..Default::default() }).is_none());
+        // A fact absent from the graph blocks the rule.
+        assert!(env.missing_requirement(&RuleRequirements { edges: vec!["Triggers".into()], ..Default::default() }).is_some());
+        assert!(env.missing_requirement(&RuleRequirements { annotations: vec!["auth".into()], ..Default::default() }).is_some());
+
+        // An env with NO Capability-channel annotation at all: any capability requirement blocks.
+        let env_no_cap = ProjectEnv {
+            languages: vec!["php".into()],
+            frameworks: vec!["thinkphp".into()],
+            edge_kinds: vec!["ReadsDb".into()],
+            annotation_kinds: vec![("FkbMark".into(), "pii".into())],
+        };
+        assert!(env_no_cap.missing_requirement(&RuleRequirements { capabilities: vec!["Authentication".into()], ..Default::default() }).is_some());
+    }
+
+    // ---- small pure helpers ----
+
+    #[test]
+    fn severity_key_maps_lowercase() {
+        assert_eq!(severity_key(Severity::Critical), "critical");
+        assert_eq!(severity_key(Severity::Error), "error");
+        assert_eq!(severity_key(Severity::Warning), "warning");
+        assert_eq!(severity_key(Severity::Info), "info");
+    }
+
+    #[test]
+    fn node_text_joins_name_fqn_identity_lowercased() {
+        let mut n = node(1, "Class", "OrderService");
+        n.fqn = Some("App\\Order".into());
+        n.identity = Some(IdentityKey::fqn("svc.order".to_string()));
+        let t = node_text(&n);
+        assert!(t.contains("orderservice"));
+        assert!(t.contains("app\\order"));
+        assert!(t.contains("svc.order"));
+    }
+
+    #[test]
+    fn property_value_reads_string_and_other() {
+        let mut n = node(1, "Class", "X");
+        n.properties = json!({ "role": "admin", "count": 3 });
+        assert_eq!(property_value(&n, "role"), Some("admin".into()));
+        assert_eq!(property_value(&n, "count"), Some("3".into()));
+        assert_eq!(property_value(&n, "missing"), None);
+    }
+
+    // ---- apply_rule_config: the documented whole-row-override pitfall ----
+
+    struct StubProvider;
+    impl RuleProvider for StubProvider {
+        fn rules(&self) -> &[CheckRule] {
+            &[]
+        }
+    }
+
+    #[test]
+    fn apply_rule_config_patch_keeps_old_options_when_omitted() {
+        let store = Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let svc = RuleService::new(store, Arc::new(StubProvider));
+        let pid = ProjectId::new(1);
+        svc.set_rule_config(ProjectRuleConfig {
+            project_id: pid,
+            rule_id: "r1".into(),
+            enabled: Some(true),
+            options: json!({ "threshold": 5, "ignore": "x" }),
+        })
+        .unwrap();
+        // patch only flips `enabled`; must NOT clear the existing options (the whole-row-override pitfall).
+        svc.apply_rule_config(pid, RuleConfigPatch { rule_id: "r1".into(), enabled: Some(false), options: None })
+            .unwrap();
+        let cfg = svc.rule_configs(pid).unwrap().get("r1").cloned().expect("config exists");
+        assert_eq!(cfg.enabled, Some(false));
+        let opts = cfg.options.as_object().expect("options preserved");
+        assert_eq!(opts.get("threshold").and_then(|v| v.as_i64()), Some(5));
+        assert_eq!(opts.get("ignore").and_then(|v| v.as_str()), Some("x"));
+    }
+
+    #[test]
+    fn apply_rule_config_patch_merges_options_by_key() {
+        let store = Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let svc = RuleService::new(store, Arc::new(StubProvider));
+        let pid = ProjectId::new(1);
+        svc.set_rule_config(ProjectRuleConfig {
+            project_id: pid,
+            rule_id: "r1".into(),
+            enabled: Some(true),
+            options: json!({ "threshold": 5, "ignore": "x" }),
+        })
+        .unwrap();
+        // patch carries only `threshold`; `ignore` must survive and `enabled` is left untouched.
+        svc.apply_rule_config(pid, RuleConfigPatch { rule_id: "r1".into(), enabled: None, options: Some(json!({ "threshold": 9 })) })
+            .unwrap();
+        let cfg = svc.rule_configs(pid).unwrap().get("r1").cloned().expect("config exists");
+        assert_eq!(cfg.enabled, Some(true), "未传 enabled 应保留原值");
+        let opts = cfg.options.as_object().unwrap();
+        assert_eq!(opts.get("threshold").and_then(|v| v.as_i64()), Some(9), "传入的 threshold 应覆盖");
+        assert_eq!(opts.get("ignore").and_then(|v| v.as_str()), Some("x"), "未传的 ignore 应保留");
+    }
+}

@@ -2926,6 +2926,7 @@ fn action_words(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gt_domain::model::{Edge, EdgeId, EdgeKind, Phase};
 
     #[test]
     fn concrete_verbs_drive_read_write() {
@@ -2949,5 +2950,192 @@ mod tests {
     fn wildcard_unknown_action_stays_read() {
         // When no known action root is hit, fall back to "unknown → read", no misjudgment
         assert!(!is_write_http_method("ANY /api/recharge/config"));
+    }
+
+    // ---- access-mode classification: the priority ladder that decides folded-view edge labels ----
+
+    #[test]
+    fn access_rank_priority_ladder() {
+        // read/write action outranks other semantic access, which outranks MapsTo, which outranks structural edges
+        assert_eq!(access_rank("WritesDb"), 3);
+        assert_eq!(access_rank("ReadsDb"), 3);
+        assert_eq!(access_rank("ReadsCache"), 3);
+        assert_eq!(access_rank("ReadsConfig"), 2);
+        assert_eq!(access_rank("Triggers"), 2);
+        assert_eq!(access_rank("CallsHttp"), 2);
+        assert_eq!(access_rank("MapsTo"), 1);
+        assert_eq!(access_rank("Calls"), 0, "结构边 Calls 不应带访问模式");
+        assert_eq!(access_rank("HandledBy"), 0);
+        assert_eq!(access_rank("Whatever"), 0, "未知 kind 退化为 0");
+    }
+
+    #[test]
+    fn action_strength_write_beats_read() {
+        assert_eq!(action_strength("WritesDb"), 2);
+        assert_eq!(action_strength("WritesCache"), 2);
+        assert_eq!(action_strength("ReadsDb"), 1);
+        assert_eq!(action_strength("ReadsCache"), 1);
+        assert_eq!(action_strength("MapsTo"), 0, "非读写动作无强弱");
+    }
+
+    #[test]
+    fn counterpart_kinds_pairs_read_and_write() {
+        let db = counterpart_kinds("WritesDb");
+        assert_eq!(db.len(), 2);
+        assert_eq!(db[0], "WritesDb");
+        assert_eq!(db[1], "ReadsDb");
+        let cache = counterpart_kinds("ReadsCache");
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache[0], "WritesCache");
+        assert_eq!(cache[1], "ReadsCache");
+        assert!(
+            counterpart_kinds("MapsTo").is_empty(),
+            "结构边无配对（被抑制的读写须记入 also_kinds）"
+        );
+    }
+
+    // ---- better_path: the deterministic edge winner (direct > rank > strength > smaller eid) ----
+
+    #[test]
+    fn better_path_direct_beats_indirect() {
+        assert!(
+            better_path(false, "ReadsDb", 5, true, "ReadsDb", 1),
+            "直接边优于传播边（同 kind）"
+        );
+        assert!(
+            !better_path(true, "ReadsDb", 5, false, "ReadsDb", 1),
+            "间接边不应胜过直接边"
+        );
+    }
+
+    #[test]
+    fn better_path_higher_rank_wins() {
+        // WritesDb(rank3) over ReadsConfig(rank2) even with the larger edge id
+        assert!(better_path(false, "WritesDb", 99, false, "ReadsConfig", 1));
+    }
+
+    #[test]
+    fn better_path_stronger_action_wins_within_rank() {
+        assert!(better_path(false, "WritesDb", 99, false, "ReadsDb", 1), "同 rank：写优于读");
+        assert!(!better_path(false, "ReadsDb", 1, false, "WritesDb", 99));
+    }
+
+    #[test]
+    fn better_path_smaller_eid_is_deterministic_tiebreak() {
+        // identical (direct, rank, strength): smaller edge id wins → result independent of traversal order
+        assert!(better_path(false, "ReadsDb", 3, false, "ReadsDb", 7));
+        assert!(!better_path(false, "ReadsDb", 7, false, "ReadsDb", 3));
+    }
+
+    // ---- enumerate_chain_paths: DFS simple paths with depth / limit / avoid ----
+
+    #[test]
+    fn enumerate_chain_paths_finds_simple_chain() {
+        let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+        out.insert(1, vec![2]);
+        out.insert(2, vec![3]);
+        out.insert(3, vec![]);
+        let paths = enumerate_chain_paths(&out, 1, 3, 10, 5, &|_| false);
+        assert_eq!(paths, vec![vec![1, 2, 3]]);
+    }
+
+    #[test]
+    fn enumerate_chain_paths_avoid_blocks_intermediate() {
+        let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+        out.insert(1, vec![2]);
+        out.insert(2, vec![3]);
+        let paths = enumerate_chain_paths(&out, 1, 3, 10, 5, &|n| n == 2);
+        assert!(paths.is_empty(), "中间语义节点被 avoid 时应无路径");
+    }
+
+    #[test]
+    fn enumerate_chain_paths_no_path_when_unreachable_or_same() {
+        let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+        out.insert(1, vec![2]);
+        out.insert(2, vec![3]);
+        assert!(enumerate_chain_paths(&out, 3, 1, 10, 5, &|_| false).is_empty(), "反向不可达");
+        assert!(enumerate_chain_paths(&out, 1, 1, 10, 5, &|_| false).is_empty(), "from==to 无路径");
+    }
+
+    #[test]
+    fn enumerate_chain_paths_respects_limit_and_hops() {
+        // diamond: 1->2->3 and 1->4->3
+        let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+        out.insert(1, vec![2, 4]);
+        out.insert(2, vec![3]);
+        out.insert(4, vec![3]);
+        let one = enumerate_chain_paths(&out, 1, 3, 10, 1, &|_| false);
+        assert_eq!(one.len(), 1, "limit=1 只返回一条");
+        let shallow = enumerate_chain_paths(&out, 1, 3, 1, 5, &|_| false);
+        assert!(shallow.is_empty(), "max_hops=1 不足以到达 2 跳外");
+        let all = enumerate_chain_paths(&out, 1, 3, 10, 5, &|_| false);
+        assert_eq!(all.len(), 2, "两条路径都应枚举到");
+    }
+
+    // ---- propagation vs direct edge distinction ----
+
+    fn edge_with_props(props: Value) -> Edge {
+        Edge {
+            id: EdgeId::new(0),
+            project_id: ProjectId::new(1),
+            kind: EdgeKind::new("ReadsConfig"),
+            from_id: NodeId::new(1),
+            to_id: NodeId::new(2),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: props,
+        }
+    }
+
+    #[test]
+    fn is_indirect_edge_detects_propagation_and_indirect_flag() {
+        assert!(is_indirect_edge(&edge_with_props(json!({ "indirect": true }))));
+        assert!(is_indirect_edge(&edge_with_props(json!({ "via": "propagate" }))));
+        assert!(!is_indirect_edge(&edge_with_props(json!({ "evidence": "x" }))));
+        assert!(!is_indirect_edge(&edge_with_props(Value::Null)));
+    }
+
+    #[test]
+    fn seed_source_of_reads_propagation_touch_point() {
+        assert_eq!(seed_source_of(&edge_with_props(json!({ "seed_source": 42 }))), Some(42));
+        assert_eq!(seed_source_of(&edge_with_props(json!({ "other": 1 }))), None);
+    }
+
+    // ---- file/line parsing + HTTP write/read inference ----
+
+    #[test]
+    fn split_file_line_parses_line_number() {
+        assert_eq!(split_file_line("a/b.go:123"), ("a/b.go".to_string(), 123));
+        assert_eq!(split_file_line("a/b.go"), ("a/b.go".to_string(), 0));
+        assert_eq!(split_file_line("x:notanum"), ("x".to_string(), 0));
+    }
+
+    #[test]
+    fn infer_write_by_action_matches_known_roots() {
+        assert_eq!(infer_write_by_action("submit"), Some(true));
+        assert_eq!(infer_write_by_action("rechargeSave"), Some(true));
+        assert_eq!(infer_write_by_action("detail"), Some(false));
+        assert_eq!(infer_write_by_action("getQRCodePath"), Some(false));
+        assert_eq!(
+            infer_write_by_action("weirdName"),
+            None,
+            "未知动作根 → 交回 '读' 兜底"
+        );
+    }
+
+    #[test]
+    fn action_words_splits_camelcase_and_separators() {
+        assert_eq!(
+            action_words("rechargeSave"),
+            vec!["recharge".to_string(), "save".to_string()]
+        );
+        assert_eq!(
+            action_words("getQRCodePath"),
+            vec!["get".to_string(), "qrcode".to_string(), "path".to_string()]
+        );
+        assert_eq!(
+            action_words("order/detail"),
+            vec!["order".to_string(), "detail".to_string()]
+        );
     }
 }

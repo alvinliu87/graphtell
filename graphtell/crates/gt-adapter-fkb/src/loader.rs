@@ -679,4 +679,150 @@ rules:
             "显式声明的 side 应优先于 FKB 默认值"
         );
     }
+
+    // ---- namespace_id: the pure prefixing rule behind every item id ----
+
+    fn tmp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gt-fkb-loader-{}-{}-{}",
+            std::process::id(),
+            name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn namespace_id_covers_idempotency_and_edge_cases() {
+        let mut id = String::from("pii");
+        namespace_id("thinkphp", &mut id);
+        assert_eq!(id, "thinkphp-pii");
+
+        let mut already = String::from("thinkphp-pii");
+        namespace_id("thinkphp", &mut already);
+        assert_eq!(already, "thinkphp-pii", "已带前缀的 id 不应被重复加前缀");
+
+        let mut same = String::from("thinkphp");
+        namespace_id("thinkphp", &mut same);
+        assert_eq!(same, "thinkphp", "id 恰等于前缀时不应把自己前缀化");
+
+        let mut empty = String::new();
+        namespace_id("thinkphp", &mut empty);
+        assert_eq!(empty, "", "空 id 不应被前缀化");
+
+        // "contains" is not "starts with": a prefix occurring mid-string must still be namespaced.
+        let mut contains = String::from("x-thinkphp");
+        namespace_id("thinkphp", &mut contains);
+        assert_eq!(contains, "thinkphp-x-thinkphp");
+    }
+
+    /// Every kind of item id must be namespaced — a forgotten loop here means two knowledge bases can
+    /// collide on an id and one of them is silently dropped downstream.
+    #[test]
+    fn apply_id_namespaces_covers_every_item_kind() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: ns
+language: php
+rules:
+  - id: r1
+    phase: AnnotatePre
+    selector: { kind: call, callee: "Db::name" }
+    binding: []
+loaders:
+  - id: l1
+    table: event_listeners
+    from:
+      kind: file
+      path: "{app_root}/event.php"
+root_rules:
+  - id: root1
+    key: app_root
+    source:
+      kind: directory_exists
+      path: app
+exclude_rules:
+  - id: ex1
+    glob: "__pycache__/**"
+resolvers:
+  - id: res1
+    call: "app()->make|app"
+    strategy: container
+"#,
+        )
+        .unwrap();
+        assert_eq!(fk.rules[0].id, "ns-r1");
+        assert_eq!(fk.loaders[0].id, "ns-l1");
+        assert_eq!(fk.root_rules[0].id, "ns-root1");
+        assert_eq!(fk.exclude_rules[0].id, "ns-ex1");
+        assert_eq!(fk.resolvers[0].id, "ns-res1");
+    }
+
+    // ---- load_dir / load_dirs contracts ----
+
+    /// A missing FKB directory yields an **empty** knowledge base, not an error: callers that only check
+    /// `!is_empty()` (container.rs) would otherwise never learn the directory was wrong.
+    #[test]
+    fn load_dir_missing_root_yields_empty_instead_of_error() {
+        let kb = YamlKnowledgeBase::load_dir(Path::new("/no/such/fkb/dir/here"))
+            .expect("缺失目录不应报错，只返回空");
+        assert!(kb.is_empty());
+        assert_eq!(kb.len(), 0);
+    }
+
+    /// One corrupt file must be skipped (warn + continue) without losing the sibling files — this is the
+    /// loader's resilience contract, and the flip side of `every_real_fkb_file_parses`.
+    #[test]
+    fn load_dir_skips_corrupt_file_and_keeps_the_good_one() {
+        let dir = tmp_dir("mixed");
+        std::fs::write(&dir.join("good.yaml"), "id: good\nlanguage: php\nrules: []\n").unwrap();
+        std::fs::write(&dir.join("bad.yaml"), "id: bad\nrules: [ unclosed\n").unwrap();
+        let kb = YamlKnowledgeBase::load_dir(&dir).expect("坏文件不应使整个目录加载失败");
+        assert_eq!(kb.len(), 1, "只应加载成功解析的那一个");
+        assert_eq!(kb.sources().len(), 1);
+        assert!(kb.by_id("good").is_some(), "存活的应是 good");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `load_dirs` merges in order and a later directory **overrides** an entry with the same id.
+    #[test]
+    fn load_dirs_later_directory_overrides_same_id() {
+        let a = tmp_dir("override_a");
+        let b = tmp_dir("override_b");
+        std::fs::write(&a.join("fkb.yaml"), "id: same\nlanguage: php\nrules: []\n").unwrap();
+        std::fs::write(&b.join("fkb.yaml"), "id: same\nlanguage: java\nrules: []\n").unwrap();
+
+        let merged = YamlKnowledgeBase::load_dirs(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(merged.len(), 1, "同 id 应合并为一条，不重复");
+        assert_eq!(
+            merged.by_id("same").map(|f| f.language.clone()),
+            Some(Language("java".into())),
+            "后加载的目录应覆盖同 id 条目"
+        );
+
+        let reversed = YamlKnowledgeBase::load_dirs(&[b, a]).unwrap();
+        assert_eq!(
+            reversed.by_id("same").map(|f| f.language.clone()),
+            Some(Language("php".into())),
+            "顺序反过来则后者胜出"
+        );
+    }
+
+    /// An FKB without `id` must be rejected: the id is the namespace prefix and the dedup key downstream.
+    #[test]
+    fn load_file_rejects_missing_id() {
+        let dir = tmp_dir("noid");
+        let p = dir.join("noid.yaml");
+        std::fs::write(&p, "language: php\nrules: []\n").unwrap();
+        assert!(
+            YamlKnowledgeBase::load_file(&p).is_err(),
+            "缺 id 的 FKB 必须被拒绝（id 是命名空间前缀与去重键）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

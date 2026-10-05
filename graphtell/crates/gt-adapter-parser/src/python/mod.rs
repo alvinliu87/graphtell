@@ -1137,4 +1137,56 @@ def get_user(user_id: int, db=Depends(get_db)):
         assert_eq!(module_fqn("app/api/__init__.py"), "app.api");
         assert_eq!(module_fqn("main.py"), "main");
     }
+
+    /// `.pyi` stubs and Windows separators both occur in real trees; the `.pyi` suffix must win over `.py`
+    /// (otherwise `models.pyi` would keep its extension in the FQN).
+    #[test]
+    fn module_fqn_handles_pyi_stubs_and_windows_separators() {
+        assert_eq!(module_fqn("app\\api\\users.py"), "app.api.users");
+        assert_eq!(module_fqn("app/models.pyi"), "app.models");
+        assert_eq!(module_fqn("app//api/users.py"), "app.api.users", "重复分隔符不应产生空段");
+    }
+
+    /// Strip the type-parameter shell so a generic base (`Base[Order]`) resolves to the same node as the bare
+    /// `Base` — otherwise inheritance would never match.
+    #[test]
+    fn bare_typename_strips_generic_and_subscript_shells() {
+        assert_eq!(bare_typename("Base[Order]".to_string()), "Base");
+        assert_eq!(bare_typename("Base<Order>".to_string()), "Base");
+        assert_eq!(bare_typename("Base".to_string()), "Base");
+        assert_eq!(bare_typename("  List [int] ".to_string()), "List", "应去掉泛型并 trim");
+    }
+
+    /// String prefixes (`r` / `rb` / `f` / `u`) and triple quotes are all common in decorators and defaults;
+    /// the raw body is what becomes identity, so the quoting must come off cleanly.
+    #[test]
+    fn unquote_handles_prefixes_and_triple_quotes() {
+        assert_eq!(unquote("'abc'"), "abc");
+        assert_eq!(unquote("\"abc\""), "abc");
+        assert_eq!(unquote("r\"a\\tb\""), "a\\tb", "前缀字母应被剥离");
+        assert_eq!(unquote("rb\"x\""), "x");
+        assert_eq!(unquote("f\"{x}\""), "{x}");
+        assert_eq!(unquote("\"\"\"doc\"\"\""), "doc", "三引号按长度剥离，不是逐字符 trim");
+        assert_eq!(unquote("'''doc'''"), "doc");
+        assert_eq!(unquote("abc"), "abc", "无引号时原样返回");
+    }
+
+    /// An absolute import must be returned **unchanged** — composing it with a parent package would produce a
+    /// module that does not exist. Levels beyond the root are clamped rather than panicking.
+    #[test]
+    fn resolve_relative_module_keeps_absolute_and_clamps_level() {
+        assert_eq!(
+            resolve_relative_module("os.path", "app.urls"),
+            "os.path",
+            "绝对导入不得与父包拼接"
+        );
+        assert_eq!(resolve_relative_module(".views", "app.urls"), "app.views");
+        assert_eq!(resolve_relative_module("..core.helper", "a.b.urls"), "a.core.helper");
+        assert_eq!(resolve_relative_module(".", "app.urls"), "app", "空 rest → 父包本身");
+        assert_eq!(
+            resolve_relative_module("...x", "a.b"),
+            "x",
+            "层级超出根时应被夹住，而不是 panic"
+        );
+    }
 }

@@ -341,3 +341,55 @@ impl<T> Persistence for T where
         + Sync,
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `is_empty` must be false whenever `reset_project` is set (a re-run clears the graph even with no new
+    /// nodes), and false for any populated member; `new()` only stamps the project id and stays empty.
+    #[test]
+    fn graph_delta_is_empty_reflects_reset_flag_and_contents() {
+        assert!(GraphDelta::default().is_empty(), "全空应为空");
+
+        let mut reset = GraphDelta::default();
+        reset.reset_project = true;
+        assert!(!reset.is_empty(), "reset_project=true 即使无节点也非空");
+
+        let mut with_patch = GraphDelta::default();
+        with_patch.kind_patches.push((NodeId::new(1), NodeKind::new("Class")));
+        assert!(!with_patch.is_empty(), "任一成员非空则整体非空");
+
+        assert!(GraphDelta::new(ProjectId::new(1)).is_empty(), "new() 仅设 project_id");
+    }
+
+    /// `merge` appends the per-node patches and ORs `reset_project` into the target.
+    #[test]
+    fn graph_delta_merge_concatenates_and_ors_reset() {
+        let mut a = GraphDelta::default();
+        a.kind_patches.push((NodeId::new(1), NodeKind::new("Class")));
+        a.property_patches.push((NodeId::new(1), json!({ "x": 1 })));
+
+        let mut b = GraphDelta::default();
+        b.kind_patches.push((NodeId::new(2), NodeKind::new("Middleware")));
+        b.reset_project = true;
+
+        a.merge(b);
+        assert_eq!(a.kind_patches.len(), 2, "patches 应追加合并");
+        assert!(a.reset_project, "reset_project 应被 OR 进目标 delta");
+        assert!(!a.is_empty());
+    }
+
+    /// A reset already set on the target must survive merging a non-reset delta.
+    #[test]
+    fn graph_delta_merge_keeps_an_existing_reset() {
+        let mut a = GraphDelta::default();
+        a.reset_project = true;
+        a.kind_patches.push((NodeId::new(1), NodeKind::new("Class")));
+
+        let b = GraphDelta::default(); // reset_project = false
+        a.merge(b);
+        assert!(a.reset_project, "已置位的 reset_project 不应被 false 覆盖");
+    }
+}

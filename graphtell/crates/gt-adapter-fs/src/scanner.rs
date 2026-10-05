@@ -276,3 +276,298 @@ impl FileScanner for WalkDirScanner {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ext_lang(ext: &str) -> Option<String> {
+        language_of_extension(ext).map(|l| l.as_str().to_string())
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gt-fs-scan-{}-{}-{}",
+            std::process::id(),
+            name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // ---- extension -> language tables ----
+
+    /// The fallback table must cover every language that has a sub-project marker: an entry missing here
+    /// leaves a detected sub-project with **zero** source files (the go / py / kt / rb / cs / scala / c / cpp
+    /// group was added for exactly that bug).
+    #[test]
+    fn language_of_extension_covers_every_marker_language() {
+        for (ext, want) in [
+            ("php", "php"), ("phtml", "php"), ("php5", "php"), ("php7", "php"), ("php8", "php"), ("inc", "php"),
+            ("js", "javascript"), ("jsx", "javascript"), ("mjs", "javascript"), ("cjs", "javascript"), ("vue", "javascript"),
+            ("ts", "typescript"), ("tsx", "typescript"),
+            ("java", "java"), ("rs", "rust"),
+            ("go", "go"), ("py", "python"), ("pyi", "python"),
+            ("kt", "kotlin"), ("kts", "kotlin"), ("rb", "ruby"), ("cs", "csharp"),
+            ("scala", "scala"), ("sc", "scala"), ("c", "c"), ("h", "c"),
+            ("cpp", "cpp"), ("cc", "cpp"), ("cxx", "cpp"), ("hpp", "cpp"),
+        ] {
+            assert_eq!(ext_lang(ext), Some(want.to_string()), "扩展名 `{ext}` 应映射到 {want}");
+        }
+        assert_eq!(ext_lang("xyz"), None, "未知扩展名应返回 None");
+        assert_eq!(ext_lang(""), None);
+    }
+
+    #[test]
+    fn language_of_extension_is_case_insensitive() {
+        assert_eq!(ext_lang("PHP"), Some("php".to_string()));
+        assert_eq!(ext_lang("PY"), Some("python".to_string()));
+        assert_eq!(ext_lang("Tsx"), Some("typescript".to_string()));
+    }
+
+    /// The caller-supplied map (parser registry) wins and matches case-insensitively; a miss falls through
+    /// so the caller can chain the built-in table.
+    #[test]
+    fn language_for_ext_prefers_the_supplied_map() {
+        let map = vec![("go".to_string(), vec!["go".to_string()])];
+        assert_eq!(
+            language_for_ext(&map, "go").map(|l| l.as_str().to_string()),
+            Some("go".to_string())
+        );
+        assert_eq!(
+            language_for_ext(&map, "GO").map(|l| l.as_str().to_string()),
+            Some("go".to_string()),
+            "大小写不敏感"
+        );
+        assert!(language_for_ext(&map, "rs").is_none(), "表里没有的扩展名应落空，交由回退表兜底");
+    }
+
+    // ---- exclusion ----
+
+    #[test]
+    fn is_excluded_matches_the_default_globs() {
+        let s = WalkDirScanner::default();
+        assert!(s.is_excluded("vendor/foo.php", None));
+        assert!(s.is_excluded("node_modules/x/y.js", None));
+        assert!(s.is_excluded("public/logo.png", None), "静态资源目录也应被排除");
+        assert!(s.is_excluded("app/runtime/cache.txt", None));
+        assert!(!s.is_excluded("app/Controller.php", None), "正常源码不应被排除");
+        assert!(!s.is_excluded("", None), "空相对路径直接放行（根目录）");
+    }
+
+    /// A directory is probed with a synthetic child: `dir/**` must exclude the directory itself, otherwise the
+    /// walker descends into a tree it was told to skip.
+    #[test]
+    fn is_excluded_probes_directories_with_a_synthetic_child() {
+        let s = WalkDirScanner::default();
+        assert!(
+            s.is_excluded("vendor", None),
+            "目录本身必须被 `**/vendor/**` 命中（靠 __probe__ 合成子节点）"
+        );
+        assert!(s.is_excluded("app/vendor", None));
+        assert!(!s.is_excluded("vendorish", None), "前缀不得误伤（不是子串匹配）");
+    }
+
+    #[test]
+    fn is_excluded_is_case_insensitive() {
+        let s = WalkDirScanner::default();
+        assert!(s.is_excluded("Vendor/x.php", None), "`Vendor/` 与 `vendor/` 是同一个坑");
+        assert!(s.is_excluded("DIST/a.js", None));
+    }
+
+    /// Project globs are **request-scoped**: they must fire only when the per-scan set is passed in, never
+    /// leak into the process-wide scanner built by `new()`.
+    ///
+    /// `storage/logs/**` is used because it is not already covered by the built-ins (unlike e.g. `runtime`,
+    /// which `**/runtime/**` already excludes everywhere).
+    #[test]
+    fn is_excluded_honors_extra_globs_from_the_request() {
+        let s = WalkDirScanner::default();
+        let extra = build_set(vec!["storage/logs/**".to_string()]);
+        assert!(s.is_excluded("storage/logs/app.log", Some(&extra)));
+        assert!(!s.is_excluded("storage/app/Controller.php", Some(&extra)));
+        // Without the per-scan set the project glob must not fire (it is request-scoped, not global).
+        assert!(!s.is_excluded("storage/logs/app.log", None));
+    }
+
+    /// One typo'd glob in a project config must not cost the whole scan: it is dropped with a warning and
+    /// the built-in patterns still apply.
+    #[test]
+    fn build_set_survives_an_invalid_glob() {
+        let s = WalkDirScanner::new(vec!["[unclosed".to_string()]);
+        assert!(s.is_excluded("vendor/a.php", None), "坏 pattern 被丢弃后默认排除仍须生效");
+        assert!(!s.is_excluded("app/A.php", None));
+    }
+
+    // ---- path helpers ----
+
+    #[test]
+    fn relative_of_strips_root_and_normalizes_separators() {
+        assert_eq!(relative_of(Path::new("/root"), Path::new("/root/a/b.php")), "a/b.php");
+        assert_eq!(
+            relative_of(Path::new("/root"), Path::new("/root/a\\b.php")),
+            "a/b.php",
+            "Windows 分隔符须归一为 `/`（glob 都按 `/` 匹配）"
+        );
+        // Not under the root: fall back to the path itself rather than panicking.
+        assert_eq!(relative_of(Path::new("/other"), Path::new("/root/a.php")), "/root/a.php");
+    }
+
+    #[test]
+    fn is_asset_file_detects_assets_and_lockfiles() {
+        assert!(is_asset_file("logo.PNG"), "大小写不敏感");
+        assert!(is_asset_file("archive.zip"));
+        assert!(is_asset_file("font.woff2"));
+        assert!(is_asset_file("composer.lock"));
+        assert!(is_asset_file(".composer-lock"), "点文件 + -lock 后缀视为锁文件");
+        assert!(!is_asset_file("Controller.php"));
+        assert!(!is_asset_file("app.js"));
+        assert!(!is_asset_file("Makefile"), "无扩展名不应误判");
+    }
+
+    // ---- scan (real temp tree) ----
+
+    fn tree() -> PathBuf {
+        let root = tmp("tree");
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("vendor/dep")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        std::fs::write(root.join("app/A.php"), b"<?php").unwrap();
+        std::fs::write(root.join("app/D.js"), b"let a=1").unwrap();
+        std::fs::write(root.join("vendor/dep/B.php"), b"<?php").unwrap();
+        std::fs::write(root.join("node_modules/x/C.js"), b"let b=1").unwrap();
+        std::fs::write(root.join("public/logo.png"), b"png").unwrap();
+        std::fs::write(root.join("README.md"), b"# hi").unwrap();
+        root
+    }
+
+    #[test]
+    fn scan_skips_excluded_dirs_assets_and_unknown_extensions() {
+        let root = tree();
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec![],
+                languages: vec![],
+                language_extensions: vec![],
+            })
+            .unwrap();
+        let rel: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert_eq!(rel, vec!["app/A.php", "app/D.js"], "只应留下真正的源码: {rel:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Output must be sorted: ingestion order decides P2 "first come, first served" results, and an unstable
+    /// order makes the whole graph drift between runs (measured: two CRMEB builds differed by 57 edges).
+    #[test]
+    fn scan_output_is_sorted_and_deterministic() {
+        let root = tmp("sorted");
+        std::fs::create_dir_all(root.join("z")).unwrap();
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        for p in ["a/b.php", "z/c.php", "m.php", "a/a.php"] {
+            std::fs::write(root.join(p), b"<?php").unwrap();
+        }
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec![],
+                languages: vec![],
+                language_extensions: vec![],
+            })
+            .unwrap();
+        let rel: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        let mut sorted = rel.clone();
+        sorted.sort();
+        assert_eq!(rel, sorted, "输出必须按相对路径排序: {rel:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_respects_the_language_filter() {
+        let root = tree();
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec![],
+                languages: vec![Language::new(Language::PHP)],
+                language_extensions: vec![],
+            })
+            .unwrap();
+        let rel: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert_eq!(rel, vec!["app/A.php"], "语言过滤应只留 php: {rel:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_skips_oversized_files() {
+        let root = tmp("big");
+        std::fs::write(root.join("small.php"), b"<?php").unwrap();
+        std::fs::write(root.join("huge.php"), vec![b'a'; 4 * 1024 * 1024 + 1]).unwrap();
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec![],
+                languages: vec![],
+                language_extensions: vec![],
+            })
+            .unwrap();
+        let rel: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert_eq!(rel, vec!["small.php"], "超过 4MB 的文件应被跳过: {rel:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_rejects_a_root_that_is_not_a_directory() {
+        let r = WalkDirScanner::default().scan(&ScanRequest {
+            root: PathBuf::from("/no/such/scan/root"),
+            extra_excludes: vec![],
+            languages: vec![],
+            language_extensions: vec![],
+        });
+        assert!(matches!(r, Err(DomainError::InvalidArgument(_))), "不存在的根目录必须报错");
+    }
+
+    // ---- find_markers ----
+
+    #[test]
+    fn find_markers_respects_depth_and_exclusions() {
+        let root = tmp("markers");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
+        std::fs::write(root.join("composer.json"), b"{}").unwrap();
+        std::fs::write(root.join("sub/composer.json"), b"{}").unwrap();
+        std::fs::write(root.join("vendor/composer.json"), b"{}").unwrap();
+
+        let found = WalkDirScanner::default()
+            .find_markers(&root, &["composer.json"], 1)
+            .unwrap();
+        assert_eq!(found.len(), 1, "max_depth=1 只应命中根目录下的那个（vendor 被排除）");
+        assert_eq!(found[0], root.join("composer.json"));
+
+        let deeper = WalkDirScanner::default()
+            .find_markers(&root, &["composer.json"], 2)
+            .unwrap();
+        assert_eq!(deeper.len(), 2, "max_depth=2 应多命中 sub/ 下的那个（vendor 仍被排除）");
+
+        let upper = WalkDirScanner::default()
+            .find_markers(&root, &["COMPOSER.JSON"], 1)
+            .unwrap();
+        assert_eq!(upper.len(), 1, "marker 名匹配应大小写不敏感");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn find_markers_returns_empty_for_a_missing_root() {
+        let found = WalkDirScanner::default()
+            .find_markers(Path::new("/no/such/marker/root"), &["composer.json"], 3)
+            .unwrap();
+        assert!(found.is_empty(), "目录不存在时返回空而非报错");
+    }
+}

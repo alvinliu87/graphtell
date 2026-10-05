@@ -920,4 +920,76 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ---- dependency detection (the port that lets FKB ask "does this project use X?") ----
+
+    #[test]
+    fn manifest_dependencies_reads_composer_require_sections() {
+        let json = r#"{
+            "require": { "topthink/framework": "^6.0", "php": ">=7.2" },
+            "require-dev": { "phpunit/phpunit": "^9" }
+        }"#;
+        let got = adapter().manifest_dependencies("composer.json", json);
+        let deps = got.expect("composer.json 应给出依赖");
+        assert!(deps.contains(&"topthink/framework".to_string()), "{deps:?}");
+        assert!(deps.contains(&"phpunit/phpunit".to_string()), "require-dev 也应计入: {deps:?}");
+        // A non-manifest file must return None so the kernel falls back to whole-file text probing.
+        assert!(adapter().manifest_dependencies("package.json", json).is_none());
+        assert!(
+            adapter().manifest_dependencies("composer.json", "{ not json").is_none(),
+            "坏 JSON 应返回 None（交由回退），而不是 panic"
+        );
+    }
+
+    #[test]
+    fn lock_dependencies_reads_composer_lock_packages() {
+        let json = r#"{
+            "packages": [ { "name": "topthink/framework" } ],
+            "packages-dev": [ { "name": "phpunit/phpunit" } ]
+        }"#;
+        let got = adapter().lock_dependencies("composer.lock", json);
+        let deps = got.expect("composer.lock 应给出依赖");
+        assert_eq!(deps, vec!["topthink/framework".to_string(), "phpunit/phpunit".to_string()]);
+        assert!(adapter().lock_dependencies("composer.json", json).is_none());
+        assert!(adapter().lock_dependencies("composer.lock", "{ not json").is_none());
+    }
+
+    /// Which directory a stack keeps translations in is stack knowledge, so it lives here — and **directory
+    /// forms must precede flat forms**, otherwise `en/translation` would be read as a locale.
+    #[test]
+    fn i18n_path_patterns_cover_thinkphp_and_legacy_laravel() {
+        let pats = adapter().i18n_path_patterns();
+        assert_eq!(
+            pats,
+            vec!["lang/{locale}/".to_string(), "resources/lang/{locale}/".to_string()],
+            "lang/ 是 ThinkPHP（及 Laravel 9+），resources/lang/ 是 Laravel ≤8"
+        );
+    }
+
+    // ---- migration column helpers ----
+
+    /// A column repeated in one blueprint must not be pushed twice (a duplicate would double-count in the schema).
+    #[test]
+    fn push_col_deduplicates_and_skips_empty() {
+        let mut cols = Vec::new();
+        push_col(&mut cols, "id");
+        push_col(&mut cols, "id");
+        push_col(&mut cols, "");
+        push_col(&mut cols, "name");
+        assert_eq!(cols, vec!["id".to_string(), "name".to_string()]);
+    }
+
+    /// String literals inside a migration may carry escaped quotes; an unterminated one must yield `None`
+    /// rather than a truncated column name.
+    #[test]
+    fn read_quoted_handles_both_quotes_and_escapes() {
+        let b = b"'a\\'b' rest";
+        assert_eq!(read_quoted(b, 0).as_deref(), Some("a\\'b"), "转义引号不应提前结束");
+        let b2 = b"\"plain\"";
+        assert_eq!(read_quoted(b2, 0).as_deref(), Some("plain"));
+        let b3 = b"'unterminated";
+        assert!(read_quoted(b3, 0).is_none(), "未闭合应返回 None");
+        let b4 = b"not-a-quote";
+        assert!(read_quoted(b4, 0).is_none(), "起始不是引号应返回 None");
+    }
 }

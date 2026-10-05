@@ -5,8 +5,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
-    EdgeKind, GraphDelta, NewEdge, NodeId, NodeKind, Phase, PhaseReport, Project, ProjectId,
-    ProjectStatus,
+    EdgeKind, GraphDelta, NewEdge, Node, NodeId, NodeKind, Phase, PhaseReport, Project, ProjectId,
+    ProjectStatus, SymbolEntry,
 };
 use gt_domain::port::{
     EdgeDirection, FileScanner, FileSystem, GraphSink, KnowledgeProvider, MarkerProvider, NodeFilter,
@@ -273,18 +273,7 @@ impl PipelineService {
             return;
         };
 
-        // class name (FQN / short name) → node id, preferring to reuse an existing Middleware node.
-        let mut by_name: HashMap<String, NodeId> = HashMap::new();
-        for n in mws.iter().chain(classes.iter()) {
-            by_name.entry(n.name.clone()).or_insert(n.id);
-            if let Some(fqn) = &n.fqn {
-                by_name.entry(fqn.clone()).or_insert(n.id);
-            }
-            let short = n.name.rsplit(['\\', '/']).next().unwrap_or(&n.name).to_string();
-            by_name.entry(short).or_insert(n.id);
-        }
-
-        // Pre-read existing PassesThrough edges for deduplication.
+        // Pre-read existing PassesThrough edges for deduplication (so re-runs don't pile up duplicate edges).
         let mut existing: HashSet<(NodeId, NodeId)> = HashSet::new();
         for c in &contracts {
             if let Ok(es) = self.store.edges_of(c.id, EdgeDirection::Outgoing) {
@@ -296,58 +285,7 @@ impl PipelineService {
             }
         }
 
-        let mut delta = GraphDelta::new(project_id);
-        for entry in declared.iter() {
-            let scope = entry
-                .value
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .unwrap_or("global");
-            let prefix = entry.value.get("prefix").and_then(|v| v.as_str());
-            let classes_arr = entry
-                .value
-                .get("classes")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            for cv in &classes_arr {
-                let Some(class) = cv.as_str().map(|s| s.to_string()) else {
-                    continue;
-                };
-                if class.is_empty() {
-                    continue;
-                }
-                let Some(&mw_id) = by_name.get(&class).or_else(|| {
-                    let short = class.rsplit(['\\', '/']).next().unwrap_or(&class);
-                    by_name.get(short)
-                }) else {
-                    continue;
-                };
-                let targets: Vec<NodeId> = if scope == "per_app" {
-                    contracts
-                        .iter()
-                        .filter(|c| prefix.map_or(true, |p| c.name.contains(p)))
-                        .map(|c| c.id)
-                        .collect()
-                } else {
-                    contracts.iter().map(|c| c.id).collect()
-                };
-                for tid in targets {
-                    if existing.contains(&(tid, mw_id)) {
-                        continue;
-                    }
-                    existing.insert((tid, mw_id));
-                    if !mws.iter().any(|m| m.id == mw_id) {
-                        delta.kind_patches.push((mw_id, NodeKind::from("Middleware")));
-                    }
-                    let mut e =
-                        NewEdge::new(project_id, EdgeKind::from("PassesThrough"), tid, mw_id);
-                    e.phase = Phase::from("P14");
-                    e.confidence = 1.0;
-                    delta.edges.push(e);
-                }
-            }
-        }
+        let delta = build_middleware_delta(project_id, &declared, &contracts, &classes, &mws, &existing);
 
         if delta.edges.is_empty() && delta.kind_patches.is_empty() {
             return;
@@ -383,5 +321,220 @@ impl PipelineService {
         // The latest run's stage report is cached by the caller; here we read a summary from the run-records table
         let _ = project_id;
         Vec::new()
+    }
+}
+
+/// Pure policy for [`PipelineService::attach_declared_middleware`]: build the `GraphDelta` that hangs `PassesThrough`
+/// edges from each middleware onto the matching `HttpContract` nodes and promotes the referenced `Class` nodes to
+/// `Middleware`. `existing` is the pre-read set of `(contract_id, mw_id)` PassesThrough edges to dedupe against.
+///
+/// Kept as a free function so the (subtle) scope/prefix/name-resolution/dedup logic is testable without a store.
+fn build_middleware_delta(
+    project_id: ProjectId,
+    declared: &[SymbolEntry],
+    contracts: &[Node],
+    classes: &[Node],
+    mws: &[Node],
+    existing: &HashSet<(NodeId, NodeId)>,
+) -> GraphDelta {
+    // class name (FQN / short name) → node id, preferring to reuse an existing Middleware node.
+    let mut by_name: HashMap<String, NodeId> = HashMap::new();
+    for n in mws.iter().chain(classes.iter()) {
+        by_name.entry(n.name.clone()).or_insert(n.id);
+        if let Some(fqn) = &n.fqn {
+            by_name.entry(fqn.clone()).or_insert(n.id);
+        }
+        let short = n.name.rsplit(['\\', '/']).next().unwrap_or(&n.name).to_string();
+        by_name.entry(short).or_insert(n.id);
+    }
+
+    let mut existing = existing.clone();
+    // Track which middleware nodes have already been queued for promotion, so a node shared by many contracts is
+    // promoted exactly once (the `kind_patches` Vec is otherwise fanned out per edge — redundant, though idempotent).
+    let mut promoted: HashSet<NodeId> = HashSet::new();
+    let mut delta = GraphDelta::new(project_id);
+    for entry in declared.iter() {
+        let scope = entry
+            .value
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("global");
+        let prefix = entry.value.get("prefix").and_then(|v| v.as_str());
+        let classes_arr = entry
+            .value
+            .get("classes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for cv in &classes_arr {
+            let Some(class) = cv.as_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            if class.is_empty() {
+                continue;
+            }
+            let Some(&mw_id) = by_name.get(&class).or_else(|| {
+                let short = class.rsplit(['\\', '/']).next().unwrap_or(&class);
+                by_name.get(short)
+            }) else {
+                continue;
+            };
+            let targets: Vec<NodeId> = if scope == "per_app" {
+                contracts
+                    .iter()
+                    .filter(|c| prefix.map_or(true, |p| c.name.contains(p)))
+                    .map(|c| c.id)
+                    .collect()
+            } else {
+                contracts.iter().map(|c| c.id).collect()
+            };
+            for tid in targets {
+                if existing.contains(&(tid, mw_id)) {
+                    continue;
+                }
+                existing.insert((tid, mw_id));
+                if !mws.iter().any(|m| m.id == mw_id) && promoted.insert(mw_id) {
+                    delta.kind_patches.push((mw_id, NodeKind::from("Middleware")));
+                }
+                let mut e = NewEdge::new(project_id, EdgeKind::from("PassesThrough"), tid, mw_id);
+                e.phase = Phase::from("P14");
+                e.confidence = 1.0;
+                delta.edges.push(e);
+            }
+        }
+    }
+    delta
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::{
+        Language, Node, NodeId, NodeKind, Phase, ProjectId, Span, SymbolEntry,
+    };
+    use serde_json::Value;
+
+    fn node(id: i64, kind: &str, name: &str, fqn: Option<&str>) -> Node {
+        Node {
+            id: NodeId::new(id),
+            project_id: ProjectId::new(1),
+            sub_project_id: None,
+            kind: NodeKind::from(kind),
+            name: name.to_string(),
+            fqn: fqn.map(|s| s.to_string()),
+            identity: None,
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: Value::Null,
+        }
+    }
+
+    fn decl(classes: &[&str], scope: &str, prefix: Option<&str>) -> SymbolEntry {
+        let mut v = serde_json::Map::new();
+        v.insert(
+            "classes".into(),
+            Value::Array(classes.iter().map(|c| Value::String(c.to_string())).collect()),
+        );
+        if scope != "global" {
+            v.insert("scope".into(), Value::String(scope.to_string()));
+        }
+        if let Some(p) = prefix {
+            v.insert("prefix".into(), Value::String(p.to_string()));
+        }
+        SymbolEntry {
+            project_id: ProjectId::new(1),
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            value: Value::Object(v),
+        }
+    }
+
+    /// `global` scope hangs the middleware onto **every** contract and promotes the referenced Class to Middleware.
+    #[test]
+    fn global_scope_hangs_all_contracts_and_promotes_class() {
+        let contracts = vec![node(1, "HttpContract", "/adminapi/order", None), node(2, "HttpContract", "/api/user", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", Some("App\\Http\\Middleware\\AuthMiddleware"))];
+        let declared = vec![decl(&["App\\Http\\Middleware\\AuthMiddleware"], "global", None)];
+
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 2, "global 挂到全部 contract");
+        for e in &d.edges {
+            assert_eq!(e.kind.as_str(), "PassesThrough");
+        }
+        // the single Class is promoted exactly once
+        assert_eq!(d.kind_patches.len(), 1);
+        assert_eq!(d.kind_patches[0], (NodeId::new(10), NodeKind::from("Middleware")));
+    }
+
+    /// `per_app` scope only hangs onto contracts whose name contains `prefix`.
+    #[test]
+    fn per_app_scope_filters_by_prefix() {
+        let contracts = vec![node(1, "HttpContract", "/adminapi/order", None), node(2, "HttpContract", "/api/user", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", Some("App\\Http\\Middleware\\AuthMiddleware"))];
+        let declared = vec![decl(&["App\\Http\\Middleware\\AuthMiddleware"], "per_app", Some("/adminapi"))];
+
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 1, "per_app 只命中含 prefix 的 contract");
+        assert_eq!(d.edges[0].from_id, NodeId::new(1));
+    }
+
+    /// per_app with no prefix matches every contract (the `map_or(true, …)` branch).
+    #[test]
+    fn per_app_without_prefix_matches_all() {
+        let contracts = vec![node(1, "HttpContract", "/adminapi/order", None), node(2, "HttpContract", "/api/user", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![decl(&["AuthMiddleware"], "per_app", None)];
+
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 2, "per_app 无 prefix 退化为全部 contract");
+    }
+
+    /// A class already resolved as `Middleware` is hung but **not** re-promoted (no duplicate kind_patch).
+    #[test]
+    fn existing_middleware_is_not_promoted_again() {
+        let contracts = vec![node(1, "HttpContract", "/x", None)];
+        let mws = vec![node(10, "Middleware", "AuthMiddleware", None)];
+        let declared = vec![decl(&["AuthMiddleware"], "global", None)];
+
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &[], &mws, &Default::default());
+        assert_eq!(d.edges.len(), 1);
+        assert!(d.kind_patches.is_empty(), "已为 Middleware 的节点不应再晋升");
+    }
+
+    /// An `existing` (contract, mw) edge must not be re-created — re-runs are idempotent.
+    #[test]
+    fn existing_edge_is_not_duplicated() {
+        let contracts = vec![node(1, "HttpContract", "/x", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![decl(&["AuthMiddleware"], "global", None)];
+        let mut existing = HashSet::new();
+        existing.insert((NodeId::new(1), NodeId::new(10)));
+
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &existing);
+        assert!(d.edges.is_empty(), "已存在的边不应重复添加");
+        assert!(d.kind_patches.is_empty());
+    }
+
+    /// A declared class with no matching node is silently skipped (no dangling edge).
+    #[test]
+    fn missing_class_is_skipped() {
+        let contracts = vec![node(1, "HttpContract", "/x", None), node(2, "HttpContract", "/y", None)];
+        let declared = vec![decl(&["GhostMiddleware"], "global", None)];
+
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &[], &[], &Default::default());
+        assert!(d.edges.is_empty());
+        assert!(d.kind_patches.is_empty());
+    }
+
+    /// Empty declaration yields an empty delta (the caller's early-return guard).
+    #[test]
+    fn empty_declared_yields_empty_delta() {
+        let contracts = vec![node(1, "HttpContract", "/x", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let d = build_middleware_delta(ProjectId::new(1), &[], &contracts, &classes, &[], &Default::default());
+        assert!(d.is_empty());
     }
 }

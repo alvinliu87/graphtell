@@ -1698,4 +1698,132 @@ mod tests {
             .expect("expected the foo function inside the vue file to be parsed");
         assert_eq!(foo.span.start_line, 5, "line numbers of functions inside a vue file should align with the original file (<script> is on line 4, the function on line 5)");
     }
+
+    // ---- the string helpers behind HTTP extraction (only ever covered indirectly above) ----
+
+    #[test]
+    fn split_top_commas_respects_strings_and_nesting() {
+        assert_eq!(split_top_commas("a, b"), vec!["a", "b"]);
+        assert_eq!(split_top_commas("'x,y', z"), vec!["'x,y'", "z"], "字符串内的逗号不应切分");
+        assert_eq!(split_top_commas("{a: 1, b: 2}, c"), vec!["{a: 1, b: 2}", "c"], "花括号内的逗号不应切分");
+        assert_eq!(split_top_commas("f(1,2), e"), vec!["f(1,2)", "e"], "括号内的逗号不应切分");
+        assert_eq!(split_top_commas("only"), vec!["only"]);
+        assert_eq!(
+            split_top_commas(r#""a\",b", c"#),
+            vec![r#""a\",b""#, "c"],
+            "转义引号不应提前结束字符串"
+        );
+    }
+
+    #[test]
+    fn split_top_plus_skips_strings() {
+        let parts = |s: &str| -> Vec<String> {
+            split_top_plus(s).iter().map(|p| p.trim().to_string()).collect()
+        };
+        assert_eq!(parts("'a' + id"), vec!["'a'", "id"]);
+        assert_eq!(parts("a + b + c"), vec!["a", "b", "c"]);
+        assert_eq!(parts("'a+b' + c"), vec!["'a+b'", "c"], "字符串内的 `+` 不应切分");
+    }
+
+    /// Degrading instead of panicking matters here: argument text may lack the closing symbol or end with a
+    /// multi-byte character, and a raw byte slice would panic.
+    #[test]
+    fn strip_ends_degrades_when_the_close_is_missing() {
+        assert_eq!(strip_ends("[1,2]", '[', ']'), "1,2");
+        assert_eq!(strip_ends("`x`", '`', '`'), "x");
+        assert_eq!(strip_ends("[1,2", '[', ']'), "1,2", "缺少右半时退化为只去左边");
+        assert_eq!(strip_ends("abc", '[', ']'), "abc", "不匹配时原样返回");
+    }
+
+    /// `$var` / `fn()` must fall through to `Unknown` — FKB's `require_literal` rejects them, so a variable can
+    /// never become identity (same handling as the back end's `Cache::get($name)`).
+    #[test]
+    fn js_value_maps_literals_and_unknown() {
+        assert!(matches!(js_value("'abc'"), FactValue::String(ref s) if s == "abc"));
+        assert!(matches!(js_value("123"), FactValue::Int(123)));
+        assert!(matches!(js_value("-5"), FactValue::Int(-5)));
+        assert!(matches!(js_value("true"), FactValue::Bool(true)));
+        assert!(matches!(js_value("false"), FactValue::Bool(false)));
+        assert!(
+            matches!(js_value("foo"), FactValue::Unknown(Some(ref s)) if s == "foo"),
+            "变量必须落到 Unknown（FKB 的 require_literal 会拒绝它）"
+        );
+        match js_value("['a','b']") {
+            FactValue::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(items[0].1, FactValue::String(ref s) if s == "a"));
+            }
+            other => panic!("数组字面量应折叠为 Array: {other:?}"),
+        }
+        match js_value("{a: 1}") {
+            FactValue::Array(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].0, "a");
+                assert!(matches!(items[0].1, FactValue::Int(1)));
+            }
+            other => panic!("对象字面量应折叠为键值对 Array: {other:?}"),
+        }
+    }
+
+    /// The documented shapes of URL normalisation: only the *shape* matters, so every interpolation folds into
+    /// `:param`, and a variable first segment abandons the whole URL (no anchoring, no guessing).
+    #[test]
+    fn literal_url_expr_normalises_the_documented_shapes() {
+        assert_eq!(
+            literal_url_expr("'v2/invoice/detail/' + id").as_deref(),
+            Some("v2/invoice/detail/:param")
+        );
+        assert_eq!(
+            literal_url_expr("`v2/order/invoice_detail/${id}`").as_deref(),
+            Some("v2/order/invoice_detail/:param")
+        );
+        assert_eq!(literal_url_expr("'v2/index'").as_deref(), Some("v2/index"));
+        assert_eq!(literal_url_expr("'v2/index/'").as_deref(), Some("v2/index"), "末尾斜杠应被去掉");
+        assert_eq!(
+            literal_url_expr("BASE + '/api' + url"),
+            None,
+            "首段是变量 → 连前缀都无法锚定，整体放弃"
+        );
+        assert_eq!(literal_url_expr(""), None);
+        assert_eq!(literal_url_expr("'/api' + x + '/y'").as_deref(), Some("/api:param/y"));
+    }
+
+    #[test]
+    fn top_level_segment_stops_at_the_first_top_level_comma() {
+        assert_eq!(top_level_segment("'a/' + id, data, {x: 1}").as_deref(), Some("'a/' + id"));
+        assert_eq!(top_level_segment("f(1,2), x").as_deref(), Some("f(1,2)"), "括号内的逗号不算顶层");
+        assert_eq!(top_level_segment(""), None);
+    }
+
+    /// `url: url` must not overrun its key, and `base_url:` must not be mistaken for `url:` — the prefix rule
+    /// (the preceding byte must not be an identifier byte) is what keeps them apart.
+    #[test]
+    fn field_expr_does_not_confuse_base_url_with_url() {
+        assert_eq!(field_expr("({url: '/a', method: 'POST'})", "url").as_deref(), Some("'/a'"));
+        assert_eq!(
+            field_expr("({base_url: 'x', url: '/a'})", "url").as_deref(),
+            Some("'/a'"),
+            "`base_url:` 不得被当成 `url:`"
+        );
+        assert_eq!(field_expr("({method: 'POST'})", "url"), None);
+    }
+
+    /// Two closed sets that guard against fake contracts: an HTTP verb alone is not enough (`$store.get()` /
+    /// `cache.get()` are everywhere), and the verb table is lowercase because that is the source form.
+    #[test]
+    fn http_verb_and_client_receiver_are_closed_sets() {
+        for v in ["get", "post", "put", "delete", "patch", "head", "options"] {
+            assert!(is_http_verb(v), "`{v}` 应被识别为 HTTP 动词");
+        }
+        assert!(!is_http_verb("GET"), "动词表只收小写（源码里的成员名形态）");
+        assert!(!is_http_verb("fetch"));
+
+        assert!(is_http_client_recv("request"));
+        assert!(is_http_client_recv("this.request"), "按末段判定");
+        assert!(is_http_client_recv("$http"));
+        assert!(is_http_client_recv("apiClient"));
+        assert!(!is_http_client_recv("cache"), "`cache.get()` 不得被当成契约");
+        assert!(!is_http_client_recv("storage"));
+        assert!(!is_http_client_recv("$store"));
+    }
 }

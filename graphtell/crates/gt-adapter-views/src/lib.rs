@@ -249,4 +249,100 @@ node_views:
         assert!(err.is_err(), "load_file should surface a parse error");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Extension matching is case-insensitive: `.YAML` / `.YML` are the same typo in every filesystem, and a scan
+    /// that fails to pick them up silently drops an entire perspective file.
+    #[test]
+    fn load_dir_recognizes_uppercase_yaml_extensions() {
+        let dir = scratch("yml_upper");
+        std::fs::write(dir.join("a.YAML"), PERSPECTIVE_YAML).unwrap();
+        std::fs::write(dir.join("b.YML"), "perspectives:\n  - id: table\n    mode: object\n").unwrap();
+        let reg = YamlViewRegistry::load_dir(&dir).expect("load_dir succeeds");
+        assert!(reg.registry().by_id("route").is_some(), ".YAML (大写) 必须被收录");
+        assert!(reg.registry().by_id("table").is_some(), ".YML (大写) 必须被收录");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only YAML files count: stray `.json` / `.txt` / extension-less files in the views dir are ignored, not
+    /// parsed (and not listed as sources).
+    #[test]
+    fn load_dir_ignores_non_yaml_files() {
+        let dir = scratch("nonyaml");
+        std::fs::write(dir.join("a.yaml"), PERSPECTIVE_YAML).unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignore me").unwrap();
+        std::fs::write(dir.join("data.json"), "{\"x\":1}").unwrap();
+        std::fs::write(dir.join("noext"), "route: x").unwrap();
+        let reg = YamlViewRegistry::load_dir(&dir).expect("load_dir succeeds");
+        assert_eq!(reg.registry().perspectives.len(), 1, "只有 .yaml 被加载");
+        assert_eq!(reg.sources().len(), 1, "非 yaml 文件不计为 source");
+        assert_eq!(reg.sources()[0].extension().unwrap().to_str().unwrap(), "yaml");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file that is *valid YAML* but does not satisfy the `ViewRegistry` schema (here `mode: notarealmode`) must
+    /// not take down the rest: `load_dir` skips it (warn) while `load_file` surfaces the schema error.
+    #[test]
+    fn load_dir_skips_valid_yaml_but_invalid_domain() {
+        let dir = scratch("baddomain");
+        std::fs::write(dir.join("good.yaml"), PERSPECTIVE_YAML).unwrap();
+        std::fs::write(dir.join("bad.yaml"), "perspectives:\n  - id: x\n    mode: notarealmode\n").unwrap();
+        let reg = YamlViewRegistry::load_dir(&dir).expect("load_dir tolerates a semantically invalid file");
+        assert_eq!(reg.registry().perspectives.len(), 1, "好文件仍在");
+        assert_eq!(reg.registry().by_id("route").unwrap().id, "route");
+        assert!(
+            YamlViewRegistry::load_file(&dir.join("bad.yaml")).is_err(),
+            "load_file 应暴露 schema 错误"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- sentinel over the real shipped declarations ----
+
+    fn builtin_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../views")
+    }
+
+    /// `load_dir` **silently skips** any file it cannot parse (warn + continue), so a typo in the shipped
+    /// declarations would drop a whole perspective with zero test signal. Parse them one by one instead.
+    #[test]
+    fn every_built_in_view_file_parses() {
+        let root = builtin_root();
+        assert!(root.is_dir(), "views 目录应存在: {}", root.display());
+        let files = collect_yaml(&root);
+        assert!(!files.is_empty(), "views 目录下应至少有 1 个 yaml 文件");
+        for f in &files {
+            YamlViewRegistry::load_file(f).unwrap_or_else(|e| {
+                panic!("视角声明解析失败（会被静默跳过，导致该视角消失）: {}: {e}", f.display())
+            });
+        }
+    }
+
+    /// A duplicate id collapses silently in `load_dir` (later overrides earlier), so a perspective can vanish
+    /// without any error. Compare the merged count against the sum declared across the files.
+    #[test]
+    fn no_built_in_perspective_is_silently_dropped() {
+        let root = builtin_root();
+        let files = collect_yaml(&root);
+        let mut total = 0usize;
+        let mut ids = std::collections::HashSet::new();
+        for f in &files {
+            let reg = YamlViewRegistry::load_file(f).expect("built-in 声明应可解析");
+            total += reg.perspectives.len();
+            for p in &reg.perspectives {
+                assert!(
+                    ids.insert(p.id.clone()),
+                    "重复视角 id（下游会静默丢弃一个）: {} ({})",
+                    p.id,
+                    f.display()
+                );
+            }
+        }
+        let merged = YamlViewRegistry::load_dir(&root).expect("内置视角目录应能加载");
+        assert!(!merged.registry().perspectives.is_empty(), "内置视角不应为空");
+        assert_eq!(
+            merged.registry().perspectives.len(),
+            total,
+            "有视角因 id 冲突被覆盖而丢失"
+        );
+    }
 }

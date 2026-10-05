@@ -196,3 +196,195 @@ fn collect_mappers(root: &Path, fs: &dyn FileSystem) -> Vec<(String, String)> {
     }
     xmls
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_adapter_fs::StdFileSystem;
+    use gt_domain::model::{Language, ProjectId, SubProjectId};
+
+    fn sub(root: PathBuf) -> SubProject {
+        SubProject {
+            id: SubProjectId::new(1),
+            project_id: ProjectId::new(1),
+            name: "test".into(),
+            root_path: root,
+            language: Language::new("java"),
+            role: "backend".into(),
+            detected_by: "pom.xml".into(),
+            frameworks: vec!["mybatis".into()],
+            facts: serde_json::Value::Null,
+        }
+    }
+
+    /// Write `files` under a fresh temp dir and run a real scan over it.
+    fn scan_files(files: &[(&str, &str)]) -> Vec<ResourceFact> {
+        let dir = std::env::temp_dir().join(format!(
+            "gt_mybatis_it_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (rel, text) in files {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, text).unwrap();
+        }
+        let out = MyBatisMapperAdapter::new()
+            .scan(&sub(dir.clone()), &dir, &StdFileSystem::new())
+            .expect("scan should succeed");
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    fn pseudo(facts: &[ResourceFact]) -> Vec<&PseudoCall> {
+        // `ResourceFact` has exactly one variant today; matching it without a wildcard keeps this compiling
+        // loudly when a second variant is added.
+        facts
+            .iter()
+            .filter_map(|f| match f {
+                ResourceFact::PseudoCall(p) => Some(p),
+            })
+            .collect()
+    }
+
+    /// The whole point of the adapter: a mapper XML becomes a pseudo call site hanging off the **Mapper
+    /// interface method FQN** (`namespace.statementId`), carrying the table as its argument — which is what lets
+    /// the generic Table / ReadsDb-WritesDb rules fire for native-MyBatis projects.
+    #[test]
+    fn mapper_statement_becomes_a_pseudo_call_on_the_interface_method() {
+        let facts = scan_files(&[(
+            "resources/mapper/CarouselMapper.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="com.example.mapper.CarouselMapper">
+    <select id="findCarouselList" resultType="map">
+        select * from tb_carousel where id = #{id}
+    </select>
+</mapper>
+"#,
+        )]);
+        let calls = pseudo(&facts);
+        assert_eq!(calls.len(), 1, "expected one pseudo call, got: {calls:?}");
+        let c = calls[0];
+        assert_eq!(c.owner_fqn, "com.example.mapper.CarouselMapper.findCarouselList");
+        assert_eq!(c.owner_class.as_deref(), Some("com.example.mapper.CarouselMapper"));
+        assert_eq!(c.callee, "mybatis::select");
+        // `callee_matches` splits an `A::b` pattern into receiver + method, so both must be faithful.
+        assert_eq!(c.receiver.as_deref(), Some("mybatis"));
+        assert_eq!(c.method.as_deref(), Some("select"));
+        assert_eq!(c.args, vec![FactValue::String("tb_carousel".to_string())]);
+        assert!((c.confidence - PSEUDO_CALL_CONFIDENCE).abs() < f32::EPSILON);
+        assert_eq!(c.file, "resources/mapper/CarouselMapper.xml");
+        assert_eq!(c.props.get("mapper").and_then(|v| v.as_str()), Some("resources/mapper/CarouselMapper.xml"));
+        assert_eq!(c.span.start_line, 3, "行号应指向该语句所在行，供 UI 定位");
+    }
+
+    /// All four statement kinds map to their verb, and a join yields one call per table.
+    #[test]
+    fn every_verb_and_every_table_of_a_join_is_captured() {
+        let facts = scan_files(&[(
+            "m.xml",
+            r#"<mapper namespace="ns.M">
+    <select id="q">select * from tb_a a join tb_b b on a.id = b.id</select>
+    <insert id="i">insert into tb_c (x) values (1)</insert>
+    <update id="u">update tb_d set x = 1</update>
+    <delete id="d">delete from tb_e where id = 1</delete>
+</mapper>
+"#,
+        )]);
+        let calls = pseudo(&facts);
+        let key = |c: &PseudoCall| {
+            (
+                c.method.clone().unwrap_or_default(),
+                c.args.first().and_then(|a| match a {
+                    FactValue::String(s) => Some(s.clone()),
+                    _ => None,
+                }).unwrap_or_default(),
+            )
+        };
+        let mut got: Vec<(String, String)> = calls.iter().map(|c| key(c)).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("delete".to_string(), "tb_e".to_string()),
+                ("insert".to_string(), "tb_c".to_string()),
+                ("select".to_string(), "tb_a".to_string()),
+                // The join's second table also becomes its own call site.
+                ("select".to_string(), "tb_b".to_string()),
+                ("update".to_string(), "tb_d".to_string()),
+            ]
+        );
+    }
+
+    /// Backtick-quoted identifiers are common in MySQL SQL; the backticks must not end up in the table name.
+    #[test]
+    fn backquoted_table_names_are_unquoted() {
+        let facts = scan_files(&[(
+            "m.xml",
+            "<mapper namespace=\"ns.M\">\n<select id=\"q\">select * from `tb_order`</select>\n</mapper>\n",
+        )]);
+        let calls = pseudo(&facts);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].args, vec![FactValue::String("tb_order".to_string())]);
+    }
+
+    /// `statement x table` is deduped across the whole sub-project — the same table in the same statement must
+    /// not produce two identical edges.
+    #[test]
+    fn duplicate_statement_table_pairs_are_deduped() {
+        let facts = scan_files(&[
+            (
+                "a.xml",
+                "<mapper namespace=\"ns.M\">\n<select id=\"q\">select * from tb_x join tb_x on 1=1</select>\n</mapper>\n",
+            ),
+            (
+                "b.xml",
+                "<mapper namespace=\"ns.M\">\n<select id=\"q\">select * from tb_x</select>\n</mapper>\n",
+            ),
+        ]);
+        let calls = pseudo(&facts);
+        assert_eq!(calls.len(), 1, "同一 语句x表 只应出现一次: {calls:?}");
+    }
+
+    /// Malformed shapes must be skipped rather than guessed: mismatched closing tag, no `id`, no namespace.
+    #[test]
+    fn malformed_statements_are_skipped_not_guessed() {
+        let facts = scan_files(&[
+            (
+                "mismatch.xml",
+                "<mapper namespace=\"ns.M\">\n<select id=\"q\">select * from tb_a</insert>\n</mapper>\n",
+            ),
+            (
+                "noid.xml",
+                "<mapper namespace=\"ns.M\">\n<select>select * from tb_b</select>\n</mapper>\n",
+            ),
+            (
+                "nons.xml",
+                "<mapper>\n<select id=\"q\">select * from tb_c</select>\n</mapper>\n",
+            ),
+            // Not a mapper at all: never collected.
+            ("other.xml", "<beans><bean id=\"x\"/></beans>"),
+            ("pom.xml", "<project><modelVersion>4</modelVersion></project>"),
+        ]);
+        assert!(facts.is_empty(), "畸形/非 mapper 文件不应产生事实: {facts:?}");
+    }
+
+    /// Dependency / build directories are pruned: a mapper vendored into `target/` must not be scanned.
+    #[test]
+    fn build_and_dependency_dirs_are_pruned() {
+        let facts = scan_files(&[(
+            "target/classes/mapper/Stale.xml",
+            "<mapper namespace=\"ns.Stale\">\n<select id=\"q\">select * from tb_stale</select>\n</mapper>\n",
+        )]);
+        assert!(facts.is_empty(), "target/ 下的 mapper 不应被扫描: {facts:?}");
+    }
+
+    #[test]
+    fn adapter_id_is_the_knowledge_id() {
+        assert_eq!(MyBatisMapperAdapter::new().id(), "mybatis");
+    }
+}

@@ -1284,6 +1284,98 @@ class UserController
         // entity points at the controller method
         assert!(route_calls.iter().all(|c| c.entity.as_deref() == Some("App\\Controller\\UserController::listUsers") || c.entity.as_deref() == Some("App\\Controller\\UserController::show") || c.entity.as_deref() == Some("App\\Controller\\UserController::ping")));
     }
+
+    // ---- the signature noise gate (the rule's only filter) ----
+
+    /// In e-commerce code `sign` almost always means **check-in**: of 32 measured "`==` comparisons containing
+    /// sign", 24 were check-in. This gate is the only thing standing between the rule and a flooded report, so
+    /// the curated noise list must be pinned.
+    #[test]
+    fn looks_like_signature_filters_checkin_noise() {
+        // Real signature values.
+        for s in ["$sign", "$signature", "$signValue", "$data['sign']", "$this->sign"] {
+            assert!(looks_like_signature(s), "`{s}` 应被判为签名值");
+        }
+        // Check-in / points noise (the measured majority).
+        for s in [
+            "$sign_mode", "$signMode", "$sign_last_date", "$sign_total_days", "$sign_num",
+            "$sign_count", "$sign_date", "$sign_enabled", "$sign_status", "$sign_rule",
+            "$points_sign_enabled", "$userSign", "$signRecord", "$signLog",
+        ] {
+            assert!(!looks_like_signature(s), "`{s}` 是签到/积分噪声，不应被判为签名值");
+        }
+        // Sign-in / sign-up are the same shape but not a signature value.
+        assert!(!looks_like_signature("$signIn"));
+        assert!(!looks_like_signature("$signUp"));
+        // Same-shaped words that merely contain `sign`.
+        assert!(!looks_like_signature("$assign_sign"));
+        assert!(!looks_like_signature("$design"));
+        assert!(!looks_like_signature("$resign"));
+        // Certificate metadata is not a signature value to verify.
+        assert!(!looks_like_signature("$signatureType"));
+        assert!(!looks_like_signature("$signAlg"));
+        // Hard requirements: a `$` variable and the `sign` stem.
+        assert!(!looks_like_signature("sign"), "无 `$` → 不是变量");
+        assert!(!looks_like_signature("$foo"), "无 sign 词干");
+    }
+
+    #[test]
+    fn is_string_literal_detects_bare_quoted_strings() {
+        assert!(is_string_literal("'x'"));
+        assert!(is_string_literal("\"x\""));
+        assert!(is_string_literal("  'x'  "), "应 trim 后再判");
+        assert!(is_string_literal("''"), "空字符串字面量也是字面量");
+        assert!(!is_string_literal("$sign"));
+        assert!(!is_string_literal("'a' . $b"), "拼接表达式不是纯字面量");
+    }
+
+    // ---- naming helpers ----
+
+    #[test]
+    fn qualify_prefixes_the_namespace() {
+        assert_eq!(qualify(Some("App\\Services"), "Foo"), "App\\Services\\Foo");
+        assert_eq!(qualify(Some(""), "Foo"), "Foo", "空命名空间不得产生前导反斜杠");
+        assert_eq!(qualify(None, "Foo"), "Foo");
+    }
+
+    #[test]
+    fn trim_leading_strips_one_or_more_leading_backslashes() {
+        assert_eq!(trim_leading("\\Foo".to_string()), "Foo");
+        assert_eq!(trim_leading("\\\\Foo".to_string()), "Foo");
+        assert_eq!(trim_leading("Foo".to_string()), "Foo");
+    }
+
+    /// A chained facade verb (`Db::name('goods')->where(...)->insert()`) carries the table name picked up
+    /// upstream, so P7 can turn the terminal verb into `WritesDb` / `ReadsDb`.
+    #[test]
+    fn chained_facade_verb_carries_the_upstream_table_name() {
+        let src = "<?php
+namespace app\\services;
+
+class Svc {
+    public function run($data) {
+        Db::name('goods')->where('id', 1)->insert($data);
+    }
+}
+";
+        let parser = PhpParser::new().unwrap();
+        let facts = parser.parse("app/services/Svc.php", src).unwrap();
+        let insert = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("insert"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "应捕获 insert 调用点: {:?}",
+                    facts.call_sites.iter().map(|c| &c.callee_text).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            insert.db_table.as_deref(),
+            Some("goods"),
+            "链式动词必须带上上游 name('goods') 的表名，否则 P7 无法落成 WritesDb"
+        );
+    }
 }
 
 /// Extract "equality comparisons of a signature value": `$sign == $ipay_signature` /

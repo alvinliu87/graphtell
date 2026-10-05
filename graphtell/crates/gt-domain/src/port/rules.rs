@@ -25,3 +25,65 @@ pub trait RuleProvider: Send + Sync {
         self.rules().is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::CheckRule;
+    use serde_json::json;
+
+    /// A rule needs many fields, but the default methods below only read `id` / `enabled`; build one from JSON
+    /// and let every other field take its serde default.
+    fn rule(id: &str, enabled: bool) -> CheckRule {
+        serde_json::from_value(json!({
+            "id": id,
+            "title": id,
+            "message": "m",
+            "enabled": enabled,
+        }))
+        .unwrap_or_else(|e| panic!("cannot build rule {id}: {e}"))
+    }
+
+    /// A minimal in-memory `RuleProvider` so the trait's default `rule` / `enabled_rules` / `len` / `is_empty`
+    /// methods can be exercised without a YAML loader.
+    struct StubProvider {
+        rules: Vec<CheckRule>,
+    }
+    impl RuleProvider for StubProvider {
+        fn rules(&self) -> &[CheckRule] {
+            &self.rules
+        }
+    }
+
+    #[test]
+    fn rule_lookup_by_id() {
+        let p = StubProvider {
+            rules: vec![rule("a", true), rule("b", false)],
+        };
+        assert_eq!(p.rule("a").map(|r| r.id.as_str()), Some("a"));
+        assert_eq!(p.rule("b").map(|r| r.id.as_str()), Some("b"));
+        assert!(p.rule("missing").is_none(), "未知 id 返回 None");
+    }
+
+    #[test]
+    fn enabled_rules_filters_by_enabled_flag() {
+        let p = StubProvider {
+            rules: vec![rule("a", true), rule("b", false), rule("c", true)],
+        };
+        let ids: Vec<&str> = p.enabled_rules().iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "c"], "仅保留启用规则，且保序");
+    }
+
+    #[test]
+    fn len_and_is_empty() {
+        let empty = StubProvider { rules: vec![] };
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+
+        let p = StubProvider {
+            rules: vec![rule("a", true)],
+        };
+        assert!(!p.is_empty());
+        assert_eq!(p.len(), 1);
+    }
+}

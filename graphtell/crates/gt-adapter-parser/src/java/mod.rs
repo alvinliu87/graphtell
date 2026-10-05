@@ -765,4 +765,133 @@ interface OrderMapper extends BaseMapper<Order> {
             "expected to capture BaseMapper<Order> -> com.demo.Order, got: {generic:?}"
         );
     }
+
+    // ---- pure helpers ----
+
+    /// Normalising argument / parameter types: `List<Order>` -> `List`, `Order[]` -> `Order`.
+    #[test]
+    fn bare_type_name_strips_generics_and_arrays() {
+        assert_eq!(bare_type_name("List<Order>".to_string()), "List");
+        assert_eq!(bare_type_name("Order[]".to_string()), "Order");
+        assert_eq!(bare_type_name("Order".to_string()), "Order");
+        assert_eq!(bare_type_name("List<Order>[]".to_string()), "List");
+        assert_eq!(bare_type_name("  Map <String, Object> ".to_string()), "Map", "应去掉泛型并 trim");
+        assert_eq!(bare_type_name("int".to_string()), "int");
+    }
+
+    fn import(name: &str, alias: Option<&str>) -> ImportFact {
+        ImportFact { name: name.to_string(), alias: alias.map(|a| a.to_string()), span: Span::default() }
+    }
+
+    fn facts_with(imports: Vec<ImportFact>) -> SyntaxFacts {
+        SyntaxFacts { imports, ..Default::default() }
+    }
+
+    /// P7 classifies read / write verbs by looking up `MapsTo` through the receiver type, and `MapsTo` hangs off
+    /// an **FQN** — a short name finds nothing, so `mapper.insert()` would produce no `WritesDb`. The order
+    /// (qualified -> import -> same package) is the contract that makes that lookup work.
+    #[test]
+    fn resolve_java_type_prefers_qualified_then_import_then_package() {
+        // ① already qualified: returned as-is, never rewritten.
+        assert_eq!(
+            resolve_java_type("com.x.User", &facts_with(vec![]), "com.demo.Svc"),
+            "com.x.User"
+        );
+        // ② an import whose last segment matches restores the exact FQN (even across packages).
+        assert_eq!(
+            resolve_java_type("User", &facts_with(vec![import("com.other.User", None)]), "com.demo.Svc"),
+            "com.other.User",
+            "不能靠同包猜测——导入能精确还原时必须用它"
+        );
+        // ② an alias matches on the alias itself, not on the imported name's last segment.
+        assert_eq!(
+            resolve_java_type("U", &facts_with(vec![import("com.other.User", Some("U"))]), "com.demo.Svc"),
+            "com.other.User"
+        );
+        // ③ no import: a same-package reference needs none, so complete with the enclosing class's package.
+        assert_eq!(
+            resolve_java_type("Repo", &facts_with(vec![]), "com.demo.Svc"),
+            "com.demo.Repo"
+        );
+        // No package at all: there is nothing to complete with, keep the bare name.
+        assert_eq!(resolve_java_type("Repo", &facts_with(vec![]), "Svc"), "Repo");
+    }
+
+    // ---- call-site capture ----
+
+    fn arg_strings(args: &[FactValue]) -> Vec<Option<String>> {
+        args.iter()
+            .map(|a| match a {
+                FactValue::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Positional semantics: the i-th argument keeps its slot, a non-literal becomes the `Unknown` placeholder —
+    /// so `arg:0` always means "the first argument" and never shifts because an earlier one was a variable.
+    /// FKB uses this to materialise `rabbitTemplate.convertAndSend("orders.queue", msg)` as a Queue producer.
+    #[test]
+    fn positional_args_keeps_positions_and_placeholders() {
+        let src = r#"package com.demo;
+
+class Svc {
+    private RabbitTemplate rabbitTemplate;
+
+    void publish(Object msg) {
+        rabbitTemplate.convertAndSend("orders.queue", msg);
+        rabbitTemplate.convertAndSend("a", "b");
+    }
+}
+"#;
+        let facts = JavaParser::new()
+            .unwrap()
+            .parse("src/main/java/com/demo/Svc.java", src)
+            .unwrap();
+        let calls: Vec<&CallSiteFact> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text.contains("convertAndSend"))
+            .collect();
+        assert_eq!(calls.len(), 2, "应捕获两次调用: {calls:?}");
+        assert_eq!(
+            arg_strings(&calls[0].args),
+            vec![Some("orders.queue".to_string()), None],
+            "第 0 位是字符串字面量，第 1 位是非字面量占位 Unknown"
+        );
+        assert_eq!(
+            arg_strings(&calls[1].args),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
+    }
+
+    /// `publishEvent(new X(...))` derives the event type X, so publishers and `@EventListener` subscribers
+    /// merge onto one `Event` node.
+    #[test]
+    fn publish_event_derives_the_event_type_from_the_constructed_object() {
+        let src = r#"package com.demo;
+
+class Svc {
+    private Publisher publisher;
+
+    void place() {
+        publisher.publishEvent(new OrderPlacedEvent(this));
+    }
+}
+"#;
+        let facts = JavaParser::new()
+            .unwrap()
+            .parse("src/main/java/com/demo/Svc.java", src)
+            .unwrap();
+        let ev = facts
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text.contains("publishEvent"))
+            .unwrap_or_else(|| panic!("应捕获 publishEvent: {:?}", facts.call_sites));
+        assert_eq!(
+            ev.entity.as_deref(),
+            Some("OrderPlacedEvent"),
+            "`publishEvent(new X())` 应推出事件类型 X"
+        );
+    }
 }

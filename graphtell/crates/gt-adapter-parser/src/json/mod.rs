@@ -207,4 +207,87 @@ mod tests {
         let facts = parse_src("{ not valid json");
         assert!(facts.config_entries.is_empty());
     }
+
+    // ---- route identity normalisation ----
+
+    /// Route identities always start with `/`, so `pages.json` and `uni.navigateTo({ url })` converge on the
+    /// same `Page` node.
+    #[test]
+    fn ensure_leading_slash_normalises_route_identity() {
+        assert_eq!(ensure_leading_slash("pages/index/index"), "/pages/index/index");
+        assert_eq!(ensure_leading_slash("/pages/index/index"), "/pages/index/index", "已有斜杠不重复加");
+        assert_eq!(ensure_leading_slash(""), "/");
+    }
+
+    /// The span line is what makes a `Page` node clickable in the UI; the **first** occurrence wins and a miss
+    /// degrades to the last line rather than 0 (which would point at nothing).
+    #[test]
+    fn line_of_reports_the_first_occurrence_line() {
+        let src = "{\n  \"pages\": [\n    \"pages/index/index\"\n  ]\n}\n";
+        assert_eq!(line_of(src, "\"pages/index/index\""), 3);
+        assert_eq!(line_of("abc\nx\nabc", "abc"), 1, "多处出现时取第一次");
+        assert_eq!(line_of(src, "nope"), 6, "找不到时退化为最后一行，而不是 0");
+        assert_eq!(line_of("a\nb", ""), 1);
+    }
+
+    #[test]
+    fn page_entries_cite_their_source_line() {
+        let facts = parse_src("{\n  \"pages\": [\n    \"pages/index/index\"\n  ]\n}\n");
+        assert_eq!(facts.config_entries.len(), 1);
+        assert_eq!(
+            facts.config_entries[0].span.start_line, 3,
+            "应指向该页面字符串所在行（可点击溯源）"
+        );
+    }
+
+    // ---- sub-package handling ----
+
+    /// `root` / `page` are normalised before joining, so neither a trailing nor a leading slash can produce
+    /// `pagesA//list/list` or drop the root.
+    #[test]
+    fn subpackage_root_and_page_slashes_are_normalised() {
+        let facts = parse_src(
+            r#"{ "subPackages": [ { "root": "pagesA/", "pages": ["/list/list"] } ] }"#,
+        );
+        assert_eq!(facts.config_entries.len(), 1);
+        assert_eq!(
+            facts.config_entries[0].value,
+            FactValue::String("/pagesA/list/list".into())
+        );
+    }
+
+    /// A sub-package with an empty / absent `root` must keep the bare route instead of prefixing an empty
+    /// segment (which would create a phantom page).
+    #[test]
+    fn subpackage_without_root_keeps_the_bare_route() {
+        let facts = parse_src(r#"{ "subPackages": [ { "root": "", "pages": ["list/list"] } ] }"#);
+        assert_eq!(facts.config_entries.len(), 1);
+        assert_eq!(
+            facts.config_entries[0].value,
+            FactValue::String("/list/list".into())
+        );
+    }
+
+    /// The sub-package **index** is part of the key path, so two sub-packages must not collapse into one slot.
+    #[test]
+    fn subpackages_are_indexed_in_their_key_path() {
+        let facts = parse_src(
+            r#"{ "subPackages": [ { "root": "A", "pages": ["a/a"] }, { "root": "B", "pages": ["b/b"] } ] }"#,
+        );
+        let paths: Vec<&str> = facts
+            .config_entries
+            .iter()
+            .map(|e| e.key_path.as_str())
+            .collect();
+        assert_eq!(paths, vec!["subPackages.0.pages.0", "subPackages.1.pages.0"]);
+    }
+
+    /// Non-string entries in the `pages` array are skipped rather than coerced (a number would become a bogus
+    /// route identity).
+    #[test]
+    fn non_string_page_entries_are_skipped() {
+        let facts = parse_src(r#"{ "pages": ["pages/a/a", 1, null, true] }"#);
+        assert_eq!(facts.config_entries.len(), 1, "只有字符串条目应成为页面");
+        assert_eq!(facts.config_entries[0].key_path, "pages.0");
+    }
 }

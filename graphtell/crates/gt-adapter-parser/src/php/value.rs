@@ -174,3 +174,112 @@ impl StringRepr for FactValue {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::php::PhpParser;
+    use gt_domain::port::LanguageParser;
+
+    /// Every argument list of the calls to `method`, in source order.
+    fn call_args(src: &str, method: &str) -> Vec<Vec<FactValue>> {
+        let facts = PhpParser::new().unwrap().parse("t.php", src).unwrap();
+        facts
+            .call_sites
+            .iter()
+            .filter(|c| c.method.as_deref() == Some(method))
+            .map(|c| c.args.clone())
+            .collect()
+    }
+
+    /// What can be evaluated statically is what FKB's `require_literal` can use as identity — so each mapping
+    /// here decides whether a rule can fire.
+    #[test]
+    fn eval_expr_maps_statically_known_literals() {
+        let src = "<?php
+class M {
+    public function run($x) {
+        $o->m('abc');
+        $o->m(123);
+        $o->m(true);
+        $o->m(null);
+        $o->m(Foo::class);
+        $o->m($x);
+        $o->m(-1);
+        $o->m(1.5);
+    }
+}
+";
+        let all = call_args(src, "m");
+        assert_eq!(all.len(), 8, "expected 8 call sites, got: {all:?}");
+        assert!(matches!(all[0][0], FactValue::String(ref s) if s == "abc"));
+        assert!(matches!(all[1][0], FactValue::Int(123)));
+        assert!(matches!(all[2][0], FactValue::Bool(true)));
+        assert!(matches!(all[3][0], FactValue::Null));
+        assert!(matches!(all[4][0], FactValue::ClassConst(ref s) if s == "Foo"));
+        assert!(
+            matches!(all[5][0], FactValue::Unknown(Some(ref s)) if s == "$x"),
+            "变量必须保留名字，供 P7 常量传播使用"
+        );
+        assert!(matches!(all[6][0], FactValue::Int(-1)), "一元负号应折成 Int");
+        assert!(matches!(all[7][0], FactValue::Float(f) if (f - 1.5).abs() < 1e-9));
+    }
+
+    /// Interpolation makes a string statically unknowable (it must never become identity), while arrays keep
+    /// their keys — including the positional fallback for unkeyed elements.
+    #[test]
+    fn eval_expr_keeps_arrays_and_rejects_interpolation() {
+        let src = "<?php
+class M {
+    public function run($x) {
+        $o->m(['a' => 1, 2]);
+        $o->m(\"pre$x\");
+        $o->m('a\\'b');
+    }
+}
+";
+        let all = call_args(src, "m");
+        assert_eq!(all.len(), 3, "expected 3 call sites, got: {all:?}");
+        match &all[0][0] {
+            FactValue::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].0, "a");
+                assert!(matches!(items[0].1, FactValue::Int(1)));
+                assert_eq!(items[1].0, "1", "无键元素用下标作键");
+                assert!(matches!(items[1].1, FactValue::Int(2)));
+            }
+            other => panic!("数组字面量应折成 Array: {other:?}"),
+        }
+        assert!(
+            matches!(all[1][0], FactValue::Unknown(Some(_))),
+            "含插值的字符串不可静态确定，不得成为身份"
+        );
+        assert!(
+            matches!(all[2][0], FactValue::String(ref s) if s == "a'b"),
+            "转义引号应被还原"
+        );
+    }
+
+    /// Used to derive array keys from non-string values, so every variant needs a stable spelling.
+    #[test]
+    fn to_string_repr_covers_every_variant() {
+        assert_eq!(FactValue::String("s".into()).to_string_repr(), "s");
+        assert_eq!(FactValue::ClassConst("App\\M".into()).to_string_repr(), "App\\M");
+        assert_eq!(FactValue::Int(5).to_string_repr(), "5");
+        assert_eq!(FactValue::Float(1.5).to_string_repr(), "1.5");
+        assert_eq!(FactValue::Bool(true).to_string_repr(), "true");
+        assert_eq!(FactValue::Bool(false).to_string_repr(), "false");
+        assert_eq!(FactValue::Null.to_string_repr(), "null");
+        assert_eq!(FactValue::Array(vec![]).to_string_repr(), "array");
+        assert_eq!(FactValue::Unknown(Some("$x".into())).to_string_repr(), "$x");
+        assert_eq!(FactValue::Unknown(None).to_string_repr(), "?");
+    }
+
+    /// Char-based, not byte-based: truncating a multi-byte identifier must not cut mid-character.
+    #[test]
+    fn truncate_counts_chars_not_bytes() {
+        assert_eq!(truncate("abc", 2), "ab");
+        assert_eq!(truncate("abc", 10), "abc", "未超长时原样返回");
+        assert_eq!(truncate("中文字符", 2), "中文", "按字符截断，不得切在多字节中间");
+    }
+}

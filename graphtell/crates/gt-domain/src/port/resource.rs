@@ -121,3 +121,43 @@ impl ResourceAdapterRegistry for DefaultResourceAdapterRegistry {
         self.adapters.iter().map(|a| a.as_ref()).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Result;
+    use crate::model::SubProject;
+    use crate::port::FileSystem;
+    use std::path::Path;
+
+    /// A no-op adapter so the registry's `register` / `adapters` can be exercised without a real resource parser.
+    struct StubAdapter(&'static str);
+    impl ResourceAdapter for StubAdapter {
+        fn id(&self) -> &str {
+            self.0
+        }
+        fn scan(
+            &self,
+            _sub: &SubProject,
+            _root: &Path,
+            _fs: &dyn FileSystem,
+        ) -> Result<Vec<ResourceFact>> {
+            Ok(vec![])
+        }
+    }
+
+    /// The registry returns exactly the adapters registered (in order); `default()` / `new()` start empty.
+    #[test]
+    fn registry_returns_every_registered_adapter() {
+        let reg = DefaultResourceAdapterRegistry::new()
+            .register(Box::new(StubAdapter("mybatis")))
+            .register(Box::new(StubAdapter("hibernate")));
+        let ids: Vec<&str> = reg.adapters().iter().map(|a| a.id()).collect();
+        assert_eq!(ids, vec!["mybatis", "hibernate"]);
+
+        assert!(
+            DefaultResourceAdapterRegistry::default().adapters().is_empty(),
+            "空 registry 应返回空列表"
+        );
+    }
+}

@@ -189,3 +189,111 @@ CREATE TABLE IF NOT EXISTS project_rule_config (
 );
 "#,
 ];
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    fn apply_all() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        for sql in super::MIGRATIONS {
+            conn.execute_batch(sql)
+                .unwrap_or_else(|e| panic!("migration must be valid SQL: {e}\n---\n{sql}"));
+        }
+        conn
+    }
+
+    fn exists(conn: &Connection, kind: &str, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            rusqlite::params![kind, name],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            > 0
+    }
+
+    /// Every statement must apply **and be idempotent** — the whole set runs on every `SqliteStore::open`, so a
+    /// single non-idempotent statement makes an existing database unopenable.
+    #[test]
+    fn migrations_apply_and_are_idempotent() {
+        let conn = apply_all();
+        for sql in super::MIGRATIONS {
+            conn.execute_batch(sql)
+                .unwrap_or_else(|e| panic!("migration must be re-runnable (IF NOT EXISTS): {e}\n---\n{sql}"));
+        }
+    }
+
+    #[test]
+    fn every_expected_table_is_created() {
+        let conn = apply_all();
+        for t in [
+            "projects",
+            "sub_projects",
+            "source_files",
+            "nodes",
+            "edges",
+            "node_annotations",
+            "aliases",
+            "symbol_tables",
+            "diagnostics",
+            "pipeline_runs",
+            "project_rule_config",
+        ] {
+            assert!(exists(&conn, "table", t), "缺少表 `{t}`");
+        }
+    }
+
+    /// Without a foreign key to `nodes`, "the node is gone but the edge remains" is undetectable — a concurrent
+    /// build once produced 10 projects overwriting each other's nodes while the UI showed "36k edges / 0 nodes".
+    #[test]
+    fn child_tables_reference_nodes_with_cascade() {
+        let conn = apply_all();
+        for t in ["edges", "node_annotations", "aliases"] {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA foreign_key_list({t})"))
+                .unwrap();
+            let fks: Vec<(String, String)> = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(2)?, r.get::<_, String>(6)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            assert!(!fks.is_empty(), "`{t}` 必须有指向 nodes 的外键");
+            assert!(
+                fks.iter().all(|(table, on_delete)| table == "nodes" && on_delete == "CASCADE"),
+                "`{t}` 的外键必须是 REFERENCES nodes ON DELETE CASCADE: {fks:?}"
+            );
+        }
+        // `edges` references nodes on both endpoints.
+        let mut stmt = conn.prepare("PRAGMA foreign_key_list(edges)").unwrap();
+        let from: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(from.contains(&"from_id".to_string()) && from.contains(&"to_id".to_string()), "{from:?}");
+    }
+
+    /// These two composite indexes are the whole difference between 9.8ms and 156ms for batch edge fetch
+    /// (the planner otherwise scans every edge of the project). Deleting one is a silent O(N^2) regression.
+    #[test]
+    fn edge_batch_lookup_indexes_exist() {
+        let conn = apply_all();
+        for idx in ["idx_edges_proj_to", "idx_edges_proj_from"] {
+            assert!(exists(&conn, "index", idx), "缺少复合索引 `{idx}`（批量取边会退化）");
+        }
+    }
+
+    /// Deliberately **not** created here (the name only appears in an explanatory SQL comment): old databases'
+    /// `node_annotations` has no `project_id`, and while `CREATE TABLE IF NOT EXISTS` would skip quietly, the
+    /// index statement errors out outright — making the whole database unopenable. `ensure_annotation_project`
+    /// adds it after the column exists.
+    #[test]
+    fn annotation_project_index_is_not_created_by_the_migrations() {
+        let conn = apply_all();
+        assert!(
+            !exists(&conn, "index", "idx_annotations_project"),
+            "`idx_annotations_project` 不应由 MIGRATIONS 创建（旧库缺列会让整库打不开）"
+        );
+    }
+}

@@ -292,4 +292,57 @@ rules:
         assert_eq!(set.rules()[0].id, "good");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// `load_file` is a public entry point (used directly by `graphtell validate`-style callers), so its own
+    /// error paths need covering — not just through `load_dir`.
+    #[test]
+    fn load_file_reports_errors_for_missing_and_corrupt_files() {
+        let root = std::env::temp_dir().join(format!("gtar_rules_file_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(
+            YamlRuleSet::load_file(&root.join("nope.yaml")).is_err(),
+            "缺失文件必须报错，而不是返回空"
+        );
+
+        let bad = root.join("bad.yaml");
+        std::fs::write(&bad, "rules: [ unclosed").unwrap();
+        let err = YamlRuleSet::load_file(&bad).expect_err("坏 YAML 必须报错");
+        assert!(
+            err.to_string().contains("bad.yaml"),
+            "错误信息应带上文件路径以便定位: {err}"
+        );
+
+        let good = root.join("good.yaml");
+        std::fs::write(&good, "rules:\n  - id: ok\n    title: t\n    message: \"m\"\n").unwrap();
+        let rules = YamlRuleSet::load_file(&good).expect("好文件应正常加载");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "ok");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Extension filtering is by extension only: `.yaml` / `.yml` (any case) are loaded, everything else is
+    /// left alone — a stray `.md` / `.txt` in the rules directory must not be parsed.
+    #[test]
+    fn load_dir_skips_non_yaml_and_accepts_yml_variants() {
+        let root = std::env::temp_dir().join(format!("gtar_rules_ext_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let rule = |id: &str| format!("rules:\n  - id: {id}\n    title: t\n    message: \"m\"\n");
+        std::fs::write(root.join("a.yaml"), rule("from-yaml")).unwrap();
+        std::fs::write(root.join("b.yml"), rule("from-yml")).unwrap();
+        std::fs::write(root.join("c.YAML"), rule("from-upper")).unwrap();
+        std::fs::write(root.join("notes.md"), "# not a rule file").unwrap();
+        std::fs::write(root.join("README.txt"), "not a rule file").unwrap();
+
+        let set = YamlRuleSet::load_dir(&root).expect("load_dir should succeed");
+        let mut ids: Vec<&str> = set.rules().iter().map(|r| r.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["from-upper", "from-yaml", "from-yml"], "只应收 yaml/yml（含大小写），排除其他: {ids:?}");
+        assert_eq!(set.sources().len(), 3, "只有 3 个文件应被记为来源");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

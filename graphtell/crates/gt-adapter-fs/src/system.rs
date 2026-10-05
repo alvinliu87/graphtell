@@ -55,3 +55,24 @@ pub fn normalize(path: &Path) -> PathBuf {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Edge cases not covered by the integration test's `normalize_resolves_dot_and_dotdot`
+    /// (which pins `a/./b/../c`, `a/b/../../c` and the `pop()`-fails fallback `../a`).
+    #[test]
+    fn normalize_edge_cases() {
+        // A trailing `..` consumes the last real component; consuming everything yields an empty path.
+        assert_eq!(normalize(Path::new("a/b/..")), Path::new("a"));
+        assert_eq!(normalize(Path::new("a/..")), Path::new(""));
+
+        // Absolute paths keep their root, and `..` never escapes it.
+        assert_eq!(normalize(Path::new("/a/../b")), Path::new("/b"));
+
+        // Already-normalized input and the empty path are unchanged.
+        assert_eq!(normalize(Path::new("a/b/c")), Path::new("a/b/c"));
+        assert_eq!(normalize(Path::new("")), Path::new(""));
+    }
+}

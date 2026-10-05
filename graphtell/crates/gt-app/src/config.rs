@@ -221,4 +221,36 @@ mod tests {
         };
         assert_eq!(cfg.database_path(), PathBuf::from("./data/graphtell.sqlite"));
     }
+
+    // ---- resolve_ui_dir: real logic (returns Option; exe-relative branch checks index.html, distinct from fkb/views) ----
+
+    #[test]
+    fn ui_dir_explicit_override_wins() {
+        let cfg = AppConfig {
+            ui_dir: Some(PathBuf::from("/explicit/ui")),
+            ..AppConfig::default()
+        };
+        assert_eq!(cfg.resolve_ui_dir(), Some(PathBuf::from("/explicit/ui")));
+    }
+
+    #[test]
+    fn ui_dir_env_var_used_when_no_explicit() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("GRAPHTELL_UI_DIR", "/env/ui");
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.resolve_ui_dir(), Some(PathBuf::from("/env/ui")));
+        std::env::remove_var("GRAPHTELL_UI_DIR");
+    }
+
+    #[test]
+    fn ui_dir_explicit_wins_over_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("GRAPHTELL_UI_DIR", "/env/ui");
+        let cfg = AppConfig {
+            ui_dir: Some(PathBuf::from("/explicit/ui")),
+            ..AppConfig::default()
+        };
+        assert_eq!(cfg.resolve_ui_dir(), Some(PathBuf::from("/explicit/ui")));
+        std::env::remove_var("GRAPHTELL_UI_DIR");
+    }
 }

@@ -207,6 +207,7 @@ fn scan(root: &Path, mtimes: &mut HashMap<PathBuf, SystemTime>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
 
     #[test]
     fn poll_interval_scales_with_project_size() {
@@ -226,5 +227,63 @@ mod tests {
             interval = (interval * 2).min(POLL_INTERVAL_MAX);
         }
         assert_eq!(interval, POLL_INTERVAL_MAX);
+    }
+
+    // ---- change detection (the watch heart) ----
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gt_watch_it_{}_{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn snapshot_records_all_files_and_unchanged_is_false() {
+        let dir = temp_root("unchanged");
+        std::fs::write(dir.join("a.rs"), b"a").unwrap();
+        std::fs::write(dir.join("b.rs"), b"b").unwrap();
+        let mut mtimes = snapshot(&dir);
+        assert_eq!(mtimes.len(), 2, "snapshot 应记录全部文件");
+        assert!(!scan(&dir, &mut mtimes), "未改动时 scan 应返回 false");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_detects_added_file() {
+        let dir = temp_root("added");
+        std::fs::write(dir.join("a.rs"), b"a").unwrap();
+        let mut mtimes = snapshot(&dir);
+        std::fs::write(dir.join("b.rs"), b"b").unwrap();
+        assert!(scan(&dir, &mut mtimes), "新增文件应被检测到");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_detects_deleted_file() {
+        let dir = temp_root("deleted");
+        std::fs::write(dir.join("a.rs"), b"a").unwrap();
+        std::fs::write(dir.join("b.rs"), b"b").unwrap();
+        let mut mtimes = snapshot(&dir);
+        std::fs::remove_file(dir.join("b.rs")).unwrap();
+        assert!(scan(&dir, &mut mtimes), "删除文件应被检测到");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_detects_modified_mtime() {
+        let dir = temp_root("modified");
+        let p = dir.join("a.rs");
+        std::fs::write(&p, b"a").unwrap();
+        let mut mtimes = snapshot(&dir);
+        // Filesystem mtime resolution is coarse, so force a distinct later mtime explicitly.
+        OpenOptions::new()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(3600))
+            .unwrap();
+        assert!(scan(&dir, &mut mtimes), "mtime 变更应被检测到");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

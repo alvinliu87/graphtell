@@ -231,3 +231,66 @@ pub struct Marker {
 pub trait MarkerProvider: Send + Sync {
     fn markers(&self) -> Vec<Marker>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal adapter whose only declared method is `language()`; everything else takes the trait default.
+    struct StubAdapter(&'static str);
+    impl TechStackAdapter for StubAdapter {
+        fn language(&self) -> Language {
+            Language::new(self.0)
+        }
+    }
+
+    /// The default `serves` is exactly "this adapter's own language" — anything else must be opted in by an
+    /// override, so a language tag can never silently degrade to "no adapter".
+    #[test]
+    fn serves_matches_own_language_only() {
+        let a = StubAdapter("php");
+        assert!(a.serves(&Language::new("php")));
+        assert!(!a.serves(&Language::new("go")), "默认 serves 不跨语言");
+    }
+
+    /// An adapter that also serves `typescript` lets the registry resolve `typescript` to the JS adapter,
+    /// instead of leaving it without one. This is the whole point of `serves` existing.
+    struct JsLikeAdapter;
+    impl TechStackAdapter for JsLikeAdapter {
+        fn language(&self) -> Language {
+            Language::new("javascript")
+        }
+        fn serves(&self, language: &Language) -> bool {
+            *language == Language::new("javascript") || *language == Language::new("typescript")
+        }
+    }
+
+    #[test]
+    fn registry_resolves_by_serves_including_override() {
+        let reg = DefaultTechStackRegistry::new()
+            .register(Box::new(StubAdapter("php")))
+            .register(Box::new(JsLikeAdapter));
+
+        assert_eq!(
+            reg.adapter_for(&Language::new("php"))
+                .map(|a| a.language().as_str().to_string()),
+            Some("php".to_string())
+        );
+        assert_eq!(
+            reg.adapter_for(&Language::new("typescript"))
+                .map(|a| a.language().as_str().to_string()),
+            Some("javascript".to_string()),
+            "typescript 经 serves 覆盖回退到 JS 适配器"
+        );
+        assert!(
+            reg.adapter_for(&Language::new("go")).is_none(),
+            "无适配器服务的语言返回 None"
+        );
+        assert!(
+            DefaultTechStackRegistry::default()
+                .adapter_for(&Language::new("php"))
+                .is_none(),
+            "空 registry 解析不到任何适配器"
+        );
+    }
+}
