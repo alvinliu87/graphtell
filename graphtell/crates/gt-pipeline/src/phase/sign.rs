@@ -85,7 +85,9 @@ pub fn run(ctx: &mut PipelineContext) {
         let Some(method) = call.method.as_deref() else {
             continue;
         };
-        if !spec.weak_algos.iter().any(|a| a == method) {
+        // Case-insensitive on purpose: PHP's function names are case-insensitive, so `MD5($str)` is the
+        // same call as `md5($str)` and must be judged the same way.
+        if !spec.weak_algos.iter().any(|a| a.eq_ignore_ascii_case(method)) {
             continue;
         }
         let arg = call.args.first().map(arg_text).unwrap_or_default();
@@ -207,6 +209,7 @@ fn arg_text(fv: &FactValue) -> String {
 mod tests {
     use super::*;
     use crate::workspace::CallRecord;
+    use gt_domain::model::syntax::SignCompareFact;
     use gt_domain::model::{Language, NodeId, Span};
 
     fn call(method: &str, args: Vec<FactValue>) -> CallRecord {
@@ -292,5 +295,139 @@ mod tests {
         assert!(!is_sign_calc(&call("md5", vec![]), &s));
         assert!(!is_sign_calc(&call("hash_hmac", vec![]), &s));
         assert!(!is_sign_calc(&call("GetSign", vec![]), &s));
+    }
+
+    // ------------------------------------------------------- the phase itself (`run`)
+
+    fn new_ctx() -> PipelineContext {
+        PipelineContext::new(gt_domain::model::Project {
+            id: gt_domain::model::ProjectId(1),
+            name: "t".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            description: None,
+            status: gt_domain::model::ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        })
+    }
+
+    fn compare(owner_fqn: &str) -> SignCompareFact {
+        SignCompareFact {
+            left: "$sign".into(),
+            right: "$calc".into(),
+            operator: "==".into(),
+            owner_fqn: owner_fqn.to_string(),
+            file: "app/pay.php".into(),
+            span: Span { start_line: 20, end_line: 20, start_byte: 0, end_byte: 0 },
+        }
+    }
+
+    fn weak_hits(ctx: &PipelineContext, node: NodeId) -> usize {
+        ctx.ws
+            .annotations_of(node)
+            .iter()
+            .filter(|a| a.kind == WEAK_HASH)
+            .count()
+    }
+
+    /// Which vocabulary judges a call site is per sub-project, falling back to the global one — and a stack
+    /// that declares none is not judged at all (the behaviour that replaced the `language == php` gate).
+    #[test]
+    fn spec_for_prefers_the_sub_project_and_judges_nothing_without_a_declaration() {
+        let mut ctx = new_ctx();
+        assert!(spec_for(&ctx, None).is_none(), "什么都没声明时不做判断");
+        assert!(spec_for(&ctx, Some(SubProjectId(1))).is_none());
+
+        ctx.sign_check_default = Some(php_spec());
+        assert!(spec_for(&ctx, None).is_some(), "全局兜底应生效");
+        assert!(
+            spec_for(&ctx, Some(SubProjectId(1))).is_some(),
+            "子工程没有自己的声明时应回落到全局兜底"
+        );
+
+        let mut sub = php_spec();
+        sub.weak_algos = vec!["sha1".into()];
+        ctx.sign_check.insert(1, sub);
+        assert_eq!(
+            spec_for(&ctx, Some(SubProjectId(1))).map(|s| s.weak_algos.clone()),
+            Some(vec!["sha1".to_string()]),
+            "子工程自己的声明应覆盖全局兜底"
+        );
+    }
+
+    /// The two hint levels differ: `value_hints` marks a call as signature-related **on its own**, while
+    /// `value_hints_require_compare` (too generic — here `key=`) only counts when the enclosing function
+    /// also compares a signature. This pins the `||` / `&&` precedence that separates them.
+    #[test]
+    fn weak_hash_gating_separates_hints_from_hints_that_need_a_comparison() {
+        // (1) `key=` alone, no signature comparison in the function -> not judged.
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        ctx.ws
+            .calls
+            .push(call("md5", vec![FactValue::String("key=abc".to_string())]));
+        run(&mut ctx);
+        assert_eq!(
+            weak_hits(&ctx, NodeId(1)),
+            0,
+            "仅有 key= 提示且无签名比较时不应判定"
+        );
+
+        // (2) same hint, now with a signature comparison in the same function -> judged.
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        ctx.ws
+            .calls
+            .push(call("md5", vec![FactValue::String("key=abc".to_string())]));
+        ctx.ws.sign_compares.push(compare("App\\Pay::respond"));
+        run(&mut ctx);
+        assert_eq!(weak_hits(&ctx, NodeId(1)), 1, "有签名比较时 key= 提示应成立");
+
+        // (3) a `value_hints` hit (`sign`) needs no comparison at all.
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        ctx.ws
+            .calls
+            .push(call("md5", vec![FactValue::String("sign=abc".to_string())]));
+        run(&mut ctx);
+        assert_eq!(weak_hits(&ctx, NodeId(1)), 1, "value_hints 单独命中即可");
+    }
+
+    #[test]
+    fn subkind_of_marks_the_two_annotation_kinds() {
+        assert_eq!(subkind_of(LOOSE_COMPARE), "LooseSignatureCompare");
+        assert_eq!(subkind_of(WEAK_HASH), "WeakSignatureHash");
+    }
+
+    /// `weak_algos` is matched **case-insensitively**: PHP's function names are case-insensitive, so
+    /// `MD5($str)` is the same call as `md5($str)` and must be judged the same. An algorithm not declared
+    /// weak is still not judged — which stays the case whether or not the spelling differs.
+    #[test]
+    fn weak_algos_are_matched_case_insensitively() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+
+        let mut sha256 = call("sha256", vec![FactValue::String("sign=abc".to_string())]);
+        sha256.node = NodeId(11);
+        let mut upper = call("MD5", vec![FactValue::String("sign=abc".to_string())]);
+        upper.node = NodeId(12);
+        let mut lower = call("md5", vec![FactValue::String("sign=abc".to_string())]);
+        lower.node = NodeId(13);
+        ctx.ws.calls.extend([sha256, upper, lower]);
+
+        run(&mut ctx);
+
+        assert_eq!(weak_hits(&ctx, NodeId(13)), 1, "声明为弱的 md5 应被判定");
+        assert_eq!(
+            weak_hits(&ctx, NodeId(11)),
+            0,
+            "未声明为弱的算法不应判定"
+        );
+        assert_eq!(
+            weak_hits(&ctx, NodeId(12)),
+            1,
+            "大写 MD5 与 md5 是同一次调用，应同样被判定"
+        );
     }
 }
