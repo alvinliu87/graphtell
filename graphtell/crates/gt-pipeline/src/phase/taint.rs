@@ -1025,4 +1025,131 @@ mod tests {
         assert_eq!(arg_text(&FactValue::Unknown(None)), "");
         assert_eq!(arg_text(&FactValue::Int(1)), "");
     }
+
+    // ===== remaining branches =====
+
+    /// A call record with no method name cannot be matched against the sink declarations: it must be
+    /// skipped rather than guessed (and must not panic). `push_call` always supplies one, so this is
+    /// pushed by hand.
+    #[test]
+    fn run_skips_a_sink_call_without_a_method_name() {
+        let mut ctx = php_ctx();
+        assign(&mut ctx, "App\\Svc::run", "sql", "input('sql')");
+        ctx.ws.calls.push(CallRecord {
+            node: NodeId(4),
+            owner: NodeId(4),
+            owner_fqn: "App\\Svc::run".into(),
+            owner_class: None,
+            callee: "Db::query".into(),
+            receiver: Some("Db".into()),
+            method: None,
+            args: vec![FactValue::Unknown(Some("$sql".into()))],
+            db_table: None,
+            in_loop: false,
+            entity: None,
+            span: Span::default(),
+            file: "app/Svc.php".into(),
+            sub: None,
+            language: Language::new(Language::PHP),
+        });
+
+        run(&mut ctx);
+
+        assert!(
+            kinds(&ctx, 4).is_empty(),
+            "没有方法名的调用无法匹配 sink 声明，应跳过"
+        );
+    }
+
+    /// `${x}` — a literal string carrying an interpolation marker — is "has a variable" for
+    /// `text_has_var`, yet `var_names_in` resolves **no name** from it. That pair is exactly why the
+    /// phase keeps the pre-P10 criterion for such arguments (see the run-level test above).
+    #[test]
+    fn text_has_var_recognises_the_brace_interpolation_form() {
+        let p = php_prefixes();
+        assert!(text_has_var("${x}", &p), "花括号插值形式应判为含变量");
+        assert!(text_has_var("DROP TABLE ${x} CASCADE", &p));
+        assert!(var_names_in("${x}", &p).is_empty(), "但解析不出变量名");
+        // PHP's own `{$var}` form does resolve a name — the two forms differ.
+        assert_eq!(var_names_in("{$table}", &p), vec!["table"]);
+    }
+
+    /// A variable assigned more than once (e.g. in two branches) is traced through **every** RHS: one
+    /// request-sourced assignment confirms it, and only when none is does it stay unproven.
+    #[test]
+    fn reaches_request_checks_every_assignment_of_the_variable() {
+        let spec = taint_spec();
+        let p = php_prefixes();
+        let mut idx: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+
+        // A config read first, then a request read — the request one must win.
+        idx.insert(("f", "sql"), vec!["Config::get('x')", "input('sql')"]);
+        assert!(reaches_request(&spec, &idx, "f", "sql", &p));
+
+        // Every assignment is a non-request read -> unproven.
+        idx.insert(("f", "other"), vec!["Config::get('x')", "file_get_contents('a.sql')"]);
+        assert!(!reaches_request(&spec, &idx, "f", "other", &p));
+    }
+
+    /// An argument referencing several variables is confirmed when **any one** of them traces to the
+    /// request — otherwise a mixed `$prefix . $table` write would be demoted to unknown.
+    #[test]
+    fn run_confirms_when_any_variable_in_the_argument_traces_to_request() {
+        let mut ctx = php_ctx();
+        // `$prefix` is a config read; `$table` comes from the request.
+        assign(&mut ctx, "App\\Svc::run", "prefix", "Config::get('prefix')");
+        assign(&mut ctx, "App\\Svc::run", "table", "input('table')");
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "Db::query",
+            Some("Db"),
+            "query",
+            vec![FactValue::Unknown(Some("SELECT * FROM $prefix$table".into()))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(
+            kinds(&ctx, 1),
+            vec!["tainted_raw".to_string()],
+            "只要其中一个变量来自请求就应确认，而非降级为 unknown"
+        );
+    }
+
+    /// A method declared in **both** sink lists is judged as raw SQL (the more severe of the two), not as
+    /// where-condition interpolation — pins the `if is_raw { … } else if …` precedence.
+    #[test]
+    fn a_method_declared_in_both_lists_is_judged_as_raw_sql() {
+        let mut ctx = php_ctx();
+        ctx.taint_default = Some(TaintSpec {
+            raw_sql_sinks: vec![TaintSink {
+                method: "whereRaw".into(),
+                receiver: None,
+            }],
+            where_interp_sinks: vec!["whereRaw".into()],
+            request_sources: vec!["input(".into()],
+        });
+        assign(&mut ctx, "App\\Svc::run", "cond", "input('cond')");
+        push_call(
+            &mut ctx,
+            1,
+            "App\\Svc::run",
+            "whereRaw",
+            None,
+            "whereRaw",
+            vec![FactValue::Unknown(Some("name = '$cond'".into()))],
+            None,
+        );
+
+        run(&mut ctx);
+
+        assert_eq!(
+            kinds(&ctx, 1),
+            vec!["tainted_raw".to_string()],
+            "同时声明在两张表里时应按原始 SQL 判定（raw 优先于 where）"
+        );
+    }
 }

@@ -2926,7 +2926,11 @@ fn action_words(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gt_domain::model::{Edge, EdgeId, EdgeKind, Phase};
+    use gt_adapter_sqlite::SqliteStore;
+    use gt_domain::model::{
+        Edge, EdgeId, EdgeKind, GraphDelta, Language, LayoutMode, NewEdge, NewNode, NewProject,
+        Phase, Span, ViewMode,
+    };
 
     #[test]
     fn concrete_verbs_drive_read_write() {
@@ -3136,6 +3140,267 @@ mod tests {
         assert_eq!(
             action_words("order/detail"),
             vec!["order".to_string(), "detail".to_string()]
+        );
+    }
+
+    // ---------------------------------------------------------------- ViewService integration
+    //
+    // The free helpers above are well covered; what was missing is the `ViewService` public surface itself
+    // (`registry` / `perspectives` / `candidates` / `node_locations` / `edge_evidence` / `aggregate_view` /
+    // `object_view`), all of which need a `Persistence` store plus a `ViewRegistryProvider`. We stub the provider
+    // with a fixed registry and drive the real `SqliteStore`.
+
+    use gt_domain::model::GroupBy;
+
+    struct StubViews {
+        registry: ViewRegistry,
+    }
+    impl ViewRegistryProvider for StubViews {
+        fn registry(&self) -> &ViewRegistry {
+            &self.registry
+        }
+    }
+
+    fn tmpdir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gt_view_it_{}_{}", std::process::id(), name));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn new_node(pid: ProjectId, id: i64, kind: &str, name: &str, props: Value) -> NewNode {
+        NewNode {
+            id: Some(NodeId::new(id)),
+            project_id: pid,
+            sub_project_id: None,
+            kind: NodeKind::new(kind),
+            name: name.to_string(),
+            fqn: None,
+            identity: None,
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: props,
+        }
+    }
+
+    /// A `ViewService` over a fresh in-memory store and a registry built from the given perspectives.
+    fn svc_with(specs: Vec<PerspectiveSpec>) -> (ViewService, Arc<dyn Persistence>) {
+        let store: Arc<dyn Persistence> =
+            Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let mut reg = ViewRegistry::default();
+        reg.perspectives = specs;
+        let svc = ViewService::new(store.clone(), Arc::new(StubViews { registry: reg }));
+        (svc, store)
+    }
+
+    fn p_spec(id: &str, kind: &str) -> PerspectiveSpec {
+        PerspectiveSpec {
+            id: id.into(),
+            label: id.into(),
+            mode: ViewMode::Object,
+            node_kind: Some(kind.into()),
+            ..PerspectiveSpec::default()
+        }
+    }
+
+    fn p_agg(id: &str, kind: &str) -> PerspectiveSpec {
+        PerspectiveSpec {
+            id: id.into(),
+            label: id.into(),
+            mode: ViewMode::Aggregate,
+            node_kind: Some(kind.into()),
+            layout: LayoutMode::Compound,
+            group_by: Some(GroupBy::NodeKind),
+            ..PerspectiveSpec::default()
+        }
+    }
+
+    fn seed_project(store: &Arc<dyn Persistence>) -> ProjectId {
+        store
+            .create_project(NewProject {
+                name: "p".into(),
+                root_path: tmpdir("seed"),
+                description: None,
+                config: None,
+            })
+            .unwrap()
+            .id
+    }
+
+    fn seed_tables(store: &Arc<dyn Persistence>, tables: &[(&str, i64)]) -> ProjectId {
+        let pid = seed_project(store);
+        let mut d = GraphDelta::new(pid);
+        for (name, id) in tables {
+            d.nodes.push(new_node(pid, *id, "Table", name, Value::Null));
+        }
+        store.apply(&d).unwrap();
+        pid
+    }
+
+    #[test]
+    fn registry_returns_provider_registry() {
+        let (svc, _store) = svc_with(vec![p_spec("table", "Table")]);
+        assert_eq!(svc.registry().perspectives.len(), 1);
+        assert_eq!(svc.registry().perspectives[0].id, "table");
+    }
+
+    /// `perspectives` reports, per spec, how many candidate objects exist (`available`); for an Object spec with a
+    /// concrete kind it reads `stats.by_kind`, so seeding one Table should yield available = 1.
+    #[test]
+    fn perspectives_reports_available_counts() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_tables(&store, &[("store_order", 1)]);
+        let ps = svc.perspectives(pid).unwrap();
+        assert_eq!(ps.len(), 1, "每个 perspective 一条");
+        let avail = ps[0].get("available").and_then(|v| v.as_u64()).unwrap();
+        assert_eq!(avail, 1, "Table 视角应报出 1 个可用对象");
+        assert_eq!(ps[0].get("id").and_then(|v| v.as_str()), Some("table"));
+    }
+
+    /// With a search term, `candidates` maps nodes straight to `Candidate` (no scoring); the store does the name filter.
+    #[test]
+    fn candidates_with_name_filter_maps_directly() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_tables(
+            &store,
+            &[("store_order", 1), ("store_goods", 2)],
+        );
+        let cs = svc
+            .candidates(pid, "table", 10, Some("goods"), None)
+            .unwrap();
+        assert_eq!(cs.len(), 1, "name 过滤只命中 store_goods");
+        assert_eq!(cs[0].name, "store_goods");
+    }
+
+    /// Without a search term, `candidates` loads `nodes_summary` + `chain_adjacency` once and ranks by semantic value.
+    #[test]
+    fn candidates_without_name_filter_ranks() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_tables(
+            &store,
+            &[("store_order", 1), ("store_goods", 2)],
+        );
+        let cs = svc.candidates(pid, "table", 10, None, None).unwrap();
+        assert_eq!(cs.len(), 2, "无搜索词返回全部候选（按语义价值排名）");
+        // both carry a badge built from the semantic-value / in-edge scoring
+        assert!(cs.iter().all(|c| c.badge.is_some()));
+    }
+
+    /// `node_locations` returns a synthesized node's co-occurrence `locations` property and the incoming-edge count.
+    #[test]
+    fn node_locations_reads_locations_and_reference_count() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_project(&store);
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(new_node(
+            pid,
+            1,
+            "Table",
+            "t",
+            json!({ "locations": [ { "file": "a.php", "line": 7 } ] }),
+        ));
+        d.nodes.push(new_node(pid, 2, "Method", "m", Value::Null));
+        d.edges.push(NewEdge::new(
+            pid,
+            EdgeKind::new("ReadsDb"),
+            NodeId::new(2),
+            NodeId::new(1),
+        ));
+        store.apply(&d).unwrap();
+
+        let nl = svc.node_locations(NodeId::new(1)).unwrap();
+        assert_eq!(nl.kind, "Table");
+        assert_eq!(nl.locations.len(), 1, "应读出 properties.locations 里的合成节点位置");
+        assert_eq!(nl.locations[0].file, "a.php");
+        assert_eq!(nl.reference_count, 1, "入边数 = 引用计数");
+    }
+
+    /// `edge_evidence` surfaces the `evidence.location` recorded when the edge was built; an unknown edge id is `None`.
+    #[test]
+    fn edge_evidence_reads_evidence_location() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_project(&store);
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(new_node(pid, 1, "Table", "t", Value::Null));
+        d.nodes.push(new_node(pid, 2, "Method", "m", Value::Null));
+        d.edges.push(NewEdge {
+            project_id: pid,
+            kind: EdgeKind::new("ReadsDb"),
+            from_id: NodeId::new(2),
+            to_id: NodeId::new(1),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: json!({ "evidence": { "location": "a/b.php:10", "snippet": "Db::name('t')" } }),
+        });
+        store.apply(&d).unwrap();
+
+        let eid = store
+            .edges_of(NodeId::new(2), EdgeDirection::Outgoing)
+            .unwrap()[0]
+            .id;
+        let ev = svc
+            .edge_evidence(eid.get())
+            .unwrap()
+            .expect("应找到边证据");
+        assert!(
+            ev.locations.iter().any(|l| l.file == "a/b.php" && l.line == 10),
+            "应读出边的 evidence 位置"
+        );
+
+        assert!(
+            svc.edge_evidence(99999).unwrap().is_none(),
+            "未知边 id 应返回 None"
+        );
+    }
+
+    /// `aggregate_view` (Compound layout) buckets all `Table` nodes into one cluster and reports the full count.
+    #[test]
+    fn aggregate_view_groups_nodes_into_clusters() {
+        let (svc, store) = svc_with(vec![p_agg("table", "Table")]);
+        let pid = seed_tables(
+            &store,
+            &[("store_order", 1), ("store_goods", 2)],
+        );
+        let av = svc.aggregate_view(pid, "table", 5).unwrap();
+        assert_eq!(av.clusters.len(), 1, "按 NodeKind 分桶应只有一个 Table 簇");
+        assert_eq!(av.clusters[0].count, 2, "簇里给出完整计数（不全画）");
+        assert_eq!(av.clusters[0].key, "Table");
+    }
+
+    /// `object_view` runs the full discover + fold pipeline; a `Table` centre with a `ReadsDb` reader one hop up
+    /// (reverse mode walks in-edges) must come back with the centre intact and a non-empty ring.
+    #[test]
+    fn object_view_smoke_returns_center_and_rings() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_project(&store);
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(new_node(pid, 1, "Table", "store_order", Value::Null));
+        // A semantic (HttpContract) caller reached via a *chain* edge (`Calls`) — reverse-mode discovery walks
+        // back along chain adjacency, so this lands in ring 1 (a semantic in-edge like `ReadsDb` would instead be
+        // folded into an orphan, not a ring node).
+        d.nodes.push(new_node(pid, 2, "HttpContract", "GET /api/order", Value::Null));
+        d.edges.push(NewEdge::new(
+            pid,
+            EdgeKind::new("Calls"),
+            NodeId::new(2),
+            NodeId::new(1),
+        ));
+        store.apply(&d).unwrap();
+
+        let ov = svc
+            .object_view(pid, "table", NodeId::new(1), None)
+            .unwrap();
+        assert_eq!(ov.center.id, NodeId::new(1), "中心节点必须原样返回");
+        // the reader (node 2) should be discovered as a neighbour of the centre
+        let mut all: Vec<NodeId> = vec![ov.center.id];
+        for ring in &ov.rings {
+            all.extend(ring.iter().map(|n| n.id));
+        }
+        assert!(
+            all.contains(&NodeId::new(2)),
+            "反向发现应把读取方放进中心邻居"
         );
     }
 }

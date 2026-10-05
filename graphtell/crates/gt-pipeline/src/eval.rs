@@ -1149,4 +1149,62 @@ mod tests {
             None
         );
     }
+
+    // ---- residual branches the 16 tests above leave open: the Config-context `entry_value` form (the one
+    // `ValueSource` field not yet read), the two pass-through accessors `ws()` / `ctx()`, and the
+    // `owner_class` empty-string guard (`!cls.is_empty()`) that falls back to splitting the FQN. ----
+
+    /// `entry_value` hands back the whole config value as a fact (string form), distinct from the key-path /
+    /// locale / array forms. The accessors `ws()` / `ctx()` expose the live evaluation context that identity
+    /// computation reads (e.g. the call-site file / line).
+    #[test]
+    fn config_ctx_entry_value_and_evaluator_accessors() {
+        let ws = ws();
+        let c = cfg(FactValue::String("hello".into()));
+        let ev = Evaluator::new(&ws, MatchCtx::Config(&c));
+
+        assert_eq!(
+            ev.string(&ValueSource {
+                entry_value: Some(true),
+                ..Default::default()
+            }),
+            Some("hello".to_string())
+        );
+        // A numeric value renders through `as_string` rather than being dropped.
+        let num = ConfigRecord {
+            value: FactValue::Int(42),
+            ..cfg(FactValue::Null)
+        };
+        assert_eq!(
+            Evaluator::new(&ws, MatchCtx::Config(&num))
+                .string(&ValueSource {
+                    entry_value: Some(true),
+                    ..Default::default()
+                }),
+            Some("42".to_string())
+        );
+
+        // The pass-through accessors return the same live references.
+        assert!(std::ptr::eq(ev.ws(), &ws));
+        match ev.ctx() {
+            MatchCtx::Config(c2) => assert!(std::ptr::eq(c2, &c)),
+            _ => panic!("ctx() 应回传 Config 变体"),
+        }
+    }
+
+    /// When the parser supplies an *empty* `owner_class` string, the guard still falls back to splitting the
+    /// FQN (otherwise the empty string would slip through as the identity and then be "unavailable").
+    #[test]
+    fn call_ctx_owner_class_empty_string_falls_back_to_fqn() {
+        let ws = ws();
+        let rec = call_with("app\\Svc::run", Some(""), None, None);
+        let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
+        assert_eq!(
+            ev.string(&ValueSource {
+                owner_class: Some(true),
+                ..Default::default()
+            }),
+            Some("app\\Svc".to_string())
+        );
+    }
 }

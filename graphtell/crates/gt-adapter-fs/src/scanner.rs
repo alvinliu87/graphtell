@@ -570,4 +570,126 @@ mod tests {
             .unwrap();
         assert!(found.is_empty(), "目录不存在时返回空而非报错");
     }
+
+    // ---- scan paths the existing tests never exercise ----
+
+    /// P0 resolves a framework's cache / generated directories and hands them over as
+    /// `ScanRequest.extra_excludes`. `is_excluded` is covered for this, but the `scan` path that **builds**
+    /// the request-scoped set is not — if that wiring broke, every resolved cache directory would be parsed.
+    /// `storage/logs/**` is used because the built-ins do not already exclude it.
+    #[test]
+    fn scan_applies_request_scoped_exclude_globs() {
+        let root = tmp("scan-extra");
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("storage/logs")).unwrap();
+        std::fs::create_dir_all(root.join("storage/app")).unwrap();
+        std::fs::write(root.join("app/A.php"), b"<?php").unwrap();
+        std::fs::write(root.join("storage/app/B.php"), b"<?php").unwrap();
+        // A *scannable* file inside the excluded directory (a `.log` would be dropped anyway as unknown).
+        std::fs::write(root.join("storage/logs/Generated.php"), b"<?php").unwrap();
+
+        let req = |extra: Vec<String>| ScanRequest {
+            root: root.clone(),
+            extra_excludes: extra,
+            languages: vec![],
+            language_extensions: vec![],
+        };
+
+        let plain = WalkDirScanner::default().scan(&req(vec![])).unwrap();
+        let rel: Vec<&str> = plain.iter().map(|f| f.relative.as_str()).collect();
+        assert!(
+            rel.contains(&"storage/logs/Generated.php"),
+            "不给排除规则时它本会被扫描（否则这条测试没测到点上）: {rel:?}"
+        );
+
+        let filtered = WalkDirScanner::default()
+            .scan(&req(vec!["storage/logs/**".to_string()]))
+            .unwrap();
+        let rel2: Vec<&str> = filtered.iter().map(|f| f.relative.as_str()).collect();
+        assert!(
+            !rel2.contains(&"storage/logs/Generated.php"),
+            "请求级 glob 应在 scan 中生效: {rel2:?}"
+        );
+        assert!(
+            rel2.contains(&"storage/app/B.php"),
+            "不应误伤同前缀的其它目录: {rel2:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Language resolution **inside `scan`**: the caller's "language -> extensions" map (parser registry)
+    /// wins, and an extension it does not know falls through to the built-in table — otherwise a stack
+    /// registered in the parser registry would silently lose every file whose extension the map omits.
+    #[test]
+    fn scan_prefers_the_registry_map_and_falls_back_to_the_builtin_table() {
+        let root = tmp("scan-map");
+        std::fs::write(root.join("A.php"), b"<?php").unwrap();
+        std::fs::write(root.join("B.js"), b"let a=1").unwrap();
+
+        // The map claims `php` for a private language: it must win over the built-in `php`.
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec![],
+                languages: vec![],
+                language_extensions: vec![("mylang".to_string(), vec!["php".to_string()])],
+            })
+            .unwrap();
+        let got: Vec<(&str, &str)> = files
+            .iter()
+            .map(|f| (f.relative.as_str(), f.language.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("A.php", "mylang"), ("B.js", "javascript")],
+            "表内的扩展名按表判定，表外的回退内置表: {got:?}"
+        );
+        // Ingestion needs the absolute path and the size.
+        assert_eq!(files[0].path, root.join("A.php"));
+        assert_eq!(files[0].size_bytes, 5);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The limit is `> 4 MiB`, not `>=`: a file of exactly 4 MiB is still source.
+    #[test]
+    fn scan_keeps_a_file_at_the_size_limit() {
+        let root = tmp("limit");
+        let limit = 4 * 1024 * 1024;
+        std::fs::write(root.join("exact.php"), vec![b'a'; limit]).unwrap();
+        std::fs::write(root.join("over.php"), vec![b'a'; limit + 1]).unwrap();
+
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec![],
+                languages: vec![],
+                language_extensions: vec![],
+            })
+            .unwrap();
+        let rel: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert_eq!(rel, vec!["exact.php"], "恰好 4MiB 应保留，只有超过的才丢弃: {rel:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `find_markers` has no `ScanRequest`: it consults the scanner's **own** set, so a project glob handed
+    /// to `scan()` cannot hide a sub-project marker, while one handed to `new()` does apply.
+    #[test]
+    fn find_markers_uses_only_the_scanners_own_excludes() {
+        let root = tmp("markers-own");
+        std::fs::create_dir_all(root.join("skipme")).unwrap();
+        std::fs::write(root.join("composer.json"), b"{}").unwrap();
+        std::fs::write(root.join("skipme/composer.json"), b"{}").unwrap();
+
+        let plain = WalkDirScanner::default()
+            .find_markers(&root, &["composer.json"], 3)
+            .unwrap();
+        assert_eq!(plain.len(), 2, "默认排除不含 skipme: {plain:?}");
+
+        let scoped = WalkDirScanner::new(vec!["skipme/**".to_string()])
+            .find_markers(&root, &["composer.json"], 3)
+            .unwrap();
+        assert_eq!(scoped.len(), 1, "构造期传入的排除应生效: {scoped:?}");
+        assert_eq!(scoped[0], root.join("composer.json"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

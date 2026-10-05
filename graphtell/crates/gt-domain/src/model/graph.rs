@@ -542,4 +542,245 @@ mod tests {
             );
         }
     }
+
+    // ===== Below: what the 11 tests above left out — the **persisted** record types (nothing pinned a renamed
+    // field until a reload silently dropped it), the enums that cross the API boundary, and the idempotent-merge
+    // guarantee `IdentityKey` exists for. =====
+
+    fn round_trip<T: Serialize + for<'de> Deserialize<'de>>(v: &T) -> T {
+        serde_json::from_value(serde_json::to_value(v).expect("serialize")).expect("deserialize")
+    }
+
+    /// `Span` is embedded in every persisted node, so both its zero default and its field names must hold.
+    #[test]
+    fn span_defaults_to_zero_and_round_trips() {
+        let zero = Span::default();
+        assert_eq!(zero, Span { start_line: 0, end_line: 0, start_byte: 0, end_byte: 0 });
+
+        let s = Span { start_line: 10, end_line: 20, start_byte: 120, end_byte: 340 };
+        assert_eq!(round_trip(&s), s, "Span 走 PartialEq：往返不能丢字段");
+        let v = serde_json::to_value(&s).unwrap();
+        for f in ["start_line", "end_line", "start_byte", "end_byte"] {
+            assert!(v.get(f).is_some(), "持久化字段名 {f} 变了会在重载时静默丢坐标");
+        }
+    }
+
+    /// `Severity` crosses into the HTTP API and the DB, so its snake_case spelling is part of the contract.
+    #[test]
+    fn severity_round_trips_in_snake_case() {
+        for (variant, text) in [
+            (Severity::Info, "info"),
+            (Severity::Warning, "warning"),
+            (Severity::Error, "error"),
+            (Severity::Critical, "critical"),
+        ] {
+            assert_eq!(serde_json::to_value(variant).unwrap(), json!(text));
+            assert_eq!(serde_json::from_value::<Severity>(json!(text)).unwrap(), variant);
+        }
+        assert!(serde_json::from_value::<Severity>(json!("Error")).is_err(), "拼写错了必须报错，而不是退化成 Info");
+    }
+
+    /// Diagnostics are themselves a product surface (`location` / `payload` carry the click-through evidence),
+    /// so nothing may fall off on the way through storage.
+    #[test]
+    fn diagnostic_round_trips_with_and_without_a_location() {
+        let d = Diagnostic {
+            project_id: ProjectId(1),
+            sub_project_id: Some(SubProjectId(2)),
+            phase: Phase("Check".to_string()),
+            code: "unresolved-link".to_string(),
+            severity: Severity::Warning,
+            message: "handler not found".to_string(),
+            location: Some("app/api/route/pc.php:42".to_string()),
+            payload: json!({ "target": "Login/appleLogin" }),
+        };
+        let back: Diagnostic = round_trip(&d);
+        assert_eq!(back.code, "unresolved-link");
+        assert_eq!(back.severity, Severity::Warning);
+        assert_eq!(back.location.as_deref(), Some("app/api/route/pc.php:42"));
+        assert_eq!(back.payload, json!({ "target": "Login/appleLogin" }));
+        assert_eq!(back.sub_project_id, Some(SubProjectId(2)));
+
+        let bare = Diagnostic { location: None, payload: Value::Null, ..d };
+        let back: Diagnostic = round_trip(&bare);
+        assert!(back.location.is_none() && back.payload.is_null());
+    }
+
+    /// A run report starts at zero — any non-zero default would invent stats for a phase that did nothing.
+    #[test]
+    fn phase_report_defaults_to_zero_counters() {
+        let r = PhaseReport::default();
+        assert!(r.phase.is_empty());
+        assert_eq!(r.nodes_created, 0);
+        assert_eq!(r.edges_created, 0);
+        assert_eq!(r.annotations_created, 0);
+        assert_eq!(r.aliases_created, 0);
+        assert_eq!(r.duration_ms, 0);
+        assert!(r.diagnostics.is_empty());
+
+        let mut counted = PhaseReport { phase: "CfAst".to_string(), nodes_created: 3, ..Default::default() };
+        counted.diagnostics.push(Diagnostic {
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            phase: Phase("CfAst".to_string()),
+            code: "parse-error".to_string(),
+            severity: Severity::Error,
+            message: "syntax error".to_string(),
+            location: None,
+            payload: Value::Null,
+        });
+        let back: PhaseReport = round_trip(&counted);
+        assert_eq!(back.nodes_created, 3);
+        assert_eq!(back.diagnostics.len(), 1);
+        assert_eq!(back.diagnostics[0].severity, Severity::Error);
+    }
+
+    /// The record types that are written to storage and read back: a renamed field would otherwise reload as a
+    /// *successfully parsed but emptied* record.
+    #[test]
+    fn persisted_records_survive_a_round_trip() {
+        let edge = Edge {
+            id: EdgeId(9),
+            project_id: ProjectId(1),
+            kind: EdgeKind("Calls".to_string()),
+            from_id: NodeId(2),
+            to_id: NodeId(3),
+            phase: Phase("Propagate".to_string()),
+            confidence: 0.75,
+            properties: json!({ "line": 12 }),
+        };
+        let back: Edge = round_trip(&edge);
+        assert_eq!(back.id, EdgeId(9));
+        assert_eq!((back.from_id, back.to_id), (NodeId(2), NodeId(3)));
+        assert_eq!(back.kind.as_str(), "Calls");
+        assert!((back.confidence - 0.75).abs() < 1e-6);
+        assert_eq!(back.properties, json!({ "line": 12 }));
+
+        let ann = Annotation {
+            id: 42,
+            node_id: NodeId(5),
+            channel: AnnotationChannel(AnnotationChannel::FKB_MARK.to_string()),
+            kind: "pii".to_string(),
+            subkind: Some("pii.phone".to_string()),
+            confidence: 0.9,
+            evidence: json!({ "hook": "cf_ast" }),
+            phase: Phase("AnnotatePre".to_string()),
+        };
+        let back: Annotation = round_trip(&ann);
+        assert_eq!(back.id, 42, "数据库分配的 id 不能被丢");
+        assert_eq!(back.subkind.as_deref(), Some("pii.phone"));
+        assert_eq!(back.channel.as_str(), AnnotationChannel::FKB_MARK);
+        assert_eq!(back.evidence, json!({ "hook": "cf_ast" }));
+
+        let new_ann = NewAnnotation {
+            node_id: NodeId(5),
+            channel: AnnotationChannel(AnnotationChannel::TAINT.to_string()),
+            kind: "sink".to_string(),
+            subkind: None,
+            confidence: 0.6,
+            evidence: Value::Null,
+            phase: Phase("Check".to_string()),
+            merge: MergeStrategy::Accumulate,
+        };
+        let back: NewAnnotation = round_trip(&new_ann);
+        assert_eq!(back.merge, MergeStrategy::Accumulate, "merge 策略必须随 action 一起存取");
+        assert!(back.subkind.is_none() && back.evidence.is_null());
+
+        // The alias index key is composite: `status_text` alone would collide across classes.
+        let alias = AliasEntry {
+            project_id: ProjectId(1),
+            namespace: "accessor".to_string(),
+            key: "status_text".to_string(),
+            qualifier: Some("app\\model\\order\\StoreOrder".to_string()),
+            node_id: NodeId(7),
+            confidence: 1.0,
+            evidence: Value::Null,
+        };
+        let back: AliasEntry = round_trip(&alias);
+        assert_eq!(back.namespace, "accessor");
+        assert_eq!(back.key, "status_text");
+        assert_eq!(back.qualifier.as_deref(), Some("app\\model\\order\\StoreOrder"));
+        let unqualified = AliasEntry { qualifier: None, ..alias };
+        assert!(round_trip::<AliasEntry>(&unqualified).qualifier.is_none(), "无 qualifier 的条目不能被写成 Some");
+
+        let sym = SymbolEntry {
+            project_id: ProjectId(1),
+            table: "schema".to_string(),
+            key: "store_order".to_string(),
+            value: json!({ "columns": ["id", "order_id"] }),
+        };
+        let back: SymbolEntry = round_trip(&sym);
+        assert_eq!(back.table, "schema");
+        assert_eq!(back.value, json!({ "columns": ["id", "order_id"] }));
+    }
+
+    /// `Node` is the widest record: language / phase / properties / scoped identity all have to come back.
+    #[test]
+    fn node_round_trips_including_its_scoped_identity() {
+        let mut n = node("token", None, Some(IdentityKey::named_scoped("token", "frontend")));
+        n.properties = json!({ "side": "frontend" });
+        n.file_id = Some(FileId(4));
+        let back: Node = round_trip(&n);
+        assert_eq!(back.display_name(), n.display_name());
+        assert_eq!(back.identity.map(|i| i.key()), Some("Named:frontend:token".to_string()));
+        assert_eq!(back.language.0, "php");
+        assert_eq!(back.file_id, Some(FileId(4)));
+        assert_eq!(back.properties, json!({ "side": "frontend" }));
+    }
+
+    /// `IdentityKey` is what makes three different rules converge on one node — the set semantics (same key
+    /// collapses, different kind / scope stays apart) are the whole point of `key()`.
+    #[test]
+    fn identity_keys_collapse_only_on_the_full_merge_key() {
+        let mut set: std::collections::HashSet<IdentityKey> = std::collections::HashSet::new();
+        set.insert(IdentityKey::named("token"));
+        set.insert(IdentityKey::named("token"));
+        set.insert(IdentityKey::named_scoped("token", "frontend"));
+        set.insert(IdentityKey::fqn("token"));
+        assert_eq!(set.len(), 3, "同名但 kind / scope 不同必须是三个独立节点");
+
+        assert_eq!(IdentityKey::contract("get", "/x").key(), format!("{}:GET /x", SynthesizedKind::CONTRACT_ID));
+        assert_eq!(IdentityKey::fqn("A").with_scope("frontend").key(), format!("{}:frontend:A", SynthesizedKind::FQN));
+    }
+
+    /// `IdentityKey.kind` flows **straight from FKB** (`IdentitySpec.kind`), and `contract_parts` compares it
+    /// exactly — so a rule whose identity kind is spelled `contract_id` would silently stop being a contract.
+    /// Pinned so the coupling stays visible (every FKB currently spells it `ContractId`); a deliberate switch to
+    /// case-insensitive matching has to update this test and `engine::compute_identity` together.
+    #[test]
+    fn contract_parts_matches_the_kind_exactly() {
+        let lower = IdentityKey {
+            kind: SynthesizedKind(SynthesizedKind::CONTRACT_ID.to_ascii_lowercase()),
+            value: "GET /x".to_string(),
+            scope: None,
+        };
+        assert_eq!(lower.contract_parts(), None, "当前是精确比较，kind 的拼写必须与 ContractId 完全一致");
+        assert!(IdentityKey::contract("GET", "/x").contract_parts().is_some());
+    }
+
+    /// Identities written before `scope` existed must still load; today's writer omits the field when it is
+    /// unset (see the existing round-trip test), so both spellings have to work.
+    #[test]
+    fn identity_key_loads_records_stored_without_a_scope() {
+        let stored = json!({ "kind": "Named", "value": "order.pay_success" });
+        let k: IdentityKey = serde_json::from_value(stored).unwrap();
+        assert_eq!(k, IdentityKey::named("order.pay_success"), "老数据缺 scope 时应补 None");
+        assert_eq!(k.key(), format!("{}:order.pay_success", SynthesizedKind::NAMED));
+    }
+
+    /// Precedence, including the degenerate case: the identity wins even when its value is empty, because a
+    /// synthetic node's name is derived from the identity rather than replacing it.
+    #[test]
+    fn display_name_prefers_the_identity_even_when_its_value_is_empty() {
+        let n = node("short", None, Some(IdentityKey::named("")));
+        assert_eq!(n.display_name(), "", "identity 优先于短名");
+    }
+
+    /// `merge` is the one FKB-facing enum spelled `PascalCase` (every sibling enum is snake_case) — writing
+    /// `max_by_kind` must be rejected rather than silently falling back to the default.
+    #[test]
+    fn merge_strategy_rejects_the_snake_case_spelling() {
+        assert!(serde_json::from_value::<MergeStrategy>(json!("max_by_kind")).is_err());
+        assert!(serde_json::from_value::<MergeStrategy>(json!("MAXBYKIND")).is_err());
+    }
 }

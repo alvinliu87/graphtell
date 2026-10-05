@@ -1332,8 +1332,9 @@ mod tests {
     use super::*;
     use crate::workspace::GraphWorkspace;
     use gt_domain::model::{
-        AnnotateAction, AnnotationSpec, FanInThresholds, Language, NewNode, NodeId, NodeKind,
-        Phase, Project, ProjectAction, ProjectConfig, ProjectId, ProjectStatus, Span,
+        AnnotateAction, AnnotationSpec, Direction, FanInThresholds, IdentitySpec, Language,
+        LinkSpec, NewNode, NodeId, NodeKind, Phase, Project, ProjectAction, ProjectConfig,
+        ProjectId, ProjectStatus, Span, SynthesizeAction, ValueSource,
     };
 
     fn call_record(receiver: Option<&str>, method: Option<&str>, callee: &str) -> CallRecord {
@@ -2429,6 +2430,204 @@ mod tests {
                 .all(|e| (e.confidence - 0.9).abs() < 1e-6),
             "未声明置信度时取规则的置信度"
         );
+    }
+
+    // ---- residual branches the 23 tests above leave open: the core `exec_synthesize` path (only the
+    // `annotate` action was exercised by `exec_binding`), the `Inherit` selector branch of rule matching, and the
+    // two trivial exported helpers `tier_of` / `default_merge`. ----
+
+    /// `exec_binding` with a `Synthesize` action must create a node carrying the computed identity, an incoming
+    /// link from the owner, and record a propagation seed so P8 can replicate the action upward the call chain.
+    #[test]
+    fn exec_synthesize_creates_node_link_and_propagation_seed() {
+        let mut ctx = ctx();
+        let owner = node(&mut ctx, "Method", "dispatch", "app\\Svc::dispatch");
+        let matched = node(&mut ctx, "Method", "call", "app\\Svc::call");
+
+        let s = SynthesizeAction {
+            node: NodeKind::from("Queue"),
+            subtype: None,
+            identity: IdentitySpec {
+                kind: SynthesizedKind::from(SynthesizedKind::NAMED),
+                value: Some(ValueSource {
+                    literal: Some("order-job".into()),
+                    ..Default::default()
+                }),
+                method: None,
+                path: None,
+                normalize: vec![],
+                value_fallback: None,
+            },
+            fields: vec![],
+            link: Some(LinkSpec {
+                kind: EdgeKind("PublishesTo".to_string()),
+                to: None,
+                to_method: None,
+                to_fallback: None,
+                direction: Direction::Incoming,
+                resolve: None,
+                confidence: None,
+            }),
+            confidence: 0.9,
+            modifiers: vec![],
+            alias: None,
+            expand: None,
+        };
+        let rule = Rule {
+            id: "r".to_string(),
+            phase: Phase("AnnotatePre".to_string()),
+            selector: Selector::Node {
+                node_kind: None,
+                r#where: vec![],
+            },
+            binding: vec![Action::Synthesize(s)],
+            confidence: 1.0,
+            languages: None,
+        };
+        let mut last = None;
+        exec_binding(
+            &mut ctx,
+            &rule,
+            MatchCtx::Node(matched),
+            matched,
+            owner,
+            None,
+            &Phase("AnnotatePre".to_string()),
+            &mut last,
+        );
+
+        let synth = last.expect("synthesise 应产生一个节点作为 @last");
+        let n = ctx.ws.node(synth).expect("合成节点应存在");
+        assert_eq!(n.kind.as_str(), "Queue");
+        assert_eq!(
+            n.properties.get("category").and_then(|v| v.as_str()),
+            Some("Queue")
+        );
+
+        // owner --PublishesTo--> synthesised node.
+        let edge = ctx
+            .ws
+            .edges()
+            .iter()
+            .find(|e| e.kind.as_str() == "PublishesTo" && e.to_id == synth);
+        assert!(edge.is_some(), "应有一条 owner -> 合成节点 的 PublishesTo 边");
+        assert_eq!(edge.unwrap().from_id, owner);
+
+        // A propagation seed was recorded so the action can be replicated to callers.
+        assert_eq!(ctx.propagation_seeds.len(), 1);
+        assert_eq!(ctx.propagation_seeds[0].kind, "PublishesTo");
+        assert_eq!(ctx.propagation_seeds[0].source, owner);
+        assert_eq!(ctx.propagation_seeds[0].target, synth);
+    }
+
+    /// The `Inherit` selector branch of rule matching: direct base match (with `|` alternatives), transitive
+    /// supertype resolution, the `with_property` gate, and the rejection of non-matching / non-inherit selectors.
+    #[test]
+    fn matches_inherit_direct_base_property_and_transitive() {
+        let mut ctx = ctx();
+        let child = node(&mut ctx, "Class", "Order", "app\\Order");
+        ctx.ws
+            .record_property(child, "table", FactValue::String("eb_order".to_string()));
+        // Transitive chain: Order -> BaseModel -> Model.
+        ctx.ws.record_supertype("app\\Order", "app\\BaseModel");
+        ctx.ws.record_supertype("app\\BaseModel", "Model");
+
+        let rec = InheritRecord {
+            child,
+            child_fqn: "app\\Order".to_string(),
+            base: "Model".to_string(),
+            kind: EdgeKind("Extends".to_string()),
+            sub: None,
+            file: String::new(),
+            span: Span::default(),
+        };
+
+        // Direct base match (rec.base == selector base).
+        assert!(matches_inherit(
+            &Selector::Inheritance {
+                base: Some("Model".to_string()),
+                with_property: None
+            },
+            &rec,
+            &ctx.ws
+        ));
+        // `|` alternatives: one of them hits.
+        assert!(matches_inherit(
+            &Selector::Inheritance {
+                base: Some("Other|Model".to_string()),
+                with_property: None
+            },
+            &rec,
+            &ctx.ws
+        ));
+        // Transitive: immediate base is BaseModel, but the chain reaches Model.
+        let rec2 = InheritRecord {
+            base: "app\\BaseModel".to_string(),
+            ..rec.clone()
+        };
+        assert!(
+            matches_inherit(
+                &Selector::Inheritance {
+                    base: Some("Model".to_string()),
+                    with_property: None
+                },
+                &rec2,
+                &ctx.ws
+            ),
+            "经 BaseModel 传递继承到 Model"
+        );
+        // No base declared -> base check skipped.
+        assert!(matches_inherit(
+            &Selector::Inheritance {
+                base: None,
+                with_property: None
+            },
+            &rec,
+            &ctx.ws
+        ));
+        // `with_property`: present -> match, absent -> reject.
+        assert!(matches_inherit(
+            &Selector::Inheritance {
+                base: None,
+                with_property: Some("table".to_string())
+            },
+            &rec,
+            &ctx.ws
+        ));
+        assert!(!matches_inherit(
+            &Selector::Inheritance {
+                base: None,
+                with_property: Some("missing".to_string())
+            },
+            &rec,
+            &ctx.ws
+        ));
+        // A non-inheritance selector is always rejected.
+        assert!(!matches_inherit(
+            &Selector::Node {
+                node_kind: None,
+                r#where: vec![]
+            },
+            &rec,
+            &ctx.ws
+        ));
+        // A base that matches neither directly nor transitively is rejected.
+        assert!(!matches_inherit(
+            &Selector::Inheritance {
+                base: Some("Unrelated".to_string()),
+                with_property: None
+            },
+            &rec,
+            &ctx.ws
+        ));
+    }
+
+    /// The two trivial exported helpers are identity / default providers; pinned so they cannot silently change.
+    #[test]
+    fn tier_of_returns_its_argument_and_default_merge_is_max_by_kind() {
+        assert_eq!(tier_of(ResolveTier::Exact), ResolveTier::Exact);
+        assert_eq!(tier_of(ResolveTier::Unknown), ResolveTier::Unknown);
+        assert_eq!(default_merge(), MergeStrategy::MaxByKind);
     }
 }
 

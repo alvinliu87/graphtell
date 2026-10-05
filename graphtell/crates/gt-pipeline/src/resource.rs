@@ -597,4 +597,65 @@ mod tests {
             );
         }
     }
+
+    // ---- residual branches the 11 tests above leave open: `run` integrating an *unresolvable* pseudo call
+    // (the `if apply(...) { injected += 1 }` false path during `run`, not just `apply` in isolation), and a
+    // detected adapter that yields *no* facts (the `injected > 0` guard that suppresses the per-sub info log). ----
+
+    /// A detected adapter can return a mix of resolvable and unresolvable pseudo calls. `run` must inject only
+    /// the ones `apply` accepts — "better missing than attached to the wrong node" — and still count them
+    /// correctly, so a broken mapper entry never silently drops a good one.
+    #[test]
+    fn run_injects_only_resolvable_facts() {
+        let mut ctx = ctx();
+        ctx.sub_projects.push(sub(1, "app", "/p/app", "java"));
+        ctx.frameworks.insert(1, vec!["mybatis".to_string()]);
+        // Only the resolvable owner exists in the graph.
+        add_node(&mut ctx, "Method", "find", "com.x.UserMapper.find");
+        let reg = registry(vec![FakeAdapter {
+            id: "mybatis".into(),
+            facts: vec![
+                ResourceFact::PseudoCall(pseudo_call("com.x.UserMapper.find", None)), // resolvable
+                ResourceFact::PseudoCall(pseudo_call("com.x.Ghost.find", None)),     // no anchor
+            ],
+            fail: false,
+        }]);
+
+        run(&mut ctx, &reg, &NoFs);
+
+        assert_eq!(ctx.ws.calls.len(), 1, "只有可解析的伪调用被注入");
+        assert_eq!(ctx.ws.calls[0].owner_fqn, "com.x.UserMapper.find");
+        // Exactly one anchor edge — the unresolvable entry must not produce one.
+        let anchored = ctx
+            .ws
+            .edges()
+            .iter()
+            .filter(|e| e.kind.as_str() == EdgeKind::HAS_CALL_SITE)
+            .count();
+        assert_eq!(anchored, 1);
+    }
+
+    /// A detected adapter that yields no facts is a clean no-op: no panic, no injection, and `total` stays zero
+    /// (so the trailing "injected in total" info is suppressed too).
+    #[test]
+    fn run_is_a_noop_when_a_detected_adapter_yields_no_facts() {
+        let mut ctx = ctx();
+        ctx.sub_projects.push(sub(1, "app", "/p/app", "java"));
+        ctx.frameworks.insert(1, vec!["mybatis".to_string()]);
+        let reg = registry(vec![FakeAdapter {
+            id: "mybatis".into(),
+            facts: vec![],
+            fail: false,
+        }]);
+
+        run(&mut ctx, &reg, &NoFs);
+
+        assert!(ctx.ws.calls.is_empty());
+        assert!(
+            ctx.ws
+                .edges()
+                .iter()
+                .all(|e| e.kind.as_str() != EdgeKind::HAS_CALL_SITE)
+        );
+    }
 }

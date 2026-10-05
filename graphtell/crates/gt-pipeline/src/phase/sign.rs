@@ -558,4 +558,150 @@ mod tests {
         assert_eq!(arg_text(&FactValue::Int(5)), "");
         assert_eq!(arg_text(&FactValue::Null), "");
     }
+
+    // ------------------------------------------------------- no vocabulary -> no judgement
+
+    /// The weak-hash vocabulary is FKB-declared: with none declared, this stack's own `md5` must **not**
+    /// be recognised at `run` level (the behaviour that replaced the old `language == php` gate). The
+    /// pure-function case is pinned above; this pins it through the phase.
+    #[test]
+    fn weak_hash_is_not_judged_without_a_declared_vocabulary() {
+        let mut ctx = new_ctx();
+        ctx.ws
+            .calls
+            .push(call("md5", vec![FactValue::String("sign=abc".into())]));
+        run(&mut ctx);
+        assert_eq!(
+            weak_hits(&ctx, NodeId(1)),
+            0,
+            "未声明词汇时不应判定弱哈希"
+        );
+    }
+
+    /// A call record with no method name is skipped rather than guessed (and must not panic).
+    #[test]
+    fn skips_calls_without_a_method_name() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        let mut no_method = call("md5", vec![FactValue::String("sign=abc".into())]);
+        no_method.method = None;
+        no_method.node = NodeId(9);
+        ctx.ws.calls.push(no_method);
+
+        run(&mut ctx);
+        assert_eq!(weak_hits(&ctx, NodeId(9)), 0, "没有方法名的调用应被跳过");
+
+        // Same guard in the pure predicate.
+        let mut bare = call("md5", vec![]);
+        bare.method = None;
+        assert!(!is_sign_calc(&bare, &php_spec()));
+    }
+
+    // ------------------------------------------------------- annotation evidence (what the view reads)
+
+    /// Beyond "an annotation exists", the **shape** is the contract: channel / subkind / confidence and the
+    /// `file:line` + snippet the view shows. Note the two kinds cite *different* lines — the loose compare
+    /// the comparison line, the weak hash the call line.
+    #[test]
+    fn annotations_carry_the_evidence_the_view_reads() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+
+        let mut cmp = compare("App\\Pay::respond");
+        cmp.left = "md5($body.$secret)".into();
+        cmp.right = "$_SERVER['HTTP_KWAISIGN']".into();
+        cmp.operator = "!=".into();
+        ctx.ws.sign_compares.push(cmp);
+
+        let mut calc = call("md5", vec![FactValue::String("sign=abc".into())]);
+        calc.owner_fqn = "App\\Pay::respond".into();
+        calc.node = NodeId(5);
+        ctx.ws.calls.push(calc);
+
+        run(&mut ctx);
+
+        let anns = ctx.ws.annotations_of(NodeId(5));
+        let loose = anns.iter().find(|a| a.kind == LOOSE_COMPARE).expect("应有松比较标注");
+        assert_eq!(loose.channel.0, "Sign");
+        assert_eq!(loose.phase.0, "Sign");
+        assert_eq!(loose.subkind.as_deref(), Some("LooseSignatureCompare"));
+        assert!((loose.confidence - 0.85).abs() < 1e-6, "置信度应为 0.85");
+        assert_eq!(loose.evidence["file"], json!("app/pay.php"));
+        assert_eq!(loose.evidence["line"], json!(20), "松比较引用的是比较所在行");
+        assert_eq!(loose.evidence["operator"], json!("!="));
+        assert_eq!(
+            loose.evidence["snippet"],
+            json!("md5($body.$secret) != $_SERVER['HTTP_KWAISIGN']")
+        );
+
+        let weak = anns.iter().find(|a| a.kind == WEAK_HASH).expect("应有弱哈希标注");
+        assert_eq!(weak.subkind.as_deref(), Some("WeakSignatureHash"));
+        assert_eq!(weak.evidence["algo"], json!("md5"));
+        assert_eq!(weak.evidence["snippet"], json!("md5(sign=abc)"));
+        assert_eq!(weak.evidence["line"], json!(10), "弱哈希引用的是调用所在行");
+    }
+
+    // ------------------------------------------------------- landing-point precedence and scope
+
+    /// Level 1 (the call **named in the comparison**) must win over level 2 (a sign calc in the same
+    /// function) — otherwise a home-grown verifier (`hashEncrypt`) would be blamed on a generic `*Sign()`.
+    #[test]
+    fn find_sign_calc_prefers_the_call_named_in_the_comparison() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        let owner = "App\\Pay::respond";
+
+        // The fallback candidate comes first in the list, so level 2 would win if the order were wrong.
+        let mut fallback = call("CreatedSign", vec![]);
+        fallback.owner_fqn = owner.into();
+        fallback.node = NodeId(8);
+        let mut named = call("hashEncrypt", vec![]);
+        named.owner_fqn = owner.into();
+        named.node = NodeId(7);
+        ctx.ws.calls.extend([fallback, named]);
+
+        let mut cmp = compare(owner);
+        cmp.left = "$this->hashEncrypt($str)".into();
+        cmp.right = "$signVerify".into();
+        assert_eq!(
+            find_sign_calc(&ctx, &cmp).map(|c| c.node),
+            Some(NodeId(7)),
+            "比较中命名的调用应优先于同函数内的签名计算回退"
+        );
+    }
+
+    /// The landing point must be scoped to the **comparing function**: a sign calc in another function is
+    /// not what this comparison compares, and annotating it would point at unrelated code.
+    #[test]
+    fn find_sign_calc_is_scoped_to_the_comparing_function() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+
+        let mut elsewhere = call("CreatedSign", vec![]);
+        elsewhere.owner_fqn = "App\\Other::helper".into();
+        ctx.ws.calls.push(elsewhere);
+
+        let mut cmp = compare("App\\Pay::respond");
+        cmp.left = "$sign".into();
+        cmp.right = "$ipay_signature".into();
+        assert!(
+            find_sign_calc(&ctx, &cmp).is_none(),
+            "签名计算必须限定在比较所在的函数内"
+        );
+    }
+
+    // ------------------------------------------------------- name convention is declared, not assumed
+
+    /// With `name_contains` unset, only the declared hash calls are known — the kernel must not fall back to
+    /// guessing by name (`*Sign()` would both miss home-grown verifiers and hit check-ins).
+    #[test]
+    fn without_a_name_convention_only_the_declared_calls_are_known() {
+        let mut s = php_spec();
+        s.name_contains = None;
+        assert!(is_sign_calc(&call("md5", vec![]), &s), "声明的哈希调用仍应识别");
+        assert!(
+            !is_sign_calc(&call("CreatedSign", vec![]), &s),
+            "没有命名约定时不应靠名字猜"
+        );
+    }
 }

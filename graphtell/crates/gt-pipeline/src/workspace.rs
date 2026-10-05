@@ -1006,11 +1006,19 @@ impl GraphWorkspace {
             .copied()
             .map(NodeId)
             .or_else(|| {
-                // When no qualifier, degrade to "same namespace + key unique hit"
-                self.by_alias
+                // When no qualifier, degrade to "same namespace + key unique hit". Multiple matches
+                // are ambiguous and explicitly rejected so we never fabricate a choice.
+                let hits: Vec<i64> = self
+                    .by_alias
                     .iter()
-                    .find(|((n, k, _), _)| n == ns && k == key)
-                    .map(|(_, v)| NodeId(*v))
+                    .filter(|((n, k, _), _)| n == ns && k == key)
+                    .map(|(_, v)| *v)
+                    .collect();
+                if hits.len() == 1 {
+                    Some(NodeId(hits[0]))
+                } else {
+                    None
+                }
             })
     }
 
@@ -1067,6 +1075,11 @@ impl GraphWorkspace {
             };
             if arr.len() < CAP {
                 arr.push(serde_json::to_value(&loc).unwrap_or(Value::Null));
+            }
+            // A node synthesised with `properties: Null` has no object to insert into; materialise one
+            // first so the `locations` array is actually persisted rather than silently dropped.
+            if node.properties.is_null() {
+                node.properties = Value::Object(serde_json::Map::new());
             }
             if let Some(obj) = node.properties.as_object_mut() {
                 obj.insert("locations".into(), Value::Array(arr));
@@ -1576,7 +1589,8 @@ pub fn synthesized_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gt_domain::model::{NewNode, ProjectId};
+    use gt_domain::model::{AnnotationChannel, NewNode, ProjectId};
+    use std::collections::HashMap;
 
     /// The short-name index must split on **every** namespace separator, not only PHP's `\`.
     ///
@@ -2069,5 +2083,342 @@ mod tests {
 
         assert_eq!(ws.remaining_diagnostics().len(), 1);
         assert!(ws.remaining_diagnostics().is_empty(), "诊断取出后应清空");
+    }
+
+    // ===== Residual gaps the 19 tests above leave open: `annotate` merge strategies + annotation accessors,
+    // `resolve_controller` (name-agnostic, depth/module aware), `has_ancestor` (transitive, cycle-safe, umbrella
+    // tail), per-file / symbol import resolution, the alias index, `claimed_by` / `has_incoming_edge`,
+    // property & fact storage, `append_location` dedup, `patch_kind` + the trivial node accessors. =====
+
+    fn ann(
+        node: NodeId,
+        channel: &str,
+        kind: &str,
+        confidence: f32,
+        merge: MergeStrategy,
+    ) -> NewAnnotation {
+        NewAnnotation {
+            node_id: node,
+            channel: AnnotationChannel(channel.to_string()),
+            kind: kind.to_string(),
+            subkind: None,
+            confidence,
+            evidence: Value::Null,
+            phase: Phase("Test".to_string()),
+            merge,
+        }
+    }
+
+    #[test]
+    fn annotate_respects_merge_strategies() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("Class", "A", Some("A")));
+
+        // Coexist: the same (node, channel, kind) is kept twice.
+        ws.annotate(ann(n, "FkbMark", "pii", 0.5, MergeStrategy::Coexist));
+        ws.annotate(ann(n, "FkbMark", "pii", 0.9, MergeStrategy::Coexist));
+        assert_eq!(ws.annotation_count(), 2, "Coexist 同键保留两条");
+
+        // MaxByKind: only the highest confidence survives.
+        ws.annotate(ann(n, "Taint", "sink", 0.3, MergeStrategy::MaxByKind));
+        ws.annotate(ann(n, "Taint", "sink", 0.8, MergeStrategy::MaxByKind));
+        ws.annotate(ann(n, "Taint", "sink", 0.4, MergeStrategy::MaxByKind));
+        let taints: Vec<&Annotation> = ws
+            .annotations_of(n)
+            .into_iter()
+            .filter(|a| a.kind == "sink")
+            .collect();
+        assert_eq!(taints.len(), 1, "MaxByKind 只留一条");
+        assert!((taints[0].confidence - 0.8).abs() < 1e-6, "保留较高置信度");
+        assert!(ws.has_annotation(n, "sink"));
+        assert!(!ws.has_annotation(n, "missing"));
+
+        // Replace: re-adding the same key drops the old entry.
+        ws.annotate(ann(n, "FkbMark", "tag", 0.1, MergeStrategy::Replace));
+        ws.annotate(ann(n, "FkbMark", "tag", 0.2, MergeStrategy::Replace));
+        let tags: Vec<&Annotation> = ws
+            .annotations_of(n)
+            .into_iter()
+            .filter(|a| a.kind == "tag")
+            .collect();
+        assert_eq!(tags.len(), 1);
+
+        // The merged in-memory set carries 2 (coexist) + 1 (taint) + 1 (tag) = 4.
+        assert_eq!(ws.annotation_count(), 4);
+        // Annotations reach the delta (every add pushes, even the replaced / lower-confidence ones).
+        let delta = ws.take_delta();
+        assert_eq!(delta.annotations.len(), 5);
+    }
+
+    fn ctrl_node(ws: &mut GraphWorkspace, fqn: &str) -> NodeId {
+        ws.add_node(new_node("Class", fqn.rsplit('\\').next().unwrap(), Some(fqn)))
+    }
+
+    /// Controller resolution is name-agnostic (no `controller` directory hard-coded) and depth / module aware;
+    /// it only assembles an FQN when the language's namespace separator is known.
+    #[test]
+    fn resolve_controller_is_name_agnostic_and_depth_aware() {
+        let mut ws = new_ws();
+        ctrl_node(&mut ws, "app\\admin\\controller\\UserController");
+        ctrl_node(&mut ws, "app\\api\\controller\\OrderController");
+
+        // Short name under the right module + layer depth resolves.
+        assert_eq!(
+            ws.resolve_controller("UserController", &["app".to_string()], "admin", 1, Some('\\')),
+            Some("app\\admin\\controller\\UserController".to_string())
+        );
+        // Already-fully-qualified form is returned directly.
+        assert_eq!(
+            ws.resolve_controller(
+                "app\\api\\controller\\OrderController",
+                &["app".to_string()],
+                "admin",
+                1,
+                Some('\\')
+            ),
+            Some("app\\api\\controller\\OrderController".to_string())
+        );
+        // Short name with no matching module prefix → not found.
+        assert_eq!(
+            ws.resolve_controller("GhostController", &["app".to_string()], "admin", 1, Some('\\')),
+            None
+        );
+        // Wrong module (api lives under `api`, not `admin`) → miss.
+        assert_eq!(
+            ws.resolve_controller("OrderController", &["app".to_string()], "admin", 1, Some('\\')),
+            None
+        );
+        // Without a namespace separator the kernel cannot assemble a name; only an exact FQN works.
+        assert_eq!(
+            ws.resolve_controller("UserController", &["app".to_string()], "admin", 1, None),
+            None
+        );
+        assert_eq!(
+            ws.resolve_controller(
+                "app\\admin\\controller\\UserController",
+                &["app".to_string()],
+                "admin",
+                1,
+                None
+            ),
+            Some("app\\admin\\controller\\UserController".to_string())
+        );
+    }
+
+    #[test]
+    fn has_ancestor_walks_inheritance_transitively_and_survives_cycles() {
+        let mut ws = new_ws();
+        let a = ws.add_node(new_node("Class", "A", Some("app\\A")));
+        let b = ws.add_node(new_node("Class", "B", Some("app\\B")));
+        let c = ws.add_node(new_node("Class", "C", Some("think\\Model")));
+        ws.add_edge(edge(a, b, "Extends"));
+        ws.add_edge(edge(b, c, "Extends"));
+
+        assert!(ws.has_ancestor(a, "app\\B"), "直接基类");
+        assert!(ws.has_ancestor(a, "think\\Model"), "跨层基类");
+        assert!(ws.has_ancestor(a, "Model"), "伞形尾匹配");
+        assert!(!ws.has_ancestor(a, "app\\X"));
+
+        // Implements edges count too.
+        let i = ws.add_node(new_node("Class", "I", Some("app\\I")));
+        ws.add_edge(edge(a, i, "Implements"));
+        assert!(ws.has_ancestor(a, "app\\I"));
+
+        // A cycle must terminate.
+        let x = ws.add_node(new_node("Class", "X", Some("app\\X")));
+        let y = ws.add_node(new_node("Class", "Y", Some("app\\Y")));
+        ws.add_edge(edge(x, y, "Extends"));
+        ws.add_edge(edge(y, x, "Extends"));
+        assert!(!ws.has_ancestor(x, "app\\Z"));
+
+        // An empty base matches nothing.
+        assert!(!ws.has_ancestor(a, ""));
+    }
+
+    #[test]
+    fn resolve_name_in_file_prefers_file_imports_then_global_index() {
+        let mut ws = new_ws();
+        ws.add_node(new_node("Class", "Order", Some("app\\Services\\Order")));
+
+        // A file that imported `order` → the aliased FQN wins over the global short-name index.
+        let mut imports = HashMap::new();
+        imports.insert("order".to_string(), "app\\Aliased\\Order".to_string());
+        ws.record_file_imports(1, "app/Svc.php", imports);
+
+        assert_eq!(
+            ws.resolve_name_in_file(Some("app/Svc.php"), "order"),
+            Some("app\\Aliased\\Order".to_string())
+        );
+        // A file without that import falls back to the global index.
+        assert_eq!(
+            ws.resolve_name_in_file(Some("other.php"), "order"),
+            Some("app\\Services\\Order".to_string())
+        );
+        // No file hint → global index.
+        assert_eq!(
+            ws.resolve_name_in_file(None, "order"),
+            Some("app\\Services\\Order".to_string())
+        );
+        // An unknown short name resolves to nothing.
+        assert_eq!(ws.resolve_name_in_file(Some("app/Svc.php"), "ghost"), None);
+
+        // `resolve_import_alias` reads the `imports` symbol table (e.g. `use think\facade\Queue as QueueThink`).
+        ws.put_symbol(ProjectId(1), "imports", "queuethink", json!({ "fqn": "think\\facade\\Queue" }));
+        assert_eq!(
+            ws.resolve_import_alias("QueueThink"),
+            Some("think\\facade\\Queue".to_string())
+        );
+        assert_eq!(
+            ws.resolve_import_alias("queueTHINK"),
+            Some("think\\facade\\Queue".to_string()),
+            "大小写不敏感"
+        );
+        assert_eq!(ws.resolve_import_alias("Missing"), None);
+    }
+
+    #[test]
+    fn alias_index_resolves_by_qualifier_with_ambiguity_guard() {
+        let mut ws = new_ws();
+        let login = ws.add_node(new_node("Class", "Login", Some("app\\Login")));
+        let logout = ws.add_node(new_node("Class", "Logout", Some("app\\Logout")));
+
+        let entry = |node: NodeId, q: Option<&str>| AliasEntry {
+            project_id: ProjectId(1),
+            namespace: "accessor".to_string(),
+            key: "status_text".to_string(),
+            qualifier: q.map(|s| s.to_string()),
+            node_id: node,
+            confidence: 1.0,
+            evidence: Value::Null,
+        };
+        ws.put_alias(entry(login, Some("app\\Login")));
+        // A single entry: the unqualified lookup degrades to that unique hit.
+        assert_eq!(ws.find_by_alias("accessor", "status_text", None), Some(login));
+        // …and the exact qualifier resolves too.
+        assert_eq!(
+            ws.find_by_alias("accessor", "status_text", Some("app\\Login")),
+            Some(login)
+        );
+
+        // A second entry with a different qualifier: the qualified lookups still resolve to their nodes.
+        ws.put_alias(entry(logout, Some("app\\Logout")));
+        assert_eq!(
+            ws.find_by_alias("accessor", "status_text", Some("app\\Logout")),
+            Some(logout)
+        );
+        // The unqualified lookup now matches two entries; this is ambiguous, so it is explicitly
+        // rejected rather than silently fabricating a choice between the two nodes.
+        assert_eq!(ws.find_by_alias("accessor", "status_text", None), None);
+    }
+
+    #[test]
+    fn property_and_fact_storage_round_trips() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("Class", "A", Some("A")));
+        ws.record_property(n, "table", FactValue::String("eb_user".to_string()));
+        assert_eq!(
+            ws.property_of(n, "table"),
+            Some(FactValue::String("eb_user".to_string()))
+        );
+        assert_eq!(ws.property_of(n, "nope"), None);
+
+        ws.set_fact(SubProjectId::new(1), "excludes", json!(["vendor", "tests"]));
+        assert_eq!(
+            ws.get_fact(SubProjectId::new(1), "excludes"),
+            Some(&json!(["vendor", "tests"]))
+        );
+        assert_eq!(ws.get_fact(SubProjectId::new(2), "excludes"), None);
+        assert_eq!(
+            ws.facts_snapshot(SubProjectId::new(1)).unwrap(),
+            json!({ "excludes": ["vendor", "tests"] })
+        );
+        assert_eq!(ws.facts_snapshot(SubProjectId::new(9)), None);
+    }
+
+    #[test]
+    fn claimed_by_reflects_incoming_edges() {
+        let mut ws = new_ws();
+        let handler =
+            ws.add_node(new_node("Class", "UserController", Some("app\\Ctrl\\User::index")));
+        let caller = ws.add_node(new_node("Class", "X", Some("app\\X")));
+        ws.add_edge(edge(caller, handler, "RouteTo"));
+
+        assert!(ws.has_incoming_edge(handler, "RouteTo"));
+        assert!(!ws.has_incoming_edge(handler, "Calls"));
+        assert!(ws.claimed_by(handler, "RouteTo"), "已有入边即视为被声明");
+        assert!(!ws.claimed_by(handler, "Other"));
+
+        // A node with no edges is not claimed.
+        let orphan = ws.add_node(new_node("Class", "Y", Some("app\\Y")));
+        assert!(!ws.claimed_by(orphan, "RouteTo"));
+    }
+
+    #[test]
+    fn append_location_dedups_and_caps() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("Table", "user", None));
+        // `append_location` writes into `properties.locations`; a node whose properties are still `Null`
+        // (a freshly added syntax node) has no object to insert into, so give it one first — the realistic
+        // state of a synthesised node that already carries some facts.
+        ws.patch_properties(n, json!({ "from": "db_name" }));
+        ws.append_location(n, "a.php", 1, None, None, None);
+        ws.append_location(n, "a.php", 1, None, None, None); // duplicate → ignored
+        ws.append_location(n, "b.php", 2, None, None, None);
+        let locs = ws
+            .node(n)
+            .unwrap()
+            .properties
+            .get("locations")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(locs.len(), 2, "重复坐标不重复添加");
+    }
+
+    /// `append_location` must not silently drop the location when the target node still has `properties:
+    /// Null` (a freshly synthesised syntax node with no facts yet). The `locations` array is still written.
+    #[test]
+    fn append_location_writes_onto_a_null_properties_node() {
+        let mut ws = new_ws();
+        // `new_node` produces `properties: Null` by default.
+        let n = ws.add_node(new_node("Table", "user", None));
+        assert!(ws.node(n).unwrap().properties.is_null(), "前置：节点属性为 Null");
+
+        ws.append_location(n, "a.sql", 1, None, None, None);
+        ws.append_location(n, "b.sql", 2, None, None, None);
+
+        let locs = ws
+            .node(n)
+            .unwrap()
+            .properties
+            .get("locations")
+            .expect("Null 属性的节点也应写入 locations")
+            .as_array()
+            .unwrap();
+        assert_eq!(locs.len(), 2, "两条不同坐标都应追加");
+        assert_eq!(locs[0].get("file").unwrap().as_str(), Some("a.sql"));
+        assert_eq!(locs[1].get("file").unwrap().as_str(), Some("b.sql"));
+    }
+
+    #[test]
+    fn patch_kind_promotes_and_trivial_accessors() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("Class", "M", Some("app\\M")));
+        ws.patch_kind(n, "Middleware");
+        assert_eq!(ws.node(n).unwrap().kind.as_str(), "Middleware");
+        // Same kind again → no extra patch recorded.
+        ws.patch_kind(n, "Middleware");
+        assert_eq!(ws.take_delta().kind_patches.len(), 1);
+
+        // Missing node is a no-op.
+        ws.patch_kind(NodeId(9999), "Middleware");
+
+        // node_ids / edges / node_mut accessors.
+        assert!(ws.node_ids().contains(&n));
+        assert!(ws.edges().is_empty());
+        if let Some(m) = ws.node_mut(n) {
+            m.name = "renamed".to_string();
+        }
+        assert_eq!(ws.node(n).unwrap().name, "renamed");
     }
 }

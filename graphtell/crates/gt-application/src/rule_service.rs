@@ -641,12 +641,14 @@ fn eval(p: &CheckPredicate, node: &Node, facts: &Facts, params: &ParamValues) ->
 mod tests {
     use super::*;
     use gt_domain::model::{
-        AnnotationChannel, EdgeId, EdgeKind, IdentityKey, Language, NumOrParam, Phase,
-        RuleRequirements, Severity, Span, StrOrParam,
+        AnnotationChannel, EdgeId, EdgeKind, GraphDelta, IdentityKey, Language, NewEdge, NewNode,
+        NewProject, NewSubProject, NumOrParam, Phase, RuleRequirements, RuleScope, Severity, Span,
+        StrOrParam,
     };
     use gt_domain::port::RuleProvider;
     use gt_adapter_sqlite::SqliteStore;
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use serde_json::json;
 
@@ -971,5 +973,313 @@ mod tests {
         let opts = cfg.options.as_object().unwrap();
         assert_eq!(opts.get("threshold").and_then(|v| v.as_i64()), Some(9), "传入的 threshold 应覆盖");
         assert_eq!(opts.get("ignore").and_then(|v| v.as_str()), Some("x"), "未传的 ignore 应保留");
+    }
+
+    // A `RuleProvider` that serves an explicit in-test rule set (the existing `StubProvider` serves none).
+    struct TestProvider {
+        rules: Vec<CheckRule>,
+    }
+    impl RuleProvider for TestProvider {
+        fn rules(&self) -> &[CheckRule] {
+            &self.rules
+        }
+    }
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gt_rule_it_{}_{}", std::process::id(), name));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    /// Build a `CheckRule` from the pieces the orchestration tests care about.
+    fn rule(id: &str, kinds: &[&str], languages: &[&str], when: Vec<CheckPredicate>) -> CheckRule {
+        CheckRule {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: None,
+            severity: Severity::Error,
+            category: "contract".to_string(),
+            enabled: true,
+            applies_to: RuleScope {
+                kinds: kinds.iter().map(|s| s.to_string()).collect(),
+                name_contains: None,
+                limit: NumOrParam::Num(20_000),
+                languages: languages.iter().map(|s| s.to_string()).collect(),
+                frameworks: vec![],
+            },
+            params: vec![],
+            when,
+            message: "{name} is a {kind} with no handler".to_string(),
+            remediation: None,
+        }
+    }
+
+    fn new_node(
+        pid: ProjectId,
+        id: i64,
+        kind: &str,
+        name: &str,
+        identity: Option<IdentityKey>,
+    ) -> NewNode {
+        NewNode {
+            id: Some(NodeId::new(id)),
+            project_id: pid,
+            sub_project_id: None,
+            kind: NodeKind::new(kind),
+            name: name.to_string(),
+            fqn: None,
+            identity,
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase::new("Synthesize"),
+            confidence: 1.0,
+            properties: Value::Null,
+        }
+    }
+
+    /// Seed a project whose graph has two `HttpContract`s — node 2 is `HandledBy` a Method, node 1 is not — plus a php
+    /// sub-project so env / framework gates open.
+    fn seed_store() -> (Arc<dyn Persistence>, ProjectId) {
+        let store: Arc<dyn Persistence> =
+            Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let p = store
+            .create_project(NewProject {
+                name: "p".into(),
+                root_path: tmpdir("seed"),
+                description: None,
+                config: None,
+            })
+            .unwrap();
+        store
+            .replace_sub_projects(p.id, vec![NewSubProject {
+                project_id: p.id,
+                name: "be".into(),
+                root_path: p.root_path.clone(),
+                language: Language::new("php"),
+                role: "backend".into(),
+                detected_by: "composer.json".into(),
+                frameworks: vec!["thinkphp".into()],
+                facts: Value::Null,
+            }])
+            .unwrap();
+        let pid = p.id;
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(new_node(
+            pid,
+            1,
+            "HttpContract",
+            "POST /api/order",
+            Some(IdentityKey::contract("POST", "/api/order")),
+        ));
+        d.nodes.push(new_node(
+            pid,
+            2,
+            "HttpContract",
+            "GET /api/user",
+            Some(IdentityKey::contract("GET", "/api/user")),
+        ));
+        d.nodes.push(new_node(pid, 3, "Method", "handleOrder", None));
+        // node 2 is handled; node 1 is not -> "no incoming HandledBy" should flag only node 1
+        d.edges.push(NewEdge::new(
+            pid,
+            EdgeKind::new("HandledBy"),
+            NodeId::new(3),
+            NodeId::new(2),
+        ));
+        store.apply(&d).unwrap();
+        (store, pid)
+    }
+
+    /// The end-to-end path: `check(persist=true)` runs the rule, writes `rule:*` diagnostics, and `violations` /
+    /// `summary` read them back. This also exercises `ProjectEnv::load` (languages / edge kinds) and `build_violation`.
+    #[test]
+    fn check_finds_contract_without_handler_and_persists() {
+        let (store, pid) = seed_store();
+        let svc = RuleService::new(
+            store,
+            Arc::new(TestProvider {
+                rules: vec![rule(
+                    "contract-no-handler",
+                    &["HttpContract"],
+                    &["php"],
+                    vec![CheckPredicate::NoIncoming("HandledBy".into())],
+                )],
+            }),
+        );
+        let rep = svc.check(pid, None, true).unwrap();
+        assert_eq!(rep.rules_total, 1);
+        assert_eq!(rep.rules_run, 1, "规则应被选中并执行");
+        assert_eq!(rep.violations.len(), 1, "只有未处理的契约应被标红");
+        assert_eq!(rep.violations[0].node_id, NodeId::new(1));
+        assert_eq!(rep.by_rule.get("contract-no-handler").copied(), Some(1));
+        assert_eq!(rep.by_severity.get("error").copied(), Some(1));
+
+        // persisted violations read back through the read-only accessor
+        let vs = svc.violations(pid, 100, None).unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(vs[0].rule_id, "contract-no-handler");
+
+        // and rolled up by severity for the menu badge
+        let s = svc.summary(pid, None).unwrap();
+        assert_eq!(s.error, 1);
+    }
+
+    /// `only` selects by id (ignoring the enabled switch) and a bogus id runs nothing.
+    #[test]
+    fn check_only_runs_named_rules() {
+        let (store, pid) = seed_store();
+        let svc = RuleService::new(
+            store,
+            Arc::new(TestProvider {
+                rules: vec![
+                    rule(
+                        "contract-no-handler",
+                        &["HttpContract"],
+                        &["php"],
+                        vec![CheckPredicate::NoIncoming("HandledBy".into())],
+                    ),
+                    rule("always-on", &["Method"], &["php"], vec![]),
+                ],
+            }),
+        );
+        let rep = svc
+            .check(pid, Some(&["contract-no-handler".to_string()]), false)
+            .unwrap();
+        assert_eq!(rep.rules_run, 1);
+        assert_eq!(rep.violations.len(), 1);
+
+        let rep2 = svc
+            .check(pid, Some(&["nope".to_string()]), false)
+            .unwrap();
+        assert_eq!(rep2.rules_run, 0);
+        assert!(rep2.violations.is_empty());
+    }
+
+    /// A language-mismatched rule is `not_applicable`; a rule whose candidate set is empty is `silent` (so the UI can
+    /// warn "no such nodes exist") rather than silently reporting zero.
+    #[test]
+    fn check_reports_not_applicable_and_silent() {
+        let (store, pid) = seed_store();
+        let svc = RuleService::new(
+            Arc::clone(&store),
+            Arc::new(TestProvider {
+                rules: vec![rule(
+                    "java-only",
+                    &["Class"],
+                    &["java"],
+                    vec![CheckPredicate::KindIn(vec!["Class".into()])],
+                )],
+            }),
+        );
+        let rep = svc.check(pid, None, false).unwrap();
+        assert_eq!(rep.rules_run, 0, "语言不匹配应跳过");
+        assert!(
+            !rep.rules_not_applicable.is_empty(),
+            "应记录 not_applicable 原因"
+        );
+
+        let svc2 = RuleService::new(
+            Arc::clone(&store),
+            Arc::new(TestProvider {
+                rules: vec![rule("ghost", &["GhostKind"], &["php"], vec![])],
+            }),
+        );
+        let rep2 = svc2.check(pid, None, false).unwrap();
+        assert_eq!(rep2.rules_run, 1, "需求满足仍应被选入 runnable");
+        assert_eq!(rep2.violations.len(), 0);
+        assert!(
+            !rep2.rules_silent.is_empty(),
+            "空候选集应标记 silent"
+        );
+    }
+
+    #[test]
+    fn rules_returns_provider_rules() {
+        let store = Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let svc = RuleService::new(
+            store,
+            Arc::new(TestProvider {
+                rules: vec![rule("a", &[], &[], vec![])],
+            }),
+        );
+        assert_eq!(svc.rules().len(), 1);
+        assert_eq!(svc.rules()[0].id, "a");
+    }
+
+    #[test]
+    fn scope_kinds_falls_back_to_any_when_empty() {
+        assert_eq!(
+            scope_kinds(&rule("x", &[], &["php"], vec![])),
+            vec!["".to_string()]
+        );
+        assert_eq!(
+            scope_kinds(&rule("y", &["Class"], &["php"], vec![])),
+            vec!["Class".to_string()]
+        );
+    }
+
+    #[test]
+    fn project_env_describe_formats_stack() {
+        let env = ProjectEnv {
+            languages: vec!["php".into()],
+            frameworks: vec![],
+            edge_kinds: vec![],
+            annotation_kinds: vec![],
+        };
+        assert_eq!(env.describe(), "php");
+        let env2 = ProjectEnv {
+            languages: vec!["php".into()],
+            frameworks: vec!["thinkphp".into()],
+            edge_kinds: vec![],
+            annotation_kinds: vec![],
+        };
+        assert_eq!(env2.describe(), "php（thinkphp）");
+        let env3 = ProjectEnv {
+            languages: vec![],
+            frameworks: vec![],
+            edge_kinds: vec![],
+            annotation_kinds: vec![],
+        };
+        assert_eq!(env3.describe(), "unknown");
+    }
+
+    #[test]
+    fn reset_and_batch_rule_config() {
+        let store = Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let svc = RuleService::new(store, Arc::new(TestProvider { rules: vec![] }));
+        let pid = ProjectId::new(1);
+        svc.set_rule_config(ProjectRuleConfig {
+            project_id: pid,
+            rule_id: "r1".into(),
+            enabled: Some(true),
+            options: json!({}),
+        })
+        .unwrap();
+        svc.reset_rule_config(pid, "r1").unwrap();
+        assert!(
+            svc.rule_configs(pid).unwrap().get("r1").is_none(),
+            "reset 后配置应消失"
+        );
+
+        svc.batch_rule_config(
+            pid,
+            vec![
+                RuleConfigPatch {
+                    rule_id: "a".into(),
+                    enabled: Some(false),
+                    options: None,
+                },
+                RuleConfigPatch {
+                    rule_id: "b".into(),
+                    enabled: Some(true),
+                    options: Some(json!({ "k": 1 })),
+                },
+            ],
+        )
+        .unwrap();
+        let cfgs = svc.rule_configs(pid).unwrap();
+        assert!(cfgs.contains_key("a"));
+        assert!(cfgs.contains_key("b"));
     }
 }

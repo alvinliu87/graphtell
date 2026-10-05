@@ -661,4 +661,319 @@ mod tests {
         assert!(d.by_id("x").is_none());
         assert!(d.view_for_kind("Any").is_none());
     }
+
+    // ===== Third pass: everything above covers how a perspective **declares** itself and how it is resolved,
+    // but the fifteen response structs — the actual API contract the UI consumes — had no test at all. Most of
+    // their interesting fields were added later and carry `#[serde(default)]`, so the thing worth pinning is
+    // that a response **without** them still loads (and what the UI then sees). =====
+
+    fn round_trip<T: Serialize + for<'de> Deserialize<'de>>(v: &T) -> T {
+        serde_json::from_value(serde_json::to_value(v).expect("serialize")).expect("deserialize")
+    }
+
+    fn location() -> SourceLocation {
+        SourceLocation {
+            file: "app/dao/OrderDao.php".into(),
+            line: 42,
+            symbol: Some("getList".into()),
+            note: Some("the call site of Db::name('store_order')".into()),
+            snippet: Some("Db::name('store_order')->select();".into()),
+        }
+    }
+
+    /// `SourceLocation` / `NodeView`: the UI relies on `snippet` being absent rather than `null` when there is
+    /// none, while `symbol` / `note` (which predate it) do serialize as `null` — pinned so the two shapes are not
+    /// "harmonised" by accident and break the frontend.
+    #[test]
+    fn source_location_and_node_view_round_trip() {
+        let loc = location();
+        assert_eq!(round_trip(&loc).snippet.as_deref(), Some("Db::name('store_order')->select();"));
+        let bare = SourceLocation { file: "a.php".into(), line: 1, symbol: None, note: None, snippet: None };
+        let v = serde_json::to_value(&bare).unwrap();
+        assert!(v.get("snippet").is_none(), "snippet 为 None 时不写出");
+        assert_eq!(v.get("symbol"), Some(&Value::Null), "symbol 为 None 时写成 null（历史形状）");
+        // A response missing the later `snippet` field still loads.
+        let old: SourceLocation = serde_json::from_value(json!({ "file": "a.php", "line": 3 })).unwrap();
+        assert!(old.snippet.is_none() && old.symbol.is_none());
+
+        let node = NodeView {
+            id: NodeId(1),
+            kind: "Table".into(),
+            category: Some("Table".into()),
+            name: "store_order".into(),
+            fqn: None,
+            ring: 0,
+            sub_project_id: Some(SubProjectId(2)),
+            has_own_view: true,
+            own_view: Some("table".into()),
+            side: Some("backend".into()),
+            locations: vec![loc],
+            annotations: vec!["pii".into()],
+            columns: Some(vec!["id".into(), "order_id".into()]),
+            metrics: json!({ "in_edges": 12 }),
+        };
+        let back: NodeView = round_trip(&node);
+        assert_eq!(back.id, NodeId(1));
+        assert_eq!(back.own_view.as_deref(), Some("table"), "二级过滤器靠它切换视角");
+        assert_eq!(back.category.as_deref(), Some("Table"));
+        assert_eq!(back.columns.as_ref().map(Vec::len), Some(2), "列是节点的属性，不占画布");
+        assert_eq!(back.locations.len(), 1);
+        assert_eq!(back.metrics, json!({ "in_edges": 12 }));
+
+        // Fields added later are optional (old payloads keep working) and `side` is omitted when unknown.
+        let old: NodeView = serde_json::from_value(json!({
+            "id": 1, "kind": "Table", "name": "t", "ring": 0,
+            "has_own_view": false, "locations": [], "annotations": [], "metrics": {}
+        }))
+        .unwrap();
+        assert!(old.category.is_none() && old.own_view.is_none() && old.columns.is_none());
+        assert!(serde_json::to_value(&old).unwrap().get("side").is_none());
+    }
+
+    /// `EdgeView`: the folded link carries what it folded away (`via` hops + both ends' call sites) and the
+    /// suppressed sibling access kinds — "looks directly connected" must stay verifiable.
+    #[test]
+    fn edge_view_round_trip_keeps_the_folded_chain() {
+        let e = EdgeView {
+            id: 10,
+            kind: "WritesDb".into(),
+            from: NodeId(1),
+            to: NodeId(2),
+            resolved: false,
+            confidence: 0.8,
+            hops: Some(2),
+            via: vec![ViaNode {
+                id: NodeId(3),
+                kind: "Method".into(),
+                name: "pay".into(),
+                call_site: Some(location()),
+            }],
+            to_call_site: Some(location()),
+            indirect: true,
+            also_kinds: vec!["ReadsDb".into()],
+            node_locations: vec![NodeLocationEntry {
+                id: NodeId(3),
+                synthetic: false,
+                locations: vec![location()],
+            }],
+        };
+        let back: EdgeView = round_trip(&e);
+        assert_eq!(back.id, 10);
+        assert!(!back.resolved);
+        assert_eq!(back.hops, Some(2));
+        assert_eq!(back.via.len(), 1, "被折叠的中间跳必须留下（via N hops 的根据）");
+        assert_eq!(back.via[0].call_site.as_ref().map(|l| l.line), Some(42));
+        assert!(back.to_call_site.is_some());
+        assert!(back.indirect, "传播得到的边要能被 UI 画虚线");
+        assert_eq!(back.also_kinds, vec!["ReadsDb".to_string()], "同一处的读写不能只报一种");
+        assert_eq!(back.node_locations.len(), 1, "沿线 location 内联，前端不必 N+1 请求");
+
+        let old: EdgeView = serde_json::from_value(json!({
+            "id": 1, "kind": "Calls", "from": 1, "to": 2, "resolved": true, "confidence": 1.0, "hops": null
+        }))
+        .unwrap();
+        assert!(old.via.is_empty() && old.to_call_site.is_none() && old.node_locations.is_empty());
+        assert!(!old.indirect && old.also_kinds.is_empty());
+    }
+
+    /// The five response envelopes (`ObjectView` / `AggregateView` / `Cluster` / `MatrixView` / `Candidate`) plus
+    /// the honesty structures (`HiddenInfo` / `UnresolvedInfo` / `OrphanAccess` / `EdgeEvidence` /
+    /// `NodeLocations`). `orphans` / `indirect` / `edge` are later additions, hence the `#[serde(default)]`.
+    #[test]
+    fn view_envelopes_round_trip() {
+        let node = NodeView {
+            id: NodeId(1),
+            kind: "Table".into(),
+            category: None,
+            name: "t".into(),
+            fqn: None,
+            ring: 0,
+            sub_project_id: None,
+            has_own_view: false,
+            own_view: None,
+            side: None,
+            locations: vec![],
+            annotations: vec![],
+            columns: None,
+            metrics: Value::Null,
+        };
+        let obj = ObjectView {
+            project_id: ProjectId(1),
+            perspective: "table".into(),
+            layout: LayoutMode::Radial,
+            center: node.clone(),
+            rings: vec![vec![node.clone()]],
+            edges: vec![],
+            hidden: HiddenInfo { total: 30, shown: 12, by_kind: BTreeMap::from([("Method".to_string(), 18)]), note: "capped".into() },
+            orphans: vec![OrphanAccess {
+                id: NodeId(9),
+                kind: "Method".into(),
+                name: "legacyImport".into(),
+                edge_kind: "WritesDb".into(),
+                location: Some(location()),
+                edge: None,
+            }],
+            unresolved: vec![UnresolvedInfo { code: "no-target".into(), message: "m".into(), location: None }],
+            conclusions: json!({ "references": 12 }),
+        };
+        let back: ObjectView = round_trip(&obj);
+        assert_eq!(back.perspective, "table");
+        assert_eq!(back.layout, LayoutMode::Radial);
+        assert_eq!(back.rings.len(), 1);
+        assert_eq!(back.hidden.total, 30, "诚实门：实际邻居数与画出数必须都在响应里");
+        assert_eq!(back.hidden.shown, 12);
+        assert_eq!(back.hidden.by_kind.get("Method"), Some(&18));
+        assert_eq!(back.orphans[0].edge_kind, "WritesDb");
+        assert!(back.orphans[0].edge.is_none());
+        assert_eq!(back.unresolved[0].code, "no-target");
+
+        // Old payloads without `orphans` still load (it was added after the canvas existed).
+        let old: ObjectView = serde_json::from_value(json!({
+            "project_id": 1, "perspective": "table", "layout": "radial",
+            "center": serde_json::to_value(&node).unwrap(), "rings": [], "edges": [],
+            "hidden": { "total": 0, "shown": 0, "by_kind": {}, "note": "" },
+            "unresolved": [], "conclusions": {}
+        }))
+        .unwrap();
+        assert!(old.orphans.is_empty());
+
+        let agg = AggregateView {
+            project_id: ProjectId(1),
+            perspective: "domain".into(),
+            layout: LayoutMode::Compound,
+            clusters: vec![Cluster { key: "order".into(), label: "Order".into(), count: 7, members: vec![node] }],
+            matrix: Some(MatrixView {
+                rows: vec!["a".into()],
+                cols: vec!["b".into()],
+                cells: vec![vec![3]],
+                row_totals: vec![3],
+                col_totals: vec![3],
+            }),
+            hidden: HiddenInfo { total: 0, shown: 0, by_kind: BTreeMap::new(), note: String::new() },
+            unresolved: vec![],
+            conclusions: Value::Null,
+            notice: Some("graph has no Domain node yet".into()),
+        };
+        let back: AggregateView = round_trip(&agg);
+        assert_eq!(back.clusters[0].count, 7, "只给计数，不全画");
+        assert_eq!(back.matrix.as_ref().map(|m| m.cells[0][0]), Some(3));
+        assert_eq!(back.notice.as_deref(), Some("graph has no Domain node yet"));
+
+        let cand = Candidate { id: NodeId(5), name: "t".into(), badge: Some("12 refs".into()), sub_project_id: None };
+        assert_eq!(round_trip(&cand).badge.as_deref(), Some("12 refs"));
+
+        let ev = EdgeEvidence {
+            edge: EdgeView {
+                id: 1,
+                kind: "Calls".into(),
+                from: NodeId(1),
+                to: NodeId(2),
+                resolved: false,
+                confidence: 0.5,
+                hops: None,
+                via: vec![],
+                to_call_site: None,
+                indirect: false,
+                also_kinds: vec![],
+                node_locations: vec![],
+            },
+            reason: Some("no direct edge, lifted through the call chain".into()),
+            locations: vec![location()],
+            via: vec!["Method::pay".into()],
+        };
+        let back: EdgeEvidence = round_trip(&ev);
+        assert_eq!(back.reason.as_deref(), Some("no direct edge, lifted through the call chain"));
+        assert_eq!(back.via, vec!["Method::pay".to_string()]);
+
+        let nl = NodeLocations {
+            id: NodeId(1),
+            kind: "Table".into(),
+            name: "t".into(),
+            synthetic: true,
+            locations: vec![location(), location()],
+            reference_count: 11,
+        };
+        let back: NodeLocations = round_trip(&nl);
+        assert!(back.synthetic, "合成节点要在 UI 上提示『多处共同出现』");
+        assert_eq!(back.locations.len(), 2, "多个定义位置从不合并成一个");
+        assert_eq!(back.reference_count, 11);
+    }
+
+    /// A perspective declaration may be sparse (`#[serde(default)]` fills everything in), and an unset
+    /// `side` / `side_any` is **omitted** from the wire so a re-serialised config file stays clean.
+    #[test]
+    fn perspective_spec_tolerates_a_sparse_declaration() {
+        let empty: PerspectiveSpec = serde_json::from_value(json!({})).expect("空声明必须能加载");
+        assert_eq!(empty.mode, ViewMode::Object);
+        assert_eq!(empty.layout, LayoutMode::Radial);
+        assert_eq!(empty.depth, 2);
+        assert!(empty.id.is_empty() && empty.label.is_empty());
+        assert!(empty.node_kind.is_none() && empty.side.is_none() && empty.side_any.is_none());
+        assert!(empty.group_by.is_none() && empty.row_from.is_none() && empty.col_from.is_none());
+        assert!(empty.description.is_none() && empty.collapsed_kinds.is_empty());
+
+        let full = PerspectiveSpec {
+            id: "route".into(),
+            label: "Routes".into(),
+            mode: ViewMode::Object,
+            node_kind: Some("HttpContract".into()),
+            side: None,
+            side_any: Some(vec!["backend".into()]),
+            layout: LayoutMode::Layered,
+            group_by: Some(GroupBy::NodeKind),
+            row_from: None,
+            col_from: None,
+            depth: 3,
+            description: Some("endpoint link view".into()),
+            collapsed_kinds: vec!["Method".into()],
+        };
+        let back = round_trip(&full);
+        assert_eq!(back.side_any, Some(vec!["backend".to_string()]));
+        assert_eq!(back.layout, LayoutMode::Layered);
+        assert_eq!(back.depth, 3);
+        assert_eq!(back.collapsed_kinds, vec!["Method".to_string()]);
+        let v = serde_json::to_value(&full).unwrap();
+        assert!(v.get("side").is_none(), "未声明的 side 必须省略（skip_serializing_if）");
+        assert!(v.get("side_any").is_some());
+    }
+
+    /// Whatever else happens, a perspective never silently becomes "no filter" / "everything matches" by accident:
+    /// an **empty** `side_any` list is no filter, a malformed `sides` value falls through to the scalar `side`,
+    /// and a non-string `side` simply does not match.
+    #[test]
+    fn side_matching_degrades_honestly_on_malformed_properties() {
+        let empty_any = spec(None, Some(&[]));
+        assert!(empty_any.accepted_sides().is_empty(), "空 side_any = 不做侧过滤");
+        assert!(empty_any.matches_sides(&json!({ "side": "anything" })));
+
+        // `sides` not a string array -> ignored, the scalar `side` is consulted instead.
+        assert!(spec(Some("backend"), None).matches_sides(&json!({ "side": "backend", "sides": "backend" })));
+        assert!(!spec(Some("frontend"), None).matches_sides(&json!({ "side": "backend", "sides": "backend" })));
+        assert!(spec(Some("backend"), None).matches_sides(&json!({ "side": "backend", "sides": [] })));
+
+        // A non-string `side` never matches (no panic, no guess).
+        assert!(!spec(Some("backend"), None).matches_sides(&json!({ "side": 1 })));
+        assert!(!spec(None, Some(&["backend"])).matches_sides(&json!({ "sides": [1, 2] })));
+    }
+
+    /// Registry resolution edges: a `node_views` entry pointing at a perspective that does not exist resolves to
+    /// `None` rather than panicking (a half-written config must be visible as "no switch", not as a crash), and
+    /// with several same-kind perspectives a missing `side` falls back to the single mapping.
+    #[test]
+    fn view_registry_resolution_survives_a_dangling_mapping() {
+        let mut reg = ViewRegistry::default();
+        reg.perspectives.push(p_spec("cache", "Cache", Some("backend")));
+        reg.node_views.insert("Cache".into(), "cache".into());
+        reg.node_views.insert("Table".into(), "missing-perspective".into());
+        assert!(reg.view_for_kind("Table").is_none(), "映射到不存在的视角 = 不切换");
+        assert!(reg.view_for_kind_and_side("Table", Some("backend")).is_none());
+        assert_eq!(reg.view_for_kind_and_side("Cache", Some("backend")).map(|p| p.id.as_str()), Some("cache"));
+
+        // Duplicate ids: the first declaration wins (lookup is a `find`).
+        let mut dup = ViewRegistry::default();
+        dup.perspectives.push(p_spec("first", "Cache", None));
+        dup.perspectives.push(p_spec("second", "Cache", None));
+        assert_eq!(dup.by_id("first").map(|p| p.id.as_str()), Some("first"));
+        assert!(dup.by_id("second").is_some());
+    }
 }

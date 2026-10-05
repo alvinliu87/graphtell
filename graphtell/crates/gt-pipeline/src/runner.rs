@@ -798,4 +798,33 @@ mod tests {
 
         assert!(res.is_err(), "持久化失败必须中断流水线");
     }
+
+    /// A new build must start from a wiped graph, so `run` issues a one-off `reset_project` delta right after
+    /// Ingest and *before* the first phase flush. It is a **separate** `apply` (never folded into the Ingest
+    /// flush), otherwise the reset would wipe the diagnostics Ingest just wrote.
+    #[test]
+    fn run_issues_a_reset_project_delta_before_the_first_phase() {
+        let infra = StubInfra::new(FakeSink::default());
+        run(&project(true), &infra, &FakeObserver::default()).unwrap();
+
+        let applied = infra.graph.applied();
+        assert!(applied.len() >= 2, "至少有 Ingest flush 与 reset 两次 apply");
+        // Exactly one delta carries the reset flag.
+        let resets: Vec<usize> = applied
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.5)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(resets.len(), 1, "只应发出一次 reset_project");
+        // …and it sits right after the Ingest flush, ahead of every phase flush.
+        assert_eq!(resets[0], 1, "reset 紧跟 Ingest flush，早于任何阶段 flush");
+        // The Ingest flush itself (and all later phase flushes) must not carry the flag.
+        assert!(!applied[0].5, "Ingest flush 不得带 reset");
+        for (i, d) in applied.iter().enumerate() {
+            if i != resets[0] {
+                assert!(!d.5, "除重置增量外不得带 reset");
+            }
+        }
+    }
 }

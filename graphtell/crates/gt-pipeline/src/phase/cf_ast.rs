@@ -669,10 +669,11 @@ mod tests {
 
     use gt_domain::error::Result as DomainResult;
     use gt_domain::model::{
-        CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, ImportFact, InheritanceFact,
-        Language, NamespacePolicy, NodeKind, Project, ProjectId, ProjectStatus, SourceFile, FileId,
-        Span, SyntaxFacts,
+        CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
+        InheritanceFact, Language, NamespacePolicy, NodeKind, Project, ProjectId, ProjectStatus,
+        SourceFile, FileId, Span, SyntaxFacts,
     };
+    use gt_domain::model::syntax::HeaderAssignFact;
     use gt_domain::port::{FileSystem, LanguageParser, ParserRegistry, TechStackRegistry};
 
     use crate::context::PipelineContext;
@@ -1036,5 +1037,276 @@ mod tests {
         let ctx = run_on(facts);
         assert_eq!(ctx.ws.configs.len(), 1, "config entry must be pushed to ws.configs");
         assert_eq!(ctx.ws.configs[0].key_path, "listen.order");
+    }
+
+    // ---- `run` degradation: no parser for the file's language -----------------
+
+    struct NoParserRegistry;
+    impl ParserRegistry for NoParserRegistry {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            None
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![]
+        }
+    }
+
+    /// `run` with no parser registered: it must still build the structural File node (degrade rather than
+    /// drop the file) and raise both the human diagnostic and the machine-readable `unsupported_languages`
+    /// signal, so the UI can banner the gap.
+    fn run_on_no_parser() -> PipelineContext {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId(1),
+            name: "t".into(),
+            root_path: "/t".into(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        ctx.lang_policy_default = php_policy();
+        ctx.files.push(SourceFile {
+            id: FileId(1),
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            path: "app/Order.php".into(),
+            language: Language::new("php"),
+            size_bytes: 10,
+            content_hash: "x".into(),
+        });
+        let registry = NoParserRegistry;
+        let fs = MemFs { source: "<?php".into() };
+        let tech = NoTechStack;
+        super::run(&mut ctx, &registry, &fs, &tech);
+        ctx
+    }
+
+    #[test]
+    fn run_still_builds_file_node_and_signals_unsupported_without_a_parser() {
+        let ctx = run_on_no_parser();
+        // The structural File node is still materialised even though no semantic extraction happened.
+        assert!(
+            ctx.ws.find_by_name("app/Order.php").is_some(),
+            "File node must still be built when no parser exists"
+        );
+        // `unsupported_languages` diagnostics + the machine-readable symbol are both emitted.
+        assert!(
+            ctx.ws.diagnostics.iter().any(|d| d.code == "NoParserForLanguage"),
+            "should diagnose the missing parser"
+        );
+        assert!(
+            ctx.ws.get_symbol("unsupported_languages", "php").is_some(),
+            "should record unsupported_languages symbol"
+        );
+    }
+
+    // ---- build_file: property / method-param / namespace-contains / import-alias / field-type / header / call-site
+
+    #[test]
+    fn build_file_property_records_default_value() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::PROPERTY.to_string()),
+                name: "id".into(),
+                fqn: "app\\Order::id".into(),
+                parent_fqn: Some("app\\Order".into()),
+                span: Span::default(),
+                extra: serde_json::json!({ "default": { "t": "String", "v": "x" } }),
+            },
+        ];
+        let ctx = run_on(facts);
+        let order = ctx.ws.find_by_name("app\\Order").expect("class");
+        let expected = serde_json::from_value::<FactValue>(serde_json::json!({ "t": "String", "v": "x" })).unwrap();
+        assert_eq!(
+            ctx.ws.property_of(order, "id"),
+            Some(expected),
+            "property default must be recorded on the owning class"
+        );
+    }
+
+    #[test]
+    fn build_file_method_param_type_inferred_and_builtin_skipped() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::METHOD.to_string()),
+                name: "save".into(),
+                fqn: "app\\Order::save".into(),
+                parent_fqn: Some("app\\Order".into()),
+                span: Span::default(),
+                extra: serde_json::json!({
+                    "parameters": [
+                        { "name": "svc", "type": "LoginService" },
+                        { "name": "n", "type": "string" }
+                    ]
+                }),
+            },
+        ];
+        let ctx = run_on(facts);
+        // A non-builtin parameter type is resolved against the namespace (P7 later uses this to walk the
+        // `$services->appAuth()` chain).
+        assert_eq!(
+            ctx.ws.param_type("app\\Order::save", "svc"),
+            Some("app\\LoginService"),
+            "non-builtin param type resolved against the namespace"
+        );
+        // Builtin `string` is skipped entirely so it never pollutes type inference.
+        assert_eq!(
+            ctx.ws.param_type("app\\Order::save", "n"),
+            None,
+            "builtin param type must not be recorded"
+        );
+    }
+
+    #[test]
+    fn build_file_namespace_contains_class() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::NAMESPACE.to_string()),
+                name: "app".into(),
+                fqn: "app".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+        ];
+        let ctx = run_on(facts);
+        let ns = ctx.ws.find_by_name("app").expect("namespace");
+        let order = ctx.ws.find_by_name("app\\Order").expect("class");
+        assert!(
+            ctx.ws.edges().iter().any(|e| e.from_id == ns
+                && e.to_id == order
+                && e.kind.as_str() == EdgeKind::CONTAINS),
+            "namespace must CONTAINS the class"
+        );
+    }
+
+    #[test]
+    fn build_file_import_alias_used_as_short_name() {
+        let mut facts = SyntaxFacts::default();
+        facts.imports = vec![ImportFact {
+            alias: Some("X".into()),
+            name: "app\\dao\\OrderDao".into(),
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        // When an alias is given, the short name is the alias (still lower-cased), not the last segment.
+        assert!(
+            ctx.ws.get_symbol("imports", "x").is_some(),
+            "import alias must be used as the (lower-cased) short name"
+        );
+        assert!(
+            ctx.ws.get_symbol("imports", "orderdao").is_none(),
+            "the last segment must not be used when an alias is present"
+        );
+    }
+
+    #[test]
+    fn build_file_field_type_sets_prop_type() {
+        let mut facts = SyntaxFacts::default();
+        facts.field_types = vec![FieldTypeFact {
+            class_fqn: "app\\Order".into(),
+            field: "mapper".into(),
+            type_name: "app\\Dao".into(),
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        // Field-declaration types feed `prop_types`, letting P7 resolve `field.method()` instance calls.
+        assert_eq!(
+            ctx.ws.prop_type("app\\Order", "mapper"),
+            Some("app\\Dao"),
+            "field type must be resolved into a prop_type"
+        );
+    }
+
+    #[test]
+    fn build_file_header_assignment_node_created() {
+        let mut facts = SyntaxFacts::default();
+        facts.header_assignments = vec![HeaderAssignFact {
+            key: "access-control-allow-origin".into(),
+            rhs_snippet: "app()->request->header('origin')".into(),
+            file: String::new(),
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        // The parse fact is promoted into a matchable node; the kernel only materialises it, the rule
+        // (language-specific) decides whether it is a reflected-CORS problem.
+        let nodes = ctx.ws.nodes_of_kind(NodeKind::HEADER_ASSIGNMENT);
+        assert_eq!(nodes.len(), 1, "one HeaderAssignment node");
+        let props = ctx.ws.node(nodes[0]).unwrap().properties.clone();
+        assert_eq!(
+            props.get("key").and_then(|v| v.as_str()),
+            Some("access-control-allow-origin")
+        );
+        assert_eq!(
+            props.get("rhs").and_then(|v| v.as_str()),
+            Some("app()->request->header('origin')")
+        );
+    }
+
+    #[test]
+    fn build_file_call_site_records_snippet_and_in_loop() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![Declaration {
+            kind: NodeKind(NodeKind::CLASS.to_string()),
+            name: "Order".into(),
+            fqn: "app\\Order".into(),
+            parent_fqn: None,
+            span: Span::default(),
+            extra: serde_json::Value::Null,
+        }];
+        facts.call_sites = vec![CallSiteFact {
+            owner_fqn: "app\\Order".into(),
+            owner_class: None,
+            callee_text: "Db::name".into(),
+            receiver: None,
+            method: None,
+            args: vec![],
+            span: Span::default(),
+            snippet: Some("Db::name('x')".into()),
+            db_table: None,
+            in_loop: true,
+            entity: None,
+        }];
+        let ctx = run_on(facts);
+        let nodes = ctx.ws.nodes_of_kind(NodeKind::CALL_SITE);
+        assert_eq!(nodes.len(), 1, "one call site node");
+        let props = ctx.ws.node(nodes[0]).unwrap().properties.clone();
+        assert_eq!(
+            props.get("snippet").and_then(|v| v.as_str()),
+            Some("Db::name('x')")
+        );
+        assert_eq!(props.get("in_loop").and_then(|v| v.as_bool()), Some(true));
     }
 }

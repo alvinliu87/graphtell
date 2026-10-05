@@ -197,4 +197,88 @@ mod tests {
         assert!(!is_external_call(&ctx, "Foo::x", None));
         assert!(!is_external_call(&ctx, "Foo::x", Some("y")));
     }
+
+    /// Build a `CallRecord` with explicit file/line so the produced annotation's evidence can be checked.
+    fn mk_call(
+        id: i64,
+        callee: &str,
+        method: Option<&str>,
+        in_loop: bool,
+        file: &str,
+        line: u32,
+    ) -> CallRecord {
+        CallRecord {
+            node: NodeId::new(id),
+            owner: NodeId::new(0),
+            owner_fqn: "C".into(),
+            owner_class: None,
+            callee: callee.into(),
+            receiver: None,
+            method: method.map(|m| m.to_string()),
+            args: vec![],
+            db_table: None,
+            in_loop,
+            entity: None,
+            span: Span { start_line: line, end_line: line, start_byte: 0, end_byte: 0 },
+            file: file.into(),
+            sub: None,
+            language: Language::new("php"),
+        }
+    }
+
+    /// The produced annotation must carry the exact channel / kind / subkind / confidence and, crucially,
+    /// an `evidence` map that preserves the originating `file`, `line`, and `callee`. The cross-language
+    /// integration test only checks `has_annotation` / `annotation_count`, so a bug that dropped or swapped
+    /// any of these fields would slip past it.
+    #[test]
+    fn annotation_records_file_line_callee_and_metadata() {
+        let mut ctx = ctx_with(vec!["curl_exec"]);
+        ctx.ws.calls.push(mk_call(1, "curl_exec", Some("curl_exec"), true, "app/loop.php", 42));
+        run(&mut ctx);
+
+        let anns = ctx.ws.annotations_of(NodeId::new(1));
+        assert_eq!(anns.len(), 1, "one in-loop external call => one annotation");
+        let a = anns[0];
+        assert_eq!(a.channel.0, "External");
+        assert_eq!(a.kind, "ext-call-in-loop");
+        assert_eq!(a.subkind.as_deref(), Some("NetworkInLoop"));
+        assert!((a.confidence - 0.85).abs() < f32::EPSILON);
+        assert_eq!(a.evidence.get("file").and_then(|v| v.as_str()), Some("app/loop.php"));
+        assert_eq!(a.evidence.get("line").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(a.evidence.get("callee").and_then(|v| v.as_str()), Some("curl_exec"));
+    }
+
+    /// An empty `external_calls` list must short-circuit `run` to produce zero annotations even when an
+    /// in-loop call is present — pins the "FKB list empty => nothing" contract end-to-end (the empty-list
+    /// branch was only unit-tested on `is_external_call` before).
+    #[test]
+    fn empty_fkb_produces_no_annotations() {
+        let mut ctx = ctx_with(vec![]);
+        ctx.ws.calls.push(mk_call(1, "curl_exec", Some("curl_exec"), true, "src", 1));
+        run(&mut ctx);
+        assert_eq!(ctx.ws.annotation_count(), 0);
+        assert!(!ctx.ws.has_annotation(NodeId::new(1), EXT_IN_LOOP));
+    }
+
+    /// `run` annotates with `MergeStrategy::Coexist`, so two in-loop external calls from the *same* node
+    /// both survive (no per-(node,kind) dedupe). A regression that switched the merge strategy to `Replace`
+    /// would silently collapse them to one — this pins the Coexist contract at the `run` layer.
+    #[test]
+    fn coexist_merge_keeps_multiple_calls_from_same_node() {
+        let mut ctx = ctx_with(vec!["curl_exec", "fetch"]);
+        // Two distinct in-loop external calls, same owning node.
+        ctx.ws.calls.push(mk_call(1, "curl_exec", Some("curl_exec"), true, "a.php", 10));
+        ctx.ws.calls.push(mk_call(1, "fetch", Some("fetch"), true, "b.php", 20));
+        run(&mut ctx);
+        assert_eq!(ctx.ws.annotations_of(NodeId::new(1)).len(), 2);
+        // And the evidence of each is preserved independently.
+        let mut callees: Vec<&str> = ctx
+            .ws
+            .annotations_of(NodeId::new(1))
+            .iter()
+            .map(|a| a.evidence.get("callee").and_then(|v| v.as_str()).unwrap())
+            .collect();
+        callees.sort_unstable();
+        assert_eq!(callees, vec!["curl_exec", "fetch"]);
+    }
 }

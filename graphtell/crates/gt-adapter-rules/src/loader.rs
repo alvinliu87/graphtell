@@ -99,8 +99,16 @@ impl YamlRuleSet {
         Ok(rules)
     }
 
-    /// Rule ids must be unique and non-empty; the copy must not be empty (otherwise the UI shows a worthless violation).
+    /// Rule ids must be unique and non-empty; the set must contain at least one rule, and each rule's
+    /// `message` (the copy shown to the user) must be non-empty — otherwise the UI surfaces a worthless,
+    /// empty violation. A `$key` referencing an undeclared parameter is also rejected (it silently
+    /// degrades to 0 / "" at evaluation time).
     fn validate(rules: &[CheckRule]) -> Result<()> {
+        if rules.is_empty() {
+            return Err(DomainError::InvalidKnowledge(
+                "a rule file must declare at least one rule".into(),
+            ));
+        }
         for r in rules {
             if r.id.trim().is_empty() {
                 return Err(DomainError::InvalidKnowledge("a rule is missing the id field".into()));
@@ -343,6 +351,62 @@ rules:
         assert_eq!(ids, vec!["from-upper", "from-yaml", "from-yml"], "只应收 yaml/yml（含大小写），排除其他: {ids:?}");
         assert_eq!(set.sources().len(), 3, "只有 3 个文件应被记为来源");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An empty rule set (`rules: []`) is rejected, not loaded as a worthless, empty set — and the same check
+    /// applies through `load_file`.
+    #[test]
+    fn empty_rule_set_is_rejected() {
+        let err = YamlRuleSet::from_str("rules: []\n")
+            .expect_err("an empty rule set must be rejected");
+        assert!(
+            err.to_string().contains("at least one rule"),
+            "actual error: {err}"
+        );
+
+        let root =
+            std::env::temp_dir().join(format!("gtar_rules_empty_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let f = root.join("empty.yaml");
+        std::fs::write(&f, "rules: []\n").unwrap();
+        let err = YamlRuleSet::load_file(&f).expect_err("load_file 应拒绝空规则集");
+        assert!(err.to_string().contains("at least one rule"), "actual error: {err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `from_str` must reject structurally malformed YAML (not just semantically invalid rules) — the parse
+    /// error path (`DomainError::InvalidKnowledge`) is distinct from the `validate` path.
+    #[test]
+    fn from_str_rejects_malformed_yaml() {
+        let err = YamlRuleSet::from_str("rules: [ unclosed")
+            .expect_err("malformed YAML should be rejected");
+        assert!(err.to_string().contains("rules YAML"), "actual error: {err}");
+    }
+
+    /// `load_dir` on a path that exists but is a file (not a directory) hits the `read_dir` error path and
+    /// must return `Err` (infra), not silently yield zero rules.
+    #[test]
+    fn load_dir_on_a_file_path_errors() {
+        let f = std::env::temp_dir().join(format!("gtar_rules_filepath_{}", std::process::id()));
+        std::fs::write(&f, "not a dir").unwrap();
+        let res = YamlRuleSet::load_dir(&f);
+        assert!(res.is_err(), "对文件调用 load_dir 应返回错误而非空集合: {res:?}");
+        let _ = std::fs::remove_file(&f);
+    }
+
+    /// `load_file` runs the same `validate` as `from_str`, but that call site (returning an
+    /// `InvalidKnowledge` error for a structurally-valid-but-invalid rule) needs its own coverage.
+    #[test]
+    fn load_file_rejects_an_invalid_rule() {
+        let root = std::env::temp_dir().join(format!("gtar_rules_file_invalid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bad = root.join("empty_id.yaml");
+        std::fs::write(&bad, "rules:\n  - id: \"\"\n    title: t\n    message: \"m\"\n").unwrap();
+        let err = YamlRuleSet::load_file(&bad).expect_err("load_file 应拒绝空 id 规则");
+        assert!(err.to_string().contains("id"), "actual error: {err}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

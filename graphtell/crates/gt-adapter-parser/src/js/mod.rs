@@ -332,27 +332,60 @@ fn collect_object_entries(node: Node, ctx: &mut Ctx, prefix: String) {
 }
 
 /// Take the base class name of `class X extends Y` (the TS grammar puts `extends` inside `class_heritage`).
-fn superclass_of(class_node: Node, src: &str) -> Option<String> {
+/// Every supertype of a class / interface as `(base name, edge kind)`.
+///
+/// `extends` yields `Extends` and `implements` yields `Implements`. Taking only the **first** clause and
+/// always tagging it `Extends` lost the rest: `class A extends B implements C` dropped `C`, and a class that
+/// only implements (`implements OnModuleInit`, the NestJS norm) was recorded as *extending* it.
+fn supertypes_of(class_node: Node, src: &str) -> Vec<(String, EdgeKind)> {
+    let mut out = Vec::new();
     let mut c = class_node.walk();
     for child in class_node.named_children(&mut c) {
-        if child.kind() == "class_heritage" {
-            let mut h = child.walk();
-            for clause in child.named_children(&mut h) {
-                if clause.kind() == "extends_clause" || clause.kind() == "implements_clause" {
-                    let mut i = clause.walk();
-                    for t in clause.named_children(&mut i) {
-                        if matches!(
-                            t.kind(),
-                            "identifier" | "type_identifier" | "nested_identifier" | "member_expression"
-                        ) {
-                            return Some(text(t, src).to_string());
-                        }
-                    }
-                }
+        if child.kind() != "class_heritage" {
+            continue;
+        }
+        let mut h = child.walk();
+        for clause in child.named_children(&mut h) {
+            let kind = match clause.kind() {
+                "extends_clause" => EdgeKind(EdgeKind::EXTENDS.to_string()),
+                "implements_clause" => EdgeKind(EdgeKind::IMPLEMENTS.to_string()),
+                _ => continue,
+            };
+            let mut i = clause.walk();
+            for t in clause.named_children(&mut i) {
+                push_type_node(t, src, &mut out, &kind);
             }
         }
     }
-    None
+    out
+}
+
+/// Record one type node of an `extends` / `implements` clause.
+///
+/// The types may sit behind a `type_list` (`implements A, B`), and a generic base (`Base<T>`) keeps only its
+/// bare name so generic arguments never leak into the base name.
+fn push_type_node(t: Node, src: &str, out: &mut Vec<(String, EdgeKind)>, kind: &EdgeKind) {
+    match t.kind() {
+        "identifier" | "type_identifier" | "nested_identifier" | "member_expression" => {
+            out.push((text(t, src).to_string(), kind.clone()));
+        }
+        "type_list" => {
+            let mut c = t.walk();
+            for inner in t.named_children(&mut c) {
+                push_type_node(inner, src, out, kind);
+            }
+        }
+        "generic_type" => {
+            let mut c = t.walk();
+            let found = t
+                .named_children(&mut c)
+                .find(|n| matches!(n.kind(), "identifier" | "type_identifier" | "nested_identifier"));
+            if let Some(inner) = found {
+                out.push((text(inner, src).to_string(), kind.clone()));
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Take the text of a field / parameter type annotation (`svc: UserService` -> `UserService`).
@@ -614,11 +647,11 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
         extra: json!({}),
     });
 
-    if let Some(base) = superclass_of(node, ctx.src) {
+    for (base, kind) in supertypes_of(node, ctx.src) {
         ctx.facts.inheritances.push(InheritanceFact {
             child_fqn: cfqn.clone(),
             base_name: base,
-            kind: EdgeKind(EdgeKind::EXTENDS.to_string()),
+            kind,
             span: span_of(node, ctx.src),
         });
     }
@@ -722,7 +755,12 @@ fn collect_class(node: Node, ctx: &mut Ctx) -> String {
 
 /// Import statements: `import axios from 'axios'` / `import { agentGet } from './api'`.
 fn collect_imports(node: Node, ctx: &mut Ctx) {
-    let Some(clause) = node.child_by_field_name("clause") else {
+    // tree-sitter-typescript exposes the clause as a plain **child** (`import_clause`), not under a field
+    // name: `child_by_field_name("clause")` is always `None`, which silently dropped **every** import — and
+    // with it the short-name index that resolves a bare `UserService` / `new UserService()` back to an FQN.
+    let mut outer = node.walk();
+    let found = node.named_children(&mut outer).find(|n| n.kind() == "import_clause");
+    let Some(clause) = found else {
         return;
     };
     let mut c = clause.walk();
@@ -1810,6 +1848,148 @@ mod tests {
 
     /// Two closed sets that guard against fake contracts: an HTTP verb alone is not enough (`$store.get()` /
     /// `cache.get()` are everywhere), and the verb table is lowercase because that is the source form.
+    /// The pluggable-language surface: the kernel must learn JS/TS's notation from the adapter instead of
+    /// assuming PHP's (`\` / `::` / `$this`).
+    #[test]
+    fn parser_declares_the_js_notation_and_layout() {
+        let p = JsFrontendParser::new().unwrap();
+        assert_eq!(p.language(), Language::new(Language::JAVASCRIPT));
+        assert_eq!(p.namespace_separator(), &['.']);
+        assert_eq!(p.member_separator(), ".", "JS 的成员分隔符是 `.`（PHP 是 `::`）");
+        assert!(p.bare_field_receivers(), "`@InjectRepository(User) repo` 用的是裸标识符");
+        assert_eq!(p.manifest_files(), &["package.json"]);
+        assert!(p.extensions().contains(&"vue"), "`.vue` 单文件组件也应作为扩展名");
+        assert!(p.exclude_dirs().contains(&"node_modules"));
+    }
+
+    /// Imports feed the short-name index (`resolve_name_in_file`), so `new UserService()` / a bare type
+    /// reference can be restored to an FQN. All three spellings must land in `facts.imports`.
+    #[test]
+    fn imports_are_collected_in_every_spelling() {
+        let facts = parse_src(
+            "import axios from 'axios';\nimport { UserService as Svc, Other } from './svc';\nimport * as ns from './ns';\n",
+        );
+        let got: Vec<(Option<&str>, &str)> = facts
+            .imports
+            .iter()
+            .map(|i| (i.alias.as_deref(), i.name.as_str()))
+            .collect();
+        assert!(got.contains(&(None, "axios")), "默认导入: {got:?}");
+        assert!(got.contains(&(Some("Svc"), "UserService")), "命名导入带别名: {got:?}");
+        assert!(got.contains(&(None, "Other")), "命名导入: {got:?}");
+        assert!(got.contains(&(None, "ns")), "命名空间导入: {got:?}");
+    }
+
+    /// Supertypes become inheritance facts — the only clue to "which base class carries the shared `MapsTo` /
+    /// behaviour", and what `parents_of` walks later.
+    ///
+    /// Regressions pinned here: `extends` and `implements` must **both** be recorded, each under its own
+    /// kind (only the first clause used to be taken, always as `Extends`), and an `implements` list with
+    /// several entries must yield one fact per entry.
+    #[test]
+    fn supertypes_are_recorded_with_their_own_kind() {
+        let inh = |src: &str| -> Vec<(String, String, String)> {
+            let facts = parse_src(src);
+            facts
+                .inheritances
+                .iter()
+                .map(|i| {
+                    (
+                        i.child_fqn.clone(),
+                        i.base_name.clone(),
+                        i.kind.as_str().to_string(),
+                    )
+                })
+                .collect()
+        };
+        let want = |v: &[(&str, &str, &str)]| -> Vec<(String, String, String)> {
+            v.iter()
+                .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+                .collect()
+        };
+
+        // extends + implements: both, each under its own kind.
+        assert_eq!(
+            inh("export class CatService extends BaseService implements OnModuleInit {\n  run() {}\n}\n"),
+            want(&[
+                ("CatService", "BaseService", "Extends"),
+                ("CatService", "OnModuleInit", "Implements"),
+            ])
+        );
+
+        // Only implements (the NestJS norm) must not be recorded as "extends".
+        assert_eq!(
+            inh("export class CatService implements OnModuleInit, OnDestroy {\n  run() {}\n}\n"),
+            want(&[
+                ("CatService", "OnModuleInit", "Implements"),
+                ("CatService", "OnDestroy", "Implements"),
+            ])
+        );
+
+        // A generic base keeps only its bare name.
+        assert_eq!(
+            inh("export class Repo extends BaseRepo<UserEntity> {\n}\n"),
+            want(&[("Repo", "BaseRepo", "Extends")]),
+        );
+    }
+
+    /// The declared type of an injected constructor property: a TypeORM `Repository<T>` is unwrapped to the
+    /// **entity** `T`, so P7 can resolve `repo.save(x)` to the entity's table through its `MapsTo` edge —
+    /// while an unrelated generic keeps its declared text.
+    #[test]
+    fn injected_field_types_unwrap_the_repository_entity() {
+        let facts = parse_src(
+            "export class UserController {\n  constructor(private readonly repo: Repository<UserEntity>, private readonly svc: UserService, private readonly p: Promise<User>) {}\n}\n",
+        );
+        let types: Vec<(&str, &str)> = facts
+            .field_types
+            .iter()
+            .map(|f| (f.field.as_str(), f.type_name.as_str()))
+            .collect();
+        assert!(
+            types.contains(&("repo", "UserEntity")),
+            "`Repository<T>` 应解包为实体 T: {types:?}"
+        );
+        assert!(types.contains(&("svc", "UserService")), "普通类型原样保留: {types:?}");
+        assert!(
+            types.contains(&("p", "Promise<User>")),
+            "非 Repository 的泛型保留声明文本: {types:?}"
+        );
+        assert!(
+            facts.field_types.iter().all(|f| f.class_fqn == "UserController"),
+            "字段类型应挂在注入它的类上: {:?}",
+            facts.field_types
+        );
+        // The same entity rides on the `@Inject` call site.
+        assert!(
+            facts
+                .call_sites
+                .iter()
+                .any(|c| c.callee_text == "@Inject" && c.entity.as_deref() == Some("UserEntity")),
+            "@Inject 调用点也应携带实体: {:?}",
+            facts.call_sites
+        );
+    }
+
+    /// A call site carries the source line it sits on (`snippet`) and a **1-based** span: the view shows the
+    /// snippet as the call site and jumps by the span, so an off-by-one line would point at the wrong code.
+    #[test]
+    fn call_sites_carry_snippet_and_one_based_span() {
+        let facts =
+            parse_src("export class Svc {\n  constructor(private readonly svc: UserService) {}\n}\n");
+        let inject = facts
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text == "@Inject")
+            .expect("expected an @Inject call site");
+        assert_eq!(inject.span.start_line, 2, "span 行号应 1-based: {:?}", inject.span);
+        assert!(
+            inject.snippet.as_deref().unwrap_or("").contains("UserService"),
+            "snippet 应是该行源码: {:?}",
+            inject.snippet
+        );
+    }
+
     #[test]
     fn http_verb_and_client_receiver_are_closed_sets() {
         for v in ["get", "post", "put", "delete", "patch", "head", "options"] {

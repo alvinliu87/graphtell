@@ -296,4 +296,121 @@ mod tests {
             "`idx_annotations_project` 不应由 MIGRATIONS 创建（旧库缺列会让整库打不开）"
         );
     }
+
+    /// Every `CREATE INDEX` declared in `MIGRATIONS` must actually materialise. A silent index removal is an
+    /// O(N^2) regression (see `idx_edges_proj_to` below) that no existing assertion would catch.
+    #[test]
+    fn every_expected_index_is_created() {
+        let conn = apply_all();
+        for idx in [
+            "idx_sub_projects_project",
+            "idx_files_project",
+            "idx_files_sub",
+            "idx_nodes_project",
+            "idx_nodes_kind",
+            "idx_nodes_fqn",
+            "idx_nodes_identity",
+            "idx_nodes_file",
+            "idx_edges_from",
+            "idx_edges_to",
+            "idx_edges_project",
+            "idx_edges_proj_to",
+            "idx_edges_proj_from",
+            "idx_annotations_node",
+            "idx_annotations_kind",
+            "idx_alias_lookup",
+            "idx_symbols",
+            "idx_diag_project",
+        ] {
+            assert!(exists(&conn, "index", idx), "缺少索引 `{idx}`（性能/正确性回归）");
+        }
+    }
+
+    /// The `UNIQUE` dedup keys are what keep a re-run build from duplicating rows. They must reject an exact
+    /// repeat, while a different key in the same table is still allowed.
+    #[test]
+    fn unique_constraints_reject_duplicates() {
+        let conn = apply_all();
+        // This test is about the UNIQUE dedup keys, not the foreign-key cascade — turn FK off so inserts
+        // referencing throw-away ids (no real node rows) don't trip the FK check.
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+
+        conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (1, 'Calls', 10, 20)",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (1, 'Calls', 10, 20)",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "edges 唯一键 (project_id,kind,from_id,to_id) 应拒绝重复: {dup:?}"
+        );
+        // a different key tuple is allowed
+        conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (1, 'Calls', 10, 21)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO aliases (project_id, namespace, key, node_id) VALUES (1, 'ns', 'k', 5)",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO aliases (project_id, namespace, key, node_id) VALUES (1, 'ns', 'k', 6)",
+            [],
+        );
+        assert!(dup.is_err(), "aliases 唯一键应拒绝重复: {dup:?}");
+
+        conn.execute(
+            "INSERT INTO symbol_tables (project_id, table_name, key, value) VALUES (1, 'schema', 'users', 'x')",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO symbol_tables (project_id, table_name, key, value) VALUES (1, 'schema', 'users', 'y')",
+            [],
+        );
+        assert!(dup.is_err(), "symbol_tables 唯一键应拒绝重复: {dup:?}");
+    }
+
+    /// The `REFERENCES nodes ON DELETE CASCADE` declaration only matters if it actually fires: an edge to a
+    /// non-existent node must be rejected, and deleting a node must take its edges with it — otherwise the
+    /// "36k edges / 0 nodes" dirty-data state (a concurrent build once produced it) is invisible.
+    #[test]
+    fn node_deletion_cascades_to_edges() {
+        let conn = apply_all();
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, project_id, kind, name) VALUES (100, 1, 'Class', 'C')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (1, 'Calls', 100, 100)",
+            [],
+        )
+        .unwrap();
+
+        // FK enforcement: an edge to a node that does not exist must be rejected.
+        let orphan = conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (1, 'Calls', 999, 999)",
+            [],
+        );
+        assert!(
+            orphan.is_err(),
+            "外键开启时指向不存在节点的边应被拒绝: {orphan:?}"
+        );
+
+        // Cascade: deleting the node removes its edges.
+        conn.execute("DELETE FROM nodes WHERE id = 100", []).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE to_id = 100", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "删除节点应级联删除其边");
+    }
 }

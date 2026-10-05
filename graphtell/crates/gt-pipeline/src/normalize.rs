@@ -523,6 +523,33 @@ mod tests {
         assert_eq!(class_to_topic("app\\job\\OrderJobs"), "order_jobs");
     }
 
+    /// `apply_normalize` still has two unexercised `NormalizeStep` arms: `Upper` and `ShortName`. `Upper` is
+    /// the case-insensitive route fold; `ShortName` collapses a fully-qualified name to its last (dot-split)
+    /// segment — distinct from `StripNamespace`, which refuses to split on `.` (so it would not merge a Java
+    /// package). Both must run through `apply_normalize` itself, not just the standalone helper.
+    #[test]
+    fn apply_normalize_covers_upper_and_short_name() {
+        // `Upper` is the last-resort case-insensitive fold.
+        assert_eq!(apply_normalize("api/v1", &[NormalizeStep::Upper]), "API/V1");
+        // Declared order wins: `Upper` following `Lower` overrides it.
+        assert_eq!(
+            apply_normalize("Ab", &[NormalizeStep::Lower, NormalizeStep::Upper]),
+            "AB"
+        );
+
+        // `ShortName` splits on `.` — a Java / Python FQN collapses to its leaf, which is what merges a
+        // restored FQN with the short name used at registration time.
+        assert_eq!(
+            apply_normalize("app.tasks.send_email", &[NormalizeStep::ShortName]),
+            "send_email"
+        );
+        // Combined with `Lower` to show the leaf is normalised too.
+        assert_eq!(
+            apply_normalize("app.tasks.SendOrder", &[NormalizeStep::ShortName, NormalizeStep::Lower]),
+            "sendorder"
+        );
+    }
+
     /// `apply_transform` has a **fixed** order (not the declaration order of the YAML): namespace, snake,
     /// snake-plural, class-to-topic, lower, upper.
     #[test]

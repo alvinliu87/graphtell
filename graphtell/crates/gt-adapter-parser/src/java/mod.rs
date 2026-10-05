@@ -233,7 +233,10 @@ fn collect_supertypes(node: Node, src: &[u8], fqn: &str, out: &mut SyntaxFacts) 
     for child in node.named_children(&mut cursor) {
         match child.kind() {
             "superclass" => {
-                if let Some(base) = type_name_of(child, src) {
+                // The `superclass` node's text is the whole clause (`extends Base`), so the base type is
+                // its first type child — taking `text(node)` yielded `base_name: "extends Base"`, which
+                // never matches an FQN downstream (`resolve_impl` compares `base == type_fqn` exactly).
+                if let Some(base) = superclass_type_name(child, src) {
                     out.inheritances.push(InheritanceFact {
                         child_fqn: fqn.to_string(),
                         base_name: base.clone(),
@@ -243,7 +246,10 @@ fn collect_supertypes(node: Node, src: &[u8], fqn: &str, out: &mut SyntaxFacts) 
                     push_generic_entity(&base, &entity, fqn, child, src, out);
                 }
             }
-            "interfaces" | "extends_interfaces" => {
+            // `super_interfaces` is what tree-sitter-java emits for a **class**'s `implements` clause
+            // (`extends_interfaces` is the interface one); without it a class's implements list was
+            // silently dropped and Java implementation relations never reached the graph.
+            "interfaces" | "extends_interfaces" | "super_interfaces" => {
                 let mut c2 = child.walk();
                 for t in child.named_children(&mut c2) {
                     let bases: Vec<String> = if t.kind() == "type_list" {
@@ -281,6 +287,17 @@ fn type_name_of(node: Node, src: &[u8]) -> Option<String> {
             .and_then(|c| text(c, src));
     }
     text(node, src)
+}
+
+/// The base type of a `superclass` node (`extends Base` / `extends Repo<User, Long>`).
+///
+/// The clause keyword belongs to the node itself, so the type is the **first type child**, not the node's
+/// text: `type_name_of` then reduces `generic_type` to its bare name, so generic arguments stay out of the
+/// base name just like they do on the `extends_interfaces` path.
+fn superclass_type_name(node: Node, src: &[u8]) -> Option<String> {
+    let mut c = node.walk();
+    let found = node.named_children(&mut c).find_map(|n| type_name_of(n, src));
+    found
 }
 
 /// Resolve a **bare type name** from the source back into an FQN.
@@ -893,5 +910,270 @@ class Svc {
             Some("OrderPlacedEvent"),
             "`publishEvent(new X())` 应推出事件类型 X"
         );
+    }
+
+    // ===== Below: the rest of the adapter, which had no coverage at all =====
+
+    /// The pluggable-language surface: the kernel must learn Java's notation from the adapter instead of
+    /// assuming PHP's (`\` / `::` / `$this`).
+    #[test]
+    fn parser_declares_the_java_notation_and_layout() {
+        let p = JavaParser::new().unwrap();
+        assert_eq!(p.language(), Language::new(Language::JAVA));
+        assert_eq!(p.extensions(), &["java"]);
+        assert_eq!(p.namespace_separator(), &['.'], "Java 的命名空间分隔符是 `.`");
+        assert_eq!(p.member_separator(), ".", "Java 的成员分隔符是 `.`（PHP 是 `::`）");
+        assert!(p.bare_field_receivers(), "`@Autowired Repo repo` 用的是裸标识符");
+        assert!(p.manifest_files().contains(&"pom.xml"));
+        assert!(p.exclude_dirs().contains(&"target"));
+    }
+
+    /// Declarations: every type kind maps to its node kind, an inner type is `Outer.Inner`, and members are
+    /// `Class.member` — the FQNs that every later phase looks nodes up by.
+    #[test]
+    fn declarations_carry_kinds_and_qualified_fqns() {
+        let src = r#"package com.demo;
+
+class Outer {
+    static class Inner {}
+    void run() {}
+    Outer() {}
+}
+
+interface Iface {}
+enum Color { RED }
+record Point(int x) {}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Demo.java", src).unwrap();
+        let kinds: Vec<(&str, &str)> = facts
+            .declarations
+            .iter()
+            .map(|d| (d.fqn.as_str(), d.kind.as_str()))
+            .collect();
+
+        assert!(kinds.contains(&("com.demo.Outer", "Class")), "{kinds:?}");
+        assert!(kinds.contains(&("com.demo.Outer.Inner", "Class")), "内部类 FQN: {kinds:?}");
+        assert!(kinds.contains(&("com.demo.Outer.run", "Method")), "方法 FQN 应是 类.方法: {kinds:?}");
+        assert!(kinds.contains(&("com.demo.Outer.Outer", "Method")), "构造器也按成员登记: {kinds:?}");
+        assert!(kinds.contains(&("com.demo.Iface", "Interface")), "{kinds:?}");
+        assert!(kinds.contains(&("com.demo.Color", "Enum")), "{kinds:?}");
+        assert!(kinds.contains(&("com.demo.Point", "Class")), "record 归为 Class: {kinds:?}");
+    }
+
+    /// A Java annotation is a **declarative framework call**: it must become a call site with its literal
+    /// arguments, or FKB could never match `@GetMapping("/users")` the same way it matches a PHP route call.
+    #[test]
+    fn annotations_become_call_sites_with_literal_args() {
+        let src = r#"package com.demo;
+
+@RequestMapping("/api")
+class Ctrl {
+    @GetMapping("/users")
+    void list() {}
+
+    @PostMapping(value = "/orders", produces = "json")
+    void create() {}
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Ctrl.java", src).unwrap();
+        let get = |m: &str| facts.call_sites.iter().find(|c| c.method.as_deref() == Some(m));
+
+        let rm = get("RequestMapping").expect("类级注解应成为调用点");
+        assert_eq!(rm.callee_text, "RequestMapping");
+        assert_eq!(arg_strings(&rm.args), vec![Some("/api".to_string())]);
+        assert_eq!(rm.owner_fqn, "com.demo.Ctrl", "类级注解落在类上");
+        assert_eq!(rm.owner_class.as_deref(), Some("com.demo.Ctrl"));
+
+        let gm = get("GetMapping").expect("方法级注解应成为调用点");
+        assert_eq!(arg_strings(&gm.args), vec![Some("/users".to_string())]);
+        assert_eq!(gm.owner_fqn, "com.demo.Ctrl.list", "方法级注解落在方法 FQN 上");
+        assert_eq!(
+            gm.owner_class.as_deref(),
+            Some("com.demo.Ctrl"),
+            "owner_class 仍显式记录所属类（内核按 `.` 切分时不会切错）"
+        );
+
+        // Literals hidden inside `element_value_pair` must still be found (recursive descent).
+        let pm = get("PostMapping").expect("PostMapping 注解");
+        assert_eq!(
+            arg_strings(&pm.args),
+            vec![Some("/orders".to_string()), Some("json".to_string())]
+        );
+    }
+
+    /// `@EventListener` derives the event type from the method's **first parameter**, so a subscriber merges
+    /// onto the same `Event` node as `publishEvent(new X())`. A method with no parameter yields no type.
+    #[test]
+    fn event_listener_derives_the_event_type_from_the_first_parameter() {
+        let src = r#"package com.demo;
+
+class Listener {
+    @EventListener
+    void on(OrderPlacedEvent e) {}
+
+    @EventListener
+    void onNothing() {}
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Listener.java", src).unwrap();
+        let seen: Vec<(&str, Option<&str>)> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.method.as_deref() == Some("EventListener"))
+            .map(|c| (c.owner_fqn.as_str(), c.entity.as_deref()))
+            .collect();
+
+        assert!(
+            seen.contains(&("com.demo.Listener.on", Some("OrderPlacedEvent"))),
+            "应取第一个参数类型: {seen:?}"
+        );
+        assert!(
+            seen.contains(&("com.demo.Listener.onNothing", None)),
+            "无参数的方法不应臆造事件类型: {seen:?}"
+        );
+    }
+
+    /// Field declarations feed Spring's `@Autowired` injection: the declared type must be resolved back into
+    /// an FQN, because P7 looks `MapsTo` up by the receiver's FQN and a short name finds nothing.
+    #[test]
+    fn field_declarations_record_resolved_field_types() {
+        let src = r#"package com.demo;
+
+import com.other.UserRepository;
+
+class Svc {
+    private UserRepository repo;
+    private OrderMapper a, b;
+    private List<Order> orders;
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Svc.java", src).unwrap();
+        let f = |field: &str| facts.field_types.iter().find(|t| t.field == field);
+
+        assert_eq!(
+            f("repo").map(|t| t.type_name.as_str()),
+            Some("com.other.UserRepository"),
+            "导入能精确还原 FQN 时应优先于同包猜测: {:?}",
+            facts.field_types
+        );
+        assert_eq!(f("a").map(|t| t.type_name.as_str()), Some("com.demo.OrderMapper"), "同包补全");
+        assert_eq!(f("b").map(|t| t.type_name.as_str()), Some("com.demo.OrderMapper"), "同一声明的多个变量都要登记");
+        assert_eq!(
+            f("orders").map(|t| t.type_name.as_str()),
+            Some("com.demo.List"),
+            "泛型外壳 `<...>` 应剥除"
+        );
+        assert_eq!(
+            facts.field_types.iter().filter(|t| t.class_fqn == "com.demo.Svc").count(),
+            4,
+            "字段归属于声明它的类: {:?}",
+            facts.field_types
+        );
+    }
+
+    /// `extends` / `implements` become inheritance facts, and a generic base (`JpaRepository<User, Long>`)
+    /// keeps only its bare name so generic arguments never leak into the base name.
+    ///
+    /// Regressions pinned here: the base name of a class `extends` must be the bare type (`Base`, not the
+    /// whole `extends Base` clause), and a **class**'s `implements` list must be captured at all
+    /// (tree-sitter-java emits it as `super_interfaces`, which used to be unmatched).
+    #[test]
+    fn supertypes_record_extends_and_implements() {
+        let src = r#"package com.demo;
+
+class A extends Base implements Iface, Other {
+}
+
+class R extends JpaRepository<User, Long> {
+}
+
+interface I extends Marker {
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("A.java", src).unwrap();
+        let ext: Vec<&str> = facts
+            .inheritances
+            .iter()
+            .filter(|i| i.kind.as_str() == EdgeKind::EXTENDS)
+            .map(|i| i.base_name.as_str())
+            .collect();
+        let imp: Vec<&str> = facts
+            .inheritances
+            .iter()
+            .filter(|i| i.kind.as_str() == EdgeKind::IMPLEMENTS)
+            .map(|i| i.base_name.as_str())
+            .collect();
+
+        assert_eq!(ext, vec!["Base", "JpaRepository"], "泛型基类只取裸名: {ext:?}");
+        assert_eq!(imp, vec!["Iface", "Other", "Marker"], "implements 列表每个都要记: {imp:?}");
+        assert!(
+            facts.inheritances.iter().all(|i| matches!(
+                i.child_fqn.as_str(),
+                "com.demo.A" | "com.demo.R" | "com.demo.I"
+            )),
+            "继承事实应挂在子类型 FQN 上: {:?}",
+            facts.inheritances
+        );
+
+        // The DAO generic entity is captured through the class `extends` path too.
+        let generic: Vec<(&str, Option<&str>)> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.callee_text.starts_with("generic."))
+            .map(|c| (c.callee_text.as_str(), c.entity.as_deref()))
+            .collect();
+        assert!(
+            generic.contains(&("generic.JpaRepository", Some("com.demo.User"))),
+            "类 extends 泛型基类也应推出实体: {generic:?}"
+        );
+    }
+
+    /// A call site records the receiver / method split and the enclosing **member** as `owner_fqn`, so a DB
+    /// write is attributed to `Class.method` rather than merely to the class.
+    #[test]
+    fn call_sites_carry_receiver_method_and_owner() {
+        let src = r#"package com.demo;
+
+class Svc {
+    void run() {
+        mapper.insert(user);
+        helper();
+    }
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Svc.java", src).unwrap();
+
+        let ins = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("insert"))
+            .expect("应捕获 insert 调用");
+        assert_eq!(ins.receiver.as_deref(), Some("mapper"));
+        assert_eq!(ins.callee_text, "mapper.insert", "接收者 + 方法构成 callee 文本");
+        assert_eq!(ins.owner_fqn, "com.demo.Svc.run", "调用点归属到方法 FQN");
+        assert_eq!(ins.owner_class.as_deref(), Some("com.demo.Svc"));
+
+        // A bare call has no receiver: the callee is just the method name.
+        let bare = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("helper"))
+            .expect("应捕获 helper 调用");
+        assert_eq!(bare.receiver, None);
+        assert_eq!(bare.callee_text, "helper");
+    }
+
+    /// Spans are **1-based**: a 0-based line would misreport every evidence location downstream.
+    #[test]
+    fn spans_are_one_based_and_cover_the_node() {
+        let src = "package com.demo;\n\nclass Svc {\n    void run() {\n        mapper.insert();\n    }\n}\n";
+        let facts = JavaParser::new().unwrap().parse("Svc.java", src).unwrap();
+        let ins = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("insert"))
+            .expect("应捕获 insert 调用");
+        assert_eq!(ins.span.start_line, 5, "应是 1-based 的第 5 行: {:?}", ins.span);
+        assert!(ins.span.end_byte > ins.span.start_byte, "span 应覆盖节点范围");
     }
 }

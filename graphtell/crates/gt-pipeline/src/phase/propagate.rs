@@ -756,5 +756,167 @@ mod tests {
             "seed_source 应为最小根因 id"
         );
     }
+
+    // ------------------------------------------------------- only `Calls` edges form the chain
+
+    /// The reverse caller index is built from `Calls` edges only: a pre-existing **semantic** edge
+    /// (here `MapsTo`) pointing at the seed's source must not turn its holder into a caller.
+    #[test]
+    fn non_call_edges_do_not_form_the_propagation_chain() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        // `mid` is linked to `leaf` by a semantic edge, not by a call.
+        ctx.ws.add_edge(NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind(EdgeKind::MAPS_TO.to_string()),
+            from_id: mid,
+            to_id: leaf,
+            phase: Phase("Synthesize".into()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        });
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.85);
+
+        super::run(&mut ctx);
+
+        assert!(
+            !has_edge(&ctx, mid, queue, EdgeKind::PUBLISHES_TO),
+            "只有 Calls 边构成调用链，语义边不能让 mid 成为 caller"
+        );
+    }
+
+    // ------------------------------------------------------- seeds are consumed (re-run safety)
+
+    /// `run` **takes** the seeds (`std::mem::take`), so a second run must not duplicate propagation.
+    /// Without this, re-running the phase (or any later replay) would pile up duplicate semantic edges.
+    #[test]
+    fn run_consumes_seeds_so_a_second_run_adds_nothing() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls(&mut ctx, mid, leaf);
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.85);
+
+        super::run(&mut ctx);
+        let after_first = ctx
+            .ws
+            .edges()
+            .iter()
+            .filter(|e| e.kind.as_str() == EdgeKind::PUBLISHES_TO)
+            .count();
+
+        super::run(&mut ctx);
+        let after_second = ctx
+            .ws
+            .edges()
+            .iter()
+            .filter(|e| e.kind.as_str() == EdgeKind::PUBLISHES_TO)
+            .count();
+
+        assert_eq!(after_first, 1, "首次运行应产生一条传播边");
+        assert_eq!(after_second, after_first, "seed 已被取走，二次运行不应重复传播");
+        assert!(ctx.propagation_seeds.is_empty(), "seed 应被消费而非保留");
+    }
+
+    // ------------------------------------------------------- the chain stops at a non-action node
+
+    /// A non-action node sitting **in the middle** of the chain (`top → Class → leaf`) must stop the
+    /// walk: `top` is reachable only *through* the class, so it must not inherit the semantic edge.
+    /// The existing test only covers a class as a *direct* caller, which is filtered at output time;
+    /// this one pins the traversal-side guard (`if is_site { stack.push(..) }`).
+    #[test]
+    fn a_non_action_node_in_the_middle_breaks_the_chain() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let cls = add_node(&mut ctx, "Class", "app\\Wrapper");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        // top → cls → leaf
+        calls(&mut ctx, cls, leaf);
+        calls(&mut ctx, top, cls);
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.85);
+
+        super::run(&mut ctx);
+
+        assert!(
+            !has_edge(&ctx, top, queue, EdgeKind::PUBLISHES_TO),
+            "非 action 节点截断调用链，top 不应获得传播边"
+        );
+        assert!(
+            !has_edge(&ctx, cls, queue, EdgeKind::PUBLISHES_TO),
+            "Class 自身也不应挂上语义边"
+        );
+    }
+
+    /// Control for the one above: a `Function` in the same middle position **is** an action site, so the
+    /// chain must continue past it — the guard must not degenerate into "stop at anything".
+    #[test]
+    fn a_function_in_the_middle_continues_the_chain() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let func = add_node(&mut ctx, "Function", "app\\helper");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        // top → func → leaf
+        calls(&mut ctx, func, leaf);
+        calls(&mut ctx, top, func);
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.85);
+
+        super::run(&mut ctx);
+
+        assert!(
+            has_edge(&ctx, func, queue, EdgeKind::PUBLISHES_TO),
+            "Function 是 action 节点，应获得传播边"
+        );
+        assert!(
+            has_edge(&ctx, top, queue, EdgeKind::PUBLISHES_TO),
+            "Function 不截断链，应继续上溯到 top"
+        );
+    }
+
+    // ------------------------------------------------------- collapsed-edge confidence is deterministic
+
+    /// Several seeds of **differing** confidence collapsing onto the same `(from, to, kind)` produce one
+    /// edge whose confidence is deterministic: sources are iterated in ascending id order and `edge_meta`
+    /// uses `or_insert`, so the lowest-id source supplies it — never a hash-order-dependent value.
+    #[test]
+    fn collapsed_edge_confidence_is_deterministic_across_seeds() {
+        let mut ctx = test_ctx();
+        let leaf_a = add_method(&mut ctx, "app\\A::run"); // added first -> smaller node id
+        let leaf_b = add_method(&mut ctx, "app\\B::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls(&mut ctx, top, leaf_a);
+        calls(&mut ctx, top, leaf_b);
+        seed(&mut ctx, leaf_a, queue, "PublishesTo", 0.9);
+        seed(&mut ctx, leaf_b, queue, "PublishesTo", 0.4);
+
+        super::run(&mut ctx);
+
+        let edges: Vec<_> = ctx
+            .ws
+            .edges()
+            .iter()
+            .filter(|e| {
+                e.from_id == top && e.to_id == queue && e.kind.as_str() == EdgeKind::PUBLISHES_TO
+            })
+            .collect();
+        assert_eq!(edges.len(), 1, "不同置信度的 seed 仍应合并为一条边");
+        // `calls` helper gives each Calls edge 0.7; the lowest-id source (`leaf_a`, 0.9) supplies the seed.
+        let expected = 0.9f32 * 0.7f32;
+        assert!(
+            (edges[0].confidence - expected).abs() < 1e-3,
+            "置信度应确定地取自最小 id 的 seed，期望 {expected}，实际 {}",
+            edges[0].confidence
+        );
+    }
 }
 

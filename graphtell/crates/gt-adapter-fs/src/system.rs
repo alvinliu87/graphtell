@@ -60,6 +60,21 @@ pub fn normalize(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gt-fs-system-{}-{}-{}",
+            std::process::id(),
+            name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// Edge cases not covered by the integration test's `normalize_resolves_dot_and_dotdot`
     /// (which pins `a/./b/../c`, `a/b/../../c` and the `pop()`-fails fallback `../a`).
     #[test]
@@ -74,5 +89,75 @@ mod tests {
         // Already-normalized input and the empty path are unchanged.
         assert_eq!(normalize(Path::new("a/b/c")), Path::new("a/b/c"));
         assert_eq!(normalize(Path::new("")), Path::new(""));
+    }
+
+    /// Repeated separators collapse and `.` is dropped wherever it appears (leading / trailing positions,
+    /// which the cases above and the integration test do not reach).
+    #[test]
+    fn normalize_collapses_separators_and_dot_components() {
+        assert_eq!(normalize(Path::new("a//b")), Path::new("a/b"));
+        assert_eq!(normalize(Path::new("./a")), Path::new("a"));
+        assert_eq!(normalize(Path::new("a/.")), Path::new("a"));
+        assert_eq!(normalize(Path::new("a/b/../..")), Path::new(""));
+    }
+
+    // ---- the adapter itself: `StdFileSystem` had no unit coverage at all ----
+
+    /// `exists` / `is_dir` are the gates every phase checks before reading: a file must not read as a
+    /// directory, and a missing path must read as absent rather than surfacing an error.
+    #[test]
+    fn file_system_reports_existence_and_kind() {
+        let fs = StdFileSystem::new();
+        let dir = tmp("kind");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"hi").unwrap();
+
+        assert!(fs.exists(&dir));
+        assert!(fs.exists(&file));
+        assert!(!fs.exists(&dir.join("nope")), "不存在的路径应报告为不存在");
+
+        assert!(fs.is_dir(&dir));
+        assert!(!fs.is_dir(&file), "文件不是目录");
+        assert!(!fs.is_dir(&dir.join("nope")), "不存在的路径也不是目录");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `read_to_string` yields the content on success and an `Err` — never a panic — on failure. P0's
+    /// `fingerprint` depends on the error arm to degrade to a `path:size` fingerprint instead of aborting
+    /// the whole ingest over a few unreadable files.
+    #[test]
+    fn read_to_string_reads_content_and_errors_instead_of_panicking() {
+        let fs = StdFileSystem::default();
+        let dir = tmp("read");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "hello").unwrap();
+
+        assert_eq!(fs.read_to_string(&file).unwrap(), "hello");
+        assert!(
+            fs.read_to_string(&dir.join("missing.txt")).is_err(),
+            "缺失文件应返回 Err（fingerprint 依赖它退化为 path:size）"
+        );
+        assert!(
+            fs.read_to_string(&dir).is_err(),
+            "把目录当文件读应返回 Err，而不是 panic"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `len` reports the byte count, and errors for a missing path rather than returning 0 — a silent 0
+    /// would make "unreadable" indistinguishable from "empty".
+    #[test]
+    fn len_counts_bytes_and_errors_for_a_missing_path() {
+        let fs = StdFileSystem::new();
+        let dir = tmp("len");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "hello").unwrap();
+
+        assert_eq!(fs.len(&file).unwrap(), 5);
+        assert!(
+            fs.len(&dir.join("missing.txt")).is_err(),
+            "缺失路径应返回 Err，而不是静默返回 0"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

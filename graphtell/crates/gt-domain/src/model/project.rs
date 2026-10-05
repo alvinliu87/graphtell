@@ -159,3 +159,194 @@ pub struct NewSourceFile {
     pub size_bytes: u64,
     pub content_hash: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn round_trip<T: Serialize + for<'de> Deserialize<'de>>(v: &T) -> T {
+        serde_json::from_value(serde_json::to_value(v).expect("serialize")).expect("deserialize")
+    }
+
+    /// `ProjectConfig` is both the **API request body** (`gt-adapter-http::dto`) and a JSON column in SQLite —
+    /// and the store reads it with `parse_json::<ProjectConfig>().unwrap_or_default()`, so a row whose JSON is
+    /// missing a key must still load as the documented defaults rather than as an error.
+    #[test]
+    fn project_config_defaults_apply_when_keys_are_absent() {
+        let d = ProjectConfig::default();
+        assert!(d.exclude_globs.is_empty());
+        assert!(d.table_prefixes.is_empty(), "表前缀不能带任何项目默认值（CRMEB 的 `eb_` 不许泄漏）");
+        assert!(d.full_pipeline, "默认跑完整流水线");
+        // The one non-empty default in an otherwise "nothing hard-coded" struct: the i18n coverage check needs
+        // a baseline, and `gt-pipeline::Config` readers rely on exactly this pair.
+        assert_eq!(d.required_locales, vec!["zh-cn".to_string(), "en-us".to_string()]);
+
+        let empty: ProjectConfig = serde_json::from_value(json!({})).expect("空配置必须能反序列化");
+        assert!(empty.exclude_globs.is_empty());
+        assert_eq!(empty.required_locales, d.required_locales);
+        assert!(empty.table_prefixes.is_empty());
+        assert!(empty.full_pipeline);
+
+        // A row written before `table_prefixes` existed: the new keys fall back, the old key survives.
+        let old_row: ProjectConfig = serde_json::from_value(json!({ "exclude_globs": ["public/static/**"] })).unwrap();
+        assert_eq!(old_row.exclude_globs, vec!["public/static/**".to_string()]);
+        assert!(old_row.table_prefixes.is_empty());
+        assert_eq!(old_row.required_locales, d.required_locales);
+
+        let explicit: ProjectConfig = serde_json::from_value(json!({
+            "exclude_globs": ["storage/logs/**"],
+            "required_locales": ["fr-fr"],
+            "table_prefixes": ["eb_"],
+            "full_pipeline": false
+        }))
+        .unwrap();
+        assert_eq!(explicit.exclude_globs, vec!["storage/logs/**".to_string()]);
+        assert_eq!(explicit.required_locales, vec!["fr-fr".to_string()]);
+        assert_eq!(explicit.table_prefixes, vec!["eb_".to_string()]);
+        assert!(!explicit.full_pipeline, "显式 false 不能被默认值覆盖");
+
+        assert_eq!(round_trip(&explicit).required_locales, explicit.required_locales);
+    }
+
+    /// `ProjectPatch` is the PATCH body: `None` means "do not touch this field", so an absent key and an
+    /// explicit `null` both mean "no change" — there is deliberately no way to clear a field through a patch.
+    #[test]
+    fn project_patch_treats_absent_and_null_as_no_change() {
+        let d = ProjectPatch::default();
+        assert!(d.name.is_none() && d.root_path.is_none() && d.description.is_none() && d.config.is_none());
+
+        let empty: ProjectPatch = serde_json::from_value(json!({})).expect("空 PATCH 体必须能反序列化");
+        assert!(empty.name.is_none() && empty.config.is_none());
+
+        let partial: ProjectPatch = serde_json::from_value(json!({ "name": "renamed" })).unwrap();
+        assert_eq!(partial.name.as_deref(), Some("renamed"));
+        assert!(partial.root_path.is_none(), "未提交的字段必须保持 None");
+        assert!(partial.description.is_none());
+        assert!(partial.config.is_none());
+
+        let nulled: ProjectPatch = serde_json::from_value(json!({ "description": null })).unwrap();
+        assert!(nulled.description.is_none(), "null 等同未提交：patch 不能清空字段");
+
+        let full: ProjectPatch = serde_json::from_value(json!({ "config": { "full_pipeline": false } })).unwrap();
+        let cfg = full.config.as_ref().expect("config 必须能整块替换");
+        assert!(!cfg.full_pipeline);
+    }
+
+    /// The status written into the DB column is **the `Display` string** (`set_project_status` stores
+    /// `ProjectStatus::Created.to_string()`) and is read back by a literal match, so `Display` must keep
+    /// producing exactly the snake_case name that storage expects.
+    #[test]
+    fn project_status_display_matches_the_persisted_spelling() {
+        for (variant, text) in [
+            (ProjectStatus::Created, "created"),
+            (ProjectStatus::Indexing, "indexing"),
+            (ProjectStatus::Ready, "ready"),
+            (ProjectStatus::Failed, "failed"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(serde_json::to_value(variant).unwrap(), json!(text));
+            assert_eq!(serde_json::from_value::<ProjectStatus>(json!(text)).unwrap(), variant);
+        }
+        assert!(serde_json::from_value::<ProjectStatus>(json!("done")).is_err(), "未知状态拼写必须报错");
+        assert_eq!(ProjectStatus::Ready, ProjectStatus::Ready);
+        assert_ne!(ProjectStatus::Created, ProjectStatus::Failed);
+    }
+
+    /// The project / sub-project / source-file records: `PathBuf` must stay a plain string on the wire, and the
+    /// free-form `facts` payload must not be reshaped.
+    #[test]
+    fn project_sub_project_and_source_file_records_round_trip() {
+        let p = Project {
+            id: ProjectId(1),
+            name: "CRMEB".to_string(),
+            root_path: PathBuf::from("/samples/php-projects/thinkphp/CRMEB"),
+            description: Some("e-commerce".to_string()),
+            config: ProjectConfig { full_pipeline: false, ..Default::default() },
+            status: ProjectStatus::Ready,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_123,
+        };
+        let back: Project = round_trip(&p);
+        assert_eq!(back.id, ProjectId(1));
+        assert_eq!(back.root_path, PathBuf::from("/samples/php-projects/thinkphp/CRMEB"));
+        assert_eq!(back.description.as_deref(), Some("e-commerce"));
+        assert_eq!(back.status, ProjectStatus::Ready);
+        assert_eq!((back.created_at, back.updated_at), (1_700_000_000, 1_700_000_123));
+        assert!(!back.config.full_pipeline);
+        let serialized = serde_json::to_value(&p).unwrap();
+        assert!(serialized["root_path"].is_string(), "PathBuf 必须是裸字符串，不能变成对象");
+
+        // A project created without any configuration must not fail to load later.
+        let np = NewProject {
+            name: "bagisto".to_string(),
+            root_path: PathBuf::from("/samples/bagisto"),
+            description: None,
+            config: None,
+        };
+        let back: NewProject = round_trip(&np);
+        assert_eq!(back.name, "bagisto");
+        assert!(back.description.is_none() && back.config.is_none());
+
+        let sp = SubProject {
+            id: SubProjectId(2),
+            project_id: ProjectId(1),
+            name: "uni-app".to_string(),
+            root_path: PathBuf::from("template/uni-app"),
+            language: Language::new("javascript"),
+            role: "frontend:admin".to_string(),
+            detected_by: "pages.json".to_string(),
+            frameworks: vec!["uni-app".to_string()],
+            facts: json!({ "app_root": "src" }),
+        };
+        let back: SubProject = round_trip(&sp);
+        assert_eq!(back.id, SubProjectId(2));
+        assert_eq!(back.role, "frontend:admin", "role 是 `tier` 或 `tier:kind`，按原样存取");
+        assert_eq!(back.detected_by, "pages.json");
+        assert_eq!(back.frameworks, vec!["uni-app".to_string()]);
+        assert_eq!(back.facts, json!({ "app_root": "src" }));
+
+        let nsp = NewSubProject {
+            project_id: ProjectId(1),
+            name: "api".to_string(),
+            root_path: PathBuf::from("app/api"),
+            language: Language::new("php"),
+            role: "backend".to_string(),
+            detected_by: "composer.json".to_string(),
+            frameworks: vec!["thinkphp".to_string(), "crmeb".to_string()],
+            facts: json!(null),
+        };
+        let back: NewSubProject = round_trip(&nsp);
+        assert_eq!(back.frameworks, vec!["thinkphp".to_string(), "crmeb".to_string()]);
+        assert!(back.facts.is_null());
+
+        // A file outside any sub-project (`sub_project_id: None`) is legal — it simply belongs to the project.
+        let f = SourceFile {
+            id: FileId(9),
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            path: "app/api/controller/Login.php".to_string(),
+            language: Language::new("php"),
+            size_bytes: 4096,
+            content_hash: "deadbeef".to_string(),
+        };
+        let back: SourceFile = round_trip(&f);
+        assert_eq!(back.id, FileId(9));
+        assert!(back.sub_project_id.is_none());
+        assert_eq!(back.path, "app/api/controller/Login.php");
+        assert_eq!(back.size_bytes, 4096);
+        assert_eq!(back.content_hash, "deadbeef");
+
+        let nf = NewSourceFile {
+            project_id: ProjectId(1),
+            sub_project_id: Some(SubProjectId(2)),
+            path: "app/model/User.php".to_string(),
+            language: Language::new("php"),
+            size_bytes: 1,
+            content_hash: String::new(),
+        };
+        let back: NewSourceFile = round_trip(&nf);
+        assert_eq!(back.sub_project_id, Some(SubProjectId(2)));
+        assert!(back.content_hash.is_empty());
+    }
+}

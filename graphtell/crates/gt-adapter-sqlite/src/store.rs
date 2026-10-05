@@ -1741,9 +1741,14 @@ fn now_millis() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
-    use gt_domain::model::{EdgeKind, NewEdge, NewNode, NodeKind};
-    use gt_domain::port::{GraphQuery, GraphSink};
+    use gt_domain::model::{NewAnnotation, EdgeKind, NewEdge, NewNode, NodeKind};
+    use gt_domain::port::{
+        DiagnosticSink, EdgeDirection, GraphQuery, GraphSink, ProjectReader, ProjectWriter,
+        RuleConfigStore, SymbolTableReader,
+    };
 
     fn store() -> SqliteStore {
         SqliteStore::in_memory().expect("in-memory store")
@@ -1865,6 +1870,542 @@ mod tests {
         let after = s.stats(pid).unwrap();
         assert_eq!(after.nodes, 0);
         assert_eq!(after.edges, 0, "边必须随节点级联删除，否则留下不可检测的脏数据: {after:?}");
+    }
+
+    // ---- helpers for the added coverage ----
+    fn node_named(pid: ProjectId, id: i64, name: &str, kind: &str) -> NewNode {
+        let mut n = node(pid, id, name);
+        n.kind = NodeKind::new(kind);
+        n
+    }
+
+    fn new_project(name: &str) -> NewProject {
+        NewProject {
+            name: name.to_string(),
+            root_path: PathBuf::from(format!("/data/{name}")),
+            description: Some("desc".into()),
+            config: None,
+        }
+    }
+
+    // ---------------------------------------------------------- project lifecycle
+    #[test]
+    fn project_create_and_list_roundtrip() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        assert_eq!(p.name, "alpha");
+        assert_eq!(p.status, ProjectStatus::Created);
+        assert_eq!(p.root_path, PathBuf::from("/data/alpha"));
+        let got = s.get_project(p.id).unwrap().expect("应存在");
+        assert_eq!(got.description.as_deref(), Some("desc"));
+        assert_eq!(s.list_projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn update_project_patches_fields() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let mut cfg = ProjectConfig::default();
+        cfg.table_prefixes = vec!["eb_".into()];
+        let updated = s
+            .update_project(
+                p.id,
+                ProjectPatch {
+                    name: Some("beta".into()),
+                    description: None,
+                    root_path: None,
+                    config: Some(cfg.clone()),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.name, "beta");
+        assert_eq!(updated.config.table_prefixes, vec!["eb_".to_string()]);
+    }
+
+    #[test]
+    fn set_project_status_transitions() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        s.set_project_status(p.id, ProjectStatus::Ready).unwrap();
+        assert_eq!(s.get_project(p.id).unwrap().unwrap().status, ProjectStatus::Ready);
+    }
+
+    #[test]
+    fn delete_project_cleans_graph_and_meta() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(1), NodeId(1)));
+        s.apply(&d).unwrap();
+        assert_eq!(s.stats(p.id).unwrap().nodes, 1);
+        s.delete_project(p.id).unwrap();
+        assert!(s.get_project(p.id).unwrap().is_none());
+        assert_eq!(s.stats(p.id).unwrap().nodes, 0);
+    }
+
+    #[test]
+    fn sub_projects_replace_and_list() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let subs = s
+            .replace_sub_projects(
+                p.id,
+                vec![NewSubProject {
+                    project_id: p.id,
+                    name: "be".into(),
+                    root_path: PathBuf::from("/data/alpha/backend"),
+                    language: Language::new("php"),
+                    role: "backend".into(),
+                    detected_by: "composer.json".into(),
+                    frameworks: vec!["thinkphp".into()],
+                    facts: serde_json::json!({ "app_root": "/x" }),
+                }],
+            )
+            .unwrap();
+        assert_eq!(subs.len(), 1);
+        let listed = s.list_sub_projects(p.id).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].language.as_str(), "php");
+        assert_eq!(listed[0].role, "backend");
+        assert_eq!(listed[0].frameworks, vec!["thinkphp".to_string()]);
+    }
+
+    #[test]
+    fn list_files_respects_sub_project_filter() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let sub = s
+            .replace_sub_projects(
+                p.id,
+                vec![NewSubProject {
+                    project_id: p.id,
+                    name: "be".into(),
+                    root_path: PathBuf::from("/be"),
+                    language: Language::new("php"),
+                    role: "backend".into(),
+                    detected_by: "x".into(),
+                    frameworks: vec![],
+                    facts: Value::Null,
+                }],
+            )
+            .unwrap()[0]
+            .id;
+        s.replace_files(
+            p.id,
+            vec![NewSourceFile {
+                project_id: p.id,
+                sub_project_id: Some(sub),
+                path: "a.php".into(),
+                language: Language::new("php"),
+                size_bytes: 10,
+                content_hash: "h".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(s.list_files(p.id, None).unwrap().len(), 1);
+        assert_eq!(s.list_files(p.id, Some(sub)).unwrap().len(), 1);
+        assert_eq!(s.list_files(p.id, Some(SubProjectId(999))).unwrap().len(), 0);
+    }
+
+    // ---------------------------------------------------------- graph queries
+    #[test]
+    fn query_nodes_filters_by_kind_and_name() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node_named(p.id, 1, "User", "Class"));
+        d.nodes.push(node_named(p.id, 2, "OrderController", "Class"));
+        d.nodes.push(node_named(p.id, 3, "Payment", "Service"));
+        s.apply(&d).unwrap();
+
+        assert_eq!(s.query_nodes(&NodeFilter { project_id: p.id, kind: Some(NodeKind::new("Service")), ..Default::default() }).unwrap().len(), 1);
+        let by_name = s.query_nodes(&NodeFilter { project_id: p.id, name_contains: Some("Controller".into()), ..Default::default() }).unwrap();
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].name, "OrderController");
+        assert_eq!(s.query_nodes(&NodeFilter { project_id: p.id, ..Default::default() }).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn get_node_and_get_nodes_batch() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 10, "A"));
+        d.nodes.push(node(p.id, 20, "B"));
+        s.apply(&d).unwrap();
+        assert_eq!(s.get_node(NodeId(10)).unwrap().unwrap().name, "A");
+        assert!(s.get_node(NodeId(999)).unwrap().is_none());
+        let many = s.get_nodes(&[NodeId(10), NodeId(20), NodeId(999)]).unwrap();
+        assert_eq!(many.len(), 2);
+        assert!(many.contains_key(&10));
+        assert!(many.contains_key(&20));
+    }
+
+    #[test]
+    fn nodes_summary_shape() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.nodes.push(node(p.id, 2, "B"));
+        s.apply(&d).unwrap();
+        let sum = s.nodes_summary(p.id).unwrap();
+        assert_eq!(sum.len(), 2);
+        assert_eq!(sum[&1].name, "A");
+        assert_eq!(sum[&2].name, "B");
+    }
+
+    /// `edges_of` must filter by the project owning the endpoint node, so a "leftover" edge recorded under a
+    /// different project (the historical dirty-data case) never leaks into the current project's views.
+    #[test]
+    fn edges_of_filters_by_endpoint_project_and_direction() {
+        let s = store();
+        let pa = s.create_project(new_project("a")).unwrap();
+        let pb = s.create_project(new_project("b")).unwrap();
+        let mut da = GraphDelta::new(pa.id);
+        da.nodes.push(node(pa.id, 1, "A1"));
+        da.nodes.push(node(pa.id, 2, "A2"));
+        s.apply(&da).unwrap();
+        let mut db = GraphDelta::new(pb.id);
+        db.nodes.push(node(pb.id, 3, "B1"));
+        s.apply(&db).unwrap();
+        // a clean edge: project A, A1 -> A2
+        let mut e = GraphDelta::new(pa.id);
+        e.edges.push(NewEdge::new(pa.id, EdgeKind::new("Calls"), NodeId(1), NodeId(2)));
+        // dirty edge: references A1 but recorded under project B
+        let mut dirty = GraphDelta::new(pb.id);
+        dirty.edges.push(NewEdge::new(pb.id, EdgeKind::new("Calls"), NodeId(1), NodeId(3)));
+        s.apply(&e).unwrap();
+        s.apply(&dirty).unwrap();
+
+        let out = s.edges_of(NodeId(1), EdgeDirection::Outgoing).unwrap();
+        assert_eq!(out.len(), 1, "应只返回属于项目 A 的边: {out:?}");
+        assert_eq!(out[0].to_id, NodeId(2));
+        assert_eq!(s.edges_of(NodeId(2), EdgeDirection::Incoming).unwrap().len(), 1);
+        assert_eq!(s.edges_of(NodeId(1), EdgeDirection::Both).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn edges_outgoing_incoming_batch_map() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.nodes.push(node(p.id, 2, "B"));
+        d.nodes.push(node(p.id, 3, "C"));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(1), NodeId(2)));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(1), NodeId(3)));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(2), NodeId(3)));
+        s.apply(&d).unwrap();
+        let out = s.edges_outgoing(&[NodeId(1), NodeId(2)]).unwrap();
+        assert_eq!(out[&1].len(), 2);
+        assert_eq!(out[&2].len(), 1);
+        assert_eq!(s.edges_incoming(&[NodeId(3)]).unwrap()[&3].len(), 2);
+    }
+
+    #[test]
+    fn kinds_and_annotations_are_queryable() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.nodes.push(node(p.id, 2, "B"));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(1), NodeId(2)));
+        d.annotations.push(NewAnnotation {
+            node_id: NodeId(1),
+            channel: AnnotationChannel(AnnotationChannel::FKB_MARK.to_string()),
+            kind: "Pii".into(),
+            subkind: None,
+            confidence: 0.9,
+            evidence: Value::Null,
+            phase: Phase(Phase::CF_AST.to_string()),
+            merge: Default::default(),
+        });
+        s.apply(&d).unwrap();
+        assert_eq!(s.node_kinds(p.id).unwrap(), vec!["Class".to_string()]);
+        assert_eq!(s.edge_kinds(p.id).unwrap(), vec!["Calls".to_string()]);
+        assert_eq!(
+            s.annotation_kinds(p.id).unwrap(),
+            vec![(AnnotationChannel::FKB_MARK.to_string(), "Pii".to_string())]
+        );
+        assert_eq!(s.annotations_of(NodeId(1)).unwrap().len(), 1);
+        assert_eq!(s.annotations_of_project(p.id).unwrap()[&1].len(), 1);
+    }
+
+    #[test]
+    fn find_edge_and_file_paths() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(1), NodeId(1)));
+        s.apply(&d).unwrap();
+        let e = s.find_edge(EdgeId(1)).unwrap().expect("应存在");
+        assert_eq!(e.kind.as_str(), "Calls");
+        assert!(s.find_edge(EdgeId(999)).unwrap().is_none());
+    }
+
+    #[test]
+    fn count_nodes_supports_kind_and_side_filters() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.nodes.push(node(p.id, 2, "B"));
+        s.apply(&d).unwrap();
+        assert_eq!(s.count_nodes(p.id, None, &[]).unwrap(), 2);
+        assert_eq!(s.count_nodes(p.id, Some(&NodeKind::new("Class")), &[]).unwrap(), 2);
+
+        let mut d2 = GraphDelta::new(p.id);
+        let mut n = node(p.id, 3, "C");
+        n.properties = serde_json::json!({ "side": "frontend" });
+        d2.nodes.push(n);
+        s.apply(&d2).unwrap();
+        assert_eq!(s.count_nodes(p.id, None, &["frontend".to_string()]).unwrap(), 1);
+        assert_eq!(s.count_nodes(p.id, None, &["backend".to_string()]).unwrap(), 0);
+    }
+
+    // ---------------------------------------------------------- symbol tables
+    #[test]
+    fn symbol_table_roundtrip() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.symbols.push(SymbolEntry {
+            project_id: p.id,
+            table: "schema".into(),
+            key: "users".into(),
+            value: serde_json::json!({ "cols": ["id", "name"] }),
+        });
+        d.symbols.push(SymbolEntry {
+            project_id: p.id,
+            table: "schema".into(),
+            key: "orders".into(),
+            value: serde_json::json!({ "cols": ["id"] }),
+        });
+        s.apply(&d).unwrap();
+        assert_eq!(
+            s.get_symbol(p.id, "schema", "users").unwrap().unwrap(),
+            serde_json::json!({ "cols": ["id", "name"] })
+        );
+        assert_eq!(s.list_symbols(p.id, "schema").unwrap().len(), 2);
+    }
+
+    // ---------------------------------------------------------- diagnostics
+    #[test]
+    fn diagnostics_push_list_exclude_and_clear() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |code: &str, sev: Severity| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.into(),
+            severity: sev,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk("rule:missing", Severity::Error), mk("rule:missing", Severity::Warning), mk("rule:other", Severity::Info)]).unwrap();
+        assert_eq!(s.list_diagnostics(p.id, 100).unwrap().len(), 3);
+        let excluded = s.list_diagnostics_excluding(p.id, "rule:missing", 100).unwrap();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].code, "rule:other");
+        let cleared = s.clear_diagnostics(p.id, "rule:missing").unwrap();
+        assert_eq!(cleared, 2);
+        assert_eq!(s.list_diagnostics(p.id, 100).unwrap().len(), 1);
+    }
+
+    /// Under a small `LIMIT`, the result must be **severity-first** (critical/error before info), otherwise a
+    /// truncation by write order could drop the entire critical tier — the documented "996 violations, 59 critical,
+    /// but LIMIT 500 left critical at 0" bug.
+    #[test]
+    fn diagnostics_by_code_orders_by_severity_under_limit() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |sev: Severity| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: "rule:x".into(),
+            severity: sev,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk(Severity::Info), mk(Severity::Error), mk(Severity::Warning)]).unwrap();
+        let limited = s.list_diagnostics_by_code(p.id, "rule:", None, 1).unwrap();
+        assert_eq!(limited.len(), 1);
+        assert!(
+            matches!(limited[0].severity, Severity::Error),
+            "LIMIT 下应优先返回最高严重度: {limited:?}"
+        );
+    }
+
+    /// A `sub_project_id IS NULL` diagnostic is "shared" and must survive any sub-project filter.
+    #[test]
+    fn diagnostics_by_code_keeps_shared_entries() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |sub: Option<SubProjectId>| Diagnostic {
+            project_id: p.id,
+            sub_project_id: sub,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: "rule:x".into(),
+            severity: Severity::Error,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk(Some(SubProjectId(1))), mk(None)]).unwrap();
+        let filtered = s.list_diagnostics_by_code(p.id, "rule:", Some(&[SubProjectId(1)]), 100).unwrap();
+        assert_eq!(filtered.len(), 2, "共享诊断 (NULL sub_project_id) 应通过过滤: {filtered:?}");
+    }
+
+    #[test]
+    fn diagnostics_count_by_code_and_excluding() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |code: &str, sev: Severity| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.into(),
+            severity: sev,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk("rule:x", Severity::Critical), mk("rule:x", Severity::Info), mk("lint:z", Severity::Warning)]).unwrap();
+        let counts = s.count_diagnostics_by_code(p.id, "rule:", None).unwrap();
+        let map: std::collections::HashMap<&str, u64> =
+            counts.iter().map(|(s, c)| (s.as_str(), *c)).collect();
+        assert_eq!(map.get("critical"), Some(&1));
+        assert_eq!(map.get("info"), Some(&1));
+        // exclude the "rule:" prefix -> only the lint:z entry remains
+        let excl = s.count_diagnostics_excluding(p.id, "rule:").unwrap();
+        let excl_map: std::collections::HashMap<&str, u64> =
+            excl.iter().map(|(s, c)| (s.as_str(), *c)).collect();
+        assert_eq!(excl_map.get("warning"), Some(&1));
+    }
+
+    // ---------------------------------------------------------- rule config
+    #[test]
+    fn rule_config_set_get_delete_roundtrip() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "no-missing-link".into(),
+            enabled: Some(true),
+            options: serde_json::json!({ "k": "v" }),
+        })
+        .unwrap();
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["no-missing-link"].enabled, Some(true));
+        assert_eq!(got["no-missing-link"].options, serde_json::json!({ "k": "v" }));
+        s.delete_rule_config(p.id, "no-missing-link").unwrap();
+        assert!(s.get_rule_configs(p.id).unwrap().is_empty());
+    }
+
+    /// An "empty override" (enabled = None **and** options empty) means "back to inherited", so the row is deleted
+    /// rather than left around as a no-op override.
+    #[test]
+    fn rule_config_empty_override_deletes_row() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: Some(false),
+            options: serde_json::json!({ "x": 1 }),
+        })
+        .unwrap();
+        assert_eq!(s.get_rule_configs(p.id).unwrap().len(), 1);
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: None,
+            options: Value::Object(Default::default()),
+        })
+        .unwrap();
+        assert!(
+            s.get_rule_configs(p.id).unwrap().is_empty(),
+            "空覆盖（enabled=None 且 options 为空）应删除行"
+        );
+    }
+
+    // ---------------------------------------------------------- apply sub-features
+    #[test]
+    fn apply_property_and_kind_patches() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        s.apply(&d).unwrap();
+
+        let mut d2 = GraphDelta::new(p.id);
+        d2.property_patches.push((NodeId(1), serde_json::json!({ "meta": { "a": 1 } })));
+        s.apply(&d2).unwrap();
+        assert_eq!(
+            s.get_node(NodeId(1)).unwrap().unwrap().properties,
+            serde_json::json!({ "meta": { "a": 1 } })
+        );
+
+        let mut d3 = GraphDelta::new(p.id);
+        d3.kind_patches.push((NodeId(1), NodeKind::new("Middleware")));
+        s.apply(&d3).unwrap();
+        let n = s.get_node(NodeId(1)).unwrap().unwrap();
+        assert_eq!(n.kind.as_str(), "Middleware", "kind_patches 应原地提升种类，不新建节点");
+        assert_eq!(s.stats(p.id).unwrap().nodes, 1, "提升后仍应只有一个节点");
+    }
+
+    #[test]
+    fn apply_empty_delta_is_a_noop() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        // No data, reset false -> is_empty() true -> early return, must not error.
+        s.apply(&GraphDelta::new(p.id)).unwrap();
+        assert_eq!(s.stats(p.id).unwrap().nodes, 0);
+    }
+
+    /// `chain_adjacency` buckets edges three ways:
+    /// - a syntax chain edge (`Calls`) feeds `out`/`inc` (used for BFS discovery) but NOT the semantic in-edge tally;
+    /// - a semantic edge (`Triggers`) feeds all three (`out`/`inc`/`sem_inc`);
+    /// - a plain structural edge (`Contains`) is ignored entirely.
+    /// The fetch uses light integer adjacency (no `properties` column) — this also exercises that fast path.
+    #[test]
+    fn chain_adjacency_buckets_chain_and_semantic_edges() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.nodes.push(node(p.id, 2, "B"));
+        d.nodes.push(node(p.id, 3, "C"));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(1), NodeId(2)));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Triggers"), NodeId(2), NodeId(3)));
+        d.edges.push(NewEdge::new(p.id, EdgeKind::new("Contains"), NodeId(1), NodeId(3)));
+        s.apply(&d).unwrap();
+
+        let (out, inc, sem_inc) = s.chain_adjacency(p.id).unwrap();
+
+        // both the syntax `Calls` and the semantic `Triggers` edge populate the call-chain adjacency
+        assert_eq!(out.len(), 2, "chain 出边应来自 Calls 与 Triggers: {out:?}");
+        assert_eq!(out[&1], vec![2]);
+        assert_eq!(out[&2], vec![3]);
+        assert_eq!(inc.len(), 2, "chain 入边应来自 Calls 与 Triggers: {inc:?}");
+        assert_eq!(inc[&2], vec![1]);
+        assert_eq!(inc[&3], vec![2]);
+
+        // only the semantic edge should land in the semantic in-edge tally (`Calls` is syntax-only)
+        assert_eq!(sem_inc.len(), 1, "semantic 入边只应含 Triggers: {sem_inc:?}");
+        assert_eq!(sem_inc[&3], vec![2]);
+
+        // the plain `Contains` edge (1->3) must appear in none of the three maps: the exact-value asserts above
+        // already guarantee it was dropped (no trailing 3 in out[1], no 1 in inc[3], and no key 1/2 in sem_inc).
+        assert!(!sem_inc.contains_key(&1) && !sem_inc.contains_key(&2));
     }
 }
 

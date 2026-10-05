@@ -666,4 +666,94 @@ mod tests {
         assert_eq!(probe_dir("*.log"), None);
         assert_eq!(probe_dir("a/b/**"), Some("a/b".to_string()));
     }
+
+    /// A rule's *own* `source` (not a root rule) must populate `{value}` and render the glob. The static
+    /// test uses a literal glob, and the others feed `{value}` from a *root rule*, so this is the only
+    /// path that exercises `rule.source -> own value`.
+    #[test]
+    fn rule_own_source_fills_value_and_renders() {
+        let root = scratch("own-source");
+        write(
+            &root,
+            "composer.json",
+            r#"{"require": {"topthink/framework": "^6"}, "extra": {"public-dir": "public"}}"#,
+        );
+        let kb = StaticKb(vec![fk_with(
+            vec![ExcludeRule {
+                id: "public-dir".into(),
+                glob: "{value}/**".into(),
+                source: Some(RootSource::ManifestJson {
+                    manifest: "composer.json".into(),
+                    pointer: "extra.public-dir".into(),
+                    pick: PickStrategy::FirstDir,
+                }),
+                fallbacks: vec![],
+            }],
+            vec![],
+        )]);
+        let got = resolve_sync(&root, &kb);
+        assert_eq!(got.globs, vec!["public/**".to_string()]);
+        assert!(got.diagnostics.is_empty());
+        // Provenance records which rule produced the glob (the `facts` array is otherwise unasserted).
+        let facts = got.facts.get("excludes").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].get("id").and_then(|v| v.as_str()), Some("public-dir"));
+        assert_eq!(facts[0].get("glob").and_then(|v| v.as_str()), Some("public/**"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A glob placeholder that matches no root rule (and the rule has no own `source`) can never render,
+    /// and with no fallbacks must be reported rather than silently dropped — pins the `else { continue }`
+    /// when a placeholder name has no matching root rule.
+    #[test]
+    fn glob_placeholder_with_no_matching_root_rule_reports() {
+        let root = scratch("no-root-rule");
+        write(&root, "composer.json", r#"{"require": {"topthink/framework": "^6"}}"#);
+        let kb = StaticKb(vec![fk_with(
+            vec![ExcludeRule {
+                id: "bogus".into(),
+                glob: "{bogus}/x/**".into(),
+                source: None,
+                fallbacks: vec![],
+            }],
+            vec![], // no root rule named `bogus`
+        )]);
+        let got = resolve_sync(&root, &kb);
+        assert!(got.globs.is_empty());
+        assert_eq!(got.diagnostics.len(), 1);
+        assert_eq!(got.diagnostics[0].code, "ExcludeRuleUnresolved");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `sanitize` must also reject an empty glob (collapses to nothing) and a glob with an empty path
+    /// segment (double slash) — both branches the single `sanitize_rejects_traversal_wildcard_and_root`
+    /// test leaves unpinned.
+    #[test]
+    fn sanitize_rejects_empty_and_empty_segment() {
+        assert!(sanitize("").is_err()); // collapses to nothing
+        assert!(sanitize("   ").is_err()); // whitespace-only
+        assert!(sanitize("a//b/**").is_err()); // empty segment from a double slash
+    }
+
+    /// `probe_dir` returns `Some("")` (an empty directory) for a glob whose only directory component is a
+    /// wildcard — the `dir.is_empty()` arm, which the integration tests never reach directly.
+    #[test]
+    fn probe_dir_empty_directory_for_double_wildcard() {
+        assert_eq!(probe_dir("**/**"), Some(String::new()));
+        assert_eq!(probe_dir("a/*.log"), Some("a".to_string()));
+    }
+
+    /// `render`: an unclosed `{` (no matching `}`) must yield `None` (never a half-rendered string), and a
+    /// placeholder name with surrounding whitespace must be trimmed so `{ app_root }` matches `app_root`.
+    #[test]
+    fn render_unclosed_brace_and_whitespace_name() {
+        let empty = std::collections::HashMap::<String, String>::new();
+        assert!(render("{app_root/runtime/**", &empty).is_none()); // no closing brace
+        let mut values = std::collections::HashMap::<String, String>::new();
+        values.insert("app_root".to_string(), "app".to_string());
+        assert_eq!(
+            render("{ app_root }/runtime/**", &values),
+            Some("app/runtime/**".to_string())
+        );
+    }
 }

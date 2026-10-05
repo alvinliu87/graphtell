@@ -906,4 +906,159 @@ mod tests {
         // Missing `guards` key yields nothing.
         assert!(row_guards(&serde_json::json!({ "handler": "C@m" })).is_empty());
     }
+
+    /// `run_capabilities` must short-circuit when there are no `HttpContract` nodes (its own
+    /// `contracts.is_empty()` guard) — an empty `Capability` / `auth.optional` channel would otherwise
+    /// read downstream as "every endpoint lacks auth" rather than "not analysed".
+    #[test]
+    fn run_capabilities_stamps_nothing_without_contracts() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("Auth", "Authentication")]);
+        // A route row exists, but no contract node was ever created.
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": "AuthTokenMiddleware", "arg": "true" }]),
+        );
+        run_capabilities(&mut ctx);
+        assert!(ctx.ws.annotation_count() == 0, "无契约节点时不应打任何标注");
+    }
+
+    /// `run` must link nothing when there are no `HttpContract` nodes to attach edges to (its own
+    /// `contracts.is_empty()` guard) — a class node present but no contract must not yield a PassesThrough edge.
+    #[test]
+    fn run_links_nothing_without_contracts() {
+        let mut ctx = PipelineContext::new(project());
+        add_class(&mut ctx, r"app\api\middleware\AuthTokenMiddleware");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": r"app\api\middleware\AuthTokenMiddleware" }]),
+        );
+        run(&mut ctx);
+        assert!(guarded_by(&ctx).is_empty(), "无契约节点时不应产生任何边");
+    }
+
+    /// A guard whose resolved target *is* the contract node itself must not produce a self-edge
+    /// (`target == contract_id` continue). Reached by giving the contract the same name as the mounted
+    /// class, so `find_by_name` resolves the middleware name back to the contract node.
+    #[test]
+    fn run_skips_self_referential_guard() {
+        let mut ctx = PipelineContext::new(project());
+        // Contract named exactly like a middleware short name.
+        add_contract(&mut ctx, "AuthTokenMiddleware");
+        put_row(
+            &mut ctx,
+            "AuthTokenMiddleware",
+            serde_json::json!([{ "class": "AuthTokenMiddleware" }]),
+        );
+        run(&mut ctx);
+        assert!(
+            guarded_by(&ctx).is_empty(),
+            "自引用守卫不应产生自边：{:?}",
+            guarded_by(&ctx)
+        );
+    }
+
+    /// `run` skips a route row that has no `guards` array (the `value.get("guards").and_then(as_array)`
+    /// else-branch), so a row shaped only with a handler produces no edge and leaves the class node alone.
+    #[test]
+    fn run_skips_row_without_guards_array() {
+        let mut ctx = PipelineContext::new(project());
+        add_contract(&mut ctx, "GET /x");
+        let mw = add_class(&mut ctx, r"app\api\middleware\AuthTokenMiddleware");
+        ctx.ws.put_symbol(
+            ProjectId::new(1),
+            "route_list",
+            "GET /x",
+            serde_json::json!({ "handler": "C@m" }),
+        );
+        run(&mut ctx);
+        assert!(
+            guarded_by(&ctx).is_empty(),
+            "无 guards 的路由行不应产生边：{:?}",
+            guarded_by(&ctx)
+        );
+        assert_eq!(
+            ctx.ws.node(mw).unwrap().kind.as_str(),
+            NodeKind::CLASS,
+            "类节点不应被改动"
+        );
+    }
+
+    /// `run_capabilities` skips a route row whose key is not a contract name (the `contracts.get(key)`
+    /// miss), even when a contract *does* exist for a different key.
+    #[test]
+    fn capabilities_skip_row_with_non_contract_key() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("Auth", "Authentication")]);
+        let c = add_contract(&mut ctx, "GET /x"); // contract exists, but the row key won't match it
+        put_row(
+            &mut ctx,
+            "GET /other",
+            serde_json::json!([{ "class": "AuthTokenMiddleware", "arg": "true" }]),
+        );
+        run_capabilities(&mut ctx);
+        assert!(
+            stamped(&ctx, c).is_empty(),
+            "路由键与契约名不匹配时不应打标注：{:?}",
+            stamped(&ctx, c)
+        );
+    }
+
+    /// The produced `Capability` / `auth.optional` annotations must carry an `evidence` map that
+    /// downstream rules read (`source`, the mounted `middleware` list, and the optional `arg`). The
+    /// other capability tests only check kind / channel, so a regression that dropped any of these
+    /// fields would slip past them.
+    #[test]
+    fn capability_evidence_captures_mounted_middleware_and_arg() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.middleware_capabilities = caps(&[("Auth", "Authentication")]);
+        let c = add_contract(&mut ctx, "GET /x");
+        put_row(
+            &mut ctx,
+            "GET /x",
+            serde_json::json!([{ "class": "AuthTokenMiddleware", "arg": "true" }]),
+        );
+        run_capabilities(&mut ctx);
+
+        let ann = ctx
+            .ws
+            .annotations_of(c)
+            .into_iter()
+            .find(|a| a.kind == "Authentication")
+            .expect("应有 Authentication 标注");
+        assert_eq!(
+            ann.evidence.get("source").and_then(|v| v.as_str()),
+            Some("route_guard")
+        );
+        let mw = ann
+            .evidence
+            .get("middleware")
+            .and_then(Value::as_array)
+            .expect("middleware 列表");
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].as_str(), Some("AuthTokenMiddleware"));
+
+        // Optional variant: evidence should carry the `arg` that justified the downgrade.
+        let mut ctx2 = PipelineContext::new(project());
+        ctx2.middleware_capabilities = caps(&[("Auth", "Authentication")]);
+        let c2 = add_contract(&mut ctx2, "GET /y");
+        put_row(
+            &mut ctx2,
+            "GET /y",
+            serde_json::json!([{ "class": "AuthTokenMiddleware", "arg": "false" }]),
+        );
+        run_capabilities(&mut ctx2);
+        let opt = ctx2
+            .ws
+            .annotations_of(c2)
+            .into_iter()
+            .find(|a| a.kind == OPTIONAL_AUTH)
+            .expect("应有 auth.optional 标注");
+        assert_eq!(
+            opt.evidence.get("arg").and_then(|v| v.as_str()),
+            Some("false")
+        );
+    }
 }

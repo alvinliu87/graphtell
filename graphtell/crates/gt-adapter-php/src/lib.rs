@@ -992,4 +992,371 @@ mod tests {
         let b4 = b"not-a-quote";
         assert!(read_quoted(b4, 0).is_none(), "起始不是引号应返回 None");
     }
+
+    // ---- port surface that the kernel depends on but wasn't pinned yet ----
+
+    #[test]
+    fn language_is_php() {
+        assert_eq!(adapter().language().as_str(), "php");
+    }
+
+    /// `enrich_method_ref` turns `composer.json`'s PSR-4 into `root_namespaces` and walks each root for
+    /// namespace-container subdirectories (modules) — none of this is hard-coded by the kernel.
+    #[test]
+    fn enrich_method_ref_discovers_namespaces_and_modules() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_enrich_{}", std::process::id()));
+        // `app/api` / `app/admin` contain a subdir → modules; `app/plain` has only a file → not a module.
+        let _ = std::fs::create_dir_all(dir.join("app/api/Controllers"));
+        let _ = std::fs::create_dir_all(dir.join("app/admin/Controllers"));
+        let _ = std::fs::create_dir_all(dir.join("app/plain"));
+        std::fs::write(dir.join("app/plain/readme.txt"), "x").unwrap();
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{ "autoload": { "psr-4": { "app\\": "app/" } } }"#,
+        )
+        .unwrap();
+        let mut spec = MethodRefSpec {
+            root_namespaces: Vec::new(),
+            app_segments: Vec::new(),
+            ..Default::default()
+        };
+        adapter().enrich_method_ref(&mut spec, &dir, &dir);
+        assert!(
+            spec.root_namespaces.contains(&"app".to_string()),
+            "应发现 app 命名空间（去尾斜杠）: {:?}",
+            spec.root_namespaces
+        );
+        assert!(
+            spec.app_segments.contains(&"api".to_string()),
+            "app/api 应为模块: {:?}",
+            spec.app_segments
+        );
+        assert!(
+            spec.app_segments.contains(&"admin".to_string()),
+            "app/admin 应为模块: {:?}",
+            spec.app_segments
+        );
+        assert!(
+            !spec.app_segments.contains(&"plain".to_string()),
+            "无子目录的 app/plain 不是模块"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With no PSR-4 map the adapter must not touch the spec (the early return, so a project without
+    /// composer.json keeps whatever the FKB/kernel already assumed).
+    #[test]
+    fn enrich_method_ref_noop_when_no_psr4() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_enrich_noop_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut spec = MethodRefSpec {
+            root_namespaces: vec!["preset".into()],
+            app_segments: vec!["preset".into()],
+            ..Default::default()
+        };
+        adapter().enrich_method_ref(&mut spec, &dir, &dir);
+        assert_eq!(spec.root_namespaces, vec!["preset".to_string()]);
+        assert_eq!(spec.app_segments, vec!["preset".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `psr4_roots` prefers the sub-project's own `composer.json` but falls back to the project root.
+    #[test]
+    fn namespaces_fall_back_to_project_root() {
+        let proj =
+            std::env::temp_dir().join(format!("phpad_test_nsfb_proj_{}", std::process::id()));
+        let sub = std::env::temp_dir().join(format!("phpad_test_nsfb_sub_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&proj);
+        let _ = std::fs::create_dir_all(&sub);
+        std::fs::write(
+            proj.join("composer.json"),
+            r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        )
+        .unwrap();
+        let ns = adapter().manifest_namespaces(&sub, &proj);
+        let names: Vec<&str> = ns.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"App"),
+            "子项目无 composer.json 时应回退到工程根: {names:?}"
+        );
+        let _ = std::fs::remove_dir_all(&proj);
+        let _ = std::fs::remove_dir_all(&sub);
+    }
+
+    /// `read_manifest` looks in `sub.root_path` first, then the project root — a manifest that only lives
+    /// at the project root must still resolve.
+    #[test]
+    fn read_manifest_falls_back_to_project_root() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_rmfb_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("config"));
+        std::fs::write(
+            dir.join("config/database.php"),
+            "<?php\nreturn ['connections' => ['mysql' => ['prefix' => 'fb_']]];",
+        )
+        .unwrap();
+        let subdir = dir.join("app");
+        let _ = std::fs::create_dir_all(&subdir);
+        let sub = make_sub(subdir);
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let got = adapter().read_manifest(
+            &sub,
+            &dir,
+            "config/database.php",
+            "connections.mysql.prefix",
+            &fs,
+            &parsers,
+        );
+        assert_eq!(
+            got.map(|(v, _)| v),
+            Some("fb_".to_string()),
+            "manifest 仅存在于工程根时应回退命中"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `read_manifest_entries` enumerates every child of `root`, fills `EntryFieldFrom::Key` with the entry
+    /// name, resolves `{key}`-substituted pointers, and picks up a top-level `default` entry.
+    #[test]
+    fn read_manifest_entries_enumerates_connections() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_entries_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("config"));
+        std::fs::write(
+            dir.join("config/database.php"),
+            "<?php\nreturn [\n    'connections' => [\n        'mysql' => ['prefix' => 'eb_', 'driver' => 'mysql'],\n        'sqlite' => ['prefix' => 'sq_', 'driver' => 'sqlite'],\n    ],\n    'default' => 'mysql',\n];",
+        )
+        .unwrap();
+        let sub = make_sub(dir.clone());
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let fields = vec![
+            EntryField { name: "name".into(), from: Some(EntryFieldFrom::Key), pointer: None },
+            EntryField { name: "prefix".into(), from: None, pointer: Some("{key}.prefix".into()) },
+        ];
+        let got = adapter().read_manifest_entries(
+            &sub,
+            &dir,
+            "config/database.php",
+            "connections",
+            &fields,
+            Some("default"),
+            &fs,
+            &parsers,
+        );
+        let me = got.expect("应枚举出 connections");
+        let by_name: std::collections::HashMap<String, Vec<(String, String)>> =
+            me.entries.iter().map(|e| (e.key.clone(), e.fields.clone())).collect();
+        assert_eq!(by_name.get("mysql").unwrap().clone(), vec![
+            ("name".to_string(), "mysql".to_string()),
+            ("prefix".to_string(), "eb_".to_string()),
+        ]);
+        assert_eq!(by_name.get("sqlite").unwrap().clone(), vec![
+            ("name".to_string(), "sqlite".to_string()),
+            ("prefix".to_string(), "sq_".to_string()),
+        ]);
+        assert_eq!(me.default.as_deref(), Some("mysql"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `env()`-default regex fallback may only run for a **single** entry: with several connections it
+    /// cannot be attributed, so it must stay `None` rather than silently copied onto every entry.
+    #[test]
+    fn read_manifest_entries_env_default_only_for_single() {
+        let dir = std::env::temp_dir()
+            .join(format!("phpad_test_entries_env_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("config"));
+        // two connections: the env-valued one must NOT fall back (single == false).
+        std::fs::write(
+            dir.join("config/database.php"),
+            "<?php\nreturn [\n    'connections' => [\n        'mysql' => ['prefix' => env('DB_PREFIX', 'yy_')],\n        'sqlite' => ['prefix' => 'sq_'],\n    ],\n];",
+        )
+        .unwrap();
+        let sub = make_sub(dir.clone());
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let fields = vec![EntryField {
+            name: "prefix".into(),
+            from: None,
+            pointer: Some("{key}.prefix".into()),
+        }];
+        let me = adapter()
+            .read_manifest_entries(
+                &sub,
+                &dir,
+                "config/database.php",
+                "connections",
+                &fields,
+                None,
+                &fs,
+                &parsers,
+            )
+            .expect("应枚举出 connections");
+        let by_name: std::collections::HashMap<String, Vec<(String, String)>> =
+            me.entries.iter().map(|e| (e.key.clone(), e.fields.clone())).collect();
+        assert!(
+            by_name.get("mysql").map(|f| f.iter().any(|(n, _)| n == "prefix")).unwrap_or(false) == false,
+            "多连接时 env 默认值不得回退（会误复制到其它连接）: {:?}",
+            by_name
+        );
+        let sqlite_prefix = by_name
+            .get("sqlite")
+            .and_then(|f| f.iter().find(|(n, _)| n == "prefix").map(|(_, v)| v.clone()));
+        assert_eq!(sqlite_prefix.as_deref(), Some("sq_"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When `root` has no children in the manifest, the adapter returns `None` (not an empty entries list).
+    #[test]
+    fn read_manifest_entries_none_when_root_absent() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_entries_none_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("config"));
+        std::fs::write(
+            dir.join("config/database.php"),
+            "<?php\nreturn ['foo' => ['bar' => 'x']];",
+        )
+        .unwrap();
+        let sub = make_sub(dir.clone());
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let fields = vec![EntryField {
+            name: "prefix".into(),
+            from: None,
+            pointer: Some("{key}.prefix".into()),
+        }];
+        let got = adapter().read_manifest_entries(
+            &sub,
+            &dir,
+            "config/database.php",
+            "connections",
+            &fields,
+            None,
+            &fs,
+            &parsers,
+        );
+        assert!(got.is_none(), "root 不存在时应返回 None");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unknown loader ids must yield an empty fact list (so the kernel can fall through to its generic
+    /// built-in loaders), never an error.
+    #[test]
+    fn load_unknown_loader_id_returns_empty() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_loadunk_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let facts = adapter()
+            .load(
+                "nonexistent_loader",
+                &serde_json::json!({}),
+                &sub,
+                &dir,
+                &fs,
+                &parsers,
+                &[],
+            )
+            .unwrap();
+        assert!(facts.is_empty(), "未知 loader id 应返回空向量而非报错");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The table prefix passed from the kernel (`table_prefixes`) must be stripped from migration table names.
+    #[test]
+    fn migration_schema_strips_table_prefix() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_migpref_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("database/migrations"));
+        std::fs::write(
+            dir.join("database/migrations/2019_create_eb_users.php"),
+            "<?php\nSchema::create('eb_users', function (Blueprint $table) {\n    $table->id();\n    $table->string('name');\n});",
+        )
+        .unwrap();
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let facts = adapter()
+            .load(
+                "migration_schema",
+                &serde_json::json!({}),
+                &sub,
+                &dir,
+                &fs,
+                &parsers,
+                &["eb_".to_string()],
+            )
+            .unwrap();
+        let table = facts.iter().find_map(|f| match f {
+            AdapterFact::Schema { table, .. } => Some(table.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            table.as_deref(),
+            Some("users"),
+            "表前缀 eb_ 应被剥离: {:?}",
+            table
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FKB may relocate migrations via the `paths` / `extensions` params; the loader must honour them.
+    #[test]
+    fn migration_schema_custom_paths_param() {
+        let dir =
+            std::env::temp_dir().join(format!("phpad_test_migpaths_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("custom/mig"));
+        std::fs::write(
+            dir.join("custom/mig/2019_create_posts.php"),
+            "<?php\nSchema::create('posts', function (Blueprint $table) { $table->id(); });",
+        )
+        .unwrap();
+        let fs = StdFileSystem::new();
+        let parsers = DefaultParserRegistry::new();
+        let sub = make_sub(dir.clone());
+        let params = serde_json::json!({ "paths": ["custom/mig"], "extensions": ["php"] });
+        let facts = adapter()
+            .load("migration_schema", &params, &sub, &dir, &fs, &parsers, &[])
+            .unwrap();
+        let table = facts.iter().find_map(|f| match f {
+            AdapterFact::Schema { table, .. } => Some(table.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            table.as_deref(),
+            Some("posts"),
+            "自定义 paths 参数应定位迁移文件"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matching_paren_finds_closing_and_none_when_unterminated() {
+        assert_eq!(matching_paren("(a(b)c)", 0), Some(6));
+        assert_eq!(matching_paren("()", 0), Some(1));
+        assert!(
+            matching_paren("(unterminated", 0).is_none(),
+            "未闭合括号应返回 None"
+        );
+        assert!(
+            matching_paren("no paren", 0).is_none(),
+            "起始不是左括号应返回 None"
+        );
+    }
+
+    #[test]
+    fn is_column_method_whitelist() {
+        assert!(is_column_method("string"));
+        assert!(is_column_method("id"));
+        assert!(is_column_method("timestamps"));
+        // modifiers that carry string args must NOT be mistaken for column declarations
+        assert!(!is_column_method("comment"));
+        assert!(!is_column_method("default"));
+        assert!(!is_column_method("after"));
+    }
 }

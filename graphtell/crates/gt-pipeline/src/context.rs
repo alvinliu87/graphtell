@@ -625,4 +625,73 @@ mod tests {
         ctx.project.config.table_prefixes = vec!["eb_".to_string()];
         assert_eq!(ctx.config().table_prefixes, vec!["eb_".to_string()]);
     }
+
+    // ---- residual branches the 15 tests above leave open: `lang_policy_for_sub` on an *unregistered* language
+    // (the empty-NamespacePolicy safety net), `rules_for` for a known sub with no own rules (it must still inherit
+    // the language-filtered globals, distinguished from "unknown sub takes everything"), and the `sub_of_path`
+    // boundary where the relative path carries a trailing slash or is empty. ----
+
+    /// `lang_policy_for_sub` is the form every phase calls. A sub exists in the project, but if its language has
+    /// no loaded notation policy it must fall back to the **empty** default — never borrow another stack's `::`
+    /// or `.`. This is exactly the guard the empty-`NamespacePolicy` refactor exists to provide.
+    #[test]
+    fn lang_policy_for_sub_falls_back_when_language_unregistered() {
+        let mut ctx = ctx_at("/p");
+        ctx.lang_policies.insert(Language::PHP.to_string(), policy("::"));
+        ctx.lang_policy_default = policy("#");
+        ctx.sub_projects.push(sub(SUB_JS, "/p/web", Language::JAVASCRIPT));
+
+        assert_eq!(
+            ctx.lang_policy_for_sub(Some(SubProjectId::new(SUB_JS)))
+                .member_separator,
+            "#",
+            "已注册子项目但语言未登记：不能借用 PHP 的 ::"
+        );
+
+        // A language that is not even a known constant behaves identically.
+        ctx.sub_projects.push(sub(3, "/p/go", "go"));
+        assert_eq!(
+            ctx.lang_policy_for_sub(Some(SubProjectId::new(3))).member_separator,
+            "#"
+        );
+    }
+
+    /// A known sub with **no** `rules_by_sub` entry must still receive the global rules that match its language
+    /// (and only those) — the global language filter is not gated on having own rules.
+    #[test]
+    fn rules_for_known_sub_without_own_rules_inherits_language_filtered_globals() {
+        let mut ctx = ctx_at("/p");
+        ctx.sub_projects.push(sub(SUB_PHP, "/p/app", Language::PHP));
+        // No `rules_by_sub.insert(SUB_PHP, …)` — only globals.
+        ctx.rules_global
+            .push((Language::new(Language::PHP), rule("g_php", "P", None)));
+        ctx.rules_global
+            .push((Language::new(Language::JAVA), rule("g_java", "P", None)));
+
+        let got = ids(&ctx.rules_for(Some(SubProjectId::new(SUB_PHP)), &Phase::new("P")));
+        assert_eq!(got, vec!["g_php".to_string()], "Java 全局规则按语言排除");
+    }
+
+    /// `sub_of_path` must treat a trailing slash as "the directory itself" (a one-segment-below entry still
+    /// belongs to the sub), and a root-level sub-project (empty prefix) claims even an empty relative path.
+    #[test]
+    fn sub_of_path_matches_a_trailing_slash_and_an_empty_relative_path() {
+        let mut ctx = ctx_at("/p");
+        ctx.sub_projects.push(sub(1, "/p/crmeb/app", Language::PHP));
+
+        assert_eq!(
+            ctx.sub_of_path("crmeb/app/"),
+            Some(SubProjectId::new(1)),
+            "末尾斜杠仍命中（目录项）"
+        );
+
+        // A project-rooted sub-project (empty prefix) is a catch-all down to an empty relative path.
+        let mut root = ctx_at("/p");
+        root.sub_projects.push(sub(2, "/p", Language::PHP));
+        assert_eq!(
+            root.sub_of_path(""),
+            Some(SubProjectId::new(2)),
+            "空相对路径归根级子项目"
+        );
+    }
 }

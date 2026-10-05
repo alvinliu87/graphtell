@@ -2660,14 +2660,15 @@ fn dedup_rules(rules: Vec<Rule>) -> Vec<Rule> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_route_guards, guard_arg_text, load_schema};
+    use super::{collect_route_guards, guard_arg_name, guard_arg_text, load_schema, merge_schema_columns};
     use crate::workspace::{CallRecord, GraphWorkspace};
     use gt_domain::model::Phase;
 
     use super::{detect_frameworks, expand_provided, lock_has, manifest_has, CodeEvidence};
     use super::{load_declared_middleware, PipelineContext};
     use super::{
-        declared_mw_path_matches, norm_class, parse_create_tables, short_callee, split_callee,
+        declared_mw_path_matches, match_route_call, norm_class, parse_create_tables,
+        receiver_matches, short_callee, split_callee,
     };
     use super::{
         expand, load_config_keys, load_i18n, load_middleware_aliases, load_nginx, load_routes,
@@ -4650,6 +4651,233 @@ mod tests {
             .expect("应写出 i18n 符号");
         assert_eq!(sym["texts"]["en"], json!("Hi"), "en 区域文本应写入");
         assert_eq!(sym["file"], json!(p));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------- receiver_matches / guard_arg_name
+
+    /// `receiver_matches` has two modes (`contains` vs `receiver_ends_with`) and is case-insensitive.
+    /// The `ends_with` mode additionally strips leading separators — `\app\Route` must still match.
+    #[test]
+    fn receiver_matches_contains_and_ends_with_modes() {
+        let mut rc = tp6_spec().route_calls[0].clone();
+        // contains mode (default): the pattern must appear anywhere in the receiver.
+        assert!(receiver_matches(&rc, "Route"));
+        assert!(receiver_matches(&rc, r"\think\facade\Route"));
+        assert!(receiver_matches(&rc, "route"), "大小写不敏感");
+        assert!(!receiver_matches(&rc, "app"), "不含 route 的接收者不应匹配");
+
+        // ends_with mode: only the tail counts, leading separators are stripped.
+        rc.receiver_ends_with = true;
+        assert!(receiver_matches(&rc, "Route"));
+        assert!(receiver_matches(&rc, r"\app\Route"));
+        assert!(!receiver_matches(&rc, "RouteFacade"), "不以 route 结尾不应匹配");
+    }
+
+    /// Only **literals** may become a guard name; a dynamic PHP arg (`->middleware($v)`) would be
+    /// fabrication. Identifiers (JS / Python function references) are accepted **only** when FKB
+    /// declares `accept_identifier`.
+    #[test]
+    fn guard_arg_name_accepts_literals_and_gated_identifiers() {
+        // Literals: PHP middleware is always `X::class`.
+        assert_eq!(
+            guard_arg_name(&FactValue::ClassConst("A\\B".into()), false),
+            Some("A\\B".to_string())
+        );
+        assert_eq!(
+            guard_arg_name(&FactValue::String("  auth  ".into()), false),
+            Some("auth".to_string()),
+            "字面量应 trim"
+        );
+        assert_eq!(
+            guard_arg_name(&FactValue::String("   ".into()), false),
+            None,
+            "空白字面量不是守卫名"
+        );
+        // Dynamic PHP arg must be rejected unless FKB opts in.
+        assert_eq!(
+            guard_arg_name(&FactValue::Unknown(Some("middleware($v)".into())), false),
+            None
+        );
+        // Identifier: accepted only with `accept_identifier`, and the call parens are stripped.
+        assert_eq!(
+            guard_arg_name(&FactValue::Unknown(Some("authGuard(...)".into())), true),
+            Some("authGuard".to_string())
+        );
+        assert_eq!(
+            guard_arg_name(&FactValue::Unknown(Some("   ".into())), true),
+            None,
+            "trim 后为空的标识符不算"
+        );
+        // Other fact kinds are never a guard name.
+        assert_eq!(guard_arg_name(&FactValue::Bool(true), true), None);
+    }
+
+    // ------------------------------------------------------- match_route_call
+
+    /// The heart of route recognition, previously only reached through `collect_route_guards`:
+    /// verb comes from the FKB verb table, path from `path_arg`, handler from `handler_arg`.
+    #[test]
+    fn match_route_call_extracts_verb_path_and_handler() {
+        let rc = tp6_spec().route_calls[0].clone();
+        let f = "app/api/route/pc.php";
+
+        // verb + path, no handler arg supplied -> handler is None
+        assert_eq!(
+            match_route_call(
+                &call(f, "Route", "get", vec![FactValue::String("info".into())], 1, 1, 0, 10),
+                &rc
+            ),
+            Some(("GET".to_string(), "info".to_string(), None))
+        );
+        // handler read from arg 1
+        assert_eq!(
+            match_route_call(
+                &call(
+                    f,
+                    "Route",
+                    "post",
+                    vec![
+                        FactValue::String("save".into()),
+                        FactValue::String("C@m".into())
+                    ],
+                    2,
+                    2,
+                    0,
+                    10
+                ),
+                &rc
+            ),
+            Some(("POST".to_string(), "save".to_string(), Some("C@m".to_string())))
+        );
+        // A receiver that does not match the spec is not a route.
+        assert_eq!(
+            match_route_call(&call(f, "Db", "get", vec![FactValue::String("x".into())], 3, 3, 0, 10), &rc),
+            None
+        );
+        // An empty path is never a route.
+        assert_eq!(
+            match_route_call(&call(f, "Route", "get", vec![FactValue::String("".into())], 4, 4, 0, 10), &rc),
+            None
+        );
+    }
+
+    // ------------------------------------------------------- merge_schema_columns
+
+    /// Schema columns arrive from several loaders (migrations, SQL probes, …) and are merged into one
+    /// symbol per table: columns must be appended **without duplicates**, and each distinct source
+    /// recorded once — otherwise the same column is listed twice and provenance is lost.
+    #[test]
+    fn merge_schema_columns_dedupes_columns_and_tracks_sources() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: std::path::PathBuf::from("/t"),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        merge_schema_columns(&mut ctx, "user", vec!["id".into(), "name".into()], "migration");
+        merge_schema_columns(&mut ctx, "user", vec!["name".into(), "email".into()], "migration");
+
+        let sym = ctx.ws.get_symbol("schema", "user").expect("schema 符号应写出");
+        let cols: Vec<&str> = sym["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(cols, vec!["id", "name", "email"], "列应合并且去重");
+        assert_eq!(sym["sources"], json!(["migration"]), "同一来源只记一次");
+
+        // A different source is appended.
+        merge_schema_columns(&mut ctx, "user", vec!["phone".into()], "sql_probe");
+        let sym = ctx.ws.get_symbol("schema", "user").expect("schema 符号");
+        assert_eq!(sym["sources"], json!(["migration", "sql_probe"]));
+
+        // Empty table name / empty column list are no-ops (guarded at the top).
+        merge_schema_columns(&mut ctx, "", vec!["x".into()], "migration");
+        merge_schema_columns(&mut ctx, "empty", vec![], "migration");
+        assert!(ctx.ws.get_symbol("schema", "").is_none(), "空表名应整段跳过");
+        assert!(ctx.ws.get_symbol("schema", "empty").is_none(), "空列清单应整段跳过");
+    }
+
+    // ------------------------------------------------------- run (integration, minimal ports)
+
+    /// `run` is the phase entry and had **no** direct coverage: its sub-functions are tested, but the
+    /// wiring "FKB detector -> `ctx.frameworks` per sub-project" (which gates every later framework
+    /// rule) was never exercised end to end.
+    #[test]
+    fn run_detects_framework_and_records_it_per_sub_project() {
+        // Local port stubs: the knowledge base holds exactly one framework, and no parser is needed
+        // because this framework declares no loaders.
+        struct OneKb(FrameworkKnowledge);
+        impl gt_domain::port::KnowledgeProvider for OneKb {
+            fn all(&self) -> Vec<&FrameworkKnowledge> {
+                vec![&self.0]
+            }
+            fn by_id(&self, id: &str) -> Option<&FrameworkKnowledge> {
+                if self.0.id == id { Some(&self.0) } else { None }
+            }
+        }
+        struct NullParsers;
+        impl gt_domain::port::ParserRegistry for NullParsers {
+            fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+                None
+            }
+            fn supported_languages(&self) -> Vec<Language> {
+                vec![]
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("gt_prepare_run_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("composer.json"), "{}").unwrap();
+
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: dir.clone(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        ctx.sub_projects = vec![SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "app".into(),
+            root_path: dir.clone(),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "composer.json".into(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        }];
+        let kb = OneKb(FrameworkKnowledge {
+            id: "myfw".into(),
+            language: Language::new(Language::PHP),
+            scope: KnowledgeScope::Framework,
+            detectors: vec![Detector::FileExists {
+                path: "composer.json".into(),
+                confidence: 0.9,
+            }],
+            // No loaders / rules: this test pins the detection wiring only.
+            ..Default::default()
+        });
+
+        super::run(&mut ctx, &kb, &StdFileSystem::new(), &NullParsers, &techstack()).expect("run ok");
+
+        let got = ctx.frameworks.get(&1).cloned().unwrap_or_default();
+        assert_eq!(
+            got,
+            vec!["myfw".to_string()],
+            "识别到的框架应记录到 ctx.frameworks：{got:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

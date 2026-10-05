@@ -146,7 +146,10 @@ pub fn writer_of(store: &Arc<dyn Persistence>) -> &dyn ProjectWriter {
 mod tests {
     use super::*;
     use gt_adapter_sqlite::SqliteStore;
-    use gt_domain::model::Phase;
+    use gt_domain::model::{
+        Language, NewSourceFile, NewSubProject, Phase, ProjectPatch, ProjectStatus,
+    };
+    use serde_json::Value;
     use std::path::PathBuf;
 
     /// `create`/`update` never read the clock, so a frozen clock is enough to build a service.
@@ -297,5 +300,179 @@ mod tests {
         assert_eq!(snap.reports.len(), 1);
         assert_eq!(snap.reports[0].phase, "Ingest");
         assert!(!snap.finished);
+    }
+
+    /// `sub_projects` delegates to `list_sub_projects`; seed two and confirm they all come back.
+    #[test]
+    fn sub_projects_delegates_to_store() {
+        let store = store();
+        let s = ProjectService::new(store.clone(), Arc::new(StubClock));
+        let p = s
+            .create(NewProject {
+                name: "sp".into(),
+                root_path: tmpdir("sp"),
+                description: None,
+                config: None,
+            })
+            .unwrap();
+        store
+            .replace_sub_projects(
+                p.id,
+                vec![
+                    NewSubProject {
+                        project_id: p.id,
+                        name: "be".into(),
+                        root_path: p.root_path.clone(),
+                        language: Language::new("php"),
+                        role: "backend".into(),
+                        detected_by: "composer.json".into(),
+                        frameworks: vec![],
+                        facts: Value::Null,
+                    },
+                    NewSubProject {
+                        project_id: p.id,
+                        name: "fe".into(),
+                        root_path: p.root_path.clone(),
+                        language: Language::new("js"),
+                        role: "frontend".into(),
+                        detected_by: "package.json".into(),
+                        frameworks: vec![],
+                        facts: Value::Null,
+                    },
+                ],
+            )
+            .unwrap();
+        let sps = s.sub_projects(p.id).unwrap();
+        assert_eq!(sps.len(), 2, "应返回两个子工程");
+        assert!(sps.iter().all(|x| x.project_id == p.id));
+    }
+
+    /// `files` delegates to `list_files`; seed two source files and confirm they all come back.
+    #[test]
+    fn files_delegates_to_store() {
+        let store = store();
+        let s = ProjectService::new(store.clone(), Arc::new(StubClock));
+        let p = s
+            .create(NewProject {
+                name: "fl".into(),
+                root_path: tmpdir("fl"),
+                description: None,
+                config: None,
+            })
+            .unwrap();
+        store
+            .replace_files(
+                p.id,
+                vec![
+                    NewSourceFile {
+                        project_id: p.id,
+                        sub_project_id: None,
+                        path: "a.php".into(),
+                        language: Language::new("php"),
+                        size_bytes: 10,
+                        content_hash: "h1".into(),
+                    },
+                    NewSourceFile {
+                        project_id: p.id,
+                        sub_project_id: None,
+                        path: "b.php".into(),
+                        language: Language::new("php"),
+                        size_bytes: 20,
+                        content_hash: "h2".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        let fs = s.files(p.id, None).unwrap();
+        assert_eq!(fs.len(), 2, "应返回两个源文件");
+        assert!(fs.iter().all(|x| x.project_id == p.id));
+    }
+
+    /// A valid patch (description change, no root override) must apply and return the updated project — the `update`
+    /// path that skips the `root_path` validation guard.
+    #[test]
+    fn update_applies_valid_patch() {
+        let s = svc();
+        let p = s
+            .create(NewProject {
+                name: "u2".into(),
+                root_path: tmpdir("u2"),
+                description: Some("old".into()),
+                config: None,
+            })
+            .unwrap();
+        let updated = s
+            .update(
+                p.id,
+                ProjectPatch {
+                    description: Some("new".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.description.as_deref(), Some("new"));
+    }
+
+    /// `delete` removes the project so a subsequent `get` is `NotFound`.
+    #[test]
+    fn delete_removes_project() {
+        let s = svc();
+        let p = s
+            .create(NewProject {
+                name: "d".into(),
+                root_path: tmpdir("d"),
+                description: None,
+                config: None,
+            })
+            .unwrap();
+        s.delete(p.id).unwrap();
+        assert!(
+            matches!(s.get(p.id), Err(DomainError::NotFound(_))),
+            "删除后 get 应为 NotFound"
+        );
+    }
+
+    /// `mark` delegates to `set_project_status`; the UI reads the status to drive the build-state badge.
+    #[test]
+    fn mark_sets_status() {
+        let s = svc();
+        let p = s
+            .create(NewProject {
+                name: "m".into(),
+                root_path: tmpdir("m"),
+                description: None,
+                config: None,
+            })
+            .unwrap();
+        s.mark(p.id, ProjectStatus::Ready).unwrap();
+        assert_eq!(s.get(p.id).unwrap().status, ProjectStatus::Ready);
+    }
+
+    /// `now` is a straight delegation to the clock (frozen at 0 here).
+    #[test]
+    fn now_reads_clock() {
+        let s = svc();
+        assert_eq!(s.now(), 0, "冻结时钟应返回 0");
+    }
+
+    /// The port-injection helpers must hand back trait objects that actually work against the store.
+    #[test]
+    fn reader_and_writer_of_resolve_traits() {
+        let store = store();
+        let s = ProjectService::new(store.clone(), Arc::new(StubClock));
+        let p = s
+            .create(NewProject {
+                name: "rw".into(),
+                root_path: tmpdir("rw"),
+                description: None,
+                config: None,
+            })
+            .unwrap();
+        let listed = reader_of(&store).list_projects().unwrap();
+        assert!(listed.iter().any(|x| x.id == p.id), "reader 端口应能列出工程");
+        writer_of(&store)
+            .set_project_status(p.id, ProjectStatus::Ready)
+            .unwrap();
+        assert_eq!(s.get(p.id).unwrap().status, ProjectStatus::Ready);
     }
 }

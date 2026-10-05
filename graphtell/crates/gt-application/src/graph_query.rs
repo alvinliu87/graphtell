@@ -190,10 +190,10 @@ mod tests {
 
     use serde_json::Value;
     use gt_domain::model::{
-        Annotation, Diagnostic, Edge, EdgeId, FileId, GraphDelta, NewProject, NewSourceFile,
-        NewSubProject, Node, NodeId, NodeKind, Project, ProjectId, ProjectPatch,
-        ProjectRuleConfig, ProjectStatus, SourceFile, SubProject, SubProjectId, SymbolEntry,
-        EdgeKind, Language, Phase, Span,
+        Annotation, AnnotationChannel, Diagnostic, Edge, EdgeId, FileId, GraphDelta, NewProject,
+        NewSourceFile, NewSubProject, Node, NodeId, NodeKind, Project, ProjectId, ProjectPatch,
+        ProjectRuleConfig, ProjectStatus, Severity, SourceFile, SubProject, SubProjectId,
+        SymbolEntry, EdgeKind, Language, Phase, Span,
     };
     use gt_domain::model::graph::NodeSummary;
     use gt_domain::port::{
@@ -210,8 +210,13 @@ mod tests {
         sev_counts: Vec<(String, u64)>,
         code_counts: Vec<(String, String, u64)>,
         symbols: Vec<SymbolEntry>,
+        annotations: Vec<Annotation>,
+        diag_excl: Vec<Diagnostic>,
         stats: GraphStats,
         last_filter: Mutex<Option<NodeFilter>>,
+        /// The last `RULE_CODE_PREFIX` (or other prefix) passed to an `*_excluding` call — lets tests assert the
+        /// service wires the compliance-violation exclusion through.
+        last_exclude: Mutex<Option<String>>,
     }
 
     fn node(id: i64, kind: &str, name: &str) -> Node {
@@ -303,7 +308,14 @@ mod tests {
         fn edge_kinds(&self, _: ProjectId) -> Result<Vec<String>> { unimplemented!() }
         fn node_kinds(&self, _: ProjectId) -> Result<Vec<String>> { unimplemented!() }
         fn annotation_kinds(&self, _: ProjectId) -> Result<Vec<(String, String)>> { unimplemented!() }
-        fn annotations_of(&self, _: NodeId) -> Result<Vec<Annotation>> { unimplemented!() }
+        fn annotations_of(&self, node: NodeId) -> Result<Vec<Annotation>> {
+            Ok(self
+                .annotations
+                .iter()
+                .filter(|a| a.node_id == node)
+                .cloned()
+                .collect())
+        }
         fn annotations_of_project(&self, _: ProjectId) -> Result<HashMap<i64, Vec<Annotation>>> {
             unimplemented!()
         }
@@ -328,8 +340,9 @@ mod tests {
     impl DiagnosticSink for MemStore {
         fn push_diagnostics(&self, _: &[Diagnostic]) -> Result<()> { unimplemented!() }
         fn list_diagnostics(&self, _: ProjectId, _: u32) -> Result<Vec<Diagnostic>> { unimplemented!() }
-        fn list_diagnostics_excluding(&self, _: ProjectId, _: &str, _: u32) -> Result<Vec<Diagnostic>> {
-            unimplemented!()
+        fn list_diagnostics_excluding(&self, _: ProjectId, prefix: &str, _: u32) -> Result<Vec<Diagnostic>> {
+            *self.last_exclude.lock().unwrap() = Some(prefix.to_string());
+            Ok(self.diag_excl.clone())
         }
         fn list_diagnostics_by_code(&self, _: ProjectId, _: &str, _: Option<&[SubProjectId]>, _: u32) -> Result<Vec<Diagnostic>> {
             unimplemented!()
@@ -338,10 +351,12 @@ mod tests {
         fn count_diagnostics_by_code(&self, _: ProjectId, _: &str, _: Option<&[SubProjectId]>) -> Result<Vec<(String, u64)>> {
             unimplemented!()
         }
-        fn count_diagnostics_excluding(&self, _: ProjectId, _: &str) -> Result<Vec<(String, u64)>> {
+        fn count_diagnostics_excluding(&self, _: ProjectId, prefix: &str) -> Result<Vec<(String, u64)>> {
+            *self.last_exclude.lock().unwrap() = Some(prefix.to_string());
             Ok(self.sev_counts.clone())
         }
-        fn count_diagnostics_by_code_excluding(&self, _: ProjectId, _: &str) -> Result<Vec<(String, String, u64)>> {
+        fn count_diagnostics_by_code_excluding(&self, _: ProjectId, prefix: &str) -> Result<Vec<(String, String, u64)>> {
+            *self.last_exclude.lock().unwrap() = Some(prefix.to_string());
             Ok(self.code_counts.clone())
         }
     }
@@ -467,5 +482,128 @@ mod tests {
         assert_eq!(f.name_contains, Some("foo".to_string()));
         assert_eq!(f.limit, Some(10));
         assert_eq!(f.offset, Some(5));
+    }
+
+    fn ann(node_id: i64, kind: &str) -> Annotation {
+        Annotation {
+            id: 1,
+            node_id: NodeId::new(node_id),
+            channel: AnnotationChannel("FkbMark".to_string()),
+            kind: kind.to_string(),
+            subkind: None,
+            confidence: 1.0,
+            evidence: Value::Null,
+            phase: Phase(Phase::CF_AST.to_string()),
+        }
+    }
+
+    fn diag(_id: i64, code: &str, sev: Severity) -> Diagnostic {
+        Diagnostic {
+            project_id: ProjectId::new(1),
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.to_string(),
+            severity: sev,
+            message: "m".to_string(),
+            location: None,
+            payload: Value::Null,
+        }
+    }
+
+    /// `stats` is a straight delegation to the store.
+    #[test]
+    fn stats_delegates_to_store() {
+        let mut store = MemStore::default();
+        store.stats = GraphStats {
+            nodes: 5,
+            edges: 7,
+            annotations: 1,
+            by_kind: Default::default(),
+            by_category: Default::default(),
+        };
+        let (s, _arc) = svc(store);
+        let st = s.stats(ProjectId::new(1)).unwrap();
+        assert_eq!(st.nodes, 5);
+        assert_eq!(st.edges, 7);
+        assert_eq!(st.annotations, 1);
+    }
+
+    /// `node` delegates to `get_node`: a present id returns the node, a missing id returns `None`.
+    #[test]
+    fn node_delegates_to_store() {
+        let mut store = MemStore::default();
+        store.nodes.insert(7, node(7, "Class", "Order"));
+        let (s, _arc) = svc(store);
+        assert_eq!(s.node(NodeId::new(7)).unwrap().unwrap().id, NodeId::new(7));
+        assert!(s.node(NodeId::new(8)).unwrap().is_none());
+    }
+
+    /// `neighbors` passes the requested direction straight through to `edges_of`, so Outgoing / Incoming / Both
+    /// each filter correctly (a node reachable only by an in-edge must not appear under Outgoing).
+    #[test]
+    fn neighbors_respects_direction() {
+        let mut store = MemStore::default();
+        store.edges = vec![edge(1, 1, 2, "Calls"), edge(2, 3, 1, "Calls")];
+        let (s, _arc) = svc(store);
+        assert_eq!(s.neighbors(NodeId::new(1), EdgeDirection::Outgoing).unwrap().len(), 1);
+        assert_eq!(s.neighbors(NodeId::new(1), EdgeDirection::Incoming).unwrap().len(), 1);
+        assert_eq!(s.neighbors(NodeId::new(1), EdgeDirection::Both).unwrap().len(), 2);
+    }
+
+    /// `annotations` delegates to `annotations_of` and the store's per-node filter applies.
+    #[test]
+    fn annotations_delegates_to_store() {
+        let mut store = MemStore::default();
+        store.annotations = vec![ann(7, "pii"), ann(7, "auth.public"), ann(8, "pii")];
+        let (s, _arc) = svc(store);
+        let a = s.annotations(NodeId::new(7)).unwrap();
+        assert_eq!(a.len(), 2, "只应返回节点 7 的注解");
+        assert!(a.iter().all(|x| x.node_id == NodeId::new(7)));
+    }
+
+    /// `symbols` delegates to `list_symbols`, which the store filters by table name.
+    #[test]
+    fn symbols_delegates_filtering_table() {
+        let mut store = MemStore::default();
+        store.symbols = vec![
+            SymbolEntry { project_id: ProjectId::new(1), table: "t1".into(), key: "a".into(), value: Value::Null },
+            SymbolEntry { project_id: ProjectId::new(1), table: "t1".into(), key: "b".into(), value: Value::Null },
+            SymbolEntry { project_id: ProjectId::new(1), table: "t2".into(), key: "c".into(), value: Value::Null },
+        ];
+        let (s, _arc) = svc(store);
+        let t1 = s.symbols(ProjectId::new(1), "t1").unwrap();
+        assert_eq!(t1.len(), 2);
+        assert!(t1.iter().all(|e| e.table == "t1"));
+        assert_eq!(s.symbols(ProjectId::new(1), "t2").unwrap().len(), 1);
+    }
+
+    /// `diagnostics` delegates to `list_diagnostics_excluding` and — critically — must pass `RULE_CODE_PREFIX` so
+    /// compliance violations are kept out of the build-diagnostics page (forgetting this silently double-counts them).
+    #[test]
+    fn diagnostics_excludes_rule_prefix_and_delegates() {
+        let mut store = MemStore::default();
+        store.diag_excl = vec![diag(1, "missing_root", Severity::Error)];
+        let (s, arc) = svc(store);
+        let ds = s.diagnostics(ProjectId::new(1), 50).unwrap();
+        assert_eq!(ds.len(), 1);
+        assert_eq!(
+            arc.last_exclude.lock().unwrap().clone(),
+            Some(RULE_CODE_PREFIX.to_string()),
+            "diagnostics 必须排除 rule: 前缀"
+        );
+    }
+
+    /// `diagnostics_summary` must also thread `RULE_CODE_PREFIX` into every `*_excluding` store call.
+    #[test]
+    fn diagnostics_summary_excludes_rule_prefix() {
+        let mut store = MemStore::default();
+        store.sev_counts = vec![("error".into(), 1)];
+        let (s, arc) = svc(store);
+        let _ = s.diagnostics_summary(ProjectId::new(1)).unwrap();
+        // the final `*_excluding` call before return is `count_diagnostics_by_code_excluding`
+        assert_eq!(
+            arc.last_exclude.lock().unwrap().clone(),
+            Some(RULE_CODE_PREFIX.to_string())
+        );
     }
 }

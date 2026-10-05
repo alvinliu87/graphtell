@@ -332,6 +332,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sub_relative_returns_file_when_sub_id_is_unknown() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        // A record whose sub id is not a registered sub-project: there is no sub root to strip against,
+        // so the path is returned unchanged rather than panicking or mis-stripping.
+        assert_eq!(
+            sub_relative(&ctx, Some(SubProjectId::new(999)), "crmeb/app/event.php"),
+            "crmeb/app/event.php"
+        );
+    }
+
     // ---- collect_rules: global rules are scoped by language; everything filtered by phase ----
 
     #[test]
@@ -991,6 +1003,61 @@ mod tests {
             file_stem: None,
         };
         assert_eq!(cfg_node(&ctx, &cfg), NodeId(1));
+    }
+
+    #[test]
+    fn cfg_node_returns_the_file_node_when_present() {
+        let mut ctx = PipelineContext::new(project());
+        let f = ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind::from("File"),
+            name: "event.php".into(),
+            fqn: None,
+            identity: None,
+            file_id: None,
+            span: span(),
+            language: Language::new("php"),
+            phase: Phase::new(""),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        });
+        ctx.ws.record_file_node("nope.php", f);
+        let cfg = ConfigRecord {
+            file: "nope.php".into(),
+            key_path: "k".into(),
+            value: FactValue::String("v".into()),
+            span: span(),
+            sub: None,
+            locale: None,
+            file_stem: None,
+        };
+        // Happy path: when a file node exists for the config's path, the annotation lands there rather
+        // than falling back to `NodeId(1)`.
+        assert_eq!(cfg_node(&ctx, &cfg), f);
+    }
+
+    #[test]
+    fn run_pre_config_rule_without_file_filter_matches_any_config() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        // A config entry whose file is nowhere the FKB predicted.
+        ctx.ws.configs.push(ConfigRecord {
+            file: "anything/at/all.php".into(),
+            key_path: "k".into(),
+            value: FactValue::String("v".into()),
+            span: span(),
+            sub: Some(SubProjectId::new(SUB)),
+            locale: None,
+            file_stem: None,
+        });
+        // `file: None` → the path filter is skipped (`!pattern.is_empty()` is false), so the rule matches
+        // every config entry of the phase regardless of where the file lives.
+        ctx.rules_by_sub
+            .insert(SUB, vec![config_rule("cfg0", "AnnotatePre", None, "cfg")]);
+        run_pre(&mut ctx);
+        assert!(ctx.ws.has_annotation(NodeId(1), "cfg"));
     }
 
     // ---------------------------------------------------------------- apply_inherit_rules

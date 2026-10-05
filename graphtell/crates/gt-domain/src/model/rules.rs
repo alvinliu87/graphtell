@@ -113,6 +113,10 @@ impl Default for StrOrParam {
 impl Serialize for StrOrParam {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
+            // A literal that itself starts with `$` has to be **escaped on the way out**: written raw it comes
+            // back in as a parameter reference (`Str("$x")` -> `"$x"` -> `Param("x")`), i.e. one round-trip
+            // through storage / the API silently turns a literal into a reference.
+            StrOrParam::Str(v) if v.starts_with(PARAM_PREFIX) => format!("{PARAM_PREFIX}{v}").serialize(s),
             StrOrParam::Str(v) => v.serialize(s),
             StrOrParam::Param(k) => format!("{PARAM_PREFIX}{k}").serialize(s),
         }
@@ -1080,5 +1084,538 @@ mod tests {
         assert_eq!(rep.violations[0].rule_id, "a");
         assert_eq!(rep.violations[1].rule_id, "b");
         assert_eq!(rep.violations[2].rule_id, "c");
+    }
+
+    // ===== Third pass: what the 14 tests above still leave open — the parameter **declaration** types
+    // (`ParamKind` / `RuleParam`), the two project-config DTOs, the `$`-escaping round-trip through storage,
+    // `resolve_str` / `render_with` fallback paths, every `CheckPredicate` variant having a YAML spelling, and
+    // the `Violation` <-> `Diagnostic` conversion on *malformed* input. =====
+
+    fn round_trip<T: Serialize + for<'de> Deserialize<'de>>(v: &T) -> T {
+        serde_json::from_value(serde_json::to_value(v).expect("serialize")).expect("deserialize")
+    }
+
+    /// `$$x` is the documented escape for the literal `$x` — but writing it out **unescaped** would read back as
+    /// a reference to parameter `x`, so serialization has to re-escape. This is the round-trip fidelity of every
+    /// rule that is stored and re-read (API edit, re-export, snapshot).
+    #[test]
+    fn str_or_param_escapes_dollar_literals_so_a_round_trip_is_stable() {
+        let cases = [
+            (StrOrParam::Str("$x".into()), json!("$$x")),
+            (StrOrParam::Str("$$x".into()), json!("$$$x")),
+            (StrOrParam::Str("plain".into()), json!("plain")),
+            (StrOrParam::Str("".into()), json!("")),
+            (StrOrParam::Param("needle".into()), json!("$needle")),
+        ];
+        for (v, wire) in cases {
+            assert_eq!(serde_json::to_value(&v).unwrap(), wire, "{v:?} 的写出形态");
+            assert!(matches!(&serde_json::from_value::<StrOrParam>(wire.clone()).unwrap(), got if std::mem::discriminant(got) == std::mem::discriminant(&v)));
+            // The invariant itself: writing then reading back yields the same value.
+            assert!(matches!(round_trip(&v), _), "round-trip 必须能再解析");
+        }
+        let again: StrOrParam = round_trip(&StrOrParam::Str("$x".into()));
+        assert!(matches!(again, StrOrParam::Str(ref s) if s == "$x"), "字面量不能被悄悄变成参数引用");
+        let again: StrOrParam = round_trip(&StrOrParam::Param("x".into()));
+        assert!(matches!(again, StrOrParam::Param(ref k) if k == "x"));
+
+        // Non-string scalars are accepted and kept as text rather than rejected.
+        assert!(matches!(
+            serde_json::from_value::<StrOrParam>(json!(true)).unwrap(),
+            StrOrParam::Str(ref s) if s == "true"
+        ));
+        assert!(matches!(
+            serde_json::from_value::<StrOrParam>(json!(null)).unwrap(),
+            StrOrParam::Str(ref s) if s == "null"
+        ));
+    }
+
+    /// Anything that is not a natural number degrades to `0` — a silent degradation, pinned so it stays a
+    /// deliberate choice rather than an accident somebody "fixes" into a panic.
+    #[test]
+    fn num_or_param_degrades_non_numeric_input_to_zero() {
+        let n: NumOrParam = serde_json::from_value(json!(-1)).unwrap();
+        assert!(matches!(n, NumOrParam::Num(0)), "负数降级为 0");
+        assert!(matches!(serde_json::from_value::<NumOrParam>(json!(1.5)).unwrap(), NumOrParam::Num(0)));
+        assert!(matches!(serde_json::from_value::<NumOrParam>(json!(true)).unwrap(), NumOrParam::Num(0)));
+        assert!(matches!(serde_json::from_value::<NumOrParam>(json!(null)).unwrap(), NumOrParam::Num(0)));
+        // A numeric **string** is still a number (YAML authors quote it by accident).
+        assert!(matches!(serde_json::from_value::<NumOrParam>(json!("42")).unwrap(), NumOrParam::Num(42)));
+        assert!(matches!(
+            serde_json::from_value::<NumOrParam>(json!("not-a-number")).unwrap(),
+            NumOrParam::Num(0)
+        ));
+    }
+
+    /// The declaration side of the parameter system: `ParamKind` spelling, and which `RuleParam` fields are
+    /// mandatory (a UI-served declaration with a missing `default` would silently evaluate as nothing).
+    #[test]
+    fn param_kind_and_rule_param_declaration_contract() {
+        for (kind, text) in [
+            (ParamKind::Number, "number"),
+            (ParamKind::String, "string"),
+            (ParamKind::Enum, "enum"),
+            (ParamKind::Bool, "bool"),
+        ] {
+            assert_eq!(serde_json::to_value(&kind).unwrap(), json!(text), "{text} 的序列化形态");
+            let back: ParamKind = serde_json::from_value(json!(text)).unwrap();
+            assert!(
+                std::mem::discriminant(&back) == std::mem::discriminant(&kind),
+                "{text} 必须读回同一个变体"
+            );
+        }
+        assert!(serde_json::from_value::<ParamKind>(json!("int")).is_err());
+
+        let p: RuleParam = serde_json::from_value(json!({
+            "key": "min_fan_in", "label": "Fan-in threshold", "kind": "number", "default": 50
+        }))
+        .unwrap();
+        assert_eq!(p.key, "min_fan_in");
+        assert!(p.description.is_none());
+        assert!(p.min.is_none() && p.max.is_none());
+        assert!(p.choices.is_empty());
+
+        let full: RuleParam = serde_json::from_value(json!({
+            "key": "level", "label": "Level", "description": "d", "kind": "enum",
+            "default": "warn", "min": 0.0, "max": 10.0, "choices": ["warn", "error"]
+        }))
+        .unwrap();
+        let back = round_trip(&full);
+        assert_eq!(back.description.as_deref(), Some("d"));
+        assert_eq!(back.min, Some(0.0));
+        assert_eq!(back.max, Some(10.0));
+        assert_eq!(back.choices, vec!["warn".to_string(), "error".to_string()]);
+
+        // `label` / `kind` / `default` are the floor: without them the UI has nothing to render.
+        assert!(serde_json::from_value::<RuleParam>(json!({ "key": "k" })).is_err());
+        assert!(serde_json::from_value::<RuleParam>(json!({ "key": "k", "label": "L", "kind": "number" })).is_err());
+    }
+
+    /// The two DTOs the rules API accepts / stores. In both, `Option` means "not decided": for
+    /// `ProjectRuleConfig.enabled` specifically, `None` is **inherit from YAML**, which is different from false.
+    #[test]
+    fn project_rule_config_and_patch_keep_none_and_false_apart() {
+        let c: ProjectRuleConfig = serde_json::from_value(json!({
+            "project_id": 1, "rule_id": "hot-table"
+        }))
+        .unwrap();
+        assert!(c.enabled.is_none(), "None = 继承 YAML 全局开关");
+        assert_eq!(c.options, Value::Null);
+
+        let explicit: ProjectRuleConfig = serde_json::from_value(json!({
+            "project_id": 1, "rule_id": "hot-table", "enabled": false, "options": { "min_fan_in": 5 }
+        }))
+        .unwrap();
+        assert_eq!(explicit.enabled, Some(false), "显式关闭必须与『继承』区分开");
+        let back = round_trip(&explicit);
+        assert_eq!(back.enabled, Some(false));
+        assert_eq!(back.options, json!({ "min_fan_in": 5 }));
+
+        let patch: RuleConfigPatch = serde_json::from_value(json!({ "rule_id": "hot-table" })).unwrap();
+        assert!(patch.enabled.is_none() && patch.options.is_none());
+        let patch: RuleConfigPatch = serde_json::from_value(json!({
+            "rule_id": "hot-table", "enabled": true, "options": null
+        }))
+        .unwrap();
+        assert_eq!(patch.enabled, Some(true));
+        assert!(patch.options.is_none(), "null 的 options 等同未提交");
+        assert!(serde_json::from_value::<RuleConfigPatch>(json!({})).is_err(), "rule_id 必需");
+    }
+
+    /// Resolution edges: a reference only reads **strings**; `resolve_str_opt` maps the empty string to `None`
+    /// because an empty name filter means "no filtering", not "match the empty name".
+    #[test]
+    fn string_resolution_reads_strings_only_and_empty_means_none() {
+        let mut table = ParamValues::new();
+        table.insert("name".into(), json!("order"));
+        table.insert("numeric".into(), json!(7));
+        table.insert("other".into(), json!({ "a": 1 }));
+
+        assert_eq!(resolve_str(&StrOrParam::Param("name".into()), &table), "order");
+        assert_eq!(
+            resolve_str(&StrOrParam::Param("numeric".into()), &table),
+            "",
+            "参数是数字时字符串解析取不到值，退化为空"
+        );
+        assert_eq!(resolve_str(&StrOrParam::Param("missing".into()), &table), "");
+        assert_eq!(resolve_str(&StrOrParam::Str("literal".into()), &table), "literal");
+
+        assert_eq!(resolve_str_opt(&None, &table), None);
+        assert_eq!(resolve_str_opt(&Some(StrOrParam::Str(String::new())), &table), None);
+        assert_eq!(resolve_str_opt(&Some(StrOrParam::Param("other".into())), &table), None);
+        assert_eq!(resolve_str_opt(&Some(StrOrParam::Param("name".into())), &table), Some("order".into()));
+    }
+
+    /// `{param:key}` falls back to the **declared default** when the effective table has no value for it — so a
+    /// report never claims a threshold that was not actually applied. A placeholder for a parameter the rule
+    /// does not declare is left verbatim (better visible than silently empty).
+    #[test]
+    fn render_with_falls_back_to_the_declared_default() {
+        let r = rule_with_params();
+        let empty_table = ParamValues::new();
+        let out = r.render_with("users", "Table", None, None, None, None, Some(&empty_table));
+        assert!(out.contains("in-edges >= 50"), "缺值时回落到声明默认值: {out}");
+
+        let undeclared: CheckRule = serde_json::from_value(json!({
+            "id": "r", "title": "T", "message": "limit {param:nope}"
+        }))
+        .unwrap();
+        let out = undeclared.render_with("n", "K", None, None, None, None, Some(&empty_table));
+        assert!(out.contains("{param:nope}"), "未声明的参数占位符原样保留: {out}");
+    }
+
+    /// Every `CheckPredicate` variant must keep a parseable YAML spelling — this list doubles as the inventory:
+    /// adding a variant means adding one row.
+    #[test]
+    fn every_check_predicate_variant_has_a_yaml_spelling() {
+        let cases: Vec<Value> = vec![
+            json!({ "kind_in": ["Table"] }),
+            json!({ "name_contains": "foo" }),
+            json!({ "name_starts_with": "get" }),
+            json!({ "fqn_contains": "controller" }),
+            json!({ "identity_contains": "POST /" }),
+            json!({ "text_contains": "order" }),
+            json!({ "has_annotation": "pii" }),
+            json!({ "no_annotation": "pii" }),
+            json!({ "property_is": { "name": "side", "value": "frontend" } }),
+            json!({ "property_contains": { "name": "rhs", "substring": "origin" } }),
+            json!({ "property_missing": "columns" }),
+            json!({ "no_capability": ["Authentication"] }),
+            json!({ "fan_in_gte": 5 }),
+            json!({ "fan_in_lte": 0 }),
+            json!({ "fan_out_gte": "$fan_out" }),
+            json!({ "no_incoming": "HandledBy" }),
+            json!({ "has_incoming": "CallsHttp" }),
+            json!({ "no_outgoing": "ReadsDb" }),
+            json!({ "has_outgoing": "Calls" }),
+            json!({ "all_of": [{ "kind_in": ["Table"] }] }),
+            json!({ "any_of": [{ "kind_in": ["Table"] }] }),
+            json!({ "not": { "has_outgoing": "Calls" } }),
+        ];
+        for c in cases {
+            let p: CheckPredicate =
+                serde_json::from_value(c.clone()).unwrap_or_else(|e| panic!("{c} must deserialize: {e}"));
+            // Each one also has to write back out, so re-exporting / re-reading a rule is possible.
+            let _ = round_trip(&p);
+        }
+        // `property_contains` needs both halves — half a condition would match nothing or everything.
+        assert!(serde_json::from_value::<CheckPredicate>(json!({ "property_is": { "name": "side" } })).is_err());
+        assert!(serde_json::from_value::<CheckPredicate>(json!({ "made_up": 1 })).is_err());
+    }
+
+    /// `Violation::location` tolerates partial information (a file without a line is legitimate), and absent
+    /// optional fields are **omitted** from the wire rather than written as `null`.
+    #[test]
+    fn violation_location_tolerates_partial_file_information() {
+        let base = Violation {
+            project_id: ProjectId(1),
+            rule_id: "r".into(),
+            title: "T".into(),
+            category: "c".into(),
+            severity: Severity::Info,
+            node_id: NodeId(1),
+            node_name: "n".into(),
+            node_kind: "K".into(),
+            message: "m".into(),
+            remediation: None,
+            file: None,
+            line: None,
+            sub_project_id: None,
+        };
+        assert_eq!(base.location(), None, "没有文件就没有定位");
+        assert_eq!(Violation { line: Some(3), ..base.clone() }.location(), None, "有行号但没有文件路径仍然无法定位");
+        assert_eq!(Violation { file: Some("a.php".into()), ..base.clone() }.location().as_deref(), Some("a.php"));
+
+        let v = serde_json::to_value(&base).unwrap();
+        for f in ["remediation", "file", "line", "sub_project_id"] {
+            assert!(v.get(f).is_none(), "{f} 为 None 时不应写出");
+        }
+    }
+
+    /// The conversion is the bridge to the diagnostic product; it has to be lossless **and** refuse foreign
+    /// payloads rather than inventing defaults (a silently rebuilt violation would look like a rule matched).
+    #[test]
+    fn violation_diagnostic_conversion_is_lossless_and_refuses_foreign_payloads() {
+        let v = Violation {
+            project_id: ProjectId(3),
+            rule_id: "no-handler".into(),
+            title: "No handler".into(),
+            category: "correctness".into(),
+            severity: Severity::Critical,
+            node_id: NodeId(11),
+            node_name: "Login/appleLogin".into(),
+            node_kind: "HttpContract".into(),
+            message: "no handler".into(),
+            remediation: Some("declare Route::post".into()),
+            file: Some("app/api/route/pc.php".into()),
+            line: Some(42),
+            sub_project_id: Some(SubProjectId(9)),
+        };
+        let d = v.to_diagnostic();
+        assert_eq!(d.code, format!("{RULE_CODE_PREFIX}no-handler"));
+        assert_eq!(d.phase, check_phase(), "违规诊断属于 Check 相位");
+        assert_eq!(d.phase.as_str(), Phase::CHECK);
+        assert_eq!(d.location.as_deref(), Some("app/api/route/pc.php:42"));
+
+        let back = Violation::from_diagnostic(&d).expect("必须能从诊断还原");
+        assert_eq!(back.project_id, v.project_id);
+        assert_eq!(back.rule_id, v.rule_id);
+        assert_eq!(back.title, v.title);
+        assert_eq!(back.category, v.category);
+        assert_eq!(back.severity, Severity::Critical);
+        assert_eq!(back.node_id, NodeId(11));
+        assert_eq!(back.node_name, v.node_name);
+        assert_eq!(back.node_kind, v.node_kind);
+        assert_eq!(back.message, v.message);
+        assert_eq!(back.remediation.as_deref(), Some("declare Route::post"));
+
+        // Foreign / truncated payloads must yield None instead of a half-built violation.
+        assert!(Violation::from_diagnostic(&Diagnostic {
+            payload: Value::Null,
+            ..d.clone()
+        })
+        .is_none());
+        assert!(Violation::from_diagnostic(&Diagnostic { payload: json!({}), ..d.clone() }).is_none());
+        assert!(Violation::from_diagnostic(&Diagnostic {
+            payload: json!({ "rule_id": "r" }),
+            ..d.clone()
+        })
+        .is_none(), "缺 node_id 拒绝还原");
+    }
+
+    /// `CheckReport` counts start at zero (a non-zero default would invent statistics), and the ordering is
+    /// total: severity desc, then rule id, then node name, including Critical / Info at the ends.
+    #[test]
+    fn check_report_defaults_are_zero_and_ordering_is_total() {
+        let r = CheckReport::default();
+        assert_eq!(r.rules_total, 0);
+        assert_eq!(r.rules_run, 0);
+        assert!(r.violations.is_empty());
+        assert!(r.by_severity.is_empty() && r.by_rule.is_empty());
+        assert!(r.rules_silent.is_empty());
+        assert!(r.rules_not_applicable.is_empty());
+        assert!(r.rules_unavailable.is_empty());
+        assert_eq!(r.duration_ms, 0);
+
+        let mk = |rule: &str, name: &str, sev: Severity| Violation {
+            project_id: ProjectId(1),
+            rule_id: rule.into(),
+            title: "T".into(),
+            category: "c".into(),
+            severity: sev,
+            node_id: NodeId(1),
+            node_name: name.into(),
+            node_kind: "K".into(),
+            message: "m".into(),
+            remediation: None,
+            file: None,
+            line: None,
+            sub_project_id: None,
+        };
+        let mut rep = CheckReport { violations: vec![
+            mk("z", "b-node", Severity::Info),
+            mk("z", "a-node", Severity::Info),
+            mk("a", "x", Severity::Critical),
+            mk("m", "y", Severity::Warning),
+        ], ..Default::default() };
+        rep.sort_violations();
+        let order: Vec<_> = rep.violations.iter().map(|v| (v.severity, v.rule_id.as_str(), v.node_name.as_str())).collect();
+        assert_eq!(
+            order,
+            vec![
+                (Severity::Critical, "a", "x"),
+                (Severity::Warning, "m", "y"),
+                (Severity::Info, "z", "a-node"),
+                (Severity::Info, "z", "b-node"),
+            ],
+            "排序需完全确定：严重度降序 → rule id → 节点名"
+        );
+    }
+
+    // ===== Fourth pass: residual contract gaps — `RuleRequirements` dedup / case-insensitivity / `is_empty`
+    // (the gate the engine uses to decide a rule can run), `referenced_params` covering every string / numeric
+    // parameter variant (incl. nested `not` / `all_of` / `any_of`), the serde round-trip of the persisted
+    // records `Violation` and `CheckReport` (None omission + the asymmetric `#[serde(default)]` on the two
+    // "skipped" lists), `render_with` substitution for non-number parameter values, and the `Default` impls of
+    // the two parameter enums. =====
+
+    /// `RuleRequirements` de-duplicates edges / annotations / capabilities **case-insensitively** (an FKB author
+    /// writing `Triggers` vs `triggers` must not split the evidence set), and `is_empty` is the gate the engine
+    /// uses to decide "this rule can still run".
+    #[test]
+    fn rule_requirements_dedup_case_insensitive_and_is_empty() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r", "title": "T", "message": "m",
+            "when": [
+                { "no_incoming": "Triggers" },
+                { "has_incoming": "triggers" },   // 同一条边，不同大小写 -> 去重
+                { "no_incoming": "Triggers" },     // 完全重复 -> 去重
+                { "has_annotation": "pii" },
+                { "no_annotation": "PII" },        // 同一注解，不同大小写 -> 去重
+                { "no_capability": ["Auth", "auth"] }
+            ]
+        }))
+        .unwrap();
+        let req = r.requirements();
+        assert_eq!(req.edges.len(), 1, "边大小写不敏感去重");
+        assert_eq!(req.annotations.len(), 1, "注解大小写不敏感去重");
+        assert_eq!(req.capabilities.len(), 1);
+        assert!(!req.is_empty());
+
+        // A predicate-free rule depends on nothing and must report empty (so the engine can still run it).
+        let empty: CheckRule = serde_json::from_value(json!({ "id": "e", "title": "T", "message": "m" })).unwrap();
+        assert!(empty.requirements().is_empty());
+        assert!(RuleRequirements::default().is_empty());
+    }
+
+    /// `referenced_params` must collect a `$key` from **every** string-bearing variant (`name_starts_with` /
+    /// `fqn_contains` / `identity_contains` / `text_contains`), the two numeric variants (`fan_in_lte` /
+    /// `fan_out_gte`), and recursively through `not` / `all_of` / `any_of`. The existing cases only exercised
+    /// `name_contains`, which is exactly the gap that lets a silently-undeclared param slip through.
+    #[test]
+    fn referenced_params_collects_every_string_and_numeric_variant() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r", "title": "T", "message": "m",
+            "params": [ { "key": "declared", "label": "L", "kind": "string", "default": "" } ],
+            "applies_to": { "name_contains": "$scope_name", "limit": "$scope_limit" },
+            "when": [
+                { "name_starts_with": "$p_nsw" },
+                { "fqn_contains": "$p_fqn" },
+                { "identity_contains": "$p_ident" },
+                { "text_contains": "$p_text" },
+                { "fan_in_lte": "$p_fil" },
+                { "fan_out_gte": "$p_fog" },
+                { "not": { "name_contains": "$p_not" } },
+                { "all_of": [ { "any_of": [ { "name_contains": "$p_nested" } ] } ] }
+            ]
+        }))
+        .unwrap();
+        let refs = r.referenced_params();
+        for expected in [
+            "scope_name", "scope_limit", "p_nsw", "p_fqn", "p_ident", "p_text",
+            "p_fil", "p_fog", "p_not", "p_nested",
+        ] {
+            assert!(refs.iter().any(|x| x == expected), "漏收集 {expected}: {refs:?}");
+        }
+        // `declared` is never referenced, so every collected key is undeclared.
+        let undeclared: std::collections::HashSet<_> = r.undeclared_params().into_iter().collect();
+        assert_eq!(undeclared.len(), 10);
+        assert!(!undeclared.contains("declared"));
+    }
+
+    /// `Violation` is a persisted / transmitted record: `Option` fields marked `skip_serializing_if` must be
+    /// omitted from the wire, and a full / partial violation must round-trip exactly (otherwise a stored
+    /// violation silently drops its `remediation` / `sub_project_id`).
+    #[test]
+    fn violation_serde_round_trip_skips_none_and_round_trips() {
+        let v = Violation {
+            project_id: ProjectId(5),
+            rule_id: "r5".into(),
+            title: "T5".into(),
+            category: "security".into(),
+            severity: Severity::Warning,
+            node_id: NodeId(42),
+            node_name: "login".into(),
+            node_kind: "Method".into(),
+            message: "m".into(),
+            remediation: None,
+            file: None,
+            line: None,
+            sub_project_id: None,
+        };
+        let wire = serde_json::to_value(&v).unwrap();
+        for f in ["remediation", "file", "line", "sub_project_id"] {
+            assert!(wire.get(f).is_none(), "{f} 为 None 不写出");
+        }
+        let back: Violation = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.project_id, v.project_id);
+        assert_eq!(back.rule_id, v.rule_id);
+        assert_eq!(back.node_id, v.node_id);
+        assert_eq!(back.remediation, None);
+        assert_eq!(back.file, None);
+        assert_eq!(back.line, None);
+        assert_eq!(back.sub_project_id, None);
+
+        // A fully-populated violation also round-trips, and the None-skip fields are present on the wire.
+        let full = Violation {
+            remediation: Some("fix".into()),
+            file: Some("a.php".into()),
+            line: Some(7),
+            sub_project_id: Some(SubProjectId(3)),
+            ..v.clone()
+        };
+        let wire_full = serde_json::to_value(&full).unwrap();
+        for f in ["remediation", "file", "line", "sub_project_id"] {
+            assert!(wire_full.get(f).is_some(), "{f} 非 None 须写出");
+        }
+        let back: Violation = serde_json::from_value(wire_full).unwrap();
+        assert_eq!(back.remediation.as_deref(), Some("fix"));
+        assert_eq!(back.file.as_deref(), Some("a.php"));
+        assert_eq!(back.line, Some(7));
+        assert_eq!(back.sub_project_id, Some(SubProjectId(3)));
+    }
+
+    /// `CheckReport` is the persisted summary. The two "skipped" lists (`rules_not_applicable` /
+    /// `rules_unavailable`) carry `#[serde(default)]` and must survive a round-trip *and* default to empty when
+    /// omitted on the wire — while `rules_silent` carries no default and is therefore **required** on the wire.
+    #[test]
+    fn check_report_serde_round_trip_keeps_default_lists_empty() {
+        let rep = CheckReport {
+            project_id: ProjectId(2),
+            rules_total: 3,
+            rules_run: 2,
+            violations: vec![],
+            by_severity: BTreeMap::new(),
+            by_rule: BTreeMap::new(),
+            rules_silent: vec![],
+            rules_not_applicable: vec!["php-only".into()],
+            rules_unavailable: vec!["needs-pii".into()],
+            duration_ms: 11,
+        };
+        let back: CheckReport = round_trip(&rep);
+        assert_eq!(back.rules_not_applicable, vec!["php-only".to_string()]);
+        assert_eq!(back.rules_unavailable, vec!["needs-pii".to_string()]);
+
+        // When the default-bearing lists are omitted on the wire they deserialize to empty (not absent / panic).
+        // `rules_silent` (no default) must still be present for deserialize to succeed.
+        let minimal: CheckReport = serde_json::from_value(json!({
+            "project_id": 2, "rules_total": 0, "rules_run": 0, "violations": [],
+            "by_severity": {}, "by_rule": {}, "rules_silent": [], "duration_ms": 0
+        }))
+        .unwrap();
+        assert!(minimal.rules_not_applicable.is_empty());
+        assert!(minimal.rules_unavailable.is_empty());
+    }
+
+    /// `render_with` substitutes `{param:key}` for **non-number** effective values too — a `bool` renders as its
+    /// text, a `string` verbatim, and any other JSON value as its `to_string()` — so a tuned toggle / label shows
+    /// up in the copy rather than a stale default.
+    #[test]
+    fn render_with_substitutes_bool_string_and_other_param_values() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r", "title": "T",
+            "params": [
+                { "key": "b", "label": "B", "kind": "bool", "default": false },
+                { "key": "s", "label": "S", "kind": "string", "default": "" },
+                { "key": "o", "label": "O", "kind": "string", "default": "" }
+            ],
+            "message": "enable {param:b} level {param:s} meta {param:o}"
+        }))
+        .unwrap();
+        let mut table = ParamValues::new();
+        table.insert("b".into(), json!(true));
+        table.insert("s".into(), json!("high"));
+        table.insert("o".into(), json!({ "k": 1 }));
+        let out = r.render_with("n", "K", None, None, None, None, Some(&table));
+        assert!(out.contains("enable true"), "actual: {out}");
+        assert!(out.contains("level high"), "actual: {out}");
+        assert!(out.contains("meta {\"k\":1}"), "actual: {out}");
+    }
+
+    /// The Rust-side `Default` of the two parameter enums is the literal / zero baseline, and must not drift from
+    /// the value the engine treats as "no parameter" (e.g. `resolve_num`/`resolve_str` fall back to 0 / "").
+    #[test]
+    fn param_enum_defaults_are_the_literal_baseline() {
+        assert!(matches!(NumOrParam::default(), NumOrParam::Num(0)));
+        assert!(matches!(StrOrParam::default(), StrOrParam::Str(ref s) if s.is_empty()));
     }
 }

@@ -1447,12 +1447,22 @@ fn is_function_node(ctx: &PipelineContext, id: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::InheritRecord;
+    use crate::workspace::{InheritRecord, PendingLink};
     use gt_adapter_fkb::YamlKnowledgeBase;
     use gt_domain::model::{
-        DbVerbsSpec, Language, MagicDelegationSpec, NewEdge, NewNode, Project, ProjectConfig,
-        ProjectId, ProjectStatus, Span,
+        AliasEntry, DbVerbsSpec, Language, MagicDelegationSpec, NamespacePolicy, NewEdge, NewNode,
+        Project, ProjectConfig, ProjectId, ProjectStatus, ResolveAs, Span,
     };
+
+    /// The **default** notation policy is the empty one (a stack that declares nothing must not borrow
+    /// PHP's), so anything reading `member_separator` / `ns_separators` needs an explicit policy.
+    fn php_policy() -> NamespacePolicy {
+        NamespacePolicy {
+            member_separator: "::".to_string(),
+            ns_separators: vec!['\\'],
+            ..Default::default()
+        }
+    }
 
     fn new_ctx() -> PipelineContext {
         PipelineContext::new(Project {
@@ -1877,5 +1887,389 @@ mod tests {
             None,
             "变量接收者不应被解析（宁可缺边也不错边）"
         );
+    }
+
+    // ------------------------------------------------------- receiver_type_fqn
+    //
+    // The variable-type resolver is what lets `$services->appAuth()` reach the real method, and the
+    // biggest function in this file with **no** direct coverage. Its receiver forms are language
+    // knowledge (`$this` / `self` / `parent` / `(new X)`, Java's bare injected field), so each is pinned.
+
+    /// `$this` / `self` / `static` all mean "the class that defines this method"; `parent` means its
+    /// **direct parent** — letting a class-level `MapsTo` surface along the call chain.
+    #[test]
+    fn receiver_type_fqn_resolves_this_self_static_and_parent() {
+        let mut ctx = new_ctx();
+        ctx.lang_policy_default = php_policy();
+        let owner_fqn = r"app\M::run";
+
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "$this", None),
+            Some(r"app\M".to_string())
+        );
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "self", None),
+            Some(r"app\M".to_string())
+        );
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "static", None),
+            Some(r"app\M".to_string())
+        );
+
+        ctx.ws.record_supertype(r"app\M", r"app\Base");
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "parent", None),
+            Some(r"app\Base".to_string()),
+            "parent 应取定义类的直接父类"
+        );
+        // A class with no recorded parent: `parent` cannot be guessed.
+        assert_eq!(receiver_type_fqn(&ctx, r"app\Other::run", "parent", None), None);
+    }
+
+    /// A typed property (`$this->dao`, found by walking up to the declaring parent) and an injected
+    /// variable (param type hint first, then in-method `$x = new Y()` inference).
+    #[test]
+    fn receiver_type_fqn_resolves_typed_property_and_injected_variable() {
+        let mut ctx = new_ctx();
+        ctx.lang_policy_default = php_policy();
+        let owner_fqn = r"app\services\UserServices::getList";
+
+        ctx.ws
+            .set_prop_type(r"app\services\UserServices", "dao", r"app\dao\UserDao");
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "$this->dao", None),
+            Some(r"app\dao\UserDao".to_string())
+        );
+
+        // Declared on the parent -> found by walking up the inheritance chain (cycle-safe).
+        ctx.ws
+            .record_supertype(r"app\services\UserServices", r"app\services\BaseServices");
+        ctx.ws
+            .set_prop_type(r"app\services\BaseServices", "repo", r"app\repo\UserRepo");
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "$this->repo", None),
+            Some(r"app\repo\UserRepo".to_string()),
+            "父类声明的属性应沿继承链上溯找到"
+        );
+
+        ctx.ws.add_param_type(owner_fqn, "svc", r"app\Service");
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "$svc", None),
+            Some(r"app\Service".to_string()),
+            "参数类型提示优先"
+        );
+        ctx.ws.set_local_type(owner_fqn, "local", r"app\Local");
+        assert_eq!(
+            receiver_type_fqn(&ctx, owner_fqn, "$local", None),
+            Some(r"app\Local".to_string()),
+            "其次用方法内赋值推断"
+        );
+        // Untyped variable -> not guessed.
+        assert_eq!(receiver_type_fqn(&ctx, owner_fqn, "$unknown", None), None);
+    }
+
+    /// A bare receiver that is a known type resolves directly; a dotted one (`Model.objects`, Django)
+    /// falls back to its **head**; anything else stays unresolved rather than being guessed.
+    #[test]
+    fn receiver_type_fqn_prefers_a_known_type_then_reduces_the_dotted_head() {
+        let mut ctx = new_ctx();
+        ctx.lang_policy_default = php_policy();
+        let _cls = add_node(&mut ctx, "Class", r"app\model\User");
+        assert_eq!(
+            receiver_type_fqn(&ctx, r"app\Ctrl::index", r"app\model\User", None),
+            Some(r"app\model\User".to_string())
+        );
+
+        let mut java = new_ctx();
+        java.lang_policy_default = NamespacePolicy {
+            member_separator: ".".to_string(),
+            ns_separators: vec!['.'],
+            ..Default::default()
+        };
+        let _model = add_node(&mut java, "Class", "app.model.User");
+        assert_eq!(
+            receiver_type_fqn(&java, "app.Ctrl.index", "app.model.User.objects", None),
+            Some("app.model.User".to_string()),
+            "整体解析不到时，点号接收者应回退到头部"
+        );
+
+        assert_eq!(
+            receiver_type_fqn(&java, "app.Ctrl.index", "nope", None),
+            None,
+            "既不是类型也不是字段时应返回 None"
+        );
+    }
+
+    // ------------------------------------------------------- class-literal resolution
+
+    /// `Foo::class` (PHP) / `Foo.class` (Java): the suffix is **`<member separator>class`**, never a
+    /// hard-coded `::class` — with an empty separator the suffix would bite off a bare `class` tail.
+    #[test]
+    fn resolve_class_node_strips_the_class_literal_suffix() {
+        let mut ctx = new_ctx();
+        ctx.lang_policy_default = php_policy();
+        let cls = add_node(&mut ctx, "Class", r"app\Listener");
+
+        assert_eq!(
+            resolve_class_node(&ctx, r"app\Listener::class", Some("app/x.php"), None),
+            Some(cls)
+        );
+        // A leading namespace separator is trimmed.
+        assert_eq!(
+            resolve_class_node(&ctx, r"\app\Listener", Some("app/x.php"), None),
+            Some(cls)
+        );
+        assert_eq!(
+            resolve_class_node(&ctx, r"app\Nope", Some("app/x.php"), None),
+            None,
+            "未知类不应被猜"
+        );
+    }
+
+    // ------------------------------------------------------- apply_resolution
+
+    /// Each strategy lays its own edge kind, and a miss is reported **except** for Facade /
+    /// VariableType, whose misses are expected (vendor is excluded by P0; most receivers have no type).
+    #[test]
+    fn apply_resolution_lays_the_strategy_edge_and_reports_unresolved() {
+        let phase = Phase(Phase::RESOLVE.to_string());
+        let mut ctx = new_ctx();
+        let owner = add_node(&mut ctx, "Method", r"app\M::run");
+        let call = add_node(&mut ctx, "CallSite", "c");
+        let target = add_node(&mut ctx, "Method", r"app\T::go");
+
+        let mut loc = locator(owner, call, r"app\M::run");
+        loc.strategy = ResolveStrategy::VariableType;
+        apply_resolution(&mut ctx, &loc, &Resolution::resolved(ResolveTier::Exact, target, "t"), &phase);
+        assert!(has_edge(&ctx, owner, target, EdgeKind::CALLS), "实例方法调用应落 Calls");
+
+        loc.strategy = ResolveStrategy::Event;
+        apply_resolution(&mut ctx, &loc, &Resolution::resolved(ResolveTier::Alias, target, "ev"), &phase);
+        assert!(has_edge(&ctx, owner, target, EdgeKind::TRIGGERS));
+
+        loc.strategy = ResolveStrategy::Handler;
+        apply_resolution(&mut ctx, &loc, &Resolution::resolved(ResolveTier::Convention, target, "h"), &phase);
+        assert!(has_edge(&ctx, owner, target, EdgeKind::HANDLED_BY));
+
+        let before = ctx.ws.diagnostics.len();
+        loc.strategy = ResolveStrategy::Container;
+        apply_resolution(&mut ctx, &loc, &Resolution::unknown("nope"), &phase);
+        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "容器未解析应报 UnresolvedLink");
+
+        let before2 = ctx.ws.diagnostics.len();
+        loc.strategy = ResolveStrategy::Facade;
+        apply_resolution(&mut ctx, &loc, &Resolution::unknown("nope"), &phase);
+        loc.strategy = ResolveStrategy::VariableType;
+        apply_resolution(&mut ctx, &loc, &Resolution::unknown("nope"), &phase);
+        assert_eq!(
+            ctx.ws.diagnostics.len(),
+            before2,
+            "Facade / VariableType 未解析属预期，不应报诊断"
+        );
+    }
+
+    // ------------------------------------------------------- pending links (P5 → P7)
+
+    /// P5 leaves route handlers as pending links; P7 turns them into real edges and must **report** a
+    /// handler that is not in the graph (a route pointing at a missing handler is a runtime 500).
+    #[test]
+    fn resolve_pending_links_lays_the_edge_and_reports_a_miss() {
+        let phase = Phase(Phase::RESOLVE.to_string());
+        let mut ctx = new_ctx();
+        let route = add_node(&mut ctx, "Route", "GET /user");
+        let handler = add_node(&mut ctx, "Class", r"app\api\controller\User");
+
+        ctx.ws.pending_links.push(PendingLink {
+            from: route,
+            kind: EdgeKind(EdgeKind::HANDLED_BY.to_string()),
+            raw: r"app\api\controller\User".into(),
+            method: None,
+            resolve: ResolveAs::MethodRef,
+            confidence: 0.9,
+            sub: None,
+            file: "app/api/route/pc.php".into(),
+            line: 10,
+        });
+        resolve_pending_links(&mut ctx, &phase);
+        assert!(has_edge(&ctx, route, handler, EdgeKind::HANDLED_BY), "pending link 应解析成边");
+        assert!(ctx.ws.pending_links.is_empty(), "pending 应被取走，不残留");
+
+        ctx.ws.pending_links.push(PendingLink {
+            from: route,
+            kind: EdgeKind(EdgeKind::HANDLED_BY.to_string()),
+            raw: "NoSuch/Nope".into(),
+            method: None,
+            resolve: ResolveAs::MethodRef,
+            confidence: 0.9,
+            sub: None,
+            file: "app/api/route/pc.php".into(),
+            line: 11,
+        });
+        let before = ctx.ws.diagnostics.len();
+        resolve_pending_links(&mut ctx, &phase);
+        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "指向不存在 handler 的路由应被报告");
+    }
+
+    // ------------------------------------------------------- emit_db_edge
+
+    /// Laying a DB action edge also (a) records the `file:line` the view jumps to, (b) registers the P8
+    /// propagation seed, and (c) tags the **call site** `db-query` / `db-write` — the N+1 rule judges per
+    /// call site, and read / write are two different fixes so they stay separate annotations.
+    #[test]
+    fn emit_db_edge_lays_edge_seed_and_call_site_annotation() {
+        let mut ctx = new_ctx();
+        let table = add_node(&mut ctx, "Table", "user");
+        let owner = add_node(&mut ctx, "Method", r"app\M::run");
+        let call = add_node(&mut ctx, "CallSite", "update");
+
+        emit_db_edge(
+            &mut ctx,
+            owner,
+            Some(call),
+            None,
+            r"app\M::run",
+            table,
+            &EdgeKind(EdgeKind::WRITES_DB.to_string()),
+            "update",
+            0.9,
+            "app/x.php:12",
+        );
+
+        assert!(has_edge(&ctx, owner, table, EdgeKind::WRITES_DB));
+        let edge = ctx
+            .ws
+            .edges()
+            .iter()
+            .find(|e| e.from_id == owner && e.to_id == table)
+            .expect("应有落下的边");
+        assert_eq!(
+            edge.properties["evidence"]["location"],
+            serde_json::json!("app/x.php:12"),
+            "evidence.location 是视图跳转到调用点的依据"
+        );
+        assert_eq!(ctx.propagation_seeds.len(), 1, "应注册 P8 传播种子");
+        assert_eq!(ctx.propagation_seeds[0].kind, EdgeKind::WRITES_DB.to_string());
+        assert!(
+            ctx.ws.annotations_of(call).iter().any(|a| a.kind == "db-write"),
+            "写调用点应标注 db-write"
+        );
+    }
+
+    // ------------------------------------------------------- the resolution funnel's container tier
+
+    /// `app()->make(x)`: literal FQN (L1) → container registry (L2); a closure binding and a total miss
+    /// must both degrade to "unknown", never to a guess.
+    #[test]
+    fn resolve_container_falls_through_the_tiers() {
+        let mut ctx = new_ctx();
+        ctx.lang_policy_default = php_policy();
+        let owner = add_node(&mut ctx, "Method", r"app\M::run");
+        let call = add_node(&mut ctx, "CallSite", "make");
+        let svc = add_node(&mut ctx, "Class", r"app\Service");
+
+        // L1: literal FQN
+        let mut loc = locator(owner, call, r"app\M::run");
+        loc.strategy = ResolveStrategy::Container;
+        loc.raw = r"app\Service".into();
+        let res = resolve_container(&mut ctx, &loc);
+        assert_eq!(res.candidates, vec![svc]);
+        assert!(matches!(res.tier, ResolveTier::Exact), "字面 FQN 应算 Exact");
+
+        // L2: container registry (the file name is whatever FKB declared; the kernel only knows "a binding")
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "container_bindings",
+            "logger",
+            serde_json::json!({ "value": r"app\Service" }),
+        );
+        let mut loc2 = locator(owner, call, r"app\M::run");
+        loc2.strategy = ResolveStrategy::Container;
+        loc2.raw = "logger".into();
+        let res2 = resolve_container(&mut ctx, &loc2);
+        assert_eq!(res2.candidates, vec![svc], "容器绑定应解析到目标");
+        assert!(matches!(res2.tier, ResolveTier::Registry), "容器绑定应算 Registry");
+
+        // Closure binding: no class target -> unknown.
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "container_bindings",
+            "closure",
+            serde_json::json!({}),
+        );
+        let mut loc3 = locator(owner, call, r"app\M::run");
+        loc3.strategy = ResolveStrategy::Container;
+        loc3.raw = "closure".into();
+        assert!(resolve_container(&mut ctx, &loc3).candidates.is_empty());
+
+        // Nothing at all -> unknown.
+        let mut loc4 = locator(owner, call, r"app\M::run");
+        loc4.strategy = ResolveStrategy::Container;
+        loc4.raw = "nope".into();
+        assert!(resolve_container(&mut ctx, &loc4).candidates.is_empty());
+    }
+
+    // ------------------------------------------------------- the alias tier (L3)
+
+    /// `event('x')` / `Event::listen('x', …)` read the `event_name` alias index, `$o->status_text` the
+    /// `accessor` index, and `Facade::get()` the FacadeMap loaded by P3. An unregistered event must be
+    /// reported — a registry whose key set is empty would otherwise mark every listener as dead code.
+    #[test]
+    fn alias_tier_resolvers_hit_their_index_and_report_misses() {
+        let mut ctx = new_ctx();
+        ctx.lang_policy_default = php_policy();
+        let owner = add_node(&mut ctx, "Method", r"app\M::run");
+        let call = add_node(&mut ctx, "CallSite", "c");
+        let event = add_node(&mut ctx, "Event", "order.created");
+        let getter = add_node(&mut ctx, "Method", "getStatusTextAttr");
+        let facade_target = add_node(&mut ctx, "Class", r"app\Cache");
+
+        ctx.ws.put_alias(AliasEntry {
+            project_id: ProjectId(1),
+            namespace: "event_name".into(),
+            key: "order.created".into(),
+            qualifier: None,
+            node_id: event,
+            confidence: 1.0,
+            evidence: serde_json::Value::Null,
+        });
+        ctx.ws.put_alias(AliasEntry {
+            project_id: ProjectId(1),
+            namespace: "accessor".into(),
+            key: "status_text".into(),
+            qualifier: None,
+            node_id: getter,
+            confidence: 1.0,
+            evidence: serde_json::Value::Null,
+        });
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "facade_map",
+            "Cache",
+            serde_json::json!({ "target": r"app\Cache" }),
+        );
+
+        let mut loc = locator(owner, call, r"app\M::run");
+        loc.strategy = ResolveStrategy::Event;
+        loc.raw = "order.created".into();
+        assert_eq!(resolve_event(&mut ctx, &loc).candidates, vec![event]);
+
+        loc.strategy = ResolveStrategy::EventListen;
+        assert_eq!(resolve_event_listen(&mut ctx, &loc).candidates, vec![event]);
+
+        loc.strategy = ResolveStrategy::Accessor;
+        loc.raw = "status_text".into();
+        assert_eq!(resolve_accessor(&mut ctx, &loc).candidates, vec![getter]);
+        loc.raw = "nope".into();
+        assert!(resolve_accessor(&mut ctx, &loc).candidates.is_empty());
+
+        loc.strategy = ResolveStrategy::Facade;
+        loc.raw = "Cache".into();
+        assert_eq!(resolve_facade(&mut ctx, &loc).candidates, vec![facade_target]);
+
+        let before = ctx.ws.diagnostics.len();
+        loc.strategy = ResolveStrategy::Event;
+        loc.raw = "never.fired".into();
+        assert!(resolve_event(&mut ctx, &loc).candidates.is_empty());
+        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "未注册事件应报诊断");
     }
 }

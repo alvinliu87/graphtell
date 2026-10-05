@@ -123,6 +123,7 @@ mod tests {
         for want in ["php", "java", "python", "javascript", "typescript", "json"] {
             assert!(langs.iter().any(|l| l == want), "缺少语言 `{want}`: {langs:?}");
         }
+        assert_eq!(langs.len(), 6, "不应注册多余或被重复的语言: {langs:?}");
         let mut sorted = langs.clone();
         sorted.sort();
         assert_eq!(langs, sorted, "supported_languages 必须有序（顺序会传到上层枚举）");
@@ -183,5 +184,84 @@ mod tests {
             .parser_for(&Language::new(Language::JAVASCRIPT))
             .expect("javascript 应有解析器");
         assert!(js.extensions().contains(&"js"));
+    }
+
+    /// `Default::default()` must delegate to `new()` so both constructors agree on the language set —
+    /// otherwise `DefaultParserRegistry::default()` (used widely by callers) could silently diverge.
+    #[test]
+    fn default_delegates_to_new() {
+        let a = DefaultParserRegistry::new();
+        let b = DefaultParserRegistry::default();
+        assert_eq!(
+            a.supported_languages(),
+            b.supported_languages(),
+            "Default::default() 必须与 new() 注册相同语言集"
+        );
+    }
+
+    /// `parser_for` returns a parser for every registered language — guards the
+    /// `map(|p| p.as_ref())` conversion and that lookups are not silently cross-wired.
+    ///
+    /// Note: TypeScript is served by the **frontend** parser, whose `language()` reports `javascript`
+    /// (the same grammar family), so it deliberately does *not* equal the lookup key `typescript`.
+    #[test]
+    fn parser_for_returns_a_parser_for_each_language() {
+        let reg = DefaultParserRegistry::new();
+        for want in ["php", "java", "python", "javascript", "json"] {
+            let p = reg
+                .parser_for(&Language::new(want))
+                .unwrap_or_else(|| panic!("应注册 {want}"));
+            assert_eq!(
+                p.language().as_str(),
+                want,
+                "parser_for({want}) 返回的解析器语言应一致"
+            );
+        }
+        // typescript resolves to the frontend parser (reports "javascript") but still serves ts/tsx.
+        let ts = reg
+            .parser_for(&Language::new(Language::TYPESCRIPT))
+            .expect("typescript 应有解析器");
+        assert_eq!(
+            ts.language().as_str(),
+            "javascript",
+            "typescript 由前端解析器提供，其 language() 应为 javascript"
+        );
+        assert!(ts.extensions().contains(&"ts"));
+        assert!(ts.extensions().contains(&"tsx"));
+    }
+
+    /// `supported_languages` reflects registrations: a brand-new language appears, and re-registering an
+    /// existing one does **not** create a duplicate entry (the map is keyed by language, so override must
+    /// replace, not append).
+    #[test]
+    fn supported_languages_reflects_registration_without_duplicates() {
+        let mut reg = DefaultParserRegistry::new();
+        let base_count = reg.supported_languages().len();
+
+        reg.register(Box::new(StubParser { lang: "cobol".into(), exts: &[".cbl"] }));
+        let with_cobol = reg.supported_languages();
+        assert_eq!(with_cobol.len(), base_count + 1, "新增语言应使列表 +1");
+        assert!(with_cobol.iter().any(|l| l.as_str() == "cobol"));
+
+        reg.register(Box::new(StubParser { lang: "php".into(), exts: &[".stub"] }));
+        let after_override = reg.supported_languages();
+        assert_eq!(
+            after_override.len(),
+            base_count + 1,
+            "同语言覆盖不应产生重复条目"
+        );
+        assert_eq!(
+            after_override.iter().filter(|l| l.as_str() == "php").count(),
+            1,
+            "php 在 supported_languages 中应只出现一次"
+        );
+    }
+
+    /// `require_parser` hands back the concrete parser for a supported language, not merely an `Ok`.
+    #[test]
+    fn require_parser_returns_the_concrete_parser() {
+        let reg = DefaultParserRegistry::new();
+        let p = require_parser(&reg, &Language::new(Language::JAVA)).unwrap();
+        assert_eq!(p.language().as_str(), "java");
     }
 }

@@ -290,4 +290,83 @@ mod tests {
         assert_eq!(facts.config_entries.len(), 1, "只有字符串条目应成为页面");
         assert_eq!(facts.config_entries[0].key_path, "pages.0");
     }
+
+    // ---- the metadata the kernel reads, and the remaining `parse` guards ----
+
+    /// The pluggable-language surface. `member_separator` is declared explicitly (**not** inherited from a
+    /// default) precisely so no other language's spelling (`::`) can leak into JSON facts.
+    #[test]
+    fn parser_declares_the_json_notation() {
+        let p = JsonParser::new().unwrap();
+        assert_eq!(p.language(), Language::new("json"));
+        assert_eq!(p.extensions(), &["json"]);
+        assert_eq!(p.namespace_separator(), &['.']);
+        assert_eq!(p.member_separator(), ".", "JSON 没有类，但分隔符仍须显式声明而非继承默认值");
+        assert!(p.manifest_files().is_empty(), "pages.json 不是任何栈的 manifest");
+        assert!(p.exclude_dirs().is_empty());
+    }
+
+    /// A JSON document whose **top level is not an object** has no `pages` to speak of — a distinct branch
+    /// from "an object without a `pages` key".
+    #[test]
+    fn top_level_non_object_json_is_ignored() {
+        for src in ["[1, 2, 3]", r#""just a string""#, "null", "42"] {
+            let facts = parse_src(src);
+            assert!(
+                facts.config_entries.is_empty(),
+                "顶层非对象应直接返回空: {src} -> {:?}",
+                facts.config_entries
+            );
+        }
+    }
+
+    /// `pages` present but not an array must be ignored, not coerced into one entry.
+    #[test]
+    fn pages_that_is_not_an_array_is_ignored() {
+        assert!(parse_src(r#"{ "pages": "pages/a/a" }"#).config_entries.is_empty());
+        assert!(parse_src(r#"{ "pages": { "0": "pages/a/a" } }"#).config_entries.is_empty());
+        assert!(parse_src(r#"{ "pages": null }"#).config_entries.is_empty());
+    }
+
+    /// Malformed `subPackages` entries — not an object, no `pages`, or a non-array `pages` — are skipped
+    /// rather than fabricating a route.
+    #[test]
+    fn malformed_subpackage_entries_are_skipped() {
+        let facts = parse_src(
+            r#"{ "subPackages": [ 1, { "root": "A" }, { "root": "B", "pages": "not-an-array" } ] }"#,
+        );
+        assert!(
+            facts.config_entries.is_empty(),
+            "畸形子包条目应整体跳过: {:?}",
+            facts.config_entries
+        );
+    }
+
+    /// Within one sub-package the page **position** is part of the key path, so several pages must not
+    /// collapse onto one slot.
+    #[test]
+    fn subpackage_pages_are_indexed_by_position() {
+        let facts = parse_src(r#"{ "subPackages": [ { "root": "A", "pages": ["a/a", "b/b"] } ] }"#);
+        let got: Vec<(&str, &str)> = facts
+            .config_entries
+            .iter()
+            .map(|e| {
+                (
+                    e.key_path.as_str(),
+                    match &e.value {
+                        FactValue::String(s) => s.as_str(),
+                        _ => "<non-string>",
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("subPackages.0.pages.0", "/A/a/a"),
+                ("subPackages.0.pages.1", "/A/b/b"),
+            ],
+            "子包内多页应按位置索引: {got:?}"
+        );
+    }
 }

@@ -409,8 +409,21 @@ fn build_middleware_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use gt_adapter_fkb::YamlKnowledgeBase;
+    use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
+    use gt_adapter_parser::DefaultParserRegistry;
+    use gt_adapter_sqlite::SqliteStore;
+    use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};
     use gt_domain::model::{
-        Language, Node, NodeId, NodeKind, Phase, ProjectId, Span, SymbolEntry,
+        CheckRule, GraphDelta, Language, NewNode, NewProject, Node, NodeId, NodeKind, Phase,
+        ProjectConfig, ProjectId, Span, SymbolEntry,
+    };
+    use gt_domain::port::{
+        DefaultResourceAdapterRegistry, DefaultTechStackRegistry, EdgeDirection, NodeFilter,
+        Persistence, RuleProvider,
     };
     use serde_json::Value;
 
@@ -536,5 +549,149 @@ mod tests {
         let classes = vec![node(10, "Class", "AuthMiddleware", None)];
         let d = build_middleware_delta(ProjectId::new(1), &[], &contracts, &classes, &[], &Default::default());
         assert!(d.is_empty());
+    }
+
+    fn new_node(pid: ProjectId, id: i64, kind: &str, name: &str, fqn: Option<&str>) -> NewNode {
+        let mut n = NewNode::new(pid, NodeKind::from(kind), name);
+        n.id = Some(NodeId::new(id));
+        n.fqn = fqn.map(|s| s.to_string());
+        n
+    }
+
+    /// `classes` being a scalar (not an array) must be treated as "no declarations": the `as_array()` fallback yields an
+    /// empty list, so no edges are produced rather than panicking or assuming a single entry.
+    #[test]
+    fn declared_classes_not_an_array_is_ignored() {
+        let contracts = vec![node(1, "HttpContract", "/x", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![SymbolEntry {
+            project_id: ProjectId::new(1),
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            value: serde_json::json!({ "classes": "AuthMiddleware", "scope": "global" }),
+        }];
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert!(d.is_empty(), "classes 非数组应被忽略");
+    }
+
+    /// A non-string entry inside the `classes` array must be skipped while a valid sibling entry still applies.
+    #[test]
+    fn declared_class_entry_not_a_string_is_skipped() {
+        let contracts = vec![node(1, "HttpContract", "/x", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![SymbolEntry {
+            project_id: ProjectId::new(1),
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            value: serde_json::json!({ "classes": ["AuthMiddleware", 123], "scope": "global" }),
+        }];
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 1, "非字符串 class 条目跳过，合法的仍生效");
+        assert_eq!(d.kind_patches.len(), 1);
+    }
+
+    /// An empty-string class entry must be skipped (not resolved as an empty node name).
+    #[test]
+    fn declared_empty_class_string_is_skipped() {
+        let contracts = vec![node(1, "HttpContract", "/x", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![SymbolEntry {
+            project_id: ProjectId::new(1),
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            value: serde_json::json!({ "classes": ["", "AuthMiddleware"], "scope": "global" }),
+        }];
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 1, "空字符串 class 应跳过");
+    }
+
+    // ---- `attach_declared_middleware` (store-only orchestration) ----
+    // The dependency bundle is only needed to satisfy `PipelineService::new`; `attach_declared_middleware` touches nothing
+    // but `self.store`, so the real adapters are inert here.
+
+    const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
+
+    fn attach_test_deps() -> PipelineDeps {
+        let kb = YamlKnowledgeBase::load_dir(Path::new(FKB_DIR)).expect("fkb must load");
+        PipelineDeps {
+            fs: Arc::new(StdFileSystem::new()),
+            scanner: Arc::new(WalkDirScanner::new(Vec::new())),
+            parsers: Arc::new(DefaultParserRegistry::new()),
+            kb: Arc::new(kb),
+            techstack: Arc::new(
+                DefaultTechStackRegistry::new().register(Box::new(JsTechStackAdapter::new())),
+            ),
+            markers: Arc::new(DefaultMarkerProvider::new()),
+            resources: Arc::new(DefaultResourceAdapterRegistry::new()),
+        }
+    }
+
+    struct NoopRules;
+    impl RuleProvider for NoopRules {
+        fn rules(&self) -> &[CheckRule] {
+            &[]
+        }
+    }
+
+    /// `attach_declared_middleware` reads the `declared_middleware` symbol table, hangs `PassesThrough` edges from every
+    /// matching `HttpContract` onto the middleware `Class`, and promotes that `Class` to `Middleware` — the full happy
+    /// path the empty-project integration test never reaches (it has no such symbols / contracts).
+    #[test]
+    fn attach_declared_middleware_hangs_edges_and_promotes_class() {
+        let store: Arc<dyn Persistence> = Arc::new(SqliteStore::in_memory().expect("store"));
+        let pid = store
+            .create_project(NewProject {
+                name: "mw".into(),
+                root_path: std::env::temp_dir().join("gt_mw_test"),
+                description: None,
+                config: Some(ProjectConfig::default()),
+            })
+            .expect("create_project")
+            .id;
+
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(new_node(pid, 1, "HttpContract", "/adminapi/order", None));
+        d.nodes.push(new_node(pid, 2, "HttpContract", "/api/user", None));
+        d.nodes.push(new_node(
+            pid,
+            3,
+            "Class",
+            "AuthMiddleware",
+            Some("App\\Http\\Middleware\\AuthMiddleware"),
+        ));
+        d.symbols.push(SymbolEntry {
+            project_id: pid,
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            value: serde_json::json!({ "classes": ["App\\Http\\Middleware\\AuthMiddleware"], "scope": "global" }),
+        });
+        store.apply(&d).expect("seed");
+
+        let svc = PipelineService::new(store.clone(), Arc::new(attach_test_deps()), Arc::new(NoopRules));
+        // private, but callable from this descendant `tests` module
+        svc.attach_declared_middleware(pid);
+
+        let contracts = store
+            .query_nodes(&NodeFilter {
+                project_id: pid,
+                kind: Some(NodeKind::from("HttpContract")),
+                ..Default::default()
+            })
+            .expect("query contracts");
+        assert_eq!(contracts.len(), 2);
+        for c in &contracts {
+            let es = store.edges_of(c.id, EdgeDirection::Outgoing).expect("edges_of");
+            let pt: Vec<_> = es.iter().filter(|e| e.kind.as_str() == "PassesThrough").collect();
+            assert_eq!(pt.len(), 1, "contract {} 应挂一条 PassesThrough", c.id.get());
+            assert_eq!(pt[0].to_id, NodeId::new(3));
+        }
+        let promoted = store
+            .query_nodes(&NodeFilter {
+                project_id: pid,
+                kind: Some(NodeKind::from("Middleware")),
+                ..Default::default()
+            })
+            .expect("query middleware");
+        assert!(promoted.iter().any(|n| n.id == NodeId::new(3)), "Class(3) 应晋升为 Middleware");
     }
 }

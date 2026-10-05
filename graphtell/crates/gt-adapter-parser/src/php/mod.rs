@@ -259,6 +259,19 @@ fn walk_scope(node: Node, ctx: &mut Ctx, owner_fqn: Option<&str>) {
 
 fn collect_imports(node: Node, ctx: &mut Ctx) {
     // The body may be a namespace_use_group (use A\{B, C};)
+    //
+    // The group's **prefix is a sibling of the group**, a direct child of the `use` declaration
+    // (`use App\{Repo\User, ...}` -> `namespace_name "App"` next to `namespace_use_group`), not nested
+    // inside it. Reading it from the group's children found nothing, so every group import lost its
+    // prefix and gained a stray leading separator (`\Repo\UserRepo` instead of `App\Repo\UserRepo`) —
+    // an FQN that matches no node, silently breaking short-name resolution for those classes.
+    let mut pc = node.walk();
+    let prefix = node
+        .named_children(&mut pc)
+        .find(|c| c.kind() == "namespace_name")
+        .map(|c| trim_leading(text(c, ctx.src)))
+        .unwrap_or_default();
+
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
@@ -268,16 +281,13 @@ fn collect_imports(node: Node, ctx: &mut Ctx) {
                 }
             }
             "namespace_use_group" => {
-                let prefix = child
-                    .named_children(&mut child.walk())
-                    .find(|c| matches!(c.kind(), "namespace_name" | "qualified_name" | "name"))
-                    .map(|c| trim_leading(text(c, ctx.src)))
-                    .unwrap_or_default();
                 let mut g = child.walk();
                 for c in child.named_children(&mut g) {
                     if c.kind() == "namespace_use_clause" {
                         if let Some(mut imp) = import_from_clause(c, ctx) {
-                            imp.name = format!("{}\\{}", prefix, imp.name);
+                            if !prefix.is_empty() {
+                                imp.name = format!("{}\\{}", prefix, imp.name);
+                            }
                             ctx.facts.imports.push(imp);
                         }
                     }
@@ -1375,6 +1385,160 @@ class Svc {
             Some("goods"),
             "链式动词必须带上上游 name('goods') 的表名，否则 P7 无法落成 WritesDb"
         );
+    }
+
+    // ===== Below: facts the existing tests never assert (metadata, imports, declarations,
+    // inheritance, field types, config entries) =====
+
+    /// The pluggable-language surface: the kernel must learn PHP's notation from the adapter (`\` / `::` /
+    /// `$var`) instead of hard-coding it.
+    #[test]
+    fn parser_declares_the_php_notation() {
+        let p = PhpParser::new().unwrap();
+        assert_eq!(p.language(), Language::new(Language::PHP));
+        assert_eq!(p.namespace_separator(), &['\\']);
+        assert_eq!(p.member_separator(), "::");
+        assert_eq!(p.variable_prefixes(), &["$"]);
+        assert_eq!(p.manifest_files(), &["composer.json"]);
+        assert_eq!(p.exclude_dirs(), &["vendor"]);
+        assert!(p.extensions().contains(&"php"));
+        assert!(
+            p.builtin_types().contains(&"string"),
+            "内置类型表用于区分内置类型与项目类型: {:?}",
+            p.builtin_types()
+        );
+    }
+
+    /// `use` statements feed the short-name index, so a bare `UserService` in the source can be restored to
+    /// its FQN. All three spellings must land in `facts.imports`.
+    #[test]
+    fn use_statements_become_imports_in_every_form() {
+        let src = "<?php
+namespace App;
+
+use App\\Service\\UserService;
+use App\\Service\\OrderService as Order;
+use App\\{Repo\\UserRepo, Repo\\OrderRepo};
+";
+        let facts = PhpParser::new().unwrap().parse("app/Ctl.php", src).unwrap();
+        let got: Vec<(Option<&str>, &str)> = facts
+            .imports
+            .iter()
+            .map(|i| (i.alias.as_deref(), i.name.as_str()))
+            .collect();
+        assert!(got.contains(&(None, "App\\Service\\UserService")), "限定名导入: {got:?}");
+        assert!(
+            got.contains(&(Some("Order"), "App\\Service\\OrderService")),
+            "带别名的导入: {got:?}"
+        );
+        assert!(got.contains(&(None, "App\\Repo\\UserRepo")), "组导入须拼上前缀: {got:?}");
+        assert!(got.contains(&(None, "App\\Repo\\OrderRepo")), "组导入须拼上前缀: {got:?}");
+    }
+
+    /// Every type declaration must reach the graph with its kind and a namespace-qualified FQN — the FQNs
+    /// later phases look nodes up by.
+    #[test]
+    fn type_declarations_carry_kinds_and_qualified_fqns() {
+        let src = "<?php
+namespace App\\Model;
+
+interface Iface {}
+trait Tr {}
+enum Suit { case Hearts; }
+class User extends Base implements Iface, Other {
+    public function run() {}
+}
+";
+        let facts = PhpParser::new().unwrap().parse("app/Model/User.php", src).unwrap();
+        let kinds: Vec<(&str, &str)> = facts
+            .declarations
+            .iter()
+            .map(|d| (d.fqn.as_str(), d.kind.as_str()))
+            .collect();
+        assert!(kinds.contains(&("App\\Model", "Namespace")), "命名空间本身也应声明: {kinds:?}");
+        assert!(kinds.contains(&("App\\Model\\User", "Class")), "{kinds:?}");
+        assert!(kinds.contains(&("App\\Model\\Iface", "Interface")), "{kinds:?}");
+        assert!(kinds.contains(&("App\\Model\\Tr", "Trait")), "{kinds:?}");
+        assert!(kinds.contains(&("App\\Model\\Suit", "Enum")), "{kinds:?}");
+        assert!(kinds.contains(&("App\\Model\\Suit::Hearts", "EnumCase")), "{kinds:?}");
+        assert!(kinds.contains(&("App\\Model\\User::run", "Method")), "方法 FQN 为 类::方法: {kinds:?}");
+    }
+
+    /// `extends` / `implements` / `use Trait` are three different relations and must land under their own
+    /// kinds — collapsing them makes "is a subtype of" indistinguishable from "shares an implementation".
+    #[test]
+    fn inheritance_is_split_by_kind() {
+        let src = "<?php
+namespace App\\Model;
+
+class User extends Base implements Iface, Other {
+    use Tr;
+}
+";
+        let facts = PhpParser::new().unwrap().parse("app/Model/User.php", src).unwrap();
+        let inh: Vec<(&str, &str)> = facts
+            .inheritances
+            .iter()
+            .map(|i| (i.base_name.as_str(), i.kind.as_str()))
+            .collect();
+        assert!(inh.contains(&("Base", "Extends")), "extends -> Extends: {inh:?}");
+        assert!(inh.contains(&("Iface", "Implements")), "implements -> Implements: {inh:?}");
+        assert!(inh.contains(&("Other", "Implements")), "implements 列表每个都要记: {inh:?}");
+        assert!(inh.contains(&("Tr", "UsesTrait")), "trait use -> UsesTrait: {inh:?}");
+        assert!(
+            facts.inheritances.iter().all(|i| i.child_fqn == "App\\Model\\User"),
+            "继承事实应挂在子类型 FQN 上: {inh:?}"
+        );
+    }
+
+    /// A typed property feeds P7's `MapsTo` lookup by receiver type; the nullable marker must be stripped so
+    /// `?string` resolves as `string`.
+    #[test]
+    fn typed_properties_record_field_types_and_declarations() {
+        let src = "<?php
+namespace App;
+
+class Ctl {
+    private UserRepository $repo;
+    protected ?string $name = null;
+}
+";
+        let facts = PhpParser::new().unwrap().parse("app/Ctl.php", src).unwrap();
+        let ft: Vec<(&str, &str)> = facts
+            .field_types
+            .iter()
+            .map(|f| (f.field.as_str(), f.type_name.as_str()))
+            .collect();
+        assert!(ft.contains(&("repo", "UserRepository")), "{ft:?}");
+        assert!(ft.contains(&("name", "string")), "可空类型的 `?` 应剥除: {ft:?}");
+        assert!(
+            facts.field_types.iter().all(|f| f.class_fqn == "App\\Ctl"),
+            "字段应挂在声明它的类上: {ft:?}"
+        );
+        let fqns: Vec<&str> = facts.declarations.iter().map(|d| d.fqn.as_str()).collect();
+        assert!(fqns.contains(&"App\\Ctl::$repo"), "属性声明精确到 类::$字段: {fqns:?}");
+    }
+
+    /// Config files (`config/*.php`) flatten `return [...]` into `config_entries`: nested arrays are recorded
+    /// both as a whole **and** expanded into dotted key paths.
+    #[test]
+    fn config_return_is_flattened_into_config_entries() {
+        let src = "<?php
+return [
+    'db' => [
+        'host' => '127.0.0.1',
+    ],
+    'debug' => true,
+];
+";
+        let facts = PhpParser::new()
+            .unwrap()
+            .parse("config/database.php", src)
+            .unwrap();
+        let paths: Vec<&str> = facts.config_entries.iter().map(|e| e.key_path.as_str()).collect();
+        assert!(paths.contains(&"db"), "数组本身也应是一条条目: {paths:?}");
+        assert!(paths.contains(&"db.host"), "嵌套键应展开为点路径: {paths:?}");
+        assert!(paths.contains(&"debug"), "{paths:?}");
     }
 }
 

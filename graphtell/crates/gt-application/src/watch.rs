@@ -286,4 +286,34 @@ mod tests {
         assert!(scan(&dir, &mut mtimes), "mtime 变更应被检测到");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // ---- cross-project rebuild gate (`rebuild_gate` / `acquire_rebuild_slot`) ----
+    //
+    // The watch loop is orchestration glue (needs a live `PipelineService` + `RecallService` to actually rebuild), so
+    // it stays out of unit scope; but the gate that serializes rebuilds across projects is pure logic and was
+    // completely untested. A regression here either deadlocks every rebuild or lets projects rebuild the whole DB
+    // simultaneously — both were exactly the "resident 7 cores saturated" failure mode.
+
+    #[test]
+    fn rebuild_gate_returns_one_stable_static() {
+        // The gate must be a single global instance shared by every project's watch thread.
+        let a: *const _ = rebuild_gate();
+        let b: *const _ = rebuild_gate();
+        assert_eq!(a, b, "rebuild_gate 应返回同一全局静态，否则跨工程串行化失效");
+    }
+
+    #[test]
+    fn acquire_rebuild_slot_returns_immediately_after_cooldown() {
+        // Force the last rebuild far in the past so the cooldown is satisfied → must not block.
+        let (lock, _cv) = rebuild_gate();
+        *lock.lock().unwrap() = Some(Instant::now() - REBUILD_COOLDOWN - Duration::from_secs(1));
+        let start = Instant::now();
+        acquire_rebuild_slot();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "cooldown已过期应立刻拿到重建槽，而非阻塞 30s"
+        );
+        // After acquiring, the gate is advanced to "now" so the next caller waits the full cooldown.
+        assert!(lock.lock().unwrap().is_some());
+    }
 }

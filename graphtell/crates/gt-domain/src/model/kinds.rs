@@ -591,4 +591,198 @@ mod tests {
         assert!(NodeKind::from("Table").eq_ignore_ascii_case("table"));
         assert!(!NodeKind::from("Table").eq_ignore_ascii_case("tabl"));
     }
+
+    // ===== Below: what the six tests above leave out — the *lists* (`SYNTHESIZED` / `SEMANTIC` / `BRIDGE`) are
+    // the single source of truth for folding, counting and drawing, yet only a handful of their entries were
+    // asserted; the invariants between the two edge lists, the `is_chain_edge` negative side, registry
+    // idempotency, and three open kinds (`Phase` / `AnnotationChannel` / `SynthesizedKind`) had no test at all. =====
+
+    /// Every entry of `SYNTHESIZED` must be classified as semantic, and the kinds that are **deliberately**
+    /// absent must stay out: `Column` is a component of a Table rather than a resource of its own,
+    /// `EventHandler` is a *view-layer relabelling* of what is still a `Class` in storage, and
+    /// `HeaderAssignment` is a matchable parse fact, not a business asset.
+    #[test]
+    fn every_synthesized_node_kind_is_semantic_and_the_omissions_stay_omitted() {
+        assert!(!NodeKind::SYNTHESIZED.is_empty());
+        for k in NodeKind::SYNTHESIZED {
+            assert!(NodeKind::from(*k).is_semantic(), "{k} 声明在第一类语义列表里就该是一等语义节点");
+        }
+        // A repeated entry would be a copy-paste slip that no compiler catches.
+        let mut seen = std::collections::HashSet::new();
+        for k in NodeKind::SYNTHESIZED {
+            assert!(seen.insert(*k), "{k} 在 SYNTHESIZED 里重复了");
+        }
+
+        for k in [NodeKind::COLUMN, NodeKind::EVENT_HANDLER, NodeKind::HEADER_ASSIGNMENT] {
+            assert!(!NodeKind::from(k).is_semantic(), "{k} 有意不在第一类语义列表里");
+        }
+        // Syntax nodes and the unclassified default are never semantic.
+        for k in [NodeKind::FILE, NodeKind::CLASS, NodeKind::PROPERTY, NodeKind::UNKNOWN] {
+            assert!(!NodeKind::from(k).is_semantic(), "{k} 不是语义节点");
+        }
+        assert!(!NodeKind::default().is_semantic());
+    }
+
+    /// The two edge lists are **mutually exclusive by design**: a bridge edge must not inflate "semantic
+    /// in-edges N" (that is exactly why `HasColumn` moved from semantic to bridge), and a semantic edge must
+    /// never degrade into the `orphans` tally.
+    #[test]
+    fn semantic_and_bridge_edge_lists_are_disjoint_and_exhaustively_classified() {
+        for k in EdgeKind::SEMANTIC {
+            assert!(EdgeKind::from(*k).is_semantic(), "{k} 在语义边列表里");
+            assert!(!EdgeKind::from(*k).is_bridge(), "{k} 不能同时是桥接边");
+            assert!(is_semantic_edge(k));
+            assert!(!is_bridge_edge(k));
+        }
+        for k in EdgeKind::BRIDGE {
+            assert!(EdgeKind::from(*k).is_bridge(), "{k} 在桥接边列表里");
+            assert!(!EdgeKind::from(*k).is_semantic(), "{k} 不能同时是语义边");
+            assert!(is_bridge_edge(k));
+            assert!(!is_semantic_edge(k));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for k in EdgeKind::SEMANTIC.iter().chain(EdgeKind::BRIDGE.iter()) {
+            assert!(seen.insert(*k), "{k} 同时出现在两个列表里");
+        }
+    }
+
+    /// Only the previous test's coverage was positive cases. A `Contains` / `Imports` leaking into
+    /// `is_chain_edge` would silently turn the folded view into the whole syntax tree.
+    #[test]
+    fn chain_edges_cover_semantic_bridge_and_two_syntactic_ones_only() {
+        for k in EdgeKind::SEMANTIC.iter().chain(EdgeKind::BRIDGE.iter()) {
+            assert!(is_chain_edge(k), "{k} 参与调用链探索");
+        }
+        assert!(is_chain_edge("Calls"));
+        assert!(is_chain_edge("HasCallSite"));
+
+        for k in [
+            EdgeKind::CONTAINS,
+            EdgeKind::DECLARES,
+            EdgeKind::EXTENDS,
+            EdgeKind::IMPLEMENTS,
+            EdgeKind::USES_TRAIT,
+            EdgeKind::IMPORTS,
+            EdgeKind::UNKNOWN,
+        ] {
+            assert!(!is_chain_edge(k), "{k} 不该出现在调用链里");
+            assert!(!is_semantic_edge(k), "{k} 不该被计入语义边");
+        }
+        assert!(!is_chain_edge(""));
+        // An invented kind not (yet) declared by FKB is nothing at all.
+        assert!(!is_chain_edge("TotallyMadeUp"));
+        assert!(!is_semantic_edge("TotallyMadeUp"));
+        assert!(!is_bridge_edge("TotallyMadeUp"));
+    }
+
+    /// The registries are process-global singletons filled as FKB loads, so loading twice (two sub-projects, two
+    /// runs in one process) must not duplicate anything, and the read accessor must stay sorted.
+    #[test]
+    fn registries_merge_idempotently_and_the_accessors_report_what_was_registered() {
+        let node_kind = "WarehouseSlotLocator".to_string();
+        assert!(!NodeKind(node_kind.clone()).is_semantic());
+        register_semantic_kinds(vec![node_kind.clone()]);
+        register_semantic_kinds(vec![node_kind.clone()]);
+        let registered = extra_semantic_kinds();
+        let occurrences = registered.iter().filter(|k| **k == node_kind).count();
+        assert_eq!(occurrences, 1, "重复注册同一个 kind 不应产生重复条目");
+        let sorted = {
+            let mut s = registered.clone();
+            s.sort();
+            s
+        };
+        assert_eq!(registered, sorted, "extra_semantic_kinds 返回有序结果");
+
+        assert!(!EdgeKind("FanoutWebhookSender".to_string()).is_semantic());
+        assert!(!EdgeKind("BridgeRedirect".to_string()).is_bridge());
+        register_edge_kinds(vec!["FanoutWebhookSender".to_string()], vec!["BridgeRedirect".to_string()]);
+        register_edge_kinds(vec!["FanoutWebhookSender".to_string()], Vec::new());
+        let (sem, bridge) = extra_edge_kinds();
+        assert_eq!(sem.iter().filter(|k| **k == "FanoutWebhookSender").count(), 1);
+        assert!(bridge.contains(&"BridgeRedirect".to_string()));
+        // Registration is only additive — an empty call must not clear anything.
+        register_edge_kinds(Vec::new(), Vec::new());
+        let (sem2, bridge2) = extra_edge_kinds();
+        assert!(sem2.contains(&"FanoutWebhookSender".to_string()) && bridge2.contains(&"BridgeRedirect".to_string()));
+    }
+
+    /// `Language` is the one open kind that is **not** macro-generated (hand-written `Default`, extra
+    /// `is_php`), so its conversions and constants need pinning of their own.
+    #[test]
+    fn language_covers_its_constants_conversions_and_display() {
+        for (c, text) in [
+            (Language::PHP, "php"),
+            (Language::JAVASCRIPT, "javascript"),
+            (Language::TYPESCRIPT, "typescript"),
+            (Language::JAVA, "java"),
+            (Language::PYTHON, "python"),
+            (Language::RUST, "rust"),
+            (Language::UNKNOWN, "unknown"),
+        ] {
+            assert_eq!(Language::new(c), Language::from(c), "{text} 的两条构造路径要一致");
+            assert_eq!(Language::from(c).as_str(), text);
+            assert_eq!(Language::from(c).to_string(), text, "Display 直接写裸字符串");
+        }
+        assert!(Language::from(Language::PHP).is_php());
+        assert!(!Language::from(Language::TYPESCRIPT).is_php());
+        assert!(!Language::from(Language::UNKNOWN).is_php());
+    }
+
+    /// The values of `Phase` / `AnnotationChannel` / `SynthesizedKind` are **persisted** (every node, edge and
+    /// annotation row carries them) — a renamed constant would orphan stored rows, so the spelling is part of
+    /// the contract, not an implementation detail.
+    #[test]
+    fn phase_channel_and_identity_kind_spellings_are_stable() {
+        for (c, text) in [
+            (Phase::INGEST, "Ingest"),
+            (Phase::CF_AST, "CfAst"),
+            (Phase::PREPARE, "Prepare"),
+            (Phase::ANNOTATE_PRE, "AnnotatePre"),
+            (Phase::SYNTHESIZE, "Synthesize"),
+            (Phase::ANNOTATE_POST, "AnnotatePost"),
+            (Phase::RESOLVE, "Resolve"),
+            (Phase::PROPAGATE, "Propagate"),
+            (Phase::CHECK, "Check"),
+        ] {
+            assert_eq!(Phase::from(c).as_str(), text);
+            let round: Phase = serde_json::from_value(serde_json::json!(text)).unwrap();
+            assert_eq!(round, Phase::from(c), "{text} 必须能原样读回");
+        }
+        for (c, text) in [
+            (AnnotationChannel::FKB_MARK, "FkbMark"),
+            (AnnotationChannel::TAINT, "Taint"),
+            (AnnotationChannel::CAPABILITY, "Capability"),
+            (AnnotationChannel::ALIAS, "Alias"),
+        ] {
+            assert_eq!(AnnotationChannel::from(c).as_str(), text);
+            let round: AnnotationChannel = serde_json::from_value(serde_json::json!(text)).unwrap();
+            assert_eq!(round, AnnotationChannel::from(c));
+        }
+        for (c, text) in [
+            (SynthesizedKind::FQN, "Fqn"),
+            (SynthesizedKind::NAMED, "Named"),
+            (SynthesizedKind::CONTRACT_ID, "ContractId"),
+        ] {
+            assert_eq!(SynthesizedKind::from(c).as_str(), text);
+            let round: SynthesizedKind = serde_json::from_value(serde_json::json!(text)).unwrap();
+            assert_eq!(round, SynthesizedKind::from(c));
+        }
+    }
+
+    /// The macro derives `Hash` / `Ord` because kinds are used as map keys and sorted for stable output; those
+    /// implementations must agree with `Eq` on the inner string (the same kind built three different ways is
+    /// one entry in a set, not three).
+    #[test]
+    fn derived_hash_and_ordering_follow_the_inner_string() {
+        let mut set = std::collections::HashSet::new();
+        assert!(set.insert(NodeKind::from("Table")));
+        assert!(!set.insert(NodeKind::new("Table")), "构造器不同但 Hash 必须相同");
+        assert!(!set.insert(NodeKind("Table".to_string())));
+        assert_eq!(set.len(), 1);
+
+        let mut kinds = vec![NodeKind::from("Class"), NodeKind::from("Table")];
+        kinds.sort();
+        assert_eq!(kinds.first().unwrap().as_str(), "Class", "Ord 按字符串序，保证输出稳定");
+        assert!(EdgeKind::from("ReadsDb") < EdgeKind::from("WritesDb"));
+    }
 }

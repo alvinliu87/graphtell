@@ -517,4 +517,105 @@ mod tests {
         assert!(manifest_has_mp_target(&serde_json::json!({ "x": "MP-WEIXIN" })), "应大小写不敏感");
         assert!(!manifest_has_mp_target(&serde_json::json!({ "h5": {} })), "纯 h5 不是小程序");
     }
+
+    /// `manifest_dependencies` only accepts `package.json` and merges the three dependency scopes; a wrong file
+    /// or unparseable body degrades to `None` (the kernel then falls back to a whole-file text probe).
+    #[test]
+    fn manifest_dependencies_parses_package_json() {
+        let a = JsTechStackAdapter::new();
+
+        // wrong file -> None, so the kernel keeps its text-probe fallback
+        assert_eq!(a.manifest_dependencies("composer.json", "{}"), None);
+        assert_eq!(a.manifest_dependencies("package-lock.json", "{}"), None);
+        // unparseable JSON -> None
+        assert_eq!(a.manifest_dependencies("package.json", "{not json"), None);
+
+        // valid but dependency-less -> `Some(empty)`, NOT `None` (keeps "no manifest" distinct from "no deps")
+        assert_eq!(a.manifest_dependencies("package.json", "{}"), Some(vec![]));
+
+        // all three dependency scopes are merged
+        let text = serde_json::json!({
+            "name": "x",
+            "dependencies": { "react": "^18" },
+            "devDependencies": { "vite": "^5" },
+            "peerDependencies": { "typescript": "^5" }
+        })
+        .to_string();
+        let mut deps = a.manifest_dependencies("package.json", &text).unwrap();
+        deps.sort();
+        assert_eq!(
+            deps,
+            vec!["react".to_string(), "typescript".to_string(), "vite".to_string()]
+        );
+    }
+
+    /// `lock_dependencies` parses the v2 `packages` map and the v1 `dependencies` map, stripping the
+    /// `node_modules/` install-path prefix and preferring an explicit `name` field.
+    #[test]
+    fn lock_dependencies_parses_v1_and_v2() {
+        let a = JsTechStackAdapter::new();
+
+        assert_eq!(a.lock_dependencies("package.json", "{}"), None);
+        assert_eq!(a.lock_dependencies("yarn.lock", "{}"), None);
+        assert_eq!(a.lock_dependencies("package-lock.json", "not json"), None);
+
+        // v2: `packages` keyed by install path; an entry without `name` falls back to the (prefix-stripped) key,
+        // an entry with `name` uses it verbatim.
+        let v2 = serde_json::json!({
+            "packages": {
+                "": { "name": "root" },
+                "node_modules/react": { "version": "18" },
+                "node_modules/@scope/bar": { "name": "@scope/bar-custom" },
+                "node_modules/foo": {}
+            }
+        })
+        .to_string();
+        let mut names = a.lock_dependencies("package-lock.json", &v2).unwrap();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "@scope/bar-custom".to_string(),
+                "foo".to_string(),
+                "react".to_string(),
+                "root".to_string(),
+            ]
+        );
+
+        // v1: `dependencies` keyed directly by package name
+        let v1 =
+            serde_json::json!({ "dependencies": { "lodash": "^4", "axios": "^1" } }).to_string();
+        let mut v1names = a.lock_dependencies("package-lock.json", &v1).unwrap();
+        v1names.sort();
+        assert_eq!(v1names, vec!["axios".to_string(), "lodash".to_string()]);
+    }
+
+    /// `read_json` degrades gracefully: `None` on a missing file or an unparseable one, `Some` on valid JSON.
+    #[test]
+    fn read_json_error_paths() {
+        let dir = scratch("readjson");
+        let fs = StdFileSystem::new();
+        assert_eq!(read_json(&dir.join("nope.json"), &fs), None);
+        std::fs::write(dir.join("bad.json"), "{not json").unwrap();
+        assert_eq!(read_json(&dir.join("bad.json"), &fs), None);
+        std::fs::write(dir.join("ok.json"), "{\"a\":1}").unwrap();
+        assert_eq!(
+            read_json(&dir.join("ok.json"), &fs),
+            Some(serde_json::json!({"a":1}))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `Default` impls must equal `new()` so callers can use either form.
+    #[test]
+    fn defaults_equal_new() {
+        assert_eq!(
+            DefaultMarkerProvider::default().markers().len(),
+            DefaultMarkerProvider::new().markers().len()
+        );
+        assert_eq!(
+            JsTechStackAdapter::default().language().as_str(),
+            Language::JAVASCRIPT
+        );
+    }
 }

@@ -928,4 +928,241 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Two marker files in the *same* directory must collapse to a single sub-project (the
+    /// `if subs.iter().any(|s| s.root_path == dir) { continue; }` dedup), while two markers in different
+    /// directories produce two.
+    #[test]
+    fn run_deduplicates_markers_in_the_same_directory() {
+        let root = scratch("run-dedup");
+        let project = project_at(&root);
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        // Two markers resolve to the same directory -> one sub-project.
+        let scanner = StubScanner {
+            markers: vec![app.join("composer.json"), app.join("package.json")],
+            scanned: vec![],
+            last_request: Mutex::new(None),
+        };
+        let markers = StubMarkers {
+            markers: vec![
+                Marker {
+                    file: "composer.json".into(),
+                    language: Language::new("php"),
+                    role: "backend".into(),
+                },
+                Marker {
+                    file: "package.json".into(),
+                    language: Language::new(Language::JAVASCRIPT),
+                    role: "frontend".into(),
+                },
+            ],
+        };
+        let res = run(
+            &project,
+            &scanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &markers,
+            &DefaultTechStackRegistry::new(),
+            &StaticKb(vec![]),
+        )
+        .expect("run ok");
+        assert_eq!(res.sub_projects.len(), 1, "同目录两个 marker 应去重为一个子项目");
+        assert_eq!(res.sub_projects[0].root_path, app);
+
+        // Two different directories -> two sub-projects (sanity for the non-dedup path).
+        let root2 = scratch("run-dedup2");
+        let a = root2.join("a");
+        let b = root2.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let scanner2 = StubScanner {
+            markers: vec![a.join("composer.json"), b.join("package.json")],
+            scanned: vec![],
+            last_request: Mutex::new(None),
+        };
+        let res2 = run(
+            &project_at(&root2),
+            &scanner2,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &StubMarkers {
+                markers: vec![
+                    Marker {
+                        file: "composer.json".into(),
+                        language: Language::new("php"),
+                        role: "backend".into(),
+                    },
+                    Marker {
+                        file: "package.json".into(),
+                        language: Language::new(Language::JAVASCRIPT),
+                        role: "frontend".into(),
+                    },
+                ],
+            },
+            &DefaultTechStackRegistry::new(),
+            &StaticKb(vec![]),
+        )
+        .expect("run ok");
+        assert_eq!(res2.sub_projects.len(), 2, "不同目录两个 marker 应各成一个子项目");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root2);
+    }
+
+    /// A sub-project sitting at the project root carries an *empty* relative prefix, so a framework's
+    /// exclude glob must reach the scan verbatim (the `prefix.is_empty()` branch) — never prefixed with a
+    /// `root/` segment or a leading slash. The prefix test above only exercises the non-empty branch.
+    #[test]
+    fn run_passes_framework_glob_through_when_sub_at_root() {
+        let root = scratch("run-rootglob");
+        let project = project_at(&root);
+        // No marker -> fallback root sub-project (language unknown). A `*` framework with an exclude glob.
+        let scanner = StubScanner {
+            markers: vec![],
+            scanned: vec![],
+            last_request: Mutex::new(None),
+        };
+        let kb = StaticKb(vec![FrameworkKnowledge {
+            id: "tp".into(),
+            display_name: "TP".into(),
+            language: Language::new("*"),
+            apply_without_detection: true,
+            exclude_rules: vec![ExcludeRule {
+                id: "cache".into(),
+                glob: "runtime/**".into(),
+                source: None,
+                fallbacks: vec![],
+            }],
+            ..Default::default()
+        }]);
+        let res = run(
+            &project,
+            &scanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &StubMarkers { markers: vec![] },
+            &DefaultTechStackRegistry::new(),
+            &kb,
+        )
+        .expect("run ok");
+        assert_eq!(res.sub_projects.len(), 1, "退化根级子项目应恰有一个");
+        let req = scanner.last_request.lock().unwrap();
+        let req = req.as_ref().expect("scan invoked");
+        assert!(
+            req.extra_excludes.contains(&"runtime/**".to_string()),
+            "根级子项目的 glob 应原样透传：{:?}",
+            req.extra_excludes
+        );
+        assert!(
+            !req
+                .extra_excludes
+                .iter()
+                .any(|g| g.contains("root/runtime") || g.starts_with('/')),
+            "不应出现 root/ 前缀或前导斜杠：{:?}",
+            req.extra_excludes
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An exclude rule whose `{value}` placeholder can never be resolved (no source, no fallback, no
+    /// matching root rule) must surface as a diagnostic that `run` propagates into the result
+    /// (`diagnostics.extend` was otherwise never asserted).
+    #[test]
+    fn run_propagates_unresolved_exclude_diagnostics() {
+        let root = scratch("run-diag");
+        let project = project_at(&root);
+        let scanner = StubScanner {
+            markers: vec![],
+            scanned: vec![],
+            last_request: Mutex::new(None),
+        };
+        let kb = StaticKb(vec![FrameworkKnowledge {
+            id: "tp".into(),
+            display_name: "TP".into(),
+            language: Language::new("*"),
+            apply_without_detection: true,
+            exclude_rules: vec![ExcludeRule {
+                id: "bogus".into(),
+                glob: "{missing}/**".into(),
+                source: None,
+                fallbacks: vec![],
+            }],
+            ..Default::default()
+        }]);
+        let res = run(
+            &project,
+            &scanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &StubMarkers { markers: vec![] },
+            &DefaultTechStackRegistry::new(),
+            &kb,
+        )
+        .expect("run ok");
+        assert!(
+            !res.diagnostics.is_empty(),
+            "无法解析的排除规则应产生诊断：{:?}",
+            res.diagnostics
+        );
+        assert_eq!(res.diagnostics[0].code, "ExcludeRuleUnresolved");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `run` wires `fingerprint` into the produced `NewSourceFile`s: the content hash must be a genuine
+    /// content hash of the scanned file on disk (not the `path:size` fallback), pinning the integration.
+    #[test]
+    fn run_computes_content_hash_from_disk_file() {
+        let root = scratch("run-hash");
+        let sub_dir = root.join("app");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let src = sub_dir.join("Controller.php");
+        std::fs::write(&src, "<?php\n").unwrap();
+        let project = project_at(&root);
+        let scanner = StubScanner {
+            markers: vec![sub_dir.join("composer.json")],
+            scanned: vec![ScannedFile {
+                path: src.clone(),
+                relative: "app/Controller.php".into(),
+                language: Language::new("php"),
+                size_bytes: 6,
+            }],
+            last_request: Mutex::new(None),
+        };
+        let markers = StubMarkers {
+            markers: vec![Marker {
+                file: "composer.json".into(),
+                language: Language::new("php"),
+                role: "backend".into(),
+            }],
+        };
+        let res = run(
+            &project,
+            &scanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &markers,
+            &DefaultTechStackRegistry::new(),
+            &StaticKb(vec![]),
+        )
+        .expect("run ok");
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(
+            res.files[0].content_hash,
+            hash("<?php\n"),
+            "content_hash 应为文件内容的指纹，而非 path:size 兜底"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `refine_backend_kind` distinguishes more than `admin` / `worker`: bff/gateway and the other worker
+    /// keywords (queue/job/…) must resolve to `backend:bff` / `backend:worker` — only the first two were
+    /// pinned by `refines_backend_role_by_dir_name`.
+    #[test]
+    fn refines_backend_kind_bff_and_worker_keywords() {
+        assert_eq!(role("backend", Path::new("/p/bff")), "backend:bff");
+        assert_eq!(role("backend", Path::new("/p/api-gateway")), "backend:bff");
+        assert_eq!(role("backend", Path::new("/p/queue")), "backend:worker");
+        assert_eq!(role("backend", Path::new("/p/job-worker")), "backend:worker");
+    }
 }

@@ -676,4 +676,264 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// `lock_has` shares `declared_in` with `manifest_has` but was never exercised directly. With no adapter
+    /// it must still match via the conservative whole-file text probe, and must be `false` for an absent
+    /// dependency or a missing lock file.
+    #[test]
+    fn lock_has_falls_back_to_plain_text_probe() {
+        let root = scratch_dir("lh-fallback");
+        std::fs::write(
+            root.join("composer.lock"),
+            r#"{"packages":[{"name":"topthink/framework","version":"^6"}]}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let php = Language::new("php");
+
+        assert!(
+            lock_has(&root.join("composer.lock"), "topthink/framework", &fs, &ts, &php),
+            "lock 中含依赖串应命中（降级为纯文本匹配）"
+        );
+        assert!(
+            !lock_has(&root.join("composer.lock"), "laravel/framework", &fs, &ts, &php),
+            "lock 中不含的依赖串不应命中"
+        );
+        assert!(
+            !lock_has(&root.join("missing.lock"), "topthink/framework", &fs, &ts, &php),
+            "lock 文件不存在应直接 false"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `resolve_root_source` is only exercised *through* `exclude::resolve_for_sub` (where sub_root ==
+    /// project_root), so its `project_root` fallback and its `Manifest` / `ManifestEntries` arms are never
+    /// pinned directly. This isolates all four arms.
+    #[test]
+    fn resolve_root_source_covers_each_kind_and_project_root_fallback() {
+        let sub = scratch_dir("rs-sub"); // no manifest here
+        let proj = scratch_dir("rs-proj");
+        std::fs::write(
+            proj.join("composer.json"),
+            r#"{"autoload": {"psr-4": {"app\\": "app/"}}}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let parsers = gt_adapter_parser::DefaultParserRegistry::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let sub_proj = provisional_sub(&sub, &Language::new("php"));
+
+        // ManifestJson resolves via the *project root* because the sub-root has no copy of the manifest
+        // — the `else { project_root.join(manifest) }` fallback branch.
+        let got = resolve_root_source(
+            &RootSource::ManifestJson {
+                manifest: "composer.json".into(),
+                pointer: "autoload.psr-4".into(),
+                pick: PickStrategy::ShallowestDir,
+            },
+            &sub,
+            &proj,
+            &sub_proj,
+            &fs,
+            &parsers,
+            &ts,
+        );
+        assert_eq!(got.map(|(v, _)| v), Some("app".to_string()), "project_root 兜底应解析出 app");
+
+        // DirectoryExists: a marker dir present directly under the root yields "." as the source root.
+        let dir_root = scratch_dir("rs-dir");
+        std::fs::create_dir_all(dir_root.join("app")).unwrap();
+        let got = resolve_root_source(
+            &RootSource::DirectoryExists { path: "app".into() },
+            &dir_root,
+            &dir_root,
+            &provisional_sub(&dir_root, &Language::new("php")),
+            &fs,
+            &parsers,
+            &ts,
+        );
+        assert_eq!(got.map(|(v, _)| v), Some(".".to_string()));
+
+        // Manifest arm: with no adapter for the language, `read_manifest` is never called -> None.
+        assert!(
+            resolve_root_source(
+                &RootSource::Manifest {
+                    manifest: "composer.json".into(),
+                    pointer: "autoload.psr-4".into(),
+                },
+                &sub,
+                &proj,
+                &provisional_sub(&sub, &Language::new("cobol")),
+                &fs,
+                &parsers,
+                &ts,
+            )
+            .is_none(),
+            "无适配器的 Manifest 源应返回 None"
+        );
+
+        // ManifestEntries arm: always resolves to None from a single-value source.
+        assert!(
+            resolve_root_source(
+                &RootSource::ManifestEntries {
+                    manifest: "composer.json".into(),
+                    root: "connections".into(),
+                    fields: vec![],
+                    default_from: None,
+                },
+                &sub,
+                &proj,
+                &sub_proj,
+                &fs,
+                &parsers,
+                &ts,
+            )
+            .is_none(),
+            "ManifestEntries 经 resolve_root_source 应返回 None"
+        );
+        let _ = std::fs::remove_dir_all(&sub);
+        let _ = std::fs::remove_dir_all(&proj);
+        let _ = std::fs::remove_dir_all(&dir_root);
+    }
+
+    /// `resolve_root_entries` is a distinct public entry that `resolve_root_source` deliberately does not
+    /// cover (it returns a list, not one value). Pin its two `None` branches: a non-`ManifestEntries`
+    /// source, and a `ManifestEntries` source with no adapter able to read it.
+    #[test]
+    fn resolve_root_entries_returns_none_outside_manifest_entries_and_without_adapter() {
+        let root = scratch_dir("rre");
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let parsers = gt_adapter_parser::DefaultParserRegistry::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+
+        // A single-value source is rejected up front by the `let ... else`.
+        assert!(resolve_root_entries(
+            &RootSource::DirectoryExists { path: "app".into() },
+            &root,
+            &provisional_sub(&root, &Language::new("php")),
+            &fs,
+            &parsers,
+            &ts,
+        )
+        .is_none());
+
+        // A `ManifestEntries` source with no adapter for the language resolves to None.
+        assert!(resolve_root_entries(
+            &RootSource::ManifestEntries {
+                manifest: "config/database.php".into(),
+                root: "connections".into(),
+                fields: vec![],
+                default_from: None,
+            },
+            &root,
+            &provisional_sub(&root, &Language::new("cobol")),
+            &fs,
+            &parsers,
+            &ts,
+        )
+        .is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `provisional_sub` is the stand-in P0 uses for every resolution; pin that it stamps the root path,
+    /// language, and the documented sentinel id/role (adapters read these to locate manifests).
+    #[test]
+    fn provisional_sub_carries_root_language_and_sentinels() {
+        let root = scratch_dir("ps");
+        let sub = provisional_sub(&root, &Language::new("php"));
+        assert_eq!(sub.id, SubProjectId(0));
+        assert_eq!(sub.project_id, ProjectId(0));
+        assert_eq!(sub.root_path, root);
+        assert_eq!(sub.language, Language::new("php"));
+        assert_eq!(sub.role, "unknown");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `detect_without_code` branches not covered by the language-gate test:
+    /// * `apply_without_detection` — a framework with no matching detector still contributes (the safe,
+    ///   language-wide generic layer);
+    /// * `language: "*"` — a universal framework fires for *any* language, not just its own;
+    /// * the `FileExists` detector (vs the `ManifestDependency` one already pinned).
+    #[test]
+    fn detect_without_code_applies_without_detection_universal_and_file_exists() {
+        let root = scratch_dir("dwc-extra");
+        std::fs::write(root.join("composer.json"), r#"{"require": {"topthink/framework": "^6"}}"#).unwrap();
+        std::fs::write(root.join("artisan"), "").unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+
+        let kb = StaticKb(vec![
+            FrameworkKnowledge {
+                id: "generic".into(),
+                language: Language::new("php"),
+                apply_without_detection: true,
+                ..Default::default()
+            },
+            FrameworkKnowledge {
+                id: "universal".into(),
+                language: Language::new("*"),
+                detectors: vec![Detector::ManifestDependency {
+                    manifest: "composer.json".into(),
+                    dependency: "topthink/framework".into(),
+                    confidence: 0.9,
+                }],
+                ..Default::default()
+            },
+            FrameworkKnowledge {
+                id: "artisan-fw".into(),
+                language: Language::new("php"),
+                detectors: vec![Detector::FileExists { path: "artisan".into(), confidence: 0.8 }],
+                ..Default::default()
+            },
+        ]);
+
+        // Queried as php: the no-detector generic (apply_without_detection), the universal (*) framework,
+        // and the FileExists detector for artisan-fw must all fire.
+        let php = detect_without_code(&kb, &fs, &root, &root, &Language::new("php"), &ts);
+        assert!(php.contains(&"generic".to_string()), "apply_without_detection 应无 detector 也命中：{php:?}");
+        assert!(php.contains(&"universal".to_string()), "通用 (*) 框架应在 php 下命中：{php:?}");
+        assert!(php.contains(&"artisan-fw".to_string()), "FileExists detector 应命中：{php:?}");
+
+        // Queried as javascript: only the universal framework survives the language gate; the two php-only
+        // frameworks are skipped.
+        let js = detect_without_code(&kb, &fs, &root, &root, &Language::new("javascript"), &ts);
+        assert!(js.contains(&"universal".to_string()), "通用 (*) 应对任何语言命中：{js:?}");
+        assert!(!js.contains(&"generic".to_string()), "php-only 的 generic 不应在 javascript 下命中：{js:?}");
+        assert!(!js.contains(&"artisan-fw".to_string()), "php-only 的 artisan-fw 不应在 javascript 下命中：{js:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `manifest_has` with a real tech-stack adapter must resolve via the adapter's parsed dependency
+    /// names (the empty-registry text probe is already pinned separately). This exercises the
+    /// `techstack.adapter_for` + `names_of` branch and its `n == needle || n.contains(needle)` match.
+    #[test]
+    fn manifest_has_uses_adapter_parsed_dependencies() {
+        let root = scratch_dir("mh-adapter");
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{"require": {"topthink/framework": "^6"}}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()));
+        let php = Language::new("php");
+
+        assert!(
+            manifest_has(&root.join("composer.json"), "topthink/framework", &fs, &ts, &php),
+            "适配器解析出的依赖名应命中"
+        );
+        // `framework` is a *substring* of the declared name `topthink/framework`, exercising the
+        // `n.contains(needle)` arm rather than the exact-`==` arm.
+        assert!(
+            manifest_has(&root.join("composer.json"), "framework", &fs, &ts, &php),
+            "声明名包含 needle 也应命中（contains 分支）"
+        );
+        assert!(
+            !manifest_has(&root.join("composer.json"), "symfony/console", &fs, &ts, &php),
+            "适配器与文本都不含的依赖不应命中"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

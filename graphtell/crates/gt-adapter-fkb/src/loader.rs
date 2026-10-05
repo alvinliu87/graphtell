@@ -825,4 +825,92 @@ resolvers:
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ---- validate_exclude_rules: authoring feedback, never a load failure ----
+
+    /// `validate_exclude_rules` only **warns**: a rule using `{value}` without a `source`, or a placeholder
+    /// no `root_rules` key produces, must still load. A single bad rule must not drop the whole knowledge
+    /// base — that is the entire point of warning instead of erroring.
+    #[test]
+    fn a_bad_exclude_rule_warns_but_does_not_fail_the_load() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: excl
+language: php
+exclude_rules:
+  - id: no-source
+    glob: "{value}/**"
+  - id: unknown-key
+    glob: "{nope}/**"
+  - id: fine
+    glob: "vendor/**"
+"#,
+        )
+        .expect("坏的排除规则只应告警，不应让整个 FKB 加载失败");
+
+        assert_eq!(fk.exclude_rules.len(), 3, "三条规则都应保留");
+        // The rest of the load pipeline still ran: ids are namespaced as usual.
+        assert_eq!(fk.exclude_rules[0].id, "excl-no-source");
+    }
+
+    // ---- the KnowledgeProvider surface the pipeline calls ----
+
+    /// `for_language` filters by the FKB's own language, `by_id` is exact, and `all` sees everything.
+    /// A `"*"` knowledge base is cross-language: it is not "of" any concrete language.
+    #[test]
+    fn knowledge_provider_serves_by_language_and_id() {
+        let dir = tmp_dir("provider");
+        std::fs::write(&dir.join("php.yaml"), "id: phpkb\nlanguage: php\nrules: []\n").unwrap();
+        std::fs::write(&dir.join("java.yaml"), "id: javakb\nlanguage: java\nrules: []\n").unwrap();
+        std::fs::write(&dir.join("uni.yaml"), "id: unikb\nlanguage: \"*\"\nrules: []\n").unwrap();
+
+        let kb = YamlKnowledgeBase::load_dir(&dir).expect("load ok");
+        assert_eq!(kb.len(), 3);
+        assert_eq!(kb.all().len(), 3);
+
+        let ids = |lang: &str| -> Vec<String> {
+            kb.for_language(&Language(lang.into()))
+                .iter()
+                .map(|f| f.id.clone())
+                .collect()
+        };
+        assert_eq!(ids("php"), vec!["phpkb".to_string()], "for_language 应只返回该语言的 FKB");
+        assert_eq!(ids("java"), vec!["javakb".to_string()]);
+        assert_eq!(ids("*"), vec!["unikb".to_string()], "通配 FKB 只在按 `*` 查询时出现");
+        assert!(
+            ids("python").is_empty(),
+            "通配 FKB 不属于任何具体语言，不应出现在 python 查询结果里"
+        );
+
+        assert!(kb.by_id("phpkb").is_some());
+        assert!(kb.by_id("missing").is_none(), "未知 id 应返回 None");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- load_dir file selection ----
+
+    /// Selection rules: recursion into subdirectories, `.yml` accepted, the extension compared
+    /// case-insensitively, and anything that is not YAML never even attempted (a stray `README.md`
+    /// beside the knowledge must not become a "corrupt FKB" warning).
+    #[test]
+    fn load_dir_walks_subdirectories_and_selects_yaml_only() {
+        let dir = tmp_dir("walk");
+        std::fs::create_dir_all(dir.join("nested/deeper")).unwrap();
+        std::fs::write(&dir.join("a.yaml"), "id: a\nlanguage: php\nrules: []\n").unwrap();
+        std::fs::write(&dir.join("nested/b.yml"), "id: b\nlanguage: php\nrules: []\n").unwrap();
+        std::fs::write(&dir.join("nested/deeper/c.YAML"), "id: c\nlanguage: php\nrules: []\n").unwrap();
+        std::fs::write(&dir.join("README.md"), "not yaml").unwrap();
+        std::fs::write(&dir.join("notes.txt"), "not yaml").unwrap();
+
+        let kb = YamlKnowledgeBase::load_dir(&dir).expect("load ok");
+        let mut got: Vec<String> = kb.all().iter().map(|f| f.id.clone()).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "应递归收录 yaml/yml（含大写扩展名），忽略非 YAML 文件"
+        );
+        assert_eq!(kb.sources().len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

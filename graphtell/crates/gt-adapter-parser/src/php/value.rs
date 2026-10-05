@@ -116,8 +116,13 @@ pub fn unwrap_string(node: Node, src: &str) -> String {
     let t = text(node, src);
     let t = t.trim();
     if t.starts_with("<<<") {
-        // heredoc / nowdoc: take everything after the first line up to the closing marker
-        return t.lines().skip(1).collect::<Vec<_>>().join("\n");
+        // heredoc / nowdoc: drop the `<<<EOT` opener line **and** the closing marker line. Keeping the
+        // marker used to leak `EOT` into the value, corrupting every identity built from it.
+        let body: Vec<&str> = t.lines().skip(1).collect();
+        return body
+            .split_last()
+            .map(|(_, rest)| rest.join("\n"))
+            .unwrap_or_default();
     }
     let bytes = t.as_bytes();
     // Both ends must be ASCII quotes before byte-slicing (avoids a panic on a multi-byte character boundary).
@@ -281,5 +286,137 @@ class M {
         assert_eq!(truncate("abc", 2), "ab");
         assert_eq!(truncate("abc", 10), "abc", "未超长时原样返回");
         assert_eq!(truncate("中文字符", 2), "中文", "按字符截断，不得切在多字节中间");
+    }
+
+    /// `X::class` is the only class-constant form that becomes a `ClassConst`; any other constant
+    /// (`Foo::BAR`) stays `Unknown`, so it can never be mistaken for a type identity.
+    #[test]
+    fn class_constants_separate_class_from_other_constants() {
+        let src = r#"<?php
+class M {
+    public function run() {
+        $o->m(Foo::class);
+        $o->m(\App\Foo::class);
+        $o->m(self::class);
+        $o->m(static::class);
+        $o->m(Foo::BAR);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert_eq!(all.len(), 5, "expected 5 call sites, got: {all:?}");
+        assert!(matches!(all[0][0], FactValue::ClassConst(ref s) if s == "Foo"));
+        assert!(
+            matches!(all[1][0], FactValue::ClassConst(ref s) if s == "App\\Foo"),
+            "前导 `\\` 应剥除: {:?}",
+            all[1][0]
+        );
+        assert!(matches!(all[2][0], FactValue::ClassConst(ref s) if s == "self"));
+        assert!(matches!(all[3][0], FactValue::ClassConst(ref s) if s == "static"));
+        assert!(
+            matches!(all[4][0], FactValue::Unknown(Some(ref s)) if s == "Foo::BAR"),
+            "非 class 常量不得当作类型身份: {:?}",
+            all[4][0]
+        );
+    }
+
+    /// PHP 7.4 numeric literal separators (`1_000`) are part of the literal, not of the value.
+    #[test]
+    fn numeric_literals_ignore_underscore_separators() {
+        let src = r#"<?php
+class M {
+    public function run() {
+        $o->m(1_000);
+        $o->m(1_0.5);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert!(matches!(all[0][0], FactValue::Int(1000)), "下划线应被忽略: {:?}", all[0][0]);
+        assert!(
+            matches!(all[1][0], FactValue::Float(f) if (f - 10.5).abs() < 1e-9),
+            "浮点同样忽略下划线: {:?}",
+            all[1][0]
+        );
+    }
+
+    /// Boolean literals are case-insensitive: PHP's `TRUE` / `False` are the same constant as `true`.
+    #[test]
+    fn boolean_literals_are_case_insensitive() {
+        let src = r#"<?php
+class M {
+    public function run() {
+        $o->m(TRUE);
+        $o->m(False);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert!(matches!(all[0][0], FactValue::Bool(true)), "{:?}", all[0][0]);
+        assert!(matches!(all[1][0], FactValue::Bool(false)), "{:?}", all[1][0]);
+    }
+
+    /// Bare constants (`PHP_EOL`) evaluate to their name, and parentheses are transparent
+    /// (`(1)` is the literal `1`, not something unknowable).
+    #[test]
+    fn bare_constants_and_parentheses_are_evaluated() {
+        let src = r#"<?php
+class M {
+    public function run() {
+        $o->m(PHP_EOL);
+        $o->m((1));
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert!(matches!(all[0][0], FactValue::String(ref s) if s == "PHP_EOL"), "{:?}", all[0][0]);
+        assert!(matches!(all[1][0], FactValue::Int(1)), "括号应透明: {:?}", all[1][0]);
+    }
+
+    /// What cannot be determined statically degrades instead of being guessed: a unary expression on a
+    /// variable yields `Unknown(None)`, and a computed expression keeps its source text (truncated).
+    #[test]
+    fn unresolvable_expressions_degrade_to_unknown() {
+        let src = r#"<?php
+class M {
+    public function run($x) {
+        $o->m(-$x);
+        $o->m(1 + 2);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert!(
+            matches!(all[0][0], FactValue::Unknown(None)),
+            "对变量取负不可静态确定: {:?}",
+            all[0][0]
+        );
+        assert!(
+            matches!(all[1][0], FactValue::Unknown(Some(ref s)) if s == "1 + 2"),
+            "计算表达式保留源码文本: {:?}",
+            all[1][0]
+        );
+    }
+
+    /// heredoc / nowdoc: the value is the **body**, so neither the `<<<EOT` opener nor the closing marker
+    /// may leak into it (a leaked `EOT` would corrupt every identity built from the string).
+    #[test]
+    fn heredoc_value_excludes_opener_and_closing_marker() {
+        let src = r#"<?php
+class M {
+    public function run() {
+        $o->m(<<<EOT
+hello
+EOT);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert_eq!(all.len(), 1, "expected 1 call site, got: {all:?}");
+        assert!(
+            matches!(all[0][0], FactValue::String(ref s) if s == "hello"),
+            "heredoc 的值应只有正文，不含 `<<<EOT` 与结束标记: {:?}",
+            all[0][0]
+        );
     }
 }

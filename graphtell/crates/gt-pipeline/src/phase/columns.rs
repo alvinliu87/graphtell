@@ -233,4 +233,103 @@ mod tests {
         assert_eq!(cols.len(), 1, "columns must resolve via identity.value, not display name");
         assert_eq!(cols[0], "user.id");
     }
+
+    #[test]
+    fn materialize_exact_singular_key_matches_without_fallback() {
+        // Primary lookup path: the schema key equals the table identity exactly, so no plural fallback is needed.
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "user", &["id", "phone"]);
+        super::materialize(&mut ctx);
+        let cols = column_identities(&ctx);
+        assert_eq!(cols.len(), 2, "singular key must match directly");
+        assert!(cols.contains(&"user.id".to_string()));
+        assert!(cols.contains(&"user.phone".to_string()));
+        assert_eq!(has_column_count(&ctx), 2);
+    }
+
+    #[test]
+    fn materialize_ignores_non_table_nodes() {
+        // Only Table nodes are materialised; a Method (or any non-table) must be left alone even if a schema
+        // entry exists for a same-named key.
+        let mut ctx = ctx_with_project();
+        let method = ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind::from("Method"),
+            name: "user".into(),
+            fqn: None,
+            identity: Some(IdentityKey::named("user")),
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase(Phase::ANNOTATE_POST.to_string()),
+            confidence: 0.9,
+            properties: serde_json::Value::Null,
+        });
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "users", &["id"]);
+        super::materialize(&mut ctx);
+        // Only the table produced a column; the Method produced none.
+        assert_eq!(column_identities(&ctx), vec!["user.id".to_string()]);
+        assert_eq!(has_column_count(&ctx), 1, "exactly one HasColumn edge (from the table)");
+        // The Method node must not have gained a HasColumn edge.
+        assert!(ctx.ws.out_edges_of(method).is_empty());
+    }
+
+    #[test]
+    fn materialize_skips_table_with_empty_name() {
+        // A Table node whose resolved name is empty (blank identity, no usable display name) cannot be
+        // looked up against the schema; it must be skipped rather than panic or fabricate a column.
+        let mut ctx = ctx_with_project();
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind(NodeKind::TABLE.to_string()),
+            name: "whatever".into(),
+            fqn: None,
+            identity: Some(IdentityKey::named("")),
+            file_id: None,
+            span: Span::default(),
+            language: Language::new("php"),
+            phase: Phase(Phase::ANNOTATE_POST.to_string()),
+            confidence: 0.9,
+            properties: serde_json::Value::Null,
+        });
+        // Schema keys that would match if the (empty) name were mis-used.
+        put_schema(&mut ctx, "", &["id"]);
+        put_schema(&mut ctx, "whatever", &["id"]);
+        super::materialize(&mut ctx);
+        assert_eq!(column_identities(&ctx).len(), 0, "empty-name table must be skipped");
+        assert_eq!(has_column_count(&ctx), 0);
+    }
+
+    #[test]
+    fn materialize_column_node_carries_schema_properties() {
+        // Each synthesised Column node records where it came from and its column name in `properties`
+        // (the kernel cannot hard-code which semantic kinds exist, so `category`/`sources`/`column` are written).
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "users", &["phone"]);
+        super::materialize(&mut ctx);
+        let col_id = ctx
+            .ws
+            .node_ids()
+            .into_iter()
+            .find(|id| {
+                ctx.ws.node(*id).map(|n| {
+                    n.kind.as_str() == "Column"
+                        && n.identity.as_ref().map(|i| i.value.as_str()) == Some("user.phone")
+                }).unwrap_or(false)
+            })
+            .expect("phone column node");
+        let props = ctx.ws.node(col_id).unwrap().properties.clone();
+        assert_eq!(props.get("column").and_then(|v| v.as_str()), Some("phone"));
+        assert_eq!(props.get("category").and_then(|v| v.as_str()), Some("Column"));
+        let sources = props.get("sources").and_then(|v| v.as_array()).expect("sources array");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources.get(0).and_then(|v| v.as_str()), Some("schema"));
+    }
 }

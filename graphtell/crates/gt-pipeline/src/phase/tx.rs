@@ -617,4 +617,118 @@ mod tests {
             "调用点所属栈未声明标记词表时不应判定"
         );
     }
+
+    // ===== remaining branches =====
+
+    /// A call site the parser could not split into a method name (a dynamic `$cb()`): `run` still registers
+    /// the method from it, so a multi-table write there **is** judged — the marker check simply has nothing
+    /// to match against. Pins the `if let Some(method)` arm.
+    fn call_no_method(
+        ctx: &mut PipelineContext,
+        owner: i64,
+        callee: &str,
+        line: u32,
+        file: &str,
+        sub: Option<i64>,
+    ) {
+        ctx.ws.calls.push(CallRecord {
+            node: NodeId(owner * 100 + line as i64),
+            owner: NodeId(owner),
+            owner_fqn: format!("App\\Svc::run{owner}"),
+            owner_class: None,
+            callee: callee.to_string(),
+            receiver: None,
+            method: None,
+            args: Vec::new(),
+            span: gt_domain::model::Span {
+                start_line: line,
+                end_line: line,
+                start_byte: 0,
+                end_byte: 0,
+            },
+            file: file.to_string(),
+            language: Language::new(Language::PHP),
+            sub: sub.map(SubProjectId::new),
+            db_table: None,
+            in_loop: false,
+            entity: None,
+        });
+    }
+
+    #[test]
+    fn a_call_site_without_a_method_name_still_registers_the_method() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        // Only a method-less call site: the method still gets a location, hence is judged.
+        call_no_method(&mut ctx, 10, "$cb()", 10, "app/Svc.php", Some(SUB));
+
+        // The same writes plus a real marker call: the marker still suppresses.
+        write(&mut ctx, 11, 20);
+        write(&mut ctx, 11, 21);
+        call_no_method(&mut ctx, 11, "$cb()", 10, "app/Svc.php", Some(SUB));
+        call(&mut ctx, 11, "transaction");
+
+        super::run(&mut ctx);
+
+        assert!(
+            annotated(&ctx, 10),
+            "没有方法名的调用点仍会登记该方法（位置已知），多表写应被判定"
+        );
+        assert!(
+            !annotated(&ctx, 11),
+            "并存的真实事务标记调用仍应抑制"
+        );
+    }
+
+    /// The marker lookup is **per call site's sub-project**: a `transaction` call recorded in a stack that
+    /// declares no markers is not recognised, so it must not silence the finding. Complements
+    /// `multi_write_is_skipped_when_the_call_sites_belong_to_a_stack_without_markers`.
+    #[test]
+    fn a_marker_call_in_a_stack_without_markers_does_not_suppress() {
+        let mut ctx = ctx_with(vec!["transaction"]); // only sub 1 declares
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        call_at(&mut ctx, 10, "save", "save", 10, "app/Svc.php", Some(SUB));
+        call_at(
+            &mut ctx,
+            10,
+            "transaction",
+            "transaction",
+            12,
+            "app/Svc.php",
+            Some(2), // a stack that declares nothing -> the call is not even consulted
+        );
+
+        super::run(&mut ctx);
+
+        assert!(
+            annotated(&ctx, 10),
+            "未声明标记词表的栈里的事务调用不应抑制"
+        );
+    }
+
+    /// The evidence location is the earliest call site **among those that could be judged** — a call site
+    /// whose stack declares no markers is skipped entirely, so it contributes no location even when it is
+    /// the earliest line in the method.
+    #[test]
+    fn evidence_points_at_the_earliest_eligible_call_site() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        // Earliest line, but its stack declares nothing -> skipped, contributes nothing.
+        call_at(&mut ctx, 10, "a", "a", 5, "app/other_stack.php", Some(2));
+        // Earliest *eligible* call site.
+        call_at(&mut ctx, 10, "save", "save", 20, "app/later.php", Some(SUB));
+
+        super::run(&mut ctx);
+
+        let a = annotation_of(&ctx, 10).expect("expected a multi-write-without-tx annotation");
+        assert_eq!(
+            a.evidence["line"],
+            json!(20),
+            "位置应取『可判定』调用点中最早者，而非全体最早"
+        );
+        assert_eq!(a.evidence["file"], json!("app/later.php"));
+    }
 }
