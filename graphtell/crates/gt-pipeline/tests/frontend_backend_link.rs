@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use gt_domain::model::NodeKind;
 use gt_domain::model::ProjectConfig;
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter, ProjectReader};
+use gt_sample_support::frontend_backend_link_root;
 
 /// A synthetic sample directory inside the repo (shipped with the repo).
 ///
@@ -31,21 +32,8 @@ use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter, ProjectReader};
 /// caller's assert raises a diagnosable missing-path message (this file deliberately requires failure
 /// rather than skip).
 fn synth_root() -> PathBuf {
-    if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLES_DIR") {
-        let candidate = PathBuf::from(dir).join("frontend-backend-link");
-        if candidate.is_dir() {
-            return candidate;
-        }
-    }
-    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..6 {
-        let candidate = cur.join("samples").join("frontend-backend-link");
-        if candidate.is_dir() {
-            return candidate;
-        }
-        if !cur.pop() {
-            break;
-        }
+    if let Some(p) = frontend_backend_link_root() {
+        return p;
     }
     // Fallback: the repo root — `crates/gt-pipeline` -> `crates` -> workspace -> repo root — so the assert
     // names the path that really should hold the sample.

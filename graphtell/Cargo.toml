@@ -22,6 +22,7 @@ members = [
     "crates/gt-adapter-rules",
     "crates/gt-adapter-sqlite",
     "crates/gt-adapter-http",
+    "crates/gt-sample-support",
     "crates/gt-app",
 ]
 
@@ -79,6 +80,7 @@ gt-adapter-views = { path = "crates/gt-adapter-views" }
 gt-adapter-rules = { path = "crates/gt-adapter-rules" }
 gt-adapter-sqlite = { path = "crates/gt-adapter-sqlite" }
 gt-adapter-http = { path = "crates/gt-adapter-http" }
+gt-sample-support = { path = "crates/gt-sample-support" }
 
 [profile.release]
 opt-level = 2

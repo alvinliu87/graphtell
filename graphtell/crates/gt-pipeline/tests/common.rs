@@ -2,14 +2,14 @@
 //!
 //! # Where the samples come from
 //!
-//! The tests use `samples/thinkphp-projects/CRMEB-master` as their material. So that CI can run on a machine
-//! without samples, a missing sample makes the test **skip** rather than fail:
-//! * the environment variable `GRAPHTELL_SAMPLE_DIR` points at it explicitly, or
-//! * the in-repo relative path `samples/thinkphp-projects/CRMEB-master`
+//! The tests use the real `sample_project` (CRMEB) checkout as material, located by
+//! `gt_sample_support::sample_root` (the `GRAPHTELL_SAMPLE_DIR` env var, or a bounded-depth search
+//! under `samples/`). So that CI can run on a machine without samples, a missing sample makes the
+//! test **skip** rather than fail.
 
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use gt_adapter_fkb::YamlKnowledgeBase;
@@ -29,60 +29,13 @@ use gt_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
 pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
-/// Locate the sample_project sample under `dir/samples`.
+/// Locate the `sample_project` (CRMEB) sample root directory.
 ///
-/// The real layout is **classified by tech stack over several levels** (e.g.
-/// `samples/php-projects/thinkphp/CRMEB`), and the directory name may or may not carry a `-master` suffix. So it
-/// does a **bounded-depth** recursive search under `samples/` for a directory named `CRMEB` / `CRMEB-master`,
-/// independent of a specific depth or naming (a fixed pattern that misses the real layout makes the tests
-/// silently skip — CI all green with zero coverage).
-fn under_samples(dir: &Path) -> Option<PathBuf> {
-    /// Search at most `depth` levels under `dir`; return the lexicographically first hit (for a stable result).
-    fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
-        if depth == 0 {
-            return None;
-        }
-        let mut hits: Vec<PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "CRMEB" || name == "CRMEB-master" {
-                hits.push(path);
-            } else if let Some(found) = search(&path, depth - 1) {
-                hits.push(found);
-            }
-        }
-        hits.sort();
-        hits.into_iter().next()
-    }
-    search(&dir.join("samples"), 3)
-}
-
-/// Locate the sample_project sample root directory.
-///
-/// Walks upward from `CARGO_MANIFEST_DIR` looking for `samples/**/CRMEB-master`, supporting both layouts —
-/// "the repo root is the workspace" and "the workspace is nested in a subdirectory".
-pub fn sample_root() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..6 {
-        if let Some(candidate) = under_samples(&cur) {
-            return Some(candidate.canonicalize().unwrap_or(candidate));
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    None
-}
+/// Delegates to `gt_sample_support::sample_root`, the single source of truth for where the real,
+/// oversized sample checkout lives (the `GRAPHTELL_SAMPLE_DIR` env var, or a bounded-depth search
+/// under `samples/`). Keeping the discovery in one crate means a layout/name change touches only
+/// that crate, not every test file.
+pub use gt_sample_support::sample_root;
 
 pub struct TestInfra {
     fs: StdFileSystem,

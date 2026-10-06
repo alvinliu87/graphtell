@@ -6,43 +6,10 @@
 //! * entry extraction from config arrays (`event.php` / `provider.php`)
 //! * `Route::post(...)` call sites inside route closures (the easiest one to miss)
 
-use std::path::PathBuf;
-
 use gt_adapter_parser::DefaultParserRegistry;
 use gt_domain::model::{Language, SyntaxFacts};
 use gt_domain::port::ParserRegistry;
-
-fn sample_root() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..6 {
-        let samples = cur.join("samples");
-        let direct = samples.join("CRMEB-master");
-        if direct.is_dir() {
-            return Some(direct.canonicalize().unwrap_or(direct));
-        }
-        let mut hits: Vec<PathBuf> = std::fs::read_dir(&samples)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path().join("CRMEB-master"))
-            .filter(|p| p.is_dir())
-            .collect();
-        hits.sort();
-        if let Some(hit) = hits.into_iter().next() {
-            return Some(hit.canonicalize().unwrap_or(hit));
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    None
-}
+use gt_sample_support::{missing_hint, sample_root};
 
 fn parse_php(rel: &str) -> Option<SyntaxFacts> {
     let root = sample_root()?;
@@ -59,7 +26,7 @@ fn parse_php(rel: &str) -> Option<SyntaxFacts> {
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_model_namespace_and_fqn() {
     let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
-        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("{}", missing_hint());
     };
     let class = facts
         .declarations
@@ -90,7 +57,7 @@ fn parses_model_namespace_and_fqn() {
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_model_name_and_pk_properties() {
     let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
-        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("{}", missing_hint());
     };
     let class = facts
         .declarations
@@ -126,7 +93,7 @@ fn parses_model_name_and_pk_properties() {
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_event_php_config_entries() {
     let Some(facts) = parse_php("crmeb/app/event.php") else {
-        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("{}", missing_hint());
     };
     let pay_success = facts
         .config_entries
@@ -152,7 +119,7 @@ fn parses_event_php_config_entries() {
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_provider_php_bindings() {
     let Some(facts) = parse_php("crmeb/app/provider.php") else {
-        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("{}", missing_hint());
     };
     let entry = |key: &str| {
         facts
@@ -177,7 +144,7 @@ fn parses_provider_php_bindings() {
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_route_call_sites_inside_closures() {
     let Some(facts) = parse_php("crmeb/app/api/route/v1.php") else {
-        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("{}", missing_hint());
     };
     // Route registration is written inside a closure: `Route::post('apple_login', 'Login/appleLogin')`
     let route_calls = facts

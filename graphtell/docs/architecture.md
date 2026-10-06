@@ -672,7 +672,10 @@ export" for each sample and generates two directly publishable static artifacts,
 
 No model weights needed (recall falls back to hashing). Regenerate locally:
 `./tools/gen_demo.sh --build` (the sample tree defaults to the repo-root `samples/`, overridable via
-`GRAPHTELL_SAMPLES_DIR`).
+`GRAPHTELL_SAMPLES_DIR`). Sample discovery for both the demo script and the integration tests is centralized
+in `gt-sample-support`: it honors `GRAPHTELL_SAMPLE_DIR` (pointing directly at a sample checkout — the
+canonical form, shared with the CRMEB pipeline) as well as the legacy `GRAPHTELL_SAMPLES_DIR` (pointing at
+the `samples/` parent).
 
 Publishing: repo **Settings → Pages → Source "GitHub Actions"** (one-time); afterwards pushing
 `master` / `main` auto-publishes via

@@ -20,53 +20,13 @@ use gt_app::{AppConfig, Container};
 use gt_application::{PipelineService, ProjectService, RecallQuality, RecallQuery, RecallService};
 use gt_domain::model::NewProject;
 use gt_domain::port::{NoopObserver, Persistence, SystemClock};
+use gt_sample_support::{missing_hint, sample_root};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
 }
 
-/// Locate the sample_project sample root: prefer `GRAPHTELL_SAMPLE_DIR`, otherwise search recursively under `samples/`
-/// **level by level upward** from `CARGO_MANIFEST_DIR` — a fixed one-level pattern does not fit the real
-/// layout `samples/php-projects/thinkphp/CRMEB`, and a miss must not become a silent skip.
-fn find_sample() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    /// Search at most `depth` levels under `dir`, matching `CRMEB` / `CRMEB-master`.
-    fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
-        if depth == 0 {
-            return None;
-        }
-        let mut hits: Vec<PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "CRMEB" || name == "CRMEB-master" {
-                hits.push(path);
-            } else if let Some(found) = search(&path, depth - 1) {
-                hits.push(found);
-            }
-        }
-        hits.sort();
-        hits.into_iter().next()
-    }
-    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..6 {
-        if let Some(cand) = search(&cur.join("samples"), 3) {
-            return Some(cand);
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    None
-}
+
 
 struct Built {
     container: Container,
@@ -78,7 +38,7 @@ fn built() -> Option<Arc<Built>> {
     static CACHE: OnceLock<Option<Arc<Built>>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let sample = find_sample()?;
+            let sample = sample_root()?;
             let data_dir =
                 std::env::temp_dir().join(format!("graphtell-evaltest-{}", std::process::id()));
             std::fs::create_dir_all(&data_dir).ok()?;
@@ -123,8 +83,8 @@ fn built() -> Option<Arc<Built>> {
         .clone()
 }
 
-fn skip() -> &'static str {
-    "skip: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
+fn skip() -> String {
+    format!("skipped: {}", missing_hint())
 }
 
 /// Parse a quality-tier string into a comparable ordinal.

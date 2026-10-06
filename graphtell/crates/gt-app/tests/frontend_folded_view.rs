@@ -17,14 +17,10 @@ use gt_app::{AppConfig, Container};
 use gt_application::{PipelineService, ProjectService, ViewService};
 use gt_domain::model::{NewProject, NodeKind};
 use gt_domain::port::{GraphQuery, NoopObserver, NodeFilter, SystemClock};
+use gt_sample_support::frontend_backend_link_root;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
-}
-
-/// Synthetic sample root: `crates/gt-app` -> up two levels to the repo root -> `samples/frontend-backend-link`.
-fn synth_root() -> PathBuf {
-    workspace_root().join("samples/frontend-backend-link")
 }
 
 struct Built {
@@ -36,7 +32,7 @@ fn built() -> Option<Arc<Built>> {
     static CACHE: OnceLock<Option<Arc<Built>>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let root = synth_root();
+            let root = frontend_backend_link_root()?;
             if !root.is_dir() {
                 return None;
             }
@@ -102,7 +98,9 @@ fn view_svc(b: &Built) -> ViewService {
 fn skip() -> String {
     format!(
         "skip: synthetic sample not found {}",
-        synth_root().display()
+        frontend_backend_link_root()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "samples/frontend-backend-link".to_string())
     )
 }
 

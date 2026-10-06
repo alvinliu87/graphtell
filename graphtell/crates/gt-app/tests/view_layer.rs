@@ -1,6 +1,7 @@
 //! gt-app view-layer integration tests (composition root → build graph → view slicing).
 //!
-//! Uses the real `samples/CRMEB-master` (3 sub-projects, 2178 source files) as material, assembles all adapters via `Container`,
+//! Uses the real `sample_project` (CRMEB) checkout (3 sub-projects, 2178 source files) as material,
+//! located by `gt_sample_support::sample_root()`, assembles all adapters via `Container`,
 //! runs a full build, then uses `ViewService` to verify the first/second-level filters and each view slice.
 //!
 //! **Depends on an oversized real sample (not in repo, see `samples/`'s .gitignore rules):**
@@ -21,58 +22,7 @@ use gt_domain::model::{NewProject, NodeKind};
 use gt_domain::port::{
     EdgeDirection, GraphQuery, NodeFilter, NoopObserver, Persistence, RuleProvider, SystemClock,
 };
-
-/// Locate the sample_project sample under `dir/samples`.
-///
-/// The sample is actually placed in a **multi-level taxonomy** by tech stack (e.g. `samples/php-projects/thinkphp/CRMEB`),
-/// and the dir name may or may not carry a `-master` suffix — a fixed one-level pattern would mismatch the real
-/// layout → the sample is on disk but not matched → the whole group takes `built()`'s soft-skip branch, still
-/// counted as passed, but in fact **zero coverage**. So this does a bounded-depth recursive search under
-/// `samples/`, independent of concrete level or naming.
-fn under_samples(dir: &Path) -> Option<PathBuf> {
-    /// Search at most `depth` levels within `dir`; return the lexicographically first hit (stable result).
-    fn search(dir: &Path, depth: usize) -> Option<PathBuf> {
-        if depth == 0 {
-            return None;
-        }
-        let mut hits: Vec<PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "CRMEB" || name == "CRMEB-master" {
-                hits.push(path);
-            } else if let Some(found) = search(&path, depth - 1) {
-                hits.push(found);
-            }
-        }
-        hits.sort();
-        hits.into_iter().next()
-    }
-    search(&dir.join("samples"), 3)
-}
-
-/// Search upward from `CARGO_MANIFEST_DIR` for `samples/**/CRMEB-master`.
-fn find_sample() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("GRAPHTELL_SAMPLE_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..6 {
-        if let Some(cand) = under_samples(&cur) {
-            return Some(cand);
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    None
-}
+use gt_sample_support::{missing_hint, sample_root};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
@@ -88,7 +38,7 @@ fn built() -> Option<Arc<Built>> {
     static CACHE: OnceLock<Option<Arc<Built>>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let sample = find_sample()?;
+            let sample = sample_root()?;
             let data_dir =
                 std::env::temp_dir().join(format!("graphtell-viewtest-{}", std::process::id()));
             std::fs::create_dir_all(&data_dir).ok()?;
@@ -139,8 +89,8 @@ fn view_svc(b: &Built) -> ViewService {
     ViewService::new(b.container.store.clone(), b.container.views())
 }
 
-fn skip() -> &'static str {
-    "skipped: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
+fn skip() -> String {
+    format!("skipped: {}", missing_hint())
 }
 
 /// Whether this perspective is registered in `views/perspectives.yaml` (unregistered aggregate perspectives can't be asserted).

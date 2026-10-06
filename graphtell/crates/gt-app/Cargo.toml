@@ -37,6 +37,7 @@ path = "src/lib.rs"
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 http-body-util = { workspace = true }
+gt-sample-support = { workspace = true }
 
 [features]
 default = ["model-candle", "model-ort"]

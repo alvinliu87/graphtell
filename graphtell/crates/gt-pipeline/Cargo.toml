@@ -22,3 +22,4 @@ gt-adapter-techstack = { workspace = true }
 gt-adapter-resource = { workspace = true }
 gt-adapter-fkb = { workspace = true }
 gt-adapter-sqlite = { workspace = true }
+gt-sample-support = { workspace = true }

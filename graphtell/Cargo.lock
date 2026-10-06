@@ -980,6 +980,7 @@ dependencies = [
  "globset",
  "gt-adapter-parser",
  "gt-domain",
+ "gt-sample-support",
  "ignore",
  "thiserror 2.0.20",
  "tracing",
@@ -1015,6 +1016,7 @@ name = "gt-adapter-parser"
 version = "0.1.0"
 dependencies = [
  "gt-domain",
+ "gt-sample-support",
  "regex",
  "serde_json",
  "thiserror 2.0.20",
@@ -1104,6 +1106,7 @@ dependencies = [
  "gt-application",
  "gt-domain",
  "gt-pipeline",
+ "gt-sample-support",
  "http-body-util",
  "serde_json",
  "tokio",
@@ -1162,6 +1165,7 @@ dependencies = [
  "gt-adapter-sqlite",
  "gt-adapter-techstack",
  "gt-domain",
+ "gt-sample-support",
  "once_cell",
  "regex",
  "serde",
@@ -1170,6 +1174,10 @@ dependencies = [
  "tracing",
  "walkdir",
 ]
+
+[[package]]
+name = "gt-sample-support"
+version = "0.1.0"
 
 [[package]]
 name = "half"

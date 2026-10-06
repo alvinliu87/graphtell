@@ -16,3 +16,4 @@ tracing = { workspace = true }
 [dev-dependencies]
 gt-domain = { workspace = true }
 gt-adapter-parser = { workspace = true }
+gt-sample-support = { workspace = true }
