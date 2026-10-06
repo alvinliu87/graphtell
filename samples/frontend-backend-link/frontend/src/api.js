@@ -9,7 +9,7 @@ export function deleteItem() {
 
 // 同上，但走 **uni-app 形态**的成员式封装：`request.get('/api/ping')`
 // —— 成员名即 HTTP method，URL 是首个实参。
-// CRMEB 的 template/uni-app 子工程（`utils/request.js` 里把 uni.request
+// template/uni-app 子工程（`utils/request.js` 里把 uni.request
 // 包成 request.get / request.post）正是这种写法；真正的 uni.request 只有一处
 // 且 URL 是动态拼串，能被静态确定 location 的就是这层。
 export function pingItem() {
@@ -22,7 +22,7 @@ export function invoiceDetail(id) {
   request.get('/api/invoice/detail/' + id);
 }
 
-// **模板串** URL：`` `...${id}` `` 同理（CRMEB uni-app 的真实写法）。
+// **模板串** URL：`` `...${id}` `` 同理（uni-app 的真实写法）。
 export function orderInvoiceDetail(id) {
   request.get(`/api/order/invoice_detail/${id}`);
 }

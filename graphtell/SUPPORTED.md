@@ -192,7 +192,7 @@ End-to-end self-check: `crates/gt-pipeline/tests/node_koa_fastify_features.rs`.
 
 **Verification samples**: besides the synthetic self-checks, real open-source projects were downloaded
 for end-to-end verification (git-ignored, not committed):
-`lujakob/nestjs-realworld-example-app` (NestJS + TypeORM), `sahat/hackathon-starter` (Express).
+a NestJS + TypeORM sample repo and an Express starter sample repo (both third-party, supplied by you).
 `crates/gt-pipeline/tests/node_real_samples.rs` runs real build assertions when the samples exist and
 skips when they're missing.
 

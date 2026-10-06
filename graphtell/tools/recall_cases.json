@@ -21,8 +21,8 @@
   "projects": {
     "1": "示例项目（PHP 电商，含 i18n）",
     "11": "likeadmin（PHP 后台管理系统）",
-    "13": "nestjs-realworld（NestJS 博客/CMS，非电商、无 i18n）",
-    "15": "express-hackathon-starter（Node/Express，非电商）",
+    "13": "示例项目（NestJS 博客/CMS，非电商、无 i18n）",
+    "15": "示例项目（Node/Express，非电商）",
     "24": "示例项目（Java/SpringBoot 电商）",
     "31": "fastapi-demo（Python/FastAPI）"
   },

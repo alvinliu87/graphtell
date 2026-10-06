@@ -34,7 +34,7 @@ flowchart LR
   end
 ```
 
-**实测对照**（CRMEB v6.0.0）：全量 **96,241 个节点 / 125,368 条边**，但围绕**一条路由**的对象视图只有 **35 条边**，且每条都有明确语义 ——
+**实测对照**（示例项目 v6.0.0）：全量 **96,241 个节点 / 125,368 条边**，但围绕**一条路由**的对象视图只有 **35 条边**，且每条都有明确语义 ——
 `ReadsConfig` 28、`ReadsCache` 2、`ReadsDb` 1、`PassesThrough` 3、`ForeignKey` 1。
 
 这就是「图很大」和「图能读」的区别。
@@ -62,9 +62,9 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 
 于是"这个接口动了什么"是一眼看出来的事，而不是人工沿调用链翻十几跳。默认折叠视图**严格只留语义节点与语义边**，语法节点收进 `via` 链。
 
-![语义图：CRMEB 路由视角，从选中的接口展开语义依赖（读表 / 读缓存 / 读配置 / 发队列），按节点类型着色](graphtell/docs/screenshots/graph-crmeb.png)
+![语义图：路由视角，从选中的接口展开语义依赖（读表 / 读缓存 / 读配置 / 发队列），按节点类型着色](graphtell/docs/screenshots/graph.png)
 
-> 上图为 CRMEB（全量 96,241 节点）的一个连通子图：**400 节点 / 894 边**，按类型着色，可缩放拖拽、点击看细节。
+> 上图为该示例项目（全量 96,241 节点）的一个连通子图：**400 节点 / 894 边**，按类型着色，可缩放拖拽、点击看细节。
 
 ### ② 基于图的规则校验
 
@@ -76,9 +76,9 @@ HttpContract --HandledBy--> Method --ReadsDb--> Table
 
 产出带 `path:line` 的违规清单，可直接跳转。
 
-![规则校验：违规表可按严重度与规则筛选](graphtell/docs/screenshots/rules-crmeb.png)
+![规则校验：违规表可按严重度与规则筛选](graphtell/docs/screenshots/rules.png)
 
-> 上图为 CRMEB 的检查结果（1,036 条违规），可按严重度 / 规则筛选。
+> 上图为该示例项目的检查结果（1,036 条违规），可按严重度 / 规则筛选。
 
 ### ③ 基于图的提示词增强（省 token）
 

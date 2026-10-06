@@ -12,8 +12,8 @@ used only as test material and demo assets.
 | Directory | Nature | Upstream | License | License text |
 | --- | --- | --- | --- | --- |
 | `frontend-backend-link` | **synthetic fixture made by this project** (packages `synthetic/frontend`, `synthetic/backend`) | — | owned by this project | no third-party grant needed |
-| `hackathon-starter` | third-party OSS | https://github.com/sahat/hackathon-starter | MIT © Sahat Yalkabov | ✅ shipped upstream (`samples/hackathon-starter/LICENSE`) |
-| `nestjs-realworld-example-app` | third-party OSS | https://github.com/lujakob/nestjs-realworld-example-app | ISC | ⚠️ not shipped upstream; standard text added per the `package.json` declaration |
+| Express starter sample | third-party OSS | not linked here — supplied via `GRAPHTELL_SAMPLE_DIR` | permissive (MIT) | ✅ license shipped with the sample |
+| NestJS + ORM sample | third-party OSS | not linked here — supplied via `GRAPHTELL_SAMPLE_DIR` | permissive (ISC) | ⚠️ license text taken from its `package.json` declaration |
 | `typescript-starter` | third-party OSS | https://github.com/nestjs/typescript-starter | MIT | ⚠️ not shipped upstream; standard text added per the `package.json` declaration |
 | `php-projects/laravel-starter` | third-party OSS (official Laravel skeleton) | https://github.com/laravel/laravel | MIT © Taylor Otwell | ⚠️ standard text added per the `composer.json` declaration |
 | large third-party e-commerce systems | — | non-standard permissive | **not included in this repo**: set `GRAPHTELL_SAMPLE_DIR` and supply them yourself |
