@@ -8,9 +8,10 @@ export default defineConfig({
     },
   },
   test: {
-    environment: 'node',
-    // Component tests use `.tsx`, and switch to jsdom per-file with `// @vitest-environment jsdom`
-    // (the default stays node; pure logic tests needn't pay jsdom's startup cost).
+    environment: 'jsdom',
+    setupFiles: ['./vitest.setup.ts'],
+    // Component tests may still opt into node via `// @vitest-environment node`;
+    // pure-logic tests run fine under jsdom too.
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 });
