@@ -3,8 +3,10 @@
 //! Only what can be determined statically is evaluated; the rest is recorded as `Unknown(var)`, keeping the
 //! variable name for P7 constant propagation.
 
-use gt_domain::model::{FactValue, Span};
+use gt_domain::model::FactValue;
 use tree_sitter::Node;
+
+use crate::ts_util::text_owned as text;
 
 /// Evaluate an expression node into a `FactValue`.
 pub fn eval_expr(node: Node, src: &str) -> FactValue {
@@ -136,22 +138,7 @@ pub fn unwrap_string(node: Node, src: &str) -> String {
     t.to_string()
 }
 
-pub fn text(node: Node, src: &str) -> String {
-    src.get(node.start_byte()..node.end_byte())
-        .unwrap_or("")
-        .to_string()
-}
 
-pub fn span_of(node: Node) -> Span {
-    let s = node.start_position();
-    let e = node.end_position();
-    Span {
-        start_line: s.row as u32 + 1,
-        end_line: e.row as u32 + 1,
-        start_byte: node.start_byte() as u32,
-        end_byte: node.end_byte() as u32,
-    }
-}
 
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {

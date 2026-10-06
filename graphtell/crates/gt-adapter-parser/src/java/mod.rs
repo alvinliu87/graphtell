@@ -11,10 +11,12 @@ use std::cell::RefCell;
 use gt_domain::error::Result;
 use gt_domain::model::{
     CallSiteFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact, InheritanceFact,
-    Language, NodeKind, Span, SyntaxFacts,
+    Language, NodeKind, SyntaxFacts,
 };
 use gt_domain::port::LanguageParser;
 use tree_sitter::{Node, Parser};
+
+use crate::ts_util::{bare_type_name, opt_text, span_of, text};
 
 thread_local! {
     static PARSER: RefCell<Option<Parser>> = const { RefCell::new(None) };
@@ -519,17 +521,6 @@ fn literal_args(node: Node, src: &[u8]) -> Vec<FactValue> {
     out
 }
 
-/// Strip generics / array shells from a type name, keeping only the bare type name.
-///
-/// `List<Order>` -> `List`; `Order[]` -> `Order`. Used when normalising argument / parameter types.
-fn bare_type_name(raw: String) -> String {
-    raw.split(['<', '['])
-        .next()
-        .unwrap_or(&raw)
-        .trim()
-        .to_string()
-}
-
 /// The first parameter type (generics stripped) of a method / constructor, used by `@EventListener` to derive
 /// the event type.
 ///
@@ -664,31 +655,10 @@ fn collect_call(
     });
 }
 
-fn text(node: Node, src: &[u8]) -> Option<String> {
-    node.utf8_text(src)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn opt_text(node: Option<Node>, src: &[u8]) -> Option<String> {
-    node.and_then(|n| text(n, src))
-}
-
-fn span_of(node: Node) -> Span {
-    let start = node.start_position();
-    let end = node.end_position();
-    Span {
-        start_line: start.row as u32 + 1,
-        end_line: end.row as u32 + 1,
-        start_byte: node.start_byte() as u32,
-        end_byte: node.end_byte() as u32,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gt_domain::model::Span;
 
     /// Calls inside a loop body must be marked `in_loop` (the only place the N+1 rule can see "this code runs N times").
     /// Consistent with the PHP side: **only the body counts as inside the loop**, the condition / update expressions do not.

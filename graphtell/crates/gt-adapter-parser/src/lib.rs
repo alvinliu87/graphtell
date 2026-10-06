@@ -6,6 +6,8 @@
 
 pub mod java;
 pub mod js;
+/// Shared tree-sitter helpers (`text` / `opt_text` / `span_of`) used by every language adapter.
+pub mod ts_util;
 pub mod json;
 pub mod php;
 pub mod python;

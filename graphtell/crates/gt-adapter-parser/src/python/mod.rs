@@ -29,11 +29,13 @@ use std::collections::{HashMap, HashSet};
 use gt_domain::error::Result;
 use gt_domain::model::{
     CallSiteFact, Declaration, EdgeKind, FactValue, ImportFact, InheritanceFact, Language, NodeKind,
-    Span, SyntaxFacts,
+    SyntaxFacts,
 };
 use gt_domain::port::LanguageParser;
 use serde_json::json;
 use tree_sitter::{Node, Parser};
+
+use crate::ts_util::{bare_type_name, field_children, opt_text, span_of, text};
 
 thread_local! {
     static PARSER: RefCell<Option<Parser>> = const { RefCell::new(None) };
@@ -254,7 +256,7 @@ fn collect_supertypes(node: Node, ctx: &mut Ctx, child_fqn: &str) {
         };
         ctx.facts.inheritances.push(InheritanceFact {
             child_fqn: child_fqn.to_string(),
-            base_name: bare_typename(base),
+            base_name: bare_type_name(base),
             kind: EdgeKind(EdgeKind::EXTENDS.to_string()),
             span: span_of(arg),
         });
@@ -699,24 +701,6 @@ fn collect_loop(node: Node, ctx: &mut Ctx) {
     }
 }
 
-/// Take every child with a given **field name** (besides `body`, a `for` also has `else`, etc.).
-fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
-    let mut out = Vec::new();
-    let mut cursor = node.walk();
-    if !cursor.goto_first_child() {
-        return out;
-    }
-    loop {
-        let child = cursor.node();
-        if child.is_named() && cursor.field_name() == Some(field) {
-            out.push(child);
-        }
-        if !cursor.goto_next_sibling() {
-            return out;
-        }
-    }
-}
-
 // ------------------------------------------------------------------ helpers
 
 /// File path -> dotted module name.
@@ -731,11 +715,6 @@ fn module_fqn(path: &str) -> String {
         segs.pop();
     }
     segs.join(".")
-}
-
-/// Strip the `<...>` generic shell: `Base[Order]` -> `Base`.
-fn bare_typename(raw: String) -> String {
-    raw.split(['<', '[']).next().unwrap_or(&raw).trim().to_string()
 }
 
 /// Strip the quotes from a Python string literal (handles prefixes and triple quotes).
@@ -799,28 +778,6 @@ fn snippet_of(node: Node, src: &[u8]) -> Option<String> {
         end -= 1;
     }
     Some(format!("{}…", &line[..end]))
-}
-
-fn text(node: Node, src: &[u8]) -> Option<String> {
-    node.utf8_text(src)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn opt_text(node: Option<Node>, src: &[u8]) -> Option<String> {
-    node.and_then(|n| text(n, src))
-}
-
-fn span_of(node: Node) -> Span {
-    let start = node.start_position();
-    let end = node.end_position();
-    Span {
-        start_line: start.row as u32 + 1,
-        end_line: end.row as u32 + 1,
-        start_byte: node.start_byte() as u32,
-        end_byte: node.end_byte() as u32,
-    }
 }
 
 #[cfg(test)]
@@ -1151,10 +1108,10 @@ def get_user(user_id: int, db=Depends(get_db)):
     /// `Base` — otherwise inheritance would never match.
     #[test]
     fn bare_typename_strips_generic_and_subscript_shells() {
-        assert_eq!(bare_typename("Base[Order]".to_string()), "Base");
-        assert_eq!(bare_typename("Base<Order>".to_string()), "Base");
-        assert_eq!(bare_typename("Base".to_string()), "Base");
-        assert_eq!(bare_typename("  List [int] ".to_string()), "List", "must strip generics and trim");
+        assert_eq!(bare_type_name("Base[Order]".to_string()), "Base");
+        assert_eq!(bare_type_name("Base<Order>".to_string()), "Base");
+        assert_eq!(bare_type_name("Base".to_string()), "Base");
+        assert_eq!(bare_type_name("  List [int] ".to_string()), "List", "must strip generics and trim");
     }
 
     /// String prefixes (`r` / `rb` / `f` / `u`) and triple quotes are all common in decorators and defaults;

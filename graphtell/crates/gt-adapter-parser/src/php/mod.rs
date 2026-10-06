@@ -13,7 +13,8 @@ use gt_domain::model::{
 use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
 use serde_json::json;
 use tree_sitter::{Language as TsLanguage, Node, Parser};
-use value::{eval_expr, span_of, text};
+use crate::ts_util::{field_children, span_of, text_owned as text};
+use value::eval_expr;
 
 use gt_domain::port::LanguageParser;
 
@@ -195,26 +196,6 @@ fn db_table_of(node: Node, ctx: &Ctx) -> Option<String> {
 
 fn find_child_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     node.named_children(&mut node.walk()).find(|c| c.kind() == kind)
-}
-
-/// Take the children carrying a given **field name** (the `body` of a `for` can appear several times in the grammar).
-///
-/// `child_by_field_name` returns only the first, so a cursor is used here to take all of them.
-fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
-    let mut out = Vec::new();
-    let mut cursor = node.walk();
-    if !cursor.goto_first_child() {
-        return out;
-    }
-    loop {
-        let child = cursor.node();
-        if child.is_named() && cursor.field_name() == Some(field) {
-            out.push(child);
-        }
-        if !cursor.goto_next_sibling() {
-            return out;
-        }
-    }
 }
 
 /// Whether the current collection position is inside a loop body (for [`CallSiteFact::in_loop`]).

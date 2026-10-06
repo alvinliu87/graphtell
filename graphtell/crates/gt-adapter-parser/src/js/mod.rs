@@ -31,12 +31,14 @@ use std::cell::RefCell;
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
     CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
-    InheritanceFact, Language, NodeKind, Span, SyntaxFacts,
+    InheritanceFact, Language, NodeKind, SyntaxFacts,
 };
 use gt_domain::port::LanguageParser;
 use serde_json::json;
 use tree_sitter::{Language as TsLanguage, Node, Parser};
 use tree_sitter_typescript::{LANGUAGE_TSX, LANGUAGE_TYPESCRIPT};
+
+use crate::ts_util::{span_of_str as span_of, text_str as text};
 
 /// The JS/TS front-end parser adapter (one implementation serves javascript / typescript / vue / jsx / tsx).
 pub struct JsFrontendParser;
@@ -1232,39 +1234,6 @@ fn is_http_client_recv(recv: &str) -> bool {
     )
 }
 
-
-fn text<'a>(node: Node<'a>, src: &'a str) -> &'a str {
-    node.utf8_text(src.as_bytes()).unwrap_or("")
-}
-
-/// Byte offset -> (line, column).
-fn line_col(src: &str, byte: usize) -> (u32, u32) {
-    let mut line = 1u32;
-    let mut col = 1u32;
-    for (i, ch) in src.char_indices() {
-        if i >= byte {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}
-
-fn span_of(node: Node, src: &str) -> Span {
-    let (sl, _) = line_col(src, node.start_byte());
-    let (el, _) = line_col(src, node.end_byte());
-    Span {
-        start_line: sl,
-        end_line: el,
-        start_byte: node.start_byte() as u32,
-        end_byte: node.end_byte() as u32,
-    }
-}
 
 /// Take the whole source line a call site sits on, so the UI can show it directly as the "call site" in a link.
 fn line_snippet(src: &str, start: usize) -> Option<String> {
