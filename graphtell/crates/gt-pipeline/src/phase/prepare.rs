@@ -475,7 +475,7 @@ mod tests {
         FactValue::ClassConst(name.into())
     }
 
-    /// CRMEB's real style: `Route::group('pc', fn){ ... })->middleware(A)->middleware(B, true)`,
+    /// sample_project's real style: `Route::group('pc', fn){ ... })->middleware(A)->middleware(B, true)`,
     /// multiple routes inside the group. Middleware must land on **every** route.
     #[test]
     fn group_level_guard_covers_inner_routes() {

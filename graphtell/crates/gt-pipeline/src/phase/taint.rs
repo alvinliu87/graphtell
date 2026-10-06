@@ -24,7 +24,7 @@
 //!
 //! Judging only the call-site argument text ("does it contain `$var`") floods false positives: `Db::execute($execSql)`,
 //! a whole-variable-pass-in write, hits every time, yet `$execSql` actually comes from a local file shipped with the version package
-//! (measured: 34 of CRMEB's 40 `sql-injection-raw` cases were this kind).
+//! (measured: 34 of sample_project's 40 `sql-injection-raw` cases were this kind).
 //!
 //! So here we trace backward along the assignment chain **within the same function**: variable -> its assignment RHS -> other
 //! variables referenced on the RHS -> …; only when any link in the chain shows a request source (`request()->param()` / `input()` /
@@ -286,7 +286,7 @@ fn arg_is_embedded(fv: &FactValue, prefixes: &[String]) -> bool {
 ///
 /// `$this` is the object itself, never user input. Counting it would make a **parameterised** write like
 /// `->where($this->alias . '.uid', $uid)` be judged as injection (the condition string does "have a variable", but that variable is a
-/// property whose value is a bound parameter) — measured on CRMEB, this was the entire source of the 29 residual `sql-injection-where-interp` cases.
+/// property whose value is a bound parameter) — measured on sample_project, this was the entire source of the 29 residual `sql-injection-where-interp` cases.
 fn text_has_var(t: &str, prefixes: &[String]) -> bool {
     let mut i = 0;
     while i < t.len() {
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(kinds(&ctx, 1), vec!["tainted_raw".to_string()]);
     }
 
-    /// The measured CRMEB case: `$execSql` comes from a local file shipped with the release package, so it must
+    /// The measured sample_project case: `$execSql` comes from a local file shipped with the release package, so it must
     /// be demoted to `..._unknown` rather than reported as a confirmed critical.
     #[test]
     fn run_demotes_raw_sql_of_unproven_source_to_unknown() {

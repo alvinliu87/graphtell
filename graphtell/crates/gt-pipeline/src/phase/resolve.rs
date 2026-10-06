@@ -288,10 +288,10 @@ fn is_db_verb(
 /// * this class or its ancestor declares this method name via `@method`;
 /// * the forwarded property's type is statically determinable (constructor injection / typed property / assignment inference).
 ///
-/// By the way: if the forwarded method itself is a read / write verb declared by FKB (CRMEB's `$this->save()` forwards via
+/// By the way: if the forwarded method itself is a read / write verb declared by FKB (sample_project's `$this->save()` forwards via
 /// `__call` to `dao->save`; `dao` maps to a table), then treat the forwarding target (`dep`'s type) as the data-model
 /// category and lay `WritesDb` / `ReadsDb` directly — otherwise such writes can only fall back to a vague "maps to"
-/// (CRMEB's 156 "mappings" almost all come from this).
+/// (sample_project's 156 "mappings" almost all come from this).
 fn resolve_magic_delegation(
     ctx: &mut PipelineContext,
     loc: &Locator,
@@ -1685,7 +1685,7 @@ mod tests {
     /// `$this->dao` (a `UserDao`, which does map to the table). Without the FKB-declared
     /// `magic_delegation.property` the "… -> Services -> Dao -> table" chain breaks at the Services hop.
     ///
-    /// This declaration lives **only** in `fkb/projects/crmeb.yaml`, whose sole test (`crmeb_pipeline.rs`)
+    /// This declaration lives **only** in `fkb/projects/crmeb.yaml`, whose sole test (`sample_project_pipeline.rs`)
     /// is sample-gated — the real FKB is loaded here so the path has always-on coverage.
     fn delegation_ctx(delegation: Option<MagicDelegationSpec>) -> (PipelineContext, NodeId, NodeId, NodeId) {
         let mut ctx = new_ctx();

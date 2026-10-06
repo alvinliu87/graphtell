@@ -488,7 +488,7 @@ async fn symbols(
 /// Read cap for the diagnostics list.
 ///
 /// It must not be small: the diagnostics page **groups by problem type** (per-type counts, sample locations,
-/// expandable lists), and grouping is only correct when it sees the full set — CRMEB alone has 445 build
+/// expandable lists), and grouping is only correct when it sees the full set — sample_project alone has 445 build
 /// diagnostics for one project, so a smaller cap would list only the most recently written rows
 /// (`ORDER BY id DESC`), showing the user "write order" rather than "how many problems", and the per-type
 /// counts would be wrong too.

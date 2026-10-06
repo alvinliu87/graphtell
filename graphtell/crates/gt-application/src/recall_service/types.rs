@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::embedding::{cosine, default_embedder, Embedder};
 /// Node kinds excluded from recall by default.
 ///
-/// `CallSite` is a single call site inside a method body (80% of all nodes in CRMEB); recalling it means treating
+/// `CallSite` is a single call site inside a method body (80% of all nodes in sample_project); recalling it means treating
 /// "every line of code" as an answer — too fine-grained and extremely noisy.
 pub const DEFAULT_EXCLUDED_KINDS: &[&str] = &[
     "CallSite",
@@ -274,7 +274,7 @@ pub struct RecallService {
     /// recall background warmup / manual `embed` command, loaded directly on restart. `None` ⇒ no persistence (in-memory cache only).
     pub(crate) embed_persist_dir: Option<PathBuf>,
     /// Candidate snapshot persistence dir (`<dir>/<project_id>.json`). Cold start loads in seconds from here, no rebuilding all nodes +
-    /// edges from SQLite live (CRMEB measured ~10s → <1s). `None` ⇒ no persistence. On graph rebuild, [`Self::clear_node_cache`] deletes
+    /// edges from SQLite live (sample_project measured ~10s → <1s). `None` ⇒ no persistence. On graph rebuild, [`Self::clear_node_cache`] deletes
     /// the whole dir to force invalidation.
     pub(crate) snapshot_persist_dir: Option<PathBuf>,
     /// Project i18n bridge cache: `project id -> [(Chinese text, English tokens split from that text's key)]`. Chinese queries map via
@@ -282,7 +282,7 @@ pub struct RecallService {
     pub(crate) bridge_cache: Arc<Mutex<HashMap<i64, Vec<(String, Vec<String>)>>>>,
     /// **Candidate-set snapshot** cache: `project id -> nodes + neighbors + file paths participating in recall`.
 ///
-/// The biggest fixed cost in one recall isn't scoring but pulling the candidate set from SQLite (CRMEB 12k nodes measured 856ms +
+/// The biggest fixed cost in one recall isn't scoring but pulling the candidate set from SQLite (sample_project 12k nodes measured 856ms +
 /// neighbors 110ms), and multi-intent queries pull it again per sub-intent. The graph only changes on rebuild: rebuild calls
 /// [`Self::clear_node_cache`]; also a cheap `stats` check before each reuse (see [`Self::snapshot_stale`]). `Arc` lets the caller borrow
 /// the snapshot for the whole recall without holding a write lock.
@@ -295,7 +295,7 @@ pub struct RecallService {
 /// The "graph snapshot" needed for one recall: candidate nodes + neighbors + file paths. See [`RecallService::candidate_cache`].
 ///
 /// Derives `Clone`/`Serialize`/`Deserialize` for **disk reuse**: cold start reads the persisted snapshot (<1s) instead of
-/// rebuilding from SQLite live (CRMEB ~10s). See [`RecallService::candidate_set`].
+/// rebuilding from SQLite live (sample_project ~10s). See [`RecallService::candidate_set`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CandidateSet {
     pub(crate) nodes: Vec<Node>,

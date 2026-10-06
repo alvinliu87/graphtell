@@ -1,7 +1,7 @@
 //! Settle the **authoritative schema's columns** into `Column` graph nodes.
 //!
 //! Kept only in the symbol table (the `schema` table, loaded by P3 from SQL install scripts / table-name call
-//! sites), column information can only be "asked a question" by the `ColumnsMatch` predicate (e.g. CRMEB tagging
+//! sites), column information can only be "asked a question" by the `ColumnsMatch` predicate (e.g. sample_project tagging
 //! tables that contain phone numbers with PII); on the graph it is **neither visible nor traversable** — impact
 //! analysis stops at the table and cannot drill down to field level.
 //!

@@ -292,7 +292,7 @@ pub trait DiagnosticSink: Send + Sync {
     ///
     /// **Same definition** as [`Self::count_diagnostics_excluding`] (both exclude `rule:`), just at a finer granularity.
     /// Why it must go down to `code`: one engine diagnostic can fire across hundreds of files (`IdentityUnresolved`
-    /// alone has 349 entries on CRMEB), and reporting "349 entries" carries no information — those are 349 **facts of
+    /// alone has 349 entries on sample_project), and reporting "349 entries" carries no information — those are 349 **facts of
     /// the same type**. Reporting "1 type · 349 places" is what tells you which piece of the graph is missing and
     /// whether it matters.
     fn count_diagnostics_by_code_excluding(

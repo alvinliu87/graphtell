@@ -1,6 +1,6 @@
 //! Domain model of the Framework Knowledge Base (FKB).
 //!
-//! FKB is the serialisable form of "preset framework knowledge": ThinkPHP, Uni-app, Laravel, CRMEB…
+//! FKB is the serialisable form of "preset framework knowledge": ThinkPHP, Uni-app, Laravel, sample_project…
 //! one YAML per framework, describing
 //! * how to **recognise** the framework ([`Detector`])
 //! * how to **resolve its root** ([`RootRule`], e.g. `autoload.psr-4` in `composer.json`)
@@ -95,8 +95,8 @@ pub struct FrameworkKnowledge {
     ///
     /// * `Framework`: generic framework knowledge (e.g. `thinkphp` / `laravel`), loaded by any project using that
     ///   framework;
-    /// * `Project`: project-specific knowledge (e.g. `crmeb`), loaded **only when the project is recognised as
-    ///   that project**, so project conventions (e.g. CRMEB's crontab routes) do not bleed into other projects on
+    /// * `Project`: project-specific knowledge (e.g. `sample_project`), loaded **only when the project is recognised as
+    ///   that project**, so project conventions (e.g. sample_project's crontab routes) do not bleed into other projects on
     ///   the same framework.
     pub scope: KnowledgeScope,
     /// Resolution rules for **string-literal callable references** (route handlers, queue string-jobs,
@@ -109,7 +109,7 @@ pub struct FrameworkKnowledge {
     /// Magic-method delegation: a class declares `@method getList(...)` and forwards it to some property via
     /// `__call`.
     ///
-    /// "annotation declaration + `__call` forwarding" is common in the PHP ecosystem (CRMEB's `BaseServices`
+    /// "annotation declaration + `__call` forwarding" is common in the PHP ecosystem (sample_project's `BaseServices`
     /// forwards 20-odd `get*` / `count*` / `delete*` to `$this->dao`), but **who it forwards to** is a project
     /// convention the kernel must not guess — FKB just names the property, and everything else (annotation
     /// parsing, where the type comes from, inheritance walk-back) is a generic capability.
@@ -166,7 +166,7 @@ pub struct FrameworkKnowledge {
     /// connect to first.
     ///
     /// Conventions differ per framework: Laravel / queue Jobs use `handle`, Symfony uses `__invoke`,
-    /// ThinkPHP / CRMEB Jobs use `doJob`, TP5 behaviour classes use `run`.
+    /// ThinkPHP / sample_project Jobs use `doJob`, TP5 behaviour classes use `run`.
     /// Declared by FKB so a new framework does not have to change the kernel for one method name.
     /// When undeclared it falls back to the kernel's built-in **cross-framework common entry names** default set.
     #[serde(default)]
@@ -562,8 +562,8 @@ mod tests {
 
         // Explicit scope / side / provides round-trip.
         let fk2: FrameworkKnowledge = serde_json::from_value(json!({
-            "id": "crmeb",
-            "display_name": "CRMEB",
+            "id": "sample_project",
+            "display_name": "sample_project",
             "language": "php",
             "scope": "project",
             "side": "backend",
@@ -1047,7 +1047,7 @@ mod tests {
         assert!(serde_json::from_value::<IdentitySpec>(json!({ "kind": "fqn", "valuee": { "arg": 0 } })).is_err());
     }
 
-    /// Every sub-kind source must sit **under `subkind:`**. Two CRMEB / ThinkPHP declarations once sat directly
+    /// Every sub-kind source must sit **under `subkind:`**. Two sample_project / ThinkPHP declarations once sat directly
     /// on the annotation spec (`computed:` / `from_symbol_table:` at the wrong level) and were silently
     /// ignored; keeping the four shapes here pins both the correct nesting and the rejection.
     #[test]

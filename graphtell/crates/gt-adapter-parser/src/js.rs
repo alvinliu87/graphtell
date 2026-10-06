@@ -22,7 +22,7 @@
 //!
 //! The object form is not the only shape: the **member form** (`request.get('/v2/index', data, opts)`, where the
 //! member name is the method and the URL is the first argument) is also normalised into `{ url, method }` —
-//! CRMEB's uni-app sub-project wraps its HTTP client, so the real `uni.request` exists in exactly one place with
+//! sample_project's uni-app sub-project wraps its HTTP client, so the real `uni.request` exists in exactly one place with
 //! a dynamically concatenated URL; the layer where the location can be determined statically is this outer
 //! member-form call. See [`HttpStyle::Member`] and [`is_http_client_recv`].
 

@@ -4,7 +4,7 @@
 //! `resources/mapper/*.xml`: `<select id="findCarouselList">… from tb_x …</select>`. Those files are not source
 //! code and the language parser never touches them — so the graphs of projects like newbee-mall / litemall / mall
 //! contain not one piece of table semantics (the table perspective has 0 candidates), while MyBatis-Plus projects
-//! like crmeb-java / snowy do get tables from the annotation rules.
+//! like sample_project-java / snowy do get tables from the annotation rules.
 //!
 //! Approach: scan the mapper XMLs and synthesise, for each statement x each table, a **pseudo call site**
 //! `mybatis::select|insert|update|delete(table name)` with `owner_fqn = namespace.statementId` — exactly the FQN of

@@ -60,7 +60,7 @@ pub struct ProjectConfig {
     ///
     /// Empty by default: the prefix should be given explicitly in the project config, or detected automatically by
     /// P3 from framework config (such as ThinkPHP's `config/database.php`). Never bake in any project-specific
-    /// default (CRMEB's `eb_` must not leak into the generic layer).
+    /// default (sample_project's `eb_` must not leak into the generic layer).
     pub table_prefixes: Vec<String>,
     /// Whether to run the full pipeline (when off, only Ingest + CfAst run).
     pub full_pipeline: bool,
@@ -182,7 +182,7 @@ mod tests {
         assert!(d.exclude_globs.is_empty());
         assert!(
             d.table_prefixes.is_empty(),
-            "no project-specific default may leak into the table prefixes (CRMEB's `eb_` must not)"
+            "no project-specific default may leak into the table prefixes (sample_project's `eb_` must not)"
         );
         assert!(d.full_pipeline, "the full pipeline runs by default");
         // The one non-empty default in an otherwise "nothing hard-coded" struct: the i18n coverage check needs
@@ -279,8 +279,8 @@ mod tests {
     fn project_sub_project_and_source_file_records_round_trip() {
         let p = Project {
             id: ProjectId(1),
-            name: "CRMEB".to_string(),
-            root_path: PathBuf::from("/samples/php-projects/thinkphp/CRMEB"),
+            name: "sample_project".to_string(),
+            root_path: PathBuf::from("/samples/php-projects/thinkphp/sample_project"),
             description: Some("e-commerce".to_string()),
             config: ProjectConfig { full_pipeline: false, ..Default::default() },
             status: ProjectStatus::Ready,
@@ -289,7 +289,7 @@ mod tests {
         };
         let back: Project = round_trip(&p);
         assert_eq!(back.id, ProjectId(1));
-        assert_eq!(back.root_path, PathBuf::from("/samples/php-projects/thinkphp/CRMEB"));
+        assert_eq!(back.root_path, PathBuf::from("/samples/php-projects/thinkphp/sample_project"));
         assert_eq!(back.description.as_deref(), Some("e-commerce"));
         assert_eq!(back.status, ProjectStatus::Ready);
         assert_eq!((back.created_at, back.updated_at), (1_700_000_000, 1_700_000_123));
@@ -336,11 +336,11 @@ mod tests {
             language: Language::new("php"),
             role: "backend".to_string(),
             detected_by: "composer.json".to_string(),
-            frameworks: vec!["thinkphp".to_string(), "crmeb".to_string()],
+            frameworks: vec!["thinkphp".to_string(), "sample_project".to_string()],
             facts: json!(null),
         };
         let back: NewSubProject = round_trip(&nsp);
-        assert_eq!(back.frameworks, vec!["thinkphp".to_string(), "crmeb".to_string()]);
+        assert_eq!(back.frameworks, vec!["thinkphp".to_string(), "sample_project".to_string()]);
         assert!(back.facts.is_null());
 
         // A file outside any sub-project (`sub_project_id: None`) is legal — it simply belongs to the project.

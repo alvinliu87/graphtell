@@ -346,11 +346,11 @@ fn resolve_manifest_entries_php(
 /// evaluate.
 ///
 /// Both env spellings must be accepted: Laravel / newer ThinkPHP apps call the helper `env('DB_PREFIX', 'eb_')`,
-/// while ThinkPHP's own config files (CRMEB among them) use the facade `Env::get('database.prefix', 'eb_')`.
+/// while ThinkPHP's own config files (sample_project among them) use the facade `Env::get('database.prefix', 'eb_')`.
 /// Recognising only the first silently cost those projects their `db_prefix` fact — and with it every
 /// column-level fact: the DDL in the install script keeps the prefix (`eb_user`) while the code writes
 /// `Db::name('user')`, so without the prefix the schema symbol table never matches a `Table` node and no
-/// `Column` node is ever produced (measured on CRMEB: 0 columns, 0 PII annotations).
+/// `Column` node is ever produced (measured on sample_project: 0 columns, 0 PII annotations).
 fn extract_php_config_default(text: &str, leaf: &str) -> Option<String> {
     let escaped = regex::escape(leaf);
     let re = regex::Regex::new(&format!(
@@ -749,7 +749,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ThinkPHP's own spelling (`Env::get`) — CRMEB's `config/database.php` writes
+    /// ThinkPHP's own spelling (`Env::get`) — sample_project's `config/database.php` writes
     /// `'prefix' => Env::get('database.prefix', 'eb_')`. Missing it means no `db_prefix` fact, so the
     /// install script's `eb_*` tables never match the `Table` nodes and no column is ever materialised.
     #[test]
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(implicit_columns("rememberToken"), vec!["remember_token"]);
     }
 
-    /// Both `env('K', 'x')` (Laravel / newer ThinkPHP) and `Env::get('K', 'x')` (ThinkPHP / CRMEB) spellings,
+    /// Both `env('K', 'x')` (Laravel / newer ThinkPHP) and `Env::get('K', 'x')` (ThinkPHP / sample_project) spellings,
     /// plus a plain literal, must be recognised.
     #[test]
     fn config_default_handles_both_env_spellings() {

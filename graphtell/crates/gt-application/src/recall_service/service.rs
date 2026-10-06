@@ -110,7 +110,7 @@ impl RecallService {
     /// Requests with a `kinds` filter don't enter the cache (minor path; caching would need a "project+filter" key).
     ///
     /// Cold-start optimization: on memory-cache miss, first try the persisted snapshot for second-level recovery ([
-    /// `Self::load_persisted_snapshot`]); if size validation passes, reuse directly, avoiding live rebuild from SQLite (CRMEB ~10s → <1s);
+    /// `Self::load_persisted_snapshot`]); if size validation passes, reuse directly, avoiding live rebuild from SQLite (sample_project ~10s → <1s);
     /// else rebuild live and persist the result for future restarts.
     fn candidate_set(&self, project_id: ProjectId, kinds: &[String]) -> Result<Arc<CandidateSet>> {
         let cacheable = kinds.is_empty();
@@ -312,7 +312,7 @@ impl RecallService {
 
     /// Persist this project's bge vectors to the on-disk file (only nodes participating in recall, to avoid cross-project bleed).
     ///
-    /// Use rmp (msgpack) not JSON: CRMEB's full vector JSON is ~153MB and serde_json parse ~5s — the root cause of "slow first query";
+    /// Use rmp (msgpack) not JSON: sample_project's full vector JSON is ~153MB and serde_json parse ~5s — the root cause of "slow first query";
     /// rmp of the same size is ~1/2 the volume and parses an order of magnitude faster (sub-second), making the warmup near-invisible.
     fn persist(&self, path: &Path, nodes: &[Node], enrich: &EnrichIndex) {
         Self::persist_vectors(
@@ -327,7 +327,7 @@ impl RecallService {
 /// Write this project's bge vectors to the rmp on-disk file (see [`PersistedEmbeds`]).
 ///
 /// Extracted as a free function so a background thread can rewrite offline during the "old JSON → rmp" transition, not blocking recall.
-/// Use rmp not JSON: CRMEB's full vector JSON is ~153MB and serde_json parse ~5s — the root cause of "slow first query"; rmp is ~1/2
+/// Use rmp not JSON: sample_project's full vector JSON is ~153MB and serde_json parse ~5s — the root cause of "slow first query"; rmp is ~1/2
 /// the volume and parses an order of magnitude faster.
 pub(crate) fn persist_vectors(
     cache: &Mutex<HashMap<u64, Vec<f32>>>,
@@ -362,7 +362,7 @@ pub(crate) fn persist_vectors(
     /// Reusable by the lexical path / semantic path / manual `embed` command, independent of the specific query.
     ///
     /// Returns the number of nodes **newly encoded this call** — the caller uses it to decide whether to persist: persisting re-serializes
-    /// the whole project's vectors (CRMEB 157MB / ~0.5s), and almost every recall misses zero nodes, so persisting every time is pure write
+    /// the whole project's vectors (sample_project 157MB / ~0.5s), and almost every recall misses zero nodes, so persisting every time is pure write
     /// amplification. `semantic` true keys by content hash of node embed text (survives rebuild); false keys by `node.id as u64` (fast hash
     /// space, instantly recomputable). `enrich` is built by the caller and passed in, to avoid each path rebuilding the enrichment index.
     fn ensure_cached_with(
@@ -1071,7 +1071,7 @@ pub(crate) fn persist_vectors(
             newly_encoded
         );
         // Only write to disk when **new vectors were really computed**. Previously unconditional write-back meant every recall re-serialized
-        // the whole project's vectors (CRMEB 157MB / ~0.5s) — content that never changed once.
+        // the whole project's vectors (sample_project 157MB / ~0.5s) — content that never changed once.
         if use_semantic && newly_encoded > 0 {
             if let Some(dir) = &self.embed_persist_dir {
                 let path = dir.join(format!("{}.rmp", project_id.get()));
@@ -1358,7 +1358,7 @@ pub(crate) fn collect_cache(
 /// `crate::embedding::cosine`] by `min(len)` distorts). Returns whether it **really** loaded (file exists and version/dim match).
 ///
 /// `false` means the persisted file is invalid (version bump / model switch); caller must treat as "not warmed up": else it would
-/// synchronously bge-encode the whole DB in the request thread (CRMEB measured 10+ min no return), and because "judged semantic path"
+/// synchronously bge-encode the whole DB in the request thread (sample_project measured 10+ min no return), and because "judged semantic path"
 /// never start background warmup — warmup progress would show never-started forever.
 pub(crate) fn load_persisted_into(
     path: &Path,
@@ -1417,7 +1417,7 @@ pub(crate) fn warm_up_worker(
         // Node text enrichment: rebuild index via this project's i18n bridge, consistent with `ensure_cached_with`, so the two warmup
         // paths produce identical node vectors.
         let enrich = build_enrich_index(&compute_bridge(&nodes));
-        // Load persisted vectors first: else after restart cache is empty, here would re-compute all nodes (CRMEB measured 56 min),
+        // Load persisted vectors first: else after restart cache is empty, here would re-compute all nodes (sample_project measured 56 min),
         // persisted file wasted.
         if let Some(dir) = &persist_dir {
             let path = dir.join(format!("{pid}.rmp"));

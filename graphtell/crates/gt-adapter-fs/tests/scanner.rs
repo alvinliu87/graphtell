@@ -114,7 +114,7 @@ fn scan_infers_language_from_extension() {
 }
 
 /// Excludes are matched as **globs against the path**, not as bare directory names: that is what makes
-/// framework-resolved rules (`crmeb/runtime/**`, `public/static/**`, `storage/logs/**`) expressible at
+/// framework-resolved rules (`sample_project/runtime/**`, `public/static/**`, `storage/logs/**`) expressible at
 /// all — a name has nowhere to say "only this one, at this depth".
 #[test]
 fn scan_matches_extra_excludes_as_path_globs() {

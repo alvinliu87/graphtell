@@ -1171,7 +1171,7 @@ fn entry_methods_for(ctx: &PipelineContext, sub: Option<SubProjectId>) -> Vec<St
 
 /// Resolve an edge target: class -> prefer its `handle`/`fire`/`doJob` method, otherwise the class itself.
 ///
-/// `doJob` is the common entry of ThinkPHP/CRMEB queue Job classes (the `QueueTrait` convention),
+/// `doJob` is the common entry of ThinkPHP/sample_project queue Job classes (the `QueueTrait` convention),
 /// listed alongside Laravel's `handle` and Symfony's `__invoke`.
 fn find_target_node(
     ctx: &PipelineContext,
@@ -1411,9 +1411,9 @@ mod tests {
         // i.e. a framework cache facade, after magic dispatch, can only know the convention "a wrapper method named `*CacheService::get`".
         let ws = GraphWorkspace::new(ProjectId(1));
         let rec = call_record(
-            Some("crmeb\\services\\CacheService"),
+            Some("sample_project\\services\\CacheService"),
             Some("get"),
-            "crmeb\\services\\CacheService::get",
+            "sample_project\\services\\CacheService::get",
         );
         assert!(aliased_callee_matches(&ws, "*CacheService::get", &rec));
         // The synonymous short-name receiver (no import alias) should also hit (tail umbrella-name match).
@@ -1697,10 +1697,10 @@ mod tests {
         assert!(path_matches("lang/*", "lang/zh-cn"));
         assert!(path_matches("", "anything"), "an empty pattern matches everything");
         // A pattern without `*` is a **suffix** match (paths are given from the project root).
-        assert!(path_matches("config/app.php", "crmeb/config/app.php"));
+        assert!(path_matches("config/app.php", "sample_project/config/app.php"));
         // A pattern that does contain `*` is anchored at its first segment, so a deeper path fails.
         assert!(
-            !path_matches("lang/*", "crmeb/lang/zh-cn"),
+            !path_matches("lang/*", "sample_project/lang/zh-cn"),
             "a pattern containing `*` is anchored at its first segment (unlike the suffix match used without one)"
         );
         assert!(

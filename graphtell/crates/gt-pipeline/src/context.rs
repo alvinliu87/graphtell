@@ -182,7 +182,7 @@ impl PipelineContext {
         let mut best_len = 0usize;
         for sub in &self.sub_projects {
             let prefix = self.relative_root(&sub.root_path);
-            // Match on **whole path segments**: `crmeb/app` must not claim `crmeb/app2/…`, which is a sibling
+            // Match on **whole path segments**: `sample_project/app` must not claim `sample_project/app2/…`, which is a sibling
             // directory rather than this sub-project. An empty prefix (a sub-project sitting at the project
             // root) stays a catch-all, so every file still belongs to *some* sub-project.
             let hit = if prefix.is_empty() {
@@ -511,20 +511,20 @@ mod tests {
         let mut ctx = ctx_at("/p");
         // Deepest first, on purpose.
         ctx.sub_projects
-            .push(sub(1, "/p/crmeb/app/admin", Language::PHP));
-        ctx.sub_projects.push(sub(2, "/p/crmeb/app", Language::PHP));
-        ctx.sub_projects.push(sub(3, "/p/crmeb", Language::PHP));
+            .push(sub(1, "/p/sample_project/app/admin", Language::PHP));
+        ctx.sub_projects.push(sub(2, "/p/sample_project/app", Language::PHP));
+        ctx.sub_projects.push(sub(3, "/p/sample_project", Language::PHP));
 
         assert_eq!(
-            ctx.sub_of_path("crmeb/app/admin/C.php"),
+            ctx.sub_of_path("sample_project/app/admin/C.php"),
             Some(SubProjectId::new(1))
         );
         assert_eq!(
-            ctx.sub_of_path("crmeb/app/S.php"),
+            ctx.sub_of_path("sample_project/app/S.php"),
             Some(SubProjectId::new(2))
         );
         assert_eq!(
-            ctx.sub_of_path("crmeb/composer.json"),
+            ctx.sub_of_path("sample_project/composer.json"),
             Some(SubProjectId::new(3))
         );
     }
@@ -534,11 +534,11 @@ mod tests {
     #[test]
     fn sub_of_path_treats_a_root_level_sub_project_as_a_catch_all() {
         let mut ctx = ctx_at("/p");
-        ctx.sub_projects.push(sub(2, "/p/crmeb/app", Language::PHP));
+        ctx.sub_projects.push(sub(2, "/p/sample_project/app", Language::PHP));
         ctx.sub_projects.push(sub(1, "/p", Language::PHP));
 
         assert_eq!(
-            ctx.sub_of_path("crmeb/app/S.php"),
+            ctx.sub_of_path("sample_project/app/S.php"),
             Some(SubProjectId::new(2)),
             "the longer prefix still wins"
         );
@@ -549,19 +549,19 @@ mod tests {
         );
     }
 
-    /// Regression: matching is on whole path segments. `crmeb/app2/…` shares the textual prefix `crmeb/app`
+    /// Regression: matching is on whole path segments. `sample_project/app2/…` shares the textual prefix `sample_project/app`
     /// but is a **sibling** directory, not that sub-project.
     #[test]
     fn sub_of_path_matches_whole_path_segments_only() {
         let mut ctx = ctx_at("/p");
-        ctx.sub_projects.push(sub(1, "/p/crmeb/app", Language::PHP));
+        ctx.sub_projects.push(sub(1, "/p/sample_project/app", Language::PHP));
 
-        assert_eq!(ctx.sub_of_path("crmeb/app2/S.php"), None);
-        assert_eq!(ctx.sub_of_path("crmeb/application/S.php"), None);
+        assert_eq!(ctx.sub_of_path("sample_project/app2/S.php"), None);
+        assert_eq!(ctx.sub_of_path("sample_project/application/S.php"), None);
         // The sub-project root itself still belongs to it.
-        assert_eq!(ctx.sub_of_path("crmeb/app"), Some(SubProjectId::new(1)));
+        assert_eq!(ctx.sub_of_path("sample_project/app"), Some(SubProjectId::new(1)));
         assert_eq!(
-            ctx.sub_of_path("crmeb/app/S.php"),
+            ctx.sub_of_path("sample_project/app/S.php"),
             Some(SubProjectId::new(1))
         );
     }
@@ -570,12 +570,12 @@ mod tests {
     fn sub_of_path_returns_none_when_nothing_matches() {
         let mut ctx = ctx_at("/p");
         assert_eq!(
-            ctx.sub_of_path("crmeb/app/S.php"),
+            ctx.sub_of_path("sample_project/app/S.php"),
             None,
             "with no sub-project there is nothing to attribute it to"
         );
 
-        ctx.sub_projects.push(sub(1, "/p/crmeb/app", Language::PHP));
+        ctx.sub_projects.push(sub(1, "/p/sample_project/app", Language::PHP));
         assert_eq!(
             ctx.sub_of_path("other/lib.php"),
             None,
@@ -587,9 +587,9 @@ mod tests {
     #[test]
     fn sub_of_path_normalises_separators_and_keeps_foreign_roots() {
         let mut ctx = ctx_at("/p");
-        ctx.sub_projects.push(sub(1, "/p/crmeb\\app", Language::PHP));
+        ctx.sub_projects.push(sub(1, "/p/sample_project\\app", Language::PHP));
         assert_eq!(
-            ctx.sub_of_path("crmeb/app/S.php"),
+            ctx.sub_of_path("sample_project/app/S.php"),
             Some(SubProjectId::new(1)),
             "a root recorded with backslashes still matches"
         );
@@ -683,10 +683,10 @@ mod tests {
     #[test]
     fn sub_of_path_matches_a_trailing_slash_and_an_empty_relative_path() {
         let mut ctx = ctx_at("/p");
-        ctx.sub_projects.push(sub(1, "/p/crmeb/app", Language::PHP));
+        ctx.sub_projects.push(sub(1, "/p/sample_project/app", Language::PHP));
 
         assert_eq!(
-            ctx.sub_of_path("crmeb/app/"),
+            ctx.sub_of_path("sample_project/app/"),
             Some(SubProjectId::new(1)),
             "a trailing slash still matches (a directory entry)"
         );

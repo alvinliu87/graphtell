@@ -4,7 +4,7 @@
 //!
 //! FKB rules only hit at **literal call sites** (e.g. `Queue::push`). If a high-level method ultimately calls that point through several wrapper layers,
 //! only the innermost method gets connected to the semantic node; all outer callers are lost — exactly the root cause of framework wrappers like
-//! `crmeb\utils\Queue::push → QueueThink::push` being swallowed.
+//! `sample_project\utils\Queue::push → QueueThink::push` being swallowed.
 //!
 //! This violates a principle: **a feature that ultimately calls something the FKB recognizes should be resolved correctly, no matter how deep.**
 //!

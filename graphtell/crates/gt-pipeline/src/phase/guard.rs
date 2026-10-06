@@ -73,7 +73,7 @@ fn row_guards(value: &Value) -> Vec<(String, Option<String>)> {
 ///
 /// # Why must be before P6
 ///
-/// P6 rules like `crmeb-public-endpoint` use `none_of_capability` to decide "public endpoint".
+/// P6 rules like `sample_project-public-endpoint` use `none_of_capability` to decide "public endpoint".
 /// A reverse criterion only holds when positive evidence **has actually existed**: if capabilities were annotated only at P14,
 /// P6 would already have marked every contract `auth.public` (measured 1529 of 1603), and
 /// patching later can't recover it (annotations already persisted).

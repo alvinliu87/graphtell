@@ -90,7 +90,7 @@ pub struct RouteGroup {
 pub struct RouteGuard {
     /// The middleware class's fully-qualified name (`app\api\middleware\AuthTokenMiddleware`).
     pub class: String,
-    /// The **second arg** at mount time: CRMEB uses it to distinguish "must login / optional login"
+    /// The **second arg** at mount time: sample_project uses it to distinguish "must login / optional login"
     /// (`AuthTokenMiddleware::class, false` == reachable without auth), the most informative signal for `auth.public`.
     /// Laravel's `->middleware('auth:api')`-style aliases also land here first; alias → class restoration is left to later phases.
     pub arg: Option<String>,
@@ -135,7 +135,7 @@ pub struct PendingLink {
     /// (its FQN is derived from PSR-4 + the real class nodes on the graph, not a hard-coded template), so passing `to_method` straight to
     /// `find_target_node` would miss; it can only degrade to a PendingLink. If we didn't carry the method name,
     /// the `raw` P7 gets would be only the class name — whether or not the class has a matching method, the edge degrades to class-level
-    /// (measured: CRMEB had 164 resource routes falling to `Class`, but `AgentLevel::delete` was clearly in the graph).
+    /// (measured: sample_project had 164 resource routes falling to `Class`, but `AgentLevel::delete` was clearly in the graph).
     pub method: Option<String>,
     pub resolve: gt_domain::model::ResolveAs,
     pub confidence: f32,
@@ -239,13 +239,13 @@ pub struct GraphWorkspace {
     table_prefixes: Vec<String>,
     /// Parent-type-name index: `child FQN → [parent FQN]`.
     ///
-    /// Must use **names** not node edges: CRMEB's chain is
-    /// `StoreOrder → crmeb\basic\BaseModel → think\Model`,
+    /// Must use **names** not node edges: sample_project's chain is
+    /// `StoreOrder → sample_project\basic\BaseModel → think\Model`,
     /// and `think\Model` is in vendor (excluded by P0), so the edge isn't on the graph.
     supertypes: HashMap<String, Vec<String>>,
     /// Subtype-name index (inheritance chain downstream): `parent FQN → [child FQN]`, reversed from `supertypes`.
     ///
-    /// Used to reverse-lookup the tables mapped by instances (subclasses) for "read / write verbs in base-class methods": yoshop / CRMEB's
+    /// Used to reverse-lookup the tables mapped by instances (subclasses) for "read / write verbs in base-class methods": yoshop / sample_project's
     /// read verbs (`$this->select` / `getAll`) are often written in base classes like `app\common\model\X`,
     /// while `MapsTo` edges only hang on concrete subclasses (`app\api\model\X`) — without walking to subclasses, these verbs
     /// can never produce `ReadsDb`, and the route can only fall back to a vague "maps to".
@@ -702,7 +702,7 @@ impl GraphWorkspace {
     /// Short-name resolution: `StoreOrderServices` → `app\services\order\StoreOrderServices`.
     ///
     /// Go through the [`Self::by_short`] index, O(1); otherwise on a big DB it degrades to O(n) full-table scan
-    /// (CRMEB has ~50k FQNs, each linear scan would slow P5/P7 by tens of seconds). **Ambiguous short names are always rejected**: only adopt when there's a unique candidate.
+    /// (sample_project has ~50k FQNs, each linear scan would slow P5/P7 by tens of seconds). **Ambiguous short names are always rejected**: only adopt when there's a unique candidate.
     ///
     /// Previously we returned the first candidate "first-come-first-served", but candidate order depended on node insertion order (non-deterministic).
     /// Among this repo's 897 type short names, 112 are duplicated (`User` / `StoreProduct` / `Login` each have
@@ -883,7 +883,7 @@ impl GraphWorkspace {
 
     /// Transitive-closure judgment: does `child` (directly or indirectly) inherit/implement `base_fqn`.
     ///
-    /// CRMEB's models are `StoreOrder extends BaseModel extends Model`,
+    /// sample_project's models are `StoreOrder extends BaseModel extends Model`,
     /// matching only the direct base class would miss almost all tables.
     pub fn has_ancestor(&self, child: NodeId, base_fqn: &str) -> bool {
         let base = base_fqn.trim_start_matches('\\').to_ascii_lowercase();
@@ -1028,7 +1028,7 @@ impl GraphWorkspace {
 
     /// Append a "co-occurrence location".
     ///
-    /// A synthesized node (e.g. `Table:user`) may come from `crmeb.sql` or from a Model's
+    /// A synthesized node (e.g. `Table:user`) may come from `sample_project.sql` or from a Model's
     /// `$table` definition. We must **keep all**, so the frontend can give a multi-location list for the user to jump and verify,
     /// rather than fabricating a single location.
     pub fn append_location(

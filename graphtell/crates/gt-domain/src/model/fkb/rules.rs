@@ -142,7 +142,7 @@ pub enum Predicate {
     ///
     /// "An explicit declaration beats a convention inference": a method already written into `Route::get` /
     /// `Route::resource` must not be scooped up a second time by a directory convention — otherwise a project like
-    /// CRMEB, which registers routes exhaustively, sprouts thousands of duplicate endpoints. This is the same
+    /// sample_project, which registers routes exhaustively, sprouts thousands of duplicate endpoints. This is the same
     /// accounting principle as "better a missing edge than a wrong edge".
     NotClaimedBy(String),
     /// The node **already has an in-edge of the given kind**.

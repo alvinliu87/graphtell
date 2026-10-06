@@ -87,7 +87,7 @@ fn sub_of(ctx: &PipelineContext, id: gt_domain::model::NodeId) -> Option<SubProj
 /// Convert an in-project relative path into a "relative to the sub-project" path.
 ///
 /// FKB writes `app/event.php` relative to the **sub-project root**, while file paths are relative to the
-/// **project root** (e.g. `crmeb/app/event.php`).
+/// **project root** (e.g. `sample_project/app/event.php`).
 fn sub_relative(ctx: &PipelineContext, sub: Option<SubProjectId>, file: &str) -> String {
     let Some(sub) = sub else { return file.to_string() };
     let Some(s) = ctx.sub_projects.iter().find(|x| x.id == sub) else {
@@ -316,18 +316,18 @@ mod tests {
     fn sub_relative_returns_file_when_no_sub() {
         let ctx = PipelineContext::new(project());
         assert_eq!(
-            sub_relative(&ctx, None, "crmeb/app/event.php"),
-            "crmeb/app/event.php"
+            sub_relative(&ctx, None, "sample_project/app/event.php"),
+            "sample_project/app/event.php"
         );
     }
 
     #[test]
     fn sub_relative_strips_sub_project_root_prefix() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
-        // `file` is project-relative (`crmeb/app/event.php`); the sub root relative to the project is `crmeb/app`.
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        // `file` is project-relative (`sample_project/app/event.php`); the sub root relative to the project is `sample_project/app`.
         assert_eq!(
-            sub_relative(&ctx, Some(SubProjectId::new(SUB)), "crmeb/app/event.php"),
+            sub_relative(&ctx, Some(SubProjectId::new(SUB)), "sample_project/app/event.php"),
             "event.php"
         );
     }
@@ -335,12 +335,12 @@ mod tests {
     #[test]
     fn sub_relative_returns_file_when_sub_id_is_unknown() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         // A record whose sub id is not a registered sub-project: there is no sub root to strip against,
         // so the path is returned unchanged rather than panicking or mis-stripping.
         assert_eq!(
-            sub_relative(&ctx, Some(SubProjectId::new(999)), "crmeb/app/event.php"),
-            "crmeb/app/event.php"
+            sub_relative(&ctx, Some(SubProjectId::new(999)), "sample_project/app/event.php"),
+            "sample_project/app/event.php"
         );
     }
 
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn collect_rules_scopes_global_rules_by_language() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         ctx.rules_by_sub
             .insert(SUB, vec![rule("own", "AnnotatePre", None)]);
         ctx.rules_global.push((Language::new("php"), rule("g_php", "AnnotatePre", None)));
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn collect_rules_filters_by_phase() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         ctx.rules_by_sub.insert(
             SUB,
             vec![
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn rules_for_unknown_sub_is_empty_and_none_is_global() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         ctx.rules_by_sub
             .insert(SUB, vec![rule("own", "AnnotatePre", None)]);
         ctx.rules_global.push((Language::new("php"), rule("g_php", "AnnotatePre", None)));
@@ -731,7 +731,7 @@ mod tests {
             in_loop: false,
             entity: None,
             span: span(),
-            file: "crmeb/app/x.php".into(),
+            file: "sample_project/app/x.php".into(),
             sub: Some(SubProjectId::new(SUB)),
             language: Language::new("php"),
         });
@@ -840,7 +840,7 @@ mod tests {
             base: base.into(),
             kind: EdgeKind::from("Extends"),
             sub: sub.map(SubProjectId::new),
-            file: "crmeb/app/x.php".into(),
+            file: "sample_project/app/x.php".into(),
             span: span(),
         });
     }
@@ -850,7 +850,7 @@ mod tests {
     #[test]
     fn run_post_node_kind_rule_annotates_only_matching_kind() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         let c = node(&mut ctx, "Class", SUB);
         ctx.rules_by_sub
@@ -863,7 +863,7 @@ mod tests {
     #[test]
     fn run_post_wild_node_rule_hits_every_node() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let a = node(&mut ctx, "Method", SUB);
         let b = node(&mut ctx, "Class", SUB);
         // A `node_kind: None` rule lives in the global (`None`) bucket and must fire on every node.
@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn run_pre_call_rule_annotates_matched_call_site() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         ctx.ws.calls.push(CallRecord {
             node: m,
@@ -912,7 +912,7 @@ mod tests {
             in_loop: false,
             entity: None,
             span: span(),
-            file: "crmeb/app/x.php".into(),
+            file: "sample_project/app/x.php".into(),
             sub: Some(SubProjectId::new(SUB)),
             language: Language::new("php"),
         });
@@ -925,11 +925,11 @@ mod tests {
     #[test]
     fn run_pre_config_rule_matches_project_relative_file() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         // Real FKB config selectors are written app-relative (e.g. `app/event.php`); the config entry's
-        // `file` is project-relative (`crmeb/app/event.php`). `path_matches` ends-with matching reconciles them.
+        // `file` is project-relative (`sample_project/app/event.php`). `path_matches` ends-with matching reconciles them.
         ctx.ws.configs.push(ConfigRecord {
-            file: "crmeb/app/event.php".into(),
+            file: "sample_project/app/event.php".into(),
             key_path: "listen.x".into(),
             value: FactValue::String("v".into()),
             span: span(),
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn run_pre_config_rule_matches_sub_relative_file() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         // Config entry stored already sub-relative (no project prefix); the rule file matches it directly.
         ctx.ws.configs.push(ConfigRecord {
             file: "event.php".into(),
@@ -967,14 +967,14 @@ mod tests {
     #[test]
     fn run_pre_config_rule_matches_via_app_root_expansion() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         // A non-default app root: the rule uses the `{app_root}` placeholder, which `matches_config` must
         // expand (against this fact) to reconcile with the project-relative config path. Before the fix,
         // `matches_config` re-checked the *unexpanded* `{app_root}/event.php` and the rule never fired.
         ctx.ws
-            .set_fact(SubProjectId::new(SUB), "app_root", json!({ "value": "crmeb/app" }));
+            .set_fact(SubProjectId::new(SUB), "app_root", json!({ "value": "sample_project/app" }));
         ctx.ws.configs.push(ConfigRecord {
-            file: "crmeb/app/event.php".into(),
+            file: "sample_project/app/event.php".into(),
             key_path: "listen.x".into(),
             value: FactValue::String("v".into()),
             span: span(),
@@ -1041,7 +1041,7 @@ mod tests {
     #[test]
     fn run_pre_config_rule_without_file_filter_matches_any_config() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         // A config entry whose file is nowhere the FKB predicted.
         ctx.ws.configs.push(ConfigRecord {
             file: "anything/at/all.php".into(),
@@ -1065,7 +1065,7 @@ mod tests {
     #[test]
     fn run_synthesize_inherit_rule_annotates_child_transitively() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         // `X extends Y extends Model`: the record's immediate base is `Y`, the rule targets `Model`.
         ctx.ws.record_supertype("X", "Y");
@@ -1076,7 +1076,7 @@ mod tests {
             base: "Y".into(),
             kind: EdgeKind::from("Extends"),
             sub: Some(SubProjectId::new(SUB)),
-            file: "crmeb/app/x.php".into(),
+            file: "sample_project/app/x.php".into(),
             span: span(),
         });
         ctx.rules_by_sub
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn inherit_rule_matches_the_immediate_base_without_any_name_chain() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         // `X extends Model`: the record's own base already matches, so no `supertypes` entry is needed.
         // Guards the `recv_matches` short-circuit — the chain walk must not be the only path.
@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn inherit_rule_skips_classes_outside_the_base_chain() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         // A perfectly real chain (`X extends Collection extends ArrayAccess`), just not the one asked for.
         // The negative nail: without it, "any non-empty supertypes entry matches" would pass silently.
@@ -1118,7 +1118,7 @@ mod tests {
     #[test]
     fn inherit_base_matches_namespace_segments_not_substrings() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         // FKB writes the short name (`Model`), the chain holds fully-qualified names.
         inherit(&mut ctx, child, "App\\Models\\Product", "App\\Models\\BaseModel", Some(SUB));
@@ -1144,7 +1144,7 @@ mod tests {
     #[test]
     fn inherit_chain_with_a_cycle_terminates_without_matching() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         // A broken hierarchy (`A extends B extends A`): `has_supertype` must terminate (visited set + step cap)
         // and answer "no", instead of spinning until the build hangs.
@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     fn inherit_rule_with_property_requires_the_property_on_the_child() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let with = node(&mut ctx, "Class", SUB);
         let without = node(&mut ctx, "Class", SUB);
         // `protected $table = 'users'` on the model: recorded as a class property default.
@@ -1179,7 +1179,7 @@ mod tests {
     #[test]
     fn inherit_rules_are_scoped_to_the_record_sub_project() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let orphan = node(&mut ctx, "Class", SUB);
         let cross = node(&mut ctx, "Class", SUB);
         // A record whose sub is not a registered sub-project has no rule bucket: silent skip, not a crash
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn inherit_rule_synthesize_binding_builds_node_and_edge() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         inherit(&mut ctx, child, "X", "Model", Some(SUB));
         // The production binding shape: not `Annotate` but `Synthesize` (Table + MapsTo), which is what
@@ -1230,7 +1230,7 @@ mod tests {
     #[test]
     fn node_rule_where_predicate_gates_the_match() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let hit = node_with_props(&mut ctx, "Method", SUB, json!({ "side": "frontend" }));
         let miss = node_with_props(&mut ctx, "Method", SUB, json!({ "side": "backend" }));
         // The selector matched both nodes (same kind); only the predicate separates them. Every other
@@ -1253,7 +1253,7 @@ mod tests {
     #[test]
     fn call_rule_where_predicate_reads_the_call_context() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let prefixed = node(&mut ctx, "Method", SUB);
         let plain = node(&mut ctx, "Method", SUB);
         // Same callee, different first argument: the predicate needs the call match-context, not just the node.
@@ -1279,7 +1279,7 @@ mod tests {
     #[test]
     fn annotate_target_synthesized_ref_lands_on_the_new_node() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         inherit(&mut ctx, child, "X", "Model", Some(SUB));
         // `Synthesize` then `Annotate { target: { synthesized_ref: "@self" } }` -- the shape
@@ -1305,7 +1305,7 @@ mod tests {
     #[test]
     fn last_synth_does_not_leak_into_another_rule() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         inherit(&mut ctx, child, "X", "Model", Some(SUB));
         // `last_synth` is created per (record, rule) -- see the three `let mut last = None` in this file --
@@ -1325,7 +1325,7 @@ mod tests {
     #[test]
     fn annotate_action_phase_gate_skips_mismatched_actions() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         push_call(&mut ctx, m, "Db::name", vec![]);
         // One rule per phase (P4 matches call sites, P6 matches graph nodes), each carrying both a
@@ -1371,7 +1371,7 @@ mod tests {
     #[test]
     fn running_the_same_phase_twice_does_not_duplicate_annotations() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         push_call(&mut ctx, m, "Db::name", vec![]);
         ctx.rules_by_sub
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn inherit_selector_without_a_base_matches_every_record() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let a = node(&mut ctx, "Class", SUB);
         let b = node(&mut ctx, "Class", SUB);
         inherit(&mut ctx, a, "A", "Whatever", Some(SUB));
@@ -1406,11 +1406,11 @@ mod tests {
     #[test]
     fn annotate_target_from_field_resolves_the_named_nodes() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let listener = node_fqn(&mut ctx, "Class", "SmsListener", "App\\Listener\\SmsListener", SUB);
         let bystander = node(&mut ctx, "Class", SUB);
         ctx.ws.configs.push(ConfigRecord {
-            file: "crmeb/app/event.php".into(),
+            file: "sample_project/app/event.php".into(),
             key_path: "listen.sms_send".into(),
             // The entry lists two classes; only one exists in the graph.
             value: FactValue::Array(vec![
@@ -1442,7 +1442,7 @@ mod tests {
     #[test]
     fn coexist_merge_keeps_every_entry_of_the_same_kind() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         push_call(&mut ctx, m, "Db::name", vec![]);
         // Two rules tag the same kind on the same node; `Coexist` is what lets "both sanitised and
@@ -1473,7 +1473,7 @@ mod tests {
     #[test]
     fn annotation_confidence_multiplies_spec_rule_and_scale() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         push_call(&mut ctx, m, "Db::name", vec![]);
         // spec 0.8 x rule 0.5 x scale 0.5 = 0.2
@@ -1498,7 +1498,7 @@ mod tests {
     #[test]
     fn unresolvable_annotate_target_is_diagnosed_not_panicking() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         // `target: { synthesized_ref: "@last" }` with no Synthesize before it: nothing to annotate.
         ctx.rules_by_sub.insert(
@@ -1520,7 +1520,7 @@ mod tests {
     #[test]
     fn synthesise_without_an_identity_is_diagnosed() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let child = node(&mut ctx, "Class", SUB);
         inherit(&mut ctx, child, "X", "Model", Some(SUB));
         // A Synthesize with no identity source at all: no node may be invented for it.
@@ -1547,7 +1547,7 @@ mod tests {
     #[test]
     fn sub_of_reads_the_node_sub_and_none_for_unknown_nodes() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let n = node(&mut ctx, "Method", SUB);
         assert_eq!(sub_of(&ctx, n).map(|s| s.get()), Some(SUB));
         // A node id that is not in the graph (P6 also looks up freshly synthesised ids): no sub, no panic.
@@ -1557,13 +1557,13 @@ mod tests {
     #[test]
     fn app_root_map_reads_the_fact_and_falls_back_to_app() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         // No fact yet -> the documented default (the app directory is a project decision, never hard-coded
         // anywhere else, so this fallback is the only place `app` may appear).
         assert_eq!(app_root_map(&ctx).get(&SUB).map(|s| s.as_str()), Some("app"));
         ctx.ws
-            .set_fact(SubProjectId::new(SUB), "app_root", json!({ "value": "crmeb/app" }));
-        assert_eq!(app_root_map(&ctx).get(&SUB).map(|s| s.as_str()), Some("crmeb/app"));
+            .set_fact(SubProjectId::new(SUB), "app_root", json!({ "value": "sample_project/app" }));
+        assert_eq!(app_root_map(&ctx).get(&SUB).map(|s| s.as_str()), Some("sample_project/app"));
         // A non-string fact is ignored rather than crashing.
         ctx.ws.set_fact(SubProjectId::new(SUB), "app_root", json!({ "value": 1 }));
         assert_eq!(app_root_map(&ctx).get(&SUB).map(|s| s.as_str()), Some("app"));
@@ -1574,12 +1574,12 @@ mod tests {
     #[test]
     fn synthesize_accumulate_field_merges_one_entry_per_record() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         // Two locale files, same key: they must merge into **one** node whose `texts` holds both locales.
         // English comes first — it is the source language and leads the i18n baseline.
         for (locale, text) in [("en", "hello-en"), ("zh", "hello-zh")] {
             ctx.ws.configs.push(ConfigRecord {
-                file: format!("crmeb/app/lang/{}/messages.php", locale),
+                file: format!("sample_project/app/lang/{}/messages.php", locale),
                 key_path: "greeting".into(),
                 value: FactValue::String(text.into()),
                 span: span(),
@@ -1603,7 +1603,7 @@ mod tests {
     #[test]
     fn synthesize_expand_builds_one_node_per_variant() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node(&mut ctx, "Method", SUB);
         // `Route::resource('cms', Ctrl::class)` — one call site, N contracts (the table comes from FKB).
         push_call(
@@ -1633,7 +1633,7 @@ mod tests {
     #[test]
     fn subkind_literal_and_from_symbol_table_are_resolved() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let m = node_fqn(&mut ctx, "Method", "run", "App\\Job\\Run", SUB);
         ctx.ws.put_symbol(ProjectId(1), "meta", "App\\Job\\Run", json!({ "owner": "team-a" }));
         ctx.rules_by_sub.insert(
@@ -1676,7 +1676,7 @@ mod tests {
     #[test]
     fn subkind_from_fan_in_uses_the_threshold_labels() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let hot = node(&mut ctx, "Table", SUB);
         let cold = node(&mut ctx, "Table", SUB);
         // fan_in comes from incoming edges: 2 -> the `medium` label, 0 -> the low one.
@@ -1732,7 +1732,7 @@ mod tests {
     #[test]
     fn link_action_builds_an_edge_between_named_nodes() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let a = node_fqn(&mut ctx, "Method", "run", "App\\A", SUB);
         let b = node_fqn(&mut ctx, "Method", "exec", "App\\B", SUB);
         // `{ self: true }` on a node match yields the node's FQN; the other end is a literal name.
@@ -1761,7 +1761,7 @@ mod tests {
     #[test]
     fn project_action_rebuilds_edges_onto_another_layer() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         let entity = node(&mut ctx, "Class", SUB);
         let field = node(&mut ctx, "Field", SUB);
         let table = node(&mut ctx, "Table", SUB);
@@ -1804,7 +1804,7 @@ mod tests {
     #[test]
     fn collect_rules_sub_rule_wins_over_same_id_global() {
         let mut ctx = PipelineContext::new(project());
-        ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
         ctx.rules_by_sub
             .insert(SUB, vec![node_rule("dup", "AnnotatePre", Some("Method"), "sub")]);
         ctx.rules_global

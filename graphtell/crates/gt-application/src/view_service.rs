@@ -1460,7 +1460,7 @@ impl ViewService {
                 // the overflow counts into `hidden` honest accounting.
                 const MAX_PATHS: usize = 4;
                 // Max hops when walking a propagation edge back to the touch point. `seed_source` is usually beyond discovery depth,
-                // but not far from the center (CRMEB measured 4~5 hops); beyond that, give up backtracking, fall back to original behavior.
+                // but not far from the center (sample_project measured 4~5 hops); beyond that, give up backtracking, fall back to original behavior.
                 const MAX_SEED_HOPS: usize = 8;
                 for ((kind, a, to), mut es) in groups {
                     es.sort_by_key(|e| e.id.get());
@@ -2770,7 +2770,7 @@ fn enumerate_chain_paths(
 /// the ancestor reuses the descendant's access mode (`pk`'s `inherited_rank` branch). **Once an access action is missed (rank degrades to 0), the inheritance chain breaks at it**,
 /// and the ancestor re-hangs on the last structural edge passed through — so "schedule → method → cache" gets labeled `HandledBy` (read as "cache handled by this task"),
 /// while the truth is the method's `Cache::set('crontabCache')`, which should be `WritesCache`.
-/// Measured CRMEB's `crontabCache` once gave 6 such mislabeled edges.
+/// Measured sample_project's `crontabCache` once gave 6 such mislabeled edges.
 pub fn access_rank(kind: &str) -> u8 {
     match kind {
         // Read/write action: **highest priority**, must override structural edges and MapTo.

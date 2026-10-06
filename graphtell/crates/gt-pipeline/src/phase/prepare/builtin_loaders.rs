@@ -279,7 +279,7 @@ pub(crate) fn merge_schema_columns(
 /// inherited them. "No knowledge declared" now means "no keys collected", which is honest.
 ///
 /// The same applies to `suffixes`: a blanket `::get` matched `Route::get('api/goods/detail')` — measured
-/// on CRMEB, 791 route registrations against 141 real `Config::get` / `Env::get` reads, i.e. the config
+/// on sample_project, 791 route registrations against 141 real `Config::get` / `Env::get` reads, i.e. the config
 /// table filled up with URL paths.
 pub(crate) fn load_config_keys(ctx: &mut PipelineContext, params: &Value, _sub: &gt_domain::model::SubProject) {
     let accessors: Vec<String> = params

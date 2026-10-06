@@ -57,7 +57,7 @@ pub struct MethodRefSpec {
 
 /// One "middleware class -> capability" declaration: what capability a middleware definitively provides.
 ///
-/// Example (CRMEB): `AuthTokenMiddleware` provides `Authentication`.
+/// Example (sample_project): `AuthTokenMiddleware` provides `Authentication`.
 /// Matching is done on the **short name** only (the last segment after stripping the namespace) and is
 /// case-insensitive — the same kind of middleware lives under different namespaces in different app directories
 /// (`app\api\middleware\AuthTokenMiddleware` vs `app\kefuapi\middleware\KefuAuthTokenMiddleware`), yet the
@@ -440,7 +440,7 @@ pub struct SignCheckSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MagicDelegationSpec {
-    /// Name of the property to forward to (e.g. CRMEB's `dao`). Its type is inferred from how the property is injected, per the existing rules.
+    /// Name of the property to forward to (e.g. sample_project's `dao`). Its type is inferred from how the property is injected, per the existing rules.
     pub property: String,
     /// Confidence of the forwarding resolution (lower than an "exact method hit", since this is an annotation declaration rather than source code).
     pub confidence: f32,

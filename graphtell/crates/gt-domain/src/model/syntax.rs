@@ -47,7 +47,7 @@ pub struct SyntaxFacts {
     /// Lets P9 Taint do backward tracking **within one function**: to decide whether a variable concatenated into
     /// SQL really comes from the request. Without it, Taint can only look at "is there a `$var`" in the call site's
     /// argument text — so a whole-variable form like `Db::execute($execSql)` is always judged high-risk, even
-    /// though that variable comes from a local file shipped with the release package (measured on CRMEB: 34 of
+    /// though that variable comes from a local file shipped with the release package (measured on sample_project: 34 of
     /// 40 entries were exactly that).
     #[serde(default)]
     pub variable_assignments: Vec<VariableAssignFact>,

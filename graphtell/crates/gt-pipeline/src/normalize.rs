@@ -54,7 +54,7 @@ pub fn apply_transform(input: &str, t: &TransformSpec) -> String {
 
 /// An empty `strip_prefix: []` in a rule means "use the table prefix detected for the current project".
 ///
-/// That way a generic framework FKB does not hard-code a concrete prefix (e.g. CRMEB's `eb_`); the prefix is
+/// That way a generic framework FKB does not hard-code a concrete prefix (e.g. sample_project's `eb_`); the prefix is
 /// detected automatically by P3 from `config/database.php`, filled into `workspace.table_prefixes`, and falls back
 /// to here.
 pub fn apply_table_prefix_steps(
@@ -330,7 +330,7 @@ mod tests {
     }
 
     /// An empty `strip_prefix: []` means "whatever prefix P3 detected for this project" — so a generic
-    /// framework FKB never hard-codes a concrete prefix like CRMEB's `eb_`.
+    /// framework FKB never hard-codes a concrete prefix like sample_project's `eb_`.
     #[test]
     fn apply_table_prefix_steps_fills_in_the_detected_prefix() {
         let steps = vec![

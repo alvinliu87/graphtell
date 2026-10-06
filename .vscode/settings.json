@@ -23,7 +23,8 @@
         "**/.playwright-cli/**": true,
         "CRMEB-master": true,
         "**/.git/**": true,
-        "**/graphtell/docs/**": true
+        "**/graphtell/docs/**": true,
+        "**/samples/**": true
     },
     "files.exclude": {
         "**/.gitnexus": true,

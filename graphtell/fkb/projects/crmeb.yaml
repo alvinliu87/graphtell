@@ -1,75 +1,23 @@
-# CRMEB project knowledge (**one product = one knowledge file**)
-#
-# CRMEB is a product built on ThinkPHP, not a framework others build on: everything about it belongs in
-# **one** file, at `scope: project`. Splitting one product's knowledge across two files causes two
-# problems:
-#   * two **independent gates** for the same product — if one missed, half the knowledge silently
-#     stopped applying (a detector hit is `best > 0.0`, there is no confidence threshold to fail on);
-#   * `crmeb` was reported as a *framework* of the sub-project (`frameworks: ["crmeb", "thinkphp"]`),
-#     which is what framework-scope knowledge does — a product is not a framework.
-#
-# Division of labour:
-#   thinkphp.yaml — framework mechanics (routes, container, events, ORM) + cross-version annotations
-#   this file     — everything CRMEB-specific: business semantics (`entrypoint.login`) and the conventions
-#                   only this codebase has (crontab routes, `sys_config()`,
-#                   `BaseServices` -> `$this->dao` forwarding).
-#
-# Two detectors are deliberately not used:
-#   * `manifest_dependency: composer.json / crmeb-crmeb` — never fires: CRMEB ships with
-#     `composer.json` declaring `topthink/think`, there is no `crmeb/*` package to depend on;
-#   * `file_exists: app/services` — fires on any PHP project with that directory (weighted 0.5
-#     and it still counts as a hit), so it would attach CRMEB's business semantics to projects
-#     that are not CRMEB.
-
 id: crmeb
 display_name: CRMEB
 language: php
 scope: project
 version_hint: "standard / multi-merchant"
-
 detectors:
-  # CRMEB's own module directory (the app ships as `crmeb/`, next to `app/`).
   - kind: file_exists
     path: crmeb
     confidence: 0.7
-  # CRMEB-specific marker file: the backend scheduled-task service (a core module, stably present).
   - kind: file_exists
     path: app/services/system/crontab/SystemCrontabServices.php
     confidence: 0.9
-
-# "Which middleware provides which capability" — this is **this project's own naming convention** (the kernel
-# should not know a name like `AuthTokenMiddleware`), so it is declared in FKB and landed by P5.5 on the contract's
-# `Capability` channel.
-#
-# Only entries **certain from the name alone** are listed: same-meaning names under several app directories
-# (`AuthTokenMiddleware` / `KefuAuthTokenMiddleware`) are both matched by the `AuthToken` fragment.
-# When the attached argument explicitly says optional (`AuthTokenMiddleware::class, false` == reachable without
-# login) no capability is produced — calling "optional" "mandatory" would be fabrication.
 middleware_capabilities:
   - matches: AuthToken
     capability: Authentication
-
 annotation_kinds:
-  # Business-specific annotation kinds (beyond the kernel standard): `entrypoint.login` is CRMEB's login-entry
-  # semantics, produced by the `login-entrypoint` rule below. Standard kinds (pii / data.criticality /
-  # auth.public / i18n.missing_locale …) are produced by the kernel's `annotation_templates` recognizer and are not
-  # listed here — a stack does not invent annotation kinds.
   - entrypoint.login
-
-# Magic-method forwarding: `BaseServices` declares 20+ `get` / `getOne` / `getList` / `count` / `delete` … via
-# `@method`, and they are actually forwarded by `__call` to `$this->dao` (the dao's type is injected by each subclass's
-# constructor, e.g. `AgentLevelServices(AgentLevelDao $dao)`).
-# Without this convention `$this->services->getList()` can only fall back to a "class-level hit", and the chain
-# "route -> controller -> Services -> Dao -> table" breaks at the Services hop.
 magic_delegation:
   property: dao
   confidence: 0.7
-
-# CRMEB's own settings accessors: `sys_config()` is defined in **this project's** `crmeb/app/common.php`
-# (guarded by `function_exists`), it is not a ThinkPHP API — so it is declared here rather than in
-# `fkb/php/thinkphp.yaml`. The loader feeds the same `config_keys` symbol table the framework loader
-# writes to, which is what gives the `sys-config` rule below its `storage` / `value_type` / `mutable`
-# fields: these keys live in the store's settings **table** and are editable at runtime.
 loaders:
   - id: config-keys
     table: config_keys
@@ -80,12 +28,7 @@ loaders:
         accessors: ["sys_config", "sys_config_all"]
         storage: Database
         mutable: RuntimeMutable
-
 rules:
-  # ===== P5 Synthesize: ConfigKey =====
-  # CRMEB's own `sys_config()` / `sys_config_all()`, which read the store's settings table.
-  #
-  # This is a **project** convention, not a ThinkPHP one.
   - id: sys-config
     phase: Synthesize
     selector:
@@ -106,23 +49,12 @@ rules:
               from_symbol_table: { table: config_keys, field: mutable }
           link: { kind: ReadsConfig, direction: incoming }
           confidence: 0.9
-
-  # ===== P5 Synthesize: scheduled tasks (Schedule) =====
-  # Scheduling convention: CRMEB does not use a framework-level scheduler (ThinkPHP's core has no built-in
-  # Schedule, and CRMEB does not use an extension like topthink/think-schedule); instead it implements its
-  # own scheduled tasks as "HTTP route + external scheduler heartbeat trigger":
-  #   Route::get('crontab/order_cancel', 'v1.CrontabController/orderUnpaidCancel')
-  #     ->name('orderUnpaidCancel')->option(['real_name' => 'cancel unpaid orders automatically']);
-  # These routes are both ordinary HttpContracts (synthesized by thinkphp-route-http-contract) and, by this
-  # rule, additionally synthesized into Schedule semantic nodes with HandledBy to the corresponding
-  # CrontabController method.
   - id: schedule-task
     phase: Synthesize
     selector:
       kind: call
       callee: "think\\facade\\Route::{get,post,any,rule,put,delete,patch}|Route::{get,post,any,rule,put,delete,patch}"
       where:
-        # Only crontab-prefixed routes are collected (triggered by the external scheduler), so business routes are not all treated as scheduled tasks.
         - arg_starts_with: { arg: 0, prefix: "crontab/" }
     binding:
       - Synthesize:
@@ -140,20 +72,6 @@ rules:
             direction: to_target
             to: { arg: 1, resolve: method_ref }
           confidence: 0.9
-
-  # ===== P6: mark "entry point" semantics on HttpContracts (CRMEB business-specific) =====
-  #
-  # Note on PII: a product-level `pii` rule here would contribute **nothing**:
-  #   * `contact_phone` exists in no CRMEB install script — the rule would be dead on arrival;
-  #   * `tell` (CRMEB's spelling in `eb_store_order_invoice` / `eb_user_invoice`) does exist, but both tables
-  #     also carry `drawer_phone` / `email`, so the generic rule in `thinkphp.yaml` (which matches `x` and
-  #     `*_x`) already flags them — a product-level copy would add 0 new nodes.
-  # Measured after the `db_prefix` fix below: 19 tables annotated `pii`, **all** via `thinkphp-pii`.
-  #
-  # The real defect was elsewhere: `db_prefix` was not resolved (CRMEB writes `Env::get('database.prefix', 'eb_')`,
-  # which the config reader did not recognise), so the install script's `eb_*` DDL never matched the `Table`
-  # nodes, **0** `Column` nodes were materialised, and `columns_match` could not fire at all.
-  # Reading the prefix is what turned 0 columns / 0 PII annotations into 1885 columns / 19 tables.
   - id: login-entrypoint
     phase: AnnotatePost
     selector:
