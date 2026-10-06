@@ -5,7 +5,7 @@
 //! * `prepare.rs`'s `#[cfg(test)]` module builds hand-crafted `StaticKb` / inline `FrameworkKnowledge`
 //!   objects — it proves the *engine* (selector matching, fact expansion, `{app_root}` substitution)
 //!   works, but it never loads a real FKB, so a typo in a shipped rule's `pointer` / `source` slips past.
-//! * the CRMEB integration test (`crmeb_pipeline.rs::prepare_resolves_app_root_from_composer_psr4`) *does*
+//! * the sample_project integration test (`sample_project_pipeline.rs::prepare_resolves_app_root_from_composer_psr4`) *does*
 //!   load the real FKB, but it is **sample-gated** — when `GRAPHTELL_SAMPLE_DIR` is unset it skips
 //!   silently (false green), so CI without samples gets zero coverage of PHP root rules.
 //!

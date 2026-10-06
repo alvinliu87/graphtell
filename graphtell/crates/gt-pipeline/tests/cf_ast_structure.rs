@@ -5,7 +5,7 @@
 //! the `imports` table, the `by_name` index, and inheritance / implementation / trait
 //! edges. A regression here silently breaks **every** stack, yet `cf_ast.rs` had no
 //! unit tests of its own, and the only structural assertions lived in
-//! `crmeb_pipeline.rs` behind a sample-gate that silently `skip`s (fake-green) when
+//! `sample_project_pipeline.rs` behind a sample-gate that silently `skip`s (fake-green) when
 //! `GRAPHTELL_SAMPLE_DIR` is unset.
 //!
 //! These tests build a tiny synthetic project in a temp dir via

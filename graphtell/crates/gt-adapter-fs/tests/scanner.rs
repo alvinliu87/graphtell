@@ -1,6 +1,6 @@
 //! Self-contained tests of the file-scanning adapter (no external sample needed).
 //!
-//! `crmeb_scan.rs` is `#[ignore]`d because the CRMEB sample is too large to ship, so it never runs in CI.
+//! `sample_project_scan.rs` is `#[ignore]`d because the sample_project sample is too large to ship, so it never runs in CI.
 //! This file pins the scanner's core invariants on synthetic temp-dir trees so the exclusion rules, marker
 //! lookup and language inference stay guarded on every build.
 
@@ -122,7 +122,7 @@ fn scan_matches_extra_excludes_as_path_globs() {
     write(&root, "app/controller/Index.php", "<?php");
     write(&root, "app/generated/a/b.php", "<?php");
     write(&root, "admin/generated/c.php", "<?php");
-    write(&root, "crmeb/service/Order.php", "<?php");
+    write(&root, "sample_project/service/Order.php", "<?php");
     let files = WalkDirScanner::new(vec!["app/generated/**".into()])
         .scan(&ScanRequest {
             root: root.clone(),
@@ -133,7 +133,7 @@ fn scan_matches_extra_excludes_as_path_globs() {
         .expect("scan");
     let rels = rels(&files);
     assert!(rels.contains(&"app/controller/Index.php".to_string()));
-    assert!(rels.contains(&"crmeb/service/Order.php".to_string()));
+    assert!(rels.contains(&"sample_project/service/Order.php".to_string()));
     assert!(
         !rels.iter().any(|r| r.starts_with("app/generated/")),
         "app/generated must be excluded: {rels:?}"

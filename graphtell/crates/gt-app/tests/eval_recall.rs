@@ -1,7 +1,7 @@
 //! Batch scoring of the recall evaluation corpus.
 //!
 //! Treats `tests/eval/*.jsonl`'s "query -> expected hits -> minimum quality tier" as a regression corpus and runs
-//! recall **against the real CRMEB sample** to validate it. Purpose:
+//! recall **against the real sample_project sample** to validate it. Purpose:
 //!
 //! 1. Pin the recall baseline for 6 kinds of real development scenarios (listeners surfacing / business methods
 //!    matching / quality not collapsing);
@@ -25,7 +25,7 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
 }
 
-/// Locate the CRMEB sample root: prefer `GRAPHTELL_SAMPLE_DIR`, otherwise search recursively under `samples/`
+/// Locate the sample_project sample root: prefer `GRAPHTELL_SAMPLE_DIR`, otherwise search recursively under `samples/`
 /// **level by level upward** from `CARGO_MANIFEST_DIR` — a fixed one-level pattern does not fit the real
 /// layout `samples/php-projects/thinkphp/CRMEB`, and a miss must not become a silent skip.
 fn find_sample() -> Option<PathBuf> {
@@ -104,7 +104,7 @@ fn built() -> Option<Arc<Built>> {
 
             let project = projects
                 .create(NewProject {
-                    name: "CRMEB".into(),
+                    name: "sample_project".into(),
                     root_path: sample,
                     description: None,
                     config: None,
@@ -113,7 +113,7 @@ fn built() -> Option<Arc<Built>> {
 
             pipeline
                 .run(project.id, &NoopObserver)
-                .expect("graph build on the CRMEB sample should not fail");
+                .expect("graph build on the sample_project sample should not fail");
 
             Some(Arc::new(Built {
                 container,
@@ -124,7 +124,7 @@ fn built() -> Option<Arc<Built>> {
 }
 
 fn skip() -> &'static str {
-    "skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
+    "skip: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
 }
 
 /// Parse a quality-tier string into a comparable ordinal.

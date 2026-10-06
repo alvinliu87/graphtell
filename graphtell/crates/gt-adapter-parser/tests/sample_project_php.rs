@@ -1,4 +1,4 @@
-//! Parser tests against real CRMEB source files.
+//! Parser tests against real sample_project source files.
 //!
 //! These cases verify the accuracy of the **facts** tree-sitter extracts, not the semantics:
 //! * namespace -> FQN derivation
@@ -56,10 +56,10 @@ fn parse_php(rel: &str) -> Option<SyntaxFacts> {
 }
 
 #[test]
-#[ignore = "needs the CRMEB sample, which is not committed (too large to ship with the repo)"]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_model_namespace_and_fqn() {
     let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
-        panic!("CRMEB sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
     };
     let class = facts
         .declarations
@@ -87,10 +87,10 @@ fn parses_model_namespace_and_fqn() {
 /// "the property value must be extracted" — asserting only that the property exists is not enough, since an
 /// empty value means the table name was not recognised.
 #[test]
-#[ignore = "needs the CRMEB sample, which is not committed (too large to ship with the repo)"]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_model_name_and_pk_properties() {
     let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
-        panic!("CRMEB sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
     };
     let class = facts
         .declarations
@@ -123,10 +123,10 @@ fn parses_model_name_and_pk_properties() {
 }
 
 #[test]
-#[ignore = "needs the CRMEB sample, which is not committed (too large to ship with the repo)"]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_event_php_config_entries() {
     let Some(facts) = parse_php("crmeb/app/event.php") else {
-        panic!("CRMEB sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
     };
     let pay_success = facts
         .config_entries
@@ -149,10 +149,10 @@ fn parses_event_php_config_entries() {
 }
 
 #[test]
-#[ignore = "needs the CRMEB sample, which is not committed (too large to ship with the repo)"]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_provider_php_bindings() {
     let Some(facts) = parse_php("crmeb/app/provider.php") else {
-        panic!("CRMEB sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
     };
     let entry = |key: &str| {
         facts
@@ -174,10 +174,10 @@ fn parses_provider_php_bindings() {
 }
 
 #[test]
-#[ignore = "needs the CRMEB sample, which is not committed (too large to ship with the repo)"]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_route_call_sites_inside_closures() {
     let Some(facts) = parse_php("crmeb/app/api/route/v1.php") else {
-        panic!("CRMEB sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
     };
     // Route registration is written inside a closure: `Route::post('apple_login', 'Login/appleLogin')`
     let route_calls = facts

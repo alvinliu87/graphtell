@@ -1,7 +1,7 @@
 //! End-to-end self-check for rule detection and prompt-augmented (code recall) recall.
 //!
 //! **Deliberately independent of external samples**: here we write a small hand-built set of nodes and edges straight into the DB,
-//! so it always runs on any machine at any time (the CRMEB-style sample tests skip when the sample is missing,
+//! so it always runs on any machine at any time (the sample_project integration tests skip when the sample is missing,
 //! and can't guard the regression of these two new capabilities).
 //!
 //! Covers three things:
@@ -876,7 +876,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
 /// 2. **Quality doesn't collapse**: event seeds only do "idf fine-tuning among sibling listeners", not globally overpower the lexical strong hits,
 ///    so the quality tier must not drop to `Low` (otherwise the whole context is voided, equal to no recall).
 ///
-/// This doesn't use the sample (CRMEB); it directly hand-builds a small graph of "order/refund/notification listeners + business Services",
+/// This doesn't use the sample (sample_project); it directly hand-builds a small graph of "order/refund/notification listeners + business Services",
 /// must run on any machine, guarding the two regressions above.
 #[test]
 fn recall_event_driven_listener_surfaces_without_quality_collapse() {

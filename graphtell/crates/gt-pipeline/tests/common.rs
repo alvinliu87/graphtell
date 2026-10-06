@@ -29,7 +29,7 @@ use gt_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
 pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
-/// Locate the CRMEB sample under `dir/samples`.
+/// Locate the sample_project sample under `dir/samples`.
 ///
 /// The real layout is **classified by tech stack over several levels** (e.g.
 /// `samples/php-projects/thinkphp/CRMEB`), and the directory name may or may not carry a `-master` suffix. So it
@@ -61,7 +61,7 @@ fn under_samples(dir: &Path) -> Option<PathBuf> {
     search(&dir.join("samples"), 3)
 }
 
-/// Locate the CRMEB sample root directory.
+/// Locate the sample_project sample root directory.
 ///
 /// Walks upward from `CARGO_MANIFEST_DIR` looking for `samples/**/CRMEB-master`, supporting both layouts —
 /// "the repo root is the workspace" and "the workspace is nested in a subdirectory".
@@ -161,7 +161,7 @@ pub fn graph() -> Option<Arc<Built>> {
             let store = Arc::new(SqliteStore::in_memory().ok()?);
             let project = store
                 .create_project(gt_domain::model::NewProject {
-                    name: "CRMEB".into(),
+                    name: "sample_project".into(),
                     root_path: root,
                     description: None,
                     config: Some(ProjectConfig {
@@ -184,7 +184,7 @@ pub fn phase_report(built: &Built, phase: &str) -> Option<gt_domain::model::Phas
     built.outcome.reports.iter().find(|r| r.phase == phase).cloned()
 }
 
-/// Run one complete graph build against **any** project root (for self-checks on synthetic samples, no external CRMEB sample needed).
+/// Run one complete graph build against **any** project root (for self-checks on synthetic samples, no external sample_project sample needed).
 pub fn graph_with_root(root: &Path, config: ProjectConfig) -> Option<Arc<Built>> {
     let store = Arc::new(SqliteStore::in_memory().ok()?);
     let project = store
@@ -204,5 +204,5 @@ pub fn graph_with_root(root: &Path, config: ProjectConfig) -> Option<Arc<Built>>
 
 /// The standard skip message when the sample is missing.
 pub fn skip_reason() -> &'static str {
-    "skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
+    "skip: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
 }

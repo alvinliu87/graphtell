@@ -1,4 +1,4 @@
-//! Tests of the file-scanning adapter against the real CRMEB sample.
+//! Tests of the file-scanning adapter against the real sample_project sample.
 //!
 //! Verifies two things: ① sub-project marker files are found (composer.json / package.json);
 //! ② dependency and asset directories are excluded correctly by the built-in rules.
@@ -44,10 +44,10 @@ fn sample_root() -> Option<PathBuf> {
 }
 
 #[test]
-#[ignore = "needs the CRMEB sample, which is not committed (too large to ship with the repo)"]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn finds_sub_project_markers() {
     let Some(root) = sample_root() else {
-        panic!("CRMEB sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
     };
     let scanner = WalkDirScanner::new(Vec::new());
     let markers = scanner
@@ -68,10 +68,10 @@ fn finds_sub_project_markers() {
 }
 
 #[test]
-#[ignore = "needs the CRMEB sample, which is not committed (too large to ship with the repo)"]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn scan_excludes_vendor_and_assets() {
     let Some(root) = sample_root() else {
-        panic!("CRMEB sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
+        panic!("sample_project sample missing: this test is marked #[ignore]; running it with --ignored requires GRAPHTELL_SAMPLE_DIR or a samples/**/CRMEB-master checkout");
     };
     let scanner = WalkDirScanner::new(Vec::new());
     let files = scanner

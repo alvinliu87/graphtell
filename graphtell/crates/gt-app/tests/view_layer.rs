@@ -22,7 +22,7 @@ use gt_domain::port::{
     EdgeDirection, GraphQuery, NodeFilter, NoopObserver, Persistence, RuleProvider, SystemClock,
 };
 
-/// Locate the CRMEB sample under `dir/samples`.
+/// Locate the sample_project sample under `dir/samples`.
 ///
 /// The sample is actually placed in a **multi-level taxonomy** by tech stack (e.g. `samples/php-projects/thinkphp/CRMEB`),
 /// and the dir name may or may not carry a `-master` suffix — a fixed one-level pattern would mismatch the real
@@ -116,7 +116,7 @@ fn built() -> Option<Arc<Built>> {
 
             let project = projects
                 .create(NewProject {
-                    name: "CRMEB".into(),
+                    name: "sample_project".into(),
                     root_path: sample,
                     description: None,
                     config: None,
@@ -125,7 +125,7 @@ fn built() -> Option<Arc<Built>> {
 
             pipeline
                 .run(project.id, &NoopObserver)
-                .expect("graphing the CRMEB sample must not fail");
+                .expect("graphing the sample_project sample must not fail");
 
             Some(Arc::new(Built {
                 container,
@@ -140,7 +140,7 @@ fn view_svc(b: &Built) -> ViewService {
 }
 
 fn skip() -> &'static str {
-    "skipped: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
+    "skipped: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
 }
 
 /// Whether this perspective is registered in `views/perspectives.yaml` (unregistered aggregate perspectives can't be asserted).
@@ -877,7 +877,7 @@ fn invoice_detail_route_first_hop_has_call_site() {
 // It guards "behavior unchanged", not "correctness" — once numbers change, they must be **explicitly** accepted and the reason written,
 // never silently passed.
 //
-// This snapshot is calibrated against the current reference sample (CRMEB v6.0.0): edge total 35, of which 4 are
+// This snapshot is calibrated against the current reference sample (sample_project v6.0.0): edge total 35, of which 4 are
 // `{ForeignKey: 1, PassesThrough: 3}` — P6 table foreign keys and P14 middleware promotion, both **direct structural
 // edges**, so `indirect` (31) is less than the edge total (35).
 // Core metrics unchanged: ReadsCache 2, ReadsConfig 28, longest via chain 5 hops.
@@ -974,7 +974,7 @@ fn object_view_characterization_invoice_detail() {
     );
 }
 
-/// Schedule perspective: `Schedule` is an **entry-kind** node (CRMEB's project-level FKB synthesizes `crontab/...` routes into
+/// Schedule perspective: `Schedule` is an **entry-kind** node (sample_project's project-level FKB synthesizes `crontab/...` routes into
 /// Schedule nodes), its dependencies are all in **out-edges**: `Schedule --HandledBy--> handler →Calls→ … → ReadsCache`,
 /// in-edges always 0. Once treated as a "resource-kind center" and walked back along in-edges ⇒ not a single edge reachable: rings all empty, `hidden.total = 0`,
 /// the canvas only has a lone center node (plus a ring of empty "1-hop" references); yet the second-level candidate badge scores by 3 hops
@@ -994,7 +994,7 @@ fn schedule_view_follows_outgoing_chain() {
         .expect("candidates");
     assert!(
         !cands.is_empty(),
-        "the schedule perspective must have candidates (CRMEB's crontab routes)"
+        "the schedule perspective must have candidates (sample_project's crontab routes)"
     );
 
     // Concrete regression: `crontab/set_open/:id/:is_open` via `SystemCrontab::setTimerStatus`
@@ -1219,7 +1219,7 @@ fn read_write_at_same_contact_is_reported_together() {
     assert!(checked > 0, "a collapsed edge must be found, but there is none");
     assert!(
         annotated > 0,
-        "the sample must contain contact points that both read and write (store_bargain / tagDate in CRMEB are such),\
+        "the sample must contain contact points that both read and write (store_bargain / tagDate in sample_project are such),\
          but none was annotated — 'read+write' has degraded back to a single mode"
     );
 }

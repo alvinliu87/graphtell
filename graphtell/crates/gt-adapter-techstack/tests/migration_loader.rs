@@ -3,7 +3,7 @@
 //! Mirrors the gt-pipeline/tests dual-rail style: a synthetic temp project, no external sample. It guards the
 //! `migration_schema` loader that turns Laravel / ThinkPHP `.php` migrations into `Schema` facts — the
 //! *only* source of `Column` facts for PHP (ORM models declare no fields). A regression here means the schema
-//! symbol table is empty and no column is ever materialised (measured on CRMEB: 0 columns, 0 PII annotations).
+//! symbol table is empty and no column is ever materialised (measured on sample_project: 0 columns, 0 PII annotations).
 
 use std::path::PathBuf;
 

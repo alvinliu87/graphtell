@@ -34,7 +34,7 @@ fn ingest_detects_three_sub_projects() {
     let subs = b.store.list_sub_projects(b.project.id).expect("the sub-projects must be readable");
     let names: Vec<&str> = subs.iter().map(|s| s.name.as_str()).collect();
 
-    // CRMEB is a multi-stack repo: a ThinkPHP backend + two frontend projects
+    // sample_project is a multi-stack repo: a ThinkPHP backend + two frontend projects
     assert!(
         names.iter().any(|n| n.contains("crmeb")),
         "a backend sub-project must be recognised, got: {names:?}"
@@ -164,11 +164,11 @@ fn ingest_resolves_excludes_from_framework_knowledge() {
 
 #[test]
 fn cf_ast_builds_syntax_nodes_and_call_sites() {
-    // Runs for real when the CRMEB sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
+    // Runs for real when the sample_project sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
     // CfAst's always-on structural coverage now lives in `cf_ast_structure.rs`, so a missing
     // sample here is a plain skip, not a fake-green gap.
     let Some(b) = built() else {
-        eprintln!("skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
+        eprintln!("skip: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
         return;
     };
     let stats = b.store.stats(b.project.id).expect("the statistics must be readable");
@@ -193,11 +193,11 @@ fn cf_ast_builds_syntax_nodes_and_call_sites() {
 
 #[test]
 fn cf_ast_resolves_php_namespace_and_fqn() {
-    // Runs for real when the CRMEB sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
+    // Runs for real when the sample_project sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
     // CfAst's always-on structural coverage now lives in `cf_ast_structure.rs`, so a missing
     // sample here is a plain skip, not a fake-green gap.
     let Some(b) = built() else {
-        eprintln!("skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
+        eprintln!("skip: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
         return;
     };
     let nodes = b
@@ -222,11 +222,11 @@ fn cf_ast_resolves_php_namespace_and_fqn() {
 
 #[test]
 fn cf_ast_follows_model_inheritance_chain() {
-    // Runs for real when the CRMEB sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
+    // Runs for real when the sample_project sample is present (GRAPHTELL_SAMPLE_DIR); skips otherwise.
     // CfAst's always-on structural coverage now lives in `cf_ast_structure.rs`, so a missing
     // sample here is a plain skip, not a fake-green gap.
     let Some(b) = built() else {
-        eprintln!("skip: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
+        eprintln!("skip: sample_project sample not found (point GRAPHTELL_SAMPLE_DIR at it)");
         return;
     };
     // StoreOrder extends BaseModel extends think\Model — the leaf is in vendor (excluded),
@@ -335,7 +335,7 @@ fn prepare_config_keys_come_from_declared_accessors_not_route_paths() {
     assert!(!rows.is_empty(), "config keys must be collected");
 
     // 1) The old blanket `suffixes: ["::get"]` matched `Route::get('api/goods/detail')` — 791 route
-    //    registrations against 141 real config reads on CRMEB. No key here may look like a URL path.
+    //    registrations against 141 real config reads on sample_project. No key here may look like a URL path.
     let route_like: Vec<&str> = rows
         .iter()
         .map(|r| r.key.as_str())
@@ -347,7 +347,7 @@ fn prepare_config_keys_come_from_declared_accessors_not_route_paths() {
         &route_like[..route_like.len().min(5)]
     );
 
-    // 2) CRMEB's own helper `sys_config()` belongs to the **project** FKB, not ThinkPHP; its keys must
+    // 2) sample_project's own helper `sys_config()` belongs to the **project** FKB, not ThinkPHP; its keys must
     //    still be collected (the framework FKB no longer lists it).
     let from_db = rows
         .iter()
@@ -608,14 +608,14 @@ fn taint_flags_sql_injection_on_real_sample() {
         "tainted_where_unknown",
     ] {
         if kinds.contains(k) {
-            eprintln!("CRMEB taint annotation present: {k}");
+            eprintln!("sample_project taint annotation present: {k}");
         }
     }
     assert!(
         kinds.iter().any(|k| {
             k == "tainted_raw" || k == "tainted_where" || k == "tainted_raw_unknown" || k == "tainted_where_unknown"
         }),
-        "CRMEB must have at least one SQL-injection annotation (tainted_raw / tainted_where / …), annotation kinds: {:?}",
+        "sample_project must have at least one SQL-injection annotation (tainted_raw / tainted_where / …), annotation kinds: {:?}",
         kinds
     );
 }
@@ -640,12 +640,12 @@ fn sign_check_flags_weak_signature_on_real_sample() {
         all.values().flatten().map(|a| a.kind.clone()).collect();
     for k in ["weak_sign_compare", "weak_sign_hash"] {
         if kinds.contains(k) {
-            eprintln!("CRMEB sign_check annotation present: {k}");
+            eprintln!("sample_project sign_check annotation present: {k}");
         }
     }
     assert!(
         kinds.iter().any(|k| k == "weak_sign_compare" || k == "weak_sign_hash"),
-        "CRMEB must have at least one signature annotation (weak_sign_compare / weak_sign_hash), annotation kinds: {:?}",
+        "sample_project must have at least one signature annotation (weak_sign_compare / weak_sign_hash), annotation kinds: {:?}",
         kinds
     );
 }
@@ -669,7 +669,7 @@ fn tx_flags_multi_write_without_tx_on_real_sample() {
         all.values().flatten().map(|a| a.kind.clone()).collect();
     assert!(
         kinds.contains("multi-write-without-tx"),
-        "CRMEB must have at least one multi-write-without-tx annotation, annotation kinds: {:?}",
+        "sample_project must have at least one multi-write-without-tx annotation, annotation kinds: {:?}",
         kinds
     );
     let subkinds: Vec<&str> = all
@@ -678,7 +678,7 @@ fn tx_flags_multi_write_without_tx_on_real_sample() {
         .filter(|a| a.kind == "multi-write-without-tx")
         .filter_map(|a| a.subkind.as_deref())
         .collect();
-    eprintln!("CRMEB multi-write-without-tx subkinds: {subkinds:?}");
+    eprintln!("sample_project multi-write-without-tx subkinds: {subkinds:?}");
 }
 
 // ---------------------------------------------------------------- P7 Resolve
@@ -1318,7 +1318,7 @@ fn v1_php_routes_are_in_graph() {
 /// Look directly at v1.php's parse product (raw call sites), without going through the whole graph.
 /// Queue semantic nodes should be detected by the **framework-level** FKB (no project-level FKB needed).
 ///
-/// CRMEB uses `think\facade\Queue` via `QueueTrait::dispatch` / `crmeb\utils\Queue`; the framework rule `thinkphp-queue-topic`
+/// sample_project uses `think\facade\Queue` via `QueueTrait::dispatch` / `crmeb\utils\Queue`; the framework rule `thinkphp-queue-topic`
 /// synthesises the queue topic through `arg:0` (the Job class) + `owner_class` fallback (the class that produces the call);
 /// propagation then walks the `PublishesTo` edge up to each Service.
 #[test]
@@ -1337,10 +1337,10 @@ fn synthesize_detects_queues_from_framework_fkb() {
             offset: Some(0),
         })
         .expect("the query must be readable");
-    eprintln!("Queue nodes detected in CRMEB = {}", queues.len());
+    eprintln!("Queue nodes detected in sample_project = {}", queues.len());
     assert!(
         !queues.is_empty(),
-        "the framework-level FKB must detect queue nodes (CRMEB uses think\\facade\\Queue through facades / wrappers / traits)"
+        "the framework-level FKB must detect queue nodes (sample_project uses think\\facade\\Queue through facades / wrappers / traits)"
     );
     // Every Queue node should have at least one PublishesTo in-edge (who publishes).
     let with_publisher = queues
@@ -1393,7 +1393,7 @@ fn synthesize_detects_schedules_from_project_fkb() {
             offset: Some(0),
         })
         .expect("the query must be readable");
-    eprintln!("Schedule nodes detected in CRMEB = {}", schedules.len());
+    eprintln!("Schedule nodes detected in sample_project = {}", schedules.len());
     assert!(
         !schedules.is_empty(),
         "the project-level FKB (crmeb.yaml) must synthesise crontab/* routes into Schedule nodes"

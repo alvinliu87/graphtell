@@ -20,8 +20,10 @@
         "**/references/**": true,
         "**/.references/**": true,
         "**/codebase-memory-mcp-main/**": true,
+        "**/.playwright-cli/**": true,
         "CRMEB-master": true,
-        ".git": true
+        "**/.git/**": true,
+        "**/graphtell/docs/**": true
     },
     "files.exclude": {
         "**/.gitnexus": true,

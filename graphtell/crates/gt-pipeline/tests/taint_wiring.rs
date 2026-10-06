@@ -9,7 +9,7 @@
 //! into `ctx.taint_default`; `run` then reads `ctx.ws.calls` / `variable_assignments` / `lang_policy`. If any
 //! of those wires broke, P9 would judge nothing — silently — and every SQL-injection gap would be invisible.
 //!
-//! Driven by `graph_with_root` (real FKB + a synthetic PHP tree), so it needs no external CRMEB sample.
+//! Driven by `graph_with_root` (real FKB + a synthetic PHP tree), so it needs no external sample_project sample.
 
 use gt_domain::model::ProjectConfig;
 use gt_domain::port::GraphQuery;

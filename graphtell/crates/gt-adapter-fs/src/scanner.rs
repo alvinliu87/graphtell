@@ -4,7 +4,7 @@
 //! * [`DEFAULT_EXCLUDE_GLOBS`] / [`ASSET_GLOBS`] — the tech-stack-agnostic baseline (dependency,
 //!   cache, build and asset directories), expressed as patterns just like everything else;
 //! * `ScanRequest.extra_excludes` — project-level globs plus what P0 resolved from framework
-//!   knowledge (`gt-pipeline`'s `phase::exclude`), e.g. `crmeb/runtime/**` rendered from the project's
+//!   knowledge (`gt-pipeline`'s `phase::exclude`), e.g. `sample_project/runtime/**` rendered from the project's
 //!   own `autoload.psr-4`. Matching by **path** rather than by directory name is what makes those
 //!   rules expressible at all: `public/static/**` or `storage/logs/**` have no name to compare.
 
@@ -189,7 +189,7 @@ impl FileScanner for WalkDirScanner {
         // **Must be sorted by file name**: `readdir` order depends on the filesystem and can differ between runs.
         // Ingestion order in turn decides a batch of P2 "first come, first served" results (which same-named class
         // registers first in `by_fqn`, whose FQN the global `imports` symbol table records); a change of order makes
-        // the whole graph drift slightly (measured: two builds of the same CRMEB differed by 57 edges), and view
+        // the whole graph drift slightly (measured: two builds of the same project differed by 57 edges), and view
         // output jitters with it.
         let mut walker = walkdir::WalkDir::new(root)
             .follow_links(false)
@@ -464,7 +464,7 @@ mod tests {
     }
 
     /// Output must be sorted: ingestion order decides P2 "first come, first served" results, and an unstable
-    /// order makes the whole graph drift between runs (measured: two CRMEB builds differed by 57 edges).
+    /// order makes the whole graph drift between runs (measured: two builds of the same project differed by 57 edges).
     #[test]
     fn scan_output_is_sorted_and_deterministic() {
         let root = tmp("sorted");

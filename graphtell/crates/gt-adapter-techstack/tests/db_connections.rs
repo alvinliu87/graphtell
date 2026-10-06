@@ -3,7 +3,7 @@
 //! Guards the *enumeration* path: a project may declare several connections, and the connection **name**
 //! is user-chosen — not always `mysql` (read/write splitting, several databases). The old rule read the
 //! single pointer `connections.mysql.prefix`, which silently produced no `db_prefix` at all for any other
-//! name, and with it lost every column-level fact (measured on CRMEB: 0 columns, 0 PII annotations).
+//! name, and with it lost every column-level fact (measured on sample_project: 0 columns, 0 PII annotations).
 
 use std::path::PathBuf;
 
@@ -78,7 +78,7 @@ fn tmp(tag: &str) -> PathBuf {
     p
 }
 
-/// The classic single-connection case must keep working exactly as before (CRMEB: `eb_`).
+/// The classic single-connection case must keep working exactly as before (sample_project: `eb_`).
 #[test]
 fn single_mysql_connection_resolves_driver_and_prefix() {
     let root = tmp("single");

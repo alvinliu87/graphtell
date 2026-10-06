@@ -1,6 +1,6 @@
 //! Self-check: a frontend sub-project's HTTP calls to the backend should be connected by the build mechanism into a "contract bridge".
 //!
-//! Not depending on an external CRMEB sample: run the full pipeline on `samples/frontend-backend-link`, a tiny
+//! Not depending on an external sample_project sample: run the full pipeline on `samples/frontend-backend-link`, a tiny
 //! synthetic repo (a ThinkPHP backend + an axios frontend), asserting:
 //!   1. the frontend `axios.post('/api/delete')` is wrapped in `export function deleteItem`,
 //!      synthesises an `HttpContract` with an **incoming `CallsHttp`** edge whose source is the frontend **function node**
@@ -211,11 +211,11 @@ fn frontend_calls_backend_merge_into_contract() {
     if out.iter().any(|e| e.kind.as_str() == "HandledBy") {
         eprintln!("✓ backend HandledBy also resolved (complete contract bridge)");
     } else {
-        eprintln!("ℹ backend HandledBy is resolved by P7 and does not deterministically land an edge in this sample; the existing CRMEB integration test covers that path");
+        eprintln!("ℹ backend HandledBy is resolved by P7 and does not deterministically land an edge in this sample; the existing sample_project integration test covers that path");
     }
 }
 
-/// **Member-style** frontend calls (`request.get('/api/ping')`, the uni-app / CRMEB `template/uni-app` form)
+/// **Member-style** frontend calls (`request.get('/api/ping')`, the uni-app / sample_project `template/uni-app` form)
 /// must also land in the contract bridge — a historical bug was exactly here:
 /// only object-style (`request({ url, method })`) and `axios.<verb>` were recognised,
 /// so the uni-app sub-project went entirely "offline", and the frontend was invisible in the route view.
