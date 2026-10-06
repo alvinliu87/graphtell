@@ -102,7 +102,7 @@ fn built() -> Option<Arc<Built>> {
                 port: 0,
                 ui_dir: None,
                 };
-            let container = Container::new(config).expect("容器装配不应失败");
+            let container = Container::new(config).expect("container wiring must not fail");
 
             let projects = ProjectService::new(
                 container.store.clone() as Arc<dyn Persistence>,
@@ -121,11 +121,11 @@ fn built() -> Option<Arc<Built>> {
                     description: None,
                     config: None,
                 })
-                .expect("创建工程不应失败");
+                .expect("creating the project must not fail");
 
             pipeline
                 .run(project.id, &NoopObserver)
-                .expect("对 CRMEB 样本建图不应失败");
+                .expect("graphing the CRMEB sample must not fail");
 
             Some(Arc::new(Built {
                 container,
@@ -140,7 +140,7 @@ fn view_svc(b: &Built) -> ViewService {
 }
 
 fn skip() -> &'static str {
-    "skipped: 未找到 CRMEB 样本（可用 GRAPHTELL_SAMPLE_DIR 指定）"
+    "skipped: CRMEB sample not found (point GRAPHTELL_SAMPLE_DIR at it)"
 }
 
 /// Whether this perspective is registered in `views/perspectives.yaml` (unregistered aggregate perspectives can't be asserted).
@@ -181,10 +181,10 @@ fn container_assembles_adapters() {
         eprintln!("{}", skip());
         return;
     };
-    assert!(b.container.framework_count() > 0, "应装载到框架知识");
+    assert!(b.container.framework_count() > 0, "framework knowledge must be loaded");
     let views_provider = b.container.views();
     let registry = views_provider.registry();
-    assert!(!registry.perspectives.is_empty(), "应装载到视角声明");
+    assert!(!registry.perspectives.is_empty(), "the perspective declarations must be loaded");
     let ids: Vec<&str> = registry
         .perspectives
         .iter()
@@ -192,7 +192,7 @@ fn container_assembles_adapters() {
         .collect();
     assert!(
         ids.iter().any(|i| *i == "route" || *i == "table"),
-        "视角应至少含 route/table"
+        "the perspectives must include at least route/table"
     );
     // HTTP routing assembles normally (smoke, no service started).
     let _router = b.container.router();
@@ -206,11 +206,11 @@ fn perspectives_reported_with_counts() {
     };
     let views = view_svc(&b);
     let list = views.perspectives(b.project_id).expect("perspectives");
-    assert!(!list.is_empty(), "视角列表不应为空");
+    assert!(!list.is_empty(), "the perspective list must not be empty");
     let any_available = list
         .iter()
         .any(|v| v["available"].as_u64().unwrap_or(0) > 0);
-    assert!(any_available, "图里至少有一个有数据的视角");
+    assert!(any_available, "at least one perspective in the graph has data");
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn aggregate_deploy_unit_clusters() {
     assert_eq!(agg.perspective, "deploy_unit");
     assert!(
         !agg.clusters.is_empty() || agg.notice.is_some(),
-        "deploy_unit 要么有聚类框，要么给出诚实提示"
+        "deploy_unit either has cluster boxes or gives an honest hint"
     );
     assert!(agg.clusters.iter().any(|c| c.count > 0));
 }
@@ -249,9 +249,9 @@ fn aggregate_platform_matrix() {
     let agg = views
         .aggregate_view(b.project_id, "platform", 12)
         .expect("aggregate");
-    let m = agg.matrix.expect("platform 应为矩阵视角");
-    assert!(!m.rows.is_empty(), "矩阵应有行");
-    assert!(!m.cols.is_empty(), "矩阵应有列");
+    let m = agg.matrix.expect("platform must be a matrix perspective");
+    assert!(!m.rows.is_empty(), "the matrix must have rows");
+    assert!(!m.cols.is_empty(), "the matrix must have columns");
     assert_eq!(m.cells.len(), m.rows.len());
     assert_eq!(m.cells.first().map(|r| r.len()).unwrap_or(0), m.cols.len());
     for (i, row) in m.cells.iter().enumerate() {
@@ -276,8 +276,8 @@ fn object_view_chain_and_hidden() {
     assert_eq!(ov.perspective, pid);
     assert_eq!(ov.center.id, nid);
     assert!(!ov.center.name.is_empty());
-    assert_eq!(ov.center.ring, 0, "中心节点应在 0 环");
-    assert!(!ov.hidden.note.is_empty(), "必须给出省略说明（诚实性）");
+    assert_eq!(ov.center.ring, 0, "the centre node must be on ring 0");
+    assert!(!ov.hidden.note.is_empty(), "an omission note must be given (honesty)");
     // Candidates are not brought back by the object view: the frontend dropdown requests `/view/{p}/candidates` on demand,
     // recomputing "score 5000 candidates one-by-one BFS" inside every object view is pure waste (see `ObjectView` comment).
 }
@@ -295,7 +295,7 @@ fn assert_visible_node_ok(_ov: &gt_domain::model::ObjectView, n: &gt_domain::mod
     let semantic = gt_domain::model::NodeKind(n.kind.clone()).is_semantic() || n.category.is_some();
     assert!(
         semantic,
-        "默认视图只允许语义节点（语法访问方应降级进 orphans 记账）：{} ({})",
+        "the default view allows semantic nodes only (syntactic accessors degrade into the orphans tally): {} ({})",
         n.name, n.kind
     );
 }
@@ -335,7 +335,7 @@ fn object_view_default_is_semantic_only() {
     };
     assert!(
         is_semantic(&ov.center),
-        "中心应是语义节点，实际 {}",
+        "the centre must be a semantic node, got {}",
         ov.center.kind
     );
     let mut visible = std::collections::HashSet::new();
@@ -347,12 +347,12 @@ fn object_view_default_is_semantic_only() {
     for e in &ov.edges {
         assert!(
             gt_domain::model::EdgeKind(e.kind.clone()).is_semantic(),
-            "默认视图不应出现语法边：{}",
+            "no syntactic edge may appear in the default view: {}",
             e.kind
         );
         assert!(
             visible.contains(&e.from.get()) && visible.contains(&e.to.get()),
-            "不应有悬空边：{} {} -> {}",
+            "there must be no dangling edge: {} {} -> {}",
             e.kind,
             e.from.get(),
             e.to.get()
@@ -380,15 +380,15 @@ fn object_view_resource_center_shows_its_users() {
         .object_view(b.project_id, "table", top.id, Some(2))
         .expect("object_view");
 
-    assert_eq!(ov.center.kind, "Table", "表视角中心应是 Table");
+    assert_eq!(ov.center.kind, "Table", "the centre of the table perspective must be a Table");
     assert_eq!(
         ov.center.own_view.as_deref(),
         Some("table"),
-        "中心应带回自己的视角 id（供「点击即切」使用）"
+        "the centre must carry its own perspective id (used by click-to-switch)"
     );
     assert!(
         ov.rings.iter().flatten().count() > 0,
-        "表视角应给出使用者（谁在读写这张表），而不是空图"
+        "the table perspective must show its users (who reads/writes the table) instead of an empty graph"
     );
     let mut visible = std::collections::HashSet::new();
     visible.insert(ov.center.id.get());
@@ -399,12 +399,12 @@ fn object_view_resource_center_shows_its_users() {
     for e in &ov.edges {
         assert!(
             gt_domain::model::EdgeKind(e.kind.clone()).is_semantic(),
-            "默认视图不应出现语法边：{}",
+            "no syntactic edge may appear in the default view: {}",
             e.kind
         );
         assert!(
             visible.contains(&e.from.get()) && visible.contains(&e.to.get()),
-            "不应有悬空边：{} {} -> {}",
+            "there must be no dangling edge: {} {} -> {}",
             e.kind,
             e.from.get(),
             e.to.get()
@@ -412,14 +412,14 @@ fn object_view_resource_center_shows_its_users() {
         assert_eq!(
             e.to.get(),
             ov.center.id.get(),
-            "资源视角的边必须指向中心（使用者 → 资源），实际 {} -> {}",
+            "an edge of a resource perspective must point at the centre (user -> resource), got {} -> {}",
             e.from.get(),
             e.to.get()
         );
         assert_ne!(
             e.from.get(),
             ov.center.id.get(),
-            "资源视角的边不应从中心出发（{e:?}）"
+            "an edge of a resource perspective must not start at the centre ({e:?})"
         );
     }
 }
@@ -452,14 +452,14 @@ fn orphan_access_is_accounted_not_drawn() {
         for o in &ov.orphans {
             assert!(
                 !drawn.contains(&o.id.get()),
-                "孤儿不应出现在画布上：{} ({})",
+                "an orphan must not appear on the canvas: {} ({})",
                 o.name,
                 o.kind
             );
-            assert!(!o.name.is_empty(), "孤儿记账必须带名字");
+            assert!(!o.name.is_empty(), "the orphan tally must carry a name");
             assert!(
                 !o.edge_kind.is_empty(),
-                "孤儿记账必须说明它对资源做了什么：{}",
+                "the orphan tally must say what it did to the resource: {}",
                 o.name
             );
             checked += 1;
@@ -496,7 +496,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
     let ov = views
         .object_view(b.project_id, "event", top.id, Some(2))
         .expect("object_view");
-    assert_eq!(ov.center.kind, "Event", "事件视角中心应是 Event");
+    assert_eq!(ov.center.kind, "Event", "the centre of the event perspective must be an Event");
 
     let visible: std::collections::HashSet<i64> =
         ov.rings.iter().flatten().map(|n| n.id.get()).collect();
@@ -506,12 +506,12 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
     for e in &trigger_edges {
         assert!(
             visible.contains(&e.from.get()),
-            "Triggers 边的触发方应是画布上的可见节点：{:?}",
+            "the trigger side of a Triggers edge must be a visible node on the canvas: {:?}",
             (e.from, e.to)
         );
         assert!(
             e.to == ov.center.id,
-            "Triggers 边的终点应是中心事件：{:?}",
+            "the end of a Triggers edge must be the centre event: {:?}",
             (e.from, e.to)
         );
     }
@@ -523,7 +523,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
         .count();
     assert!(
         trigger_edges.is_empty() || trigger_orphans == 0,
-        "触发方要么画上画布、要么（富化失败时）记账，不应两边同时出现：edges={} orphans={}",
+        "the trigger side is either drawn on the canvas or (when enrichment fails) tallied, never both: edges={} orphans={}",
         trigger_edges.len(),
         trigger_orphans
     );
@@ -533,7 +533,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
     for e in &handled_edges {
         assert!(
             visible.contains(&e.to.get()) || visible.contains(&e.from.get()),
-            "HandledBy 边的端点应是画布上的可见监听器节点：{:?}",
+            "the endpoint of a HandledBy edge must be a visible listener node on the canvas: {:?}",
             (e.from, e.to)
         );
     }
@@ -541,7 +541,7 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
     // ③ view not empty: canvas edges on producer/consumer side, or direct accounting, at least one.
     assert!(
         !ov.edges.is_empty() || !ov.orphans.is_empty(),
-        "事件视角不应是一张空图"
+        "the event perspective must not be an empty graph"
     );
 }
 
@@ -558,7 +558,7 @@ fn node_locations_returns_sources() {
     };
     let locs = views.node_locations(nid).expect("node_locations");
     assert_eq!(locs.id, nid);
-    assert!(!locs.locations.is_empty(), "语法节点应至少有一条定义位置");
+    assert!(!locs.locations.is_empty(), "a syntactic node must have at least one definition location");
 }
 
 #[test]
@@ -575,7 +575,7 @@ fn edge_evidence_verifies_chain() {
     let store = &b.container.store;
     let edges = store
         .edges_of(nid, EdgeDirection::Both)
-        .expect("edges_of 不应失败");
+        .expect("edges_of must not fail");
     let Some(e) = edges.into_iter().next() else {
         eprintln!("the center node has no edges; skipping the edge_evidence assertion");
         return;
@@ -583,11 +583,11 @@ fn edge_evidence_verifies_chain() {
     let ev = views
         .edge_evidence(e.id.get())
         .expect("edge_evidence")
-        .expect("边应存在");
+        .expect("the edge must exist");
     assert_eq!(ev.edge.id, e.id.get());
     assert!(
         !ev.locations.is_empty() || ev.reason.is_some(),
-        "实边或虚线都应有证据位置或理由"
+        "both solid and dashed edges must have an evidence location or a reason"
     );
 }
 
@@ -612,7 +612,7 @@ fn folded_semantic_edges_end_at_real_contact() {
             return;
         }
     };
-    assert!(!cands.is_empty(), "route 视角应有候选");
+    assert!(!cands.is_empty(), "the route perspective must have candidates");
 
     let mut checked = 0usize;
     let mut violations: Vec<String> = Vec::new();
@@ -636,16 +636,16 @@ fn folded_semantic_edges_end_at_real_contact() {
             });
             if !has_direct {
                 violations.push(format!(
-                    "路由 {} 的边 --{}--> #{} 末端接触点是 {:?}（#{}），但它没有带 evidence 的直接边",
+                    "edge --{}--> #{} of route {} ends at the contact point {:?} (#{}) but has no direct edge carrying evidence",
                     c.name, e.kind, e.to.get(), contact.name, contact.id.get()
                 ));
             }
         }
     }
-    assert!(checked > 0, "应检查到折叠边，实际一条都没有");
+    assert!(checked > 0, "a collapsed edge must be found, but there is none");
     assert!(
         violations.is_empty(),
-        "存在断在发现深度上的伪路径：\n{}",
+        "a pseudo-path broken off at the discovery depth exists:\n{}",
         violations.join("\n")
     );
 }
@@ -670,8 +670,8 @@ fn cache_view_folded_edges_end_at_real_contact() {
     let store = &b.container.store;
     let cands = views
         .candidates(b.project_id, "cache", 50, None, None)
-        .expect("cache 候选");
-    assert!(!cands.is_empty(), "cache 视角应有候选");
+        .expect("cache candidate");
+    assert!(!cands.is_empty(), "the cache perspective must have candidates");
 
     let mut checked = 0usize;
     let mut violations: Vec<String> = Vec::new();
@@ -695,7 +695,7 @@ fn cache_view_folded_edges_end_at_real_contact() {
             });
             if !has_direct {
                 violations.push(format!(
-                    "缓存 {} 的折叠边 --{}--> #{} 末端接触点是 {:?}（#{}），但它没有带 evidence 的直接边",
+                    "the collapsed edge --{}--> #{} of cache {} ends at the contact point {:?} (#{}) but has no direct edge carrying evidence",
                     c.name,
                     e.kind,
                     e.to.get(),
@@ -705,10 +705,10 @@ fn cache_view_folded_edges_end_at_real_contact() {
             }
         }
     }
-    assert!(checked > 0, "应检查到折叠边，实际一条都没有");
+    assert!(checked > 0, "a collapsed edge must be found, but there is none");
     assert!(
         violations.is_empty(),
-        "资源视角存在断在传播捷径上的伪路径（接触点张冠李戴）：\n{}",
+        "the resource perspective has a pseudo-path broken off at a propagation shortcut (the contact point is misattributed):\n{}",
         violations.join("\n")
     );
 
@@ -732,16 +732,16 @@ fn cache_view_folded_edges_end_at_real_contact() {
             .iter()
             .find(|e| e.from == route.id && e.kind == "ReadsCache")
         {
-            let cs = e.to_call_site.as_ref().expect("该缓存边应给出访问位置");
+            let cs = e.to_call_site.as_ref().expect("that cache edge must give an access location");
             assert!(
                 cs.file.ends_with("CacheService.php"),
-                "该路由访问缓存的位置应在 CacheService.php，实际 {}:{}",
+                "the route's cache access must be located in CacheService.php, got {}:{}",
                 cs.file,
                 cs.line
             );
             assert!(
                 !e.via.is_empty() && e.via.last().unwrap().name == "clear",
-                "该缓存边的接触点应是 CacheService::clear，实际 {:?}",
+                "the contact point of that cache edge must be CacheService::clear, got {:?}",
                 e.via.iter().map(|v| v.name.as_str()).collect::<Vec<_>>()
             );
         }
@@ -790,7 +790,7 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
     assert_eq!(
         cache_edges.len(),
         2,
-        "应只有两条完整到达路径（tidyOrder / getQRCodePath 两条分支），实际 {}: {:?}",
+        "there must be exactly two complete arrival paths (the tidyOrder / getQRCodePath branches), got {}: {:?}",
         cache_edges.len(),
         desc
     );
@@ -798,22 +798,22 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
         let last = e
             .via
             .last()
-            .unwrap_or_else(|| panic!("缓存边应经过折叠链，实际 via 为空：{desc:?}"));
+            .unwrap_or_else(|| panic!("the cache edge must go through a collapsed chain, but via is empty: {desc:?}"));
         assert_eq!(
             last.name, "remember",
-            "via 必须落在真正的接触点 CacheService::remember 上，实际末端是 {:?}（整链 {desc:?}）",
+            "via must land on the real contact point CacheService::remember, but it ends at {:?} (whole chain {desc:?})",
             last.name
         );
-        assert!(e.indirect, "路由自身不读缓存，应标记为间接（虚线）");
+        assert!(e.indirect, "the route itself does not read the cache, so it must be marked indirect (dashed)");
         assert!(
             e.to_call_site.is_some(),
-            "应给出本链路访问缓存的位置（CacheService.php 的 Cache::tag()->remember()）"
+            "it must give the location where this chain accesses the cache (Cache::tag()->remember() in CacheService.php)"
         );
     }
     // Former fake-path shape: via only one hop, equal to saying the handler itself read the cache.
     assert!(
         !cache_edges.iter().any(|e| e.via.len() <= 1),
-        "不应再出现单跳的断尾伪路径：{desc:?}"
+        "no single-hop truncated pseudo-path may appear any more: {desc:?}"
     );
 }
 
@@ -859,11 +859,11 @@ fn invoice_detail_route_first_hop_has_call_site() {
         checked += 1;
         assert!(
             first.call_site.is_some(),
-            "路由 → handler 首跳（{name}）应给出调用处（路由注册行），实际为 None（会显示「未解析到调用语句」）",
+            "the route -> handler first hop ({name}) must give a call site (the route registration line), got None (it would show 'call statement not resolved')",
             name = first.name
         );
     }
-    assert!(checked > 0, "应检查到至少一条经由 detail 的折叠边");
+    assert!(checked > 0, "at least one collapsed edge going through detail must be found");
 }
 
 /// **Characterization test**: pin the full output shape of `object_view` for a fixed route.
@@ -933,44 +933,44 @@ fn object_view_characterization_invoice_detail() {
         ov.orphans.iter().filter(|o| o.edge_kind == "CallsHttp").count(),
     );
 
-    assert_eq!(ov.edges.len(), 35, "边总数变了：{:?}", by_kind);
+    assert_eq!(ov.edges.len(), 35, "the total edge count changed: {:?}", by_kind);
     assert_eq!(
         ov.orphans
             .iter()
             .filter(|o| o.edge_kind == "CallsHttp")
             .count(),
         1,
-        "前端调用该契约的 CallsHttp 应记在 orphans 里，变了说明契约桥被改坏"
+        "the CallsHttp of a frontend call to this contract must be tallied in orphans; a change means the contract bridge was broken"
     );
     assert_eq!(
         by_kind.get("ReadsCache").copied().unwrap_or(0),
         2,
-        "ReadsCache 边数变了"
+        "the ReadsCache edge count changed"
     );
     assert_eq!(
         by_kind.get("ReadsConfig").copied().unwrap_or(0),
         28,
-        "ReadsConfig 边数变了"
+        "the ReadsConfig edge count changed"
     );
     assert_eq!(
         indirect, 31,
-        "间接（提拉/传播）边数变了，说明 indirect 判定被改坏"
+        "the indirect (hoisted / propagated) edge count changed, so the indirect judgement was broken"
     );
     // 34 can give a resource-access location; the missing 1 is a structural edge (no call site to cite), expected.
     assert_eq!(
         with_loc, 34,
-        "能给出访问位置的边数变了，说明证据选取被改坏"
+        "the number of edges able to give an access location changed, so evidence selection was broken"
     );
     // Key: **the longest chain must reach 5 hops** (detail → getQRCodePath → init → more → remember),
     // if folding/back-tracking is broken, the longest chain falls back to 2~3 hops.
     assert_eq!(
         via_len.last().copied().unwrap_or(0),
         5,
-        "最长 via 链应为 5 跳，实际分布 {via_len:?}"
+        "the longest via chain should be 5 hops, got distribution {via_len:?}"
     );
     assert!(
         via_len.iter().filter(|&&l| l == 1).count() >= 6,
-        "应有多条 1 跳的直接边（detail 自己读的配置），实际 {via_len:?}"
+        "there must be several 1-hop direct edges (the config that detail itself reads), got {via_len:?}"
     );
 }
 
@@ -994,7 +994,7 @@ fn schedule_view_follows_outgoing_chain() {
         .expect("candidates");
     assert!(
         !cands.is_empty(),
-        "计划任务视角应有候选（CRMEB 的 crontab 路由）"
+        "the schedule perspective must have candidates (CRMEB's crontab routes)"
     );
 
     // Concrete regression: `crontab/set_open/:id/:is_open` via `SystemCrontab::setTimerStatus`
@@ -1006,28 +1006,28 @@ fn schedule_view_follows_outgoing_chain() {
         let ov = views
             .object_view(b.project_id, "schedule", c.id, Some(2))
             .expect("object_view");
-        assert_eq!(ov.center.kind, "Schedule", "计划任务视角中心应是 Schedule");
+        assert_eq!(ov.center.kind, "Schedule", "the centre of the schedule perspective must be a Schedule");
         assert!(
             !ov.edges.is_empty(),
-            "计划任务 {} 画出了空图（环 {:?}）：入口类中心的依赖在出边，不能沿入边回溯",
+            "schedule {} drew an empty graph (rings {:?}): the entry-class centre's dependencies are on out-edges, so they cannot be traced back along in-edges",
             c.name,
             ov.rings.iter().map(|r| r.len()).collect::<Vec<_>>()
         );
         assert!(
             ov.rings.iter().flatten().count() > 0,
-            "计划任务 {} 的环里应有可达的语义节点",
+            "the rings of schedule {} must contain a reachable semantic node",
             c.name
         );
         for e in &ov.edges {
             assert!(
                 gt_domain::model::EdgeKind(e.kind.clone()).is_semantic(),
-                "默认视图不应出现语法边：{}",
+                "no syntactic edge may appear in the default view: {}",
                 e.kind
             );
             assert_eq!(
                 e.from.get(),
                 ov.center.id.get(),
-                "入口类视角的边应从中心出发，实际 {} -> {}",
+                "an edge of an entry-class perspective must start at the centre, got {} -> {}",
                 e.from.get(),
                 e.to.get()
             );
@@ -1038,22 +1038,22 @@ fn schedule_view_follows_outgoing_chain() {
             .find(|e| e.kind == "WritesCache")
             .unwrap_or_else(|| {
                 panic!(
-                    "计划任务 {} 应写缓存（与路由视角一致），实际边：{:?}",
+                    "schedule {} must write the cache (consistent with the route perspective), edges: {:?}",
                     c.name,
                     ov.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
                 )
             });
         assert!(
             !cache.via.is_empty(),
-            "应经过折叠链（handler → 服务方法）到达缓存，实际 via 为空"
+            "it must reach the cache through a collapsed chain (handler -> service method), but via is empty"
         );
         let cs = cache
             .to_call_site
             .as_ref()
-            .expect("应给出写缓存的那一行（本链路访问该资源的位置）");
+            .expect("it must give the line that writes the cache (where this chain accesses the resource)");
         assert!(
             cs.file.ends_with("SystemCrontabServices.php"),
-            "写缓存的位置应在 SystemCrontabServices.php（147 行 Cache::delete），实际 {}:{}",
+            "the cache write must be located in SystemCrontabServices.php (Cache::delete on line 147), got {}:{}",
             cs.file,
             cs.line
         );
@@ -1082,13 +1082,13 @@ fn schedule_view_follows_outgoing_chain() {
             .expect("object_view");
         checked += 1;
         if ov.edges.is_empty() {
-            dead.push(format!("{}（徽标 {:?}）", c.name, c.badge));
+            dead.push(format!("{} (badge {:?})", c.name, c.badge));
         }
     }
     assert!(checked > 0, "there should be a scheduled-task candidate with semantic dependencies > 0");
     assert!(
         dead.is_empty(),
-        "这些计划任务有语义依赖，视图却画出空图：\n{}",
+        "these schedules have semantic dependencies, yet the view drew an empty graph:\n{}",
         dead.join("\n")
     );
 }
@@ -1111,7 +1111,7 @@ fn empty_entry_view_carries_hint() {
         let cands = views
             .candidates(b.project_id, perspective, 200, None, None)
             .expect("candidates");
-        assert!(!cands.is_empty(), "{perspective} 视角应有候选");
+        assert!(!cands.is_empty(), "the {perspective} perspective must have candidates");
         for c in cands.iter() {
             let ov = views
                 .object_view(b.project_id, perspective, c.id, Some(3))
@@ -1120,7 +1120,7 @@ fn empty_entry_view_carries_hint() {
             assert_eq!(
                 ov.edges.is_empty(),
                 has_hint,
-                "{perspective} {} 空图与提示必须同时出现/消失：edges={} hint={:?}",
+                "for {perspective} {} the empty graph and the hint must appear/vanish together: edges={} hint={:?}",
                 c.name,
                 ov.edges.len(),
                 ov.conclusions.get("hint")
@@ -1134,7 +1134,7 @@ fn empty_entry_view_carries_hint() {
                     } else {
                         "route"
                     }),
-                    "{perspective} {} 的提示应点明入口类型，实际 {msg}",
+                    "the hint for {perspective} {} must name the entry type, got {msg}",
                     c.name
                 );
             }
@@ -1143,7 +1143,7 @@ fn empty_entry_view_carries_hint() {
     if empty_seen == 0 {
         eprintln!("this sample has no entry with empty dependencies (does not affect the invariant); skipping the content assertion");
     } else {
-        assert!(empty_seen > 0, "应至少命中一个空依赖入口以验证提示内容");
+        assert!(empty_seen > 0, "at least one empty-dependency entry must be hit to verify the hint content");
     }
 }
 
@@ -1187,7 +1187,7 @@ fn read_write_at_same_contact_is_reported_together() {
                 assert_eq!(
                     all.len(),
                     2,
-                    "{} 的 {} 边上 also_kinds 应恰好补上另一种访问方式，实际 {:?}",
+                    "on the {} edge of {} also_kinds must add exactly the other access mode, got {:?}",
                     c.name,
                     e.kind,
                     e.also_kinds
@@ -1197,26 +1197,26 @@ fn read_write_at_same_contact_is_reported_together() {
                 let cache = all.iter().all(|k| k.ends_with("Cache"));
                 assert!(
                     db || cache,
-                    "{} 的 {}+{:?} 跨资源混搭了（库与缓存不可能是同一条边的两种访问方式）",
+                    "{} mixes resources across {}+{:?} (a DB and a cache cannot be two access modes of the same edge)",
                     c.name,
                     e.kind,
                     e.also_kinds
                 );
                 assert!(
                     all.contains(&"ReadsDb") || all.contains(&"ReadsCache"),
-                    "另一种访问方式应是读，实际 {:?}",
+                    "the other access mode must be read, got {:?}",
                     e.also_kinds
                 );
                 assert!(
                     all.contains(&"WritesDb") || all.contains(&"WritesCache"),
-                    "另一种访问方式应是写，实际 {:?}",
+                    "the other access mode must be write, got {:?}",
                     e.also_kinds
                 );
                 let _ = family;
             }
         }
     }
-    assert!(checked > 0, "应检查到折叠边，实际一条都没有");
+    assert!(checked > 0, "a collapsed edge must be found, but there is none");
     assert!(
         annotated > 0,
         "样本里应有既读又写的接触点（CRMEB 的 store_bargain / tagDate 都是），\

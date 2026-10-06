@@ -207,12 +207,12 @@ fn spring_features_produce_semantic_nodes_and_edges() {
     // is now inherited from `fkb/java/spring-boot.yaml`'s top-level `side: backend` (see the loader).
     for kind in ["Cache", "Event", "Queue"] {
         let nodes = nodes_of_kind(&b, kind);
-        assert!(!nodes.is_empty(), "{kind} 节点应存在");
+        assert!(!nodes.is_empty(), "the {kind} node must exist");
         for n in &nodes {
             assert_eq!(
                 n.properties.get("side").and_then(|v| v.as_str()),
                 Some("backend"),
-                "{kind} 节点 {name} 应继承侧别 side=backend（继承自增顶层声明），实际 properties={props}",
+                "the {kind} node {name} must inherit side=backend (inherited from the increment's top-level declaration), got properties={props}",
                 name = n.name,
                 props = n.properties
             );

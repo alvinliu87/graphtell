@@ -1676,7 +1676,7 @@ mod tests {
         );
         assert!(
             ws.by_short.get("run").is_none(),
-            "方法 / 函数不进短名索引，否则 `config` 这类高频名会污染解析"
+            "methods / functions stay out of the short-name index, otherwise frequent names like `config` would pollute resolution"
         );
         // A synthesized Table has no FQN and is looked up by name.
         assert_eq!(ws.find_table_by_name("user"), Some(table));
@@ -1684,7 +1684,7 @@ mod tests {
 
         // A repeated FQN does not create a second index entry: the first registration wins.
         let dup = ws.add_node(new_node("Class", "User2", Some("app\\model\\User")));
-        assert_ne!(dup, cls, "add_node 本身不幂等（幂等合成走 get_or_create_synthesized）");
+        assert_ne!(dup, cls, "add_node itself is not idempotent (idempotent synthesis goes through get_or_create_synthesized)");
         assert_eq!(ws.find_by_name("app\\model\\User"), Some(cls));
 
         // Every node reaches the delta with its id back-filled.
@@ -1702,8 +1702,8 @@ mod tests {
         ws.patch_properties(n, json!({ "o": { "b": 2 }, "x": 9 }));
 
         let props = &ws.node(n).unwrap().properties;
-        assert_eq!(props["x"], json!(9), "顶层键后者覆盖");
-        assert_eq!(props["o"]["a"], json!(1), "嵌套对象应合并而非整体覆盖");
+        assert_eq!(props["x"], json!(9), "for a top-level key the later value wins");
+        assert_eq!(props["o"]["a"], json!(1), "nested objects must be merged, not overwritten wholesale");
         assert_eq!(props["o"]["b"], json!(2));
 
         // Nodes already in the delta carry their properties; later patches are separate upserts.
@@ -1722,11 +1722,11 @@ mod tests {
 
         assert!(created_a);
         assert!(!created_b);
-        assert_eq!(a, b, "同一身份必须复用同一节点");
+        assert_eq!(a, b, "the same identity must reuse the same node");
         assert_eq!(ws.node_count(), 1);
         let node = ws.node(a).unwrap();
-        assert!((node.confidence - 0.9).abs() < 1e-6, "置信度取较大值");
-        assert_eq!(node.properties["from"], json!("model"), "后来者覆盖同名属性");
+        assert!((node.confidence - 0.9).abs() < 1e-6, "confidence takes the larger value");
+        assert_eq!(node.properties["from"], json!("model"), "the later value overwrites a property of the same name");
     }
 
     /// A backend auto-route (`ANY` / `RULE`) must converge with the frontend's concrete method onto one
@@ -1746,7 +1746,7 @@ mod tests {
             1.0,
             Value::Null,
         ));
-        assert_eq!(any, post, "已存在通配方法时应复用");
+        assert_eq!(any, post, "an existing wildcard method must be reused");
         assert!(c1 && !c2);
 
         // The other direction: a concrete method registered first, the wildcard arrives later.
@@ -1780,7 +1780,7 @@ mod tests {
             1.0,
             Value::Null,
         ));
-        assert_ne!(p, g, "POST 与 GET 不是同一个契约");
+        assert_ne!(p, g, "POST and GET are not the same contract");
     }
 
     /// `scope` folds into the merge key, so the frontend's and the backend's `token` stay two nodes.
@@ -1804,7 +1804,7 @@ mod tests {
         assert_eq!(
             ws.node(fe).unwrap().name,
             "token",
-            "scope 只影响合并键，不影响显示名"
+            "scope only affects the merge key, not the display name"
         );
         assert_eq!(ws.node(be).unwrap().name, "token");
     }
@@ -1825,7 +1825,7 @@ mod tests {
         assert_eq!(
             ws.node(n).unwrap().properties["sides"],
             json!(["backend", "frontend"]),
-            "集合有序，结果与写入顺序无关"
+            "the collection is ordered, so the result does not depend on write order"
         );
 
         // Re-recording the same side, or an empty one, changes nothing.
@@ -1844,15 +1844,15 @@ mod tests {
         let b = ws.add_node(new_node("Method", "b", Some("B::b")));
 
         assert!(ws.add_edge(edge(a, b, "Calls")));
-        assert!(!ws.add_edge(edge(a, b, "Calls")), "同一 (kind,from,to) 只应有一条边");
-        assert!(ws.add_edge(edge(a, b, "Extends")), "不同 kind 可以共存");
+        assert!(!ws.add_edge(edge(a, b, "Calls")), "there must be only one edge per (kind,from,to)");
+        assert!(ws.add_edge(edge(a, b, "Extends")), "different kinds may coexist");
         // Direction matters.
         assert!(ws.add_edge(edge(b, a, "Calls")));
 
         assert_eq!(ws.edge_count(), 3);
         assert_eq!(ws.out_edges_of(a).len(), 2);
         assert_eq!(ws.fan_out(a), 2);
-        assert_eq!(ws.fan_in(b), 2, "a->b 两条不同 kind 都算入度");
+        assert_eq!(ws.fan_in(b), 2, "two different kinds a->b both count towards fan-in");
         assert_eq!(ws.fan_in(a), 1);
         let z = ws.add_node(new_node("Method", "z", Some("Z::z")));
         assert_eq!(ws.fan_out(z), 0);
@@ -1867,13 +1867,13 @@ mod tests {
         ws.add_edge(edge(a, b, "MapsTo"));
         ws.add_edge(edge(b, c, "MapsTo"));
 
-        assert_eq!(ws.follow(a, &[]), Some(a), "空链 = 不投影");
+        assert_eq!(ws.follow(a, &[]), Some(a), "an empty chain = no projection");
         assert_eq!(ws.follow(a, &["MapsTo".to_string()]), Some(b));
         assert_eq!(
             ws.follow(a, &["MapsTo".to_string(), "MapsTo".to_string()]),
             Some(c)
         );
-        assert_eq!(ws.follow(a, &["Nope".to_string()]), None, "断链返回 None");
+        assert_eq!(ws.follow(a, &["Nope".to_string()]), None, "a broken chain returns None");
         assert_eq!(ws.follow(c, &["MapsTo".to_string()]), None);
     }
 
@@ -1913,8 +1913,8 @@ mod tests {
 
         assert_eq!(ws.find_table_by_name("good"), Some(good));
         assert_eq!(ws.find_table_by_name("goods"), Some(good), "goods -> singularize -> good");
-        assert_eq!(ws.find_table_by_name("eb_store_order"), Some(order), "剥离前缀后再查");
-        assert_eq!(ws.find_table_by_name("STORE_ORDER"), Some(order), "大小写不敏感兜底");
+        assert_eq!(ws.find_table_by_name("eb_store_order"), Some(order), "look up after stripping the prefix");
+        assert_eq!(ws.find_table_by_name("STORE_ORDER"), Some(order), "case-insensitive fallback");
         assert_eq!(ws.find_table_by_name("nope"), None);
         assert_eq!(ws.find_table_by_name(""), None);
     }
@@ -1922,7 +1922,7 @@ mod tests {
     #[test]
     fn strip_table_prefix_uses_the_configured_prefixes() {
         let mut ws = new_ws();
-        assert_eq!(ws.strip_table_prefix("eb_store_order"), "eb_store_order", "未配置前缀时原样返回");
+        assert_eq!(ws.strip_table_prefix("eb_store_order"), "eb_store_order", "with no prefix configured it is returned verbatim");
         ws.set_table_prefixes(vec!["eb_".to_string()]);
         assert_eq!(ws.strip_table_prefix("eb_store_order"), "store_order");
         assert_eq!(ws.strip_table_prefix("store_order"), "store_order");
@@ -1949,8 +1949,8 @@ mod tests {
         ws.record_supertype("app\\StoreOrder", "app\\BaseModel");
         ws.record_supertype("app\\BaseModel", "think\\Model");
 
-        assert!(ws.has_supertype("app\\StoreOrder", "BaseModel"), "直接基类");
-        assert!(ws.has_supertype("app\\StoreOrder", "Model"), "跨层 + 伞形尾匹配");
+        assert!(ws.has_supertype("app\\StoreOrder", "BaseModel"), "direct base class");
+        assert!(ws.has_supertype("app\\StoreOrder", "Model"), "cross-layer + umbrella tail match");
         assert!(!ws.has_supertype("app\\StoreOrder", "Controller"));
 
         // A cycle must terminate rather than loop forever.
@@ -1994,8 +1994,8 @@ mod tests {
 
         assert_eq!(ws.route_group_prefix("r.php", 20), "v2/inner");
         assert_eq!(ws.route_group_prefix("r.php", 90), "v2");
-        assert_eq!(ws.route_group_prefix("r.php", 200), "", "落在所有分组之外");
-        assert_eq!(ws.route_group_prefix("other.php", 20), "", "按文件隔离");
+        assert_eq!(ws.route_group_prefix("r.php", 200), "", "outside every group");
+        assert_eq!(ws.route_group_prefix("other.php", 20), "", "isolated per file");
     }
 
     /// Outer-first, and a same-named guard declared by the **inner** scope wins.
@@ -2023,8 +2023,8 @@ mod tests {
 
         let got = ws.route_guards("r.php", 15);
         assert_eq!(got.len(), 2);
-        assert_eq!(got[0].class, "app\\Auth", "外层在前");
-        assert_eq!(got[0].arg.as_deref(), Some("false"), "内层覆盖外层");
+        assert_eq!(got[0].class, "app\\Auth", "outer layer first");
+        assert_eq!(got[0].arg.as_deref(), Some("false"), "inner layer overrides the outer one");
         assert!(got.iter().any(|g| g.class == "app\\Log"));
 
         // Outside every scope: no guards at all.
@@ -2058,8 +2058,8 @@ mod tests {
         );
         assert_eq!(ws.chained_strings("r.php", 10, "only"), vec!["index".to_string()]);
         assert!(ws.chained_strings("r.php", 10, "missing").is_empty());
-        assert!(ws.chained_strings("r.php", 11, "only").is_empty(), "行号参与索引");
-        assert!(ws.chained_strings("r.php", 12, "except").is_empty(), "非字符串参数不索引");
+        assert!(ws.chained_strings("r.php", 11, "only").is_empty(), "the line number takes part in the index");
+        assert!(ws.chained_strings("r.php", 12, "except").is_empty(), "a non-string argument is not indexed");
         assert!(ws.chained_strings("other.php", 10, "except").is_empty());
     }
 
@@ -2079,10 +2079,10 @@ mod tests {
         );
 
         assert_eq!(ws.take_delta().nodes.len(), 1);
-        assert!(ws.take_delta().nodes.is_empty(), "delta 取出后应清空");
+        assert!(ws.take_delta().nodes.is_empty(), "the delta must be emptied once taken");
 
         assert_eq!(ws.remaining_diagnostics().len(), 1);
-        assert!(ws.remaining_diagnostics().is_empty(), "诊断取出后应清空");
+        assert!(ws.remaining_diagnostics().is_empty(), "diagnostics must be emptied once taken");
     }
 
     // ===== Residual gaps the 19 tests above leave open: `annotate` merge strategies + annotation accessors,
@@ -2117,7 +2117,7 @@ mod tests {
         // Coexist: the same (node, channel, kind) is kept twice.
         ws.annotate(ann(n, "FkbMark", "pii", 0.5, MergeStrategy::Coexist));
         ws.annotate(ann(n, "FkbMark", "pii", 0.9, MergeStrategy::Coexist));
-        assert_eq!(ws.annotation_count(), 2, "Coexist 同键保留两条");
+        assert_eq!(ws.annotation_count(), 2, "Coexist keeps both entries for the same key");
 
         // MaxByKind: only the highest confidence survives.
         ws.annotate(ann(n, "Taint", "sink", 0.3, MergeStrategy::MaxByKind));
@@ -2128,8 +2128,8 @@ mod tests {
             .into_iter()
             .filter(|a| a.kind == "sink")
             .collect();
-        assert_eq!(taints.len(), 1, "MaxByKind 只留一条");
-        assert!((taints[0].confidence - 0.8).abs() < 1e-6, "保留较高置信度");
+        assert_eq!(taints.len(), 1, "MaxByKind keeps only one");
+        assert!((taints[0].confidence - 0.8).abs() < 1e-6, "the higher confidence is kept");
         assert!(ws.has_annotation(n, "sink"));
         assert!(!ws.has_annotation(n, "missing"));
 
@@ -2214,9 +2214,9 @@ mod tests {
         ws.add_edge(edge(a, b, "Extends"));
         ws.add_edge(edge(b, c, "Extends"));
 
-        assert!(ws.has_ancestor(a, "app\\B"), "直接基类");
-        assert!(ws.has_ancestor(a, "think\\Model"), "跨层基类");
-        assert!(ws.has_ancestor(a, "Model"), "伞形尾匹配");
+        assert!(ws.has_ancestor(a, "app\\B"), "direct base class");
+        assert!(ws.has_ancestor(a, "think\\Model"), "cross-layer base class");
+        assert!(ws.has_ancestor(a, "Model"), "umbrella tail match");
         assert!(!ws.has_ancestor(a, "app\\X"));
 
         // Implements edges count too.
@@ -2271,7 +2271,7 @@ mod tests {
         assert_eq!(
             ws.resolve_import_alias("queueTHINK"),
             Some("think\\facade\\Queue".to_string()),
-            "大小写不敏感"
+            "case-insensitive"
         );
         assert_eq!(ws.resolve_import_alias("Missing"), None);
     }
@@ -2345,7 +2345,7 @@ mod tests {
 
         assert!(ws.has_incoming_edge(handler, "RouteTo"));
         assert!(!ws.has_incoming_edge(handler, "Calls"));
-        assert!(ws.claimed_by(handler, "RouteTo"), "已有入边即视为被声明");
+        assert!(ws.claimed_by(handler, "RouteTo"), "having an in-edge counts as being declared");
         assert!(!ws.claimed_by(handler, "Other"));
 
         // A node with no edges is not claimed.
@@ -2372,7 +2372,7 @@ mod tests {
             .unwrap()
             .as_array()
             .unwrap();
-        assert_eq!(locs.len(), 2, "重复坐标不重复添加");
+        assert_eq!(locs.len(), 2, "a duplicate coordinate is not added twice");
     }
 
     /// `append_location` must not silently drop the location when the target node still has `properties:
@@ -2382,7 +2382,7 @@ mod tests {
         let mut ws = new_ws();
         // `new_node` produces `properties: Null` by default.
         let n = ws.add_node(new_node("Table", "user", None));
-        assert!(ws.node(n).unwrap().properties.is_null(), "前置：节点属性为 Null");
+        assert!(ws.node(n).unwrap().properties.is_null(), "precondition: the node properties are Null");
 
         ws.append_location(n, "a.sql", 1, None, None, None);
         ws.append_location(n, "b.sql", 2, None, None, None);
@@ -2392,10 +2392,10 @@ mod tests {
             .unwrap()
             .properties
             .get("locations")
-            .expect("Null 属性的节点也应写入 locations")
+            .expect("a node with Null properties must still be written into locations")
             .as_array()
             .unwrap();
-        assert_eq!(locs.len(), 2, "两条不同坐标都应追加");
+        assert_eq!(locs.len(), 2, "both distinct coordinates must be appended");
         assert_eq!(locs[0].get("file").unwrap().as_str(), Some("a.sql"));
         assert_eq!(locs[1].get("file").unwrap().as_str(), Some("b.sql"));
     }

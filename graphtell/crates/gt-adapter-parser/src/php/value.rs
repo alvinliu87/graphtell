@@ -224,9 +224,9 @@ class M {
         assert!(matches!(all[4][0], FactValue::ClassConst(ref s) if s == "Foo"));
         assert!(
             matches!(all[5][0], FactValue::Unknown(Some(ref s)) if s == "$x"),
-            "变量必须保留名字，供 P7 常量传播使用"
+            "a variable must keep its name so P7 constant propagation can use it"
         );
-        assert!(matches!(all[6][0], FactValue::Int(-1)), "一元负号应折成 Int");
+        assert!(matches!(all[6][0], FactValue::Int(-1)), "a unary minus must fold into an Int");
         assert!(matches!(all[7][0], FactValue::Float(f) if (f - 1.5).abs() < 1e-9));
     }
 
@@ -250,18 +250,18 @@ class M {
                 assert_eq!(items.len(), 2);
                 assert_eq!(items[0].0, "a");
                 assert!(matches!(items[0].1, FactValue::Int(1)));
-                assert_eq!(items[1].0, "1", "无键元素用下标作键");
+                assert_eq!(items[1].0, "1", "a key-less element uses its index as the key");
                 assert!(matches!(items[1].1, FactValue::Int(2)));
             }
-            other => panic!("数组字面量应折成 Array: {other:?}"),
+            other => panic!("an array literal must fold into Array: {other:?}"),
         }
         assert!(
             matches!(all[1][0], FactValue::Unknown(Some(_))),
-            "含插值的字符串不可静态确定，不得成为身份"
+            "a string with interpolation cannot be determined statically and must not become an identity"
         );
         assert!(
             matches!(all[2][0], FactValue::String(ref s) if s == "a'b"),
-            "转义引号应被还原"
+            "an escaped quote must be restored"
         );
     }
 
@@ -284,8 +284,8 @@ class M {
     #[test]
     fn truncate_counts_chars_not_bytes() {
         assert_eq!(truncate("abc", 2), "ab");
-        assert_eq!(truncate("abc", 10), "abc", "未超长时原样返回");
-        assert_eq!(truncate("中文字符", 2), "中文", "按字符截断，不得切在多字节中间");
+        assert_eq!(truncate("abc", 10), "abc", "when it is not too long it is returned verbatim");
+        assert_eq!(truncate("中文字符", 2), "中文", "it is truncated by characters and must not cut in the middle of a multi-byte one");
     }
 
     /// `X::class` is the only class-constant form that becomes a `ClassConst`; any other constant
@@ -308,14 +308,14 @@ class M {
         assert!(matches!(all[0][0], FactValue::ClassConst(ref s) if s == "Foo"));
         assert!(
             matches!(all[1][0], FactValue::ClassConst(ref s) if s == "App\\Foo"),
-            "前导 `\\` 应剥除: {:?}",
+            "a leading `\\` must be stripped: {:?}",
             all[1][0]
         );
         assert!(matches!(all[2][0], FactValue::ClassConst(ref s) if s == "self"));
         assert!(matches!(all[3][0], FactValue::ClassConst(ref s) if s == "static"));
         assert!(
             matches!(all[4][0], FactValue::Unknown(Some(ref s)) if s == "Foo::BAR"),
-            "非 class 常量不得当作类型身份: {:?}",
+            "a non-class constant must not be used as a type identity: {:?}",
             all[4][0]
         );
     }
@@ -332,10 +332,10 @@ class M {
 }
 "#;
         let all = call_args(src, "m");
-        assert!(matches!(all[0][0], FactValue::Int(1000)), "下划线应被忽略: {:?}", all[0][0]);
+        assert!(matches!(all[0][0], FactValue::Int(1000)), "underscores must be ignored: {:?}", all[0][0]);
         assert!(
             matches!(all[1][0], FactValue::Float(f) if (f - 10.5).abs() < 1e-9),
-            "浮点同样忽略下划线: {:?}",
+            "floats ignore underscores as well: {:?}",
             all[1][0]
         );
     }
@@ -370,7 +370,7 @@ class M {
 "#;
         let all = call_args(src, "m");
         assert!(matches!(all[0][0], FactValue::String(ref s) if s == "PHP_EOL"), "{:?}", all[0][0]);
-        assert!(matches!(all[1][0], FactValue::Int(1)), "括号应透明: {:?}", all[1][0]);
+        assert!(matches!(all[1][0], FactValue::Int(1)), "parentheses must be transparent: {:?}", all[1][0]);
     }
 
     /// What cannot be determined statically degrades instead of being guessed: a unary expression on a
@@ -388,12 +388,12 @@ class M {
         let all = call_args(src, "m");
         assert!(
             matches!(all[0][0], FactValue::Unknown(None)),
-            "对变量取负不可静态确定: {:?}",
+            "negating a variable cannot be determined statically: {:?}",
             all[0][0]
         );
         assert!(
             matches!(all[1][0], FactValue::Unknown(Some(ref s)) if s == "1 + 2"),
-            "计算表达式保留源码文本: {:?}",
+            "a computed expression keeps its source text: {:?}",
             all[1][0]
         );
     }
@@ -415,7 +415,7 @@ EOT);
         assert_eq!(all.len(), 1, "expected 1 call site, got: {all:?}");
         assert!(
             matches!(all[0][0], FactValue::String(ref s) if s == "hello"),
-            "heredoc 的值应只有正文，不含 `<<<EOT` 与结束标记: {:?}",
+            "a heredoc value must hold only the body, without `<<<EOT` and the closing marker: {:?}",
             all[0][0]
         );
     }

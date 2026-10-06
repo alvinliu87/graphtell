@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(ann.phase, Phase("Taint".to_string()));
         assert!(
             (ann.confidence - 0.9).abs() < f32::EPSILON,
-            "置信度应为 0.9"
+            "confidence should be 0.9"
         );
         assert_eq!(ann.evidence["callee"], "Db::query");
         assert_eq!(ann.evidence["sql"], "SHOW COLUMNS FROM `{$table}`");
@@ -785,7 +785,7 @@ mod tests {
         assert_eq!(
             kinds(&ctx, 1),
             vec!["tainted_raw_unknown".to_string()],
-            "来源不可追溯时只能降级为 unknown，不能当作已确认的 critical"
+            "when the source cannot be traced it may only degrade to unknown, never count as a confirmed critical"
         );
     }
 
@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(kinds(&ctx, 2), vec!["tainted_where_unknown".to_string()]);
         assert!(
             kinds(&ctx, 3).is_empty(),
-            "裸变量交给 Tier-2，本阶段不误报"
+            "a bare variable is handed to Tier-2; this phase must not report it"
         );
     }
 
@@ -870,7 +870,7 @@ mod tests {
 
         assert!(
             kinds(&ctx, 1).is_empty(),
-            "没有 sink 词汇 / 变量标记时不应判断，更不应借用别的栈的词汇"
+            "with no sink vocabulary / variable marker it must not judge, let alone borrow another stack's vocabulary"
         );
     }
 
@@ -915,9 +915,9 @@ mod tests {
 
         run(&mut ctx);
 
-        assert!(kinds(&ctx, 1).is_empty(), "非 sink 调用不应标注");
-        assert!(kinds(&ctx, 2).is_empty(), "无参数的 sink 不应标注");
-        assert!(kinds(&ctx, 3).is_empty(), "参数中没有变量就不是注入");
+        assert!(kinds(&ctx, 1).is_empty(), "a non-sink call must not be annotated");
+        assert!(kinds(&ctx, 2).is_empty(), "a sink call with no argument must not be annotated");
+        assert!(kinds(&ctx, 3).is_empty(), "no variable in the arguments means no injection");
     }
 
     /// A sub-project's own vocabulary **replaces** the global default (it is not merged with it), so a stack
@@ -965,7 +965,7 @@ mod tests {
         assert_eq!(kinds(&ctx, 1), vec!["tainted_raw".to_string()]);
         assert!(
             kinds(&ctx, 2).is_empty(),
-            "子项目有自己的词汇时不应再回落到默认词汇"
+            "a sub-project with its own vocabulary must not fall back to the default one"
         );
     }
 
@@ -1006,11 +1006,11 @@ mod tests {
         assert_eq!(
             var_names_in("$a . $b . $a", &p),
             vec!["a", "b"],
-            "同一变量只应出现一次"
+            "the same variable must appear only once"
         );
         assert!(
             var_names_in("$this->alias . '.uid'", &p).is_empty(),
-            "$this 是对象自身，不是用户输入"
+            "$this is the object itself, not user input"
         );
         assert!(var_names_in("no variables here", &p).is_empty());
         // The `${x}` form yields no resolvable name — that is the fallback exercised above.
@@ -1057,7 +1057,7 @@ mod tests {
 
         assert!(
             kinds(&ctx, 4).is_empty(),
-            "没有方法名的调用无法匹配 sink 声明，应跳过"
+            "a call with no method name cannot match a sink declaration and must be skipped"
         );
     }
 
@@ -1067,9 +1067,9 @@ mod tests {
     #[test]
     fn text_has_var_recognises_the_brace_interpolation_form() {
         let p = php_prefixes();
-        assert!(text_has_var("${x}", &p), "花括号插值形式应判为含变量");
+        assert!(text_has_var("${x}", &p), "the brace-interpolation form must be judged as containing a variable");
         assert!(text_has_var("DROP TABLE ${x} CASCADE", &p));
-        assert!(var_names_in("${x}", &p).is_empty(), "但解析不出变量名");
+        assert!(var_names_in("${x}", &p).is_empty(), "but the variable name cannot be parsed out");
         // PHP's own `{$var}` form does resolve a name — the two forms differ.
         assert_eq!(var_names_in("{$table}", &p), vec!["table"]);
     }
@@ -1115,7 +1115,7 @@ mod tests {
         assert_eq!(
             kinds(&ctx, 1),
             vec!["tainted_raw".to_string()],
-            "只要其中一个变量来自请求就应确认，而非降级为 unknown"
+            "if any one of the variables comes from the request it must be confirmed, not degraded to unknown"
         );
     }
 
@@ -1149,7 +1149,7 @@ mod tests {
         assert_eq!(
             kinds(&ctx, 1),
             vec!["tainted_raw".to_string()],
-            "同时声明在两张表里时应按原始 SQL 判定（raw 优先于 where）"
+            "declared in both tables, it must be judged as raw SQL (raw wins over where)"
         );
     }
 }

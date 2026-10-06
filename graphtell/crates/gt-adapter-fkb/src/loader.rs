@@ -436,18 +436,18 @@ rules:
     #[test]
     fn every_real_fkb_file_parses_and_ids_are_unique() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb");
-        assert!(root.is_dir(), "fkb 目录应存在: {}", root.display());
+        assert!(root.is_dir(), "the fkb directory must exist: {}", root.display());
 
         let files = collect_yaml(&root);
-        assert!(!files.is_empty(), "fkb 目录下应至少有 1 个 yaml 文件");
+        assert!(!files.is_empty(), "the fkb directory must contain at least one yaml file");
 
         let mut ids = std::collections::HashSet::new();
         for f in &files {
             let fk = YamlKnowledgeBase::load_file(f)
-                .unwrap_or_else(|e| panic!("FKB 文件解析失败（会被静默跳过，导致知识丢失）: {}: {e}", f.display()));
+                .unwrap_or_else(|e| panic!("the FKB file failed to parse (it would be skipped silently, losing knowledge): {}: {e}", f.display()));
             assert!(
                 ids.insert(fk.id.clone()),
-                "重复 FKB id（下游会静默丢弃一个）: {}  ({})",
+                "duplicate FKB id (one is dropped silently downstream): {}  ({})",
                 fk.id,
                 f.display()
             );
@@ -476,7 +476,7 @@ rules:
         .unwrap();
         assert!(
             YamlKnowledgeBase::load_file(&bad).is_err(),
-            "非法的 side 必须被拒绝"
+            "an illegal side must be rejected"
         );
 
         let good = dir.join("good.yaml");
@@ -487,7 +487,7 @@ rules:
         .unwrap();
         assert!(
             YamlKnowledgeBase::load_file(&good).is_ok(),
-            "合法的 side 应通过校验"
+            "a legal side must pass validation"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -521,14 +521,14 @@ rules:
         std::fs::write(&bad, source("      format: php\n")).unwrap();
         assert!(
             YamlKnowledgeBase::load_file(&bad).is_err(),
-            "内核不读取的 `format:` 必须被拒绝（否则它会一直看起来生效）"
+            "a `format:` the kernel never reads must be rejected (otherwise it keeps looking like it works)"
         );
 
         let good = dir.join("good.yaml");
         std::fs::write(&good, source("")).unwrap();
         assert!(
             YamlKnowledgeBase::load_file(&good).is_ok(),
-            "去掉该字段后应正常解析"
+            "once the field is removed it must parse normally"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -560,7 +560,7 @@ rules:
         .unwrap();
         assert!(
             YamlKnowledgeBase::load_file(&bad).is_err(),
-            "规则层的 `where:` 必须被拒绝（否则规则会无条件命中）"
+            "a rule-level `where:` must be rejected (otherwise the rule matches unconditionally)"
         );
 
         let good = dir.join("good.yaml");
@@ -571,7 +571,7 @@ rules:
         .unwrap();
         assert!(
             YamlKnowledgeBase::load_file(&good).is_ok(),
-            "写进 selector 的 `where:` 应正常解析"
+            "a `where:` written into the selector must parse normally"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -616,7 +616,7 @@ rules:
         assert_eq!(
             side_of_first_synth(&fk).as_deref(),
             Some("backend"),
-            "side-aware kind 应被注入 side"
+            "a side-aware kind must have side injected"
         );
     }
 
@@ -645,7 +645,7 @@ rules:
         assert_eq!(
             side_of_first_synth(&fk),
             None,
-            "非 side-aware kind 不应被注入 side"
+            "a non-side-aware kind must not have side injected"
         );
     }
 
@@ -676,7 +676,7 @@ rules:
         assert_eq!(
             side_of_first_synth(&fk).as_deref(),
             Some("frontend"),
-            "显式声明的 side 应优先于 FKB 默认值"
+            "an explicitly declared side wins over the FKB default"
         );
     }
 
@@ -705,15 +705,15 @@ rules:
 
         let mut already = String::from("thinkphp-pii");
         namespace_id("thinkphp", &mut already);
-        assert_eq!(already, "thinkphp-pii", "已带前缀的 id 不应被重复加前缀");
+        assert_eq!(already, "thinkphp-pii", "an id that already carries the prefix must not be prefixed again");
 
         let mut same = String::from("thinkphp");
         namespace_id("thinkphp", &mut same);
-        assert_eq!(same, "thinkphp", "id 恰等于前缀时不应把自己前缀化");
+        assert_eq!(same, "thinkphp", "an id equal to the prefix must not prefix itself");
 
         let mut empty = String::new();
         namespace_id("thinkphp", &mut empty);
-        assert_eq!(empty, "", "空 id 不应被前缀化");
+        assert_eq!(empty, "", "an empty id must not be prefixed");
 
         // "contains" is not "starts with": a prefix occurring mid-string must still be namespaced.
         let mut contains = String::from("x-thinkphp");
@@ -770,7 +770,7 @@ resolvers:
     #[test]
     fn load_dir_missing_root_yields_empty_instead_of_error() {
         let kb = YamlKnowledgeBase::load_dir(Path::new("/no/such/fkb/dir/here"))
-            .expect("缺失目录不应报错，只返回空");
+            .expect("a missing directory must not error, it just returns empty");
         assert!(kb.is_empty());
         assert_eq!(kb.len(), 0);
     }
@@ -782,10 +782,10 @@ resolvers:
         let dir = tmp_dir("mixed");
         std::fs::write(&dir.join("good.yaml"), "id: good\nlanguage: php\nrules: []\n").unwrap();
         std::fs::write(&dir.join("bad.yaml"), "id: bad\nrules: [ unclosed\n").unwrap();
-        let kb = YamlKnowledgeBase::load_dir(&dir).expect("坏文件不应使整个目录加载失败");
-        assert_eq!(kb.len(), 1, "只应加载成功解析的那一个");
+        let kb = YamlKnowledgeBase::load_dir(&dir).expect("a broken file must not fail the whole directory load");
+        assert_eq!(kb.len(), 1, "only the one that parses must be loaded");
         assert_eq!(kb.sources().len(), 1);
-        assert!(kb.by_id("good").is_some(), "存活的应是 good");
+        assert!(kb.by_id("good").is_some(), "the survivor must be good");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -798,18 +798,18 @@ resolvers:
         std::fs::write(&b.join("fkb.yaml"), "id: same\nlanguage: java\nrules: []\n").unwrap();
 
         let merged = YamlKnowledgeBase::load_dirs(&[a.clone(), b.clone()]).unwrap();
-        assert_eq!(merged.len(), 1, "同 id 应合并为一条，不重复");
+        assert_eq!(merged.len(), 1, "the same id must merge into one entry, with no duplicates");
         assert_eq!(
             merged.by_id("same").map(|f| f.language.clone()),
             Some(Language("java".into())),
-            "后加载的目录应覆盖同 id 条目"
+            "the directory loaded later must override the entry with the same id"
         );
 
         let reversed = YamlKnowledgeBase::load_dirs(&[b, a]).unwrap();
         assert_eq!(
             reversed.by_id("same").map(|f| f.language.clone()),
             Some(Language("php".into())),
-            "顺序反过来则后者胜出"
+            "with the order reversed the later one wins"
         );
     }
 
@@ -821,7 +821,7 @@ resolvers:
         std::fs::write(&p, "language: php\nrules: []\n").unwrap();
         assert!(
             YamlKnowledgeBase::load_file(&p).is_err(),
-            "缺 id 的 FKB 必须被拒绝（id 是命名空间前缀与去重键）"
+            "an FKB without an id must be rejected (the id is the namespace prefix and the de-duplication key)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -846,9 +846,9 @@ exclude_rules:
     glob: "vendor/**"
 "#,
         )
-        .expect("坏的排除规则只应告警，不应让整个 FKB 加载失败");
+        .expect("a broken exclude rule must only warn, not fail the whole FKB load");
 
-        assert_eq!(fk.exclude_rules.len(), 3, "三条规则都应保留");
+        assert_eq!(fk.exclude_rules.len(), 3, "all three rules must be kept");
         // The rest of the load pipeline still ran: ids are namespaced as usual.
         assert_eq!(fk.exclude_rules[0].id, "excl-no-source");
     }
@@ -874,16 +874,16 @@ exclude_rules:
                 .map(|f| f.id.clone())
                 .collect()
         };
-        assert_eq!(ids("php"), vec!["phpkb".to_string()], "for_language 应只返回该语言的 FKB");
+        assert_eq!(ids("php"), vec!["phpkb".to_string()], "for_language must return only that language's FKBs");
         assert_eq!(ids("java"), vec!["javakb".to_string()]);
-        assert_eq!(ids("*"), vec!["unikb".to_string()], "通配 FKB 只在按 `*` 查询时出现");
+        assert_eq!(ids("*"), vec!["unikb".to_string()], "a wildcard FKB appears only when querying with `*`");
         assert!(
             ids("python").is_empty(),
-            "通配 FKB 不属于任何具体语言，不应出现在 python 查询结果里"
+            "a wildcard FKB belongs to no concrete language, so it must not appear in a python query result"
         );
 
         assert!(kb.by_id("phpkb").is_some());
-        assert!(kb.by_id("missing").is_none(), "未知 id 应返回 None");
+        assert!(kb.by_id("missing").is_none(), "an unknown id must return None");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -908,7 +908,7 @@ exclude_rules:
         assert_eq!(
             got,
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            "应递归收录 yaml/yml（含大写扩展名），忽略非 YAML 文件"
+            "yaml/yml must be collected recursively (upper-case extensions included), non-YAML files ignored"
         );
         assert_eq!(kb.sources().len(), 3);
         let _ = std::fs::remove_dir_all(&dir);

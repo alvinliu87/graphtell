@@ -159,7 +159,7 @@ app.post('/login', (req, res) => { res.send('ok'); });
     .unwrap();
 
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("合成工程建图应成功");
+        panic!("graphing the synthetic project must succeed");
     };
 
     // NestJS: decorator → HttpContract, and HandledBy points to a method node
@@ -167,11 +167,11 @@ app.post('/login', (req, res) => { res.send('ok'); });
     let nest_names: Vec<&str> = nest_contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
         nest_names.iter().any(|n| n.contains("user")),
-        "NestJS 应产出 user 相关契约，实际：{nest_names:?}"
+        "NestJS must produce user-related contracts, got: {nest_names:?}"
     );
     assert!(
         has_outgoing_edge(&b, "HttpContract", "HandledBy"),
-        "NestJS HttpContract 应有 HandledBy 出边（连到处理方法），实际：{nest_names:?}"
+        "a NestJS HttpContract must have a HandledBy out-edge (to the handler method), got: {nest_names:?}"
     );
 
     // Express: member-style `app.get` → HttpContract (path from arg0, method from member name)
@@ -193,14 +193,14 @@ app.post('/login', (req, res) => { res.send('ok'); });
         .collect();
     assert!(
         login.iter().any(|n| n.starts_with("GET /login") || n.starts_with("POST /login")),
-        "Express 应产出 /login 契约，实际：{login:?}"
+        "Express must produce the /login contract, got: {login:?}"
     );
 
     // NestJS DI: `constructor(private readonly userService: UserService)`
     // → `UserController --DependsOn--> UserService`
     assert!(
         class_links_to_named(&b, "UserController", "DependsOn", "UserService"),
-        "UserController 应 DependsOn 到 UserService"
+        "UserController must DependsOn UserService"
     );
 
     // TypeORM: `@Entity('user')` → Table node "user", and the model class connects to the table via MapsTo
@@ -211,11 +211,11 @@ app.post('/login', (req, res) => { res.send('ok'); });
         .collect();
     assert!(
         tables.iter().any(|t| t == &"user"),
-        "应产出 Table 节点 user，实际：{tables:?}"
+        "the Table node user must be produced, got: {tables:?}"
     );
     assert!(
         class_links_to(&b, "UserEntity", "MapsTo"),
-        "UserEntity 应经 MapsTo 连到表 user"
+        "UserEntity must connect to the user table via MapsTo"
     );
 
     // entity field → column: `@Column() username` becomes a `Column` node, pointed at by the entity via HasColumn
@@ -225,24 +225,24 @@ app.post('/login', (req, res) => { res.send('ok'); });
         .collect();
     assert!(
         cols.iter().any(|c| c == "UserEntity.username"),
-        "应产出列节点 UserEntity.username，实际：{cols:?}"
+        "the column node UserEntity.username must be produced, got: {cols:?}"
     );
     assert!(
         class_links_to(&b, "UserEntity", "HasColumn"),
-        "UserEntity 应经 HasColumn 指向其字段列"
+        "UserEntity must point at its field columns via HasColumn"
     );
 
     // entity relation (foreign-key holder): `@ManyToOne(…) author: UserEntity`
     // → `ArticleEntity --References--> UserEntity`
     assert!(
         class_links_to_named(&b, "ArticleEntity", "References", "UserEntity"),
-        "ArticleEntity 应经 References 连到 UserEntity"
+        "ArticleEntity must connect to UserEntity via References"
     );
 
     // table-level foreign key: entity relation projects via `Project` to table → table (both entities have @Entity('x'), so both ends exist)
     assert!(
         node_links_to_named(&b, "Table", "article", "ForeignKey", "user"),
-        "article 表应经 ForeignKey 连到 user 表"
+        "the article table must connect to the user table via a foreign key"
     );
 }
 
@@ -296,30 +296,30 @@ fn nestjs_real_sample_produces_route_contracts() {
         return;
     };
     let Some(b) = common::graph_with_root(&nest_root, ProjectConfig::default()) else {
-        panic!("真实样本建图应成功");
+        panic!("graphing the real sample must succeed");
     };
     let contracts = nodes_of_kind(&b, "HttpContract");
     let names: Vec<&str> = contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
         !names.is_empty(),
-        "真实 NestJS 样本应产出 HttpContract，实际节点为空"
+        "the real NestJS sample must produce an HttpContract, but the node list is empty"
     );
     // `@Get('user')` / `@Post('users')` etc. in `user.controller.ts` should become
     assert!(
         names.iter().any(|n| n.contains("user")),
-        "应包含 user 相关契约，实际：{names:?}"
+        "a user-related contract must be included, got: {names:?}"
     );
     // HandledBy should leave the HttpContract, pointing to a method node (proves owner resolved precisely to `Class.method`).
     // Note the link direction is `to_target`: the edge is **emitted** by the contract node, so look at the HttpContract's **out-edges**.
     assert!(
         has_outgoing_edge(&b, "HttpContract", "HandledBy"),
-        "HttpContract 应有 HandledBy 出边（连到处理方法），实际契约：{names:?}"
+        "an HttpContract must have a HandledBy out-edge (to the handler method), contracts: {names:?}"
     );
     // DI: `constructor(private readonly userService: UserService)` in `user.controller.ts`
     // → `UserController --DependsOn--> UserService`
     assert!(
         class_links_to_named(&b, "UserController", "DependsOn", "UserService"),
-        "UserController 应 DependsOn 到 UserService"
+        "UserController must DependsOn UserService"
     );
     // TypeORM: `@Entity('user')` → Table node "user"
     let tables: Vec<String> = nodes_of_kind(&b, "Table")
@@ -328,11 +328,11 @@ fn nestjs_real_sample_produces_route_contracts() {
         .collect();
     assert!(
         tables.iter().any(|t| t == "user"),
-        "应产出 Table 节点 user，实际：{tables:?}"
+        "the Table node user must be produced, got: {tables:?}"
     );
     assert!(
         class_links_to(&b, "UserEntity", "MapsTo"),
-        "UserEntity 应经 MapsTo 连到表 user"
+        "UserEntity must connect to the user table via MapsTo"
     );
 
     // entity field → column: each entity has `@PrimaryGeneratedColumn() id`, the column identity carries entity scope,
@@ -343,39 +343,39 @@ fn nestjs_real_sample_produces_route_contracts() {
         .collect();
     assert!(
         cols.iter().any(|c| c == "UserEntity.id") && cols.iter().any(|c| c == "ArticleEntity.id"),
-        "不同实体的同名 id 列应各自独立，实际：{:?}",
+        "the same-named id columns of different entities must stay separate, got: {:?}",
         &cols[..cols.len().min(12)]
     );
     assert!(
         class_links_to(&b, "UserEntity", "HasColumn"),
-        "UserEntity 应经 HasColumn 指向其字段列"
+        "UserEntity must point at its field columns via HasColumn"
     );
 
     assert!(
         class_links_to_named(&b, "Comment", "References", "ArticleEntity"),
-        "Comment 应经 References 连到 ArticleEntity"
+        "Comment must connect to ArticleEntity via References"
     );
     assert!(
         class_links_to_named(&b, "ArticleEntity", "References", "UserEntity"),
-        "ArticleEntity 应经 References 连到 UserEntity"
+        "ArticleEntity must connect to UserEntity via References"
     );
     assert!(
         class_links_to_named(&b, "UserEntity", "References", "ArticleEntity"),
-        "UserEntity 应经 ManyToMany(favorites) 连到 ArticleEntity"
+        "UserEntity must connect to ArticleEntity via ManyToMany (favorites)"
     );
 
     // table-level foreign key: `References` (entity → entity) projects via `Project` into `ForeignKey` (table → table).
     // `Comment` is `@Entity()` with no arg → no Table, its foreign key doesn't enter the graph (better missing than guessed).
     assert!(
         node_links_to_named(&b, "Table", "article", "ForeignKey", "user"),
-        "article 表应经 ForeignKey 连到 user 表"
+        "the article table must connect to the user table via a foreign key"
     );
     assert!(
         node_links_to_named(&b, "Table", "user", "ForeignKey", "article"),
-        "user 表应经 ForeignKey 连到 article 表（@ManyToMany favorites）"
+        "the user table must connect to the article table via a foreign key (@ManyToMany favorites)"
     );
     eprintln!(
-        "NestJS 真实样本契约数 = {}，表示例：{:?}，表数 = {}，列数 = {}",
+        "real NestJS sample: contracts = {}, table examples: {:?}, tables = {}, columns = {}",
         names.len(),
         &names[..names.len().min(8)],
         tables.len(),
@@ -393,7 +393,7 @@ fn nestjs_real_sample_consumer_middleware() {
         return;
     };
     let Some(b) = common::graph_with_root(&nest_root, ProjectConfig::default()) else {
-        panic!("真实样本建图应成功");
+        panic!("graphing the real sample must succeed");
     };
     let mws: Vec<String> = nodes_of_kind(&b, "Middleware")
         .iter()
@@ -401,7 +401,7 @@ fn nestjs_real_sample_consumer_middleware() {
         .collect();
     assert!(
         mws.iter().any(|n| n == "AuthMiddleware"),
-        "应产出 Middleware 节点 AuthMiddleware，实际：{mws:?}"
+        "the Middleware node AuthMiddleware must be produced, got: {mws:?}"
     );
     // at least one contract connects to AuthMiddleware via `PassesThrough` (in-edge).
     let linked = nodes_of_kind(&b, "Middleware")
@@ -416,7 +416,7 @@ fn nestjs_real_sample_consumer_middleware() {
         });
     assert!(
         linked,
-        "至少一条 HttpContract 应经 PassesThrough 连到 AuthMiddleware"
+        "at least one HttpContract must connect to AuthMiddleware via PassesThrough"
     );
     let count = nodes_of_kind(&b, "Middleware")
         .into_iter()
@@ -434,18 +434,18 @@ fn express_real_sample_produces_route_contracts() {
         return;
     };
     let Some(b) = common::graph_with_root(&expr_root, ProjectConfig::default()) else {
-        panic!("真实样本建图应成功");
+        panic!("graphing the real sample must succeed");
     };
     let contracts = nodes_of_kind(&b, "HttpContract");
     let names: Vec<&str> = contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
         !names.is_empty(),
-        "真实 Express 样本应产出 HttpContract，实际节点为空"
+        "the real Express sample must produce an HttpContract, but the node list is empty"
     );
     // `app.get('/login', ...)` should become
     assert!(
         names.iter().any(|n| n.contains("login")),
-        "应包含 /login 契约，实际：{names:?}"
+        "the /login contract must be included, got: {names:?}"
     );
     eprintln!("contract count in the real Express sample = {}, examples: {:?}", names.len(), &names[..names.len().min(8)]);
 }

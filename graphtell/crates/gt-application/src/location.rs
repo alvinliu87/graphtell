@@ -173,7 +173,7 @@ mod tests {
         let files = HashMap::from([(7i64, "app/Order.php".to_string())]);
         let (path, line) = node_location(&n, &files, Some(Path::new("/root")));
         assert_eq!(path, Some("/root/app/Order.php".to_string()));
-        assert_eq!(line, None, "start_line=0 不应暴露 line");
+        assert_eq!(line, None, "start_line=0 must not expose line");
     }
 
     /// Malformed `locations` (here a string, not an array) must degrade to `(None, None)` rather than panic/assume.
@@ -208,7 +208,7 @@ mod tests {
         });
         let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
         assert_eq!(path, Some("/root/sql/a.sql".to_string()));
-        assert_eq!(line, Some(1), "只取第一条 location");
+        assert_eq!(line, Some(1), "only the first location is taken");
     }
 
     /// A syntax node whose `file_id` resolves, with no project root, yields the raw (relative) path — the `absolute`
@@ -220,7 +220,7 @@ mod tests {
         n.span = Span { start_line: 42, ..Span::default() };
         let files = HashMap::from([(7i64, "app/Order.php".to_string())]);
         let (path, line) = node_location(&n, &files, None);
-        assert_eq!(path, Some("app/Order.php".to_string()), "无 root 时不拼接绝对路径");
+        assert_eq!(path, Some("app/Order.php".to_string()), "with no root no absolute path is joined");
         assert_eq!(line, Some(42));
     }
 
@@ -235,7 +235,7 @@ mod tests {
         n.properties = serde_json::json!({ "locations": [{ "file": "sql/a.sql", "line": 99 }] });
         let files = HashMap::from([(7i64, "app/Order.php".to_string())]);
         let (path, line) = node_location(&n, &files, Some(Path::new("/root")));
-        assert_eq!(path, Some("/root/app/Order.php".to_string()), "file_id 应优先于 locations");
+        assert_eq!(path, Some("/root/app/Order.php".to_string()), "file_id takes precedence over locations");
         assert_eq!(line, Some(42));
     }
 
@@ -247,7 +247,7 @@ mod tests {
         n.properties = serde_json::json!({ "locations": [{ "file": "sql/a.sql" }] });
         let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
         assert_eq!(path, Some("/root/sql/a.sql".to_string()));
-        assert_eq!(line, None, "缺失 line 不应暴露成 0");
+        assert_eq!(line, None, "a missing line must not be exposed as 0");
     }
 
     /// A synthetic node in a project with no known root yields the relative path as-is (still usable for display).

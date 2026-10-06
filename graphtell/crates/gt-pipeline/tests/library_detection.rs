@@ -70,7 +70,7 @@ fn java_project(tag: &str, pom: &str, sources: &[(&str, &str)]) -> std::path::Pa
 
 /// Frameworks recognised for the **Java** sub-projects of a full pipeline run.
 fn detected_frameworks_java(root: &Path) -> Vec<String> {
-    let b = common::graph_with_root(root, ProjectConfig::default()).expect("建图");
+    let b = common::graph_with_root(root, ProjectConfig::default()).expect("graphing");
     b.store
         .list_sub_projects(b.project.id)
         .unwrap_or_default()
@@ -82,7 +82,7 @@ fn detected_frameworks_java(root: &Path) -> Vec<String> {
 
 /// Frameworks recognised for the PHP sub-project of a full pipeline run.
 fn detected_frameworks(root: &Path) -> Vec<String> {
-    let b = common::graph_with_root(root, ProjectConfig::default()).expect("建图");
+    let b = common::graph_with_root(root, ProjectConfig::default()).expect("graphing");
     b.store
         .list_sub_projects(b.project.id)
         .unwrap_or_default()
@@ -116,7 +116,7 @@ class Notifier
     let got = detected_frameworks(&root);
     assert!(
         got.contains(&"guzzle".to_string()),
-        "代码 `use GuzzleHttp\\Client as G;` 应激活 guzzle 知识，实际识别：{got:?}"
+        "the code `use GuzzleHttp\\Client as G;` must activate the guzzle knowledge, recognised: {got:?}"
     );
 }
 
@@ -140,7 +140,7 @@ class Notifier
     let got = detected_frameworks(&root);
     assert!(
         got.contains(&"guzzle".to_string()),
-        "内联 `\\GuzzleHttp\\Client::request()` 应激活 guzzle 知识，实际识别：{got:?}"
+        "the inline `\\GuzzleHttp\\Client::request()` must activate the guzzle knowledge, recognised: {got:?}"
     );
 }
 
@@ -171,7 +171,7 @@ class Notifier
     let got = detected_frameworks(&root);
     assert!(
         got.contains(&"illuminate-database".to_string()),
-        "laravel 的 provides 应激活 illuminate-database，实际识别：{got:?}"
+        "laravel's provides must activate illuminate-database, recognised: {got:?}"
     );
 }
 
@@ -196,7 +196,7 @@ class Notifier
     let got = detected_frameworks(&root);
     assert!(
         got.contains(&"illuminate-database".to_string()),
-        "composer.lock 里的依赖应被识别，实际识别：{got:?}"
+        "a dependency in composer.lock must be recognised, recognised: {got:?}"
     );
 }
 
@@ -248,9 +248,9 @@ public class OrderListener {
     let got = detected_frameworks_java(&root);
     assert!(
         got.contains(&"spring-kafka".to_string()),
-        "@KafkaListener 应激活 spring-kafka，实际识别：{got:?}"
+        "@KafkaListener must activate spring-kafka, recognised: {got:?}"
     );
-    assert!(got.contains(&"spring-boot".to_string()), "同时应识别为 spring-boot");
+    assert!(got.contains(&"spring-boot".to_string()), "it must be recognised as spring-boot as well");
 }
 
 #[test]
@@ -287,9 +287,9 @@ public class ProductService {
     let got = detected_frameworks_java(&root);
     assert!(
         got.contains(&"spring-cache".to_string()),
-        "@Cacheable 应激活 spring-cache，实际识别：{got:?}"
+        "@Cacheable must activate spring-cache, recognised: {got:?}"
     );
-    assert!(got.contains(&"spring-boot".to_string()), "同时应识别为 spring-boot");
+    assert!(got.contains(&"spring-boot".to_string()), "it must be recognised as spring-boot as well");
 }
 
 #[test]
@@ -336,13 +336,13 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     let got = detected_frameworks_java(&root);
     assert!(
         got.contains(&"spring-jpa".to_string()),
-        "@Table / JpaRepository 应激活 spring-jpa，实际识别：{got:?}"
+        "@Table / JpaRepository must activate spring-jpa, recognised: {got:?}"
     );
-    assert!(got.contains(&"spring-boot".to_string()), "同时应识别为 spring-boot");
+    assert!(got.contains(&"spring-boot".to_string()), "it must be recognised as spring-boot as well");
 
     // The `@Table` rule must actually materialise a `Table` node (gated, so it only fires because spring-jpa
     // was detected above).
-    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
+    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("graphing");
     let has_order_table = b
         .store
         .query_nodes(&NodeFilter {
@@ -355,7 +355,7 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
         .expect("query")
         .into_iter()
         .any(|t| t.name.to_ascii_lowercase().contains("order"));
-    assert!(has_order_table, "JPA @Table 应生成 Table(eb_order) 节点");
+    assert!(has_order_table, "a JPA @Table must produce the Table(eb_order) node");
 }
 
 #[test]
@@ -387,7 +387,7 @@ public interface OrderMapper {
     let got = detected_frameworks_java(&root);
     assert!(
         got.contains(&"mybatis".to_string()),
-        "pom.xml 里的 mybatis 依赖应被识别（无 Java import），实际识别：{got:?}"
+        "the mybatis dependency in pom.xml must be recognised (with no Java import), recognised: {got:?}"
     );
 }
 
@@ -409,11 +409,11 @@ public class OrderController {
         )],
     );
     let got = detected_frameworks_java(&root);
-    assert!(got.contains(&"spring-boot".to_string()), "应识别为 spring-boot：{got:?}");
+    assert!(got.contains(&"spring-boot".to_string()), "it must be recognised as spring-boot: {got:?}");
     for lib in ["mybatis", "spring-amqp", "spring-kafka", "spring-cache", "spring-jpa"] {
         assert!(
             !got.contains(&lib.to_string()),
-            "{lib} 不该被识别（项目没有用它），实际识别：{got:?}"
+            "{lib} must not be recognised (the project does not use it), recognised: {got:?}"
         );
     }
 }
@@ -442,6 +442,6 @@ class Notifier
     let got = detected_frameworks(&root);
     assert!(
         !got.contains(&"guzzle".to_string()),
-        "没有用到 Guzzle 的项目不应被识别为 guzzle，实际识别：{got:?}"
+        "a project that does not use Guzzle must not be recognised as guzzle, recognised: {got:?}"
     );
 }

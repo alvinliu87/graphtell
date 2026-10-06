@@ -1144,7 +1144,7 @@ def get_user(user_id: int, db=Depends(get_db)):
     fn module_fqn_handles_pyi_stubs_and_windows_separators() {
         assert_eq!(module_fqn("app\\api\\users.py"), "app.api.users");
         assert_eq!(module_fqn("app/models.pyi"), "app.models");
-        assert_eq!(module_fqn("app//api/users.py"), "app.api.users", "重复分隔符不应产生空段");
+        assert_eq!(module_fqn("app//api/users.py"), "app.api.users", "repeated separators must not produce empty segments");
     }
 
     /// Strip the type-parameter shell so a generic base (`Base[Order]`) resolves to the same node as the bare
@@ -1154,7 +1154,7 @@ def get_user(user_id: int, db=Depends(get_db)):
         assert_eq!(bare_typename("Base[Order]".to_string()), "Base");
         assert_eq!(bare_typename("Base<Order>".to_string()), "Base");
         assert_eq!(bare_typename("Base".to_string()), "Base");
-        assert_eq!(bare_typename("  List [int] ".to_string()), "List", "应去掉泛型并 trim");
+        assert_eq!(bare_typename("  List [int] ".to_string()), "List", "must strip generics and trim");
     }
 
     /// String prefixes (`r` / `rb` / `f` / `u`) and triple quotes are all common in decorators and defaults;
@@ -1163,12 +1163,12 @@ def get_user(user_id: int, db=Depends(get_db)):
     fn unquote_handles_prefixes_and_triple_quotes() {
         assert_eq!(unquote("'abc'"), "abc");
         assert_eq!(unquote("\"abc\""), "abc");
-        assert_eq!(unquote("r\"a\\tb\""), "a\\tb", "前缀字母应被剥离");
+        assert_eq!(unquote("r\"a\\tb\""), "a\\tb", "the prefix letters must be stripped");
         assert_eq!(unquote("rb\"x\""), "x");
         assert_eq!(unquote("f\"{x}\""), "{x}");
-        assert_eq!(unquote("\"\"\"doc\"\"\""), "doc", "三引号按长度剥离，不是逐字符 trim");
+        assert_eq!(unquote("\"\"\"doc\"\"\""), "doc", "triple quotes are stripped by length, not trimmed character by character");
         assert_eq!(unquote("'''doc'''"), "doc");
-        assert_eq!(unquote("abc"), "abc", "无引号时原样返回");
+        assert_eq!(unquote("abc"), "abc", "with no quotes it is returned verbatim");
     }
 
     /// An absolute import must be returned **unchanged** — composing it with a parent package would produce a
@@ -1178,15 +1178,15 @@ def get_user(user_id: int, db=Depends(get_db)):
         assert_eq!(
             resolve_relative_module("os.path", "app.urls"),
             "os.path",
-            "绝对导入不得与父包拼接"
+            "an absolute import must not be joined with the parent package"
         );
         assert_eq!(resolve_relative_module(".views", "app.urls"), "app.views");
         assert_eq!(resolve_relative_module("..core.helper", "a.b.urls"), "a.core.helper");
-        assert_eq!(resolve_relative_module(".", "app.urls"), "app", "空 rest → 父包本身");
+        assert_eq!(resolve_relative_module(".", "app.urls"), "app", "empty rest → the parent package itself");
         assert_eq!(
             resolve_relative_module("...x", "a.b"),
             "x",
-            "层级超出根时应被夹住，而不是 panic"
+            "walking past the root must be clamped instead of panicking"
         );
     }
 }

@@ -138,7 +138,7 @@ fn samples_under(stack_dir: &str) -> Vec<(String, PathBuf)> {
 
 fn report(label: &str, root: &Path, probes: &[Probe], counts: &mut (usize, usize)) {
     let Some(built) = common::graph_with_root(root, ProjectConfig::default()) else {
-        eprintln!("{label:<24} 建图失败，跳过");
+        eprintln!("{label:<24} graphing failed, skipping");
         return;
     };
     let frameworks: Vec<String> = built
@@ -182,6 +182,6 @@ fn detector_coverage_on_real_samples() {
     }
 
     let (rows, misses) = counts;
-    assert!(rows >= 3, "真实样本不足（{rows} 个），覆盖率结论不可信");
-    eprintln!("\n{rows} 个样本，{misses} 个漏判（used>0 但 detected=no）");
+    assert!(rows >= 3, "too few real samples ({rows}), so the coverage conclusion is not trustworthy");
+    eprintln!("\n{rows} samples, {misses} missed (used>0 but detected=no)");
 }

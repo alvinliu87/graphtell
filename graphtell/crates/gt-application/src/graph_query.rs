@@ -402,10 +402,10 @@ mod tests {
         assert_eq!(s.warning, 3);
         assert_eq!(s.info, 1);
         let codes: Vec<&str> = s.by_code.iter().map(|c| c.code.as_str()).collect();
-        assert!(codes.contains(&"missing_root"), "by_code 必须保留每条诊断码");
+        assert!(codes.contains(&"missing_root"), "by_code must keep every diagnostic code");
         assert!(codes.contains(&"broken_link"));
         assert_eq!(s.by_code.len(), 2);
-        assert_eq!(s.unsupported_languages, vec!["go".to_string(), "rust".to_string()], "sort+dedup 应有去重");
+        assert_eq!(s.unsupported_languages, vec!["go".to_string(), "rust".to_string()], "sort+dedup must de-duplicate");
     }
 
     /// BFS respects both the depth bound and the `max_nodes` cap (a node is only queued while under the cap, so
@@ -426,23 +426,23 @@ mod tests {
 
         let d1 = s.subgraph(NodeId::new(1), 1, 100).unwrap();
         let ids1: Vec<i64> = d1.nodes.iter().map(|n| n.id.get()).collect();
-        assert_eq!(ids1, vec![1, 2, 3], "depth=1 含根 + 直接邻居");
+        assert_eq!(ids1, vec![1, 2, 3], "depth=1 includes the root plus its direct neighbours");
 
         let d2 = s.subgraph(NodeId::new(1), 2, 100).unwrap();
         let ids2: Vec<i64> = d2.nodes.iter().map(|n| n.id.get()).collect();
-        assert_eq!(ids2, vec![1, 2, 3, 4], "depth=2 扩展到第 2 环（孙子）");
+        assert_eq!(ids2, vec![1, 2, 3, 4], "depth=2 expands to ring 2 (grandchildren)");
 
         // max_nodes=2: node 3 is never queued because the cap is hit while expanding node 1's neighbors.
         let capped = s.subgraph(NodeId::new(1), 10, 2).unwrap();
         let capped_ids: Vec<i64> = capped.nodes.iter().map(|n| n.id.get()).collect();
-        assert_eq!(capped_ids, vec![1, 2], "max_nodes 截断：3 不应入队");
+        assert_eq!(capped_ids, vec![1, 2], "the max_nodes cut-off: 3 must not be enqueued");
         assert_eq!(capped.nodes.len(), 2);
 
         // The 2<->1 cycle must not produce a duplicate node.
         let cycled = s.subgraph(NodeId::new(1), 5, 100).unwrap();
         let mut seen = std::collections::HashSet::new();
         for n in &cycled.nodes {
-            assert!(seen.insert(n.id.get()), "同一节点因环被重复访问");
+            assert!(seen.insert(n.id.get()), "the same node is visited twice because of a cycle");
         }
     }
 
@@ -458,7 +458,7 @@ mod tests {
         let (s, _arc) = svc(store);
         let g = s.subgraph(NodeId::new(5), 1, 100).unwrap();
         let ids: Vec<i64> = g.nodes.iter().map(|n| n.id.get()).collect();
-        assert!(ids.contains(&5) && ids.contains(&6), "Both 方向必须沿入边发现 6");
+        assert!(ids.contains(&5) && ids.contains(&6), "the Both direction must discover 6 along in-edges");
     }
 
     /// A missing root yields an empty subgraph (no panic, no partial nodes).
@@ -476,7 +476,7 @@ mod tests {
     fn nodes_builds_node_filter() {
         let (s, arc) = svc(MemStore::default());
         let _ = s.nodes(ProjectId::new(1), Some("Class"), Some("foo"), 10, 5).unwrap();
-        let f = arc.last_filter.lock().unwrap().clone().expect("query_nodes 应被调用");
+        let f = arc.last_filter.lock().unwrap().clone().expect("query_nodes must be called");
         assert_eq!(f.project_id, ProjectId::new(1));
         assert_eq!(f.kind, Some(NodeKind("Class".to_string())));
         assert_eq!(f.name_contains, Some("foo".to_string()));
@@ -557,7 +557,7 @@ mod tests {
         store.annotations = vec![ann(7, "pii"), ann(7, "auth.public"), ann(8, "pii")];
         let (s, _arc) = svc(store);
         let a = s.annotations(NodeId::new(7)).unwrap();
-        assert_eq!(a.len(), 2, "只应返回节点 7 的注解");
+        assert_eq!(a.len(), 2, "only the annotations of node 7 must be returned");
         assert!(a.iter().all(|x| x.node_id == NodeId::new(7)));
     }
 
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(
             arc.last_exclude.lock().unwrap().clone(),
             Some(RULE_CODE_PREFIX.to_string()),
-            "diagnostics 必须排除 rule: 前缀"
+            "diagnostics must exclude the rule: prefix"
         );
     }
 

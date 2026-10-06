@@ -336,14 +336,14 @@ mod tests {
     #[test]
     fn spec_for_prefers_the_sub_project_and_judges_nothing_without_a_declaration() {
         let mut ctx = new_ctx();
-        assert!(spec_for(&ctx, None).is_none(), "什么都没声明时不做判断");
+        assert!(spec_for(&ctx, None).is_none(), "with nothing declared, no judgement is made");
         assert!(spec_for(&ctx, Some(SubProjectId(1))).is_none());
 
         ctx.sign_check_default = Some(php_spec());
-        assert!(spec_for(&ctx, None).is_some(), "全局兜底应生效");
+        assert!(spec_for(&ctx, None).is_some(), "the global fallback must apply");
         assert!(
             spec_for(&ctx, Some(SubProjectId(1))).is_some(),
-            "子工程没有自己的声明时应回落到全局兜底"
+            "a sub-project with no declaration of its own falls back to the global one"
         );
 
         let mut sub = php_spec();
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(
             spec_for(&ctx, Some(SubProjectId(1))).map(|s| s.weak_algos.clone()),
             Some(vec!["sha1".to_string()]),
-            "子工程自己的声明应覆盖全局兜底"
+            "a sub-project's own declaration overrides the global fallback"
         );
     }
 
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(
             weak_hits(&ctx, NodeId(1)),
             0,
-            "仅有 key= 提示且无签名比较时不应判定"
+            "a lone `key=` hint with no signature comparison must not be judged"
         );
 
         // (2) same hint, now with a signature comparison in the same function -> judged.
@@ -382,7 +382,7 @@ mod tests {
             .push(call("md5", vec![FactValue::String("key=abc".to_string())]));
         ctx.ws.sign_compares.push(compare("App\\Pay::respond"));
         run(&mut ctx);
-        assert_eq!(weak_hits(&ctx, NodeId(1)), 1, "有签名比较时 key= 提示应成立");
+        assert_eq!(weak_hits(&ctx, NodeId(1)), 1, "with a signature comparison the `key=` hint holds");
 
         // (3) a `value_hints` hit (`sign`) needs no comparison at all.
         let mut ctx = new_ctx();
@@ -391,7 +391,7 @@ mod tests {
             .calls
             .push(call("md5", vec![FactValue::String("sign=abc".to_string())]));
         run(&mut ctx);
-        assert_eq!(weak_hits(&ctx, NodeId(1)), 1, "value_hints 单独命中即可");
+        assert_eq!(weak_hits(&ctx, NodeId(1)), 1, "value_hints alone is enough to match");
     }
 
     #[test]
@@ -418,16 +418,16 @@ mod tests {
 
         run(&mut ctx);
 
-        assert_eq!(weak_hits(&ctx, NodeId(13)), 1, "声明为弱的 md5 应被判定");
+        assert_eq!(weak_hits(&ctx, NodeId(13)), 1, "md5 declared as weak must be judged");
         assert_eq!(
             weak_hits(&ctx, NodeId(11)),
             0,
-            "未声明为弱的算法不应判定"
+            "an algorithm not declared weak must not be judged"
         );
         assert_eq!(
             weak_hits(&ctx, NodeId(12)),
             1,
-            "大写 MD5 与 md5 是同一次调用，应同样被判定"
+            "upper-case MD5 is the same call as md5 and must be judged the same"
         );
     }
 
@@ -457,11 +457,11 @@ mod tests {
         ctx.ws.calls.push(calc.clone());
 
         run(&mut ctx);
-        assert_eq!(loose_hits(&ctx, calc.node), 1, "松比较应标注到签名计算调用点");
+        assert_eq!(loose_hits(&ctx, calc.node), 1, "a loose comparison must be annotated at the signature-computation call site");
         assert_eq!(
             weak_hits(&ctx, calc.node),
             0,
-            "该参数不含签名提示，不应同时判弱哈希"
+            "that argument carries no signature hint, so weak-hash must not be judged as well"
         );
     }
 
@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(
             loose_hits(&ctx, NodeId(1)),
             0,
-            "无可定位的签名计算时不该标注"
+            "with no locatable signature computation, nothing must be annotated"
         );
     }
 
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(
             find_sign_calc(&ctx, &cmp).map(|c| c.node),
             Some(calc.node),
-            "比较一侧本身是调用时直接取该调用点"
+            "when one side of the comparison is itself a call, take that call site directly"
         );
     }
 
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(
             find_sign_calc(&ctx, &cmp).map(|c| c.node),
             Some(calc.node),
-            "两侧都是变量时回落到同函数内的签名计算调用"
+            "when both sides are variables, fall back to the signature computation call inside the same function"
         );
     }
 
@@ -545,7 +545,7 @@ mod tests {
         ctx.ws.calls.push(other);
         assert!(
             find_sign_calc(&ctx, &cmp).is_none(),
-            "既无比较中命名的调用也无同函数签名计算时返回 None"
+            "with neither a call named in the comparison nor a same-function signature computation, return None"
         );
     }
 
@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(
             weak_hits(&ctx, NodeId(1)),
             0,
-            "未声明词汇时不应判定弱哈希"
+            "with no declared vocabulary, weak hash must not be judged"
         );
     }
 
@@ -589,7 +589,7 @@ mod tests {
         ctx.ws.calls.push(no_method);
 
         run(&mut ctx);
-        assert_eq!(weak_hits(&ctx, NodeId(9)), 0, "没有方法名的调用应被跳过");
+        assert_eq!(weak_hits(&ctx, NodeId(9)), 0, "a call with no method name must be skipped");
 
         // Same guard in the pure predicate.
         let mut bare = call("md5", vec![]);
@@ -621,24 +621,24 @@ mod tests {
         run(&mut ctx);
 
         let anns = ctx.ws.annotations_of(NodeId(5));
-        let loose = anns.iter().find(|a| a.kind == LOOSE_COMPARE).expect("应有松比较标注");
+        let loose = anns.iter().find(|a| a.kind == LOOSE_COMPARE).expect("a loose-comparison annotation must be present");
         assert_eq!(loose.channel.0, "Sign");
         assert_eq!(loose.phase.0, "Sign");
         assert_eq!(loose.subkind.as_deref(), Some("LooseSignatureCompare"));
-        assert!((loose.confidence - 0.85).abs() < 1e-6, "置信度应为 0.85");
+        assert!((loose.confidence - 0.85).abs() < 1e-6, "confidence should be 0.85");
         assert_eq!(loose.evidence["file"], json!("app/pay.php"));
-        assert_eq!(loose.evidence["line"], json!(20), "松比较引用的是比较所在行");
+        assert_eq!(loose.evidence["line"], json!(20), "the loose comparison points at the line of the comparison");
         assert_eq!(loose.evidence["operator"], json!("!="));
         assert_eq!(
             loose.evidence["snippet"],
             json!("md5($body.$secret) != $_SERVER['HTTP_KWAISIGN']")
         );
 
-        let weak = anns.iter().find(|a| a.kind == WEAK_HASH).expect("应有弱哈希标注");
+        let weak = anns.iter().find(|a| a.kind == WEAK_HASH).expect("a weak-hash annotation must be present");
         assert_eq!(weak.subkind.as_deref(), Some("WeakSignatureHash"));
         assert_eq!(weak.evidence["algo"], json!("md5"));
         assert_eq!(weak.evidence["snippet"], json!("md5(sign=abc)"));
-        assert_eq!(weak.evidence["line"], json!(10), "弱哈希引用的是调用所在行");
+        assert_eq!(weak.evidence["line"], json!(10), "the weak hash points at the line of the call");
     }
 
     // ------------------------------------------------------- landing-point precedence and scope
@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(
             find_sign_calc(&ctx, &cmp).map(|c| c.node),
             Some(NodeId(7)),
-            "比较中命名的调用应优先于同函数内的签名计算回退"
+            "a call named in the comparison takes precedence over the same-function signature-computation fallback"
         );
     }
 
@@ -686,7 +686,7 @@ mod tests {
         cmp.right = "$ipay_signature".into();
         assert!(
             find_sign_calc(&ctx, &cmp).is_none(),
-            "签名计算必须限定在比较所在的函数内"
+            "the signature computation must be confined to the function holding the comparison"
         );
     }
 
@@ -698,10 +698,10 @@ mod tests {
     fn without_a_name_convention_only_the_declared_calls_are_known() {
         let mut s = php_spec();
         s.name_contains = None;
-        assert!(is_sign_calc(&call("md5", vec![]), &s), "声明的哈希调用仍应识别");
+        assert!(is_sign_calc(&call("md5", vec![]), &s), "a declared hash call must still be recognised");
         assert!(
             !is_sign_calc(&call("CreatedSign", vec![]), &s),
-            "没有命名约定时不应靠名字猜"
+            "with no naming convention, do not guess by name"
         );
     }
 }

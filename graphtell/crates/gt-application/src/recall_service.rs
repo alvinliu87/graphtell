@@ -4041,12 +4041,12 @@ mod tests {
             let (_terms, hints) = parse_query(word);
             assert!(
                 hints.iter().any(|h| h == kind),
-                "提示词 {word:?} 应映射到 {kind:?}，实际 {hints:?}"
+                "the hint word {word:?} must map to {kind:?}, got {hints:?}"
             );
         }
         // "table" covered in other integration cases; re-confirm the anchor here
         let (_t, hints) = parse_query("表");
-        assert!(hints.contains(&"Table".to_string()), "表 → Table");
+        assert!(hints.contains(&"Table".to_string()), "表 must map to Table");
     }
 
     #[test]
@@ -4056,7 +4056,7 @@ mod tests {
         assert!(terms.contains(&"Order".to_string()));
         assert!(
             terms.contains(&"createOrder".to_string()),
-            "整体标识符应保留（精确匹配得分最高）：{terms:?}"
+            "a whole identifier must be kept (exact match scores highest): {terms:?}"
         );
     }
 
@@ -4065,7 +4065,7 @@ mod tests {
         let (terms, _hints) = parse_query("store_order");
         assert!(
             terms.contains(&"store_order".to_string()),
-            "snake_case 不能被拆成 store + order：{terms:?}"
+            "snake_case must not be split into store + order: {terms:?}"
         );
     }
 
@@ -4074,15 +4074,15 @@ mod tests {
         let (terms, _hints) = parse_query("用户相关的代码");
         assert!(
             !terms.contains(&"相关".to_string()),
-            "2 字停用词应被过滤：{terms:?}"
+            "a two-character stop word must be filtered out: {terms:?}"
         );
         assert!(
             !terms.contains(&"代码".to_string()),
-            "2 字停用词应被过滤：{terms:?}"
+            "a two-character stop word must be filtered out: {terms:?}"
         );
         assert!(
             terms.iter().any(|t| t.contains("用户")),
-            "有意义的词应保留：{terms:?}"
+            "a meaningful word must be kept: {terms:?}"
         );
     }
 
@@ -4098,10 +4098,10 @@ mod tests {
 
         // symptom → implementation surface: mail→mail/email/smtp, password→password/passwd/pwd, oversell gives both stock and lock/atomic
         // (different systems land differently).
-        assert!(en_of("邮件").iter().any(|e| e == "mail"), "邮件→mail");
-        assert!(en_of("密码").iter().any(|e| e == "password"), "密码→password");
-        assert!(en_of("超卖").iter().any(|e| e == "stock"), "超卖→stock");
-        assert!(en_of("加锁").iter().any(|e| e == "lock"), "加锁→lock");
+        assert!(en_of("邮件").iter().any(|e| e == "mail"), "邮件 must map to mail");
+        assert!(en_of("密码").iter().any(|e| e == "password"), "密码 must map to password");
+        assert!(en_of("超卖").iter().any(|e| e == "stock"), "超卖 must map to stock");
+        assert!(en_of("加锁").iter().any(|e| e == "lock"), "加锁 must map to lock");
         assert!(en_of("jwt").iter().any(|e| e == "token"), "jwt→token");
 
         // The literal-translation layer's old entries aren't polluted by the symptom pack (delete still only delete/remove/destroy).
@@ -4117,7 +4117,7 @@ mod tests {
             vec!["token".to_string(), "auth".to_string()],
         )];
         let out = expand_intent_aliases("JWT 是在哪里统一校验的", &low);
-        assert!(out.contains(&"token".to_string()), "大写 JWT 也应命中jwt桥");
+        assert!(out.contains(&"token".to_string()), "an upper-case JWT must hit the jwt bridge too");
         let out = expand_intent_aliases("jwt middleware", &low);
         assert!(out.contains(&"auth".to_string()));
 
@@ -4131,9 +4131,9 @@ mod tests {
     #[test]
     fn cjk_segmentation_keeps_unknown_words_beside_known_ones() {
         let (terms, _) = parse_query("退款审核通过后钱怎么退回");
-        assert!(terms.iter().any(|t| t == "退款"), "已知词保留：{terms:?}");
-        assert!(terms.iter().any(|t| t == "审核"), "未收录业务词应保留：{terms:?}");
-        assert!(terms.iter().any(|t| t == "退回"), "未收录业务词应保留：{terms:?}");
+        assert!(terms.iter().any(|t| t == "退款"), "a known word is kept: {terms:?}");
+        assert!(terms.iter().any(|t| t == "审核"), "an unlisted business word must be kept: {terms:?}");
+        assert!(terms.iter().any(|t| t == "退回"), "an unlisted business word must be kept: {terms:?}");
 
         // Boundary-crossing noise is still dropped as before (see parse_query_drops_boundary_bigrams).
         let segs = segment_cjk("如何修改下单优惠", &builtin_alias_keys());
@@ -4158,13 +4158,13 @@ mod tests {
         let g = alias_group_map(&builtin_aliases());
         // Only one operation category hit ("query" → find): no boost
         let one = cohesion_multiplier(&["find".to_string()], &g);
-        assert!((one - 1.0).abs() < 1e-9, "单类别不应加成：{one}");
+        assert!((one - 1.0).abs() < 1e-9, "a single category must not get a bonus: {one}");
         // Two operation categories hit (query + delete): ×1.3
         let two = cohesion_multiplier(&["find".to_string(), "delete".to_string()], &g);
-        assert!((two - 1.3).abs() < 1e-9, "双类别应 ×1.3：{two}");
+        assert!((two - 1.3).abs() < 1e-9, "two categories must score ×1.3: {two}");
         // Chinese intent words also categorized (with cross-domain generic verbs, no domain vocabulary)
         let zh = cohesion_multiplier(&["查询".to_string(), "删除".to_string()], &g);
-        assert!((zh - 1.3).abs() < 1e-9, "中文双类别也应 ×1.3：{zh}");
+        assert!((zh - 1.3).abs() < 1e-9, "two Chinese categories must score ×1.3 as well: {zh}");
     }
 
     // ---- seed union (fix 1+2: cross-language nodes must enter seeds, and merge score is additive) ----
@@ -4188,12 +4188,12 @@ mod tests {
 
         let seeds = select_seeds(&lexical, &vector, &index);
         let ids: Vec<i64> = seeds.iter().map(|(_, _, n)| n.id.get()).collect();
-        assert!(ids.contains(&2), "Coupon 节点必须作为向量种子入选：{ids:?}");
+        assert!(ids.contains(&2), "the Coupon node must be selected as a vector seed: {ids:?}");
         // merged score = lexical + vector (additive not max)
         let coupon = seeds.iter().find(|(_, _, n)| n.id.get() == 2).unwrap();
         assert!(
             (coupon.0 - 165.0).abs() < 1e-9,
-            "合并分应为 55+110=165，实际 {}",
+            "the merged score should be 55+110=165, got {}",
             coupon.0
         );
     }
@@ -4205,7 +4205,7 @@ mod tests {
         // 100 (exact) × 1.4 (Table weight)
         let n = tnode(101, "Table", "user", None, None);
         let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
-        assert!((score - 140.0).abs() < 1e-9, "精确匹配应得 100×1.4=140，实际 {score}");
+        assert!((score - 140.0).abs() < 1e-9, "an exact match should score 100×1.4=140, got {score}");
         assert_eq!(matched, vec!["user".to_string()]);
     }
 
@@ -4214,7 +4214,7 @@ mod tests {
         // 70 (prefix) × 1.4
         let n = tnode(102, "Table", "user_order", None, None);
         let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
-        assert!((score - 98.0).abs() < 1e-9, "前缀匹配应得 70×1.4=98，实际 {score}");
+        assert!((score - 98.0).abs() < 1e-9, "a prefix match should score 70×1.4=98, got {score}");
     }
 
     #[test]
@@ -4222,7 +4222,7 @@ mod tests {
         // 50 (contains) × 1.0 (Method)
         let n = tnode(103, "Method", "my_user_x", None, None);
         let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
-        assert!((score - 50.0).abs() < 1e-9, "包含匹配应得 50×1.0=50，实际 {score}");
+        assert!((score - 50.0).abs() < 1e-9, "a contains match should score 50×1.0=50, got {score}");
     }
 
     #[test]
@@ -4230,7 +4230,7 @@ mod tests {
         // name doesn't match, identity contains → 45 × 1.0 (Method)
         let n = tnode(104, "Method", "zzz", None, Some("user_identity"));
         let (score, matched) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
-        assert!((score - 45.0).abs() < 1e-9, "identity 命中应得 45×1.0=45，实际 {score}");
+        assert!((score - 45.0).abs() < 1e-9, "an identity hit should score 45×1.0=45, got {score}");
         assert_eq!(matched, vec!["user".to_string()]);
     }
 
@@ -4239,7 +4239,7 @@ mod tests {
         // fqn contains → 35 × 1.0
         let n = tnode(105, "Method", "zzz", Some("app\\model\\user"), None);
         let (score, _) = score_node(&n, &["user".to_string()], &[], &HashMap::new(), false);
-        assert!((score - 35.0).abs() < 1e-9, "fqn 命中应得 35×1.0=35，实际 {score}");
+        assert!((score - 35.0).abs() < 1e-9, "an fqn hit should score 35×1.0=35, got {score}");
     }
 
     #[test]
@@ -4250,7 +4250,7 @@ mod tests {
         let (sb, _) = score_node(&b, &["agree".to_string()], &[], &HashMap::new(), false);
         assert!(
             (sa - sb).abs() < 1e-9,
-            "当前实现下两者同分（均为整串前缀 70）；若不等说明已改动，必须重跑 48 条 A/B：{sa} vs {sb}"
+            "under the current implementation both score the same (both are a whole-string prefix at 70); if they differ the implementation changed and the 48-case A/B must be re-run: {sa} vs {sb}"
         );
     }
 
@@ -4270,9 +4270,9 @@ mod tests {
         );
         assert!(
             (two - (one + order_only) * 1.5).abs() < 1e-9,
-            "双词应 = (单 + 单) × 1.5：one={one} order_only={order_only} two={two}"
+            "two terms should equal (one + one) × 1.5: one={one} order_only={order_only} two={two}"
         );
-        assert!(two > one + order_only, "多词应严格高于简单相加");
+        assert!(two > one + order_only, "several terms must score strictly above their plain sum");
         assert_eq!(matched.len(), 2);
     }
 
@@ -4284,7 +4284,7 @@ mod tests {
         let (s_m, _) = score_node(&method, &["user".to_string()], &[], &HashMap::new(), false);
         assert!((s_t - 140.0).abs() < 1e-9, "Table 100×1.4=140");
         assert!((s_m - 100.0).abs() < 1e-9, "Method 100×1.0=100");
-        assert!(s_t > s_m, "语义节点（表）应优先于方法");
+        assert!(s_t > s_m, "a semantic node (table) must rank above a method");
     }
 
     #[test]
@@ -4296,7 +4296,7 @@ mod tests {
             score_node(&n, &["user".to_string()], &["Table".to_string()], &HashMap::new(), false);
         assert!(
             (with_hint - (no_hint + 30.0)).abs() < 1e-9,
-            "结构提示应 +30：{with_hint} vs {no_hint}"
+            "a structural hint adds +30: {with_hint} vs {no_hint}"
         );
     }
 
@@ -4308,7 +4308,7 @@ mod tests {
         let (score, _) = score_node(&n, &["user".to_string()], &[], &inc, false);
         assert!(
             (score - (100.0 + 2.0 * 0.4)).abs() < 1e-9,
-            "扇入 2 应 +0.8，实际 {score}"
+            "fan-in 2 should add +0.8, got {score}"
         );
     }
 
@@ -4324,10 +4324,10 @@ mod tests {
 
     #[test]
     fn action_intent_detects_code_seeking_verbs() {
-        assert!(action_intent("修改订单优惠")); // 修改
-        assert!(action_intent("支付回调通知商户")); // 回调 / 支付 / 通知
-        assert!(action_intent("用户余额不足时拦截下单")); // 拦截
-        assert!(action_intent("商品库存扣减失败回滚")); // 扣减 / 回滚
+        assert!(action_intent("修改订单优惠")); // 修改 (edit)
+        assert!(action_intent("支付回调通知商户")); // 回调 / 支付 / 通知 (callback / pay / notify)
+        assert!(action_intent("用户余额不足时拦截下单")); // 拦截 (block)
+        assert!(action_intent("商品库存扣减失败回滚")); // 扣减 / 回滚 (deduct / rollback)
         // Pure topic query should not trigger action intent.
         assert!(!action_intent("优惠券列表页面"));
     }
@@ -4339,7 +4339,7 @@ mod tests {
         let method = tnode(202, "Method", "storeCoupon", None, None);
         let (s_route, _) = score_node(&route, &["coupon".to_string()], &[], &HashMap::new(), true);
         let (s_method, _) = score_node(&method, &["coupon".to_string()], &[], &HashMap::new(), true);
-        assert!(s_method > s_route, "动作意图下方法应压过路由：{s_method} vs {s_route}");
+        assert!(s_method > s_route, "under an action intent a method must outrank a route: {s_method} vs {s_route}");
     }
 
     #[test]
@@ -4349,7 +4349,7 @@ mod tests {
         let generic = tnode(301, "Method", "save", None, None);
         let (s_gen, _) = score_node(&generic, &["save".to_string()], &[], &HashMap::new(), true);
         // 100 (exact) × 0.5 (pure-verb no-content discount) × 1.0 (fallback weight) = 50
-        assert!((s_gen - 50.0).abs() < 1e-9, "纯 CRUD 方法无内容词应打折并退回 1.0 权重，实际 {s_gen}");
+        assert!((s_gen - 50.0).abs() < 1e-9, "a pure CRUD method with no content word must be discounted back to the 1.0 weight, got {s_gen}");
 
         let coupon_edit = tnode(
             302,
@@ -4369,7 +4369,7 @@ mod tests {
         );
         assert!(
             (s_ce - 303.75).abs() < 1e-9,
-            "命中内容词的 CRUD 方法应保留 1.5 加权，实际 {s_ce}"
+            "a CRUD method hitting a content word keeps the 1.5 multiplier, got {s_ce}"
         );
 
         // Counter-case: DeliveryService is under the order/ dir (fqn path contains order), but its class identifier contains no content word,
@@ -4392,13 +4392,13 @@ mod tests {
         // 135 × 1.5 = 202.5。
         assert!(
             (s_ds - 101.25).abs() < 1e-9,
-            "类标识符无内容词的 CRUD 方法应退回 1.0 权重，实际 {s_ds}"
+            "a CRUD method whose class identifier has no content word falls back to the 1.0 weight, got {s_ds}"
         );
 
         // Compound business names (createForm) still get the 1.5× action boost, unaffected.
         let biz = tnode(304, "Method", "createForm", None, None);
         let (s_biz, _) = score_node(&biz, &["form".to_string()], &[], &HashMap::new(), true);
-        assert!((s_biz - 75.0).abs() < 1e-9, "复合业务方法应保留 1.5 加权，实际 {s_biz}");
+        assert!((s_biz - 75.0).abs() < 1e-9, "a compound business method keeps the 1.5 multiplier, got {s_biz}");
     }
 
     #[test]
@@ -4428,7 +4428,7 @@ mod tests {
         );
         assert!(
             s_addr > s_user,
-            "实体容器名词 user 不应作为内容词豁免泛 CRUD 折扣：address 命中 {s_addr} 应 > user 命中 {s_user}"
+            "the entity-container noun user must not exempt a generic CRUD method from the discount: an address hit {s_addr} must beat a user hit {s_user}"
         );
     }
 
@@ -4449,14 +4449,14 @@ mod tests {
         );
         assert!(
             !has_content_word(&address_create, &terms),
-            "通用动词不算内容词，且类 token 不含查询主题"
+            "a generic verb is not a content word, and the class tokens carry no query topic"
         );
         // name create (100) + fqn contains add (35) → 135; two words ×1.5; no content word → boost falls back to 1.0: 135 × 1.5 = 202.5
         // (not 303.75).
         let (s_addr, _) = score_node(&address_create, &terms, &[], &HashMap::new(), true);
         assert!(
             (s_addr - 101.25).abs() < 1e-9,
-            "无关域 CRUD 不应保留 1.5 加权，实际 {s_addr}"
+            "a CRUD method from an unrelated domain must not keep the 1.5 multiplier, got {s_addr}"
         );
 
         // Control group: same pure verb `create`, but the class identifier tokens really include coupon (token prefix, not mid-string substring)
@@ -4470,14 +4470,14 @@ mod tests {
         );
         assert!(
             has_content_word(&coupon_create, &terms),
-            "类标识符 token 含 coupon 应算命中内容词"
+            "a class-identifier token containing coupon counts as hitting a content word"
         );
         let (s_coupon, _) = score_node(&coupon_create, &terms, &[], &HashMap::new(), true);
         assert!(
             (s_coupon - 303.75).abs() < 1e-9,
-            "命中内容词的 CRUD 方法应保留 1.5 加权，实际 {s_coupon}"
+            "a CRUD method hitting a content word keeps the 1.5 multiplier, got {s_coupon}"
         );
-        assert!(s_coupon > s_addr, "优惠券的 create 应高于无关域的 create");
+        assert!(s_coupon > s_addr, "the create of a coupon must outrank the create of an unrelated domain");
 
         // Directly verify identifier splitting.
         assert_eq!(
@@ -4626,7 +4626,7 @@ mod tests {
             (anchor_multiplier(&other, &anchors) - 1.0).abs() < 1e-9,
             "未被点名的符号不加权"
         );
-        assert!(anchor_multiplier(&method, &[]) == 1.0, "无锚点时保持中性");
+        assert!(anchor_multiplier(&method, &[]) == 1.0, "with no anchors it stays neutral");
 
         // Prefix / suffix hit (`createOrders`) → next tier; fqn-only hit → one tier lower.
         let plural = tnode(423, "Method", "createOrders", None, None);
@@ -4650,7 +4650,7 @@ mod tests {
             "sms".to_string(),
             "notify".to_string(),
         ]);
-        assert!(!triggered.is_empty(), "邮件应触发通知簇");
+        assert!(!triggered.is_empty(), "邮件 must trigger the notification cluster");
 
         // Single core token (sms, no other concept token) → mild boost 1.2.
         let single = tnode(430, "Method", "sendSms", None, None);
@@ -4717,65 +4717,65 @@ mod tests {
         };
 
         // 1) cross-domain generic pack (PACK_GENERIC) still present: action verbs + generic technical nouns.
-        assert!(!en_of("查询").is_empty(), "通用动词 查询 应在内置表");
-        assert!(!en_of("配置").is_empty(), "通用名词 配置 应在内置表");
+        assert!(!en_of("查询").is_empty(), "the generic verb 查询 must be in the built-in table");
+        assert!(!en_of("配置").is_empty(), "the generic noun 配置 must be in the built-in table");
 
         // 2) e-commerce pack (PACK_ECOMMERCE) filler domain words effective.
-        assert!(en_of("二维码").iter().any(|e| e == "qrcode"), "二维码→qrcode 补齐");
-        assert!(en_of("头像").iter().any(|e| e == "avatar"), "头像→avatar 补齐");
-        assert!(en_of("地址").iter().any(|e| e == "address"), "地址→address 补齐");
-        assert!(en_of("购物车").iter().any(|e| e == "cart"), "购物车→cart 补齐");
+        assert!(en_of("二维码").iter().any(|e| e == "qrcode"), "二维码 must be completed to qrcode");
+        assert!(en_of("头像").iter().any(|e| e == "avatar"), "头像 must be completed to avatar");
+        assert!(en_of("地址").iter().any(|e| e == "address"), "地址 must be completed to address");
+        assert!(en_of("购物车").iter().any(|e| e == "cart"), "购物车 must be completed to cart");
 
         // 3) synonyms: 退货 / 售后 (return / after-sales) should both bridge to refund (synonym of 退款).
         let refund_terms = expand_intent_aliases("怎么办理退货", &all);
-        assert!(refund_terms.iter().any(|t| t == "refund"), "退货 应展开 refund：{refund_terms:?}");
+        assert!(refund_terms.iter().any(|t| t == "refund"), "退货 must expand to refund: {refund_terms:?}");
         let aftersale_terms = expand_intent_aliases("售后问题怎么处理", &all);
-        assert!(aftersale_terms.iter().any(|t| t == "refund"), "售后 应展开 refund：{aftersale_terms:?}");
+        assert!(aftersale_terms.iter().any(|t| t == "refund"), "售后 must expand to refund: {aftersale_terms:?}");
 
         // 4) finance pack (PACK_FINANCE) merged: non-e-commerce projects also bridge to this-domain tokens.
         //    Here only verify "pack loaded, expansion correct"; end-to-end hit depends on whether the project really has the code.
-        assert!(en_of("对账").iter().any(|e| e == "reconcile"), "金融包 对账→reconcile 应存在");
-        assert!(en_of("转账").iter().any(|e| e == "transfer"), "金融包 转账→transfer 应存在");
+        assert!(en_of("对账").iter().any(|e| e == "reconcile"), "the finance pack 对账 -> reconcile must exist");
+        assert!(en_of("转账").iter().any(|e| e == "transfer"), "the finance pack 转账 -> transfer must exist");
         let reconcile_terms = expand_intent_aliases("订单怎么对账", &all);
-        assert!(reconcile_terms.iter().any(|t| t == "reconcile"), "对账 应展开 reconcile：{reconcile_terms:?}");
+        assert!(reconcile_terms.iter().any(|t| t == "reconcile"), "对账 must expand to reconcile: {reconcile_terms:?}");
 
         // 5) fulfillment / type filler words: before, "how to add a new delivery method" had zero landings (only bigrams), recall drifted to
         //    unrelated nodes like environment / issue_log.
-        assert!(en_of("配送").iter().any(|e| e == "delivery"), "配送→delivery 补齐");
-        assert!(en_of("快递").iter().any(|e| e == "express"), "快递→express 补齐");
-        assert!(en_of("发货").iter().any(|e| e == "delivery"), "发货→delivery 补齐");
-        assert!(en_of("类型").iter().any(|e| e == "type"), "类型→type 补齐");
-        assert!(en_of("方式").iter().any(|e| e == "method"), "方式→method 补齐");
+        assert!(en_of("配送").iter().any(|e| e == "delivery"), "配送 must be completed to delivery");
+        assert!(en_of("快递").iter().any(|e| e == "express"), "快递 must be completed to express");
+        assert!(en_of("发货").iter().any(|e| e == "delivery"), "发货 must be completed to delivery");
+        assert!(en_of("类型").iter().any(|e| e == "type"), "类型 must be completed to type");
+        assert!(en_of("方式").iter().any(|e| e == "method"), "方式 must be completed to method");
 
         // Full sentence end-to-end: must really expand delivery / express (before neither word existed).
         let ship_terms = expand_intent_aliases("怎么加一个新的配送方式", &all);
         assert!(
             ship_terms.iter().any(|t| t == "delivery"),
-            "配送方式 应展开 delivery：{ship_terms:?}"
+            "配送方式 must expand to delivery: {ship_terms:?}"
         );
         assert!(
             ship_terms.iter().any(|t| t == "express"),
-            "配送方式 应展开 express：{ship_terms:?}"
+            "配送方式 must expand to express: {ship_terms:?}"
         );
         // Coupon type: 类型 (type) must connect to type, else "add a new coupon type" only has generic add/coupon.
         let coupon_type_terms = expand_intent_aliases("怎么新增一种优惠券类型", &all);
         assert!(
             coupon_type_terms.iter().any(|t| t == "type"),
-            "优惠券类型 应展开 type：{coupon_type_terms:?}"
+            "优惠券类型 must expand to type: {coupon_type_terms:?}"
         );
         assert!(
             coupon_type_terms.iter().any(|t| t == "coupon"),
-            "优惠券类型 仍应展开 coupon：{coupon_type_terms:?}"
+            "优惠券类型 must still expand to coupon: {coupon_type_terms:?}"
         );
     }
 
     #[test]
     fn warm_priority_ranks_methods_above_classes_above_rest() {
-        assert_eq!(warm_priority("Method"), 0, "Method 是最主要的实现落点");
+        assert_eq!(warm_priority("Method"), 0, "Method is the main implementation landing point");
         assert_eq!(warm_priority("Function"), 0);
         assert_eq!(warm_priority("Class"), 1);
         assert_eq!(warm_priority("Interface"), 1);
-        assert_eq!(warm_priority("Table"), 2, "Table 等多靠 BFS 带出，排在最后");
+        assert_eq!(warm_priority("Table"), 2, "Table and similar are mostly pulled in by BFS and rank last");
     }
 
     #[test]
@@ -4790,11 +4790,11 @@ mod tests {
         sort_pending_for_warmup(&mut p);
         let ids: Vec<u64> = p.iter().map(|x| x.0).collect();
         // ① high-value kinds (priority 0) all in front
-        assert_eq!(&ids[..2], &[1u64, 2], "Method/Function 应先编码：{ids:?}");
+        assert_eq!(&ids[..2], &[1u64, 2], "Method/Function must be encoded first: {ids:?}");
         // ② within priority by length ascending → least in-batch padding
-        assert!(p[0].1.len() <= p[1].1.len(), "同优先级内应按长度相邻：{ids:?}");
+        assert!(p[0].1.len() <= p[1].1.len(), "within the same priority they must be adjacent by length: {ids:?}");
         // ③ low priority at the end, also adjacent by length
-        assert_eq!(&ids[2..], &[4u64, 3], "低优先级在后且按长度相邻：{ids:?}");
+        assert_eq!(&ids[2..], &[4u64, 3], "lower priorities come last and stay adjacent by length: {ids:?}");
     }
 
     #[test]
@@ -4808,7 +4808,7 @@ mod tests {
         );
         assert!(
             !has_content_word(&recorder_save, &["save".to_string(), "order".to_string()]),
-            "`order` 嵌在 `recorder` 词中，不应算命中内容词"
+            "`order` embedded inside the word `recorder` does not count as hitting a content word"
         );
         // save (100) + fqn contains order (35) → 135; two words ×1.5; no content word → 1.0: 135 × 1.5 = 202.5.
         let (s_rec, _) = score_node(
@@ -4820,7 +4820,7 @@ mod tests {
         );
         assert!(
             (s_rec - 101.25).abs() < 1e-9,
-            "词中子串不应保住 1.5 加权，实际 {s_rec}"
+            "a substring inside a word must not keep the 1.5 multiplier, got {s_rec}"
         );
 
         // Reverse protection: reasonable "compound / inflected" matches must be kept — `pay` → `payment` is prefix hit; degrading to strict
@@ -4834,7 +4834,7 @@ mod tests {
         );
         assert!(
             has_content_word(&payment_save, &["save".to_string(), "pay".to_string()]),
-            "`pay` 应前缀命中 `payment`，否则会误伤支付域"
+            "`pay` must prefix-match `payment`, otherwise the payment domain gets hurt"
         );
         let (s_pay, _) = score_node(
             &payment_save,
@@ -4845,7 +4845,7 @@ mod tests {
         );
         assert!(
             (s_pay - 303.75).abs() < 1e-9,
-            "复合匹配应保留 1.5 加权，实际 {s_pay}"
+            "a compound match keeps the 1.5 multiplier, got {s_pay}"
         );
     }
 
@@ -4873,7 +4873,7 @@ mod tests {
 
     #[test]
     fn flow_intent_only_fires_on_flow_queries() {
-        assert!(flow_intent("注册流程"), "「注册流程」应识别为流程查询");
+        assert!(flow_intent("注册流程"), "注册流程 must be recognised as a flow query");
         assert!(flow_intent("支付的调用链"));
         assert!(flow_intent("how does the payment flow work"));
         // Non-flow query must be false — prerequisite for "other queries' order has zero regression".
@@ -4910,14 +4910,14 @@ mod tests {
         assert_eq!(
             order[..6],
             [2, 1, 3, 4, 5, 6],
-            "流程查询应沿「入口 → 落库」排序，实际 {order:?}"
+            "a flow query must be ordered along 'entry → persistence', got {order:?}"
         );
-        assert_eq!(order[6], 7, "与链路无关的邻居应沉底，实际 {order:?}");
+        assert_eq!(order[6], 7, "neighbours unrelated to the chain must sink to the bottom, got {order:?}");
         // Key regression point: route must rank before the service method.
         let pos = |id: i64| order.iter().position(|x| *x == id).unwrap();
         assert!(
             pos(2) < pos(4),
-            "路由（入口）应排在服务方法之前：路由 {:?} vs 服务 {:?}",
+            "a route (the entry) must rank before the service method: route {:?} vs service {:?}",
             pos(2),
             pos(4)
         );
@@ -4925,13 +4925,13 @@ mod tests {
 
     #[test]
     fn hub_penalty_suppresses_high_fan_in_only() {
-        assert_eq!(hub_penalty(10), 1.0, "低扇入不应被惩罚");
-        assert_eq!(hub_penalty(60), 1.0, "阈值内不应被惩罚");
+        assert_eq!(hub_penalty(10), 1.0, "a low fan-in must not be penalised");
+        assert_eq!(hub_penalty(60), 1.0, "within the threshold there must be no penalty");
         let mid = hub_penalty(123); // 如 BaseDao::save
         let hub = hub_penalty(452); // 如 Cache
-        assert!(mid < 1.0 && mid > 0.4, "中等枢纽应被部分压低，实际 {mid}");
-        assert!(hub < mid, "扇入越大衰减越多：{hub} vs {mid}");
-        assert!(hub >= 0.4, "衰减应有下限，实际 {hub}");
+        assert!(mid < 1.0 && mid > 0.4, "a medium hub must be partly pushed down, got {mid}");
+        assert!(hub < mid, "the larger the fan-in the stronger the decay: {hub} vs {mid}");
+        assert!(hub >= 0.4, "the decay must have a floor, got {hub}");
     }
 
     // ---- event-driven recall ----
@@ -4939,18 +4939,18 @@ mod tests {
     #[test]
     fn event_intent_fires_only_on_sequence_or_explicit_event() {
         // Only temporal / explicit event signals trigger; ordinary action queries don't (avoid wrongly mixing listener seeds).
-        assert!(event_intent("下单后怎么发通知给用户"), "应包含时序词『后怎么』");
-        assert!(event_intent("退款成功后怎么回退优惠券"), "应包含『成功后』");
-        assert!(event_intent("订单创建之后做哪些事"), "应包含『之后』");
-        assert!(event_intent("支付回调通知商户"), "『回调』是事件语义");
-        assert!(event_intent("用户注册事件如何处理"), "『事件』是显式事件信号");
-        assert!(event_intent("order paid after event listener"), "英文 after / listener");
+        assert!(event_intent("下单后怎么发通知给用户"), "must contain the temporal phrase 后怎么");
+        assert!(event_intent("退款成功后怎么回退优惠券"), "must contain 成功后");
+        assert!(event_intent("订单创建之后做哪些事"), "must contain 之后");
+        assert!(event_intent("支付回调通知商户"), "回调 carries event semantics");
+        assert!(event_intent("用户注册事件如何处理"), "事件 is an explicit event signal");
+        assert!(event_intent("order paid after event listener"), "English after / listener");
 
         // Ordinary action queries shouldn't be misjudged.
-        assert!(!event_intent("如何修改下单优惠"), "纯动作查询不应触发");
-        assert!(!event_intent("商品库存预警阈值是多少"), "配置查询不应触发");
-        assert!(!event_intent("注册流程是怎样的"), "流程意图与事件意图独立（flow 另判）");
-        assert!(!event_intent("怎么发送通知"), "仅有『通知』无时序/事件信号不应触发");
+        assert!(!event_intent("如何修改下单优惠"), "a pure action query must not trigger it");
+        assert!(!event_intent("商品库存预警阈值是多少"), "a config query must not trigger it");
+        assert!(!event_intent("注册流程是怎样的"), "flow intent is independent of event intent (flow is judged separately)");
+        assert!(!event_intent("怎么发送通知"), "a lone 通知 with no temporal / event signal must not trigger it");
     }
 
     #[test]
@@ -5012,12 +5012,12 @@ mod tests {
             &nodes, &index, &existing, &["refund".to_string(), "paid".to_string(), "order".to_string()], 400.0,
         );
         let ids: Vec<i64> = seeds.iter().map(|(_, _, n)| n.id.get()).collect();
-        assert!(ids.contains(&1), "监听器类应作种子：{ids:?}");
-        assert!(ids.contains(&2), "监听器 handle 方法应作种子：{ids:?}");
-        assert!(ids.contains(&4), "名字命中查询词的 Event 节点应作种子：{ids:?}");
-        assert!(!ids.contains(&3), "普通 Services 类不应作种子：{ids:?}");
-        assert!(!ids.contains(&5), "名字未命中查询词的 Event 节点应排除：{ids:?}");
-        assert!(!ids.contains(&9), "已存在的种子不应重复：{ids:?}");
+        assert!(ids.contains(&1), "the listener class must be a seed: {ids:?}");
+        assert!(ids.contains(&2), "the listener's handle method must be a seed: {ids:?}");
+        assert!(ids.contains(&4), "an Event node whose name hits a query term must be a seed: {ids:?}");
+        assert!(!ids.contains(&3), "an ordinary Services class must not be a seed: {ids:?}");
+        assert!(!ids.contains(&5), "an Event node whose name misses the query terms must be excluded: {ids:?}");
+        assert!(!ids.contains(&9), "an existing seed must not be duplicated: {ids:?}");
     }
 
     // ---- multi-intent split / merge ----
@@ -5026,7 +5026,7 @@ mod tests {
     fn split_intents_splits_compound_questions_only() {
         // Two independent questions joined by 、 (enumeration comma) → split into segments (together they interfere, measured both lose answers).
         let parts = RecallService::split_intents("怎么修改商品库存预警阈值、修改订单自动取消时间");
-        assert_eq!(parts.len(), 2, "应拆成 2 个意图：{parts:?}");
+        assert_eq!(parts.len(), 2, "it must split into 2 intents: {parts:?}");
         assert!(parts[0].contains("库存预警阈值"), "{parts:?}");
         assert!(parts[1].contains("自动取消时间"), "{parts:?}");
 
@@ -5056,7 +5056,7 @@ mod tests {
         ];
         let merged = RecallService::merge_intent_hits(vec![a, b], 4);
         let ids: Vec<i64> = merged.iter().map(|h| h.node_id.get()).collect();
-        assert_eq!(ids, vec![1, 4, 2, 5], "应按意图轮询而非按分数，实际 {ids:?}");
+        assert_eq!(ids, vec![1, 4, 2, 5], "it must round-robin by intent rather than by score, got {ids:?}");
 
         // Cross-intent duplicate nodes kept only once.
         let dup = RecallService::merge_intent_hits(
@@ -5066,7 +5066,7 @@ mod tests {
             ],
             4,
         );
-        assert_eq!(dup.len(), 1, "跨意图重复节点应去重，实际 {}", dup.len());
+        assert_eq!(dup.len(), 1, "a node repeated across intents must be de-duplicated, got {}", dup.len());
     }
 
     // ---- config-item intent / hint-word whole-word deletion ----
@@ -5130,8 +5130,8 @@ mod tests {
         ];
         let (q, conf, _reason, missing) =
             RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new(), &builtin_aliases());
-        assert_eq!(q, RecallQuality::High, "概念全覆盖应为 High，conf={conf}");
-        assert!(missing.is_empty(), "不应有未命中概念：{missing:?}");
+        assert_eq!(q, RecallQuality::High, "full concept coverage must be High, conf={conf}");
+        assert!(missing.is_empty(), "there must be no unmatched concept: {missing:?}");
     }
 
     #[test]
@@ -5141,11 +5141,11 @@ mod tests {
         let hits = vec![qhit(1, 500.0, &["order"]), qhit(2, 100.0, &["order"])];
         let (q, _conf, _reason, missing) =
             RecallService::assess_quality("如何修改下单优惠", &hits, &HashSet::new(), &builtin_aliases());
-        assert_eq!(q, RecallQuality::Medium, "部分覆盖应为 Medium");
-        assert!(missing.iter().any(|m| m == "优惠"), "应报告缺失概念「优惠」：{missing:?}");
+        assert_eq!(q, RecallQuality::Medium, "partial coverage must be Medium");
+        assert!(missing.iter().any(|m| m == "优惠"), "must report the missing concept 优惠: {missing:?}");
         assert!(
             !missing.iter().any(|m| m == "修改"),
-            "动作动词修改不应作为未命中概念：{missing:?}"
+            "the action verb 修改 must not count as an unmatched concept: {missing:?}"
         );
     }
 
@@ -5155,14 +5155,14 @@ mod tests {
         let hits = vec![qhit(1, 500.0, &["order"]), qhit(2, 100.0, &["order"])];
         let (q, _conf, _reason, missing) =
             RecallService::assess_quality("如何修改下单优惠支付", &hits, &HashSet::new(), &builtin_aliases());
-        assert_eq!(q, RecallQuality::Low, "多数概念未命中应为 Low");
+        assert_eq!(q, RecallQuality::Low, "most concepts unmatched must be Low");
         assert!(
             missing.iter().any(|m| m == "优惠") && missing.iter().any(|m| m == "支付"),
-            "缺失概念应含「优惠」「支付」：{missing:?}"
+            "the missing concepts must include 优惠 and 支付: {missing:?}"
         );
         assert!(
             !missing.iter().any(|m| m == "修改"),
-            "动作动词修改不应作为未命中概念：{missing:?}"
+            "the action verb 修改 must not count as an unmatched concept: {missing:?}"
         );
     }
 
@@ -5175,9 +5175,9 @@ mod tests {
             RecallService::assess_quality("如何修改下单优惠支付", &hits, &boilerplate, &builtin_aliases());
         assert!(
             missing.iter().any(|m| m == "优惠"),
-            "样板命中不应算覆盖「优惠」：{missing:?}"
+            "a boilerplate hit must not count as covering 优惠: {missing:?}"
         );
-        assert_eq!(q, RecallQuality::Low, "排除样板后覆盖率过低应为 Low");
+        assert_eq!(q, RecallQuality::Low, "once boilerplate is excluded, a too-low coverage rate must be Low");
     }
 
     #[test]
@@ -5187,14 +5187,14 @@ mod tests {
         let hits = vec![qhit(1, 500.0, &["pay"])];
         let (_q, _conf, reason, missing) =
             RecallService::assess_quality("支付回调失败怎么排查", &hits, &HashSet::new(), &builtin_aliases());
-        assert!(missing.iter().any(|m| m == "回调"), "应含中文概念：{missing:?}");
+        assert!(missing.iter().any(|m| m == "回调"), "must contain the Chinese concept: {missing:?}");
         assert!(
             missing.iter().any(|m| m == "callback"),
-            "应含英文展开 callback，否则 grep 不到代码：{missing:?}"
+            "must contain the English expansion callback, otherwise grep cannot find the code: {missing:?}"
         );
-        assert!(missing.iter().any(|m| m == "fail"), "应含英文展开 fail：{missing:?}");
+        assert!(missing.iter().any(|m| m == "fail"), "must contain the English expansion fail: {missing:?}");
         // Explanation uses only Chinese concepts, to avoid being too long.
-        assert!(!reason.contains("callback"), "说明文案不应塞英文展开：{reason}");
+        assert!(!reason.contains("callback"), "the explanation text must not be stuffed with English expansions: {reason}");
     }
 
     #[test]
@@ -5217,10 +5217,10 @@ mod tests {
             RecallService::assess_quality("怎么生成商品二维码", &hits, &HashSet::new(), &aliases);
         assert!(
             !missing.iter().any(|m| m == "生成"),
-            "动作动词生成不应作为未命中概念：{missing:?}"
+            "the action verb 生成 must not count as an unmatched concept: {missing:?}"
         );
         // QR covered, generate not counted → coverage driven by domain concept, shouldn't drop to Low for missing generate.
-        assert_ne!(q, RecallQuality::Low, "生成不应拉低质量档：{missing:?}");
+        assert_ne!(q, RecallQuality::Low, "生成 must not lower the quality band: {missing:?}");
     }
 
     #[test]
@@ -5235,12 +5235,12 @@ mod tests {
         // "how to modify order discount" contains known Chinese words (modify / order / discount), should keep them, but filter out
         // boundary-crossing noise bigrams (何修 / 改下 / 单优).
         let (terms, _hints) = parse_query("如何修改下单优惠");
-        assert!(terms.iter().any(|t| t == "修改"), "修改 应保留：{terms:?}");
-        assert!(terms.iter().any(|t| t == "下单"), "下单 应保留：{terms:?}");
-        assert!(terms.iter().any(|t| t == "优惠"), "优惠 应保留：{terms:?}");
-        assert!(!terms.iter().any(|t| t == "何修"), "何修 应为噪音被过滤：{terms:?}");
-        assert!(!terms.iter().any(|t| t == "改下"), "改下 应为噪音被过滤：{terms:?}");
-        assert!(!terms.iter().any(|t| t == "单优"), "单优 应为噪音被过滤：{terms:?}");
+        assert!(terms.iter().any(|t| t == "修改"), "修改 must be kept: {terms:?}");
+        assert!(terms.iter().any(|t| t == "下单"), "下单 must be kept: {terms:?}");
+        assert!(terms.iter().any(|t| t == "优惠"), "优惠 must be kept: {terms:?}");
+        assert!(!terms.iter().any(|t| t == "何修"), "何修 is noise and must be filtered: {terms:?}");
+        assert!(!terms.iter().any(|t| t == "改下"), "改下 is noise and must be filtered: {terms:?}");
+        assert!(!terms.iter().any(|t| t == "单优"), "单优 is noise and must be filtered: {terms:?}");
     }
 
     // ---- relation_summary ----
@@ -5256,11 +5256,11 @@ mod tests {
         let rel = relation_summary(NodeId::new(300), &inc, &HashMap::new());
         assert!(
             rel.iter().any(|r| r == "← WritesDb ×3"),
-            "同种类多条入边应聚合为 ×3：{rel:?}"
+            "several in-edges of the same kind must aggregate to ×3: {rel:?}"
         );
         assert!(
             rel.iter().any(|r| r == "← ReadsDb"),
-            "单条不应带 ×N：{rel:?}"
+            "a single edge must not carry ×N: {rel:?}"
         );
     }
 
@@ -5270,7 +5270,7 @@ mod tests {
         let rel = relation_summary(NodeId::new(300), &HashMap::new(), &out);
         assert!(
             rel.iter().any(|r| r == "→ Calls"),
-            "出边应带 → 前缀：{rel:?}"
+            "an out-edge must carry the → prefix: {rel:?}"
         );
     }
 
@@ -5282,8 +5282,8 @@ mod tests {
         let out = outgoing(&[("Calls", 500, 501)]);
         let ns = neighbours(NodeId::new(500), &inc, &out);
         let ids: Vec<i64> = ns.iter().map(|n| n.get()).collect();
-        assert!(ids.contains(&501), "应沿出边走到 501：{ids:?}");
-        assert!(ids.contains(&502), "应沿入边走到 502：{ids:?}");
+        assert!(ids.contains(&501), "must walk along the out-edge to 501: {ids:?}");
+        assert!(ids.contains(&502), "must walk along the in-edge to 502: {ids:?}");
     }
 
     // ---- DEFAULT_EXCLUDED_KINDS ----
@@ -5301,7 +5301,7 @@ mod tests {
         for k in want {
             assert!(
                 DEFAULT_EXCLUDED_KINDS.iter().any(|x| *x == k),
-                "{k} 应被排除出召回候选（否则召回会退化成逐行匹配）"
+                "{k} must be excluded from the recall candidates (otherwise recall degrades into line-by-line matching)"
             );
         }
     }
@@ -5365,9 +5365,9 @@ mod tests {
         // Same file referenced by two hits: body should appear only once, else duplicate body wastes context.
         let hits = vec![hit_with_file("/src/A.php"), hit_with_file("/src/A.php")];
         let out = append_file_bodies(&fs, &hits, "# 上下文\n".to_string());
-        assert!(out.starts_with("# 上下文\n"), "应在原上下文之后追加：{out}");
+        assert!(out.starts_with("# 上下文\n"), "it must be appended after the original context: {out}");
         assert!(out.contains("## Full files (include_body)"), "should carry the section heading: {out}");
-        assert_eq!(out.matches("class A {}").count(), 1, "同一文件正文只应出现一次：{out}");
+        assert_eq!(out.matches("class A {}").count(), 1, "the body of the same file must appear only once: {out}");
     }
 
     #[test]
@@ -5388,10 +5388,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         fs.insert(&p, content);
-        let snip = read_snippet(&fs, &p, 3).expect("应读出片段");
-        assert!(snip.contains("line1"), "应包含目标行之前 2 行：{snip}");
-        assert!(snip.contains("line3"), "应包含目标行：{snip}");
-        assert!(snip.contains("line6"), "应包含目标行之后 3 行：{snip}");
+        let snip = read_snippet(&fs, &p, 3).expect("the snippet must be read");
+        assert!(snip.contains("line1"), "must contain the 2 lines before the target line: {snip}");
+        assert!(snip.contains("line3"), "must contain the target line: {snip}");
+        assert!(snip.contains("line6"), "must contain the 3 lines after the target line: {snip}");
     }
 
     #[test]
@@ -5400,7 +5400,7 @@ mod tests {
         let p = PathBuf::from("/x/huge.php");
         fs.insert(&p, "x".repeat(3 * 1024 * 1024)); // 3MB > 2MB 上限
         let snip = read_snippet(&fs, &p, 1);
-        assert!(snip.is_none(), "超大文件应跳过片段读取（防 OOM）");
+        assert!(snip.is_none(), "an oversized file must skip snippet reading (to avoid OOM)");
     }
 
     // ---- real model (bge-m3 / candle) semantic verification: only compiled under the `model-candle` feature ----
@@ -5430,11 +5430,11 @@ mod tests {
 
         assert!(
             co > 0.4 && cd > 0.4,
-            "中文意图应语义命中英文业务节点：co={co} cd={cd}"
+            "a Chinese intent must hit the English business node semantically: co={co} cd={cd}"
         );
         assert!(
             co > cn && cd > cn,
-            "噪声节点应明显低于目标节点：cn={cn} co={co} cd={cd}"
+            "noise nodes must score clearly below the target nodes: cn={cn} co={co} cd={cd}"
         );
     }
 
@@ -5445,10 +5445,10 @@ mod tests {
     fn merged_aliases_without_root_is_builtin_only() {
         let base = builtin_aliases();
         let got = merged_aliases(None);
-        assert_eq!(got.len(), base.len(), "无 root 时不应增减别名组");
+        assert_eq!(got.len(), base.len(), "with no root the alias groups must neither grow nor shrink");
         for (k, v) in &base {
             let g = got.iter().find(|(z, _)| z == k).expect("builtin key must survive");
-            assert_eq!(g.1, *v, "builtin 值不应被改动: {k}");
+            assert_eq!(g.1, *v, "a builtin value must not be changed: {k}");
         }
     }
 
@@ -5464,9 +5464,9 @@ mod tests {
         std::fs::write(cfg.join("aliases.json"), text).unwrap();
 
         let got = merged_aliases(Some(&dir));
-        let group = got.iter().find(|(z, _)| z == key).expect("组应存在");
+        let group = got.iter().find(|(z, _)| z == key).expect("the group must exist");
         let extra = group.1.iter().filter(|e| *e == "__extra_alias_term__").count();
-        assert_eq!(extra, 1, "项目别名应并入现有组且不重复");
+        assert_eq!(extra, 1, "project aliases must merge into the existing group without duplicates");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5476,7 +5476,7 @@ mod tests {
         let key = "__brand_new_alias_group__"; // sentinel: must not collide with any built-in key
         assert!(
             !builtin_aliases().iter().any(|(z, _)| z == key),
-            "测试哨兵 key 不应与内置别名冲突"
+            "the test sentinel key must not clash with a built-in alias"
         );
         let dir = std::env::temp_dir().join(format!("gt_alias_it2_{}", std::process::id()));
         let cfg = dir.join(".graphtell");
@@ -5485,7 +5485,7 @@ mod tests {
         std::fs::write(cfg.join("aliases.json"), text).unwrap();
 
         let got = merged_aliases(Some(&dir));
-        let rec = got.iter().find(|(z, _)| z == key).expect("新组应被追加");
+        let rec = got.iter().find(|(z, _)| z == key).expect("a new group must be appended");
         assert_eq!(rec.1, vec!["reconcile".to_string(), "Reconciliation".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5501,7 +5501,7 @@ mod tests {
 
         let base = builtin_aliases();
         let got = merged_aliases(Some(&dir)); // must not panic
-        assert_eq!(got.len(), base.len(), "损坏配置应回退到内置表（组数不变）");
+        assert_eq!(got.len(), base.len(), "a corrupt config must fall back to the built-in table (same group count)");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5512,7 +5512,7 @@ mod tests {
     fn is_vector_kind_excludes_noise_kinds() {
         assert!(
             !is_vector_kind(&tnode(1, "CallSite", "x", None, None)),
-            "排除的噪声 kind 不应向量化"
+            "an excluded noise kind must not be vectorised"
         );
     }
 
@@ -5521,11 +5521,11 @@ mod tests {
     fn is_vector_kind_method_needs_source_file() {
         assert!(
             !is_vector_kind(&tnode(2, "Method", "m", None, None)),
-            "无源码位置的合成 Method 不应向量化"
+            "a synthesised Method with no source location must not be vectorised"
         );
         let mut n = tnode(3, "Method", "m", None, None);
         n.file_id = Some(FileId::new(7));
-        assert!(is_vector_kind(&n), "有源码位置的 Method 应向量化");
+        assert!(is_vector_kind(&n), "a Method with a source location must be vectorised");
     }
 
     /// Business/structural kinds (Class/Table) are vector-eligible by default.

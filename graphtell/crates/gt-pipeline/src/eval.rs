@@ -481,7 +481,7 @@ mod tests {
                 ..Default::default()
             }),
             None,
-            "default 不替代取不到的值"
+            "a default must not replace a value that cannot be obtained"
         );
         assert_eq!(
             ev.string(&ValueSource {
@@ -511,7 +511,7 @@ mod tests {
         };
 
         assert_eq!(ev.string(&src(0, true)), Some("orders".to_string()));
-        assert_eq!(ev.string(&src(1, true)), None, "变量不能当身份");
+        assert_eq!(ev.string(&src(1, true)), None, "a variable cannot serve as an identity");
         assert_eq!(ev.string(&src(1, false)), Some("$name".to_string()));
         // Scalars count as literals.
         assert_eq!(ev.string(&src(2, true)), Some("3".to_string()));
@@ -1081,12 +1081,12 @@ mod tests {
                 ..Default::default()
             }),
             None,
-            "arg + field：非数组参数视为取不到"
+            "arg + field: a non-array argument counts as unobtainable"
         );
         assert_eq!(
             ev2.string(&nested),
             Some("plain".to_string()),
-            "已知分歧：source + field 在非数组时返回整个值"
+            "known divergence: source + field returns the whole value when it is not an array"
         );
     }
 
@@ -1188,7 +1188,7 @@ mod tests {
         assert!(std::ptr::eq(ev.ws(), &ws));
         match ev.ctx() {
             MatchCtx::Config(c2) => assert!(std::ptr::eq(c2, &c)),
-            _ => panic!("ctx() 应回传 Config 变体"),
+            _ => panic!("ctx() must pass the Config variant back"),
         }
     }
 

@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(outcome.reports[0].nodes_created, 1);
         assert_eq!(
             outcome.reports[1].nodes_created, 0,
-            "第二个阶段不应重复上报同一批节点"
+            "the second phase must not report the same batch of nodes again"
         );
         assert_eq!(
             obs.ends(),
@@ -560,8 +560,8 @@ mod tests {
         );
 
         assert!(res.is_err());
-        assert!(outcome.reports.is_empty(), "持久化失败不应记入报告");
-        assert!(obs.ends().is_empty(), "不应通知观察者阶段已完成");
+        assert!(outcome.reports.is_empty(), "a persistence failure must not be recorded in the report");
+        assert!(obs.ends().is_empty(), "the observer must not be notified that the phase completed");
         assert!(sink.applied().is_empty());
     }
 
@@ -585,7 +585,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!sink.applied()[0].5, "flush 不得清空项目图");
+        assert!(!sink.applied()[0].5, "flush must not clear the project graph");
     }
 
     // ---------------------------------------------------------------- `run()` orchestration
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(
             phases(&outcome),
             vec![Phase::INGEST.to_string(), Phase::CF_AST.to_string(), Phase::PREPARE.to_string()],
-            "非完整流水线应止于 P3"
+            "a non-full pipeline must stop at P3"
         );
         assert_eq!(obs.starts(), phases(&outcome));
         assert_eq!(obs.ends(), phases(&outcome));
@@ -796,7 +796,7 @@ mod tests {
 
         let res = run(&project(true), &infra, &FakeObserver::default());
 
-        assert!(res.is_err(), "持久化失败必须中断流水线");
+        assert!(res.is_err(), "a persistence failure must abort the pipeline");
     }
 
     /// A new build must start from a wiped graph, so `run` issues a one-off `reset_project` delta right after
@@ -808,7 +808,7 @@ mod tests {
         run(&project(true), &infra, &FakeObserver::default()).unwrap();
 
         let applied = infra.graph.applied();
-        assert!(applied.len() >= 2, "至少有 Ingest flush 与 reset 两次 apply");
+        assert!(applied.len() >= 2, "there must be at least two applies: the Ingest flush and the reset");
         // Exactly one delta carries the reset flag.
         let resets: Vec<usize> = applied
             .iter()
@@ -816,14 +816,14 @@ mod tests {
             .filter(|(_, d)| d.5)
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(resets.len(), 1, "只应发出一次 reset_project");
+        assert_eq!(resets.len(), 1, "reset_project must be emitted exactly once");
         // …and it sits right after the Ingest flush, ahead of every phase flush.
-        assert_eq!(resets[0], 1, "reset 紧跟 Ingest flush，早于任何阶段 flush");
+        assert_eq!(resets[0], 1, "the reset follows the Ingest flush immediately, before any phase flush");
         // The Ingest flush itself (and all later phase flushes) must not carry the flag.
-        assert!(!applied[0].5, "Ingest flush 不得带 reset");
+        assert!(!applied[0].5, "the Ingest flush must not carry a reset");
         for (i, d) in applied.iter().enumerate() {
             if i != resets[0] {
-                assert!(!d.5, "除重置增量外不得带 reset");
+                assert!(!d.5, "nothing but the reset delta may carry a reset");
             }
         }
     }

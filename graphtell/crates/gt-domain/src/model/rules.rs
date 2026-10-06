@@ -879,8 +879,8 @@ mod tests {
         // The 20_000 cap is the *serde* default (used when `limit` is omitted from YAML); `Default::default()` of
         // the struct gives 0, so the documented cap only kicks in through deserialization.
         let scope: RuleScope = serde_json::from_value(json!({})).unwrap();
-        assert!(matches!(scope.limit, NumOrParam::Num(20_000)), "缺省 limit 经 serde 默认 20000");
-        assert!(matches!(RuleScope::default().limit, NumOrParam::Num(0)), "derive Default 给 0（仅 serde 路径吃 default_scope_limit）");
+        assert!(matches!(scope.limit, NumOrParam::Num(20_000)), "the default limit is 20000 through serde");
+        assert!(matches!(RuleScope::default().limit, NumOrParam::Num(0)), "derive Default gives 0 (only the serde path picks up default_scope_limit)");
     }
 
     /// `CheckRule` defaults: `severity = warning`, `category = general`, `enabled = true`, and an omitted
@@ -895,7 +895,7 @@ mod tests {
         assert_eq!(r.category, "general");
         assert!(r.enabled);
         assert!(r.applies_to.kinds.is_empty());
-        assert!(matches!(r.applies_to.limit, NumOrParam::Num(0)), "省略 applies_to ⇒ RuleScope::default()，limit=0；20000 需显式空 applies_to: {{}}");
+        assert!(matches!(r.applies_to.limit, NumOrParam::Num(0)), "omitting applies_to ⇒ RuleScope::default(), limit=0; 20000 needs an explicit empty applies_to: {{}}");
         assert_eq!(r.code(), "rule:r1");
     }
 
@@ -922,7 +922,7 @@ mod tests {
         .unwrap();
         let req = r.requirements();
         assert!(req.edges.iter().any(|e| e.eq_ignore_ascii_case("Triggers")));
-        assert!(req.edges.iter().any(|e| e.eq_ignore_ascii_case("CallsHttp")), "Not 不减 polarity，仍收集");
+        assert!(req.edges.iter().any(|e| e.eq_ignore_ascii_case("CallsHttp")), "Not does not reduce polarity and is still collected");
         assert!(req.annotations.iter().any(|a| a.eq_ignore_ascii_case("pii")));
         assert!(req.capabilities.iter().any(|c| c.eq_ignore_ascii_case("Authentication")));
         assert!(req.capabilities.iter().any(|c| c.eq_ignore_ascii_case("RateLimiting")));
@@ -946,7 +946,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(r.referenced_params(), vec!["a".to_string(), "b".to_string(), "c".to_string()]);
-        assert_eq!(r.undeclared_params(), vec!["b".to_string(), "c".to_string()], "只有 declared 被声明");
+        assert_eq!(r.undeclared_params(), vec!["b".to_string(), "c".to_string()], "only declared is declared");
     }
 
     /// `applies_to_env` is "a match exists" (multi-language projects), case-insensitive, on both the language and
@@ -960,10 +960,10 @@ mod tests {
         .unwrap();
 
         assert!(r.applies_to_env(&["php".into(), "javascript".into()], &["thinkphp".into()]),
-            "PHP 子项目存在即命中");
-        assert!(r.applies_to_env(&["PHP".into()], &["ThinkPHP".into()]), "大小写不敏感");
-        assert!(!r.applies_to_env(&["java".into()], &["thinkphp".into()]), "语言不匹配则跳过");
-        assert!(!r.applies_to_env(&["php".into()], &["laravel".into()]), "框架不匹配则跳过");
+            "an existing PHP sub-project matches");
+        assert!(r.applies_to_env(&["PHP".into()], &["ThinkPHP".into()]), "case-insensitive");
+        assert!(!r.applies_to_env(&["java".into()], &["thinkphp".into()]), "a language mismatch is skipped");
+        assert!(!r.applies_to_env(&["php".into()], &["laravel".into()]), "a framework mismatch is skipped");
 
         // Empty allowlist = language-agnostic, always applicable.
         let any: CheckRule = serde_json::from_value(json!({ "id": "r", "title": "T", "message": "m" })).unwrap();
@@ -1108,13 +1108,13 @@ mod tests {
             (StrOrParam::Param("needle".into()), json!("$needle")),
         ];
         for (v, wire) in cases {
-            assert_eq!(serde_json::to_value(&v).unwrap(), wire, "{v:?} 的写出形态");
+            assert_eq!(serde_json::to_value(&v).unwrap(), wire, "the written form of {v:?}");
             assert!(matches!(&serde_json::from_value::<StrOrParam>(wire.clone()).unwrap(), got if std::mem::discriminant(got) == std::mem::discriminant(&v)));
             // The invariant itself: writing then reading back yields the same value.
-            assert!(matches!(round_trip(&v), _), "round-trip 必须能再解析");
+            assert!(matches!(round_trip(&v), _), "the round-trip must be parsable again");
         }
         let again: StrOrParam = round_trip(&StrOrParam::Str("$x".into()));
-        assert!(matches!(again, StrOrParam::Str(ref s) if s == "$x"), "字面量不能被悄悄变成参数引用");
+        assert!(matches!(again, StrOrParam::Str(ref s) if s == "$x"), "a literal must not be silently turned into a parameter reference");
         let again: StrOrParam = round_trip(&StrOrParam::Param("x".into()));
         assert!(matches!(again, StrOrParam::Param(ref k) if k == "x"));
 
@@ -1134,7 +1134,7 @@ mod tests {
     #[test]
     fn num_or_param_degrades_non_numeric_input_to_zero() {
         let n: NumOrParam = serde_json::from_value(json!(-1)).unwrap();
-        assert!(matches!(n, NumOrParam::Num(0)), "负数降级为 0");
+        assert!(matches!(n, NumOrParam::Num(0)), "a negative number degrades to 0");
         assert!(matches!(serde_json::from_value::<NumOrParam>(json!(1.5)).unwrap(), NumOrParam::Num(0)));
         assert!(matches!(serde_json::from_value::<NumOrParam>(json!(true)).unwrap(), NumOrParam::Num(0)));
         assert!(matches!(serde_json::from_value::<NumOrParam>(json!(null)).unwrap(), NumOrParam::Num(0)));
@@ -1156,11 +1156,11 @@ mod tests {
             (ParamKind::Enum, "enum"),
             (ParamKind::Bool, "bool"),
         ] {
-            assert_eq!(serde_json::to_value(&kind).unwrap(), json!(text), "{text} 的序列化形态");
+            assert_eq!(serde_json::to_value(&kind).unwrap(), json!(text), "the serialised form of {text}");
             let back: ParamKind = serde_json::from_value(json!(text)).unwrap();
             assert!(
                 std::mem::discriminant(&back) == std::mem::discriminant(&kind),
-                "{text} 必须读回同一个变体"
+                "{text} must be read back as the same variant"
             );
         }
         assert!(serde_json::from_value::<ParamKind>(json!("int")).is_err());
@@ -1198,14 +1198,14 @@ mod tests {
             "project_id": 1, "rule_id": "hot-table"
         }))
         .unwrap();
-        assert!(c.enabled.is_none(), "None = 继承 YAML 全局开关");
+        assert!(c.enabled.is_none(), "None = inherit the global YAML switch");
         assert_eq!(c.options, Value::Null);
 
         let explicit: ProjectRuleConfig = serde_json::from_value(json!({
             "project_id": 1, "rule_id": "hot-table", "enabled": false, "options": { "min_fan_in": 5 }
         }))
         .unwrap();
-        assert_eq!(explicit.enabled, Some(false), "显式关闭必须与『继承』区分开");
+        assert_eq!(explicit.enabled, Some(false), "an explicit off must be distinguishable from 'inherit'");
         let back = round_trip(&explicit);
         assert_eq!(back.enabled, Some(false));
         assert_eq!(back.options, json!({ "min_fan_in": 5 }));
@@ -1217,8 +1217,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(patch.enabled, Some(true));
-        assert!(patch.options.is_none(), "null 的 options 等同未提交");
-        assert!(serde_json::from_value::<RuleConfigPatch>(json!({})).is_err(), "rule_id 必需");
+        assert!(patch.options.is_none(), "a null options is the same as not submitting it");
+        assert!(serde_json::from_value::<RuleConfigPatch>(json!({})).is_err(), "rule_id is required");
     }
 
     /// Resolution edges: a reference only reads **strings**; `resolve_str_opt` maps the empty string to `None`
@@ -1234,7 +1234,7 @@ mod tests {
         assert_eq!(
             resolve_str(&StrOrParam::Param("numeric".into()), &table),
             "",
-            "参数是数字时字符串解析取不到值，退化为空"
+            "when the parameter is a number the string parse yields nothing and degrades to empty"
         );
         assert_eq!(resolve_str(&StrOrParam::Param("missing".into()), &table), "");
         assert_eq!(resolve_str(&StrOrParam::Str("literal".into()), &table), "literal");
@@ -1253,14 +1253,14 @@ mod tests {
         let r = rule_with_params();
         let empty_table = ParamValues::new();
         let out = r.render_with("users", "Table", None, None, None, None, Some(&empty_table));
-        assert!(out.contains("in-edges >= 50"), "缺值时回落到声明默认值: {out}");
+        assert!(out.contains("in-edges >= 50"), "a missing value falls back to the declared default: {out}");
 
         let undeclared: CheckRule = serde_json::from_value(json!({
             "id": "r", "title": "T", "message": "limit {param:nope}"
         }))
         .unwrap();
         let out = undeclared.render_with("n", "K", None, None, None, None, Some(&empty_table));
-        assert!(out.contains("{param:nope}"), "未声明的参数占位符原样保留: {out}");
+        assert!(out.contains("{param:nope}"), "an undeclared parameter placeholder is kept verbatim: {out}");
     }
 
     /// Every `CheckPredicate` variant must keep a parseable YAML spelling — this list doubles as the inventory:
@@ -1321,13 +1321,13 @@ mod tests {
             line: None,
             sub_project_id: None,
         };
-        assert_eq!(base.location(), None, "没有文件就没有定位");
-        assert_eq!(Violation { line: Some(3), ..base.clone() }.location(), None, "有行号但没有文件路径仍然无法定位");
+        assert_eq!(base.location(), None, "no file means no location");
+        assert_eq!(Violation { line: Some(3), ..base.clone() }.location(), None, "a line number without a file path still cannot be located");
         assert_eq!(Violation { file: Some("a.php".into()), ..base.clone() }.location().as_deref(), Some("a.php"));
 
         let v = serde_json::to_value(&base).unwrap();
         for f in ["remediation", "file", "line", "sub_project_id"] {
-            assert!(v.get(f).is_none(), "{f} 为 None 时不应写出");
+            assert!(v.get(f).is_none(), "{f} must not be written when it is None");
         }
     }
 
@@ -1352,11 +1352,11 @@ mod tests {
         };
         let d = v.to_diagnostic();
         assert_eq!(d.code, format!("{RULE_CODE_PREFIX}no-handler"));
-        assert_eq!(d.phase, check_phase(), "违规诊断属于 Check 相位");
+        assert_eq!(d.phase, check_phase(), "a violation diagnostic belongs to the Check phase");
         assert_eq!(d.phase.as_str(), Phase::CHECK);
         assert_eq!(d.location.as_deref(), Some("app/api/route/pc.php:42"));
 
-        let back = Violation::from_diagnostic(&d).expect("必须能从诊断还原");
+        let back = Violation::from_diagnostic(&d).expect("it must be restorable from the diagnostic");
         assert_eq!(back.project_id, v.project_id);
         assert_eq!(back.rule_id, v.rule_id);
         assert_eq!(back.title, v.title);
@@ -1379,7 +1379,7 @@ mod tests {
             payload: json!({ "rule_id": "r" }),
             ..d.clone()
         })
-        .is_none(), "缺 node_id 拒绝还原");
+        .is_none(), "a missing node_id refuses to restore");
     }
 
     /// `CheckReport` counts start at zero (a non-zero default would invent statistics), and the ordering is
@@ -1427,7 +1427,7 @@ mod tests {
                 (Severity::Info, "z", "a-node"),
                 (Severity::Info, "z", "b-node"),
             ],
-            "排序需完全确定：严重度降序 → rule id → 节点名"
+            "the ordering must be fully deterministic: severity descending → rule id → node name"
         );
     }
 
@@ -1456,8 +1456,8 @@ mod tests {
         }))
         .unwrap();
         let req = r.requirements();
-        assert_eq!(req.edges.len(), 1, "边大小写不敏感去重");
-        assert_eq!(req.annotations.len(), 1, "注解大小写不敏感去重");
+        assert_eq!(req.edges.len(), 1, "edges are de-duplicated case-insensitively");
+        assert_eq!(req.annotations.len(), 1, "annotations are de-duplicated case-insensitively");
         assert_eq!(req.capabilities.len(), 1);
         assert!(!req.is_empty());
 
@@ -1494,7 +1494,7 @@ mod tests {
             "scope_name", "scope_limit", "p_nsw", "p_fqn", "p_ident", "p_text",
             "p_fil", "p_fog", "p_not", "p_nested",
         ] {
-            assert!(refs.iter().any(|x| x == expected), "漏收集 {expected}: {refs:?}");
+            assert!(refs.iter().any(|x| x == expected), "missed collecting {expected}: {refs:?}");
         }
         // `declared` is never referenced, so every collected key is undeclared.
         let undeclared: std::collections::HashSet<_> = r.undeclared_params().into_iter().collect();
@@ -1524,7 +1524,7 @@ mod tests {
         };
         let wire = serde_json::to_value(&v).unwrap();
         for f in ["remediation", "file", "line", "sub_project_id"] {
-            assert!(wire.get(f).is_none(), "{f} 为 None 不写出");
+            assert!(wire.get(f).is_none(), "{f} is not written when None");
         }
         let back: Violation = serde_json::from_value(wire).unwrap();
         assert_eq!(back.project_id, v.project_id);
@@ -1545,7 +1545,7 @@ mod tests {
         };
         let wire_full = serde_json::to_value(&full).unwrap();
         for f in ["remediation", "file", "line", "sub_project_id"] {
-            assert!(wire_full.get(f).is_some(), "{f} 非 None 须写出");
+            assert!(wire_full.get(f).is_some(), "{f} must be written when not None");
         }
         let back: Violation = serde_json::from_value(wire_full).unwrap();
         assert_eq!(back.remediation.as_deref(), Some("fix"));

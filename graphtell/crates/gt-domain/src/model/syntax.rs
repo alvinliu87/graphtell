@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn namespace_policy_default_is_empty_not_php() {
         let d = NamespacePolicy::default();
-        assert!(d.ns_separator.is_none(), "未知语言没有任何命名空间分隔符");
+        assert!(d.ns_separator.is_none(), "an unknown language has no namespace separator");
         assert!(d.ns_separators.is_empty());
         assert!(d.member_separator.is_empty());
         assert!(d.variable_prefixes.is_empty());
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn namespace_policy_from_parser_maps_port_fields() {
         let p = NamespacePolicy::from_parser(&FakeParser);
-        assert_eq!(p.ns_separator, Some('\\'), "取第一个命名空间分隔符");
+        assert_eq!(p.ns_separator, Some('\\'), "takes the first namespace separator");
         assert_eq!(p.ns_separators, vec!['\\', '.']);
         assert_eq!(p.member_separator, "::");
         assert_eq!(p.variable_prefixes, vec!["$".to_string()]);
@@ -528,14 +528,14 @@ mod tests {
     #[test]
     fn fact_value_default_is_null_and_equality_is_by_value() {
         assert_eq!(FactValue::default(), FactValue::Null);
-        assert_ne!(FactValue::String("x".into()), FactValue::ClassConst("x".into()), "同类文本但语义不同");
+        assert_ne!(FactValue::String("x".into()), FactValue::ClassConst("x".into()), "the same kind of text but a different meaning");
         assert_eq!(FactValue::Int(1), FactValue::Int(1));
         let nested = FactValue::Array(vec![
             ("a".into(), FactValue::Array(vec![("b".into(), FactValue::Int(1))])),
             ("c".into(), FactValue::Unknown(None)),
         ]);
         let json = serde_json::to_value(&nested).unwrap();
-        assert_eq!(serde_json::from_value::<FactValue>(json).unwrap(), nested, "嵌套数组原样往返");
+        assert_eq!(serde_json::from_value::<FactValue>(json).unwrap(), nested, "nested arrays round-trip verbatim");
         assert_eq!(nested.array_len(), 2);
     }
 
@@ -548,7 +548,7 @@ mod tests {
             ("dup".into(), FactValue::Int(2)),
             ("''q''".into(), FactValue::Int(3)),
         ]);
-        assert_eq!(arr.get("dup"), Some(&FactValue::Int(1)), "同名 key 取第一个");
+        assert_eq!(arr.get("dup"), Some(&FactValue::Int(1)), "for duplicate keys the first one wins");
         assert_eq!(arr.get("q"), Some(&FactValue::Int(3)));
     }
 
@@ -563,13 +563,13 @@ mod tests {
             "args": [],
             "span": { "start_line": 1, "end_line": 1, "start_byte": 0, "end_byte": 4 }
         }))
-        .expect("旧版 payload 必须能加载");
-        assert!(old.owner_class.is_none(), "未填老的 owner_class 时内核回退字符串切分");
+        .expect("an old payload must still load");
+        assert!(old.owner_class.is_none(), "when the old owner_class is absent the kernel falls back to string splitting");
         assert!(old.snippet.is_none());
         assert!(old.db_table.is_none());
-        assert!(!old.in_loop, "未标记 = 不在循环里");
+        assert!(!old.in_loop, "unmarked = not inside a loop");
         assert!(old.entity.is_none());
-        assert!(old.receiver.is_none() && old.method.is_none(), "Option 字段缺失按 None");
+        assert!(old.receiver.is_none() && old.method.is_none(), "a missing Option field counts as None");
 
         let full: CallSiteFact = serde_json::from_value(json!({
             "owner_fqn": "App\\Foo::bar",
@@ -585,10 +585,10 @@ mod tests {
             "entity": "OrderPlacedEvent"
         }))
         .unwrap();
-        assert_eq!(full.owner_class.as_deref(), Some("App\\Foo"), "类级注解的 owner_class 由 parser 显式给出");
+        assert_eq!(full.owner_class.as_deref(), Some("App\\Foo"), "for a class-level annotation the parser gives owner_class explicitly");
         assert_eq!(full.snippet.as_deref(), Some("Db::name('goods')->insert($data);"));
         assert_eq!(full.db_table.as_deref(), Some("goods"));
-        assert!(full.in_loop, "N+1 判断的事实基础");
+        assert!(full.in_loop, "the factual basis of the N+1 judgement");
         assert_eq!(full.entity.as_deref(), Some("OrderPlacedEvent"));
         assert_eq!(full.args.len(), 1);
         assert_eq!(full.args[0].as_str(), Some("goods"));
@@ -606,14 +606,14 @@ mod tests {
                                    "config_entries": [], "header_assignments": [], "sign_compares": [] });
         assert!(
             serde_json::from_value::<SyntaxFacts>(missing_decl).is_err(),
-            "缺少 declarations 必须报错，而不是当成空事实集"
+            "a missing declarations must error, not count as an empty fact set"
         );
 
         let before_variable_assignments = json!({
             "declarations": [], "imports": [], "inheritances": [], "call_sites": [], "field_types": [],
             "config_entries": [], "header_assignments": [], "sign_compares": []
         });
-        let facts: SyntaxFacts = serde_json::from_value(before_variable_assignments).expect("旧版文档必须能加载");
+        let facts: SyntaxFacts = serde_json::from_value(before_variable_assignments).expect("an old document must still load");
         assert!(facts.namespace.is_none());
         assert!(facts.declarations.is_empty());
         assert!(facts.imports.is_empty());
@@ -623,7 +623,7 @@ mod tests {
         assert!(facts.config_entries.is_empty());
         assert!(facts.header_assignments.is_empty());
         assert!(facts.sign_compares.is_empty());
-        assert!(facts.variable_assignments.is_empty(), "后加的集合允许缺失");
+        assert!(facts.variable_assignments.is_empty(), "a collection added later may be absent");
     }
 
     /// Declaration / import / inheritance facts: the three structs every parser must fill, with their optional
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(method.parent_fqn.as_deref(), Some("app\\dao\\order\\OrderDao"));
         assert!(cls.parent_fqn.is_none());
         let back: Declaration = round_trip(&method);
-        assert_eq!(back.extra, json!({ "visibility": "public" }), "语言专属字段原样存取");
+        assert_eq!(back.extra, json!({ "visibility": "public" }), "language-specific fields are stored and read verbatim");
         assert_eq!(back.fqn, method.fqn);
 
         let plain = ImportFact { alias: None, name: "app\\dao\\order\\OrderDao".into(), span };
@@ -667,7 +667,7 @@ mod tests {
             span,
         };
         let back = round_trip(&ext);
-        assert_eq!(back.base_name, "Base", "基名按原文保留（可能是短名或 import 别名）");
+        assert_eq!(back.base_name, "Base", "the base name is kept verbatim (it may be a short name or an import alias)");
         assert_eq!(back.kind.as_str(), "Extends");
     }
 
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(back.declarations.len(), 1);
         assert_eq!(back.call_sites[0].db_table.as_deref(), Some("store_order"));
         assert!(back.call_sites[0].in_loop);
-        assert_eq!(back.field_types[0].type_name, "OrderMapper<Order>", "原始类型名含泛型，由 P2 还原");
+        assert_eq!(back.field_types[0].type_name, "OrderMapper<Order>", "the raw type name carries generics, restored by P2");
         assert_eq!(
             back.config_entries[0].value.get("0").and_then(|v| v.as_str()),
             Some("app\\listener\\order\\OrderPaySuccessListener")
@@ -764,7 +764,7 @@ mod tests {
     #[test]
     fn join_member_with_an_unknown_policy_degrades_to_concatenation() {
         let unknown = NamespacePolicy::default();
-        assert_eq!(unknown.join_member("App\\Foo", "bar"), "App\\Foobar", "空分隔符 ⇒ 直接拼接（调用方必须先判空）");
+        assert_eq!(unknown.join_member("App\\Foo", "bar"), "App\\Foobar", "an empty separator ⇒ plain concatenation (the caller must check for empty first)");
     }
 
     fn round_trip<T: Serialize + for<'de> Deserialize<'de>>(v: &T) -> T {

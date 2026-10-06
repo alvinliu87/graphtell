@@ -62,7 +62,7 @@ mod tests {
         };
         assert_eq!(p.rule("a").map(|r| r.id.as_str()), Some("a"));
         assert_eq!(p.rule("b").map(|r| r.id.as_str()), Some("b"));
-        assert!(p.rule("missing").is_none(), "未知 id 返回 None");
+        assert!(p.rule("missing").is_none(), "an unknown id returns None");
     }
 
     #[test]
@@ -71,7 +71,7 @@ mod tests {
             rules: vec![rule("a", true), rule("b", false), rule("c", true)],
         };
         let ids: Vec<&str> = p.enabled_rules().iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, vec!["a", "c"], "仅保留启用规则，且保序");
+        assert_eq!(ids, vec!["a", "c"], "only enabled rules are kept, preserving their order");
     }
 
     #[test]

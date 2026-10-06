@@ -55,11 +55,11 @@ mod tests {
     #[test]
     fn system_clock_returns_recent_epoch_millis() {
         let now = SystemClock.now_millis();
-        assert!(now > 0, "时钟不应静默返回 0");
+        assert!(now > 0, "the clock must not silently return 0");
         // 2023-01-01 in millis; below this it is either seconds or a regression.
         assert!(
             now > 1_672_531_200_000,
-            "now_millis 应返回毫秒级纪元时间，而非秒或 0: {now}"
+            "now_millis must return epoch time in milliseconds, not seconds or 0: {now}"
         );
     }
 }

@@ -528,9 +528,9 @@ mod tests {
         // `side: backend`, so "the backend participates" silently dropped every node the front end had touched.
         for side in ["backend", "frontend"] {
             let s = spec(Some(side), None);
-            assert!(s.matches_sides(&bridge()), "bridge 应命中 {side}");
+            assert!(s.matches_sides(&bridge()), "bridge must match {side}");
             let s_any = spec(None, Some(&[side]));
-            assert!(s_any.matches_sides(&bridge()), "side_any: bridge 应命中 {side}");
+            assert!(s_any.matches_sides(&bridge()), "side_any: bridge must match {side}");
         }
     }
 
@@ -584,7 +584,7 @@ mod tests {
         assert_eq!(reg.by_id("cache").map(|p| p.id.as_str()), Some("cache"));
         assert!(reg.by_id("missing").is_none());
         assert_eq!(reg.view_for_kind("Cache").map(|p| p.id.as_str()), Some("cache"));
-        assert!(reg.view_for_kind("Unknown").is_none(), "node_views 未覆盖的 kind 不切换");
+        assert!(reg.view_for_kind("Unknown").is_none(), "a kind not covered by node_views does not switch");
     }
 
     /// `view_for_kind_and_side` prefers a perspective whose `side` matches the node, then falls back to the
@@ -600,10 +600,10 @@ mod tests {
         assert_eq!(
             reg.view_for_kind_and_side("Cache", Some("frontend")).map(|p| p.id.as_str()),
             Some("local_storage"),
-            "side 优先：frontend 节点应切到 local_storage，而非 node_views 映射的 cache"
+            "side wins: a frontend node must switch to local_storage, not the cache mapped by node_views"
         );
         assert_eq!(reg.view_for_kind_and_side("Cache", Some("backend")).map(|p| p.id.as_str()), Some("cache"));
-        assert_eq!(reg.view_for_kind_and_side("Cache", None).map(|p| p.id.as_str()), Some("cache"), "无 side 回退到 node_views");
+        assert_eq!(reg.view_for_kind_and_side("Cache", None).map(|p| p.id.as_str()), Some("cache"), "with no side it falls back to node_views");
         // node_views 没覆盖、也没给出 side 的 kind：即便存在同名 node_kind 的 perspective，无 side 不命中。
         assert!(reg.view_for_kind_and_side("Table", None).is_none());
     }
@@ -690,8 +690,8 @@ mod tests {
         assert_eq!(round_trip(&loc).snippet.as_deref(), Some("Db::name('store_order')->select();"));
         let bare = SourceLocation { file: "a.php".into(), line: 1, symbol: None, note: None, snippet: None };
         let v = serde_json::to_value(&bare).unwrap();
-        assert!(v.get("snippet").is_none(), "snippet 为 None 时不写出");
-        assert_eq!(v.get("symbol"), Some(&Value::Null), "symbol 为 None 时写成 null（历史形状）");
+        assert!(v.get("snippet").is_none(), "snippet is not written when None");
+        assert_eq!(v.get("symbol"), Some(&Value::Null), "symbol is written as null when None (historical shape)");
         // A response missing the later `snippet` field still loads.
         let old: SourceLocation = serde_json::from_value(json!({ "file": "a.php", "line": 3 })).unwrap();
         assert!(old.snippet.is_none() && old.symbol.is_none());
@@ -714,9 +714,9 @@ mod tests {
         };
         let back: NodeView = round_trip(&node);
         assert_eq!(back.id, NodeId(1));
-        assert_eq!(back.own_view.as_deref(), Some("table"), "二级过滤器靠它切换视角");
+        assert_eq!(back.own_view.as_deref(), Some("table"), "the second-level filter switches perspective through it");
         assert_eq!(back.category.as_deref(), Some("Table"));
-        assert_eq!(back.columns.as_ref().map(Vec::len), Some(2), "列是节点的属性，不占画布");
+        assert_eq!(back.columns.as_ref().map(Vec::len), Some(2), "columns are node properties, they take no canvas space");
         assert_eq!(back.locations.len(), 1);
         assert_eq!(back.metrics, json!({ "in_edges": 12 }));
 
@@ -761,12 +761,12 @@ mod tests {
         assert_eq!(back.id, 10);
         assert!(!back.resolved);
         assert_eq!(back.hops, Some(2));
-        assert_eq!(back.via.len(), 1, "被折叠的中间跳必须留下（via N hops 的根据）");
+        assert_eq!(back.via.len(), 1, "a collapsed intermediate hop must be kept (the basis of 'via N hops')");
         assert_eq!(back.via[0].call_site.as_ref().map(|l| l.line), Some(42));
         assert!(back.to_call_site.is_some());
-        assert!(back.indirect, "传播得到的边要能被 UI 画虚线");
-        assert_eq!(back.also_kinds, vec!["ReadsDb".to_string()], "同一处的读写不能只报一种");
-        assert_eq!(back.node_locations.len(), 1, "沿线 location 内联，前端不必 N+1 请求");
+        assert!(back.indirect, "a propagated edge must be drawable as a dashed line by the UI");
+        assert_eq!(back.also_kinds, vec!["ReadsDb".to_string()], "a place that both reads and writes must not report only one of them");
+        assert_eq!(back.node_locations.len(), 1, "locations are inlined along the line, so the frontend needs no N+1 requests");
 
         let old: EdgeView = serde_json::from_value(json!({
             "id": 1, "kind": "Calls", "from": 1, "to": 2, "resolved": true, "confidence": 1.0, "hops": null
@@ -820,7 +820,7 @@ mod tests {
         assert_eq!(back.perspective, "table");
         assert_eq!(back.layout, LayoutMode::Radial);
         assert_eq!(back.rings.len(), 1);
-        assert_eq!(back.hidden.total, 30, "诚实门：实际邻居数与画出数必须都在响应里");
+        assert_eq!(back.hidden.total, 30, "honesty gate: both the real neighbour count and the drawn count must be in the response");
         assert_eq!(back.hidden.shown, 12);
         assert_eq!(back.hidden.by_kind.get("Method"), Some(&18));
         assert_eq!(back.orphans[0].edge_kind, "WritesDb");
@@ -855,7 +855,7 @@ mod tests {
             notice: Some("graph has no Domain node yet".into()),
         };
         let back: AggregateView = round_trip(&agg);
-        assert_eq!(back.clusters[0].count, 7, "只给计数，不全画");
+        assert_eq!(back.clusters[0].count, 7, "only counts are given, nothing is drawn in full");
         assert_eq!(back.matrix.as_ref().map(|m| m.cells[0][0]), Some(3));
         assert_eq!(back.notice.as_deref(), Some("graph has no Domain node yet"));
 
@@ -894,8 +894,8 @@ mod tests {
             reference_count: 11,
         };
         let back: NodeLocations = round_trip(&nl);
-        assert!(back.synthetic, "合成节点要在 UI 上提示『多处共同出现』");
-        assert_eq!(back.locations.len(), 2, "多个定义位置从不合并成一个");
+        assert!(back.synthetic, "a synthesised node must be flagged in the UI as 'appears in several places'");
+        assert_eq!(back.locations.len(), 2, "several definition locations are never merged into one");
         assert_eq!(back.reference_count, 11);
     }
 
@@ -903,7 +903,7 @@ mod tests {
     /// `side` / `side_any` is **omitted** from the wire so a re-serialised config file stays clean.
     #[test]
     fn perspective_spec_tolerates_a_sparse_declaration() {
-        let empty: PerspectiveSpec = serde_json::from_value(json!({})).expect("空声明必须能加载");
+        let empty: PerspectiveSpec = serde_json::from_value(json!({})).expect("an empty declaration must load");
         assert_eq!(empty.mode, ViewMode::Object);
         assert_eq!(empty.layout, LayoutMode::Radial);
         assert_eq!(empty.depth, 2);
@@ -933,7 +933,7 @@ mod tests {
         assert_eq!(back.depth, 3);
         assert_eq!(back.collapsed_kinds, vec!["Method".to_string()]);
         let v = serde_json::to_value(&full).unwrap();
-        assert!(v.get("side").is_none(), "未声明的 side 必须省略（skip_serializing_if）");
+        assert!(v.get("side").is_none(), "an undeclared side must be omitted (skip_serializing_if)");
         assert!(v.get("side_any").is_some());
     }
 
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn side_matching_degrades_honestly_on_malformed_properties() {
         let empty_any = spec(None, Some(&[]));
-        assert!(empty_any.accepted_sides().is_empty(), "空 side_any = 不做侧过滤");
+        assert!(empty_any.accepted_sides().is_empty(), "an empty side_any = no side filtering");
         assert!(empty_any.matches_sides(&json!({ "side": "anything" })));
 
         // `sides` not a string array -> ignored, the scalar `side` is consulted instead.
@@ -965,7 +965,7 @@ mod tests {
         reg.perspectives.push(p_spec("cache", "Cache", Some("backend")));
         reg.node_views.insert("Cache".into(), "cache".into());
         reg.node_views.insert("Table".into(), "missing-perspective".into());
-        assert!(reg.view_for_kind("Table").is_none(), "映射到不存在的视角 = 不切换");
+        assert!(reg.view_for_kind("Table").is_none(), "mapping to a non-existent perspective = no switch");
         assert!(reg.view_for_kind_and_side("Table", Some("backend")).is_none());
         assert_eq!(reg.view_for_kind_and_side("Cache", Some("backend")).map(|p| p.id.as_str()), Some("cache"));
 

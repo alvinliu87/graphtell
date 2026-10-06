@@ -183,7 +183,7 @@ mod tests {
         });
         assert!(
             matches!(r, Err(DomainError::InvalidArgument(_))),
-            "空名（仅空白）必须被拒"
+            "an empty (whitespace-only) name must be rejected"
         );
     }
 
@@ -198,7 +198,7 @@ mod tests {
         });
         assert!(
             matches!(r, Err(DomainError::InvalidArgument(_))),
-            "不存在的 root 目录必须被拒"
+            "a non-existent root directory must be rejected"
         );
     }
 
@@ -241,10 +241,10 @@ mod tests {
             .unwrap();
 
         let all = s.list().unwrap();
-        assert_eq!(all.len(), 1, "同名重建必须只保留一个工程（不累积）");
+        assert_eq!(all.len(), 1, "recreating with the same name must keep exactly one project (no accumulation)");
         // SQLite reuses the deleted rowid on the next insert, so `first.id == second.id` is expected; the rebuild
         // contract is proven by the single surviving row pointing at the *new* root path.
-        assert_eq!(all[0].root_path, dir_b, "重建后保留的是新 root 的工程");
+        assert_eq!(all[0].root_path, dir_b, "after the rebuild the project with the new root is the one kept");
     }
 
     #[test]
@@ -276,7 +276,7 @@ mod tests {
         );
         assert!(
             matches!(r, Err(DomainError::InvalidArgument(_))),
-            "update 的非法 root 必须被拒"
+            "an illegal root in update must be rejected"
         );
     }
 
@@ -343,7 +343,7 @@ mod tests {
             )
             .unwrap();
         let sps = s.sub_projects(p.id).unwrap();
-        assert_eq!(sps.len(), 2, "应返回两个子工程");
+        assert_eq!(sps.len(), 2, "two sub-projects must be returned");
         assert!(sps.iter().all(|x| x.project_id == p.id));
     }
 
@@ -384,7 +384,7 @@ mod tests {
             )
             .unwrap();
         let fs = s.files(p.id, None).unwrap();
-        assert_eq!(fs.len(), 2, "应返回两个源文件");
+        assert_eq!(fs.len(), 2, "two source files must be returned");
         assert!(fs.iter().all(|x| x.project_id == p.id));
     }
 
@@ -428,7 +428,7 @@ mod tests {
         s.delete(p.id).unwrap();
         assert!(
             matches!(s.get(p.id), Err(DomainError::NotFound(_))),
-            "删除后 get 应为 NotFound"
+            "after deletion get must be NotFound"
         );
     }
 
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn now_reads_clock() {
         let s = svc();
-        assert_eq!(s.now(), 0, "冻结时钟应返回 0");
+        assert_eq!(s.now(), 0, "the frozen clock must return 0");
     }
 
     /// The port-injection helpers must hand back trait objects that actually work against the store.
@@ -469,7 +469,7 @@ mod tests {
             })
             .unwrap();
         let listed = reader_of(&store).list_projects().unwrap();
-        assert!(listed.iter().any(|x| x.id == p.id), "reader 端口应能列出工程");
+        assert!(listed.iter().any(|x| x.id == p.id), "the reader port must be able to list projects");
         writer_of(&store)
             .set_project_status(p.id, ProjectStatus::Ready)
             .unwrap();

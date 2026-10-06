@@ -400,13 +400,13 @@ mod tests {
         let n = NewNode::new(ProjectId(7), NodeKind("Class".to_string()), "User");
         assert_eq!(n.project_id, ProjectId(7));
         assert_eq!(n.name, "User");
-        assert!(n.id.is_none(), "id 由流水线分配");
+        assert!(n.id.is_none(), "the id is assigned by the pipeline");
         assert!(n.sub_project_id.is_none());
         assert!(n.fqn.is_none());
         assert!(n.identity.is_none());
         assert!(n.file_id.is_none());
         assert_eq!(n.span, Span::default());
-        assert_eq!(n.language.0, Language::UNKNOWN, "语言必须显式声明，不猜");
+        assert_eq!(n.language.0, Language::UNKNOWN, "the language must be declared explicitly, never guessed");
         assert_eq!(n.phase.0, Phase::CF_AST);
         assert!((n.confidence - 1.0).abs() < 1e-6);
         assert!(n.properties.is_null());
@@ -440,9 +440,9 @@ mod tests {
 
         assert_eq!(plain.key(), format!("{}:token", SynthesizedKind::NAMED));
         assert_eq!(fe.key(), format!("{}:frontend:token", SynthesizedKind::NAMED));
-        assert_ne!(fe.key(), be.key(), "两端不能合并成同一节点");
+        assert_ne!(fe.key(), be.key(), "the two ends must not merge into the same node");
         assert_ne!(fe, be);
-        assert_eq!(fe.value, "token", "显示名不受 scope 影响");
+        assert_eq!(fe.value, "token", "the display name is not affected by scope");
         assert_eq!(be.value, "token");
 
         // `with_scope` is the chainable equivalent of `named_scoped`.
@@ -487,13 +487,13 @@ mod tests {
     fn identity_key_round_trips_and_omits_an_empty_scope() {
         let plain = IdentityKey::named("token");
         let v = serde_json::to_value(&plain).unwrap();
-        assert!(v.get("scope").is_none(), "未设置 scope 时不应写出该字段");
+        assert!(v.get("scope").is_none(), "the field must not be written when scope is unset");
         assert_eq!(serde_json::from_value::<IdentityKey>(v).unwrap(), plain);
 
         let scoped = IdentityKey::named_scoped("token", "frontend");
         let back: IdentityKey =
             serde_json::from_value(serde_json::to_value(&scoped).unwrap()).unwrap();
-        assert_eq!(back, scoped, "scope 必须参与往返");
+        assert_eq!(back, scoped, "scope must take part in the round-trip");
         assert_eq!(back.key(), scoped.key());
     }
 
@@ -501,10 +501,10 @@ mod tests {
     #[test]
     fn is_wildcard_http_method_recognises_any_and_rule_case_insensitively() {
         for m in ["ANY", "any", "Any", "RULE", "rule"] {
-            assert!(is_wildcard_http_method(m), "{m} 应视为通配方法");
+            assert!(is_wildcard_http_method(m), "{m} must be treated as a wildcard method");
         }
         for m in ["GET", "POST", "PUT", "DELETE", "PATCH", "ANYTHING", ""] {
-            assert!(!is_wildcard_http_method(m), "{m} 不是通配方法");
+            assert!(!is_wildcard_http_method(m), "{m} is not a wildcard method");
         }
     }
 
@@ -558,10 +558,10 @@ mod tests {
         assert_eq!(zero, Span { start_line: 0, end_line: 0, start_byte: 0, end_byte: 0 });
 
         let s = Span { start_line: 10, end_line: 20, start_byte: 120, end_byte: 340 };
-        assert_eq!(round_trip(&s), s, "Span 走 PartialEq：往返不能丢字段");
+        assert_eq!(round_trip(&s), s, "Span relies on PartialEq: the round-trip must not lose fields");
         let v = serde_json::to_value(&s).unwrap();
         for f in ["start_line", "end_line", "start_byte", "end_byte"] {
-            assert!(v.get(f).is_some(), "持久化字段名 {f} 变了会在重载时静默丢坐标");
+            assert!(v.get(f).is_some(), "renaming the persisted field {f} would silently drop coordinates on reload");
         }
     }
 
@@ -577,7 +577,7 @@ mod tests {
             assert_eq!(serde_json::to_value(variant).unwrap(), json!(text));
             assert_eq!(serde_json::from_value::<Severity>(json!(text)).unwrap(), variant);
         }
-        assert!(serde_json::from_value::<Severity>(json!("Error")).is_err(), "拼写错了必须报错，而不是退化成 Info");
+        assert!(serde_json::from_value::<Severity>(json!("Error")).is_err(), "a misspelling must error, not degrade to Info");
     }
 
     /// Diagnostics are themselves a product surface (`location` / `payload` carry the click-through evidence),
@@ -667,7 +667,7 @@ mod tests {
             phase: Phase("AnnotatePre".to_string()),
         };
         let back: Annotation = round_trip(&ann);
-        assert_eq!(back.id, 42, "数据库分配的 id 不能被丢");
+        assert_eq!(back.id, 42, "the id assigned by the database must not be lost");
         assert_eq!(back.subkind.as_deref(), Some("pii.phone"));
         assert_eq!(back.channel.as_str(), AnnotationChannel::FKB_MARK);
         assert_eq!(back.evidence, json!({ "hook": "cf_ast" }));
@@ -683,7 +683,7 @@ mod tests {
             merge: MergeStrategy::Accumulate,
         };
         let back: NewAnnotation = round_trip(&new_ann);
-        assert_eq!(back.merge, MergeStrategy::Accumulate, "merge 策略必须随 action 一起存取");
+        assert_eq!(back.merge, MergeStrategy::Accumulate, "the merge strategy must be stored and read together with the action");
         assert!(back.subkind.is_none() && back.evidence.is_null());
 
         // The alias index key is composite: `status_text` alone would collide across classes.
@@ -701,7 +701,7 @@ mod tests {
         assert_eq!(back.key, "status_text");
         assert_eq!(back.qualifier.as_deref(), Some("app\\model\\order\\StoreOrder"));
         let unqualified = AliasEntry { qualifier: None, ..alias };
-        assert!(round_trip::<AliasEntry>(&unqualified).qualifier.is_none(), "无 qualifier 的条目不能被写成 Some");
+        assert!(round_trip::<AliasEntry>(&unqualified).qualifier.is_none(), "an entry with no qualifier must not be written as Some");
 
         let sym = SymbolEntry {
             project_id: ProjectId(1),
@@ -737,7 +737,7 @@ mod tests {
         set.insert(IdentityKey::named("token"));
         set.insert(IdentityKey::named_scoped("token", "frontend"));
         set.insert(IdentityKey::fqn("token"));
-        assert_eq!(set.len(), 3, "同名但 kind / scope 不同必须是三个独立节点");
+        assert_eq!(set.len(), 3, "the same name with different kind / scope must be three independent nodes");
 
         assert_eq!(IdentityKey::contract("get", "/x").key(), format!("{}:GET /x", SynthesizedKind::CONTRACT_ID));
         assert_eq!(IdentityKey::fqn("A").with_scope("frontend").key(), format!("{}:frontend:A", SynthesizedKind::FQN));
@@ -754,7 +754,7 @@ mod tests {
             value: "GET /x".to_string(),
             scope: None,
         };
-        assert_eq!(lower.contract_parts(), None, "当前是精确比较，kind 的拼写必须与 ContractId 完全一致");
+        assert_eq!(lower.contract_parts(), None, "the comparison is exact, so the kind must be spelled exactly like the ContractId");
         assert!(IdentityKey::contract("GET", "/x").contract_parts().is_some());
     }
 
@@ -764,7 +764,7 @@ mod tests {
     fn identity_key_loads_records_stored_without_a_scope() {
         let stored = json!({ "kind": "Named", "value": "order.pay_success" });
         let k: IdentityKey = serde_json::from_value(stored).unwrap();
-        assert_eq!(k, IdentityKey::named("order.pay_success"), "老数据缺 scope 时应补 None");
+        assert_eq!(k, IdentityKey::named("order.pay_success"), "old data missing scope must be filled in with None");
         assert_eq!(k.key(), format!("{}:order.pay_success", SynthesizedKind::NAMED));
     }
 
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn display_name_prefers_the_identity_even_when_its_value_is_empty() {
         let n = node("short", None, Some(IdentityKey::named("")));
-        assert_eq!(n.display_name(), "", "identity 优先于短名");
+        assert_eq!(n.display_name(), "", "identity takes precedence over the short name");
     }
 
     /// `merge` is the one FKB-facing enum spelled `PascalCase` (every sibling enum is snake_case) — writing

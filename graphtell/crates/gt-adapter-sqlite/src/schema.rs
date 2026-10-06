@@ -240,7 +240,7 @@ mod tests {
             "pipeline_runs",
             "project_rule_config",
         ] {
-            assert!(exists(&conn, "table", t), "缺少表 `{t}`");
+            assert!(exists(&conn, "table", t), "missing table `{t}`");
         }
     }
 
@@ -258,10 +258,10 @@ mod tests {
                 .unwrap()
                 .map(|r| r.unwrap())
                 .collect();
-            assert!(!fks.is_empty(), "`{t}` 必须有指向 nodes 的外键");
+            assert!(!fks.is_empty(), "`{t}` must have a foreign key to nodes");
             assert!(
                 fks.iter().all(|(table, on_delete)| table == "nodes" && on_delete == "CASCADE"),
-                "`{t}` 的外键必须是 REFERENCES nodes ON DELETE CASCADE: {fks:?}"
+                "the foreign key of `{t}` must be REFERENCES nodes ON DELETE CASCADE: {fks:?}"
             );
         }
         // `edges` references nodes on both endpoints.
@@ -280,7 +280,7 @@ mod tests {
     fn edge_batch_lookup_indexes_exist() {
         let conn = apply_all();
         for idx in ["idx_edges_proj_to", "idx_edges_proj_from"] {
-            assert!(exists(&conn, "index", idx), "缺少复合索引 `{idx}`（批量取边会退化）");
+            assert!(exists(&conn, "index", idx), "missing composite index `{idx}` (batch edge reads would degrade)");
         }
     }
 
@@ -293,7 +293,7 @@ mod tests {
         let conn = apply_all();
         assert!(
             !exists(&conn, "index", "idx_annotations_project"),
-            "`idx_annotations_project` 不应由 MIGRATIONS 创建（旧库缺列会让整库打不开）"
+            "`idx_annotations_project` must not be created by MIGRATIONS (an old database missing the column would not open at all)"
         );
     }
 
@@ -322,7 +322,7 @@ mod tests {
             "idx_symbols",
             "idx_diag_project",
         ] {
-            assert!(exists(&conn, "index", idx), "缺少索引 `{idx}`（性能/正确性回归）");
+            assert!(exists(&conn, "index", idx), "missing index `{idx}` (performance / correctness regression)");
         }
     }
 
@@ -346,7 +346,7 @@ mod tests {
         );
         assert!(
             dup.is_err(),
-            "edges 唯一键 (project_id,kind,from_id,to_id) 应拒绝重复: {dup:?}"
+            "the edges unique key (project_id,kind,from_id,to_id) must reject duplicates: {dup:?}"
         );
         // a different key tuple is allowed
         conn.execute(
@@ -364,7 +364,7 @@ mod tests {
             "INSERT INTO aliases (project_id, namespace, key, node_id) VALUES (1, 'ns', 'k', 6)",
             [],
         );
-        assert!(dup.is_err(), "aliases 唯一键应拒绝重复: {dup:?}");
+        assert!(dup.is_err(), "the aliases unique key must reject duplicates: {dup:?}");
 
         conn.execute(
             "INSERT INTO symbol_tables (project_id, table_name, key, value) VALUES (1, 'schema', 'users', 'x')",
@@ -375,7 +375,7 @@ mod tests {
             "INSERT INTO symbol_tables (project_id, table_name, key, value) VALUES (1, 'schema', 'users', 'y')",
             [],
         );
-        assert!(dup.is_err(), "symbol_tables 唯一键应拒绝重复: {dup:?}");
+        assert!(dup.is_err(), "the symbol_tables unique key must reject duplicates: {dup:?}");
     }
 
     /// The `REFERENCES nodes ON DELETE CASCADE` declaration only matters if it actually fires: an edge to a
@@ -403,7 +403,7 @@ mod tests {
         );
         assert!(
             orphan.is_err(),
-            "外键开启时指向不存在节点的边应被拒绝: {orphan:?}"
+            "with foreign keys on, an edge pointing at a missing node must be rejected: {orphan:?}"
         );
 
         // Cascade: deleting the node removes its edges.
@@ -411,6 +411,6 @@ mod tests {
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM edges WHERE to_id = 100", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(remaining, 0, "删除节点应级联删除其边");
+        assert_eq!(remaining, 0, "deleting a node must cascade to its edges");
     }
 }

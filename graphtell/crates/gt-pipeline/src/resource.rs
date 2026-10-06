@@ -326,14 +326,14 @@ mod tests {
 
         run(&mut ctx, &reg, &NoFs);
 
-        assert!(ctx.ws.calls.is_empty(), "未识别该库的子项目不应注入任何调用点");
+        assert!(ctx.ws.calls.is_empty(), "a sub-project that does not use the library must not get any call site injected");
         assert!(
             !ctx
                 .ws
                 .edges()
                 .iter()
                 .any(|e| e.kind.as_str() == EdgeKind::HAS_CALL_SITE),
-            "不应产出锚定边"
+            "no anchoring edge must be produced"
         );
     }
 
@@ -375,7 +375,7 @@ mod tests {
 
         run(&mut ctx, &reg, &NoFs);
 
-        assert_eq!(ctx.ws.calls.len(), 1, "失败的适配器被跳过，健康的仍然注入");
+        assert_eq!(ctx.ws.calls.len(), 1, "a failing adapter is skipped while the healthy one still injects");
     }
 
     #[test]
@@ -407,7 +407,7 @@ mod tests {
             .filter_map(|c| c.sub.map(|s| s.get()))
             .collect();
         assert_eq!(subs, vec![1, 1, 3, 3]);
-        assert!(!subs.contains(&2), "未识别的子项目不应出现");
+        assert!(!subs.contains(&2), "an unrecognised sub-project must not appear");
     }
 
     // ---------------------------------------------------------------- `apply()` materialisation
@@ -462,7 +462,7 @@ mod tests {
                     && e.from_id == owner
                     && e.to_id == rec.node
             }),
-            "必须锚定到 owner"
+            "it must be anchored to the owner"
         );
     }
 
@@ -525,7 +525,7 @@ mod tests {
                 .edges()
                 .iter()
                 .any(|e| e.kind.as_str() == EdgeKind::HAS_CALL_SITE),
-            "解析不到锚点时不建边"
+            "no edge is created when the anchor cannot be resolved"
         );
     }
 
@@ -623,7 +623,7 @@ mod tests {
 
         run(&mut ctx, &reg, &NoFs);
 
-        assert_eq!(ctx.ws.calls.len(), 1, "只有可解析的伪调用被注入");
+        assert_eq!(ctx.ws.calls.len(), 1, "only resolvable pseudo-calls are injected");
         assert_eq!(ctx.ws.calls[0].owner_fqn, "com.x.UserMapper.find");
         // Exactly one anchor edge — the unresolvable entry must not produce one.
         let anchored = ctx

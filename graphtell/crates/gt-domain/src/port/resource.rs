@@ -157,7 +157,7 @@ mod tests {
 
         assert!(
             DefaultResourceAdapterRegistry::default().adapters().is_empty(),
-            "空 registry 应返回空列表"
+            "an empty registry must return an empty list"
         );
     }
 }

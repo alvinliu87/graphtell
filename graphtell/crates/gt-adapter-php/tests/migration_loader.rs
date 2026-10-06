@@ -67,7 +67,7 @@ fn migration_loader_emits_stripped_schema_facts() {
     assert_eq!(
         tables,
         vec!["orders".to_string(), "users".to_string()],
-        "表前缀 eb_ 应被剥除: {tables:?}"
+        "the eb_ table prefix must be stripped: {tables:?}"
     );
 
     let users = facts
@@ -99,7 +99,7 @@ fn unknown_loader_id_is_empty() {
             &[],
         )
         .expect("load ok (empty)");
-    assert!(facts.is_empty(), "未知 loader 应返回空向量而非报错");
+    assert!(facts.is_empty(), "an unknown loader must return an empty vector rather than error");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -130,7 +130,7 @@ fn stack_prefixed_loader_id_is_not_recognised() {
         .expect("load ok");
     assert!(
         facts.is_empty(),
-        "栈前缀 id `php_migration_schema` 不应再被识别（已彻底移除别名）: {facts:?}"
+        "the stack-prefixed id `php_migration_schema` must no longer be recognised (the alias is gone for good): {facts:?}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

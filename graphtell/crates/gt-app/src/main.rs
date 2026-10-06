@@ -680,7 +680,7 @@ mod tests {
         std::fs::write(dir.join("sub/h.md"), b"").unwrap();
         let mut out = Vec::new();
         collect_yaml(&dir, &mut out);
-        assert_eq!(out.len(), 5, "应递归收集 *.yaml/*.yml（含大小写变体），排除其他扩展名");
+        assert_eq!(out.len(), 5, "*.yaml/*.yml must be collected recursively (case variants included), other extensions excluded");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -697,13 +697,13 @@ mod tests {
     #[test]
     fn validate_fkbs_errors_on_missing_dir() {
         let dir = std::env::temp_dir().join(format!("gt_main_it_{}_no_fkb", std::process::id()));
-        assert!(validate_fkbs(&dir).is_err(), "不存在的 FKB 目录必须 bail（非零退出）");
+        assert!(validate_fkbs(&dir).is_err(), "a non-existent FKB directory must bail (non-zero exit)");
     }
 
     #[test]
     fn validate_fkbs_ok_on_empty_dir() {
         let dir = temp_root("empty_fkb");
-        assert!(validate_fkbs(&dir).is_ok(), "空目录（无 yaml）应返回 Ok");
+        assert!(validate_fkbs(&dir).is_ok(), "an empty directory (no yaml) must return Ok");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -713,7 +713,7 @@ mod tests {
         std::fs::write(dir.join("bad.yaml"), b"key: [unclosed").unwrap();
         assert!(
             validate_fkbs(&dir).is_err(),
-            "解析失败的 FKB 文件必须使 validate 返回 Err（CI 非零退出）"
+            "an FKB file that fails to parse must make validate return Err (non-zero exit in CI)"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

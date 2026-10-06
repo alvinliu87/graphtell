@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn ensure_leading_slash_normalises_route_identity() {
         assert_eq!(ensure_leading_slash("pages/index/index"), "/pages/index/index");
-        assert_eq!(ensure_leading_slash("/pages/index/index"), "/pages/index/index", "已有斜杠不重复加");
+        assert_eq!(ensure_leading_slash("/pages/index/index"), "/pages/index/index", "an existing slash is not added twice");
         assert_eq!(ensure_leading_slash(""), "/");
     }
 
@@ -225,8 +225,8 @@ mod tests {
     fn line_of_reports_the_first_occurrence_line() {
         let src = "{\n  \"pages\": [\n    \"pages/index/index\"\n  ]\n}\n";
         assert_eq!(line_of(src, "\"pages/index/index\""), 3);
-        assert_eq!(line_of("abc\nx\nabc", "abc"), 1, "多处出现时取第一次");
-        assert_eq!(line_of(src, "nope"), 6, "找不到时退化为最后一行，而不是 0");
+        assert_eq!(line_of("abc\nx\nabc", "abc"), 1, "with several occurrences the first one is taken");
+        assert_eq!(line_of(src, "nope"), 6, "when it is not found it degrades to the last line, not to 0");
         assert_eq!(line_of("a\nb", ""), 1);
     }
 
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(facts.config_entries.len(), 1);
         assert_eq!(
             facts.config_entries[0].span.start_line, 3,
-            "应指向该页面字符串所在行（可点击溯源）"
+            "it must point at the line of that page string (clickable provenance)"
         );
     }
 
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn non_string_page_entries_are_skipped() {
         let facts = parse_src(r#"{ "pages": ["pages/a/a", 1, null, true] }"#);
-        assert_eq!(facts.config_entries.len(), 1, "只有字符串条目应成为页面");
+        assert_eq!(facts.config_entries.len(), 1, "only string entries must become pages");
         assert_eq!(facts.config_entries[0].key_path, "pages.0");
     }
 
@@ -301,8 +301,8 @@ mod tests {
         assert_eq!(p.language(), Language::new("json"));
         assert_eq!(p.extensions(), &["json"]);
         assert_eq!(p.namespace_separator(), &['.']);
-        assert_eq!(p.member_separator(), ".", "JSON 没有类，但分隔符仍须显式声明而非继承默认值");
-        assert!(p.manifest_files().is_empty(), "pages.json 不是任何栈的 manifest");
+        assert_eq!(p.member_separator(), ".", "JSON has no classes, but the separator must still be declared explicitly rather than inherited from a default");
+        assert!(p.manifest_files().is_empty(), "pages.json is not a manifest of any stack");
         assert!(p.exclude_dirs().is_empty());
     }
 
@@ -314,7 +314,7 @@ mod tests {
             let facts = parse_src(src);
             assert!(
                 facts.config_entries.is_empty(),
-                "顶层非对象应直接返回空: {src} -> {:?}",
+                "a non-object at the top level must return empty: {src} -> {:?}",
                 facts.config_entries
             );
         }
@@ -337,7 +337,7 @@ mod tests {
         );
         assert!(
             facts.config_entries.is_empty(),
-            "畸形子包条目应整体跳过: {:?}",
+            "a malformed sub-package entry must be skipped entirely: {:?}",
             facts.config_entries
         );
     }
@@ -366,7 +366,7 @@ mod tests {
                 ("subPackages.0.pages.0", "/A/a/a"),
                 ("subPackages.0.pages.1", "/A/b/b"),
             ],
-            "子包内多页应按位置索引: {got:?}"
+            "several pages in a sub-package must be indexed by position: {got:?}"
         );
     }
 }

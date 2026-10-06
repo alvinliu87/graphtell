@@ -258,8 +258,8 @@ node_views:
         std::fs::write(dir.join("a.YAML"), PERSPECTIVE_YAML).unwrap();
         std::fs::write(dir.join("b.YML"), "perspectives:\n  - id: table\n    mode: object\n").unwrap();
         let reg = YamlViewRegistry::load_dir(&dir).expect("load_dir succeeds");
-        assert!(reg.registry().by_id("route").is_some(), ".YAML (大写) 必须被收录");
-        assert!(reg.registry().by_id("table").is_some(), ".YML (大写) 必须被收录");
+        assert!(reg.registry().by_id("route").is_some(), ".YAML (upper-case) must be collected");
+        assert!(reg.registry().by_id("table").is_some(), ".YML (upper-case) must be collected");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -273,8 +273,8 @@ node_views:
         std::fs::write(dir.join("data.json"), "{\"x\":1}").unwrap();
         std::fs::write(dir.join("noext"), "route: x").unwrap();
         let reg = YamlViewRegistry::load_dir(&dir).expect("load_dir succeeds");
-        assert_eq!(reg.registry().perspectives.len(), 1, "只有 .yaml 被加载");
-        assert_eq!(reg.sources().len(), 1, "非 yaml 文件不计为 source");
+        assert_eq!(reg.registry().perspectives.len(), 1, "only .yaml is loaded");
+        assert_eq!(reg.sources().len(), 1, "a non-yaml file does not count as a source");
         assert_eq!(reg.sources()[0].extension().unwrap().to_str().unwrap(), "yaml");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -287,11 +287,11 @@ node_views:
         std::fs::write(dir.join("good.yaml"), PERSPECTIVE_YAML).unwrap();
         std::fs::write(dir.join("bad.yaml"), "perspectives:\n  - id: x\n    mode: notarealmode\n").unwrap();
         let reg = YamlViewRegistry::load_dir(&dir).expect("load_dir tolerates a semantically invalid file");
-        assert_eq!(reg.registry().perspectives.len(), 1, "好文件仍在");
+        assert_eq!(reg.registry().perspectives.len(), 1, "the good file is still there");
         assert_eq!(reg.registry().by_id("route").unwrap().id, "route");
         assert!(
             YamlViewRegistry::load_file(&dir.join("bad.yaml")).is_err(),
-            "load_file 应暴露 schema 错误"
+            "load_file must surface the schema error"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -307,12 +307,12 @@ node_views:
     #[test]
     fn every_built_in_view_file_parses() {
         let root = builtin_root();
-        assert!(root.is_dir(), "views 目录应存在: {}", root.display());
+        assert!(root.is_dir(), "the views directory must exist: {}", root.display());
         let files = collect_yaml(&root);
-        assert!(!files.is_empty(), "views 目录下应至少有 1 个 yaml 文件");
+        assert!(!files.is_empty(), "the views directory must contain at least one yaml file");
         for f in &files {
             YamlViewRegistry::load_file(f).unwrap_or_else(|e| {
-                panic!("视角声明解析失败（会被静默跳过，导致该视角消失）: {}: {e}", f.display())
+                panic!("the perspective declaration failed to parse (it would be skipped silently, losing that perspective): {}: {e}", f.display())
             });
         }
     }
@@ -326,23 +326,23 @@ node_views:
         let mut total = 0usize;
         let mut ids = std::collections::HashSet::new();
         for f in &files {
-            let reg = YamlViewRegistry::load_file(f).expect("built-in 声明应可解析");
+            let reg = YamlViewRegistry::load_file(f).expect("the built-in declaration must parse");
             total += reg.perspectives.len();
             for p in &reg.perspectives {
                 assert!(
                     ids.insert(p.id.clone()),
-                    "重复视角 id（下游会静默丢弃一个）: {} ({})",
+                    "duplicate perspective id (one is dropped silently downstream): {} ({})",
                     p.id,
                     f.display()
                 );
             }
         }
-        let merged = YamlViewRegistry::load_dir(&root).expect("内置视角目录应能加载");
-        assert!(!merged.registry().perspectives.is_empty(), "内置视角不应为空");
+        let merged = YamlViewRegistry::load_dir(&root).expect("the built-in perspectives directory must load");
+        assert!(!merged.registry().perspectives.is_empty(), "the built-in perspectives must not be empty");
         assert_eq!(
             merged.registry().perspectives.len(),
             total,
-            "有视角因 id 冲突被覆盖而丢失"
+            "a perspective was lost because an id conflict overwrote it"
         );
     }
 }

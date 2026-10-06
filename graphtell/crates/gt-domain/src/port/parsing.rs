@@ -215,8 +215,8 @@ mod tests {
     fn language_for_extension_is_case_insensitive_and_first_match() {
         let reg = StubRegistry { php: PhpLikeParser, js: JsLikeParser };
         assert_eq!(reg.language_for_extension("php"), Some(Language::new("php")));
-        assert_eq!(reg.language_for_extension("PHP"), Some(Language::new("php")), "大小写不敏感");
-        assert_eq!(reg.language_for_extension("ts"), Some(Language::new("javascript")), "ts 归属 javascript");
-        assert!(reg.language_for_extension("unknownext").is_none(), "未知扩展名返回 None");
+        assert_eq!(reg.language_for_extension("PHP"), Some(Language::new("php")), "case-insensitive");
+        assert_eq!(reg.language_for_extension("ts"), Some(Language::new("javascript")), "ts belongs to javascript");
+        assert!(reg.language_for_extension("unknownext").is_none(), "an unknown extension returns None");
     }
 }

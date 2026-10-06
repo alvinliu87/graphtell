@@ -1763,7 +1763,7 @@ mod tests {
     fn like_escape_neutralises_wildcards() {
         assert_eq!(like_escape("a_b"), "a\\_b");
         assert_eq!(like_escape("100%"), "100\\%");
-        assert_eq!(like_escape("a\\b"), "a\\\\b", "反斜杠必须先转义，否则会被再加一层");
+        assert_eq!(like_escape("a\\b"), "a\\\\b", "backslashes must be escaped first, otherwise another layer is added");
         assert_eq!(like_escape("plain"), "plain");
     }
 
@@ -1773,16 +1773,16 @@ mod tests {
     fn merge_into_merges_nested_objects_but_replaces_scalars() {
         let mut base = serde_json::json!({ "a": 1, "nested": { "x": 1, "y": 2 }, "list": [1, 2] });
         merge_into(&mut base, &serde_json::json!({ "a": 9, "nested": { "y": 20, "z": 30 }, "list": [3] }));
-        assert_eq!(base["a"], 9, "标量应被覆盖");
-        assert_eq!(base["nested"]["x"], 1, "嵌套对象应逐键合并，未提及的键保留");
+        assert_eq!(base["a"], 9, "a scalar must be overwritten");
+        assert_eq!(base["nested"]["x"], 1, "nested objects are merged key by key, keys not mentioned are kept");
         assert_eq!(base["nested"]["y"], 20);
-        assert_eq!(base["nested"]["z"], 30, "新增键应加入");
-        assert_eq!(base["list"], serde_json::json!([3]), "数组应整体替换，不做合并");
+        assert_eq!(base["nested"]["z"], 30, "a new key must be added");
+        assert_eq!(base["list"], serde_json::json!([3]), "an array is replaced wholesale, never merged");
 
         // null is a no-op; a non-object patch replaces the base outright.
         let mut b2 = serde_json::json!({ "a": 1 });
         merge_into(&mut b2, &Value::Null);
-        assert_eq!(b2, serde_json::json!({ "a": 1 }), "null 补丁应为无操作");
+        assert_eq!(b2, serde_json::json!({ "a": 1 }), "a null patch must be a no-op");
         merge_into(&mut b2, &serde_json::json!(5));
         assert_eq!(b2, serde_json::json!(5));
     }
@@ -1791,16 +1791,16 @@ mod tests {
     #[test]
     fn identity_from_key_reads_both_spellings() {
         let json = identity_from_key(r#"{"kind":"table","value":"users","scope":"db1"}"#)
-            .expect("JSON 形式应解析");
+            .expect("the JSON form must parse");
         assert_eq!(json.value, "users");
-        assert_eq!(json.scope.as_deref(), Some("db1"), "JSON 形式必须保留 scope");
+        assert_eq!(json.scope.as_deref(), Some("db1"), "the JSON form must preserve scope");
 
-        let flat = identity_from_key("table:users").expect("旧格式应解析");
+        let flat = identity_from_key("table:users").expect("the old format must parse");
         assert_eq!(flat.kind.as_str(), "table");
         assert_eq!(flat.value, "users");
-        assert!(flat.scope.is_none(), "旧格式没有 scope");
+        assert!(flat.scope.is_none(), "the old format has no scope");
 
-        let named = identity_from_key("SomeClass").expect("裸名字应解析");
+        let named = identity_from_key("SomeClass").expect("a bare name must parse");
         assert_eq!(named.value, "SomeClass");
     }
 
@@ -1816,7 +1816,7 @@ mod tests {
         assert!(matches!(parse_status("failed"), ProjectStatus::Failed));
         assert!(
             matches!(parse_status("who-knows"), ProjectStatus::Created),
-            "未知状态应退化为 Created，而不是报错"
+            "an unknown status must degrade to Created, not error"
         );
     }
 
@@ -1846,7 +1846,7 @@ mod tests {
         second.nodes.push(node(pid, 3, "C"));
         s.apply(&second).unwrap();
         let stats = s.stats(pid).unwrap();
-        assert_eq!(stats.nodes, 1, "重建后应只剩新节点，而不是累积: {stats:?}");
+        assert_eq!(stats.nodes, 1, "after a rebuild only the new node may remain, nothing accumulates: {stats:?}");
     }
 
     /// The foreign keys to `nodes` must really cascade: without them "the node is gone but the edge remains" is
@@ -1869,7 +1869,7 @@ mod tests {
         s.apply(&reset).unwrap();
         let after = s.stats(pid).unwrap();
         assert_eq!(after.nodes, 0);
-        assert_eq!(after.edges, 0, "边必须随节点级联删除，否则留下不可检测的脏数据: {after:?}");
+        assert_eq!(after.edges, 0, "edges must be cascade-deleted with their node, otherwise undetectable dirty data is left behind: {after:?}");
     }
 
     // ---- helpers for the added coverage ----
@@ -1896,7 +1896,7 @@ mod tests {
         assert_eq!(p.name, "alpha");
         assert_eq!(p.status, ProjectStatus::Created);
         assert_eq!(p.root_path, PathBuf::from("/data/alpha"));
-        let got = s.get_project(p.id).unwrap().expect("应存在");
+        let got = s.get_project(p.id).unwrap().expect("it must exist");
         assert_eq!(got.description.as_deref(), Some("desc"));
         assert_eq!(s.list_projects().unwrap().len(), 1);
     }
@@ -2080,7 +2080,7 @@ mod tests {
         s.apply(&dirty).unwrap();
 
         let out = s.edges_of(NodeId(1), EdgeDirection::Outgoing).unwrap();
-        assert_eq!(out.len(), 1, "应只返回属于项目 A 的边: {out:?}");
+        assert_eq!(out.len(), 1, "only the edges of project A must be returned: {out:?}");
         assert_eq!(out[0].to_id, NodeId(2));
         assert_eq!(s.edges_of(NodeId(2), EdgeDirection::Incoming).unwrap().len(), 1);
         assert_eq!(s.edges_of(NodeId(1), EdgeDirection::Both).unwrap().len(), 1);
@@ -2141,7 +2141,7 @@ mod tests {
         d.nodes.push(node(p.id, 1, "A"));
         d.edges.push(NewEdge::new(p.id, EdgeKind::new("Calls"), NodeId(1), NodeId(1)));
         s.apply(&d).unwrap();
-        let e = s.find_edge(EdgeId(1)).unwrap().expect("应存在");
+        let e = s.find_edge(EdgeId(1)).unwrap().expect("it must exist");
         assert_eq!(e.kind.as_str(), "Calls");
         assert!(s.find_edge(EdgeId(999)).unwrap().is_none());
     }
@@ -2239,7 +2239,7 @@ mod tests {
         assert_eq!(limited.len(), 1);
         assert!(
             matches!(limited[0].severity, Severity::Error),
-            "LIMIT 下应优先返回最高严重度: {limited:?}"
+            "under LIMIT the highest severity must be returned first: {limited:?}"
         );
     }
 
@@ -2260,7 +2260,7 @@ mod tests {
         };
         s.push_diagnostics(&[mk(Some(SubProjectId(1))), mk(None)]).unwrap();
         let filtered = s.list_diagnostics_by_code(p.id, "rule:", Some(&[SubProjectId(1)]), 100).unwrap();
-        assert_eq!(filtered.len(), 2, "共享诊断 (NULL sub_project_id) 应通过过滤: {filtered:?}");
+        assert_eq!(filtered.len(), 2, "a shared diagnostic (NULL sub_project_id) must pass the filter: {filtered:?}");
     }
 
     #[test]
@@ -2333,7 +2333,7 @@ mod tests {
         .unwrap();
         assert!(
             s.get_rule_configs(p.id).unwrap().is_empty(),
-            "空覆盖（enabled=None 且 options 为空）应删除行"
+            "an empty override (enabled=None with empty options) must delete the row"
         );
     }
 
@@ -2358,8 +2358,8 @@ mod tests {
         d3.kind_patches.push((NodeId(1), NodeKind::new("Middleware")));
         s.apply(&d3).unwrap();
         let n = s.get_node(NodeId(1)).unwrap().unwrap();
-        assert_eq!(n.kind.as_str(), "Middleware", "kind_patches 应原地提升种类，不新建节点");
-        assert_eq!(s.stats(p.id).unwrap().nodes, 1, "提升后仍应只有一个节点");
+        assert_eq!(n.kind.as_str(), "Middleware", "kind_patches must promote the kind in place, without creating a node");
+        assert_eq!(s.stats(p.id).unwrap().nodes, 1, "there must still be only one node after the promotion");
     }
 
     #[test]
@@ -2392,15 +2392,15 @@ mod tests {
         let (out, inc, sem_inc) = s.chain_adjacency(p.id).unwrap();
 
         // both the syntax `Calls` and the semantic `Triggers` edge populate the call-chain adjacency
-        assert_eq!(out.len(), 2, "chain 出边应来自 Calls 与 Triggers: {out:?}");
+        assert_eq!(out.len(), 2, "chain out-edges must come from Calls and Triggers: {out:?}");
         assert_eq!(out[&1], vec![2]);
         assert_eq!(out[&2], vec![3]);
-        assert_eq!(inc.len(), 2, "chain 入边应来自 Calls 与 Triggers: {inc:?}");
+        assert_eq!(inc.len(), 2, "chain in-edges must come from Calls and Triggers: {inc:?}");
         assert_eq!(inc[&2], vec![1]);
         assert_eq!(inc[&3], vec![2]);
 
         // only the semantic edge should land in the semantic in-edge tally (`Calls` is syntax-only)
-        assert_eq!(sem_inc.len(), 1, "semantic 入边只应含 Triggers: {sem_inc:?}");
+        assert_eq!(sem_inc.len(), 1, "semantic in-edges must contain only Triggers: {sem_inc:?}");
         assert_eq!(sem_inc[&3], vec![2]);
 
         // the plain `Contains` edge (1->3) must appear in none of the three maps: the exact-value asserts above

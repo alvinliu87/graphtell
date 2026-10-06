@@ -58,7 +58,7 @@ mod tests {
         let e = DomainError::infra("disk full");
         match e {
             DomainError::Infrastructure(ref msg) => assert_eq!(msg, "disk full"),
-            other => panic!("infra 必须产生 Infrastructure 变体，得到 {other:?}"),
+            other => panic!("infra must produce the Infrastructure variant, got {other:?}"),
         }
         assert_eq!(e.to_string(), "infrastructure error: disk full");
     }
@@ -83,7 +83,7 @@ mod tests {
     fn from_serde_json_error_yields_json_variant() {
         let je: serde_json::Error = serde_json::from_str::<serde_json::Value>("{not valid").unwrap_err();
         let de: DomainError = je.into();
-        assert!(matches!(de, DomainError::Json(_)), "serde_json::Error 必须转到 Json 变体");
+        assert!(matches!(de, DomainError::Json(_)), "a serde_json::Error must be converted to the Json variant");
     }
 
     /// Pin the `Display` format of the field-bearing variants so the `{file}: {reason}` / path wording is not

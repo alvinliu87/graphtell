@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(
             ctx.ws.annotation_count(),
             3,
-            "3 个跨语言、循环内的外部调用应被捕获"
+            "the 3 cross-language external calls inside the loop must be captured"
         );
         assert!(ctx.ws.has_annotation(NodeId::new(1), EXT_IN_LOOP));
         assert!(ctx.ws.has_annotation(NodeId::new(2), EXT_IN_LOOP));

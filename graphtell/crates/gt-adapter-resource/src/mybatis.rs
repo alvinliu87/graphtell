@@ -279,7 +279,7 @@ mod tests {
         assert!((c.confidence - PSEUDO_CALL_CONFIDENCE).abs() < f32::EPSILON);
         assert_eq!(c.file, "resources/mapper/CarouselMapper.xml");
         assert_eq!(c.props.get("mapper").and_then(|v| v.as_str()), Some("resources/mapper/CarouselMapper.xml"));
-        assert_eq!(c.span.start_line, 3, "行号应指向该语句所在行，供 UI 定位");
+        assert_eq!(c.span.start_line, 3, "the line number must point at the line of that statement so the UI can locate it");
     }
 
     /// All four statement kinds map to their verb, and a join yields one call per table.
@@ -347,7 +347,7 @@ mod tests {
             ),
         ]);
         let calls = pseudo(&facts);
-        assert_eq!(calls.len(), 1, "同一 语句x表 只应出现一次: {calls:?}");
+        assert_eq!(calls.len(), 1, "the same statement x table must appear only once: {calls:?}");
     }
 
     /// Malformed shapes must be skipped rather than guessed: mismatched closing tag, no `id`, no namespace.
@@ -370,7 +370,7 @@ mod tests {
             ("other.xml", "<beans><bean id=\"x\"/></beans>"),
             ("pom.xml", "<project><modelVersion>4</modelVersion></project>"),
         ]);
-        assert!(facts.is_empty(), "畸形/非 mapper 文件不应产生事实: {facts:?}");
+        assert!(facts.is_empty(), "a malformed / non-mapper file must not produce facts: {facts:?}");
     }
 
     /// Dependency / build directories are pruned: a mapper vendored into `target/` must not be scanned.
@@ -380,7 +380,7 @@ mod tests {
             "target/classes/mapper/Stale.xml",
             "<mapper namespace=\"ns.Stale\">\n<select id=\"q\">select * from tb_stale</select>\n</mapper>\n",
         )]);
-        assert!(facts.is_empty(), "target/ 下的 mapper 不应被扫描: {facts:?}");
+        assert!(facts.is_empty(), "a mapper under target/ must not be scanned: {facts:?}");
     }
 
     #[test]

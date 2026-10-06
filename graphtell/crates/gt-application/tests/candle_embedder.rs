@@ -52,8 +52,8 @@ fn outputs_are_unit_length_and_match_dim() {
         emb.embed("apply discount to cart"),
         emb.embed_query("apply discount"),
     ] {
-        assert_eq!(v.len(), dim, "输出维度必须等于 dim()");
-        assert!((l2(&v) - 1.0).abs() < 1e-4, "向量必须 L2 归一化为单位长度，得到 {}", l2(&v));
+        assert_eq!(v.len(), dim, "the output dimension must equal dim()");
+        assert!((l2(&v) - 1.0).abs() < 1e-4, "the vector must be L2-normalised to unit length, got {}", l2(&v));
     }
 
     let batch = emb.embed_batch(&[
@@ -80,7 +80,7 @@ fn embed_batch_single_item_matches_embed() {
     assert_eq!(batched.len(), 1);
     assert!(
         all_close(&single, &batched[0], 1e-3),
-        "单条 batch 必须等于单条 embed（doc 侧同前缀、同归一）"
+        "a batch of one must equal a single embed (same prefix and normalisation on the doc side)"
     );
 }
 
@@ -97,16 +97,16 @@ fn query_and_doc_encodings_differ_for_same_text() {
     assert_ne!(q.len(), 0);
     assert!(
         !all_close(&q, &d, 1e-2),
-        "query 侧带检索前缀，与 doc 侧编码必须不同"
+        "the query side carries a retrieval prefix, so its encoding must differ from the doc side"
     );
     // Both still unit-length and in the same space: they must correlate above the noise floor.
     let sim = cosine(&q, &d);
-    assert!(sim > 0.0, "query/doc 同源文本应正相关，得到 {sim}");
+    assert!(sim > 0.0, "query/doc of the same source text must correlate positively, got {sim}");
 }
 
 /// An empty batch is a no-op, not a shape panic (the forward pass cannot take a `batch x 0` tensor).
 #[test]
 fn embed_batch_empty_is_empty() {
     let Some(emb) = embedder_or_skip() else { return };
-    assert!(emb.embed_batch(&[]).is_empty(), "空 batch 必须返回空 vec");
+    assert!(emb.embed_batch(&[]).is_empty(), "an empty batch must return an empty vec");
 }

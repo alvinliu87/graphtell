@@ -101,7 +101,7 @@ impl OrtBgeEmbedder {
             .get(2)
             .and_then(|d| d.to_i64().ok())
             .map(|d| d as usize)
-            .ok_or("无法从 ONNX 输出 fact 推断 hidden 维度")?;
+            .ok_or("cannot infer the hidden dimension from the ONNX output fact")?;
         // tract 0.23: `into_runnable()` returns `Arc<SimplePlan<…>>` directly.
         let model: Arc<BgeModel> = typed.into_runnable()?;
         let tokenizer = Tokenizer::from_file(tokenizer_json)?;
@@ -119,7 +119,7 @@ impl OrtBgeEmbedder {
         } else {
             text.to_string()
         };
-        let enc = self.tokenizer.encode(t, true).expect("tokenize 失败");
+        let enc = self.tokenizer.encode(t, true).expect("tokenisation failed");
         let mut ids: Vec<i64> = enc.get_ids().iter().map(|x| *x as i64).collect();
         let mut attn = vec![1i64; ids.len()];
         if ids.len() > MAX_TOKENS {

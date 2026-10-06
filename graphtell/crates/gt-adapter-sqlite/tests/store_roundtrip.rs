@@ -172,9 +172,9 @@ fn count_nodes_accepts_any_party_with_evidence() {
     let contracts = Some("HttpContract");
     assert_eq!(count(contracts, &["backend"]), 2, "bridge + backend-only");
     assert_eq!(count(contracts, &["frontend"]), 2, "bridge + frontend-only");
-    assert_eq!(count(contracts, &["backend", "frontend"]), 3, "三方各行按需，无重复计数");
-    assert_eq!(count(contracts, &["external"]), 0, "没有证据的一方不该命中");
-    assert_eq!(count(contracts, &[]), 4, "空集合 = 不过滤");
+    assert_eq!(count(contracts, &["backend", "frontend"]), 3, "each of the three sides counts on demand, with no double counting");
+    assert_eq!(count(contracts, &["external"]), 0, "a side with no evidence must not match");
+    assert_eq!(count(contracts, &[]), 4, "an empty set = no filtering");
     // Legacy rows (scalar only) keep working, which is what makes the filter safe without a rebuild.
     assert_eq!(count(Some("Cache"), &["backend"]), 1);
     assert_eq!(count(Some("Cache"), &["frontend"]), 0);

@@ -311,20 +311,20 @@ rules:
 
         assert!(
             YamlRuleSet::load_file(&root.join("nope.yaml")).is_err(),
-            "缺失文件必须报错，而不是返回空"
+            "a missing file must error, not return empty"
         );
 
         let bad = root.join("bad.yaml");
         std::fs::write(&bad, "rules: [ unclosed").unwrap();
-        let err = YamlRuleSet::load_file(&bad).expect_err("坏 YAML 必须报错");
+        let err = YamlRuleSet::load_file(&bad).expect_err("bad YAML must error");
         assert!(
             err.to_string().contains("bad.yaml"),
-            "错误信息应带上文件路径以便定位: {err}"
+            "the error message must carry the file path so it can be located: {err}"
         );
 
         let good = root.join("good.yaml");
         std::fs::write(&good, "rules:\n  - id: ok\n    title: t\n    message: \"m\"\n").unwrap();
-        let rules = YamlRuleSet::load_file(&good).expect("好文件应正常加载");
+        let rules = YamlRuleSet::load_file(&good).expect("a good file must load normally");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "ok");
 
@@ -348,8 +348,8 @@ rules:
         let set = YamlRuleSet::load_dir(&root).expect("load_dir should succeed");
         let mut ids: Vec<&str> = set.rules().iter().map(|r| r.id.as_str()).collect();
         ids.sort();
-        assert_eq!(ids, vec!["from-upper", "from-yaml", "from-yml"], "只应收 yaml/yml（含大小写），排除其他: {ids:?}");
-        assert_eq!(set.sources().len(), 3, "只有 3 个文件应被记为来源");
+        assert_eq!(ids, vec!["from-upper", "from-yaml", "from-yml"], "only yaml/yml must be collected (any case), everything else excluded: {ids:?}");
+        assert_eq!(set.sources().len(), 3, "only 3 files must be recorded as sources");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -371,7 +371,7 @@ rules:
         std::fs::create_dir_all(&root).unwrap();
         let f = root.join("empty.yaml");
         std::fs::write(&f, "rules: []\n").unwrap();
-        let err = YamlRuleSet::load_file(&f).expect_err("load_file 应拒绝空规则集");
+        let err = YamlRuleSet::load_file(&f).expect_err("load_file must reject an empty rule set");
         assert!(err.to_string().contains("at least one rule"), "actual error: {err}");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -392,7 +392,7 @@ rules:
         let f = std::env::temp_dir().join(format!("gtar_rules_filepath_{}", std::process::id()));
         std::fs::write(&f, "not a dir").unwrap();
         let res = YamlRuleSet::load_dir(&f);
-        assert!(res.is_err(), "对文件调用 load_dir 应返回错误而非空集合: {res:?}");
+        assert!(res.is_err(), "calling load_dir on a file must return an error, not an empty set: {res:?}");
         let _ = std::fs::remove_file(&f);
     }
 
@@ -405,7 +405,7 @@ rules:
         std::fs::create_dir_all(&root).unwrap();
         let bad = root.join("empty_id.yaml");
         std::fs::write(&bad, "rules:\n  - id: \"\"\n    title: t\n    message: \"m\"\n").unwrap();
-        let err = YamlRuleSet::load_file(&bad).expect_err("load_file 应拒绝空 id 规则");
+        let err = YamlRuleSet::load_file(&bad).expect_err("load_file must reject a rule with an empty id");
         assert!(err.to_string().contains("id"), "actual error: {err}");
         let _ = std::fs::remove_dir_all(&root);
     }

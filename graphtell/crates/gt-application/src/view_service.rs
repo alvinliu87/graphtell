@@ -2968,9 +2968,9 @@ mod tests {
         assert_eq!(access_rank("Triggers"), 2);
         assert_eq!(access_rank("CallsHttp"), 2);
         assert_eq!(access_rank("MapsTo"), 1);
-        assert_eq!(access_rank("Calls"), 0, "结构边 Calls 不应带访问模式");
+        assert_eq!(access_rank("Calls"), 0, "the structural edge Calls must not carry an access mode");
         assert_eq!(access_rank("HandledBy"), 0);
-        assert_eq!(access_rank("Whatever"), 0, "未知 kind 退化为 0");
+        assert_eq!(access_rank("Whatever"), 0, "an unknown kind degrades to 0");
     }
 
     #[test]
@@ -2979,7 +2979,7 @@ mod tests {
         assert_eq!(action_strength("WritesCache"), 2);
         assert_eq!(action_strength("ReadsDb"), 1);
         assert_eq!(action_strength("ReadsCache"), 1);
-        assert_eq!(action_strength("MapsTo"), 0, "非读写动作无强弱");
+        assert_eq!(action_strength("MapsTo"), 0, "a non-read/write action has no strength");
     }
 
     #[test]
@@ -2994,7 +2994,7 @@ mod tests {
         assert_eq!(cache[1], "ReadsCache");
         assert!(
             counterpart_kinds("MapsTo").is_empty(),
-            "结构边无配对（被抑制的读写须记入 also_kinds）"
+            "a structural edge has no pairing (a suppressed read/write must be recorded in also_kinds)"
         );
     }
 
@@ -3004,11 +3004,11 @@ mod tests {
     fn better_path_direct_beats_indirect() {
         assert!(
             better_path(false, "ReadsDb", 5, true, "ReadsDb", 1),
-            "直接边优于传播边（同 kind）"
+            "a direct edge beats a propagated one (same kind)"
         );
         assert!(
             !better_path(true, "ReadsDb", 5, false, "ReadsDb", 1),
-            "间接边不应胜过直接边"
+            "an indirect edge must not beat a direct one"
         );
     }
 
@@ -3020,7 +3020,7 @@ mod tests {
 
     #[test]
     fn better_path_stronger_action_wins_within_rank() {
-        assert!(better_path(false, "WritesDb", 99, false, "ReadsDb", 1), "同 rank：写优于读");
+        assert!(better_path(false, "WritesDb", 99, false, "ReadsDb", 1), "same rank: write beats read");
         assert!(!better_path(false, "ReadsDb", 1, false, "WritesDb", 99));
     }
 
@@ -3049,7 +3049,7 @@ mod tests {
         out.insert(1, vec![2]);
         out.insert(2, vec![3]);
         let paths = enumerate_chain_paths(&out, 1, 3, 10, 5, &|n| n == 2);
-        assert!(paths.is_empty(), "中间语义节点被 avoid 时应无路径");
+        assert!(paths.is_empty(), "when an intermediate semantic node is avoided there must be no path");
     }
 
     #[test]
@@ -3057,8 +3057,8 @@ mod tests {
         let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
         out.insert(1, vec![2]);
         out.insert(2, vec![3]);
-        assert!(enumerate_chain_paths(&out, 3, 1, 10, 5, &|_| false).is_empty(), "反向不可达");
-        assert!(enumerate_chain_paths(&out, 1, 1, 10, 5, &|_| false).is_empty(), "from==to 无路径");
+        assert!(enumerate_chain_paths(&out, 3, 1, 10, 5, &|_| false).is_empty(), "unreachable in the reverse direction");
+        assert!(enumerate_chain_paths(&out, 1, 1, 10, 5, &|_| false).is_empty(), "from==to has no path");
     }
 
     #[test]
@@ -3069,11 +3069,11 @@ mod tests {
         out.insert(2, vec![3]);
         out.insert(4, vec![3]);
         let one = enumerate_chain_paths(&out, 1, 3, 10, 1, &|_| false);
-        assert_eq!(one.len(), 1, "limit=1 只返回一条");
+        assert_eq!(one.len(), 1, "limit=1 returns only one");
         let shallow = enumerate_chain_paths(&out, 1, 3, 1, 5, &|_| false);
-        assert!(shallow.is_empty(), "max_hops=1 不足以到达 2 跳外");
+        assert!(shallow.is_empty(), "max_hops=1 cannot reach 2 hops away");
         let all = enumerate_chain_paths(&out, 1, 3, 10, 5, &|_| false);
-        assert_eq!(all.len(), 2, "两条路径都应枚举到");
+        assert_eq!(all.len(), 2, "both paths must be enumerated");
     }
 
     // ---- propagation vs direct edge distinction ----
@@ -3123,7 +3123,7 @@ mod tests {
         assert_eq!(
             infer_write_by_action("weirdName"),
             None,
-            "未知动作根 → 交回 '读' 兜底"
+            "an unknown action root falls back to '读'"
         );
     }
 
@@ -3253,9 +3253,9 @@ mod tests {
         let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
         let pid = seed_tables(&store, &[("store_order", 1)]);
         let ps = svc.perspectives(pid).unwrap();
-        assert_eq!(ps.len(), 1, "每个 perspective 一条");
+        assert_eq!(ps.len(), 1, "one per perspective");
         let avail = ps[0].get("available").and_then(|v| v.as_u64()).unwrap();
-        assert_eq!(avail, 1, "Table 视角应报出 1 个可用对象");
+        assert_eq!(avail, 1, "the Table perspective must report 1 usable object");
         assert_eq!(ps[0].get("id").and_then(|v| v.as_str()), Some("table"));
     }
 
@@ -3270,7 +3270,7 @@ mod tests {
         let cs = svc
             .candidates(pid, "table", 10, Some("goods"), None)
             .unwrap();
-        assert_eq!(cs.len(), 1, "name 过滤只命中 store_goods");
+        assert_eq!(cs.len(), 1, "the name filter hits only store_goods");
         assert_eq!(cs[0].name, "store_goods");
     }
 
@@ -3283,7 +3283,7 @@ mod tests {
             &[("store_order", 1), ("store_goods", 2)],
         );
         let cs = svc.candidates(pid, "table", 10, None, None).unwrap();
-        assert_eq!(cs.len(), 2, "无搜索词返回全部候选（按语义价值排名）");
+        assert_eq!(cs.len(), 2, "with no search term every candidate is returned (ranked by semantic value)");
         // both carry a badge built from the semantic-value / in-edge scoring
         assert!(cs.iter().all(|c| c.badge.is_some()));
     }
@@ -3312,9 +3312,9 @@ mod tests {
 
         let nl = svc.node_locations(NodeId::new(1)).unwrap();
         assert_eq!(nl.kind, "Table");
-        assert_eq!(nl.locations.len(), 1, "应读出 properties.locations 里的合成节点位置");
+        assert_eq!(nl.locations.len(), 1, "must read the synthesised node locations from properties.locations");
         assert_eq!(nl.locations[0].file, "a.php");
-        assert_eq!(nl.reference_count, 1, "入边数 = 引用计数");
+        assert_eq!(nl.reference_count, 1, "the in-edge count is the reference count");
     }
 
     /// `edge_evidence` surfaces the `evidence.location` recorded when the edge was built; an unknown edge id is `None`.
@@ -3343,15 +3343,15 @@ mod tests {
         let ev = svc
             .edge_evidence(eid.get())
             .unwrap()
-            .expect("应找到边证据");
+            .expect("the edge evidence must be found");
         assert!(
             ev.locations.iter().any(|l| l.file == "a/b.php" && l.line == 10),
-            "应读出边的 evidence 位置"
+            "must read the edge's evidence location"
         );
 
         assert!(
             svc.edge_evidence(99999).unwrap().is_none(),
-            "未知边 id 应返回 None"
+            "an unknown edge id must return None"
         );
     }
 
@@ -3364,8 +3364,8 @@ mod tests {
             &[("store_order", 1), ("store_goods", 2)],
         );
         let av = svc.aggregate_view(pid, "table", 5).unwrap();
-        assert_eq!(av.clusters.len(), 1, "按 NodeKind 分桶应只有一个 Table 簇");
-        assert_eq!(av.clusters[0].count, 2, "簇里给出完整计数（不全画）");
+        assert_eq!(av.clusters.len(), 1, "bucketing by NodeKind must yield exactly one Table cluster");
+        assert_eq!(av.clusters[0].count, 2, "a cluster reports its full count (nothing is drawn in full)");
         assert_eq!(av.clusters[0].key, "Table");
     }
 
@@ -3392,7 +3392,7 @@ mod tests {
         let ov = svc
             .object_view(pid, "table", NodeId::new(1), None)
             .unwrap();
-        assert_eq!(ov.center.id, NodeId::new(1), "中心节点必须原样返回");
+        assert_eq!(ov.center.id, NodeId::new(1), "the centre node must be returned verbatim");
         // the reader (node 2) should be discovered as a neighbour of the centre
         let mut all: Vec<NodeId> = vec![ov.center.id];
         for ring in &ov.rings {
@@ -3400,7 +3400,7 @@ mod tests {
         }
         assert!(
             all.contains(&NodeId::new(2)),
-            "反向发现应把读取方放进中心邻居"
+            "reverse discovery must put the reader among the centre's neighbours"
         );
     }
 }

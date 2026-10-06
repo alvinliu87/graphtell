@@ -389,7 +389,7 @@ mod tests {
             .unwrap();
         assert!(
             (edge.confidence - 0.85).abs() < 1e-3,
-            "确定性链不应衰减，期望 0.85，实际 {}",
+            "a deterministic chain must not decay, expected 0.85, got {}",
             edge.confidence
         );
         // Environment reads are still flagged indirect, so downstream distinguishes direct from indirect.
@@ -427,7 +427,7 @@ mod tests {
             .unwrap();
         assert!(
             (edge.confidence - 0.2125).abs() < 1e-3,
-            "不确定性链应衰减（0.5^2），期望 0.2125，实际 {}",
+            "an uncertain chain must decay (0.5^2), expected 0.2125, got {}",
             edge.confidence
         );
     }
@@ -463,10 +463,10 @@ mod tests {
 
         super::run(&mut ctx);
 
-        assert!(has_edge(&ctx, mid, table, EdgeKind::READS_DB), "真实读表的边应保留");
+        assert!(has_edge(&ctx, mid, table, EdgeKind::READS_DB), "an edge that really reads a table must be kept");
         assert!(
             !has_edge(&ctx, mid, table, EdgeKind::MAPS_TO),
-            "同一 (from,to) 已真实读表，传播来的 MapsTo 应被抑制"
+            "when the same (from,to) really reads the table, a propagated MapsTo must be suppressed"
         );
     }
 
@@ -485,7 +485,7 @@ mod tests {
 
         assert!(
             has_edge(&ctx, mid, table, EdgeKind::MAPS_TO),
-            "没有读写时 MapsTo 仍应上抛"
+            "with no read/write, MapsTo must still be propagated upwards"
         );
     }
 
@@ -509,11 +509,11 @@ mod tests {
 
         assert!(
             has_edge(&ctx, func, queue, EdgeKind::PUBLISHES_TO),
-            "Function 是 action 节点，应参与传播"
+            "Function is an action node, so it must take part in propagation"
         );
         assert!(
             !has_edge(&ctx, cls, queue, EdgeKind::PUBLISHES_TO),
-            "Class 不是 action 节点，不应被挂上传播来的语义边"
+            "Class is not an action node, so no propagated semantic edge may be attached to it"
         );
     }
 
@@ -544,15 +544,15 @@ mod tests {
                 e.from_id == top && e.to_id == queue && e.kind.as_str() == EdgeKind::PUBLISHES_TO
             })
             .collect();
-        assert_eq!(edges.len(), 1, "同一 (from,to,kind) 只应有一条边：{edges:?}");
+        assert_eq!(edges.len(), 1, "there must be only one edge per (from,to,kind): {edges:?}");
 
         let props = &edges[0].properties;
         assert_eq!(props.get("via").and_then(|v| v.as_str()), Some("propagate"));
         let sources = props
             .get("seed_sources")
             .and_then(|v| v.as_array())
-            .expect("seed_sources 应是数组");
-        assert_eq!(sources.len(), 2, "两个根因都应记录：{sources:?}");
+            .expect("seed_sources must be an array");
+        assert_eq!(sources.len(), 2, "both root causes must be recorded: {sources:?}");
     }
 
     // ------------------------------------------------------- the `indirect` flag
@@ -583,12 +583,12 @@ mod tests {
         assert_eq!(
             flag(config, "ReadsConfig"),
             Some(serde_json::json!(true)),
-            "ReadsConfig 也应标记 indirect"
+            "ReadsConfig must be marked indirect too"
         );
         assert_eq!(
             flag(queue, "PublishesTo"),
             None,
-            "真实发生的动作不应标记 indirect"
+            "an action that really happens must not be marked indirect"
         );
     }
 
@@ -647,9 +647,9 @@ mod tests {
             .iter()
             .find(|(c, _)| *c == top.get())
             .map(|(_, conf)| *conf);
-        assert_eq!(top_conf, Some(1.0), "top 应保留最强路径 1.0，而非较弱的 0.25");
+        assert_eq!(top_conf, Some(1.0), "top must keep the strongest path 1.0, not the weaker 0.25");
         let count = reach.iter().filter(|(c, _)| *c == top.get()).count();
-        assert_eq!(count, 1, "同一 caller 不应重复出现");
+        assert_eq!(count, 1, "the same caller must not appear twice");
     }
 
     // ------------------------------------------------------- early-return / no-op guards
@@ -668,7 +668,7 @@ mod tests {
             .edges()
             .iter()
             .any(|e| e.properties.get("via") == Some(&serde_json::json!("propagate")));
-        assert!(!propagated, "无 seed 时不应新增任何传播边（已有的 Calls 边应保留）");
+        assert!(!propagated, "with no seed, no propagation edge may be added (existing Calls edges stay)");
     }
 
     /// A seed exists, but nothing calls its source: propagation only targets *callers*, so the source itself
@@ -682,9 +682,9 @@ mod tests {
         super::run(&mut ctx);
         assert!(
             !has_edge(&ctx, leaf, queue, EdgeKind::PUBLISHES_TO),
-            "seed 的 source 自身不应被挂边（只向 caller 传播）"
+            "the seed's own source must not get an edge (propagation goes to callers only)"
         );
-        assert_eq!(ctx.ws.edges().len(), 0, "没有 caller，不应新增任何边");
+        assert_eq!(ctx.ws.edges().len(), 0, "with no caller, no edge may be added");
     }
 
     // ------------------------------------------------------- the `MapsTo` suppression also covers WritesDb
@@ -705,10 +705,10 @@ mod tests {
 
         super::run(&mut ctx);
 
-        assert!(has_edge(&ctx, mid, table, EdgeKind::WRITES_DB), "真实写表的边应保留");
+        assert!(has_edge(&ctx, mid, table, EdgeKind::WRITES_DB), "an edge that really writes a table must be kept");
         assert!(
             !has_edge(&ctx, mid, table, EdgeKind::MAPS_TO),
-            "同一 (from,to) 已真实写表，传播来的 MapsTo 应被抑制"
+            "when the same (from,to) really writes the table, a propagated MapsTo must be suppressed"
         );
     }
 
@@ -742,18 +742,18 @@ mod tests {
                     && e.to_id == queue
                     && e.kind.as_str() == EdgeKind::PUBLISHES_TO
             })
-            .expect("应有一条传播边");
+            .expect("there must be one propagation edge");
         let sources = edge
             .properties
             .get("seed_sources")
             .and_then(|v| v.as_array())
-            .expect("seed_sources 应是数组");
-        assert_eq!(sources.len(), 2, "两个根因都应记录");
-        assert!(sources[0].as_i64() < sources[1].as_i64(), "seed_sources 应升序");
+            .expect("seed_sources must be an array");
+        assert_eq!(sources.len(), 2, "both root causes must be recorded");
+        assert!(sources[0].as_i64() < sources[1].as_i64(), "seed_sources must be sorted ascending");
         assert_eq!(
             edge.properties.get("seed_source").and_then(|v| v.as_i64()),
             sources[0].as_i64(),
-            "seed_source 应为最小根因 id"
+            "seed_source must be the smallest root-cause id"
         );
     }
 
@@ -784,7 +784,7 @@ mod tests {
 
         assert!(
             !has_edge(&ctx, mid, queue, EdgeKind::PUBLISHES_TO),
-            "只有 Calls 边构成调用链，语义边不能让 mid 成为 caller"
+            "only Calls edges form a call chain; a semantic edge must not make mid a caller"
         );
     }
 
@@ -818,9 +818,9 @@ mod tests {
             .filter(|e| e.kind.as_str() == EdgeKind::PUBLISHES_TO)
             .count();
 
-        assert_eq!(after_first, 1, "首次运行应产生一条传播边");
-        assert_eq!(after_second, after_first, "seed 已被取走，二次运行不应重复传播");
-        assert!(ctx.propagation_seeds.is_empty(), "seed 应被消费而非保留");
+        assert_eq!(after_first, 1, "the first run must produce one propagation edge");
+        assert_eq!(after_second, after_first, "the seed has been consumed, so a second run must not propagate again");
+        assert!(ctx.propagation_seeds.is_empty(), "the seed must be consumed, not kept");
     }
 
     // ------------------------------------------------------- the chain stops at a non-action node
@@ -846,11 +846,11 @@ mod tests {
 
         assert!(
             !has_edge(&ctx, top, queue, EdgeKind::PUBLISHES_TO),
-            "非 action 节点截断调用链，top 不应获得传播边"
+            "a non-action node cuts the call chain, so top must not get a propagation edge"
         );
         assert!(
             !has_edge(&ctx, cls, queue, EdgeKind::PUBLISHES_TO),
-            "Class 自身也不应挂上语义边"
+            "Class itself must not get a semantic edge either"
         );
     }
 
@@ -873,11 +873,11 @@ mod tests {
 
         assert!(
             has_edge(&ctx, func, queue, EdgeKind::PUBLISHES_TO),
-            "Function 是 action 节点，应获得传播边"
+            "Function is an action node, so it must receive the propagation edge"
         );
         assert!(
             has_edge(&ctx, top, queue, EdgeKind::PUBLISHES_TO),
-            "Function 不截断链，应继续上溯到 top"
+            "Function does not cut the chain, so it must keep walking up to top"
         );
     }
 
@@ -909,12 +909,12 @@ mod tests {
                 e.from_id == top && e.to_id == queue && e.kind.as_str() == EdgeKind::PUBLISHES_TO
             })
             .collect();
-        assert_eq!(edges.len(), 1, "不同置信度的 seed 仍应合并为一条边");
+        assert_eq!(edges.len(), 1, "seeds with different confidences must still merge into one edge");
         // `calls` helper gives each Calls edge 0.7; the lowest-id source (`leaf_a`, 0.9) supplies the seed.
         let expected = 0.9f32 * 0.7f32;
         assert!(
             (edges[0].confidence - expected).abs() < 1e-3,
-            "置信度应确定地取自最小 id 的 seed，期望 {expected}，实际 {}",
+            "confidence must be taken deterministically from the seed with the smallest id, expected {expected}, got {}",
             edges[0].confidence
         );
     }

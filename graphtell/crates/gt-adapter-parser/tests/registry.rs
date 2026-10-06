@@ -19,7 +19,7 @@ fn registry_exposes_every_required_language() {
     for lang in EXPECTED {
         assert!(
             reg.parser_for(&Language::new(*lang)).is_some(),
-            "语言 {lang} 必须注册解析器（否则该语言在 pipeline 中静默无 facts）"
+            "language {lang} must have a parser registered (otherwise it silently produces no facts in the pipeline)"
         );
     }
 }
@@ -34,13 +34,13 @@ fn supported_languages_contains_all_expected_and_is_sorted() {
     for lang in EXPECTED {
         assert!(
             langs.iter().any(|l| l.as_str() == *lang),
-            "supported_languages 应包含 {lang}"
+            "supported_languages must contain {lang}"
         );
     }
     // The returned list is already sorted (the trait guarantees an order).
     let mut sorted = langs.clone();
     sorted.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    assert_eq!(langs, sorted, "supported_languages 应已排序");
+    assert_eq!(langs, sorted, "supported_languages must be sorted");
 }
 
 #[test]
@@ -56,6 +56,6 @@ fn require_parser_errors_for_unknown_language() {
     let reg = DefaultParserRegistry::new();
     assert!(
         require_parser(&reg, &Language::new("cobol")).is_err(),
-        "require_parser 对未注册语言应返回清晰的 Unsupported 错误"
+        "require_parser must return a clear Unsupported error for an unregistered language"
     );
 }

@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(
             locale_of_path("resources/lang/en/auth.php", &php, &ts),
             Some("en".to_string()),
-            "Laravel ≤8 的语言包在 resources/lang/ 下"
+            "Laravel ≤8 keeps its language packs under resources/lang/"
         );
         assert_eq!(
             locale_of_path("src/locales/en/translation.json", &js, &ts),
@@ -411,12 +411,12 @@ mod tests {
         assert_eq!(
             locale_of_path("src/locales/en.json", &js, &ts),
             Some("en".to_string()),
-            "一个语言一个文件的布局也要认"
+            "the one-file-per-locale layout must be recognised too"
         );
         assert_eq!(
             locale_of_path("src/main/resources/messages.properties", &Language::new(Language::JAVA), &ts),
             None,
-            "没有适配器声明约定的栈不猜"
+            "a stack whose adapter declares no convention is not guessed"
         );
     }
 
@@ -440,9 +440,9 @@ mod tests {
         let root = scratch_dir("direct");
         std::fs::create_dir_all(root.join("app")).unwrap();
 
-        let (value, why) = resolve_directory_exists(&root, "app").expect("app 存在，应命中");
-        assert_eq!(value, ".", "单模块直命中时源码根就是子工程根");
-        assert!(why.contains("directory exists"), "溯源应说明依据，实际：{why}");
+        let (value, why) = resolve_directory_exists(&root, "app").expect("app exists, so it must hit");
+        assert_eq!(value, ".", "on a direct single-module hit the source root is the sub-project root");
+        assert!(why.contains("directory exists"), "the provenance must state its evidence, got: {why}");
     }
 
     /// Multi-module: the **shallowest** hit module wins (breadth-first), and the value is the module dir —
@@ -453,8 +453,8 @@ mod tests {
         std::fs::create_dir_all(root.join("mall-admin/src/main/java")).unwrap();
         std::fs::create_dir_all(root.join("deep/x/y/src/main/java")).unwrap();
 
-        let (value, _) = resolve_directory_exists(&root, "src/main/java").expect("应有命中");
-        assert_eq!(value, "mall-admin", "应返回最浅命中模块的目录，实际：{value}");
+        let (value, _) = resolve_directory_exists(&root, "src/main/java").expect("there must be a hit");
+        assert_eq!(value, "mall-admin", "must return the directory of the shallowest matching module, got: {value}");
     }
 
     /// The probe is depth-limited (a large repo must not be walked whole); one level past the limit the
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(
             resolve_directory_exists(&hit, "app").map(|(v, _)| v),
             Some("d1/d2/d3/d4/d5".to_string()),
-            "深度上限内的命中应被找到"
+            "a hit within the depth limit must be found"
         );
 
         let miss = scratch_dir("depth-miss");
@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(
             resolve_directory_exists(&miss, "app"),
             None,
-            "超过深度上限应放弃探测并返回 None"
+            "past the depth limit it must give up probing and return None"
         );
     }
 
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(
             order,
             vec!["framework", "other", "comp"],
-            "直接检出的知识必须全部排在 provided 之前：{order:?}"
+            "directly detected knowledge must all rank before provided ones: {order:?}"
         );
     }
 
@@ -541,14 +541,14 @@ mod tests {
         let got = expand_provided(vec![("a".into(), 1.0)], &kb);
 
         let conf = |id: &str| got.iter().find(|(i, _)| i == id).map(|(_, c)| *c);
-        assert_eq!(conf("a"), Some(1.0), "直接检出不衰减");
-        assert_eq!(conf("b"), Some(0.9), "一级 provided 衰减一次");
+        assert_eq!(conf("a"), Some(1.0), "a direct detection does not decay");
+        assert_eq!(conf("b"), Some(0.9), "a first-level provided decays once");
         assert!(
             (conf("c").unwrap_or_default() - 0.81).abs() < 1e-6,
-            "二级 provided 应再衰减一次，实际：{:?}",
+            "a second-level provided must decay once more, got: {:?}",
             conf("c")
         );
-        assert_eq!(got.len(), 3, "展开应传递：{got:?}");
+        assert_eq!(got.len(), 3, "expansion must be transitive: {got:?}");
     }
 
     /// A `provides` cycle must terminate and must never duplicate an entry.
@@ -558,7 +558,7 @@ mod tests {
         let got = expand_provided(vec![("a".into(), 1.0)], &kb);
 
         let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, vec!["a", "b"], "环应终止且不重复：{ids:?}");
+        assert_eq!(ids, vec!["a", "b"], "a cycle must terminate without duplicates: {ids:?}");
     }
 
     // ---- under-covered branch tests ----
@@ -586,20 +586,20 @@ mod tests {
             resolve_manifest_pointer(&path, "autoload.psr-4", PickStrategy::ShallowestDir, &fs)
                 .map(|(v, _)| v),
             Some("app".to_string()),
-            "最浅候选 app/ 应胜出，而非 a/b/c/"
+            "the shallowest candidate app/ must win, not a/b/c/"
         );
         assert_eq!(
             resolve_manifest_pointer(&path, "autoload.psr-4", PickStrategy::ByNamespaceKey, &fs)
                 .map(|(v, _)| v),
             Some("app".to_string()),
-            "ByNamespaceKey 当前与 ShallowestDir 行为一致（取最浅）"
+            "ByNamespaceKey currently behaves like ShallowestDir (takes the shallowest)"
         );
         // A map whose directories all trim to empty yields no candidate.
         let empty = dir.join("empty.json");
         std::fs::write(&empty, r#"{"autoload": {"psr-4": {"x\\": "/"}}}"#).unwrap();
         assert!(
             resolve_manifest_pointer(&empty, "autoload.psr-4", PickStrategy::FirstDir, &fs).is_none(),
-            "目录被 trim 成空后应无候选"
+            "a directory trimmed to empty yields no candidate"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -630,10 +630,10 @@ mod tests {
         let ts = gt_domain::port::DefaultTechStackRegistry::new();
 
         let php = detect_without_code(&kb, &fs, &root, &root, &Language::new("php"), &ts);
-        assert!(php.contains(&"tp".to_string()), "php 应检出 tp，实际：{php:?}");
+        assert!(php.contains(&"tp".to_string()), "php must detect tp, got: {php:?}");
 
         let js = detect_without_code(&kb, &fs, &root, &root, &Language::new("javascript"), &ts);
-        assert!(!js.contains(&"tp".to_string()), "javascript 不应检出 php 框架，实际：{js:?}");
+        assert!(!js.contains(&"tp".to_string()), "javascript must not detect a php framework, got: {js:?}");
 
         let unk = detect_without_code(
             &kb,
@@ -643,7 +643,7 @@ mod tests {
             &Language::new(Language::UNKNOWN),
             &ts,
         );
-        assert!(unk.contains(&"tp".to_string()), "UNKNOWN 应解除语言门，实际：{unk:?}");
+        assert!(unk.contains(&"tp".to_string()), "UNKNOWN must lift the language gate, got: {unk:?}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -664,15 +664,15 @@ mod tests {
 
         assert!(
             manifest_has(&root.join("composer.json"), "topthink/framework", &fs, &ts, &php),
-            "含依赖串应命中（降级为纯文本匹配）"
+            "a manifest containing the dependency string must match (degraded to plain-text matching)"
         );
         assert!(
             !manifest_has(&root.join("composer.json"), "laravel/framework", &fs, &ts, &php),
-            "不含的依赖串不应命中"
+            "a dependency string that is absent must not match"
         );
         assert!(
             !manifest_has(&root.join("missing.json"), "topthink/framework", &fs, &ts, &php),
-            "文件不存在应直接 false"
+            "a missing file must simply be false"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -694,15 +694,15 @@ mod tests {
 
         assert!(
             lock_has(&root.join("composer.lock"), "topthink/framework", &fs, &ts, &php),
-            "lock 中含依赖串应命中（降级为纯文本匹配）"
+            "a lock file containing the dependency string must match (degraded to plain-text matching)"
         );
         assert!(
             !lock_has(&root.join("composer.lock"), "laravel/framework", &fs, &ts, &php),
-            "lock 中不含的依赖串不应命中"
+            "a dependency string absent from the lock file must not match"
         );
         assert!(
             !lock_has(&root.join("missing.lock"), "topthink/framework", &fs, &ts, &php),
-            "lock 文件不存在应直接 false"
+            "a missing lock file must simply be false"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -739,7 +739,7 @@ mod tests {
             &parsers,
             &ts,
         );
-        assert_eq!(got.map(|(v, _)| v), Some("app".to_string()), "project_root 兜底应解析出 app");
+        assert_eq!(got.map(|(v, _)| v), Some("app".to_string()), "the project_root fallback must resolve to app");
 
         // DirectoryExists: a marker dir present directly under the root yields "." as the source root.
         let dir_root = scratch_dir("rs-dir");
@@ -770,7 +770,7 @@ mod tests {
                 &ts,
             )
             .is_none(),
-            "无适配器的 Manifest 源应返回 None"
+            "a Manifest source with no adapter must return None"
         );
 
         // ManifestEntries arm: always resolves to None from a single-value source.
@@ -790,7 +790,7 @@ mod tests {
                 &ts,
             )
             .is_none(),
-            "ManifestEntries 经 resolve_root_source 应返回 None"
+            "ManifestEntries must return None through resolve_root_source"
         );
         let _ = std::fs::remove_dir_all(&sub);
         let _ = std::fs::remove_dir_all(&proj);
@@ -891,16 +891,16 @@ mod tests {
         // Queried as php: the no-detector generic (apply_without_detection), the universal (*) framework,
         // and the FileExists detector for artisan-fw must all fire.
         let php = detect_without_code(&kb, &fs, &root, &root, &Language::new("php"), &ts);
-        assert!(php.contains(&"generic".to_string()), "apply_without_detection 应无 detector 也命中：{php:?}");
-        assert!(php.contains(&"universal".to_string()), "通用 (*) 框架应在 php 下命中：{php:?}");
-        assert!(php.contains(&"artisan-fw".to_string()), "FileExists detector 应命中：{php:?}");
+        assert!(php.contains(&"generic".to_string()), "apply_without_detection must hit even with no detector: {php:?}");
+        assert!(php.contains(&"universal".to_string()), "the generic (*) framework must hit under php: {php:?}");
+        assert!(php.contains(&"artisan-fw".to_string()), "the FileExists detector must hit: {php:?}");
 
         // Queried as javascript: only the universal framework survives the language gate; the two php-only
         // frameworks are skipped.
         let js = detect_without_code(&kb, &fs, &root, &root, &Language::new("javascript"), &ts);
-        assert!(js.contains(&"universal".to_string()), "通用 (*) 应对任何语言命中：{js:?}");
-        assert!(!js.contains(&"generic".to_string()), "php-only 的 generic 不应在 javascript 下命中：{js:?}");
-        assert!(!js.contains(&"artisan-fw".to_string()), "php-only 的 artisan-fw 不应在 javascript 下命中：{js:?}");
+        assert!(js.contains(&"universal".to_string()), "the generic (*) must hit for any language: {js:?}");
+        assert!(!js.contains(&"generic".to_string()), "a php-only generic must not hit under javascript: {js:?}");
+        assert!(!js.contains(&"artisan-fw".to_string()), "the php-only artisan-fw must not hit under javascript: {js:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -922,17 +922,17 @@ mod tests {
 
         assert!(
             manifest_has(&root.join("composer.json"), "topthink/framework", &fs, &ts, &php),
-            "适配器解析出的依赖名应命中"
+            "a dependency name resolved by the adapter must match"
         );
         // `framework` is a *substring* of the declared name `topthink/framework`, exercising the
         // `n.contains(needle)` arm rather than the exact-`==` arm.
         assert!(
             manifest_has(&root.join("composer.json"), "framework", &fs, &ts, &php),
-            "声明名包含 needle 也应命中（contains 分支）"
+            "a declared name containing the needle must match as well (the contains branch)"
         );
         assert!(
             !manifest_has(&root.join("composer.json"), "symfony/console", &fs, &ts, &php),
-            "适配器与文本都不含的依赖不应命中"
+            "a dependency in neither the adapter nor the text must not match"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

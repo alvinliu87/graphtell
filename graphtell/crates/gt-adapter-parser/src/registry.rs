@@ -121,12 +121,12 @@ mod tests {
             .map(|l| l.as_str().to_string())
             .collect();
         for want in ["php", "java", "python", "javascript", "typescript", "json"] {
-            assert!(langs.iter().any(|l| l == want), "缺少语言 `{want}`: {langs:?}");
+            assert!(langs.iter().any(|l| l == want), "missing language `{want}`: {langs:?}");
         }
-        assert_eq!(langs.len(), 6, "不应注册多余或被重复的语言: {langs:?}");
+        assert_eq!(langs.len(), 6, "no extra or duplicated language may be registered: {langs:?}");
         let mut sorted = langs.clone();
         sorted.sort();
-        assert_eq!(langs, sorted, "supported_languages 必须有序（顺序会传到上层枚举）");
+        assert_eq!(langs, sorted, "supported_languages must be sorted (the order is passed up to the enumeration)");
     }
 
     #[test]
@@ -141,12 +141,12 @@ mod tests {
         assert!(require_parser(&reg, &Language::new(Language::PHP)).is_ok());
         let err = require_parser(&reg, &Language::new("cobol"))
             .err()
-            .expect("未知语言应返回 Err");
+            .expect("an unknown language must return Err");
         assert!(
             matches!(err, DomainError::Unsupported(_)),
-            "未知语言必须报 Unsupported，而不是泛化错误"
+            "an unknown language must report Unsupported, not a generic error"
         );
-        assert!(format!("{err}").contains("cobol"), "错误信息应带上语言名: {err}");
+        assert!(format!("{err}").contains("cobol"), "the error message must carry the language name: {err}");
     }
 
     /// Registering is keyed by language: a new language is added, and re-registering an existing one
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(
             same.and_then(|p| p.extensions().first().copied()),
             Some(".stub"),
-            "同语言重复注册应覆盖，而不是被忽略"
+            "registering the same language twice must override, not be ignored"
         );
     }
 
@@ -177,12 +177,12 @@ mod tests {
         let reg = DefaultParserRegistry::new();
         let ts = reg
             .parser_for(&Language::new(Language::TYPESCRIPT))
-            .expect("typescript 应有解析器");
-        assert!(ts.extensions().contains(&"ts"), "扩展名应含 ts: {:?}", ts.extensions());
+            .expect("typescript must have a parser");
+        assert!(ts.extensions().contains(&"ts"), "the extensions must include ts: {:?}", ts.extensions());
         assert!(ts.extensions().contains(&"tsx"));
         let js = reg
             .parser_for(&Language::new(Language::JAVASCRIPT))
-            .expect("javascript 应有解析器");
+            .expect("javascript must have a parser");
         assert!(js.extensions().contains(&"js"));
     }
 
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(
             a.supported_languages(),
             b.supported_languages(),
-            "Default::default() 必须与 new() 注册相同语言集"
+            "Default::default() must register the same language set as new()"
         );
     }
 
@@ -210,21 +210,21 @@ mod tests {
         for want in ["php", "java", "python", "javascript", "json"] {
             let p = reg
                 .parser_for(&Language::new(want))
-                .unwrap_or_else(|| panic!("应注册 {want}"));
+                .unwrap_or_else(|| panic!("{want} must be registered"));
             assert_eq!(
                 p.language().as_str(),
                 want,
-                "parser_for({want}) 返回的解析器语言应一致"
+                "the parser returned by parser_for({want}) must report the same language"
             );
         }
         // typescript resolves to the frontend parser (reports "javascript") but still serves ts/tsx.
         let ts = reg
             .parser_for(&Language::new(Language::TYPESCRIPT))
-            .expect("typescript 应有解析器");
+            .expect("typescript must have a parser");
         assert_eq!(
             ts.language().as_str(),
             "javascript",
-            "typescript 由前端解析器提供，其 language() 应为 javascript"
+            "typescript is served by the frontend parser, so its language() should be javascript"
         );
         assert!(ts.extensions().contains(&"ts"));
         assert!(ts.extensions().contains(&"tsx"));
@@ -240,7 +240,7 @@ mod tests {
 
         reg.register(Box::new(StubParser { lang: "cobol".into(), exts: &[".cbl"] }));
         let with_cobol = reg.supported_languages();
-        assert_eq!(with_cobol.len(), base_count + 1, "新增语言应使列表 +1");
+        assert_eq!(with_cobol.len(), base_count + 1, "adding a language grows the list by one");
         assert!(with_cobol.iter().any(|l| l.as_str() == "cobol"));
 
         reg.register(Box::new(StubParser { lang: "php".into(), exts: &[".stub"] }));
@@ -248,12 +248,12 @@ mod tests {
         assert_eq!(
             after_override.len(),
             base_count + 1,
-            "同语言覆盖不应产生重复条目"
+            "overriding the same language must not produce duplicate entries"
         );
         assert_eq!(
             after_override.iter().filter(|l| l.as_str() == "php").count(),
             1,
-            "php 在 supported_languages 中应只出现一次"
+            "php must appear exactly once in supported_languages"
         );
     }
 

@@ -596,21 +596,21 @@ mod tests {
         assert_eq!(
             parse_base("http://127.0.0.1:5177/").unwrap(),
             ("127.0.0.1".to_string(), 5177),
-            "尾部斜杠应被忽略"
+            "a trailing slash must be ignored"
         );
         assert_eq!(
             parse_base("127.0.0.1:5177").unwrap(),
             ("127.0.0.1".to_string(), 5177),
-            "缺省 scheme 也应可用"
+            "a missing scheme must still work"
         );
         assert_eq!(parse_base("localhost:8080").unwrap(), ("localhost".to_string(), 8080));
     }
 
     #[test]
     fn parse_base_rejects_malformed_addresses() {
-        assert!(parse_base("127.0.0.1").is_err(), "缺端口必须报错");
+        assert!(parse_base("127.0.0.1").is_err(), "a missing port must error");
         assert!(parse_base("http://127.0.0.1:notaport").is_err());
-        assert!(parse_base("http://127.0.0.1:99999").is_err(), "端口溢出 u16 必须报错");
+        assert!(parse_base("http://127.0.0.1:99999").is_err(), "a port overflowing u16 must error");
     }
 
     // ---- decode_chunked ----
@@ -628,9 +628,9 @@ mod tests {
         assert_eq!(
             decode_chunked("10\r\n0123456789abcdef\r\n0\r\n\r\n"),
             "0123456789abcdef",
-            "`10` 是 16 字节，不是 10"
+            "`10` means 16 bytes, not 10"
         );
-        assert_eq!(decode_chunked("A\r\n0123456789\r\n0\r\n\r\n"), "0123456789", "大写十六进制同样合法");
+        assert_eq!(decode_chunked("A\r\n0123456789\r\n0\r\n\r\n"), "0123456789", "upper-case hex is valid too");
     }
 
     #[test]
@@ -641,15 +641,15 @@ mod tests {
     #[test]
     fn decode_chunked_is_safe_on_empty_and_malformed() {
         assert_eq!(decode_chunked(""), "");
-        assert_eq!(decode_chunked("garbage"), "", "无 CRLF 时不应 panic");
-        assert_eq!(decode_chunked("5\r\nHi\r\n"), "", "声明长度超出实际内容时应安全中断");
+        assert_eq!(decode_chunked("garbage"), "", "without CRLF it must not panic");
+        assert_eq!(decode_chunked("5\r\nHi\r\n"), "", "a declared length beyond the actual content must stop safely");
     }
 
     // ---- handle: the JSON-RPC protocol layer (no network) ----
 
     #[test]
     fn handle_replies_parse_error_for_invalid_json() {
-        let r = bridge().handle("not json").expect("解析错误也要回复");
+        let r = bridge().handle("not json").expect("a parse error must still be answered");
         assert_eq!(r["jsonrpc"], "2.0");
         assert_eq!(r["error"]["code"].as_i64(), Some(-32700));
     }
@@ -659,7 +659,7 @@ mod tests {
         let r = bridge()
             .handle(r#"{"jsonrpc":"2.0","id":7,"method":"nope"}"#)
             .unwrap();
-        assert_eq!(r["id"].as_i64(), Some(7), "错误响应必须回带原 id");
+        assert_eq!(r["id"].as_i64(), Some(7), "an error response must echo the original id");
         assert_eq!(r["error"]["code"].as_i64(), Some(-32601));
     }
 
@@ -669,7 +669,7 @@ mod tests {
             bridge()
                 .handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
                 .is_none(),
-            "通知（无 id）不应回包"
+            "a notification (no id) must not be answered"
         );
     }
 
@@ -753,15 +753,15 @@ mod tests {
         assert_eq!(
             extract_warmup_note(r#"{"data":{"warmup":{"warmed":true,"warming":true,"done":5,"total":10}}}"#),
             "",
-            "已预热完成时不应再提示"
+            "once warmed up there must be no further note"
         );
         assert_eq!(
             extract_warmup_note(r#"{"data":{"warmup":{"warmed":false,"warming":false}}}"#),
             ""
         );
         let note = extract_warmup_note(r#"{"data":{"warmup":{"warmed":false,"warming":true,"done":3,"total":9}}}"#);
-        assert!(note.contains("3/9"), "预热中应带上进度: {note}");
-        assert!(note.contains("cold path"), "预热中应提示质量偏弱");
+        assert!(note.contains("3/9"), "while warming up the progress must be included: {note}");
+        assert!(note.contains("cold path"), "while warming up it must warn that quality is weaker");
     }
 
     #[test]
@@ -770,21 +770,21 @@ mod tests {
         assert_eq!(
             with_quality_guidance(md.clone(), "high", 1.0, &[]),
             md,
-            "高质量应原样返回"
+            "a high quality band is returned unchanged"
         );
         assert_eq!(
             with_quality_guidance(md.clone(), "weird", 0.1, &[]),
             md,
-            "未知档位不应改动"
+            "an unknown band must not be altered"
         );
         let low = with_quality_guidance(md.clone(), "low", 0.42, &["库存".to_string()]);
-        assert!(low.starts_with("# ctx"), "低质量也绝不能丢弃已召回内容");
+        assert!(low.starts_with("# ctx"), "a low quality band must never drop the recalled content");
         assert!(low.contains("Recall quality low"));
         assert!(low.contains("0.42"));
         assert!(low.contains("`库存`"));
         let med = with_quality_guidance(md.clone(), "medium", 0.7, &[]);
         assert!(med.contains("Recall quality medium"));
-        assert!(med.contains("no usable feature terms"), "缺失词为空时应给占位提示");
+        assert!(med.contains("no usable feature terms"), "with no missing terms a placeholder hint must be given");
     }
 
     // ---- response extraction / formatting ----
@@ -799,8 +799,8 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("boom"));
-        assert!(extract_markdown(r#"{"ok":true}"#).is_err(), "缺 data 应报错");
-        assert!(extract_markdown(r#"{"ok":true,"data":{}}"#).is_err(), "缺 markdown 应报错");
+        assert!(extract_markdown(r#"{"ok":true}"#).is_err(), "a missing data must error");
+        assert!(extract_markdown(r#"{"ok":true,"data":{}}"#).is_err(), "a missing markdown must error");
         assert_eq!(extract_prompt(r#"{"ok":true,"data":{"prompt":"P"}}"#).unwrap(), "P");
         assert!(extract_prompt(r#"{"ok":false}"#)
             .unwrap_err()
@@ -826,9 +826,9 @@ mod tests {
         assert!(out.contains("Violations (1 in total)"));
         assert!(out.contains("[warning] x f:1 — m"));
         let (out, err) = format_violations(r#"{"ok":true,"data":null}"#);
-        assert!(!err, "无违规不是错误");
+        assert!(!err, "no violations is not an error");
         assert_eq!(out, "No violations");
-        assert!(format_violations(r#"{"ok":false,"error":"e"}"#).1, "服务失败应标记为错误");
+        assert!(format_violations(r#"{"ok":false,"error":"e"}"#).1, "a service failure must be marked as an error");
     }
 
     #[test]
@@ -845,7 +845,7 @@ mod tests {
         let (out, err) = format_warmup(r#"{"ok":true}"#);
         assert!(!err);
         assert_eq!(out, "No warm-up status");
-        assert!(format_warmup(r#"{"ok":false}"#).1, "服务失败应标记为错误");
+        assert!(format_warmup(r#"{"ok":false}"#).1, "a service failure must be marked as an error");
     }
 
     #[test]
@@ -857,9 +857,9 @@ mod tests {
         assert!(out.contains("ran 5 rules in 42ms"));
         assert!(out.contains("error=2"));
         assert!(out.contains("warning=1"));
-        assert!(out.contains("critical=0"), "未出现的级别应记 0");
+        assert!(out.contains("critical=0"), "a level that does not appear must be recorded as 0");
         assert!(out.contains("[error] r f.php:3 — m"));
-        assert!(format_check(r#"{"ok":true}"#).1, "缺 data 应标记为错误");
+        assert!(format_check(r#"{"ok":true}"#).1, "a missing data must be marked as an error");
         assert!(format_check(r#"{"ok":false}"#).1);
     }
 }

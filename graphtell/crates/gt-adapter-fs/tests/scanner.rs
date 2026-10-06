@@ -61,11 +61,11 @@ fn scan_excludes_dependency_and_asset_dirs() {
     write(&root, "target/debug/o", "x");
     write(&root, "build/out.js", "x");
     let rels = rels(&scan_all(&root));
-    assert!(rels.contains(&"app/foo.php".to_string()), "业务源码必须被扫描");
+    assert!(rels.contains(&"app/foo.php".to_string()), "business source must be scanned");
     for forbidden in ["vendor/", "node_modules/", "static/", "dist/", "target/", "build/"] {
         assert!(
             !rels.iter().any(|r| r.starts_with(forbidden)),
-            "扫描结果不得包含 {forbidden}"
+            "the scan result must not contain {forbidden}"
         );
     }
     let _ = std::fs::remove_dir_all(&root);
@@ -84,10 +84,10 @@ fn scan_excludes_asset_extensions() {
     for ext in [".png", ".jpg", ".woff2", ".zip"] {
         assert!(
             !rels.iter().any(|r| r.ends_with(ext)),
-            "扩展名 {ext} 必须排除"
+            "extension {ext} must be excluded"
         );
     }
-    assert!(rels.iter().any(|r| r == "app.go"), "go 源码必须保留");
+    assert!(rels.iter().any(|r| r == "app.go"), "go source must be kept");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -136,11 +136,11 @@ fn scan_matches_extra_excludes_as_path_globs() {
     assert!(rels.contains(&"crmeb/service/Order.php".to_string()));
     assert!(
         !rels.iter().any(|r| r.starts_with("app/generated/")),
-        "app/generated 必须排除: {rels:?}"
+        "app/generated must be excluded: {rels:?}"
     );
     assert!(
         rels.contains(&"admin/generated/c.php".to_string()),
-        "同名目录在别的路径下必须保留: {rels:?}"
+        "a directory of the same name under another path must be kept: {rels:?}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -172,8 +172,8 @@ fn scan_skips_unknown_extensions() {
     write(&root, "readme", "x");
     write(&root, "app.php", "<?php");
     let rels = rels(&scan_all(&root));
-    assert!(!rels.iter().any(|r| r.ends_with(".md")), ".md 不应被扫描");
-    assert!(!rels.contains(&"readme".to_string()), "无扩展名文件不应被扫描");
+    assert!(!rels.iter().any(|r| r.ends_with(".md")), ".md must not be scanned");
+    assert!(!rels.contains(&"readme".to_string()), "a file with no extension must not be scanned");
     assert!(rels.contains(&"app.php".to_string()));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -193,7 +193,7 @@ fn scan_respects_language_filter() {
         .expect("scan");
     let rels = rels(&files);
     assert!(rels.contains(&"a.php".to_string()));
-    assert!(!rels.contains(&"b.js".to_string()), "非目标语言应被过滤");
+    assert!(!rels.contains(&"b.js".to_string()), "non-target languages must be filtered out");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -216,7 +216,7 @@ fn scan_respects_extra_excludes() {
     assert!(rels.contains(&"app/code.php".to_string()));
     assert!(
         !rels.iter().any(|r| r.starts_with("secret/")),
-        "extra_excludes 应生效"
+        "extra_excludes must take effect"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -253,7 +253,7 @@ fn scan_honours_the_requests_extra_excludes() {
     );
     assert!(
         before.contains(&"storage/framework/cache/x.php".to_string()),
-        "前提：未传排除时应被扫到，否则这条测试测不到点上：{before:?}"
+        "precondition: without the exclude it must be scanned, otherwise this test does not test what it claims: {before:?}"
     );
 
     let after = rels(
@@ -266,15 +266,15 @@ fn scan_honours_the_requests_extra_excludes() {
     );
     assert!(
         after.contains(&"app/code.php".to_string()),
-        "正常源文件应保留：{after:?}"
+        "ordinary source files must be kept: {after:?}"
     );
     assert!(
         !after.contains(&"storage/framework/cache/x.php".to_string()),
-        "请求里的排除应生效：{after:?}"
+        "the exclude in the request must take effect: {after:?}"
     );
     assert!(
         !after.contains(&"bootstrap/cache/y.php".to_string()),
-        "请求里的排除应生效：{after:?}"
+        "the exclude in the request must take effect: {after:?}"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -287,7 +287,7 @@ fn scan_skips_large_files() {
     write(&root, "small.php", "<?php");
     let rels = rels(&scan_all(&root));
     assert!(rels.contains(&"small.php".to_string()));
-    assert!(!rels.contains(&"big.php".to_string()), "超过 4 MiB 的文件应被跳过");
+    assert!(!rels.contains(&"big.php".to_string()), "files larger than 4 MiB must be skipped");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -308,19 +308,19 @@ fn find_markers_finds_markers_and_skips_excluded_dirs() {
         .collect();
     assert!(
         names.iter().any(|n| n.ends_with("/composer.json")),
-        "应找到根 composer.json"
+        "the root composer.json must be found"
     );
     assert!(
         names.iter().any(|n| n.ends_with("/web/package.json")),
-        "应找到 web/package.json"
+        "web/package.json must be found"
     );
     assert!(
         names.iter().any(|n| n.ends_with("/deep/a/b/package.json")),
-        "深目录 marker 应被找到"
+        "a marker in a deep directory must be found"
     );
     assert!(
         !names.iter().any(|n| n.contains("node_modules")),
-        "node_modules 内的 package.json 不应被当作子工程标记"
+        "a package.json inside node_modules must not count as a sub-project marker"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -340,7 +340,7 @@ fn find_markers_respects_max_depth() {
     assert!(names.iter().any(|n| n.ends_with("/shallow/package.json")));
     assert!(
         !names.iter().any(|n| n.contains("deep/a/b")),
-        "超过 max_depth 的 marker 不应被找到"
+        "a marker beyond max_depth must not be found"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -362,7 +362,7 @@ fn scan_errors_on_missing_root() {
         languages: Vec::new(),
         language_extensions: Vec::new(),
     });
-    assert!(res.is_err(), "根目录不存在时 scan 应返回错误");
+    assert!(res.is_err(), "scan must return an error when the root directory does not exist");
 }
 
 /// The parser-registry map (`ScanRequest.language_extensions`) is the **preferred** language source: it shares a
@@ -386,7 +386,7 @@ fn scan_language_extensions_map_is_the_preferred_channel() {
         .expect("scan");
     assert!(
         !rels(&without).contains(&"gen/code.unknownext".to_string()),
-        "前提：map 为空时未知扩展名应被跳过"
+        "precondition: with an empty map an unknown extension must be skipped"
     );
 
     // With the map declaring it, the file is scanned and tagged with the map's language; the fallback still
@@ -416,14 +416,14 @@ fn scan_excludes_are_case_insensitive() {
     write(&root, "DIST/bundle.js", "x"); // matches `**/dist/**`
     write(&root, "app/code.php", "<?php");
     let rels = rels(&scan_all(&root));
-    assert!(rels.contains(&"app/code.php".to_string()), "业务源码必须保留");
+    assert!(rels.contains(&"app/code.php".to_string()), "business source must be kept");
     assert!(
         !rels.iter().any(|r| r.to_lowercase().starts_with("vendor/")),
-        "Vendor/ 应被排除（大小写不敏感）"
+        "Vendor/ must be excluded (case-insensitive)"
     );
     assert!(
         !rels.iter().any(|r| r.to_lowercase().starts_with("dist/")),
-        "DIST/ 应被排除（大小写不敏感）"
+        "DIST/ must be excluded (case-insensitive)"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -448,7 +448,7 @@ fn std_file_system_basic_ops() {
     assert!(!fs.is_dir(&file));
     assert_eq!(fs.read_to_string(&file).unwrap(), "hello");
     assert_eq!(fs.len(&file).unwrap(), 5);
-    assert!(fs.read_to_string(&root.join("nope")).is_err(), "读缺失文件应返回错误而非 panic");
+    assert!(fs.read_to_string(&root.join("nope")).is_err(), "reading a missing file must return an error rather than panic");
     assert!(fs.len(&root.join("nope")).is_err());
     let _ = std::fs::remove_dir_all(&root);
 }

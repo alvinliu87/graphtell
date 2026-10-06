@@ -1054,7 +1054,7 @@ mod tests {
             include_body: None,
         };
         let rq = q.into_query();
-        assert_eq!(rq.limit, 10, "GET recall 默认 limit 应与 RecallQuery 契约一致 (10)");
+        assert_eq!(rq.limit, 10, "the GET recall default limit must match the RecallQuery contract (10)");
         assert_eq!(rq.hops, 2);
         assert!(rq.kinds.is_empty());
         assert!(rq.with_snippets);

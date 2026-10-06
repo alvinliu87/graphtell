@@ -346,7 +346,7 @@ mod tests {
         let v = e.embed("placeOrder discount coupon");
         assert_eq!(v.len(), 128);
         let norm: f64 = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-6, "应 L2 归一化，实际范数 {norm}");
+        assert!((norm - 1.0).abs() < 1e-6, "it must be L2-normalised, got norm {norm}");
     }
 
     #[test]
@@ -366,7 +366,7 @@ mod tests {
         let unrelated = e.embed("unused_log config cache session");
         assert!(
             cosine(&q, &related) > cosine(&q, &unrelated),
-            "共享 order/discount/coupon 的节点应比无关节点更近"
+            "nodes sharing order/discount/coupon must be closer than unrelated ones"
         );
     }
 }

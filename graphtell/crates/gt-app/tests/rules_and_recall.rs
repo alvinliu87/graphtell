@@ -79,7 +79,7 @@ fn fixture() -> Option<Fixture> {
             .unwrap_or(0),
         seq
     ));
-    std::fs::create_dir_all(&data_dir).expect("临时目录应可创建");
+    std::fs::create_dir_all(&data_dir).expect("the temp directory must be creatable");
     let config = AppConfig {
         data_dir,
         fkb_dir: Some(root.join("fkb")),
@@ -89,19 +89,19 @@ fn fixture() -> Option<Fixture> {
         port: 0,
         ui_dir: None,
     };
-    let container = gt_app::Container::new(config).expect("容器装配不应失败");
+    let container = gt_app::Container::new(config).expect("container wiring must not fail");
     let project_service = gt_application::ProjectService::new(
         container.store.clone() as Arc<dyn Persistence>,
         Arc::new(gt_domain::port::SystemClock),
     );
     let project = project_service
         .create(NewProject {
-            name: "规则与召回自检".into(),
+            name: "rules and recall self-check".into(),
             root_path: samples.join("frontend-backend-link"),
             description: None,
             config: None,
         })
-        .expect("工程应可创建");
+        .expect("the project must be creatable");
     Some(Fixture { container, project: project.id })
 }
 
@@ -123,7 +123,7 @@ fn temp_fixture() -> Fixture {
             .unwrap_or(0),
         seq
     ));
-    std::fs::create_dir_all(&data_dir).expect("临时目录应可创建");
+    std::fs::create_dir_all(&data_dir).expect("the temp directory must be creatable");
     let config = AppConfig {
         data_dir,
         fkb_dir: Some(root.join("fkb")),
@@ -133,7 +133,7 @@ fn temp_fixture() -> Fixture {
         port: 0,
         ui_dir: None,
     };
-    let container = gt_app::Container::new(config).expect("容器装配不应失败");
+    let container = gt_app::Container::new(config).expect("container wiring must not fail");
     let project_service = gt_application::ProjectService::new(
         container.store.clone() as Arc<dyn Persistence>,
         Arc::new(gt_domain::port::SystemClock),
@@ -145,7 +145,7 @@ fn temp_fixture() -> Fixture {
             description: None,
             config: None,
         })
-        .expect("工程应可创建");
+        .expect("the project must be creatable");
     Fixture { container, project: project.id }
 }
 
@@ -183,7 +183,7 @@ fn seed_graph(f: &Fixture) {
                 },
             ],
         )
-        .expect("文件应可写入");
+        .expect("the file must be writable");
     let svc_file = files[0].id;
     let model_file = files[1].id;
 
@@ -240,7 +240,7 @@ fn seed_graph(f: &Fixture) {
             }],
             ..Default::default()
         })
-        .expect("图应可写入");
+        .expect("the graph must be writable");
 
 }
 
@@ -257,7 +257,7 @@ rules:
       kinds: [HttpContract]
     when:
       - no_outgoing: HandledBy
-    message: "契约 {name} 没有 handler"
+    message: "contract {name} has no handler"
   - id: demo-pii-table
     title: 含 PII 的表
     severity: warning
@@ -266,7 +266,7 @@ rules:
       kinds: [Table]
     when:
       - has_annotation: pii
-    message: "表 {name} 含 PII"
+    message: "table {name} contains PII"
   - id: demo-dead-table
     title: 无人使用的表
     severity: info
@@ -275,7 +275,7 @@ rules:
       kinds: [Table]
     when:
       - fan_in_lte: 0
-    message: "表 {name} 没有任何读写引用"
+    message: "table {name} has no read/write reference at all"
 "#;
 
 #[test]
@@ -286,8 +286,8 @@ fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
     };
     seed_graph(&f);
 
-    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则 YAML 应可解析"));
-    assert_eq!(rules.len(), 3, "三条规则都应装载");
+    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("the rule YAML must parse"));
+    assert_eq!(rules.len(), 3, "all three rules must be loaded");
 
     let svc = RuleService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -295,7 +295,7 @@ fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
     );
     let report = svc
         .check(f.project, None, false)
-        .expect("检查不应失败");
+        .expect("the check must not fail");
 
     let hit = |id: &str| {
         report
@@ -304,21 +304,21 @@ fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
             .filter(|v| v.rule_id == id)
             .count()
     };
-    assert_eq!(hit("demo-contract-no-handler"), 1, "只有 DELETE /api/ghost 没有 handler");
-    assert_eq!(hit("demo-pii-table"), 1, "只有 user 表带 pii 标注");
-    assert_eq!(hit("demo-dead-table"), 1, "unused_log 没有任何读写边");
+    assert_eq!(hit("demo-contract-no-handler"), 1, "only DELETE /api/ghost has no handler");
+    assert_eq!(hit("demo-pii-table"), 1, "only the user table carries the pii annotation");
+    assert_eq!(hit("demo-dead-table"), 1, "unused_log has no read/write edge");
 
     let ghost = report
         .violations
         .iter()
         .find(|v| v.rule_id == "demo-contract-no-handler")
-        .expect("应存在幽灵契约违规");
+        .expect("a ghost-contract violation must exist");
     assert_eq!(ghost.severity, Severity::Error);
     assert_eq!(ghost.node_name, "DELETE /api/ghost");
-    assert!(ghost.message.contains("DELETE /api/ghost"), "文案应渲染出节点名");
+    assert!(ghost.message.contains("DELETE /api/ghost"), "the copy must render the node name");
 
     // Violation order: errors first
-    let first = report.violations.first().expect("至少有 1 条违规");
+    let first = report.violations.first().expect("there must be at least 1 violation");
     assert_eq!(first.severity, Severity::Error);
 }
 
@@ -331,24 +331,24 @@ fn partial_rerun_only_replaces_its_own_violations() {
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("the rule must parse"));
     let svc = RuleService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
         rules.clone(),
     );
 
-    svc.check(f.project, None, true).expect("全量检查应成功");
-    assert_eq!(svc.violations(f.project, 500, None).expect("回读").len(), 3);
+    svc.check(f.project, None, true).expect("the full check must succeed");
+    assert_eq!(svc.violations(f.project, 500, None).expect("read back").len(), 3);
 
     // Re-run only the pii rule: the other two must still be there
     svc.check(f.project, Some(&["demo-pii-table".to_string()]), true)
-        .expect("部分检查应成功");
-    let left = svc.violations(f.project, 500, None).expect("回读");
-    assert_eq!(left.len(), 3, "部分重跑应保留其它规则的结论");
+        .expect("the partial check must succeed");
+    let left = svc.violations(f.project, 500, None).expect("read back");
+    assert_eq!(left.len(), 3, "a partial re-run must keep the other rules' conclusions");
     assert!(
         left.iter().any(|v| v.rule_id == "demo-dead-table")
             && left.iter().any(|v| v.rule_id == "demo-contract-no-handler"),
-        "未被重跑的规则结论必须仍在，实际：{:?}",
+        "conclusions of rules that were not re-run must still be there, got: {:?}",
         left.iter().map(|v| &v.rule_id).collect::<Vec<_>>()
     );
 }
@@ -361,24 +361,24 @@ fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("the rule must parse"));
     let svc = RuleService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
         rules.clone(),
     );
 
-    svc.check(f.project, None, true).expect("首次检查应成功");
-    let first = svc.violations(f.project, 500, None).expect("应能回读违规");
-    assert_eq!(first.len(), 3, "落库后应能回读出 3 条违规");
+    svc.check(f.project, None, true).expect("the first check must succeed");
+    let first = svc.violations(f.project, 500, None).expect("the violations must be readable back");
+    assert_eq!(first.len(), 3, "after persisting, 3 violations must be readable back");
     assert!(
         first.iter().all(|v| v.rule_id.starts_with("demo-")),
-        "回读的应是规则违规，而非建图期诊断"
+        "what is read back must be rule violations, not build-time diagnostics"
     );
 
     // Run again: result must **still be 3**, not accumulate to 6
-    svc.check(f.project, None, true).expect("重复检查应成功");
-    let second = svc.violations(f.project, 500, None).expect("应能回读违规");
-    assert_eq!(second.len(), 3, "重跑必须清空旧违规，而不是累加");
+    svc.check(f.project, None, true).expect("a repeated check must succeed");
+    let second = svc.violations(f.project, 500, None).expect("the violations must be readable back");
+    assert_eq!(second.len(), 3, "a re-run must clear old violations instead of accumulating");
 }
 
 /// Run only specified rules (`only` filter).
@@ -389,14 +389,14 @@ fn check_can_run_a_subset_of_rules() {
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("规则应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(RULES_YAML).expect("the rule must parse"));
     let svc = RuleService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
         rules.clone(),
     );
     let report = svc
         .check(f.project, Some(&["demo-pii-table".to_string()]), false)
-        .expect("检查应成功");
+        .expect("the check must succeed");
     assert_eq!(report.rules_run, 1);
     assert_eq!(report.violations.len(), 1);
     assert_eq!(report.violations[0].rule_id, "demo-pii-table");
@@ -418,21 +418,21 @@ rules:
           - name_contains: user
           - name_contains: nonexistent
       - not: { name_contains: unused }
-    message: "命中 {name}"
+    message: "hit {name}"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(yaml).expect("规则应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(yaml).expect("the rule must parse"));
     let svc = RuleService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
         rules.clone(),
     );
-    let report = svc.check(f.project, None, false).expect("检查应成功");
+    let report = svc.check(f.project, None, false).expect("the check must succeed");
     let names: Vec<&str> = report.violations.iter().map(|v| v.node_name.as_str()).collect();
-    assert_eq!(names, vec!["user"], "any_of 命中 user，not 排除掉 unused_log");
+    assert_eq!(names, vec!["user"], "any_of hits user while not excludes unused_log");
 }
 
 /// The built-in rule library must load (guards against `rules/*.yaml` being broken unnoticed).
@@ -443,19 +443,19 @@ fn builtin_rules_yaml_loads() {
         return;
     };
     let set = &f.container.rules;
-    assert!(!set.is_empty(), "内置规则库不应为空");
+    assert!(!set.is_empty(), "the built-in rule set must not be empty");
     for r in set.rules() {
         assert!(!r.id.is_empty());
         assert!(!r.message.is_empty());
         assert!(
             !r.applies_to.kinds.is_empty(),
-            "规则 {} 未声明作用范围：会退化成扫全图",
+            "rule {} declares no scope: it would degrade to scanning the whole graph",
             r.id
         );
     }
     assert!(
         set.rules().iter().any(|r| r.category == "contract"),
-        "内置规则应至少包含一条契约类规则"
+        "the built-in rules must include at least one contract rule"
     );
 }
 
@@ -487,14 +487,14 @@ fn recall_expands_from_seed_along_graph() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
 
-    assert!(!result.hits.is_empty(), "至少要召回一条");
+    assert!(!result.hits.is_empty(), "at least one result must be recalled");
 
     // 1) the seed should hit `Table:user`
     assert!(
         result.seeds.iter().any(|s| s.name == "user"),
-        "种子应命中 user 表，实际：{:?}",
+        "the seed must hit the user table, got: {:?}",
         result.seeds.iter().map(|s| &s.name).collect::<Vec<_>>()
     );
 
@@ -503,11 +503,11 @@ fn recall_expands_from_seed_along_graph() {
     let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
     assert!(
         names.contains(&"createOrder"),
-        "写 user 表的 createOrder 应被扩展带出，实际命中：{names:?}"
+        "createOrder, which writes the user table, must be pulled in by expansion, hits: {names:?}"
     );
     assert!(
         names.contains(&"userDaoSelect"),
-        "读 user 表的方法也应被带出，实际命中：{names:?}"
+        "the method reading the user table must be pulled in as well, hits: {names:?}"
     );
 
     // 3) hop count vs direct-hit distinction must be correct
@@ -515,15 +515,15 @@ fn recall_expands_from_seed_along_graph() {
         .hits
         .iter()
         .find(|h| h.name == "user")
-        .expect("user 表应在命中里");
+        .expect("the user table must be among the hits");
     assert_eq!(seed_hit.hop, 0);
-    assert!(seed_hit.direct, "种子是直接命中");
+    assert!(seed_hit.direct, "a seed is a direct hit");
     let expanded = result
         .hits
         .iter()
         .find(|h| h.name == "createOrder")
-        .expect("createOrder 应在命中里");
-    assert!(!expanded.direct, "扩展出来的是间接命中");
+        .expect("createOrder must be among the hits");
+    assert!(!expanded.direct, "something pulled in by expansion is an indirect hit");
     assert!(expanded.hop >= 1);
 }
 
@@ -560,14 +560,14 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败")
+        .expect("recall must not fail")
     };
 
     // First recall: the node isn't on the graph yet (also loads this project's snapshot into the cache).
     let before = query("zzqLateAddedWidget");
     assert!(
         !before.hits.iter().any(|h| h.name == "zzqLateAddedWidget"),
-        "写入前不应存在该节点，实际：{:?}",
+        "the node must not exist before the write, got: {:?}",
         before.hits.iter().map(|h| &h.name).collect::<Vec<_>>()
     );
 
@@ -598,13 +598,13 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
             edges: Vec::new(),
             ..Default::default()
         })
-        .expect("改图应成功");
+        .expect("the graph rewrite must succeed");
 
     // Second recall: must see the new node — otherwise the snapshot is permanently reused, always answering the stale graph.
     let after = query("zzqLateAddedWidget");
     assert!(
         after.hits.iter().any(|h| h.name == "zzqLateAddedWidget"),
-        "图已改写但快照未失效（会一直答旧图），实际命中：{:?}",
+        "the graph was rewritten but the snapshot was not invalidated (it would keep answering from the old graph), hits: {:?}",
         after.hits.iter().map(|h| &h.name).collect::<Vec<_>>()
     );
 }
@@ -645,7 +645,7 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
                 },
             ],
         )
-        .expect("文件应可写入");
+        .expect("the file must be writable");
     let svc_file = files[0].id;
     let i18n_file = files[1].id;
 
@@ -696,7 +696,7 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
             ],
             ..Default::default()
         })
-        .expect("图应可写入");
+        .expect("the graph must be writable");
 
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -717,24 +717,24 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
 
     let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
 
     // 1) Chinese generic verbs must bridge to English methods (not just hit Chinese i18n text)
     assert!(
         names.contains(&"listOrders"),
-        "「查询/列表」应 bridge 到 listOrders，实际命中：{names:?}"
+        "查询/列表 must bridge to listOrders, hits: {names:?}"
     );
     // 2) graph expansion: listOrders writes OrderService, should be pulled out
     assert!(
         names.contains(&"OrderService"),
-        "OrderService 应被图扩展带出，实际命中：{names:?}"
+        "OrderService must be pulled in by graph expansion, hits: {names:?}"
     );
     // 3) the hits must include "code nodes", not only text-class nodes
     assert!(
         names.iter().any(|n| *n == "listOrders" || *n == "OrderService"),
-        "结果应包含代码节点，实际命中：{names:?}"
+        "the result must contain code nodes, hits: {names:?}"
     );
 }
 
@@ -778,7 +778,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
                 },
             ],
         )
-        .expect("文件应可写入");
+        .expect("the file must be writable");
     let coupon_file = files[0].id;
     let ship_file = files[1].id;
 
@@ -822,7 +822,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
             nodes: vec![coupon_edit, ship_update],
             ..Default::default()
         })
-        .expect("图应可写入");
+        .expect("the graph must be writable");
 
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -841,28 +841,28 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
 
     let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
     let rank = |n: &str| names.iter().position(|x| *x == n);
 
-    let b = rank("edit").expect("业务方法 StoreCouponIssue::edit 应被召回");
+    let b = rank("edit").expect("the business method StoreCouponIssue::edit must be recalled");
     let s = rank("update");
     assert!(
         s.map_or(true, |si| b < si),
-        "业务 edit 应排在发货 update 之前（修改意图下内容词才加权），实际：{names:?}"
+        "the business edit must rank before the shipping update (only a content word is weighted under a modification intent), got: {names:?}"
     );
     // Keywords shouldn't be character-level bigrams: proves Chinese already goes word-level segmentation
     assert!(
         !result.terms.iter().any(|t| t == "何修" || t == "改下" || t == "单优"),
-        "查询词不应含跨词边界噪音 bigram，实际：{:?}",
+        "the query terms must not contain cross-boundary noise bigrams, got: {:?}",
         result.terms
     );
     assert!(
         result.terms.iter().any(|t| t == "修改")
             && result.terms.iter().any(|t| t == "下单")
             && result.terms.iter().any(|t| t == "优惠"),
-        "查询词应保留 修改 / 下单 / 优惠，实际：{:?}",
+        "the query terms must keep 修改 / 下单 / 优惠, got: {:?}",
         result.terms
     );
 }
@@ -899,7 +899,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
                 content_hash: "hl1".into(),
             }],
         )
-        .expect("文件应可写入");
+        .expect("the file must be writable");
     let listener_file = files[0].id;
 
     let node = |kind: &str, name: &str, id: i64, file: FileId, fqn: &str| NewNode {
@@ -999,7 +999,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
             ],
             ..Default::default()
         })
-        .expect("图应可写入");
+        .expect("the graph must be writable");
 
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1020,16 +1020,16 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
     let names1: Vec<&str> = r1.hits.iter().map(|h| h.name.as_str()).collect();
     assert!(
         names1.iter().any(|n| *n == "OrderCreateAfterListener"),
-        "「下单后发通知」必须召回 OrderCreateAfterListener，实际：{names1:?}"
+        "下单后发通知 must recall OrderCreateAfterListener, got: {names1:?}"
     );
     assert_ne!(
         r1.quality,
         RecallQuality::Low,
-        "事件种子不得整体压过词面命中导致质量崩到 Low，实际：{:?}（{names1:?}）",
+        "event seeds must not collectively outrank lexical hits and drop quality to Low, got: {:?} ({names1:?})",
         r1.quality_reason
     );
 
@@ -1046,16 +1046,16 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
     let names2: Vec<&str> = r2.hits.iter().map(|h| h.name.as_str()).collect();
     assert!(
         names2.iter().any(|n| *n == "OrderRefundCreateAfterListener"),
-        "「退款回退优惠券」必须召回 OrderRefundCreateAfterListener，实际：{names2:?}"
+        "退款回退优惠券 must recall OrderRefundCreateAfterListener, got: {names2:?}"
     );
     assert_ne!(
         r2.quality,
         RecallQuality::Low,
-        "退款场景质量不得崩到 Low，实际：{:?}（{names2:?}）",
+        "the refund scenario must not drop to Low quality, got: {:?} ({names2:?})",
         r2.quality_reason
     );
 
@@ -1064,7 +1064,7 @@ fn recall_event_driven_listener_surfaces_without_quality_collapse() {
     match (rank("NotifyListener"), rank("OrderRefundCreateAfterListener")) {
         (Some(a), Some(b)) => assert!(
             a < b,
-            "NotifyListener（notify，稀有）应排在 OrderRefundCreateAfterListener（仅 order）之前，实际：{names1:?}"
+            "NotifyListener (notify, rare) must rank before OrderRefundCreateAfterListener (order only), got: {names1:?}"
         ),
         _ => {} // If any fails to reach the front we don't force it (mainly depends on lexical-seed competition); the core invariant is already held by the two checks above.
     }
@@ -1092,7 +1092,7 @@ fn recall_real_bge_model_chinese_to_english() {
         .exists()
     {
         eprintln!(
-            "skip recall_real_bge_model: 未找到 {model_dir}/model.safetensors（先跑 tools/convert_bge_safetensors.py）"
+            "skip recall_real_bge_model: {model_dir}/model.safetensors not found (run tools/convert_bge_safetensors.py first)"
         );
         return;
     }
@@ -1126,7 +1126,7 @@ fn recall_real_bge_model_chinese_to_english() {
                 },
             ],
         )
-        .expect("文件应可写入");
+        .expect("the file must be writable");
     let svc_file = files[0].id;
 
     let node = |kind: &str, name: &str, id: i64, file: Option<FileId>| NewNode {
@@ -1166,16 +1166,16 @@ fn recall_real_bge_model_chinese_to_english() {
             ],
             ..Default::default()
         })
-        .expect("图应可写入");
+        .expect("the graph must be writable");
 
     let svc = RecallService::with_embedder(
         f.container.store.clone() as Arc<dyn Persistence>,
         f.container.filesystem(),
         f.container.scanner(),
-        Arc::new(CandleBgeEmbedder::load(&model_dir).expect("加载 bge-m3 失败")),
+        Arc::new(CandleBgeEmbedder::load(&model_dir).expect("failed to load bge-m3")),
     );
-    let warmed = svc.warm_up(f.project).expect("bge 预热应成功");
-    assert!(warmed > 0, "应至少编码一个主题级节点，实际 {warmed}");
+    let warmed = svc.warm_up(f.project).expect("the bge warmup must succeed");
+    assert!(warmed > 0, "at least one topic-level node must be encoded, got {warmed}");
 
     let result = svc
         .recall(
@@ -1189,7 +1189,7 @@ fn recall_real_bge_model_chinese_to_english() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
 
     let score_of = |name: &str| {
         result
@@ -1197,7 +1197,7 @@ fn recall_real_bge_model_chinese_to_english() {
             .iter()
             .find(|s| s.name == name)
             .map(|s| s.score)
-            .expect("seed 应含该节点")
+            .expect("the seed must contain that node")
     };
     let p = score_of("placeOrder");
     let a = score_of("applyDiscount");
@@ -1209,8 +1209,8 @@ fn recall_real_bge_model_chinese_to_english() {
         .unwrap_or(0.0);
     println!("bge recall scores: placeOrder={p:.1} applyDiscount={a:.1} unused_log={n:.1}");
 
-    assert!(p > n, "placeOrder 得分应高于噪声 unused_log：{p} vs {n}");
-    assert!(a > n, "applyDiscount 得分应高于噪声 unused_log：{a} vs {n}");
+    assert!(p > n, "placeOrder must score above the noise node unused_log: {p} vs {n}");
+    assert!(a > n, "applyDiscount must score above the noise node unused_log: {a} vs {n}");
 }
 
 /// Chinese structural hints ("表") should converge results to the corresponding node kind.
@@ -1239,11 +1239,11 @@ fn recall_understands_chinese_kind_hints() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
 
     assert!(
         result.kind_hints.contains(&"Table".to_string()),
-        "“表”应被识别为 Table 结构提示，实际：{:?}",
+        "'表' must be recognised as the Table structural hint, got: {:?}",
         result.kind_hints
     );
 }
@@ -1272,7 +1272,7 @@ fn build_runs_check_automatically() {
             location: None,
             payload: serde_json::json!({}),
         }])
-        .expect("诊断应可写入");
+        .expect("the diagnostic must be writable");
 
     let pipeline = gt_application::PipelineService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -1281,16 +1281,16 @@ fn build_runs_check_automatically() {
     );
     pipeline
         .run(f.project, &gt_domain::port::NoopObserver)
-        .expect("建图不应失败");
+        .expect("graphing must not fail");
 
     let left = f
         .container
         .store
         .list_diagnostics_by_code(f.project, "rule:", None, 100)
-        .expect("诊断应可读回");
+        .expect("the diagnostic must be readable back");
     assert!(
         left.iter().all(|d| d.code != "rule:stale-should-be-cleared"),
-        "建图后自动检查应清掉陈旧的 rule: 诊断，实际残留 {:?}",
+        "the automatic check after graphing must clear the stale rule: diagnostics, left over: {:?}",
         left.iter().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
@@ -1315,7 +1315,7 @@ fn set_stack(f: &Fixture, language: &str, frameworks: &[&str]) {
                 facts: serde_json::Value::Null,
             }],
         )
-        .expect("子工程应可写入");
+        .expect("the sub-project must be writable");
 }
 
 /// Environment gate: language-specific rules **must not** run on a project that doesn't match.
@@ -1336,17 +1336,17 @@ fn php_only_rules_are_skipped_on_java_project() {
         f.container.store.clone() as Arc<dyn Persistence>,
         f.container.rules.clone() as Arc<dyn RuleProvider>,
     );
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
 
     for id in ["orphan-event", "orphan-queue", "raw-sql-sink", "eventbus-orphan"] {
         assert!(
             report.rules_not_applicable.iter().any(|s| s.starts_with(id)),
-            "{id} 是 PHP 专属规则，在 Java 工程上应被判为不适用，实际 not_applicable={:?}",
+            "{id} is a PHP-only rule, so on a Java project it must be judged not applicable, got not_applicable={:?}",
             report.rules_not_applicable
         );
         assert!(
             !report.violations.iter().any(|v| v.rule_id == id),
-            "{id} 不应在 Java 工程上产出任何违规"
+            "{id} must not produce any violation on a Java project"
         );
     }
     // Reverse confirmation: cross-language contract rules are unaffected, run as usual
@@ -1356,7 +1356,7 @@ fn php_only_rules_are_skipped_on_java_project() {
             .keys()
             .any(|k| k.starts_with("http-contract-without-handler"))
             || report.rules_silent.iter().any(|s| s.starts_with("http-contract-without-handler")),
-        "跨语言规则在 Java 工程上仍应执行，实际 by_rule={:?}",
+        "a cross-language rule must still execute on a Java project, got by_rule={:?}",
         report.by_rule
     );
 }
@@ -1375,14 +1375,14 @@ fn php_only_rules_run_on_php_project() {
         f.container.store.clone() as Arc<dyn Persistence>,
         f.container.rules.clone() as Arc<dyn RuleProvider>,
     );
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
 
     assert!(
         !report
             .rules_not_applicable
             .iter()
             .any(|s| s.starts_with("orphan-event")),
-        "PHP 工程上 orphan-event 不应被判为不适用，实际 {:?}",
+        "on a PHP project orphan-event must not be judged not applicable, got {:?}",
         report.rules_not_applicable
     );
 }
@@ -1405,7 +1405,7 @@ fn js_only_rules_are_skipped_on_backend_only_project() {
         f.container.store.clone() as Arc<dyn Persistence>,
         f.container.rules.clone() as Arc<dyn RuleProvider>,
     );
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
 
     for id in [
         "eventbus-emitted-without-listener",
@@ -1413,12 +1413,12 @@ fn js_only_rules_are_skipped_on_backend_only_project() {
     ] {
         assert!(
             report.rules_not_applicable.iter().any(|s| s.starts_with(id)),
-            "{id} 是前端规则，在纯后端工程上应被判为不适用，实际 not_applicable={:?}",
+            "{id} is a frontend rule, so on a pure-backend project it must be judged not applicable, got not_applicable={:?}",
             report.rules_not_applicable
         );
         assert!(
             !report.violations.iter().any(|v| v.rule_id == id),
-            "{id} 不应在纯后端工程上产出任何违规"
+            "{id} must not produce any violation on a pure-backend project"
         );
     }
 }
@@ -1476,7 +1476,7 @@ fn ext_call_in_loop_runs_on_every_stack_that_declares_external_calls() {
                 }],
                 ..Default::default()
             })
-            .expect("图应可写入");
+            .expect("the graph must be writable");
 
         set_stack(&f, language, &[]);
 
@@ -1484,11 +1484,11 @@ fn ext_call_in_loop_runs_on_every_stack_that_declares_external_calls() {
             f.container.store.clone() as Arc<dyn Persistence>,
             f.container.rules.clone() as Arc<dyn RuleProvider>,
         );
-        let report = svc.check(f.project, None, false).expect("检查不应失败");
+        let report = svc.check(f.project, None, false).expect("the check must not fail");
 
         assert!(
             report.violations.iter().any(|v| v.rule_id == rule_id),
-            "{language} 工程上 {rule_id} 规则应触发（P12 不限语言）；实际违规={:?}，not_applicable={:?}",
+            "on a {language} project the {rule_id} rule must fire (P12 is not language-gated); violations={:?}, not_applicable={:?}",
             report.violations.iter().map(|v| v.rule_id.clone()).collect::<Vec<_>>(),
             report.rules_not_applicable
         );
@@ -1513,14 +1513,14 @@ fn rule_is_disabled_when_its_edge_never_occurs() {
         f.container.store.clone() as Arc<dyn Persistence>,
         f.container.rules.clone() as Arc<dyn RuleProvider>,
     );
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
 
     assert!(
         report
             .rules_unavailable
             .iter()
             .any(|s| s.starts_with("backend-endpoint-never-called")),
-        "图上没有 CallsHttp 边时该规则应被停用（否则会把所有端点报成死端点），实际 {:?}",
+        "with no CallsHttp edge in the graph the rule must be disabled (otherwise every endpoint is reported dead), got {:?}",
         report.rules_unavailable
     );
     assert!(
@@ -1528,7 +1528,7 @@ fn rule_is_disabled_when_its_edge_never_occurs() {
             .violations
             .iter()
             .any(|v| v.rule_id == "backend-endpoint-never-called"),
-        "被停用的规则不应产出违规"
+        "a disabled rule must not produce violations"
     );
 }
 
@@ -1536,22 +1536,22 @@ fn rule_is_disabled_when_its_edge_never_occurs() {
 #[test]
 fn builtin_rules_are_organised_per_language() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
-    let set = YamlRuleSet::load_dir(&root.join("rules")).expect("规则应可装载");
+    let set = YamlRuleSet::load_dir(&root.join("rules")).expect("the rule must be loadable");
     let rules = set.rules();
-    assert!(rules.len() >= 10, "内置规则应全部装载，实际 {}", rules.len());
+    assert!(rules.len() >= 10, "all built-in rules must be loaded, got {}", rules.len());
 
     let php_tagged: Vec<_> = rules
         .iter()
         .filter(|r| r.applies_to.languages.iter().any(|l| l == "php"))
         .collect();
-    assert!(!php_tagged.is_empty(), "应存在声明 php 的规则");
+    assert!(!php_tagged.is_empty(), "there must be rules declaring php");
 
     // Cross-language rules must depend only on topology, never sneak in a language declaration.
     for r in rules.iter().filter(|r| r.applies_to.languages.is_empty()) {
         let req = r.requirements();
         assert!(
             req.annotations.is_empty() && req.capabilities.is_empty(),
-            "跨语言规则 {} 不应依赖语言特有的标注/能力，实际 {:?}",
+            "the cross-language rule {} must not depend on a language-specific annotation / capability, got {:?}",
             r.id,
             req
         );
@@ -1587,12 +1587,12 @@ fn recall_splits_chinese_sentence_into_bigrams() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
 
     for want in ["订单", "创建"] {
         assert!(
             result.terms.iter().any(|t| t == want),
-            "整句应被切成二字组，期望含 {want:?}，实际：{:?}",
+            "the whole sentence must be cut into bigrams, expected to contain {want:?}, got: {:?}",
             result.terms
         );
     }
@@ -1600,13 +1600,13 @@ fn recall_splits_chinese_sentence_into_bigrams() {
     // "表"/"接口" only act as kind boosts and must not linger as text-match words (would steer recall wrong).
     assert!(
         !result.terms.iter().any(|t| t.contains('表') || t.contains('接')),
-        "结构提示词不应残留为匹配词，实际：{:?}",
+        "a structural hint word must not remain as a match term, got: {:?}",
         result.terms
     );
     assert!(
         result.kind_hints.contains(&"Table".to_string())
             && result.kind_hints.contains(&"HttpContract".to_string()),
-        "应同时识别 Table / HttpContract 提示，实际：{:?}",
+        "both the Table and HttpContract hints must be recognised, got: {:?}",
         result.kind_hints
     );
 }
@@ -1636,15 +1636,15 @@ fn recall_keeps_snake_case_identifiers_intact() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
     assert!(
         result.terms.contains(&"unused_log".to_string()),
-        "`unused_log` 不能被拆成 unused + log，实际词：{:?}",
+        "`unused_log` must not be split into unused + log, got terms: {:?}",
         result.terms
     );
     assert!(
         result.hits.iter().any(|h| h.name == "unused_log"),
-        "应精确命中 unused_log"
+        "unused_log must be hit exactly"
     );
 }
 
@@ -1673,7 +1673,7 @@ fn recall_produces_markdown_context_pack() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
     let md = &result.markdown;
     assert!(md.contains("# Recall context"), "the context pack should have a heading");
     assert!(md.contains("Seeds"), "the context pack should describe the seeds");
@@ -1717,7 +1717,7 @@ fn seed_node_with_property(f: &Fixture, id: i64, kind: &str, name: &str, props: 
             }],
             ..Default::default()
         })
-        .expect("节点应可写入");
+        .expect("the node must be writable");
 }
 
 /// A rule with `enabled: false` must produce **zero violations**.
@@ -1738,7 +1738,7 @@ rules:
       kinds: [Table]
     when:
       - fan_in_gte: 0
-    message: "表 {name} 命中了（不该发生）"
+    message: "table {name} was hit (it should not have been)"
   - id: on-should-run
     title: 启用规则
     severity: info
@@ -1747,25 +1747,25 @@ rules:
       kinds: [Table]
     when:
       - fan_in_gte: 0
-    message: "表 {name} 命中了"
+    message: "table {name} was hit"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
 
     assert_eq!(
         report.violations.iter().filter(|v| v.rule_id == "off-should-not-run").count(),
         0,
-        "enabled: false 的规则不应产出任何违规"
+        "a rule with enabled: false must not produce any violation"
     );
     assert!(
         report.violations.iter().any(|v| v.rule_id == "on-should-run"),
-        "对照组：enabled 为真的规则应正常命中"
+        "control group: the rule with enabled true must hit normally"
     );
 }
 
@@ -1782,7 +1782,7 @@ rules:
       kinds: [HttpContract]
     when:
       - property_is: { name: "side", value: "frontend" }
-    message: "契约 {name} 来自前端"
+    message: "contract {name} comes from the frontend"
   - id: t-has-outgoing
     title: 有 handler 的契约
     severity: error
@@ -1791,7 +1791,7 @@ rules:
       kinds: [HttpContract]
     when:
       - has_outgoing: HandledBy
-    message: "契约 {name} 有 handler"
+    message: "contract {name} has a handler"
   - id: t-fan-in-gte
     title: 被引用过的表
     severity: info
@@ -1800,7 +1800,7 @@ rules:
       kinds: [Table]
     when:
       - fan_in_gte: 1
-    message: "表 {name} 有 {kind} 引用"
+    message: "table {name} has a {kind} reference"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
@@ -1815,17 +1815,17 @@ rules:
         serde_json::json!({ "side": "frontend" }),
     );
 
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
     let hit = |id: &str| report.violations.iter().filter(|v| v.rule_id == id).count();
 
     // Only the just-added GET /api/from-frontend carries side=frontend
-    assert_eq!(hit("t-property-is"), 1, "`property_is` 应只命中 side=frontend 的契约");
+    assert_eq!(hit("t-property-is"), 1, "`property_is` must hit only contracts with side=frontend");
     // Only POST /api/order/create has a HandledBy out-edge (ghost doesn't)
-    assert_eq!(hit("t-has-outgoing"), 1, "`has_outgoing` 应只命中带 handler 的契约");
+    assert_eq!(hit("t-has-outgoing"), 1, "`has_outgoing` must hit only contracts that have a handler");
     // user is referenced by both read and write edges; unused_log is not
-    assert_eq!(hit("t-fan-in-gte"), 1, "`fan_in_gte: 1` 应只命中 user 表");
+    assert_eq!(hit("t-fan-in-gte"), 1, "`fan_in_gte: 1` must hit only the user table");
 }
 
 /// Framework gate: a rule that declares `frameworks` must also be skipped when that framework is absent.
@@ -1844,34 +1844,34 @@ rules:
       frameworks: [thinkphp]
     when:
       - fan_in_gte: 0
-    message: "表 {name}"
+    message: "table {name}"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
 
     set_stack(&f, "php", &["laravel"]);
-    let without = svc.check(f.project, None, false).expect("检查不应失败");
+    let without = svc.check(f.project, None, false).expect("the check must not fail");
     assert!(
         without.rules_not_applicable.iter().any(|s| s.starts_with("tp-only")),
-        "laravel 工程上 thinkphp 规则应不适用，实际 {:?}",
+        "on a laravel project the thinkphp rule must be not applicable, got {:?}",
         without.rules_not_applicable
     );
 
     set_stack(&f, "php", &["thinkphp"]);
-    let with = svc.check(f.project, None, false).expect("检查不应失败");
+    let with = svc.check(f.project, None, false).expect("the check must not fail");
     assert!(
         !with.rules_not_applicable.iter().any(|s| s.starts_with("tp-only")),
-        "thinkphp 工程上应恢复执行，实际 {:?}",
+        "on a thinkphp project it must execute again, got {:?}",
         with.rules_not_applicable
     );
     assert!(
         with.violations.iter().any(|v| v.rule_id == "tp-only"),
-        "恢复执行后应真的命中"
+        "once it executes again it must really hit"
     );
 }
 
@@ -1902,7 +1902,7 @@ fn java_n1_query_rule_fires_on_loop_db_read() {
                 content_hash: "h-java-n1".into(),
             }],
         )
-        .expect("文件应可写入");
+        .expect("the file must be writable");
     let file_id = files[0].id;
 
     f.container
@@ -1941,20 +1941,20 @@ fn java_n1_query_rule_fires_on_loop_db_read() {
             }],
             ..Default::default()
         })
-        .expect("图应可写入");
+        .expect("the graph must be writable");
 
     let svc = RuleService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
         f.container.rules.clone() as Arc<dyn RuleProvider>,
     );
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
 
     assert!(
         report
             .violations
             .iter()
             .any(|v| v.rule_id == "java-n1-query-in-loop"),
-        "java-n1-query-in-loop 应命中循环体内的数据库读调用点，实际违规：{:?}",
+        "java-n1-query-in-loop must hit the DB read call site inside the loop, violations: {:?}",
         report
             .violations
             .iter()
@@ -1967,7 +1967,7 @@ fn java_n1_query_rule_fires_on_loop_db_read() {
             .violations
             .iter()
             .any(|v| v.rule_id == "java-n1-write-in-loop"),
-        "未打 db-write 标注时 java-n1-write-in-loop 不应误命中"
+        "without the db-write annotation java-n1-write-in-loop must not hit falsely"
     );
 }
 
@@ -1984,32 +1984,32 @@ rules:
       kinds: [Method]
     when:
       - name_contains: createOrder
-    message: "位置 {file}:{line} 名称 {name}"
+    message: "location {file}:{line}, name {name}"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
 
     let v = report
         .violations
         .iter()
         .find(|v| v.rule_id == "t-file-line")
-        .expect("应命中 createOrder");
-    assert!(v.file.is_some(), "应解析出文件");
-    assert!(v.line.is_some(), "应解析出行号");
+        .expect("createOrder must be hit");
+    assert!(v.file.is_some(), "the file must be resolved");
+    assert!(v.line.is_some(), "the line number must be resolved");
     assert!(
         v.message.contains(&v.file.clone().unwrap_or_default()),
-        "文案应渲染出文件路径，实际：{}",
+        "the copy must render the file path, got: {}",
         v.message
     );
     assert!(
         !v.message.contains("{file}") && !v.message.contains("{line}"),
-        "占位符不应残留，实际：{}",
+        "no placeholder may remain, got: {}",
         v.message
     );
 }
@@ -2047,29 +2047,29 @@ fn recall_kinds_filters_seeds_not_results() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败")
+        .expect("recall must not fail")
     };
 
     let only_tables = run(vec!["Table".into()]);
-    assert!(!only_tables.hits.is_empty(), "限定 Table 时应有结果");
+    assert!(!only_tables.hits.is_empty(), "restricting to Table must yield results");
 
     // Seeds (hop == 0) must all come from the specified kind
     assert!(
         only_tables.hits.iter().filter(|h| h.hop == 0).all(|h| h.kind == "Table"),
-        "种子应全部是 Table，实际：{:?}",
+        "every seed must be a Table, got: {:?}",
         only_tables.hits.iter().filter(|h| h.hop == 0).map(|h| &h.kind).collect::<Vec<_>>()
     );
     // Neighbors pulled in by expansion may be other kinds (this is exactly recall's value)
     assert!(
         only_tables.hits.iter().any(|h| h.hop > 0 && h.kind != "Table"),
-        "扩展应能带出其它种类的相关代码，否则召回退化成关键词匹配"
+        "expansion must pull in related code of other kinds, otherwise recall degrades to keyword matching"
     );
 
     // Switch the kind and the seeds should change too -- proving kinds really take effect
     let only_contracts = run(vec!["HttpContract".into()]);
     assert!(
         !only_contracts.seeds.iter().any(|s| s.kind == "Table"),
-        "限定 HttpContract 时种子里不应出现 Table，实际：{:?}",
+        "restricting to HttpContract means no Table among the seeds, got: {:?}",
         only_contracts.seeds
     );
 }
@@ -2099,12 +2099,12 @@ fn recall_limit_truncates_results() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败")
+        .expect("recall must not fail")
     };
     let full = run(50);
-    assert!(full.hits.len() >= 2, "样本应能召回至少 2 条，实际 {}", full.hits.len());
+    assert!(full.hits.len() >= 2, "the sample must recall at least 2 results, got {}", full.hits.len());
     let capped = run(1);
-    assert_eq!(capped.hits.len(), 1, "limit=1 应只返回 1 条");
+    assert_eq!(capped.hits.len(), 1, "limit=1 must return only 1 result");
 }
 
 /// Empty / pure-noise queries must not panic, and should yield empty results rather than returning something arbitrary.
@@ -2133,8 +2133,8 @@ fn recall_handles_empty_query() {
                 include_body: false,
                 },
             )
-            .unwrap_or_else(|e| panic!("查询 {q:?} 不应失败：{e}"));
-        assert!(r.hits.is_empty(), "查询 {q:?} 不应召回任何结果，实际 {} 条", r.hits.len());
+            .unwrap_or_else(|e| panic!("query {q:?} must not fail: {e}"));
+        assert!(r.hits.is_empty(), "query {q:?} must recall nothing, got {} results", r.hits.len());
     }
 }
 
@@ -2167,7 +2167,7 @@ fn seed_rich_node(f: &Fixture, id: i64, kind: &str, name: &str, fqn: &str, ident
             }],
             ..Default::default()
         })
-        .expect("节点应可写入");
+        .expect("the node must be writable");
 }
 
 /// Coverage for the remaining predicates: `kind_in` / `name_starts_with` / `fqn_contains` /
@@ -2188,7 +2188,7 @@ rules:
       kinds: [Table, Method]
     when:
       - kind_in: [Method]
-    message: "{name} 是方法"
+    message: "{name} is a method"
   - id: t-name-starts-with
     title: 名字以 create 开头
     severity: info
@@ -2197,7 +2197,7 @@ rules:
       kinds: [Method]
     when:
       - name_starts_with: create
-    message: "{name} 以 create 开头"
+    message: "{name} starts with create"
   - id: t-fqn-contains
     title: fqn 含 Service
     severity: info
@@ -2206,7 +2206,7 @@ rules:
       kinds: [Class]
     when:
       - fqn_contains: service
-    message: "{name} 的 fqn 含 Service"
+    message: "the fqn of {name} contains Service"
   - id: t-identity-contains
     title: identity 含 OrderService
     severity: info
@@ -2215,7 +2215,7 @@ rules:
       kinds: [Class]
     when:
       - identity_contains: orderservice
-    message: "{name} 的 identity 含 OrderService"
+    message: "the identity of {name} contains OrderService"
   - id: t-text-contains
     title: 任一文本含 userDao
     severity: info
@@ -2224,7 +2224,7 @@ rules:
       kinds: [Method]
     when:
       - text_contains: userdao
-    message: "{name} 命中文本"
+    message: "{name} hits the text"
   - id: t-no-annotation
     title: 没有 pii 标注的表
     severity: info
@@ -2233,7 +2233,7 @@ rules:
       kinds: [Table]
     when:
       - no_annotation: pii
-    message: "{name} 没有 pii"
+    message: "{name} has no pii"
   - id: t-property-missing
     title: 缺 side 属性的契约
     severity: info
@@ -2242,7 +2242,7 @@ rules:
       kinds: [HttpContract]
     when:
       - property_missing: side
-    message: "{name} 没有 side 属性"
+    message: "{name} has no side property"
   - id: t-fan-out-gte
     title: 有出边的方法
     severity: info
@@ -2251,7 +2251,7 @@ rules:
       kinds: [Method]
     when:
       - fan_out_gte: 1
-    message: "{name} 至少有一条语义出边"
+    message: "{name} has at least one semantic out-edge"
   - id: t-has-incoming
     title: 被写过的表
     severity: info
@@ -2260,7 +2260,7 @@ rules:
       kinds: [Table]
     when:
       - has_incoming: WritesDb
-    message: "{name} 被写过"
+    message: "{name} is written to"
   - id: t-all-of
     title: 同时满足两个条件
     severity: info
@@ -2271,7 +2271,7 @@ rules:
       - all_of:
           - no_annotation: pii
           - fan_in_lte: 0
-    message: "{name} 既无 pii 也无人引用"
+    message: "{name} has neither pii nor any reference"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
@@ -2280,21 +2280,21 @@ rules:
     seed_graph(&f);
     seed_rich_node(&f, 301, "Class", "OrderService", "App\\Service\\OrderService", "OrderService");
 
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
     let hit = |id: &str| report.violations.iter().filter(|v| v.rule_id == id).count();
 
-    assert_eq!(hit("t-kind-in"), 2, "Method 有两个（createOrder / userDaoSelect）");
-    assert_eq!(hit("t-name-starts-with"), 1, "只有 createOrder 以 create 开头");
-    assert_eq!(hit("t-fqn-contains"), 1, "fqn 匹配（大小写不敏感）");
-    assert_eq!(hit("t-identity-contains"), 1, "identity 匹配（大小写不敏感）");
-    assert_eq!(hit("t-text-contains"), 1, "text 应能在 name/fqn/identity 任一命中");
-    assert_eq!(hit("t-no-annotation"), 1, "只有 unused_log 没有 pii");
-    assert_eq!(hit("t-property-missing"), 2, "两个契约都没有 side 属性");
-    assert_eq!(hit("t-fan-out-gte"), 2, "两个方法各有一条语义出边");
-    assert_eq!(hit("t-has-incoming"), 1, "只有 user 表被 WritesDb 指向");
-    assert_eq!(hit("t-all-of"), 1, "只有 unused_log 同时满足两条");
+    assert_eq!(hit("t-kind-in"), 2, "there are two Methods (createOrder / userDaoSelect)");
+    assert_eq!(hit("t-name-starts-with"), 1, "only createOrder starts with create");
+    assert_eq!(hit("t-fqn-contains"), 1, "fqn matching (case-insensitive)");
+    assert_eq!(hit("t-identity-contains"), 1, "identity matching (case-insensitive)");
+    assert_eq!(hit("t-text-contains"), 1, "text must hit any of name/fqn/identity");
+    assert_eq!(hit("t-no-annotation"), 1, "only unused_log has no pii");
+    assert_eq!(hit("t-property-missing"), 2, "neither contract has a side property");
+    assert_eq!(hit("t-fan-out-gte"), 2, "each of the two methods has one semantic out-edge");
+    assert_eq!(hit("t-has-incoming"), 1, "only the user table is targeted by WritesDb");
+    assert_eq!(hit("t-all-of"), 1, "only unused_log satisfies both conditions");
 }
 
 /// The **interaction** between `no_capability` and criterion validation:
@@ -2308,34 +2308,34 @@ fn no_capability_depends_on_capability_channel() {
     const YAML: &str = r#"
 rules:
   - id: t-no-auth
-    title: 没有鉴权能力的表
+    title: tables without an auth capability
     severity: warning
     category: security
     applies_to:
       kinds: [Table]
     when:
       - no_capability: [Authentication]
-    message: "表 {name} 未识别到鉴权能力"
+    message: "table {name} has no recognised auth capability"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
 
     // Phase 1: Capability channel empty -> rule should be caught by criterion validation
-    let before = svc.check(f.project, None, false).expect("检查不应失败");
+    let before = svc.check(f.project, None, false).expect("the check must not fail");
     assert!(
         before.rules_unavailable.iter().any(|s| s.starts_with("t-no-auth")),
-        "Capability 通道为空时该规则必须停用（否则 no_capability 恒真），实际 {:?}",
+        "with an empty Capability channel the rule must be disabled (otherwise no_capability is vacuously true), got {:?}",
         before.rules_unavailable
     );
     assert_eq!(
         before.violations.iter().filter(|v| v.rule_id == "t-no-auth").count(),
         0,
-        "被停用的规则不应产出违规"
+        "a disabled rule must not produce violations"
     );
 
     // Phase 2: add a **different** capability (RateLimiting), channel is not empty
@@ -2355,18 +2355,18 @@ rules:
             }],
             ..Default::default()
         })
-        .expect("标注应可写入");
+        .expect("the annotation must be writable");
 
-    let after = svc.check(f.project, None, false).expect("检查不应失败");
+    let after = svc.check(f.project, None, false).expect("the check must not fail");
     assert!(
         !after.rules_unavailable.iter().any(|s| s.starts_with("t-no-auth")),
-        "Capability 通道有标注后应恢复执行，实际 {:?}",
+        "once the Capability channel has annotations it must execute again, got {:?}",
         after.rules_unavailable
     );
     assert_eq!(
         after.violations.iter().filter(|v| v.rule_id == "t-no-auth").count(),
         2,
-        "两张表都没有 Authentication 能力（user 只有 RateLimiting），都应命中"
+        "neither table has the Authentication capability (user only has RateLimiting), so both must be hit"
     );
 }
 
@@ -2386,19 +2386,19 @@ rules:
       kinds: []
     when:
       - name_contains: order
-    message: "{name} 命中"
+    message: "{name} is hit"
 "#;
     let Some(f) = fixture() else {
         eprintln!("skipped: samples/frontend-backend-link not found (set GRAPHTELL_SAMPLE_DIR to point at it)");
         return;
     };
     seed_graph(&f);
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
     assert!(
         !report.violations.is_empty(),
-        "不限种类时应能跨种类命中（createOrder / POST /api/order/create 等），实际 0 条"
+        "with no kind restriction it must hit across kinds (createOrder / POST /api/order/create …), got 0"
     );
 }
 
@@ -2427,7 +2427,7 @@ fn recall_reads_snippet_from_real_file() {
                 content_hash: "h-real".into(),
             }],
         )
-        .expect("文件应可写入");
+        .expect("the file must be writable");
     let real_file = files[0].id;
 
     f.container
@@ -2456,7 +2456,7 @@ fn recall_reads_snippet_from_real_file() {
             }],
             ..Default::default()
         })
-        .expect("节点应可写入");
+        .expect("the node must be writable");
 
     let svc = RecallService::new(
         f.container.store.clone() as Arc<dyn Persistence>,
@@ -2475,21 +2475,21 @@ fn recall_reads_snippet_from_real_file() {
                 include_body: false,
             },
         )
-        .expect("召回不应失败");
+        .expect("recall must not fail");
 
     let hit = r
         .hits
         .iter()
         .find(|h| h.name == "realOrderController")
-        .expect("应命中刚写入的节点");
+        .expect("the node just written must be hit");
     let snippet = hit
         .snippet
         .clone()
-        .unwrap_or_else(|| panic!("文件真实存在时应读出片段，file={:?} line={:?}", hit.file, hit.line));
-    assert!(!snippet.is_empty(), "片段不应为空");
+        .unwrap_or_else(|| panic!("when the file really exists a snippet must be read, file={:?} line={:?}", hit.file, hit.line));
+    assert!(!snippet.is_empty(), "the snippet must not be empty");
     assert!(
         r.markdown.contains(&snippet) || snippet.lines().count() > 0,
-        "上下文包应带上片段内容"
+        "the context pack must carry the snippet content"
     );
 }
 
@@ -2556,7 +2556,7 @@ fn seed_many_tables(f: &Fixture, n: usize) {
     f.container
         .store
         .apply(&GraphDelta { project_id: Some(pid), nodes, edges, ..Default::default() })
-        .expect("批量图应可写入");
+        .expect("the batch graph must be writable");
 }
 
 /// Time of one check (ms); the rule hits all tables, ensuring every candidate is really evaluated.
@@ -2567,7 +2567,7 @@ fn time_check_on_tables(f: &Fixture) -> (u128, usize) {
     const YAML: &str = r#"
 rules:
   - id: perf-table-hit
-    title: 被读过的表
+    title: tables that are read
     severity: info
     category: perf
     applies_to:
@@ -2575,14 +2575,14 @@ rules:
       limit: 200000
     when:
       - fan_in_gte: 1
-    message: "表 {name} 被读过"
+    message: "table {name} is read"
 "#;
-    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("YAML 应可解析"));
+    let rules = Arc::new(YamlRuleSet::from_str(YAML).expect("the YAML must parse"));
     let svc = RuleService::new(f.container.store.clone() as Arc<dyn Persistence>, rules.clone());
-    svc.check(f.project, None, false).expect("预热检查不应失败");
+    svc.check(f.project, None, false).expect("the warmup check must not fail");
 
     let t = std::time::Instant::now();
-    let report = svc.check(f.project, None, false).expect("检查不应失败");
+    let report = svc.check(f.project, None, false).expect("the check must not fail");
     (t.elapsed().as_millis(), report.violations.len())
 }
 
@@ -2618,12 +2618,12 @@ fn check_does_not_degenerate_quadratically() {
 
     let budget = t_small * 16 + 100;
     eprintln!(
-        "[perf] {SMALL} 节点 {t_small} ms / {BIG} 节点 {t_big} ms（预算 {budget} ms，倍数 {:.1}）",
+        "[perf] {SMALL} nodes {t_small} ms / {BIG} nodes {t_big} ms (budget {budget} ms, factor {:.1})",
         t_big as f64 / t_small.max(1) as f64
     );
 
-    assert_eq!(hit_small, SMALL, "小规模应全部命中");
-    assert_eq!(hit_big, BIG, "大规模应全部命中");
+    assert_eq!(hit_small, SMALL, "the small scale must hit everything");
+    assert_eq!(hit_big, BIG, "the large scale must hit everything");
     assert!(
         t_big <= budget,
         "规模 ×8 耗时从 {t_small}ms 涨到 {t_big}ms（预算 {budget}ms）—— \
@@ -2649,7 +2649,7 @@ fn check_completes_within_budget() {
     let (ms, hits) = time_check_on_tables(&f);
     eprintln!("[perf] {N} nodes in {ms} ms (budget {BUDGET_MS} ms)");
 
-    assert_eq!(hits, N, "应全部命中");
+    assert_eq!(hits, N, "everything must be hit");
     assert!(
         ms <= BUDGET_MS,
         "{N} 个候选的检查耗时 {ms}ms 超过预算 {BUDGET_MS}ms —— \
@@ -2685,12 +2685,12 @@ fn recall_with_snippets_is_safe_when_file_missing() {
                 include_body: false,
             },
         )
-        .expect("开启片段不应导致失败");
-    assert!(!r.hits.is_empty(), "开启片段后仍应有召回结果");
+        .expect("enabling snippets must not cause a failure");
+    assert!(!r.hits.is_empty(), "with snippets enabled there must still be recall results");
     // The fixture's source file does not exist on disk; the snippet should be None, not panic
     assert!(
         r.hits.iter().all(|h| h.snippet.is_none()),
-        "文件不存在时片段应为 None，实际：{:?}",
+        "when the file does not exist the snippet must be None, got: {:?}",
         r.hits.iter().filter_map(|h| h.snippet.as_ref()).collect::<Vec<_>>()
     );
 }
@@ -2723,13 +2723,13 @@ async fn recall_http_get_endpoint_returns_hits() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
-    assert!(json["ok"].as_bool() == Some(true), "应 success：{json:?}");
-    let hits = json["data"]["hits"].as_array().expect("data.hits 应为数组");
-    assert!(!hits.is_empty(), "GET /recall 应召回结果");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("the response must be JSON");
+    assert!(json["ok"].as_bool() == Some(true), "it must succeed: {json:?}");
+    let hits = json["data"]["hits"].as_array().expect("data.hits must be an array");
+    assert!(!hits.is_empty(), "GET /recall must return results");
     assert!(
         hits.iter().any(|h| h["name"].as_str() == Some("user")),
-        "应含 user 种子：{hits:?}"
+        "it must contain the user seed: {hits:?}"
     );
 }
 
@@ -2763,10 +2763,10 @@ async fn recall_http_post_endpoint_returns_hits() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
-    assert!(json["ok"].as_bool() == Some(true), "应 success：{json:?}");
-    let hits = json["data"]["hits"].as_array().expect("data.hits 应为数组");
-    assert!(!hits.is_empty(), "POST /recall 应召回结果");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("the response must be JSON");
+    assert!(json["ok"].as_bool() == Some(true), "it must succeed: {json:?}");
+    let hits = json["data"]["hits"].as_array().expect("data.hits must be an array");
+    assert!(!hits.is_empty(), "POST /recall must return results");
 }
 
 /// HTTP layer: `include_body` must pass through to recall and append the full source of hit files at the end of the context pack.
@@ -2802,8 +2802,8 @@ async fn recall_http_include_body_appends_full_file_section() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
-    let md = json["data"]["markdown"].as_str().expect("应有 markdown");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("the response must be JSON");
+    let md = json["data"]["markdown"].as_str().expect("there must be markdown");
     assert!(
         md.contains("## Full files (include_body)"),
         "with include_body=true the full-file section should be appended: {md}"
@@ -2833,8 +2833,8 @@ async fn recall_http_without_include_body_has_no_full_file_section() {
         .unwrap();
 
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
-    let md = json["data"]["markdown"].as_str().expect("应有 markdown");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("the response must be JSON");
+    let md = json["data"]["markdown"].as_str().expect("there must be markdown");
     assert!(
         !md.contains("## Full files (include_body)"),
         "by default the full-file section should not be appended: {md}"
@@ -2863,9 +2863,9 @@ async fn warmup_http_endpoint_returns_status_fields() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("响应应为 JSON");
-    assert!(json["ok"].as_bool() == Some(true), "应 success：{json:?}");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("the response must be JSON");
+    assert!(json["ok"].as_bool() == Some(true), "it must succeed: {json:?}");
     let d = &json["data"];
-    assert!(d["warmed"].is_boolean(), "应有 warmed 字段：{d:?}");
-    assert!(d["warming"].is_boolean(), "应有 warming 字段：{d:?}");
+    assert!(d["warmed"].is_boolean(), "there must be a warmed field: {d:?}");
+    assert!(d["warming"].is_boolean(), "there must be a warming field: {d:?}");
 }

@@ -767,10 +767,10 @@ mod tests {
     fn is_builtin_type_strips_nullable_and_is_case_insensitive() {
         let policy = php_policy();
         assert!(super::is_builtin_type("string", &policy));
-        assert!(super::is_builtin_type("?string", &policy), "可空前缀 ? 应被剥离");
-        assert!(super::is_builtin_type("INT", &policy), "大小写不敏感");
-        assert!(super::is_builtin_type(" Array ", &policy), "前后空白应被 trim");
-        assert!(!super::is_builtin_type("DateTime", &policy), "非内建类型不应命中");
+        assert!(super::is_builtin_type("?string", &policy), "the nullable `?` prefix must be stripped");
+        assert!(super::is_builtin_type("INT", &policy), "case-insensitive");
+        assert!(super::is_builtin_type(" Array ", &policy), "surrounding whitespace must be trimmed");
+        assert!(!super::is_builtin_type("DateTime", &policy), "a non-builtin type must not match");
         assert!(!super::is_builtin_type("?CustomType", &policy));
     }
 
@@ -789,7 +789,7 @@ mod tests {
         };
         let expected =
             serde_json::from_value::<FactValue>(serde_json::json!({ "t": "Int", "v": 42 })).unwrap();
-        assert_eq!(super::property_value(&with_default), expected, "应读取 default 字段");
+        assert_eq!(super::property_value(&with_default), expected, "must read the default field");
 
         let no_default = Declaration {
             kind: NodeKind(NodeKind::PROPERTY.to_string()),
@@ -802,7 +802,7 @@ mod tests {
         assert_eq!(
             super::property_value(&no_default),
             FactValue::Null,
-            "无 default 应回退 Null"
+            "with no default it must fall back to Null"
         );
     }
 

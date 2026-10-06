@@ -236,7 +236,7 @@ mod tests {
         write(&mut ctx, 10, 21);
         call(&mut ctx, 10, "save");
         super::run(&mut ctx);
-        assert!(annotated(&ctx, 10), "写两张表且无事务标记应被标注");
+        assert!(annotated(&ctx, 10), "writing two tables with no transaction marker must be annotated");
     }
 
     #[test]
@@ -247,7 +247,7 @@ mod tests {
         call(&mut ctx, 10, "save");
         call(&mut ctx, 10, "transaction");
         super::run(&mut ctx);
-        assert!(!annotated(&ctx, 10), "方法内出现事务标记则不应标注");
+        assert!(!annotated(&ctx, 10), "a transaction marker inside the method means no annotation");
     }
 
     #[test]
@@ -256,7 +256,7 @@ mod tests {
         write(&mut ctx, 10, 20);
         call(&mut ctx, 10, "save");
         super::run(&mut ctx);
-        assert!(!annotated(&ctx, 10), "只写一张表不算多表写");
+        assert!(!annotated(&ctx, 10), "writing a single table is not a multi-table write");
     }
 
     /// The point of the whole refactor: a stack that declares **no** transaction markers is not judged.
@@ -271,7 +271,7 @@ mod tests {
         super::run(&mut ctx);
         assert!(
             !annotated(&ctx, 10),
-            "未声明事务标记的栈不应被判定（否则每个多表写都误报）"
+            "a stack with no declared transaction marker must not be judged (otherwise every multi-table write is a false positive)"
         );
     }
 
@@ -307,7 +307,7 @@ mod tests {
         call(&mut ctx, 10, "save");
         super::run(&mut ctx);
         // Only ONE direct table -> below the MIN_TABLES(2) threshold -> must not be flagged.
-        assert!(!annotated(&ctx, 10), "间接传播写库边不应计入直写表数");
+        assert!(!annotated(&ctx, 10), "an indirectly propagated write edge must not count towards the direct-write table count");
     }
 
     /// Two direct writes plus an extra propagated write still count as a multi-table write.
@@ -327,7 +327,7 @@ mod tests {
         });
         call(&mut ctx, 10, "save");
         super::run(&mut ctx);
-        assert!(annotated(&ctx, 10), "两张直写表 + 一条间接边仍应被标注");
+        assert!(annotated(&ctx, 10), "two directly written tables + one indirect edge must still be annotated");
     }
 
     /// The global `tx_calls_default` is consulted when a sub-project declares nothing of its own.
@@ -346,7 +346,7 @@ mod tests {
         call(&mut ctx, 10, "save");
         super::run(&mut ctx);
         // default markers apply; no marker call -> still flagged
-        assert!(annotated(&ctx, 10), "子项目未声明时回退默认事务标记词表");
+        assert!(annotated(&ctx, 10), "a sub-project with no declaration falls back to the default transaction-marker vocabulary");
     }
 
     #[test]
@@ -356,7 +356,7 @@ mod tests {
         write(&mut ctx, 10, 21);
         call(&mut ctx, 10, "transaction");
         super::run(&mut ctx);
-        assert!(!annotated(&ctx, 10), "默认词表中的标记出现即抑制");
+        assert!(!annotated(&ctx, 10), "a marker from the default vocabulary appearing suppresses the annotation");
     }
 
     /// `run()` matches transaction markers case-insensitively: the declaration may be `startTrans`, the call
@@ -368,7 +368,7 @@ mod tests {
         write(&mut ctx, 10, 21);
         call(&mut ctx, 10, "STARTTRANS");
         super::run(&mut ctx);
-        assert!(!annotated(&ctx, 10), "标记大小写无关匹配应在 run() 中生效");
+        assert!(!annotated(&ctx, 10), "case-insensitive marker matching must take effect inside run()");
     }
 
     /// The annotation's contract: kind / subkind / channel / confidence / evidence are fixed.
@@ -451,7 +451,7 @@ mod tests {
 
         assert!(
             annotated(&ctx, 10),
-            "子项目有自己的标记词表时，默认词表不参与（不合并）"
+            "when a sub-project has its own marker vocabulary the default one does not take part (no merging)"
         );
     }
 
@@ -470,7 +470,7 @@ mod tests {
 
         assert!(
             !annotated(&ctx, 10),
-            "显式声明为空的栈不回落到默认词表：声明为空就是『该栈没有事务概念』"
+            "a stack that declares an empty vocabulary does not fall back to the default: an empty declaration means 'this stack has no notion of transactions'"
         );
     }
 
@@ -484,7 +484,7 @@ mod tests {
 
         super::run(&mut ctx);
 
-        assert!(annotated(&ctx, 10), "无 sub 的调用点应按默认词表判定");
+        assert!(annotated(&ctx, 10), "a call site with no sub must be judged by the default vocabulary");
     }
 
     /// A declaration may name the **qualified** call (`Db::startTrans`); matching must consider the callee text
@@ -509,7 +509,7 @@ mod tests {
 
         assert!(
             !annotated(&ctx, 10),
-            "限定名调用文本也应匹配事务标记"
+            "a fully qualified call text must match the transaction marker too"
         );
     }
 
@@ -532,7 +532,7 @@ mod tests {
 
         super::run(&mut ctx);
 
-        assert!(!annotated(&ctx, 10), "只读不算多表写");
+        assert!(!annotated(&ctx, 10), "read-only is not a multi-table write");
     }
 
     /// With no call site at all the phase cannot know whether a marker appears, so it stays silent —
@@ -548,7 +548,7 @@ mod tests {
 
         assert!(
             !annotated(&ctx, 10),
-            "没有任何调用点就无法得知是否出现事务标记，应保守跳过"
+            "with no call site there is no way to know whether a transaction marker appears, so it must conservatively skip"
         );
     }
 
@@ -566,8 +566,8 @@ mod tests {
 
         super::run(&mut ctx);
 
-        assert!(annotated(&ctx, 10), "无标记的方法应被标注");
-        assert!(!annotated(&ctx, 11), "有标记的方法不应被标注（不串味）");
+        assert!(annotated(&ctx, 10), "a method with no marker must be annotated");
+        assert!(!annotated(&ctx, 11), "a method with a marker must not be annotated (no bleeding between methods)");
     }
 
     /// The evidence points at the **earliest** call site of the method, wherever it was registered in the list.
@@ -582,7 +582,7 @@ mod tests {
         super::run(&mut ctx);
 
         let a = annotation_of(&ctx, 10).expect("expected a multi-write-without-tx annotation");
-        assert_eq!(a.evidence["line"], json!(7), "行号应取最早的调用点");
+        assert_eq!(a.evidence["line"], json!(7), "the line number must come from the earliest call site");
         assert_eq!(a.evidence["file"], json!("app/early.php"));
     }
 
@@ -598,7 +598,7 @@ mod tests {
         super::run(&mut ctx);
 
         let a = annotation_of(&ctx, 10).expect("expected a multi-write-without-tx annotation");
-        assert_eq!(a.evidence["tables"], json!(3), "证据应记录真实表数，而非阈值");
+        assert_eq!(a.evidence["tables"], json!(3), "the evidence must record the real table count, not the threshold");
     }
 
     /// A method whose call sites all belong to a stack that declares no markers is not judged, even when
@@ -614,7 +614,7 @@ mod tests {
 
         assert!(
             !annotated(&ctx, 10),
-            "调用点所属栈未声明标记词表时不应判定"
+            "no judgement when the stack owning the call site declares no marker vocabulary"
         );
     }
 
@@ -673,11 +673,11 @@ mod tests {
 
         assert!(
             annotated(&ctx, 10),
-            "没有方法名的调用点仍会登记该方法（位置已知），多表写应被判定"
+            "a call site with no method name still registers the method (its position is known), so a multi-table write must be judged"
         );
         assert!(
             !annotated(&ctx, 11),
-            "并存的真实事务标记调用仍应抑制"
+            "a coexisting real transaction-marker call must still suppress"
         );
     }
 
@@ -704,7 +704,7 @@ mod tests {
 
         assert!(
             annotated(&ctx, 10),
-            "未声明标记词表的栈里的事务调用不应抑制"
+            "a transaction call in a stack that declares no marker vocabulary must not suppress"
         );
     }
 
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(
             a.evidence["line"],
             json!(20),
-            "位置应取『可判定』调用点中最早者，而非全体最早"
+            "the position must be the earliest among the 'judgeable' call sites, not the earliest of all"
         );
         assert_eq!(a.evidence["file"], json!("app/later.php"));
     }

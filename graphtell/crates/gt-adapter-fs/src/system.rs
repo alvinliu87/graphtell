@@ -114,11 +114,11 @@ mod tests {
 
         assert!(fs.exists(&dir));
         assert!(fs.exists(&file));
-        assert!(!fs.exists(&dir.join("nope")), "不存在的路径应报告为不存在");
+        assert!(!fs.exists(&dir.join("nope")), "a non-existent path must be reported as non-existent");
 
         assert!(fs.is_dir(&dir));
-        assert!(!fs.is_dir(&file), "文件不是目录");
-        assert!(!fs.is_dir(&dir.join("nope")), "不存在的路径也不是目录");
+        assert!(!fs.is_dir(&file), "a file is not a directory");
+        assert!(!fs.is_dir(&dir.join("nope")), "a non-existent path is not a directory either");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -135,11 +135,11 @@ mod tests {
         assert_eq!(fs.read_to_string(&file).unwrap(), "hello");
         assert!(
             fs.read_to_string(&dir.join("missing.txt")).is_err(),
-            "缺失文件应返回 Err（fingerprint 依赖它退化为 path:size）"
+            "a missing file must return Err (the fingerprint relies on it to degrade to path:size)"
         );
         assert!(
             fs.read_to_string(&dir).is_err(),
-            "把目录当文件读应返回 Err，而不是 panic"
+            "reading a directory as a file must return Err, not panic"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(fs.len(&file).unwrap(), 5);
         assert!(
             fs.len(&dir.join("missing.txt")).is_err(),
-            "缺失路径应返回 Err，而不是静默返回 0"
+            "a missing path must return Err, not silently return 0"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -250,7 +250,7 @@ mod tests {
     fn serves_matches_own_language_only() {
         let a = StubAdapter("php");
         assert!(a.serves(&Language::new("php")));
-        assert!(!a.serves(&Language::new("go")), "默认 serves 不跨语言");
+        assert!(!a.serves(&Language::new("go")), "the default serves does not cross languages");
     }
 
     /// An adapter that also serves `typescript` lets the registry resolve `typescript` to the JS adapter,
@@ -280,17 +280,17 @@ mod tests {
             reg.adapter_for(&Language::new("typescript"))
                 .map(|a| a.language().as_str().to_string()),
             Some("javascript".to_string()),
-            "typescript 经 serves 覆盖回退到 JS 适配器"
+            "typescript falls back to the JS adapter through the serves override"
         );
         assert!(
             reg.adapter_for(&Language::new("go")).is_none(),
-            "无适配器服务的语言返回 None"
+            "a language no adapter serves returns None"
         );
         assert!(
             DefaultTechStackRegistry::default()
                 .adapter_for(&Language::new("php"))
                 .is_none(),
-            "空 registry 解析不到任何适配器"
+            "an empty registry resolves no adapter"
         );
     }
 }

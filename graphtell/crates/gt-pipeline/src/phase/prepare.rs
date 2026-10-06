@@ -526,7 +526,7 @@ fn apply_root_rules(
                     phase,
                     "RootRuleUnresolved",
                     gt_domain::model::Severity::Warning,
-                    format!("框架 {} 的 {} 未能解析", fk.id, rule.key),
+                    format!("framework {}: {} could not be resolved", fk.id, rule.key),
                     Some(sub.root_path.to_string_lossy().to_string()),
                 );
                 continue;
@@ -587,7 +587,7 @@ fn apply_root_rules(
                             phase,
                             "RootRuleUnresolved",
                             gt_domain::model::Severity::Warning,
-                            format!("框架 {} 的 {} 未能解析", fk.id, rule.key),
+                            format!("framework {}: {} could not be resolved", fk.id, rule.key),
                             Some(sub.root_path.to_string_lossy().to_string()),
                         );
                         continue;
@@ -2245,10 +2245,10 @@ fn load_declared_middleware(
         );
         idx += 1;
         info!(
-            "P3 声明式中间件：{} 个类（作用域 {:?}{}）",
+            "P3 declarative middleware: {} classes (scope {:?}{})",
             classes.len(),
             scope,
-            prefix.map(|p| format!(", 前缀 {}", p)).unwrap_or_default()
+            prefix.map(|p| format!(", prefix {}", p)).unwrap_or_default()
         );
     }
 }
@@ -2804,9 +2804,9 @@ mod tests {
             ),
         ];
         let scopes = collect_route_guards(&tp6_spec(), &calls);
-        assert_eq!(scopes.len(), 1, "一条链只应产出一段区间");
-        assert_eq!((scopes[0].start_line, scopes[0].end_line), (1, 3), "区间必须取根的 span");
-        assert_eq!(scopes[0].guards.len(), 2, "两个中间件都要收");
+        assert_eq!(scopes.len(), 1, "one chain must produce exactly one span");
+        assert_eq!((scopes[0].start_line, scopes[0].end_line), (1, 3), "the span must be taken from the root");
+        assert_eq!(scopes[0].guards.len(), 2, "both middleware must be collected");
 
         let mut ws = GraphWorkspace::new(ProjectId::new(1));
         ws.add_route_guard_scopes(scopes);
@@ -2819,7 +2819,7 @@ mod tests {
                 r"app\api\middleware\AuthTokenMiddleware",
             ]
         );
-        assert_eq!(got[1].arg.as_deref(), Some("true"), "`AuthToken::class, true` 的第二参数要留下");
+        assert_eq!(got[1].arg.as_deref(), Some("true"), "the second argument of `AuthToken::class, true` must be kept");
         // Routes outside the range shouldn't be guarded by it (this is exactly the "global vs group-level" boundary)
         assert!(ws.route_guards(f, 40).is_empty());
     }
@@ -2894,16 +2894,16 @@ mod tests {
             ),
         ];
         let scopes = collect_route_guards(&tp6_spec(), &calls);
-        assert_eq!(scopes.len(), 1, "整条链只应产出一段区间");
+        assert_eq!(scopes.len(), 1, "the whole chain must produce exactly one span");
         assert_eq!(
             (scopes[0].start_line, scopes[0].end_line),
             (1, 9),
-            "区间必须取 group 的 span（否则包不住组内路由）"
+            "the span must be taken from the group (otherwise it cannot cover the routes inside it)"
         );
         let mut ws = GraphWorkspace::new(ProjectId::new(1));
         ws.add_route_guard_scopes(scopes);
         let got = ws.route_guards(f, 3);
-        assert_eq!(got.len(), 1, "组内路由应当被这个别名守卫覆盖");
+        assert_eq!(got.len(), 1, "routes inside the group must be covered by this guard alias");
         assert_eq!(got[0].class, "auth");
     }
 
@@ -2928,7 +2928,7 @@ mod tests {
             ),
         ];
         let scopes = collect_route_guards(&tp6_spec(), &calls);
-        assert_eq!(scopes[0].guards.len(), 2, "数组里每一项都算一次挂载");
+        assert_eq!(scopes[0].guards.len(), 2, "every item in the array counts as one attach");
     }
 
     /// The same-name `->middleware()` on a non-Route receiver must not mis-match;
@@ -3123,7 +3123,7 @@ mod tests {
             mk("UseGuards", "UserController.update", class("AdminGuard"), 19),
         ];
         let scopes = collect_route_guards(&spec, &calls);
-        assert_eq!(scopes.len(), 2, "每个被修饰的路由方法各出一段");
+        assert_eq!(scopes.len(), 2, "each decorated route method produces one span");
         let mut by_line: std::collections::HashMap<u32, Vec<String>> = scopes
             .iter()
             .map(|s| (s.start_line, s.guards.iter().map(|g| g.class.clone()).collect()))
@@ -3262,7 +3262,7 @@ mod tests {
         ];
         let scopes = collect_route_guards(&spec, &calls);
         // Should hit only 'user' GET and 'user' PUT (the verb dimension filters out POST / DELETE).
-        assert_eq!(scopes.len(), 2, "只应命中显式路径 + 动词匹配到的两条路由");
+        assert_eq!(scopes.len(), 2, "only the two routes matched by an explicit path + verb should hit");
         let mut by_line: std::collections::HashMap<u32, Vec<String>> = scopes
             .iter()
             .map(|s| (s.start_line, s.guards.iter().map(|g| g.class.clone()).collect()))
@@ -3400,7 +3400,7 @@ mod tests {
         assert_eq!(
             scopes[0].guards.iter().map(|g| g.class.as_str()).collect::<Vec<_>>(),
             vec!["@UseGuards"],
-            "只剩真守卫：文档装饰器与成员调用都不该算"
+            "only real guards remain: doc decorators and member calls must not count"
         );
     }
 
@@ -3428,8 +3428,8 @@ mod tests {
             }],
         }]);
         let got = ws.route_guards(f, 5);
-        assert_eq!(got.len(), 1, "同名中间件只算一个");
-        assert_eq!(got[0].arg.as_deref(), Some("false"), "内层实参覆盖外层");
+        assert_eq!(got.len(), 1, "middleware with the same name counts once");
+        assert_eq!(got[0].arg.as_deref(), Some("false"), "the inner argument overrides the outer one");
     }
 
     // ------------------------------------------------------------ code-evidence detectors
@@ -3489,11 +3489,11 @@ mod tests {
     #[test]
     fn import_exists_matches_fqn_exactly_and_by_prefix() {
         let ev = evidence(&["guzzlehttp\\client", "app\\services\\order"], &[]);
-        assert!(ev.imports("GuzzleHttp\\Client"), "大小写不敏感");
-        assert!(ev.imports("\\GuzzleHttp\\Client"), "前导分隔符忽略");
-        assert!(ev.imports("GuzzleHttp\\*"), "命名空间前缀");
-        assert!(!ev.imports("GuzzleHttp\\HandlerStack"), "前缀内未导入的符号不算");
-        assert!(!ev.imports("GuzzleHttp"), "无通配时是完整 FQN 比较，不是前缀");
+        assert!(ev.imports("GuzzleHttp\\Client"), "case-insensitive");
+        assert!(ev.imports("\\GuzzleHttp\\Client"), "a leading separator is ignored");
+        assert!(ev.imports("GuzzleHttp\\*"), "namespace prefix");
+        assert!(!ev.imports("GuzzleHttp\\HandlerStack"), "symbols not imported under the prefix do not count");
+        assert!(!ev.imports("GuzzleHttp"), "without a wildcard it is a full-FQN comparison, not a prefix match");
     }
 
     #[test]
@@ -3543,7 +3543,7 @@ mod tests {
         ]);
         let hits =
             detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev, &techstack());
-        assert_eq!(hits, vec!["guzzle".to_string()], "只激活代码里真用到的库");
+        assert_eq!(hits, vec!["guzzle".to_string()], "only libraries actually used in the code are activated");
 
         // And the alias spelling — `use GuzzleHttp\Client as G;` — records the same FQN, so it too fires.
         let kb2 = StaticKb(vec![fk(
@@ -3592,7 +3592,7 @@ mod tests {
         let php = Language::new(Language::PHP);
         assert!(lock_has(&lock, "illuminate/database", &fs, &ts, &php));
         assert!(lock_has(&lock, "guzzlehttp/guzzle", &fs, &ts, &php));
-        assert!(lock_has(&lock, "phpunit/phpunit", &fs, &ts, &php), "packages-dev 也算");
+        assert!(lock_has(&lock, "phpunit/phpunit", &fs, &ts, &php), "packages-dev counts too");
         assert!(!lock_has(&lock, "spatie/laravel-permission", &fs, &ts, &php));
         assert!(!lock_has(
             &std::path::PathBuf::from("/p/other.lock"),
@@ -3613,11 +3613,11 @@ mod tests {
         )]));
         let ts = techstack();
         let js = Language::new(Language::JAVASCRIPT);
-        assert!(lock_has(&v2, "express", &fs, &ts, &js), "key 去掉 node_modules/ 前缀后应命中");
+        assert!(lock_has(&v2, "express", &fs, &ts, &js), "the key must match once the node_modules/ prefix is stripped");
         // A TypeScript sub-project must not lose the JS adapter (`serves`), or npm layouts would
         // silently degrade to the whole-file text probe.
         let ts_lang = Language::new(Language::TYPESCRIPT);
-        assert!(lock_has(&v2, "express", &fs, &ts, &ts_lang), "typescript 也由 JS adapter 承担");
+        assert!(lock_has(&v2, "express", &fs, &ts, &ts_lang), "typescript is served by the JS adapter too");
 
         // v1: an object keyed by package name under `dependencies`.
         let v1 = std::path::PathBuf::from("/q/package-lock.json");
@@ -3651,7 +3651,7 @@ mod tests {
         let java = Language::new(Language::JAVA);
         assert!(
             manifest_has(&pom, "spring-boot", &fs, &ts, &java),
-            "没有 adapter 的生态必须退回文本探测，而不是静默失效"
+            "an ecosystem with no adapter must fall back to text probing, not fail silently"
         );
     }
 
@@ -3689,7 +3689,7 @@ mod tests {
         load_schema(&mut ctx, &json!({}), &sub, std::path::Path::new("/t"), &Phase(Phase::PREPARE.to_string()));
         assert!(
             ctx.ws.get_symbol("schema", "eb_user").is_none(),
-            "未声明 table_receivers / table_methods 时不应采集任何表名"
+            "with no declared table_receivers / table_methods, no table name may be collected"
         );
 
         // Declared by FKB (as thinkphp.yaml / illuminate-database.yaml do) → collected.
@@ -3704,7 +3704,7 @@ mod tests {
         );
         assert!(
             ctx.ws.get_symbol("schema", "eb_user").is_some(),
-            "FKB 声明后应采集到表名"
+            "table names must be collected once the FKB declares them"
         );
     }
 
@@ -3904,7 +3904,7 @@ mod tests {
 
         assert!(
             ctx.ws.get_symbol("schema", "users").is_some(),
-            "FKB 声明的 `migration_schema` 必须经 PHP adapter 解析迁移并落入 schema 符号表"
+            "the FKB-declared `migration_schema` must be parsed through the PHP adapter and land in the schema symbol table"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3954,10 +3954,10 @@ mod tests {
             ctx.ws.get_symbol("schema", table).is_some()
         };
 
-        assert!(run(&mut ctx, "Db", "t_users"), "裸 `Db` 应命中");
-        assert!(run(&mut ctx, "think\\facade\\Db", "t_ns"), "命名空间下的 `Db` 应命中（末段相同）");
-        assert!(run(&mut ctx, "DB", "t_upper"), "大小写不敏感");
-        assert!(!run(&mut ctx, "DbHelper", "t_junk"), "`DbHelper` 不该被当成查询构造器");
+        assert!(run(&mut ctx, "Db", "t_users"), "a bare `Db` must match");
+        assert!(run(&mut ctx, "think\\facade\\Db", "t_ns"), "a namespaced `Db` must match (same last segment)");
+        assert!(run(&mut ctx, "DB", "t_upper"), "case-insensitive");
+        assert!(!run(&mut ctx, "DbHelper", "t_junk"), "`DbHelper` must not be treated as a query builder");
     }
 
     /// The array syntax (`[ … ]` / `=>` / `//` / `::class`) used to be hard-coded, so only PHP-shaped
@@ -4015,7 +4015,7 @@ mod tests {
                 .and_then(|c| c.get(0))
                 .and_then(|c| c.as_str()),
             Some("App\\Foo"),
-            "PHP 数组字面量应照声明解析"
+            "a PHP array literal must be parsed as declared"
         );
 
         // ② A different stack's syntax: `{}` blocks, `:` pairs, `#` comments, quoted values.
@@ -4044,7 +4044,7 @@ mod tests {
         assert_eq!(
             classes,
             vec!["Acme\\Foo".to_string(), "Acme\\Bar".to_string()],
-            "非 PHP 语法也应照声明解析"
+            "non-PHP syntax must be parsed as declared too"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -4072,11 +4072,11 @@ mod tests {
         assert_eq!(
             ids2,
             vec!["laravel", "guzzle", "illuminate-database", "illuminate-support"],
-            "派生知识排在直接命中之后"
+            "derived knowledge is ranked after direct hits"
         );
         assert!(
             hits2.iter().find(|(id, _)| id == "illuminate-database").unwrap().1 < 0.95,
-            "被 provides 引入的置信度低于其提供者"
+            "knowledge pulled in via `provides` has a lower confidence than its provider"
         );
     }
 
@@ -4088,7 +4088,7 @@ mod tests {
         b.provides = vec!["a".into(), "b".into()]; // mutual, and self-referential
         let kb = StaticKb(vec![a, b]);
         let hits = expand_provided(vec![("a".to_string(), 0.9)], &kb);
-        assert_eq!(hits.len(), 2, "环不应导致重复或无限展开");
+        assert_eq!(hits.len(), 2, "a cycle must not cause duplicates or infinite expansion");
     }
 
     #[test]
@@ -4118,18 +4118,18 @@ mod tests {
         assert_eq!(
             tables.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
             vec!["eb_user".to_string(), "eb_order".to_string()],
-            "应解析出两张表并剥掉引号：{tables:?}"
+            "two tables must be parsed with quotes stripped: {tables:?}"
         );
         assert_eq!(
             tables[0].1,
             vec!["id".to_string(), "name".to_string()],
-            "`PRIMARY KEY` 不是列：{:?}",
+            "`PRIMARY KEY` is not a column: {:?}",
             tables[0].1
         );
         assert_eq!(
             tables[1].1,
             vec!["id".to_string(), "price".to_string()],
-            "`KEY idx_price` 不是列：{:?}",
+            "`KEY idx_price` is not a column: {:?}",
             tables[1].1
         );
     }
@@ -4145,7 +4145,7 @@ mod tests {
         assert_eq!(
             tables[0].1,
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            "括号与字符串里的逗号不应切分字段：{:?}",
+            "commas inside parentheses or strings must not split fields: {:?}",
             tables[0].1
         );
     }
@@ -4160,7 +4160,7 @@ mod tests {
         assert_eq!(
             tables[0].1,
             vec!["id".to_string(), "name".to_string()],
-            "注释行不应成为列：{:?}",
+            "a comment line must not become a column: {:?}",
             tables[0].1
         );
     }
@@ -4182,7 +4182,7 @@ mod tests {
                 "index_sort".to_string(),
                 "foreign_id".to_string(),
             ],
-            "以约束关键字开头的合法列名必须保留：{:?}",
+            "a legal column name starting with a constraint keyword must be kept: {:?}",
             tables[0].1
         );
     }
@@ -4215,7 +4215,7 @@ mod tests {
             split_callee("$db->query"),
             (Some("$db".to_string()), Some("query".to_string()))
         );
-        assert_eq!(split_callee("curl_exec"), (None, None), "无接收者时两个分量都是 None");
+        assert_eq!(split_callee("curl_exec"), (None, None), "with no receiver both components are None");
 
         assert_eq!(short_callee(r"App\Http\Middleware\Auth"), "Auth");
         assert_eq!(short_callee("org.springframework.Boot"), "Boot");
@@ -4228,19 +4228,19 @@ mod tests {
         assert!(declared_mw_path_matches("app/Http/Middleware", "app/Http/Middleware"));
         assert!(
             declared_mw_path_matches("Http/Middleware", "app/Http/Middleware"),
-            "应按路径后缀匹配"
+            "must match by path suffix"
         );
         assert!(
             declared_mw_path_matches("app/*/Middleware", "app/Http/Middleware"),
-            "* 通配一段"
+            "`*` wildcards exactly one segment"
         );
         assert!(
             !declared_mw_path_matches("app/Http/Middleware", "Http/Middleware"),
-            "路径比模式短时不应匹配"
+            "a path shorter than the pattern must not match"
         );
         assert!(
             !declared_mw_path_matches("app/Http", "app/Http/Middleware"),
-            "模式必须是路径的后缀"
+            "the pattern must be a suffix of the path"
         );
     }
 
@@ -4254,9 +4254,9 @@ mod tests {
         assert_eq!(
             expand("app/routes", "application"),
             "app/routes",
-            "无占位符应原样保留"
+            "with no placeholder it is kept verbatim"
         );
-        assert_eq!(expand("{app_root}", ""), "", "空 app_root 也应正确替换");
+        assert_eq!(expand("{app_root}", ""), "", "an empty app_root must still be substituted correctly");
     }
 
     /// `resolve_guard_class` turns a mount arg alias (`auth`) back into a class, passes a class literal
@@ -4286,21 +4286,21 @@ mod tests {
         assert_eq!(
             resolve_guard_class(&ctx, "auth", Some("mw"), sep),
             Some(r"App\Auth".into()),
-            "别名应查表还原为类"
+            "an alias must be resolved back to its class via the table"
         );
         // already a class name (contains a separator) -> returned as-is, trimmed
         assert_eq!(
             resolve_guard_class(&ctx, r"\App\Http\Auth", Some("mw"), sep),
             Some(r"App\Http\Auth".into()),
-            "含命名空间分隔符的按原样返回并 trim"
+            "a name containing a namespace separator is returned verbatim and trimmed"
         );
         // empty -> None
-        assert_eq!(resolve_guard_class(&ctx, "  ", Some("mw"), sep), None, "空串返回 None");
+        assert_eq!(resolve_guard_class(&ctx, "  ", Some("mw"), sep), None, "an empty string returns None");
         // unknown alias, no separator -> None (never fabricate)
         assert_eq!(
             resolve_guard_class(&ctx, "unknown", Some("mw"), sep),
             None,
-            "未知别名不臆造"
+            "an unknown alias is never invented"
         );
     }
 
@@ -4365,14 +4365,14 @@ mod tests {
         let key = ctx
             .ws
             .get_symbol("config_keys", "sys.site_name")
-            .expect("应写入 config_keys 符号");
+            .expect("must write the config_keys symbol");
         assert_eq!(key["storage"], json!("Database"));
         assert_eq!(key["mutable"], json!("EnvFixed"));
         assert_eq!(key["value_type"], json!("string"));
         assert_eq!(key["file"], json!(f));
         assert!(
             ctx.ws.get_symbol("config_keys", "has space").is_none(),
-            "含空格的 key 不应写入"
+            "a key containing a space must not be written"
         );
     }
 
@@ -4411,7 +4411,7 @@ mod tests {
         let sym = ctx
             .ws
             .get_symbol("nginx", "site.conf")
-            .expect("应写入 nginx 符号");
+            .expect("must write the nginx symbol");
         assert_eq!(sym["server_name"], json!("example.com"));
         assert_eq!(sym["root"], json!("/var/www/html"));
         assert_eq!(sym["locations"].as_array().unwrap().len(), 1);
@@ -4469,14 +4469,14 @@ mod tests {
             .ws
             .symbols
             .get("middleware_aliases")
-            .expect("应写入别名表");
+            .expect("must write into the alias table");
         assert_eq!(
             table
                 .get("auth")
                 .and_then(|v| v.get("class"))
                 .and_then(|c| c.as_str()),
             Some("App\\Auth"),
-            "auth 别名还原为 App\\Auth"
+            "the `auth` alias resolves back to App\\Auth"
         );
         assert_eq!(
             table
@@ -4538,14 +4538,14 @@ mod tests {
         let route = ctx
             .ws
             .get_symbol("route_list", "GET info")
-            .expect("应写出 route_list 符号");
+            .expect("must write the route_list symbol");
         assert_eq!(route["handler"], json!(""));
-        let guards = route["guards"].as_array().expect("应有守卫");
-        assert_eq!(guards.len(), 1, "应解析出 1 个路由守卫");
+        let guards = route["guards"].as_array().expect("a guard must be present");
+        assert_eq!(guards.len(), 1, "exactly one route guard must be parsed");
         assert_eq!(
             guards[0]["class"],
             json!(r"app\api\middleware\AuthTokenMiddleware"),
-            "守卫类应原样保留（含命名空间）"
+            "the guard class is kept verbatim (namespace included)"
         );
         assert_eq!(guards[0]["arg"], json!("false"));
     }
@@ -4648,8 +4648,8 @@ mod tests {
         let sym = ctx
             .ws
             .get_symbol("i18n", "messages.hello")
-            .expect("应写出 i18n 符号");
-        assert_eq!(sym["texts"]["en"], json!("Hi"), "en 区域文本应写入");
+            .expect("must write the i18n symbol");
+        assert_eq!(sym["texts"]["en"], json!("Hi"), "the `en` locale text must be written");
         assert_eq!(sym["file"], json!(p));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4664,14 +4664,14 @@ mod tests {
         // contains mode (default): the pattern must appear anywhere in the receiver.
         assert!(receiver_matches(&rc, "Route"));
         assert!(receiver_matches(&rc, r"\think\facade\Route"));
-        assert!(receiver_matches(&rc, "route"), "大小写不敏感");
-        assert!(!receiver_matches(&rc, "app"), "不含 route 的接收者不应匹配");
+        assert!(receiver_matches(&rc, "route"), "case-insensitive");
+        assert!(!receiver_matches(&rc, "app"), "a receiver that does not contain `route` must not match");
 
         // ends_with mode: only the tail counts, leading separators are stripped.
         rc.receiver_ends_with = true;
         assert!(receiver_matches(&rc, "Route"));
         assert!(receiver_matches(&rc, r"\app\Route"));
-        assert!(!receiver_matches(&rc, "RouteFacade"), "不以 route 结尾不应匹配");
+        assert!(!receiver_matches(&rc, "RouteFacade"), "a receiver not ending in `route` must not match");
     }
 
     /// Only **literals** may become a guard name; a dynamic PHP arg (`->middleware($v)`) would be
@@ -4687,12 +4687,12 @@ mod tests {
         assert_eq!(
             guard_arg_name(&FactValue::String("  auth  ".into()), false),
             Some("auth".to_string()),
-            "字面量应 trim"
+            "the literal must be trimmed"
         );
         assert_eq!(
             guard_arg_name(&FactValue::String("   ".into()), false),
             None,
-            "空白字面量不是守卫名"
+            "a blank literal is not a guard name"
         );
         // Dynamic PHP arg must be rejected unless FKB opts in.
         assert_eq!(
@@ -4707,7 +4707,7 @@ mod tests {
         assert_eq!(
             guard_arg_name(&FactValue::Unknown(Some("   ".into())), true),
             None,
-            "trim 后为空的标识符不算"
+            "an identifier that is empty after trimming does not count"
         );
         // Other fact kinds are never a guard name.
         assert_eq!(guard_arg_name(&FactValue::Bool(true), true), None);
@@ -4782,26 +4782,26 @@ mod tests {
         merge_schema_columns(&mut ctx, "user", vec!["id".into(), "name".into()], "migration");
         merge_schema_columns(&mut ctx, "user", vec!["name".into(), "email".into()], "migration");
 
-        let sym = ctx.ws.get_symbol("schema", "user").expect("schema 符号应写出");
+        let sym = ctx.ws.get_symbol("schema", "user").expect("the schema symbol must be written");
         let cols: Vec<&str> = sym["columns"]
             .as_array()
             .unwrap()
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert_eq!(cols, vec!["id", "name", "email"], "列应合并且去重");
-        assert_eq!(sym["sources"], json!(["migration"]), "同一来源只记一次");
+        assert_eq!(cols, vec!["id", "name", "email"], "columns must be merged and de-duplicated");
+        assert_eq!(sym["sources"], json!(["migration"]), "the same source is recorded only once");
 
         // A different source is appended.
         merge_schema_columns(&mut ctx, "user", vec!["phone".into()], "sql_probe");
-        let sym = ctx.ws.get_symbol("schema", "user").expect("schema 符号");
+        let sym = ctx.ws.get_symbol("schema", "user").expect("schema symbol");
         assert_eq!(sym["sources"], json!(["migration", "sql_probe"]));
 
         // Empty table name / empty column list are no-ops (guarded at the top).
         merge_schema_columns(&mut ctx, "", vec!["x".into()], "migration");
         merge_schema_columns(&mut ctx, "empty", vec![], "migration");
-        assert!(ctx.ws.get_symbol("schema", "").is_none(), "空表名应整段跳过");
-        assert!(ctx.ws.get_symbol("schema", "empty").is_none(), "空列清单应整段跳过");
+        assert!(ctx.ws.get_symbol("schema", "").is_none(), "an empty table name skips the whole entry");
+        assert!(ctx.ws.get_symbol("schema", "empty").is_none(), "an empty column list skips the whole entry");
     }
 
     // ------------------------------------------------------- run (integration, minimal ports)
@@ -4876,7 +4876,7 @@ mod tests {
         assert_eq!(
             got,
             vec!["myfw".to_string()],
-            "识别到的框架应记录到 ctx.frameworks：{got:?}"
+            "recognised frameworks must be recorded into ctx.frameworks: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1742,14 +1742,14 @@ mod tests {
     #[test]
     fn split_top_commas_respects_strings_and_nesting() {
         assert_eq!(split_top_commas("a, b"), vec!["a", "b"]);
-        assert_eq!(split_top_commas("'x,y', z"), vec!["'x,y'", "z"], "字符串内的逗号不应切分");
-        assert_eq!(split_top_commas("{a: 1, b: 2}, c"), vec!["{a: 1, b: 2}", "c"], "花括号内的逗号不应切分");
-        assert_eq!(split_top_commas("f(1,2), e"), vec!["f(1,2)", "e"], "括号内的逗号不应切分");
+        assert_eq!(split_top_commas("'x,y', z"), vec!["'x,y'", "z"], "a comma inside a string must not split");
+        assert_eq!(split_top_commas("{a: 1, b: 2}, c"), vec!["{a: 1, b: 2}", "c"], "a comma inside braces must not split");
+        assert_eq!(split_top_commas("f(1,2), e"), vec!["f(1,2)", "e"], "a comma inside parentheses must not split");
         assert_eq!(split_top_commas("only"), vec!["only"]);
         assert_eq!(
             split_top_commas(r#""a\",b", c"#),
             vec![r#""a\",b""#, "c"],
-            "转义引号不应提前结束字符串"
+            "an escaped quote must not end the string early"
         );
     }
 
@@ -1760,7 +1760,7 @@ mod tests {
         };
         assert_eq!(parts("'a' + id"), vec!["'a'", "id"]);
         assert_eq!(parts("a + b + c"), vec!["a", "b", "c"]);
-        assert_eq!(parts("'a+b' + c"), vec!["'a+b'", "c"], "字符串内的 `+` 不应切分");
+        assert_eq!(parts("'a+b' + c"), vec!["'a+b'", "c"], "a `+` inside a string must not split");
     }
 
     /// Degrading instead of panicking matters here: argument text may lack the closing symbol or end with a
@@ -1769,8 +1769,8 @@ mod tests {
     fn strip_ends_degrades_when_the_close_is_missing() {
         assert_eq!(strip_ends("[1,2]", '[', ']'), "1,2");
         assert_eq!(strip_ends("`x`", '`', '`'), "x");
-        assert_eq!(strip_ends("[1,2", '[', ']'), "1,2", "缺少右半时退化为只去左边");
-        assert_eq!(strip_ends("abc", '[', ']'), "abc", "不匹配时原样返回");
+        assert_eq!(strip_ends("[1,2", '[', ']'), "1,2", "with the right half missing it degrades to stripping the left only");
+        assert_eq!(strip_ends("abc", '[', ']'), "abc", "when it does not match it is returned verbatim");
     }
 
     /// `$var` / `fn()` must fall through to `Unknown` — FKB's `require_literal` rejects them, so a variable can
@@ -1784,14 +1784,14 @@ mod tests {
         assert!(matches!(js_value("false"), FactValue::Bool(false)));
         assert!(
             matches!(js_value("foo"), FactValue::Unknown(Some(ref s)) if s == "foo"),
-            "变量必须落到 Unknown（FKB 的 require_literal 会拒绝它）"
+            "a variable must land on Unknown (the FKB's require_literal rejects it)"
         );
         match js_value("['a','b']") {
             FactValue::Array(items) => {
                 assert_eq!(items.len(), 2);
                 assert!(matches!(items[0].1, FactValue::String(ref s) if s == "a"));
             }
-            other => panic!("数组字面量应折叠为 Array: {other:?}"),
+            other => panic!("an array literal must fold into Array: {other:?}"),
         }
         match js_value("{a: 1}") {
             FactValue::Array(items) => {
@@ -1799,7 +1799,7 @@ mod tests {
                 assert_eq!(items[0].0, "a");
                 assert!(matches!(items[0].1, FactValue::Int(1)));
             }
-            other => panic!("对象字面量应折叠为键值对 Array: {other:?}"),
+            other => panic!("an object literal must fold into a key-value Array: {other:?}"),
         }
     }
 
@@ -1816,11 +1816,11 @@ mod tests {
             Some("v2/order/invoice_detail/:param")
         );
         assert_eq!(literal_url_expr("'v2/index'").as_deref(), Some("v2/index"));
-        assert_eq!(literal_url_expr("'v2/index/'").as_deref(), Some("v2/index"), "末尾斜杠应被去掉");
+        assert_eq!(literal_url_expr("'v2/index/'").as_deref(), Some("v2/index"), "a trailing slash must be removed");
         assert_eq!(
             literal_url_expr("BASE + '/api' + url"),
             None,
-            "首段是变量 → 连前缀都无法锚定，整体放弃"
+            "the first segment is a variable → even the prefix cannot be anchored, so it is abandoned entirely"
         );
         assert_eq!(literal_url_expr(""), None);
         assert_eq!(literal_url_expr("'/api' + x + '/y'").as_deref(), Some("/api:param/y"));
@@ -1829,7 +1829,7 @@ mod tests {
     #[test]
     fn top_level_segment_stops_at_the_first_top_level_comma() {
         assert_eq!(top_level_segment("'a/' + id, data, {x: 1}").as_deref(), Some("'a/' + id"));
-        assert_eq!(top_level_segment("f(1,2), x").as_deref(), Some("f(1,2)"), "括号内的逗号不算顶层");
+        assert_eq!(top_level_segment("f(1,2), x").as_deref(), Some("f(1,2)"), "a comma inside parentheses is not top-level");
         assert_eq!(top_level_segment(""), None);
     }
 
@@ -1841,7 +1841,7 @@ mod tests {
         assert_eq!(
             field_expr("({base_url: 'x', url: '/a'})", "url").as_deref(),
             Some("'/a'"),
-            "`base_url:` 不得被当成 `url:`"
+            "`base_url:` must not be taken for `url:`"
         );
         assert_eq!(field_expr("({method: 'POST'})", "url"), None);
     }
@@ -1855,10 +1855,10 @@ mod tests {
         let p = JsFrontendParser::new().unwrap();
         assert_eq!(p.language(), Language::new(Language::JAVASCRIPT));
         assert_eq!(p.namespace_separator(), &['.']);
-        assert_eq!(p.member_separator(), ".", "JS 的成员分隔符是 `.`（PHP 是 `::`）");
-        assert!(p.bare_field_receivers(), "`@InjectRepository(User) repo` 用的是裸标识符");
+        assert_eq!(p.member_separator(), ".", "JS's member separator is `.` (PHP's is `::`)");
+        assert!(p.bare_field_receivers(), "`@InjectRepository(User) repo` uses a bare identifier");
         assert_eq!(p.manifest_files(), &["package.json"]);
-        assert!(p.extensions().contains(&"vue"), "`.vue` 单文件组件也应作为扩展名");
+        assert!(p.extensions().contains(&"vue"), "`.vue` single-file components must count as an extension too");
         assert!(p.exclude_dirs().contains(&"node_modules"));
     }
 
@@ -1874,10 +1874,10 @@ mod tests {
             .iter()
             .map(|i| (i.alias.as_deref(), i.name.as_str()))
             .collect();
-        assert!(got.contains(&(None, "axios")), "默认导入: {got:?}");
-        assert!(got.contains(&(Some("Svc"), "UserService")), "命名导入带别名: {got:?}");
-        assert!(got.contains(&(None, "Other")), "命名导入: {got:?}");
-        assert!(got.contains(&(None, "ns")), "命名空间导入: {got:?}");
+        assert!(got.contains(&(None, "axios")), "default import: {got:?}");
+        assert!(got.contains(&(Some("Svc"), "UserService")), "named import with alias: {got:?}");
+        assert!(got.contains(&(None, "Other")), "named import: {got:?}");
+        assert!(got.contains(&(None, "ns")), "namespace import: {got:?}");
     }
 
     /// Supertypes become inheritance facts — the only clue to "which base class carries the shared `MapsTo` /
@@ -1948,16 +1948,16 @@ mod tests {
             .collect();
         assert!(
             types.contains(&("repo", "UserEntity")),
-            "`Repository<T>` 应解包为实体 T: {types:?}"
+            "`Repository<T>` must unwrap to the entity T: {types:?}"
         );
-        assert!(types.contains(&("svc", "UserService")), "普通类型原样保留: {types:?}");
+        assert!(types.contains(&("svc", "UserService")), "a plain type is kept verbatim: {types:?}");
         assert!(
             types.contains(&("p", "Promise<User>")),
-            "非 Repository 的泛型保留声明文本: {types:?}"
+            "a non-Repository generic keeps its declared text: {types:?}"
         );
         assert!(
             facts.field_types.iter().all(|f| f.class_fqn == "UserController"),
-            "字段类型应挂在注入它的类上: {:?}",
+            "the field type must be attached to the class injecting it: {:?}",
             facts.field_types
         );
         // The same entity rides on the `@Inject` call site.
@@ -1966,7 +1966,7 @@ mod tests {
                 .call_sites
                 .iter()
                 .any(|c| c.callee_text == "@Inject" && c.entity.as_deref() == Some("UserEntity")),
-            "@Inject 调用点也应携带实体: {:?}",
+            "an @Inject call site must carry the entity as well: {:?}",
             facts.call_sites
         );
     }
@@ -1982,10 +1982,10 @@ mod tests {
             .iter()
             .find(|c| c.callee_text == "@Inject")
             .expect("expected an @Inject call site");
-        assert_eq!(inject.span.start_line, 2, "span 行号应 1-based: {:?}", inject.span);
+        assert_eq!(inject.span.start_line, 2, "the span line number must be 1-based: {:?}", inject.span);
         assert!(
             inject.snippet.as_deref().unwrap_or("").contains("UserService"),
-            "snippet 应是该行源码: {:?}",
+            "the snippet must be the source of that line: {:?}",
             inject.snippet
         );
     }
@@ -1993,16 +1993,16 @@ mod tests {
     #[test]
     fn http_verb_and_client_receiver_are_closed_sets() {
         for v in ["get", "post", "put", "delete", "patch", "head", "options"] {
-            assert!(is_http_verb(v), "`{v}` 应被识别为 HTTP 动词");
+            assert!(is_http_verb(v), "`{v}` must be recognised as an HTTP verb");
         }
-        assert!(!is_http_verb("GET"), "动词表只收小写（源码里的成员名形态）");
+        assert!(!is_http_verb("GET"), "the verb table only holds lower-case forms (the shape of member names in source)");
         assert!(!is_http_verb("fetch"));
 
         assert!(is_http_client_recv("request"));
-        assert!(is_http_client_recv("this.request"), "按末段判定");
+        assert!(is_http_client_recv("this.request"), "judged by the last segment");
         assert!(is_http_client_recv("$http"));
         assert!(is_http_client_recv("apiClient"));
-        assert!(!is_http_client_recv("cache"), "`cache.get()` 不得被当成契约");
+        assert!(!is_http_client_recv("cache"), "`cache.get()` must not be taken for a contract");
         assert!(!is_http_client_recv("storage"));
         assert!(!is_http_client_recv("$store"));
     }

@@ -107,58 +107,58 @@ fn out_edge_count_to_kind(b: &common::Built, kind: &str, from: &str, edge: &str,
 fn django_model_fields_become_columns_and_relations_become_foreign_keys() {
     let root = synthetic_django_root();
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("合成 Django 工程建图应成功");
+        panic!("graphing the synthetic Django project must succeed");
     };
 
     // Model -> table (snake_plural + strip_namespace + singularize): User -> user, Post -> post
     let tables: Vec<String> = nodes_of_kind(&b, "Table").iter().map(|n| n.name.clone()).collect();
     assert!(
         tables.iter().any(|t| t == "user") && tables.iter().any(|t| t == "post"),
-        "应产出 user / post 两张表，实际：{tables:?}"
+        "the user and post tables must be produced, got: {tables:?}"
     );
 
     // Scalar field -> Column: `User.name` / `User.email` / `Post.title`
     let cols: Vec<String> = nodes_of_kind(&b, "Column").iter().map(|n| n.name.clone()).collect();
-    assert!(cols.iter().any(|c| c.contains("User.name")), "User.name 应成为列，实际：{cols:?}");
-    assert!(cols.iter().any(|c| c.contains("User.email")), "User.email 应成为列，实际：{cols:?}");
-    assert!(cols.iter().any(|c| c.contains("Post.title")), "Post.title 应成为列，实际：{cols:?}");
+    assert!(cols.iter().any(|c| c.contains("User.name")), "User.name must become a column, got: {cols:?}");
+    assert!(cols.iter().any(|c| c.contains("User.email")), "User.email must become a column, got: {cols:?}");
+    assert!(cols.iter().any(|c| c.contains("Post.title")), "Post.title must become a column, got: {cols:?}");
 
     // A relation field is **not** an ordinary column: FK / M2M fields must not enter Column
     assert!(
         !cols.iter().any(|c| c.contains("Post.author")),
-        "ForeignKey 字段不该是普通列，实际：{cols:?}"
+        "a ForeignKey field must not be an ordinary column, got: {cols:?}"
     );
     assert!(
         !cols.iter().any(|c| c.contains("Post.tags")),
-        "ManyToManyField 字段不该是普通列，实际：{cols:?}"
+        "a ManyToManyField must not be an ordinary column, got: {cols:?}"
     );
 
     // HasColumn: model class -> column (field-level impact is drillable)
     assert!(
         links_to_kind(&b, "Class", "Post", "HasColumn", "Column"),
-        "Post 模型应经 HasColumn 连到列"
+        "the Post model must connect to its columns via HasColumn"
     );
     assert!(
         links_to_kind(&b, "Class", "User", "HasColumn", "Column"),
-        "User 模型应经 HasColumn 连到列"
+        "the User model must connect to its columns via HasColumn"
     );
 
     // References: model -> model (Post.author -> User)
     assert!(
         links_to_named(&b, "Class", "Post", "References", "User"),
-        "Post 应经 References 连到 User（ForeignKey 持有方）"
+        "Post must connect to User via References (the ForeignKey holder)"
     );
     // Post has only one References edge (author -> User); tags is a string reference with no class-constant argument -> no edge
     assert_eq!(
         out_edge_count_to_kind(&b, "Class", "Post", "References", "Class"),
         1,
-        "Post 应只有 1 条 References 边（author→User），字符串引用的 tags 不该建边"
+        "Post must have exactly 1 References edge (author->User); the string-referenced tags must not create one"
     );
 
     // Table-level foreign key: `References` projected via `Project`, each end landing on a table along `MapsTo`
     assert!(
         links_to_named(&b, "Table", "post", "ForeignKey", "user"),
-        "post 表应经 ForeignKey 连到 user 表"
+        "the post table must connect to the user table via the foreign key"
     );
 }
 
@@ -192,7 +192,7 @@ class Post(models.Model):
     .expect("write models.py");
 
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("graphing must succeed");
     };
     // No References edge at all (the target "Tag" is a string, and here Tag is declared but still a string reference,
     // the parser does not parse class names inside strings) — no fabricated dangling edge.
@@ -202,7 +202,7 @@ class Post(models.Model):
         .flat_map(|n| b.store.edges_of(n.id, EdgeDirection::Outgoing).expect("edges"))
         .filter(|e| e.kind.as_str() == "References")
         .count();
-    assert_eq!(refs, 0, "字符串引用的关系不应建 References 边");
+    assert_eq!(refs, 0, "a string-referenced relation must not create a References edge");
 }
 
 /// `path(route, view)` in `urls.py` -> `HttpContract` (`ANY` method + route path) + `HandledBy`
@@ -246,7 +246,7 @@ urlpatterns = [
     .expect("write urls.py");
 
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("graphing must succeed");
     };
 
     // One HttpContract per path(), method wildcard ANY
@@ -254,19 +254,19 @@ urlpatterns = [
     let names: Vec<&str> = contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
         names.iter().any(|n| *n == "ANY /users/"),
-        "应有 ANY /users/ 契约，实际：{names:?}"
+        "there must be an ANY /users/ contract, got: {names:?}"
     );
     assert!(
         names.iter().any(|n| n.contains("/users/<int:pk>/")),
-        "应含带转换器的路由，实际：{names:?}"
+        "a route with a converter must be included, got: {names:?}"
     );
-    assert_eq!(contracts.len(), 2, "应恰好 2 条契约（两个 path()），实际：{names:?}");
+    assert_eq!(contracts.len(), 2, "there must be exactly 2 contracts (two path() calls), got: {names:?}");
 
     // HandledBy: contract -> view function (a bare-name reference is resolved by the parser into the full FQN and connects)
     let users_contract = contracts
         .iter()
         .find(|n| n.name == "ANY /users/")
-        .expect("users 契约");
+        .expect("the users contract");
     let handlers: Vec<Node> = b
         .store
         .edges_of(users_contract.id, EdgeDirection::Outgoing)
@@ -275,10 +275,10 @@ urlpatterns = [
         .filter(|e| e.kind.as_str() == "HandledBy")
         .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
         .collect();
-    assert!(!handlers.is_empty(), "ANY /users/ 应经 HandledBy 连到视图");
+    assert!(!handlers.is_empty(), "ANY /users/ must connect to the view via HandledBy");
     assert!(
         handlers.iter().any(|n| n.name.ends_with("user_list")),
-        "handler 应为 user_list 函数，实际：{handlers:?}"
+        "the handler must be the user_list function, got: {handlers:?}"
     );
 }
 
@@ -328,16 +328,16 @@ urlpatterns = [
     .expect("write urls.py");
 
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("建图应成功");
+        panic!("graphing must succeed");
     };
 
     let contracts: Vec<Node> = nodes_of_kind(&b, "HttpContract");
-    assert_eq!(contracts.len(), 3, "应恰好 3 条契约，实际：{:?}",
+    assert_eq!(contracts.len(), 3, "there must be exactly 3 contracts, got: {:?}",
         contracts.iter().map(|n| &n.name).collect::<Vec<_>>());
 
     // Helper: take the target node name a contract connects to via HandledBy
     let handler_of = |name: &str| -> String {
-        let c = contracts.iter().find(|n| n.name == name).expect("契约");
+        let c = contracts.iter().find(|n| n.name == name).expect("contract");
         let hs: Vec<Node> = b
             .store
             .edges_of(c.id, EdgeDirection::Outgoing)
@@ -346,7 +346,7 @@ urlpatterns = [
             .filter(|e| e.kind.as_str() == "HandledBy")
             .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
             .collect();
-        assert!(!hs.is_empty(), "{name} 应有 HandledBy 目标");
+        assert!(!hs.is_empty(), "{name} must have a HandledBy target");
         hs[0].name.clone()
     };
 

@@ -143,7 +143,7 @@ fn run_flips_status_to_ready_and_returns_ok() {
     let out = svc.run(pid, &NoopObserver).expect("build should succeed");
     assert!(!out.sub_projects.is_empty() || out.files.is_empty(), "build produced an outcome");
     let status = store.get_project(pid).unwrap().unwrap().status;
-    assert_eq!(status, ProjectStatus::Ready, "成功后状态必须为 Ready");
+    assert_eq!(status, ProjectStatus::Ready, "after success the status must be Ready");
 }
 
 /// Two concurrent builds of the **same** project must not both run: exactly one wins and the other is rejected
@@ -162,10 +162,10 @@ fn concurrent_builds_of_same_project_conflict() {
         .iter()
         .filter(|r| matches!(r, Err(DomainError::Conflict(_))))
         .count();
-    assert_eq!(conflicts, 1, "同一工程并发建图必须恰好一个 Conflict");
-    assert!(main_res.is_ok() || thread_res.is_ok(), "其中一个必须成功建图");
+    assert_eq!(conflicts, 1, "concurrent graphing of the same project must yield exactly one Conflict");
+    assert!(main_res.is_ok() || thread_res.is_ok(), "one of them must succeed at graphing");
     let status = store.get_project(pid).unwrap().unwrap().status;
-    assert_eq!(status, ProjectStatus::Ready, "胜出的一方应把工程建成 Ready");
+    assert_eq!(status, ProjectStatus::Ready, "the winner must leave the project Ready");
 }
 
 /// Three concurrent builds of **different** projects must serialize through `MAX_CONCURRENT_BUILDS` (2) slots:
@@ -191,7 +191,7 @@ fn concurrent_builds_respect_slot_cap() {
     // 3 builds / 2 slots → at least 2 waves → strictly more than a single build's time.
     assert!(
         elapsed >= Duration::from_millis(150 * 3 / 2),
-        "并发槽应使总耗时 > 1.5× 单程（测得 {:?}）",
+        "the concurrency slot must make the total time > 1.5x a single run (measured {:?})",
         elapsed
     );
     for pid in pids {

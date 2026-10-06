@@ -797,8 +797,8 @@ mod tests {
         let mut a: HashMap<i64, Vec<Annotation>> = HashMap::new();
         a.insert(n.id.get(), vec![ann(AnnotationChannel::CAPABILITY, "Authentication")]);
         let f = facts(a, HashMap::new(), HashMap::new(), HashMap::new());
-        assert!(!eval(&CheckPredicate::NoCapability(vec!["Authentication".into()]), &n, &f, &empty_params()), "有该能力时 NoCapability 应为 false");
-        assert!(eval(&CheckPredicate::NoCapability(vec!["RateLimiting".into()]), &n, &f, &empty_params()), "缺该能力时 NoCapability 应为 true");
+        assert!(!eval(&CheckPredicate::NoCapability(vec!["Authentication".into()]), &n, &f, &empty_params()), "with the capability present, NoCapability must be false");
+        assert!(eval(&CheckPredicate::NoCapability(vec!["RateLimiting".into()]), &n, &f, &empty_params()), "with the capability missing, NoCapability must be true");
         assert!(eval(&CheckPredicate::NoCapability(vec!["Authentication".into()]), &node(2, "Class", "Guest"), &Facts::default(), &empty_params()));
     }
 
@@ -810,8 +810,8 @@ mod tests {
         let mut inc: HashMap<i64, Vec<Edge>> = HashMap::new();
         inc.insert(n.id.get(), vec![edge("ReadsDb", 99, n.id.get()), edge("Calls", 98, n.id.get())]);
         let f = facts(HashMap::new(), inc, HashMap::new(), HashMap::new());
-        assert!(eval(&CheckPredicate::FanInGte(NumOrParam::Num(1)), &n, &f, &empty_params()), "一条语义入边 → fan_in=1");
-        assert!(!eval(&CheckPredicate::FanInGte(NumOrParam::Num(2)), &n, &f, &empty_params()), "非语义入边不计入 → fan_in 仍为 1");
+        assert!(eval(&CheckPredicate::FanInGte(NumOrParam::Num(1)), &n, &f, &empty_params()), "one semantic in-edge → fan_in=1");
+        assert!(!eval(&CheckPredicate::FanInGte(NumOrParam::Num(2)), &n, &f, &empty_params()), "a non-semantic in-edge does not count → fan_in stays 1");
         assert!(eval(&CheckPredicate::HasIncoming("ReadsDb".into()), &n, &f, &empty_params()));
         assert!(eval(&CheckPredicate::NoIncoming("HandledBy".into()), &n, &f, &empty_params()));
     }
@@ -823,7 +823,7 @@ mod tests {
         out.insert(n.id.get(), vec![edge("WritesDb", n.id.get(), 7), edge("Calls", n.id.get(), 8)]);
         let f = facts(HashMap::new(), HashMap::new(), out, HashMap::new());
         assert!(eval(&CheckPredicate::FanOutGte(NumOrParam::Num(1)), &n, &f, &empty_params()));
-        assert!(!eval(&CheckPredicate::FanOutGte(NumOrParam::Num(2)), &n, &f, &empty_params()), "非语义出边不计入 fan_out");
+        assert!(!eval(&CheckPredicate::FanOutGte(NumOrParam::Num(2)), &n, &f, &empty_params()), "a non-semantic out-edge does not count towards fan_out");
         assert!(eval(&CheckPredicate::HasOutgoing("WritesDb".into()), &n, &f, &empty_params()));
         assert!(eval(&CheckPredicate::NoOutgoing("Triggers".into()), &n, &f, &empty_params()));
     }
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn matches_all_empty_when_is_always_true() {
-        assert!(matches_all(&[], &node(1, "Class", "X"), &Facts::default(), &empty_params()), "空 when = 范围内全部命中");
+        assert!(matches_all(&[], &node(1, "Class", "X"), &Facts::default(), &empty_params()), "an empty when = everything in scope matches");
     }
 
     #[test]
@@ -969,10 +969,10 @@ mod tests {
         svc.apply_rule_config(pid, RuleConfigPatch { rule_id: "r1".into(), enabled: None, options: Some(json!({ "threshold": 9 })) })
             .unwrap();
         let cfg = svc.rule_configs(pid).unwrap().get("r1").cloned().expect("config exists");
-        assert_eq!(cfg.enabled, Some(true), "未传 enabled 应保留原值");
+        assert_eq!(cfg.enabled, Some(true), "enabled not passed keeps its previous value");
         let opts = cfg.options.as_object().unwrap();
-        assert_eq!(opts.get("threshold").and_then(|v| v.as_i64()), Some(9), "传入的 threshold 应覆盖");
-        assert_eq!(opts.get("ignore").and_then(|v| v.as_str()), Some("x"), "未传的 ignore 应保留");
+        assert_eq!(opts.get("threshold").and_then(|v| v.as_i64()), Some(9), "a passed threshold must override");
+        assert_eq!(opts.get("ignore").and_then(|v| v.as_str()), Some("x"), "ignore not passed is kept");
     }
 
     // A `RuleProvider` that serves an explicit in-test rule set (the existing `StubProvider` serves none).
@@ -1109,8 +1109,8 @@ mod tests {
         );
         let rep = svc.check(pid, None, true).unwrap();
         assert_eq!(rep.rules_total, 1);
-        assert_eq!(rep.rules_run, 1, "规则应被选中并执行");
-        assert_eq!(rep.violations.len(), 1, "只有未处理的契约应被标红");
+        assert_eq!(rep.rules_run, 1, "the rule must be selected and executed");
+        assert_eq!(rep.violations.len(), 1, "only unhandled contracts must be flagged");
         assert_eq!(rep.violations[0].node_id, NodeId::new(1));
         assert_eq!(rep.by_rule.get("contract-no-handler").copied(), Some(1));
         assert_eq!(rep.by_severity.get("error").copied(), Some(1));
@@ -1173,10 +1173,10 @@ mod tests {
             }),
         );
         let rep = svc.check(pid, None, false).unwrap();
-        assert_eq!(rep.rules_run, 0, "语言不匹配应跳过");
+        assert_eq!(rep.rules_run, 0, "a language mismatch must be skipped");
         assert!(
             !rep.rules_not_applicable.is_empty(),
-            "应记录 not_applicable 原因"
+            "the not_applicable reason must be recorded"
         );
 
         let svc2 = RuleService::new(
@@ -1186,11 +1186,11 @@ mod tests {
             }),
         );
         let rep2 = svc2.check(pid, None, false).unwrap();
-        assert_eq!(rep2.rules_run, 1, "需求满足仍应被选入 runnable");
+        assert_eq!(rep2.rules_run, 1, "a satisfied requirement must still be selected as runnable");
         assert_eq!(rep2.violations.len(), 0);
         assert!(
             !rep2.rules_silent.is_empty(),
-            "空候选集应标记 silent"
+            "an empty candidate set must be marked silent"
         );
     }
 
@@ -1259,7 +1259,7 @@ mod tests {
         svc.reset_rule_config(pid, "r1").unwrap();
         assert!(
             svc.rule_configs(pid).unwrap().get("r1").is_none(),
-            "reset 后配置应消失"
+            "after a reset the config must be gone"
         );
 
         svc.batch_rule_config(

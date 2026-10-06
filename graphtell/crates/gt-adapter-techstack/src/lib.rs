@@ -279,11 +279,11 @@ mod tests {
             let m = markers
                 .iter()
                 .find(|m| m.file == file)
-                .unwrap_or_else(|| panic!("marker {file} 缺失"));
-            assert_eq!(m.language.as_str(), lang, "marker {file} 的语言不对");
-            assert_eq!(m.role, role, "marker {file} 的角色不对");
+                .unwrap_or_else(|| panic!("marker {file} is missing"));
+            assert_eq!(m.language.as_str(), lang, "marker {file} has the wrong language");
+            assert_eq!(m.role, role, "marker {file} has the wrong role");
         }
-        assert_eq!(markers.len(), expected.len(), "marker 数量应与预期一致");
+        assert_eq!(markers.len(), expected.len(), "the marker count must match the expectation");
     }
 
     // ---- JsTechStackAdapter: frontend framework recognition moved out of the kernel ----
@@ -451,7 +451,7 @@ mod tests {
     fn js_adapter_also_serves_typescript() {
         let a = JsTechStackAdapter::new();
         assert!(a.serves(&Language::new(Language::JAVASCRIPT)));
-        assert!(a.serves(&Language::new(Language::TYPESCRIPT)), "TS 子项目不能丢失适配器");
+        assert!(a.serves(&Language::new(Language::TYPESCRIPT)), "a TS sub-project must not lose its adapter");
         assert!(!a.serves(&Language::new(Language::PHP)));
         assert!(!a.serves(&Language::new("python")));
     }
@@ -475,10 +475,10 @@ mod tests {
         let first_flat = pats
             .iter()
             .position(|p| !p.ends_with('/'))
-            .expect("应存在扁平形式");
+            .expect("the flat form must be present");
         assert!(
             pats[..first_flat].iter().all(|p| p.ends_with('/')),
-            "所有目录形式必须排在扁平形式之前: {pats:?}"
+            "every directory form must be ordered before the flat forms: {pats:?}"
         );
     }
 
@@ -493,8 +493,8 @@ mod tests {
         });
         let deps = collect_deps(&pkg);
         assert!(deps.contains(&"react".to_string()), "{deps:?}");
-        assert!(deps.contains(&"@dcloudio/uni-mp-weixin".to_string()), "devDependencies 应计入: {deps:?}");
-        assert!(deps.contains(&"react-native".to_string()), "peerDependencies 应计入: {deps:?}");
+        assert!(deps.contains(&"@dcloudio/uni-mp-weixin".to_string()), "devDependencies must count: {deps:?}");
+        assert!(deps.contains(&"react-native".to_string()), "peerDependencies must count: {deps:?}");
 
         // A non-object section or a missing one is ignored rather than erroring.
         assert!(collect_deps(&serde_json::json!({ "dependencies": [] })).is_empty());
@@ -511,11 +511,11 @@ mod tests {
         ] {
             assert!(
                 manifest_has_mp_target(&serde_json::json!({ "app": { t: {} } })),
-                "目标 `{t}` 应被识别为小程序"
+                "target `{t}` must be recognised as a mini program"
             );
         }
-        assert!(manifest_has_mp_target(&serde_json::json!({ "x": "MP-WEIXIN" })), "应大小写不敏感");
-        assert!(!manifest_has_mp_target(&serde_json::json!({ "h5": {} })), "纯 h5 不是小程序");
+        assert!(manifest_has_mp_target(&serde_json::json!({ "x": "MP-WEIXIN" })), "it must be case-insensitive");
+        assert!(!manifest_has_mp_target(&serde_json::json!({ "h5": {} })), "plain h5 is not a mini program");
     }
 
     /// `manifest_dependencies` only accepts `package.json` and merges the three dependency scopes; a wrong file

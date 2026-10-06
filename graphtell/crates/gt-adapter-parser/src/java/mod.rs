@@ -792,7 +792,7 @@ interface OrderMapper extends BaseMapper<Order> {
         assert_eq!(bare_type_name("Order[]".to_string()), "Order");
         assert_eq!(bare_type_name("Order".to_string()), "Order");
         assert_eq!(bare_type_name("List<Order>[]".to_string()), "List");
-        assert_eq!(bare_type_name("  Map <String, Object> ".to_string()), "Map", "应去掉泛型并 trim");
+        assert_eq!(bare_type_name("  Map <String, Object> ".to_string()), "Map", "must strip generics and trim");
         assert_eq!(bare_type_name("int".to_string()), "int");
     }
 
@@ -818,7 +818,7 @@ interface OrderMapper extends BaseMapper<Order> {
         assert_eq!(
             resolve_java_type("User", &facts_with(vec![import("com.other.User", None)]), "com.demo.Svc"),
             "com.other.User",
-            "不能靠同包猜测——导入能精确还原时必须用它"
+            "no same-package guessing — when an import can restore it exactly, that must be used"
         );
         // ② an alias matches on the alias itself, not on the imported name's last segment.
         assert_eq!(
@@ -870,11 +870,11 @@ class Svc {
             .iter()
             .filter(|c| c.callee_text.contains("convertAndSend"))
             .collect();
-        assert_eq!(calls.len(), 2, "应捕获两次调用: {calls:?}");
+        assert_eq!(calls.len(), 2, "both calls must be captured: {calls:?}");
         assert_eq!(
             arg_strings(&calls[0].args),
             vec![Some("orders.queue".to_string()), None],
-            "第 0 位是字符串字面量，第 1 位是非字面量占位 Unknown"
+            "position 0 is a string literal, position 1 is a non-literal Unknown placeholder"
         );
         assert_eq!(
             arg_strings(&calls[1].args),
@@ -904,11 +904,11 @@ class Svc {
             .call_sites
             .iter()
             .find(|c| c.callee_text.contains("publishEvent"))
-            .unwrap_or_else(|| panic!("应捕获 publishEvent: {:?}", facts.call_sites));
+            .unwrap_or_else(|| panic!("publishEvent must be captured: {:?}", facts.call_sites));
         assert_eq!(
             ev.entity.as_deref(),
             Some("OrderPlacedEvent"),
-            "`publishEvent(new X())` 应推出事件类型 X"
+            "`publishEvent(new X())` must infer the event type X"
         );
     }
 
@@ -921,9 +921,9 @@ class Svc {
         let p = JavaParser::new().unwrap();
         assert_eq!(p.language(), Language::new(Language::JAVA));
         assert_eq!(p.extensions(), &["java"]);
-        assert_eq!(p.namespace_separator(), &['.'], "Java 的命名空间分隔符是 `.`");
-        assert_eq!(p.member_separator(), ".", "Java 的成员分隔符是 `.`（PHP 是 `::`）");
-        assert!(p.bare_field_receivers(), "`@Autowired Repo repo` 用的是裸标识符");
+        assert_eq!(p.namespace_separator(), &['.'], "Java's namespace separator is `.`");
+        assert_eq!(p.member_separator(), ".", "Java's member separator is `.` (PHP's is `::`)");
+        assert!(p.bare_field_receivers(), "`@Autowired Repo repo` uses a bare identifier");
         assert!(p.manifest_files().contains(&"pom.xml"));
         assert!(p.exclude_dirs().contains(&"target"));
     }
@@ -952,12 +952,12 @@ record Point(int x) {}
             .collect();
 
         assert!(kinds.contains(&("com.demo.Outer", "Class")), "{kinds:?}");
-        assert!(kinds.contains(&("com.demo.Outer.Inner", "Class")), "内部类 FQN: {kinds:?}");
-        assert!(kinds.contains(&("com.demo.Outer.run", "Method")), "方法 FQN 应是 类.方法: {kinds:?}");
-        assert!(kinds.contains(&("com.demo.Outer.Outer", "Method")), "构造器也按成员登记: {kinds:?}");
+        assert!(kinds.contains(&("com.demo.Outer.Inner", "Class")), "inner class FQN: {kinds:?}");
+        assert!(kinds.contains(&("com.demo.Outer.run", "Method")), "a method FQN must be Class.method: {kinds:?}");
+        assert!(kinds.contains(&("com.demo.Outer.Outer", "Method")), "a constructor is registered as a member too: {kinds:?}");
         assert!(kinds.contains(&("com.demo.Iface", "Interface")), "{kinds:?}");
         assert!(kinds.contains(&("com.demo.Color", "Enum")), "{kinds:?}");
-        assert!(kinds.contains(&("com.demo.Point", "Class")), "record 归为 Class: {kinds:?}");
+        assert!(kinds.contains(&("com.demo.Point", "Class")), "a record is classified as Class: {kinds:?}");
     }
 
     /// A Java annotation is a **declarative framework call**: it must become a call site with its literal
@@ -978,23 +978,23 @@ class Ctrl {
         let facts = JavaParser::new().unwrap().parse("Ctrl.java", src).unwrap();
         let get = |m: &str| facts.call_sites.iter().find(|c| c.method.as_deref() == Some(m));
 
-        let rm = get("RequestMapping").expect("类级注解应成为调用点");
+        let rm = get("RequestMapping").expect("a class-level annotation must become a call site");
         assert_eq!(rm.callee_text, "RequestMapping");
         assert_eq!(arg_strings(&rm.args), vec![Some("/api".to_string())]);
-        assert_eq!(rm.owner_fqn, "com.demo.Ctrl", "类级注解落在类上");
+        assert_eq!(rm.owner_fqn, "com.demo.Ctrl", "a class-level annotation lands on the class");
         assert_eq!(rm.owner_class.as_deref(), Some("com.demo.Ctrl"));
 
-        let gm = get("GetMapping").expect("方法级注解应成为调用点");
+        let gm = get("GetMapping").expect("a method-level annotation must become a call site");
         assert_eq!(arg_strings(&gm.args), vec![Some("/users".to_string())]);
-        assert_eq!(gm.owner_fqn, "com.demo.Ctrl.list", "方法级注解落在方法 FQN 上");
+        assert_eq!(gm.owner_fqn, "com.demo.Ctrl.list", "a method-level annotation lands on the method FQN");
         assert_eq!(
             gm.owner_class.as_deref(),
             Some("com.demo.Ctrl"),
-            "owner_class 仍显式记录所属类（内核按 `.` 切分时不会切错）"
+            "owner_class still records the owning class explicitly (the kernel cannot cut wrong when splitting on `.`)"
         );
 
         // Literals hidden inside `element_value_pair` must still be found (recursive descent).
-        let pm = get("PostMapping").expect("PostMapping 注解");
+        let pm = get("PostMapping").expect("a PostMapping annotation");
         assert_eq!(
             arg_strings(&pm.args),
             vec![Some("/orders".to_string()), Some("json".to_string())]
@@ -1025,11 +1025,11 @@ class Listener {
 
         assert!(
             seen.contains(&("com.demo.Listener.on", Some("OrderPlacedEvent"))),
-            "应取第一个参数类型: {seen:?}"
+            "the first parameter type must be taken: {seen:?}"
         );
         assert!(
             seen.contains(&("com.demo.Listener.onNothing", None)),
-            "无参数的方法不应臆造事件类型: {seen:?}"
+            "a method with no parameter must not invent an event type: {seen:?}"
         );
     }
 
@@ -1053,20 +1053,20 @@ class Svc {
         assert_eq!(
             f("repo").map(|t| t.type_name.as_str()),
             Some("com.other.UserRepository"),
-            "导入能精确还原 FQN 时应优先于同包猜测: {:?}",
+            "when an import can restore the FQN exactly it wins over same-package guessing: {:?}",
             facts.field_types
         );
-        assert_eq!(f("a").map(|t| t.type_name.as_str()), Some("com.demo.OrderMapper"), "同包补全");
-        assert_eq!(f("b").map(|t| t.type_name.as_str()), Some("com.demo.OrderMapper"), "同一声明的多个变量都要登记");
+        assert_eq!(f("a").map(|t| t.type_name.as_str()), Some("com.demo.OrderMapper"), "same-package completion");
+        assert_eq!(f("b").map(|t| t.type_name.as_str()), Some("com.demo.OrderMapper"), "every variable of the same declaration must be registered");
         assert_eq!(
             f("orders").map(|t| t.type_name.as_str()),
             Some("com.demo.List"),
-            "泛型外壳 `<...>` 应剥除"
+            "the generic shell `<...>` must be stripped"
         );
         assert_eq!(
             facts.field_types.iter().filter(|t| t.class_fqn == "com.demo.Svc").count(),
             4,
-            "字段归属于声明它的类: {:?}",
+            "a field belongs to the class declaring it: {:?}",
             facts.field_types
         );
     }
@@ -1104,14 +1104,14 @@ interface I extends Marker {
             .map(|i| i.base_name.as_str())
             .collect();
 
-        assert_eq!(ext, vec!["Base", "JpaRepository"], "泛型基类只取裸名: {ext:?}");
-        assert_eq!(imp, vec!["Iface", "Other", "Marker"], "implements 列表每个都要记: {imp:?}");
+        assert_eq!(ext, vec!["Base", "JpaRepository"], "a generic base class keeps only the bare name: {ext:?}");
+        assert_eq!(imp, vec!["Iface", "Other", "Marker"], "every entry of the implements list must be recorded: {imp:?}");
         assert!(
             facts.inheritances.iter().all(|i| matches!(
                 i.child_fqn.as_str(),
                 "com.demo.A" | "com.demo.R" | "com.demo.I"
             )),
-            "继承事实应挂在子类型 FQN 上: {:?}",
+            "an inheritance fact must hang on the subtype FQN: {:?}",
             facts.inheritances
         );
 
@@ -1124,7 +1124,7 @@ interface I extends Marker {
             .collect();
         assert!(
             generic.contains(&("generic.JpaRepository", Some("com.demo.User"))),
-            "类 extends 泛型基类也应推出实体: {generic:?}"
+            "a class extending a generic base must infer the entity too: {generic:?}"
         );
     }
 
@@ -1147,10 +1147,10 @@ class Svc {
             .call_sites
             .iter()
             .find(|c| c.method.as_deref() == Some("insert"))
-            .expect("应捕获 insert 调用");
+            .expect("the insert call must be captured");
         assert_eq!(ins.receiver.as_deref(), Some("mapper"));
-        assert_eq!(ins.callee_text, "mapper.insert", "接收者 + 方法构成 callee 文本");
-        assert_eq!(ins.owner_fqn, "com.demo.Svc.run", "调用点归属到方法 FQN");
+        assert_eq!(ins.callee_text, "mapper.insert", "receiver + method form the callee text");
+        assert_eq!(ins.owner_fqn, "com.demo.Svc.run", "the call site is attributed to the method FQN");
         assert_eq!(ins.owner_class.as_deref(), Some("com.demo.Svc"));
 
         // A bare call has no receiver: the callee is just the method name.
@@ -1158,7 +1158,7 @@ class Svc {
             .call_sites
             .iter()
             .find(|c| c.method.as_deref() == Some("helper"))
-            .expect("应捕获 helper 调用");
+            .expect("the helper call must be captured");
         assert_eq!(bare.receiver, None);
         assert_eq!(bare.callee_text, "helper");
     }
@@ -1172,8 +1172,8 @@ class Svc {
             .call_sites
             .iter()
             .find(|c| c.method.as_deref() == Some("insert"))
-            .expect("应捕获 insert 调用");
-        assert_eq!(ins.span.start_line, 5, "应是 1-based 的第 5 行: {:?}", ins.span);
-        assert!(ins.span.end_byte > ins.span.start_byte, "span 应覆盖节点范围");
+            .expect("the insert call must be captured");
+        assert_eq!(ins.span.start_line, 5, "it must be 1-based line 5: {:?}", ins.span);
+        assert!(ins.span.end_byte > ins.span.start_byte, "the span must cover the node range");
     }
 }

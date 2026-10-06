@@ -697,7 +697,7 @@ mod tests {
                 "eb_".to_string(),
                 format!("php config: {}", dir.join("config/database.php").display())
             )),
-            "应从 config/database.php 的 connections.mysql.prefix 读出表前缀"
+            "the table prefix must be read from connections.mysql.prefix in config/database.php"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -717,7 +717,7 @@ mod tests {
             &fs,
             &parsers,
         );
-        assert!(got.is_none(), "配置文件缺失时不应探测到前缀");
+        assert!(got.is_none(), "with the config file missing, no prefix must be detected");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(
             got.map(|(v, _)| v),
             Some("eb_".to_string()),
-            "应从 env('DB_PREFIX', 'eb_') 的默认值读出表前缀"
+            "the table prefix must be read from the default of env('DB_PREFIX', 'eb_')"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -775,7 +775,7 @@ mod tests {
         assert_eq!(
             got.map(|(v, _)| v),
             Some("eb_".to_string()),
-            "应从 Env::get('database.prefix', 'eb_') 的默认值读出表前缀"
+            "the table prefix must be read from the default of Env::get('database.prefix', 'eb_')"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -793,8 +793,8 @@ mod tests {
         .unwrap();
         let ns = adapter().manifest_namespaces(&dir, &dir);
         let names: Vec<&str> = ns.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"app"), "PSR-4 应导出 app 命名空间: {names:?}");
-        assert!(names.contains(&"App"), "PSR-4 应导出 App 命名空间: {names:?}");
+        assert!(names.contains(&"app"), "PSR-4 must export the app namespace: {names:?}");
+        assert!(names.contains(&"App"), "PSR-4 must export the App namespace: {names:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -811,14 +811,14 @@ mod tests {
             $table->timestamps();
         "#;
         let cols = columns_of_blueprint(body);
-        assert!(cols.contains(&"email".to_string()), "string('email') 应被识别为列: {cols:?}");
-        assert!(cols.contains(&"id".to_string()), "id() 隐式列名应为 id: {cols:?}");
+        assert!(cols.contains(&"email".to_string()), "string('email') must be recognised as a column: {cols:?}");
+        assert!(cols.contains(&"id".to_string()), "the implicit column name of id() must be id: {cols:?}");
         assert!(
             cols.contains(&"created_at".to_string()) && cols.contains(&"updated_at".to_string()),
-            "timestamps() 应展开为 created_at/updated_at: {cols:?}"
+            "timestamps() must expand to created_at/updated_at: {cols:?}"
         );
-        assert!(!cols.contains(&"邮箱".to_string()), "comment 的字符串参数不应误判为列");
-        assert!(!cols.contains(&"name".to_string()), "after 的字符串参数不应误判为列");
+        assert!(!cols.contains(&"邮箱".to_string()), "the string argument of comment must not be misjudged as a column");
+        assert!(!cols.contains(&"name".to_string()), "the string argument of after must not be misjudged as a column");
     }
 
     #[test]
@@ -835,9 +835,9 @@ mod tests {
             });
         "#;
         let tables = parse_migration_tables(src);
-        let users = tables.iter().find(|(t, _)| t == "users").expect("users 表");
+        let users = tables.iter().find(|(t, _)| t == "users").expect("the users table");
         assert_eq!(users.1, vec!["id", "name", "email"]);
-        let orders = tables.iter().find(|(t, _)| t == "orders").expect("orders 表");
+        let orders = tables.iter().find(|(t, _)| t == "orders").expect("the orders table");
         assert_eq!(orders.1, vec!["id", "user_id"]);
     }
 
@@ -846,10 +846,10 @@ mod tests {
     fn migration_paren_in_string_is_balanced() {
         let src = "Schema::create('items', function (Blueprint $table) {\n    $table->string('note')->default(')');\n    $table->string('name');\n});";
         let tables = parse_migration_tables(src);
-        let (_, cols) = tables.iter().find(|(t, _)| t == "items").expect("items 表");
+        let (_, cols) = tables.iter().find(|(t, _)| t == "items").expect("the items table");
         assert!(
             cols.contains(&"name".to_string()),
-            "括号在字符串内不应截断解析: {cols:?}"
+            "parentheses inside a string must not cut the parse short: {cols:?}"
         );
         assert!(!cols.contains(&")".to_string()));
     }
@@ -930,14 +930,14 @@ mod tests {
             "require-dev": { "phpunit/phpunit": "^9" }
         }"#;
         let got = adapter().manifest_dependencies("composer.json", json);
-        let deps = got.expect("composer.json 应给出依赖");
+        let deps = got.expect("composer.json must yield dependencies");
         assert!(deps.contains(&"topthink/framework".to_string()), "{deps:?}");
-        assert!(deps.contains(&"phpunit/phpunit".to_string()), "require-dev 也应计入: {deps:?}");
+        assert!(deps.contains(&"phpunit/phpunit".to_string()), "require-dev must count as well: {deps:?}");
         // A non-manifest file must return None so the kernel falls back to whole-file text probing.
         assert!(adapter().manifest_dependencies("package.json", json).is_none());
         assert!(
             adapter().manifest_dependencies("composer.json", "{ not json").is_none(),
-            "坏 JSON 应返回 None（交由回退），而不是 panic"
+            "bad JSON must return None (left to the fallback) rather than panic"
         );
     }
 
@@ -948,7 +948,7 @@ mod tests {
             "packages-dev": [ { "name": "phpunit/phpunit" } ]
         }"#;
         let got = adapter().lock_dependencies("composer.lock", json);
-        let deps = got.expect("composer.lock 应给出依赖");
+        let deps = got.expect("composer.lock must yield dependencies");
         assert_eq!(deps, vec!["topthink/framework".to_string(), "phpunit/phpunit".to_string()]);
         assert!(adapter().lock_dependencies("composer.json", json).is_none());
         assert!(adapter().lock_dependencies("composer.lock", "{ not json").is_none());
@@ -962,7 +962,7 @@ mod tests {
         assert_eq!(
             pats,
             vec!["lang/{locale}/".to_string(), "resources/lang/{locale}/".to_string()],
-            "lang/ 是 ThinkPHP（及 Laravel 9+），resources/lang/ 是 Laravel ≤8"
+            "lang/ is ThinkPHP (and Laravel 9+), resources/lang/ is Laravel ≤8"
         );
     }
 
@@ -984,13 +984,13 @@ mod tests {
     #[test]
     fn read_quoted_handles_both_quotes_and_escapes() {
         let b = b"'a\\'b' rest";
-        assert_eq!(read_quoted(b, 0).as_deref(), Some("a\\'b"), "转义引号不应提前结束");
+        assert_eq!(read_quoted(b, 0).as_deref(), Some("a\\'b"), "an escaped quote must not end it early");
         let b2 = b"\"plain\"";
         assert_eq!(read_quoted(b2, 0).as_deref(), Some("plain"));
         let b3 = b"'unterminated";
-        assert!(read_quoted(b3, 0).is_none(), "未闭合应返回 None");
+        assert!(read_quoted(b3, 0).is_none(), "an unterminated string must return None");
         let b4 = b"not-a-quote";
-        assert!(read_quoted(b4, 0).is_none(), "起始不是引号应返回 None");
+        assert!(read_quoted(b4, 0).is_none(), "not starting with a quote must return None");
     }
 
     // ---- port surface that the kernel depends on but wasn't pinned yet ----
@@ -1024,22 +1024,22 @@ mod tests {
         adapter().enrich_method_ref(&mut spec, &dir, &dir);
         assert!(
             spec.root_namespaces.contains(&"app".to_string()),
-            "应发现 app 命名空间（去尾斜杠）: {:?}",
+            "the app namespace must be discovered (trailing slash removed): {:?}",
             spec.root_namespaces
         );
         assert!(
             spec.app_segments.contains(&"api".to_string()),
-            "app/api 应为模块: {:?}",
+            "app/api must be a module: {:?}",
             spec.app_segments
         );
         assert!(
             spec.app_segments.contains(&"admin".to_string()),
-            "app/admin 应为模块: {:?}",
+            "app/admin must be a module: {:?}",
             spec.app_segments
         );
         assert!(
             !spec.app_segments.contains(&"plain".to_string()),
-            "无子目录的 app/plain 不是模块"
+            "app/plain, which has no sub-directory, is not a module"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1079,7 +1079,7 @@ mod tests {
         let names: Vec<&str> = ns.iter().map(|(n, _)| n.as_str()).collect();
         assert!(
             names.contains(&"App"),
-            "子项目无 composer.json 时应回退到工程根: {names:?}"
+            "a sub-project without composer.json must fall back to the project root: {names:?}"
         );
         let _ = std::fs::remove_dir_all(&proj);
         let _ = std::fs::remove_dir_all(&sub);
@@ -1113,7 +1113,7 @@ mod tests {
         assert_eq!(
             got.map(|(v, _)| v),
             Some("fb_".to_string()),
-            "manifest 仅存在于工程根时应回退命中"
+            "when the manifest exists only at the project root the fallback must hit"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1147,7 +1147,7 @@ mod tests {
             &fs,
             &parsers,
         );
-        let me = got.expect("应枚举出 connections");
+        let me = got.expect("the connections must be enumerated");
         let by_name: std::collections::HashMap<String, Vec<(String, String)>> =
             me.entries.iter().map(|e| (e.key.clone(), e.fields.clone())).collect();
         assert_eq!(by_name.get("mysql").unwrap().clone(), vec![
@@ -1194,12 +1194,12 @@ mod tests {
                 &fs,
                 &parsers,
             )
-            .expect("应枚举出 connections");
+            .expect("the connections must be enumerated");
         let by_name: std::collections::HashMap<String, Vec<(String, String)>> =
             me.entries.iter().map(|e| (e.key.clone(), e.fields.clone())).collect();
         assert!(
             by_name.get("mysql").map(|f| f.iter().any(|(n, _)| n == "prefix")).unwrap_or(false) == false,
-            "多连接时 env 默认值不得回退（会误复制到其它连接）: {:?}",
+            "with several connections the env default must not fall back (it would be copied to the other connections): {:?}",
             by_name
         );
         let sqlite_prefix = by_name
@@ -1238,7 +1238,7 @@ mod tests {
             &fs,
             &parsers,
         );
-        assert!(got.is_none(), "root 不存在时应返回 None");
+        assert!(got.is_none(), "a missing root must return None");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1263,7 +1263,7 @@ mod tests {
                 &[],
             )
             .unwrap();
-        assert!(facts.is_empty(), "未知 loader id 应返回空向量而非报错");
+        assert!(facts.is_empty(), "an unknown loader id must return an empty vector rather than error");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1299,7 +1299,7 @@ mod tests {
         assert_eq!(
             table.as_deref(),
             Some("users"),
-            "表前缀 eb_ 应被剥离: {:?}",
+            "the eb_ table prefix must be stripped: {:?}",
             table
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1330,7 +1330,7 @@ mod tests {
         assert_eq!(
             table.as_deref(),
             Some("posts"),
-            "自定义 paths 参数应定位迁移文件"
+            "a custom paths argument must locate the migration files"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1341,11 +1341,11 @@ mod tests {
         assert_eq!(matching_paren("()", 0), Some(1));
         assert!(
             matching_paren("(unterminated", 0).is_none(),
-            "未闭合括号应返回 None"
+            "an unclosed parenthesis must return None"
         );
         assert!(
             matching_paren("no paren", 0).is_none(),
-            "起始不是左括号应返回 None"
+            "not starting with a left parenthesis must return None"
         );
     }
 

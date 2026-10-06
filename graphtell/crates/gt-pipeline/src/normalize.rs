@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn apply_normalize_trims_first_and_applies_steps_in_order() {
         assert_eq!(apply_normalize("  /api/v1  ", &[NormalizeStep::Trim]), "/api/v1");
-        assert_eq!(apply_normalize("  X  ", &[]), "X", "即使没有步骤也会先 trim");
+        assert_eq!(apply_normalize("  X  ", &[]), "X", "it trims first even when there are no steps");
 
         let lower_then_strip = vec![
             NormalizeStep::Lower,
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(
             apply_normalize("EB_Store", &strip_then_lower),
             "eb_store",
-            "大小写敏感的前缀剥离必须先 lower 才生效"
+            "the case-sensitive prefix strip only takes effect after lowering first"
         );
     }
 
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(
             resolved[0],
             NormalizeStep::StripPrefix(prefixes(&["eb_"])),
-            "空列表应被检测到的前缀替换"
+            "an empty list must be replaced by the detected prefix"
         );
         // Steps of other kinds pass through untouched.
         assert_eq!(resolved[1], NormalizeStep::Singularize);
@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(
             strip_namespace("app.tasks.send_email"),
             "app.tasks.send_email",
-            "strip_namespace 刻意不按 `.` 切分（否则会切开 Java 包名）"
+            "strip_namespace deliberately does not split on `.` (that would cut Java package names apart)"
         );
         assert_eq!(short_name("app.tasks.send_email"), "send_email");
         assert_eq!(short_name("app\\service\\OrderService"), "OrderService");
@@ -451,7 +451,7 @@ mod tests {
 
         // Round-trip: pluralize -> singularize returns the original for the forms the rules cover.
         for w in ["store_order", "category", "user", "class"] {
-            assert_eq!(singularize(&pluralize(w)), w, "{w} 应可往返");
+            assert_eq!(singularize(&pluralize(w)), w, "{w} must round-trip");
         }
     }
 
@@ -460,8 +460,8 @@ mod tests {
     #[test]
     fn pluralize_is_idempotent() {
         for w in ["store_orders", "categories", "boxes", "dishes", "quizzes", "classes"] {
-            assert_eq!(pluralize(w), w, "{w} 已是复数，不应再加词尾");
-            assert_eq!(pluralize(&pluralize(w)), pluralize(w), "{w} 应幂等");
+            assert_eq!(pluralize(w), w, "{w} is already plural, so no suffix must be added");
+            assert_eq!(pluralize(&pluralize(w)), pluralize(w), "{w} must be idempotent");
         }
         // ...while genuinely singular words still get pluralised.
         assert_eq!(pluralize("store_order"), "store_orders");
@@ -486,7 +486,7 @@ mod tests {
 
         // Round-trip now holds for every form the rules cover.
         for w in ["store_order", "category", "user", "class", "box", "dish", "quiz", "status"] {
-            assert_eq!(singularize(&pluralize(w)), w, "{w} 应可往返");
+            assert_eq!(singularize(&pluralize(w)), w, "{w} must round-trip");
         }
     }
 
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(singularize("fezzes"), "fez");
         assert_eq!(singularize("waltzes"), "waltz");
         for w in ["quiz", "fez", "waltz", "quartz"] {
-            assert_eq!(singularize(&pluralize(w)), w, "{w} 应可往返");
+            assert_eq!(singularize(&pluralize(w)), w, "{w} must round-trip");
         }
     }
 

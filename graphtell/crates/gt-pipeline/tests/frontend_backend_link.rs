@@ -61,21 +61,21 @@ fn frontend_calls_backend_merge_into_contract() {
     let root = synth_root();
     assert!(
         root.is_dir(),
-        "合成样本缺失：{}。它随仓库分发，不应被 .gitignore 排除",
+        "the synthetic sample is missing: {}. It ships with the repository, so .gitignore must not exclude it",
         root.display()
     );
-    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
+    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("graphing");
 
     // The two sub-projects should be recognised correctly: backend php / frontend javascript.
     let subs = b.store.list_sub_projects(b.project.id).unwrap_or_default();
     assert!(
         subs.iter().any(|s| s.language.as_str() == "php" && s.frameworks.contains(&"thinkphp".to_string())),
-        "后端应识别为 thinkphp，实际：{:?}",
+        "the backend must be recognised as thinkphp, got: {:?}",
         subs.iter().map(|s| (&s.language, &s.frameworks)).collect::<Vec<_>>()
     );
     assert!(
         subs.iter().any(|s| s.language.as_str() == "javascript" && s.frameworks.contains(&"frontend-js".to_string())),
-        "前端应识别为 frontend-js"
+        "the frontend must be recognised as frontend-js"
     );
 
     // Take all HttpContract nodes, find the one an incoming frontend CallsHttp connects into.
@@ -88,7 +88,7 @@ fn frontend_calls_backend_merge_into_contract() {
             limit: Some(200),
             offset: Some(0),
         })
-        .expect("契约节点可读");
+        .expect("the contract node must be readable");
 
     let mut frontend_caller: Option<gt_domain::model::Node> = None;
     let mut bridged: Option<gt_domain::model::Node> = None;
@@ -109,18 +109,18 @@ fn frontend_calls_backend_merge_into_contract() {
 
     // ---- 1) Frontend -> backend: the CallsHttp in-edge must exist, and its source is a frontend semantic node (function) ----
     let caller = frontend_caller
-        .expect("前端 axios.post('/api/delete') 应合成 HttpContract 并产生 CallsHttp 入边");
+        .expect("the frontend axios.post('/api/delete') must synthesise an HttpContract and produce a CallsHttp in-edge");
     // The frontend HTTP call is wrapped in `export function deleteItem`, so CallsHttp is initiated by the function node,
     // isomorphic to the backend `Method --HandledBy--> HttpContract`.
     assert_eq!(
         caller.kind.as_str(),
         "Function",
-        "CallsHttp 的源头应是前端函数节点（语义节点），实际 kind = {}",
+        "the source of CallsHttp must be a frontend function node (a semantic node), got kind = {}",
         caller.kind
     );
     assert_eq!(
         caller.name, "deleteItem",
-        "CallsHttp 源头函数应为 deleteItem"
+        "the source function of CallsHttp must be deleteItem"
     );
 
     // ---- 1.5) The frontend function node should be built as a declaration node by P2, holding a HasCallSite edge ----
@@ -133,18 +133,18 @@ fn frontend_calls_backend_merge_into_contract() {
             limit: Some(5000),
             offset: Some(0),
         })
-        .expect("节点可读");
+        .expect("the node must be readable");
     let fn_delete = all_nodes
         .iter()
         .find(|n| n.kind.as_str() == "Function" && n.name == "deleteItem")
-        .expect("应建出前端语义节点 Function:deleteItem");
+        .expect("the frontend semantic node Function:deleteItem must be created");
     assert!(
         b.store
             .edges_of(fn_delete.id, EdgeDirection::Outgoing)
             .unwrap_or_default()
             .iter()
             .any(|e| e.kind.as_str() == "HasCallSite"),
-        "deleteItem 函数应持有 HasCallSite 边（指向其内部的 axios 调用点）"
+        "the deleteItem function must hold a HasCallSite edge (pointing at the axios call site inside it)"
     );
 
     // ---- 4) Frontend cross-file call chain: App.onDelete -> api.deleteItem ----
@@ -173,21 +173,21 @@ fn frontend_calls_backend_merge_into_contract() {
     }
 
     // ---- 2) Contract bridge: frontend and backend synthesise the same ContractId and merge ----
-    let c = bridged.expect("被前端连入的契约节点应存在");
+    let c = bridged.expect("the contract node connected from the frontend must exist");
     assert_eq!(
         c.identity.as_ref().map(|i| i.value.as_str()),
         Some("POST /api/delete"),
-        "前后端应汇聚到同一个 ContractId（POST /api/delete）"
+        "frontend and backend must converge on the same ContractId (POST /api/delete)"
     );
 
     // ---- 2.5) The "was the front end here?" marker must be judged by the **edge**, not by a property.
     // Historically `frontend-mark-called` selected on `side = frontend`; but a bridge node is patched by both
     // sides and its scalar `side` is decided by whoever patches last, so the marker could vanish silently.
     // The selector now asks for a `CallsHttp` in-edge — this assertion locks that (see `Predicate::HasIncoming`).
-    let anns = b.store.annotations_of(c.id).expect("标注可读");
+    let anns = b.store.annotations_of(c.id).expect("the annotations must be readable");
     assert!(
         anns.iter().any(|a| a.kind == "frontend.called"),
-        "被前端连入的契约应命中 frontend-mark-called（判据是 CallsHttp 边），实际标注：{:?}",
+        "a contract connected from the frontend must be hit by frontend-mark-called (its criterion is a CallsHttp edge), annotations: {:?}",
         anns.iter().map(|a| a.kind.clone()).collect::<Vec<_>>()
     );
 
@@ -198,12 +198,12 @@ fn frontend_calls_backend_merge_into_contract() {
     assert_eq!(
         c.properties.get("side").and_then(|v| v.as_str()),
         Some("bridge"),
-        "前后端共有的契约 side 应为 bridge"
+        "a contract shared by frontend and backend must have side bridge"
     );
     assert_eq!(
         c.properties.get("sides"),
         Some(&serde_json::json!(["backend", "frontend"])),
-        "sides 应是两侧的有序去重集合"
+        "sides must be the ordered de-duplicated set of both sides"
     );
 
     // ---- Informational: backend handler resolution (P7, existing mechanism) ----
@@ -224,10 +224,10 @@ fn member_style_request_bridges() {
     let root = synth_root();
     assert!(
         root.is_dir(),
-        "合成样本缺失：{}。它随仓库分发，不应被 .gitignore 排除",
+        "the synthetic sample is missing: {}. It ships with the repository, so .gitignore must not exclude it",
         root.display()
     );
-    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
+    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("graphing");
 
     let all = b
         .store
@@ -238,24 +238,24 @@ fn member_style_request_bridges() {
             limit: Some(5000),
             offset: Some(0),
         })
-        .expect("节点可读");
+        .expect("the node must be readable");
 
     let ping = all
         .iter()
         .find(|n| n.kind.as_str() == "HttpContract" && n.name.contains("/api/ping"))
-        .expect("应由 `request.get('/api/ping')` 合成契约 GET /api/ping");
-    assert_eq!(ping.name, "GET /api/ping", "成员名应成为 HTTP method");
+        .expect("`request.get('/api/ping')` must synthesise the contract GET /api/ping");
+    assert_eq!(ping.name, "GET /api/ping", "the member name becomes the HTTP method");
     // Both the backend `Route::get('/api/ping')` and the frontend `request.get('/api/ping')` synthesise this
     // node, hence `bridge` + both parties in `sides`.
     assert_eq!(
         ping.properties.get("side").and_then(|v| v.as_str()),
         Some("bridge"),
-        "桥梁契约 side 应为 bridge"
+        "the side of a bridge contract must be bridge"
     );
     assert_eq!(
         ping.properties.get("sides"),
         Some(&serde_json::json!(["backend", "frontend"])),
-        "sides 应包含前后端两侧"
+        "sides must contain both the frontend and the backend"
     );
 
     // Frontend side: CallsHttp is initiated by a **function node** (semantic node), not a File.
@@ -265,8 +265,8 @@ fn member_style_request_bridges() {
         .find(|e| e.kind.as_str() == "CallsHttp")
         .map(|e| b.store.get_node(e.from_id).ok().flatten())
         .flatten()
-        .expect("应存在来自前端的 CallsHttp 边");
-    assert_eq!(caller.name, "pingItem", "CallsHttp 源头应是前端函数 pingItem");
+        .expect("a CallsHttp edge coming from the frontend must exist");
+    assert_eq!(caller.name, "pingItem", "the source of CallsHttp must be the frontend function pingItem");
     assert_eq!(caller.kind.as_str(), "Function");
 
     let locs = ping
@@ -281,11 +281,11 @@ fn member_style_request_bridges() {
         .collect();
     assert!(
         files.iter().any(|f| f.contains("api.js")),
-        "契约应带前端 location，实际：{files:?}"
+        "the contract must carry a frontend location, got: {files:?}"
     );
     assert!(
         files.iter().any(|f| f.contains("route/api.php")),
-        "契约应带后端路由 location（前后端汇聚到同一节点），实际：{files:?}"
+        "the contract must carry the backend route location (both sides converge on one node), got: {files:?}"
     );
 
     for (fn_name, url_part) in [("invoiceDetail", "/api/invoice/detail"), ( "orderInvoiceDetail", "/api/order/invoice_detail")] {
@@ -294,7 +294,7 @@ fn member_style_request_bridges() {
             n.kind.as_str() == "HttpContract"
                 && n.identity.as_ref().map(|i| i.value.as_str()) == Some(ident.as_str())
         })
-        .unwrap_or_else(|| panic!("拼接/模板 URL 应与后端路由按形状汇聚成 {ident}"));
+        .unwrap_or_else(|| panic!("a concatenated / templated URL must converge with the backend route by shape into {ident}"));
         let locs = node
             .properties
             .get("locations")
@@ -307,11 +307,11 @@ fn member_style_request_bridges() {
             .collect();
         assert!(
             files.iter().any(|f| f.contains("api.js")),
-            "{ident} 应带前端 location，实际：{files:?}"
+            "{ident} must carry a frontend location, got: {files:?}"
         );
         assert!(
             files.iter().any(|f| f.contains("route/api.php")),
-            "{ident} 应带后端路由 location（前后端同一节点），实际：{files:?}"
+            "{ident} must carry the backend route location (one node for both sides), got: {files:?}"
         );
         let _ = fn_name;
     }
@@ -321,7 +321,7 @@ fn member_style_request_bridges() {
     let cache = all
         .iter()
         .find(|n| n.kind.as_str() == "Cache" && n.name == "token")
-        .expect("前端本地存储应合成 Cache 语义节点（前端 FKB 规则 frontend-cache-*）");
+        .expect("frontend local storage must synthesise a Cache semantic node (the frontend FKB rules frontend-cache-*)");
     assert_eq!(
         cache.properties.get("side").and_then(|v| v.as_str()),
         Some("frontend")
@@ -335,11 +335,11 @@ fn member_style_request_bridges() {
         .collect();
     assert!(
         inc.iter().any(|k| k == "ReadsCache"),
-        "读方应挂 ReadsCache，实际：{inc:?}"
+        "the reader must get ReadsCache, got: {inc:?}"
     );
     assert!(
         inc.iter().any(|k| k == "WritesCache"),
-        "写方应挂 WritesCache，实际：{inc:?}"
+        "the writer must get WritesCache, got: {inc:?}"
     );
 
     // The frontend semantic-node family: I18nKey (copy), Store (Vuex, declared by FKB `semantic_kinds`),
@@ -347,7 +347,7 @@ fn member_style_request_bridges() {
     let i18n = all
         .iter()
         .find(|n| n.kind.as_str() == "I18nKey" && n.name == "hello")
-        .expect("`i18n.t('hello')` 应合成 I18nKey 语义节点");
+        .expect("`i18n.t('hello')` must synthesise an I18nKey semantic node");
     assert_eq!(
         i18n.properties.get("side").and_then(|v| v.as_str()),
         Some("frontend")
@@ -355,19 +355,19 @@ fn member_style_request_bridges() {
     let store = all
         .iter()
         .find(|n| n.kind.as_str() == "Store" && n.name == "counter/inc")
-        .expect("`$store.dispatch('counter/inc')` 应合成 Store 语义节点");
+        .expect("`$store.dispatch('counter/inc')` must synthesise a Store semantic node");
     assert!(
         b.store
             .edges_of(store.id, EdgeDirection::Incoming)
             .unwrap_or_default()
             .iter()
             .any(|e| e.kind.as_str() == "Mutates"),
-        "Store 节点应有 Mutates 入边"
+        "the Store node must have a Mutates in-edge"
     );
     assert!(
         all.iter()
             .any(|n| n.kind.as_str() == "ConfigKey" && n.name == "HTTP_REQUEST_URL"),
-        "前端配置（export default）应合成 ConfigKey，实际：{:?}",
+        "frontend config (export default) must synthesise a ConfigKey, got: {:?}",
         all.iter()
             .filter(|n| n.kind.as_str() == "ConfigKey")
             .map(|n| &n.name)
@@ -391,16 +391,16 @@ fn member_style_request_bridges() {
         "PUT /api/items/:id",
         "DELETE /api/items/:id",
     ] {
-        assert!(ids.contains(want), "资源路由应展开出 {want}，实际：{ids:?}");
+        assert!(ids.contains(want), "a resource route must expand to {want}, got: {ids:?}");
     }
     assert!(
         ids.contains("GET /api/tags") && ids.contains("DELETE /api/tags/:id"),
-        "`except` 只剔除 read，其余动作应照常展开，实际：{:?}",
+        "`except` removes only read; the other actions must still expand, got: {:?}",
         ids.iter().filter(|i| i.contains("api/tags")).collect::<Vec<_>>()
     );
     assert!(
         !ids.contains("GET /api/tags/:id"),
-        "`->except(['read'])` 应剔除 read 动作，不该凭空造出 GET /api/tags/:id"
+        "`->except(['read'])` must drop the read action and must not invent GET /api/tags/:id"
     );
 
     // The other branch of the derived label: a contract **only** the backend ever synthesised stays `backend`
@@ -409,23 +409,23 @@ fn member_style_request_bridges() {
         .iter()
         .find(|n| n.kind.as_str() == "HttpContract"
             && n.identity.as_ref().map(|i| i.value.as_str()) == Some("GET /api/items"))
-        .expect("资源路由应展开出 GET /api/items");
+        .expect("a resource route must expand to GET /api/items");
     assert_eq!(
         items_index.properties.get("side").and_then(|v| v.as_str()),
         Some("backend"),
-        "只有后端一侧有证据的契约 side 应为 backend"
+        "a contract with evidence only on the backend side must have side backend"
     );
     assert_eq!(
         items_index.properties.get("sides"),
         Some(&serde_json::json!(["backend"])),
-        "只有后端一侧有证据的契约 sides 应为 [backend]"
+        "a contract with evidence only on the backend side must have sides [backend]"
     );
 
     // Frontend **page-route** semantic node: comes from `pages.json`, isomorphic to the backend `Route`.
     let index_page = all
         .iter()
         .find(|n| n.kind.as_str() == "Page" && n.name == "/pages/index/index")
-        .expect("`pages.json` 应合成 Page 语义节点 /pages/index/index");
+        .expect("`pages.json` must synthesise the Page semantic node /pages/index/index");
     assert_eq!(
         index_page.properties.get("side").and_then(|v| v.as_str()),
         Some("frontend")
@@ -434,7 +434,7 @@ fn member_style_request_bridges() {
     let sub_page = all
         .iter()
         .find(|n| n.kind.as_str() == "Page" && n.name == "/pagesA/list/list")
-        .expect("subPackages 页面身份应带 root 前缀（/pagesA/list/list）");
+        .expect("a subPackages page identity must carry the root prefix (/pagesA/list/list)");
 
     let inc = b
         .store
@@ -443,14 +443,14 @@ fn member_style_request_bridges() {
     let nav = inc
         .iter()
         .find(|e| e.kind.as_str() == "NavigatesTo")
-        .expect("子包页应收到 NavigatesTo 入边（来自 uni.navigateTo）");
+        .expect("a sub-package page must receive a NavigatesTo in-edge (from uni.navigateTo)");
     let from = b
         .store
         .get_node(nav.from_id)
         .ok()
         .flatten()
-        .expect("导航源头节点应存在");
-    assert_eq!(from.name, "goList", "NavigatesTo 源头应是 goList 函数");
+        .expect("the navigation source node must exist");
+    assert_eq!(from.name, "goList", "the source of NavigatesTo must be the goList function");
     assert_eq!(from.kind.as_str(), "Function");
 
     // Frontend **event-bus** semantic node: `uni.$emit('listRefresh')` and `uni.$on('listRefresh')`
@@ -458,7 +458,7 @@ fn member_style_request_bridges() {
     let bus = all
         .iter()
         .find(|n| n.kind.as_str() == "EventBus" && n.name == "listRefresh")
-        .expect("`uni.$emit/on('listRefresh')` 应合成 EventBus 语义节点");
+        .expect("`uni.$emit/on('listRefresh')` must synthesise an EventBus semantic node");
     assert_eq!(
         bus.properties.get("side").and_then(|v| v.as_str()),
         Some("frontend")
@@ -471,18 +471,18 @@ fn member_style_request_bridges() {
     let emitter = emit_inc
         .iter()
         .find(|e| e.kind.as_str() == "Emits")
-        .expect("事件节点应收到 Emits 入边")
+        .expect("the event node must receive an Emits in-edge")
         .from_id;
-    let emitter = b.store.get_node(emitter).ok().flatten().expect("发射方节点");
-    assert_eq!(emitter.name, "emitRefresh", "Emits 源头应是 emitRefresh 函数");
+    let emitter = b.store.get_node(emitter).ok().flatten().expect("the emitting node");
+    assert_eq!(emitter.name, "emitRefresh", "the source of Emits must be the emitRefresh function");
     // Listener `onRefresh` -> event node (ListensTo in-edge).
     let listener = emit_inc
         .iter()
         .find(|e| e.kind.as_str() == "ListensTo")
-        .expect("事件节点应收到 ListensTo 入边")
+        .expect("the event node must receive a ListensTo in-edge")
         .from_id;
-    let listener = b.store.get_node(listener).ok().flatten().expect("监听方节点");
-    assert_eq!(listener.name, "onRefresh", "ListensTo 源头应是 onRefresh 函数");
+    let listener = b.store.get_node(listener).ok().flatten().expect("the listening node");
+    assert_eq!(listener.name, "onRefresh", "the source of ListensTo must be the onRefresh function");
 
     // Counterexample: `cache.get('/api/ping')` has a receiver that is not an HTTP client, must **not** produce a contract.
     let false_positive = all.iter().any(|n| {
@@ -493,7 +493,7 @@ fn member_style_request_bridges() {
                 .unwrap_or_default()
                 .contains("dynamic-url")
     });
-    assert!(!false_positive, "动态 URL 不应合成 <dynamic-url> 垃圾契约");
+    assert!(!false_positive, "a dynamic URL must not synthesise a junk <dynamic-url> contract");
 }
 
 /// **Backend cache nodes must carry `side: backend`** (symmetric to the frontend `side = frontend`).
@@ -507,10 +507,10 @@ fn backend_cache_node_tagged_backend() {
     let root = synth_root();
     assert!(
         root.is_dir(),
-        "合成样本缺失：{}。它随仓库分发，不应被 .gitignore 排除",
+        "the synthetic sample is missing: {}. It ships with the repository, so .gitignore must not exclude it",
         root.display()
     );
-    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("建图");
+    let b = common::graph_with_root(&root, ProjectConfig::default()).expect("graphing");
 
     let all = b
         .store
@@ -521,17 +521,17 @@ fn backend_cache_node_tagged_backend() {
             limit: Some(5000),
             offset: Some(0),
         })
-        .expect("节点可读");
+        .expect("the node must be readable");
 
     // Backend controller's `Cache::get('order-status')` -> node `order-status`.
     let backend_cache = all
         .iter()
         .find(|n| n.kind.as_str() == "Cache" && n.name == "order-status")
-        .expect("后端 `Cache::get('order-status')` 应合成 Cache 语义节点（common.yaml）");
+        .expect("the backend `Cache::get('order-status')` must synthesise a Cache semantic node (common.yaml)");
     assert_eq!(
         backend_cache.properties.get("side").and_then(|v| v.as_str()),
         Some("backend"),
-        "后端缓存节点应被通用层标注 side=backend"
+        "a backend cache node must be annotated side=backend by the generic layer"
     );
 
     // The reader should carry a ReadsCache in-edge.
@@ -541,7 +541,7 @@ fn backend_cache_node_tagged_backend() {
         .unwrap_or_default();
     assert!(
         inc.iter().any(|e| e.kind.as_str() == "ReadsCache"),
-        "后端缓存读方应挂 ReadsCache，实际：{:?}",
+        "a backend cache reader must get ReadsCache, got: {:?}",
         inc.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
     );
 }

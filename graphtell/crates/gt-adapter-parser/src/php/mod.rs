@@ -1304,7 +1304,7 @@ class UserController
     fn looks_like_signature_filters_checkin_noise() {
         // Real signature values.
         for s in ["$sign", "$signature", "$signValue", "$data['sign']", "$this->sign"] {
-            assert!(looks_like_signature(s), "`{s}` 应被判为签名值");
+            assert!(looks_like_signature(s), "`{s}` must be judged a signature value");
         }
         // Check-in / points noise (the measured majority).
         for s in [
@@ -1312,7 +1312,7 @@ class UserController
             "$sign_count", "$sign_date", "$sign_enabled", "$sign_status", "$sign_rule",
             "$points_sign_enabled", "$userSign", "$signRecord", "$signLog",
         ] {
-            assert!(!looks_like_signature(s), "`{s}` 是签到/积分噪声，不应被判为签名值");
+            assert!(!looks_like_signature(s), "`{s}` is check-in / points noise and must not be judged a signature value");
         }
         // Sign-in / sign-up are the same shape but not a signature value.
         assert!(!looks_like_signature("$signIn"));
@@ -1325,18 +1325,18 @@ class UserController
         assert!(!looks_like_signature("$signatureType"));
         assert!(!looks_like_signature("$signAlg"));
         // Hard requirements: a `$` variable and the `sign` stem.
-        assert!(!looks_like_signature("sign"), "无 `$` → 不是变量");
-        assert!(!looks_like_signature("$foo"), "无 sign 词干");
+        assert!(!looks_like_signature("sign"), "no `$` → not a variable");
+        assert!(!looks_like_signature("$foo"), "no `sign` stem");
     }
 
     #[test]
     fn is_string_literal_detects_bare_quoted_strings() {
         assert!(is_string_literal("'x'"));
         assert!(is_string_literal("\"x\""));
-        assert!(is_string_literal("  'x'  "), "应 trim 后再判");
-        assert!(is_string_literal("''"), "空字符串字面量也是字面量");
+        assert!(is_string_literal("  'x'  "), "it must be trimmed before judging");
+        assert!(is_string_literal("''"), "an empty string literal is still a literal");
         assert!(!is_string_literal("$sign"));
-        assert!(!is_string_literal("'a' . $b"), "拼接表达式不是纯字面量");
+        assert!(!is_string_literal("'a' . $b"), "a concatenation expression is not a pure literal");
     }
 
     // ---- naming helpers ----
@@ -1344,7 +1344,7 @@ class UserController
     #[test]
     fn qualify_prefixes_the_namespace() {
         assert_eq!(qualify(Some("App\\Services"), "Foo"), "App\\Services\\Foo");
-        assert_eq!(qualify(Some(""), "Foo"), "Foo", "空命名空间不得产生前导反斜杠");
+        assert_eq!(qualify(Some(""), "Foo"), "Foo", "an empty namespace must not produce a leading backslash");
         assert_eq!(qualify(None, "Foo"), "Foo");
     }
 
@@ -1376,14 +1376,14 @@ class Svc {
             .find(|c| c.method.as_deref() == Some("insert"))
             .unwrap_or_else(|| {
                 panic!(
-                    "应捕获 insert 调用点: {:?}",
+                    "the insert call site must be captured: {:?}",
                     facts.call_sites.iter().map(|c| &c.callee_text).collect::<Vec<_>>()
                 )
             });
         assert_eq!(
             insert.db_table.as_deref(),
             Some("goods"),
-            "链式动词必须带上上游 name('goods') 的表名，否则 P7 无法落成 WritesDb"
+            "a chained verb must carry the table name from the upstream name('goods'), otherwise P7 cannot land a WritesDb"
         );
     }
 
@@ -1404,7 +1404,7 @@ class Svc {
         assert!(p.extensions().contains(&"php"));
         assert!(
             p.builtin_types().contains(&"string"),
-            "内置类型表用于区分内置类型与项目类型: {:?}",
+            "the builtin-type table distinguishes builtin from project types: {:?}",
             p.builtin_types()
         );
     }
@@ -1426,13 +1426,13 @@ use App\\{Repo\\UserRepo, Repo\\OrderRepo};
             .iter()
             .map(|i| (i.alias.as_deref(), i.name.as_str()))
             .collect();
-        assert!(got.contains(&(None, "App\\Service\\UserService")), "限定名导入: {got:?}");
+        assert!(got.contains(&(None, "App\\Service\\UserService")), "fully qualified import: {got:?}");
         assert!(
             got.contains(&(Some("Order"), "App\\Service\\OrderService")),
-            "带别名的导入: {got:?}"
+            "import with alias: {got:?}"
         );
-        assert!(got.contains(&(None, "App\\Repo\\UserRepo")), "组导入须拼上前缀: {got:?}");
-        assert!(got.contains(&(None, "App\\Repo\\OrderRepo")), "组导入须拼上前缀: {got:?}");
+        assert!(got.contains(&(None, "App\\Repo\\UserRepo")), "a group import must be joined with the prefix: {got:?}");
+        assert!(got.contains(&(None, "App\\Repo\\OrderRepo")), "a group import must be joined with the prefix: {got:?}");
     }
 
     /// Every type declaration must reach the graph with its kind and a namespace-qualified FQN — the FQNs
@@ -1455,13 +1455,13 @@ class User extends Base implements Iface, Other {
             .iter()
             .map(|d| (d.fqn.as_str(), d.kind.as_str()))
             .collect();
-        assert!(kinds.contains(&("App\\Model", "Namespace")), "命名空间本身也应声明: {kinds:?}");
+        assert!(kinds.contains(&("App\\Model", "Namespace")), "the namespace itself must be declared as well: {kinds:?}");
         assert!(kinds.contains(&("App\\Model\\User", "Class")), "{kinds:?}");
         assert!(kinds.contains(&("App\\Model\\Iface", "Interface")), "{kinds:?}");
         assert!(kinds.contains(&("App\\Model\\Tr", "Trait")), "{kinds:?}");
         assert!(kinds.contains(&("App\\Model\\Suit", "Enum")), "{kinds:?}");
         assert!(kinds.contains(&("App\\Model\\Suit::Hearts", "EnumCase")), "{kinds:?}");
-        assert!(kinds.contains(&("App\\Model\\User::run", "Method")), "方法 FQN 为 类::方法: {kinds:?}");
+        assert!(kinds.contains(&("App\\Model\\User::run", "Method")), "a method FQN is Class::method: {kinds:?}");
     }
 
     /// `extends` / `implements` / `use Trait` are three different relations and must land under their own
@@ -1483,11 +1483,11 @@ class User extends Base implements Iface, Other {
             .collect();
         assert!(inh.contains(&("Base", "Extends")), "extends -> Extends: {inh:?}");
         assert!(inh.contains(&("Iface", "Implements")), "implements -> Implements: {inh:?}");
-        assert!(inh.contains(&("Other", "Implements")), "implements 列表每个都要记: {inh:?}");
+        assert!(inh.contains(&("Other", "Implements")), "every entry of the implements list must be recorded: {inh:?}");
         assert!(inh.contains(&("Tr", "UsesTrait")), "trait use -> UsesTrait: {inh:?}");
         assert!(
             facts.inheritances.iter().all(|i| i.child_fqn == "App\\Model\\User"),
-            "继承事实应挂在子类型 FQN 上: {inh:?}"
+            "an inheritance fact must hang on the subtype FQN: {inh:?}"
         );
     }
 
@@ -1510,13 +1510,13 @@ class Ctl {
             .map(|f| (f.field.as_str(), f.type_name.as_str()))
             .collect();
         assert!(ft.contains(&("repo", "UserRepository")), "{ft:?}");
-        assert!(ft.contains(&("name", "string")), "可空类型的 `?` 应剥除: {ft:?}");
+        assert!(ft.contains(&("name", "string")), "the `?` of a nullable type must be stripped: {ft:?}");
         assert!(
             facts.field_types.iter().all(|f| f.class_fqn == "App\\Ctl"),
-            "字段应挂在声明它的类上: {ft:?}"
+            "a field must hang on the class declaring it: {ft:?}"
         );
         let fqns: Vec<&str> = facts.declarations.iter().map(|d| d.fqn.as_str()).collect();
-        assert!(fqns.contains(&"App\\Ctl::$repo"), "属性声明精确到 类::$字段: {fqns:?}");
+        assert!(fqns.contains(&"App\\Ctl::$repo"), "a property declaration is precise down to Class::$field: {fqns:?}");
     }
 
     /// Config files (`config/*.php`) flatten `return [...]` into `config_entries`: nested arrays are recorded
@@ -1536,8 +1536,8 @@ return [
             .parse("config/database.php", src)
             .unwrap();
         let paths: Vec<&str> = facts.config_entries.iter().map(|e| e.key_path.as_str()).collect();
-        assert!(paths.contains(&"db"), "数组本身也应是一条条目: {paths:?}");
-        assert!(paths.contains(&"db.host"), "嵌套键应展开为点路径: {paths:?}");
+        assert!(paths.contains(&"db"), "the array itself must be an entry too: {paths:?}");
+        assert!(paths.contains(&"db.host"), "nested keys must be expanded into dotted paths: {paths:?}");
         assert!(paths.contains(&"debug"), "{paths:?}");
     }
 }

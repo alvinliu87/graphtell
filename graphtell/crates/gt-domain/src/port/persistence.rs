@@ -351,17 +351,17 @@ mod tests {
     /// nodes), and false for any populated member; `new()` only stamps the project id and stays empty.
     #[test]
     fn graph_delta_is_empty_reflects_reset_flag_and_contents() {
-        assert!(GraphDelta::default().is_empty(), "全空应为空");
+        assert!(GraphDelta::default().is_empty(), "all-empty must be empty");
 
         let mut reset = GraphDelta::default();
         reset.reset_project = true;
-        assert!(!reset.is_empty(), "reset_project=true 即使无节点也非空");
+        assert!(!reset.is_empty(), "reset_project=true is non-empty even with no nodes");
 
         let mut with_patch = GraphDelta::default();
         with_patch.kind_patches.push((NodeId::new(1), NodeKind::new("Class")));
-        assert!(!with_patch.is_empty(), "任一成员非空则整体非空");
+        assert!(!with_patch.is_empty(), "if any member is non-empty the whole thing is non-empty");
 
-        assert!(GraphDelta::new(ProjectId::new(1)).is_empty(), "new() 仅设 project_id");
+        assert!(GraphDelta::new(ProjectId::new(1)).is_empty(), "new() only sets project_id");
     }
 
     /// `merge` appends the per-node patches and ORs `reset_project` into the target.
@@ -376,8 +376,8 @@ mod tests {
         b.reset_project = true;
 
         a.merge(b);
-        assert_eq!(a.kind_patches.len(), 2, "patches 应追加合并");
-        assert!(a.reset_project, "reset_project 应被 OR 进目标 delta");
+        assert_eq!(a.kind_patches.len(), 2, "patches must be appended and merged");
+        assert!(a.reset_project, "reset_project must be OR-ed into the target delta");
         assert!(!a.is_empty());
     }
 
@@ -390,6 +390,6 @@ mod tests {
 
         let b = GraphDelta::default(); // reset_project = false
         a.merge(b);
-        assert!(a.reset_project, "已置位的 reset_project 不应被 false 覆盖");
+        assert!(a.reset_project, "an already-set reset_project must not be overwritten by false");
     }
 }

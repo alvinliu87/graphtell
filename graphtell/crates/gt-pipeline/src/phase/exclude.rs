@@ -409,7 +409,7 @@ mod tests {
             vec![app_root_rule()],
         )]);
         let got = resolve_sync(&root, &kb);
-        assert!(got.globs.is_empty(), "不得排除整个子项目根: {:?}", got.globs);
+        assert!(got.globs.is_empty(), "must not exclude an entire sub-project root: {:?}", got.globs);
         assert_eq!(got.diagnostics.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -457,9 +457,9 @@ mod tests {
 
         let fkb_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/php/thinkphp.yaml");
-        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        assert!(fkb_path.is_file(), "the real FKB must exist: {}", fkb_path.display());
         let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
-            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+            .unwrap_or_else(|e| panic!("the real FKB failed to parse: {}: {e}", fkb_path.display()));
         let kb = StaticKb(vec![real_fk]);
 
         let fs = gt_adapter_fs::StdFileSystem::new();
@@ -477,7 +477,7 @@ mod tests {
 
         assert!(
             got.diagnostics.is_empty(),
-            "真实 FKB 排除规则不应有未解析项: {:?}",
+            "the real FKB exclude rules must have no unresolved entries: {:?}",
             got.diagnostics
         );
         for expected in [
@@ -488,7 +488,7 @@ mod tests {
         ] {
             assert!(
                 got.globs.iter().any(|g| g == expected),
-                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                "the real FKB must yield `{expected}`, got: {:?}",
                 got.globs
             );
         }
@@ -510,9 +510,9 @@ mod tests {
 
         let fkb_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/js/nestjs.yaml");
-        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        assert!(fkb_path.is_file(), "the real FKB must exist: {}", fkb_path.display());
         let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
-            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+            .unwrap_or_else(|e| panic!("the real FKB failed to parse: {}: {e}", fkb_path.display()));
         let kb = StaticKb(vec![real_fk]);
 
         // JS adapter registered for faithful detection; the plain-text fallback in `detect_without_code`
@@ -524,13 +524,13 @@ mod tests {
 
         assert!(
             got.diagnostics.is_empty(),
-            "真实 FKB 排除规则不应有未解析项: {:?}",
+            "the real FKB exclude rules must have no unresolved entries: {:?}",
             got.diagnostics
         );
         for expected in ["coverage/**", "dist/**"] {
             assert!(
                 got.globs.iter().any(|g| g == expected),
-                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                "the real FKB must yield `{expected}`, got: {:?}",
                 got.globs
             );
         }
@@ -549,9 +549,9 @@ mod tests {
 
         let fkb_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/python/django.yaml");
-        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        assert!(fkb_path.is_file(), "the real FKB must exist: {}", fkb_path.display());
         let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
-            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+            .unwrap_or_else(|e| panic!("the real FKB failed to parse: {}: {e}", fkb_path.display()));
         let kb = StaticKb(vec![real_fk]);
 
         // No Python adapter exists, so detection relies on the plain-text probe — faithful to the real
@@ -562,7 +562,7 @@ mod tests {
 
         assert!(
             got.diagnostics.is_empty(),
-            "真实 FKB 排除规则不应有未解析项: {:?}",
+            "the real FKB exclude rules must have no unresolved entries: {:?}",
             got.diagnostics
         );
         for expected in [
@@ -573,7 +573,7 @@ mod tests {
         ] {
             assert!(
                 got.globs.iter().any(|g| g == expected),
-                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                "the real FKB must yield `{expected}`, got: {:?}",
                 got.globs
             );
         }
@@ -596,9 +596,9 @@ mod tests {
 
         let fkb_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/php/laravel.yaml");
-        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        assert!(fkb_path.is_file(), "the real FKB must exist: {}", fkb_path.display());
         let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
-            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+            .unwrap_or_else(|e| panic!("the real FKB failed to parse: {}: {e}", fkb_path.display()));
         let kb = StaticKb(vec![real_fk]);
 
         let ts = techstack();
@@ -606,7 +606,7 @@ mod tests {
 
         assert!(
             got.diagnostics.is_empty(),
-            "真实 FKB 排除规则不应有未解析项: {:?}",
+            "the real FKB exclude rules must have no unresolved entries: {:?}",
             got.diagnostics
         );
         for expected in [
@@ -617,7 +617,7 @@ mod tests {
         ] {
             assert!(
                 got.globs.iter().any(|g| g == expected),
-                "真实 FKB 应产出 `{expected}`，实际: {:?}",
+                "the real FKB must yield `{expected}`, got: {:?}",
                 got.globs
             );
         }

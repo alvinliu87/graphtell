@@ -82,7 +82,7 @@ mod tests {
         };
         let scan = p.rules_for(&["laravel".into(), "thinkphp".into()], &Phase::new("scan"));
         let ids: Vec<&str> = scan.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, vec!["r1", "r3"], "仅保留 scan 阶段规则，且跨两个框架按 id 顺序合并");
+        assert_eq!(ids, vec!["r1", "r3"], "only scan-phase rules are kept, merged across the two frameworks in id order");
 
         let taint = p.rules_for(&["laravel".into()], &Phase::new("taint"));
         assert_eq!(taint.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["r2"]);
@@ -98,12 +98,12 @@ mod tests {
         assert_eq!(
             got.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             vec!["r1"],
-            "未知 id 被跳过，已知 id 仍命中"
+            "an unknown id is skipped while a known id still hits"
         );
 
         assert!(
             p.rules_for(&["missing".into()], &Phase::new("scan")).is_empty(),
-            "全是未知 id 时返回空"
+            "when every id is unknown it returns empty"
         );
     }
 
@@ -130,7 +130,7 @@ mod tests {
 
         assert!(
             p.for_language(&Language::new("go")).is_empty(),
-            "无对应语言的框架时返回空"
+            "with no framework for that language it returns empty"
         );
     }
 }

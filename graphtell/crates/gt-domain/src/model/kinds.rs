@@ -511,11 +511,11 @@ mod tests {
             EdgeKind::READS_CONFIG,
             EdgeKind::MAPS_TO,
         ] {
-            assert!(EdgeKind::from(k).is_semantic(), "{k} 应在语义边列表里");
+            assert!(EdgeKind::from(k).is_semantic(), "{k} must be in the semantic edge list");
             assert!(is_semantic_edge(k));
         }
         for k in [EdgeKind::HANDLED_BY, EdgeKind::CALLS_HTTP, EdgeKind::HAS_COLUMN] {
-            assert!(EdgeKind::from(k).is_bridge(), "{k} 应在桥接边列表里");
+            assert!(EdgeKind::from(k).is_bridge(), "{k} must be in the bridging edge list");
         }
         // A bridge edge is deliberately **not** semantic, and vice versa.
         assert!(!EdgeKind::from(EdgeKind::HANDLED_BY).is_semantic());
@@ -605,20 +605,20 @@ mod tests {
     fn every_synthesized_node_kind_is_semantic_and_the_omissions_stay_omitted() {
         assert!(!NodeKind::SYNTHESIZED.is_empty());
         for k in NodeKind::SYNTHESIZED {
-            assert!(NodeKind::from(*k).is_semantic(), "{k} 声明在第一类语义列表里就该是一等语义节点");
+            assert!(NodeKind::from(*k).is_semantic(), "{k} declared in the first-class semantic list must be a first-class semantic node");
         }
         // A repeated entry would be a copy-paste slip that no compiler catches.
         let mut seen = std::collections::HashSet::new();
         for k in NodeKind::SYNTHESIZED {
-            assert!(seen.insert(*k), "{k} 在 SYNTHESIZED 里重复了");
+            assert!(seen.insert(*k), "{k} is duplicated in SYNTHESIZED");
         }
 
         for k in [NodeKind::COLUMN, NodeKind::EVENT_HANDLER, NodeKind::HEADER_ASSIGNMENT] {
-            assert!(!NodeKind::from(k).is_semantic(), "{k} 有意不在第一类语义列表里");
+            assert!(!NodeKind::from(k).is_semantic(), "{k} is deliberately absent from the first-class semantic list");
         }
         // Syntax nodes and the unclassified default are never semantic.
         for k in [NodeKind::FILE, NodeKind::CLASS, NodeKind::PROPERTY, NodeKind::UNKNOWN] {
-            assert!(!NodeKind::from(k).is_semantic(), "{k} 不是语义节点");
+            assert!(!NodeKind::from(k).is_semantic(), "{k} is not a semantic node");
         }
         assert!(!NodeKind::default().is_semantic());
     }
@@ -629,20 +629,20 @@ mod tests {
     #[test]
     fn semantic_and_bridge_edge_lists_are_disjoint_and_exhaustively_classified() {
         for k in EdgeKind::SEMANTIC {
-            assert!(EdgeKind::from(*k).is_semantic(), "{k} 在语义边列表里");
-            assert!(!EdgeKind::from(*k).is_bridge(), "{k} 不能同时是桥接边");
+            assert!(EdgeKind::from(*k).is_semantic(), "{k} is in the semantic edge list");
+            assert!(!EdgeKind::from(*k).is_bridge(), "{k} must not be a bridging edge at the same time");
             assert!(is_semantic_edge(k));
             assert!(!is_bridge_edge(k));
         }
         for k in EdgeKind::BRIDGE {
-            assert!(EdgeKind::from(*k).is_bridge(), "{k} 在桥接边列表里");
-            assert!(!EdgeKind::from(*k).is_semantic(), "{k} 不能同时是语义边");
+            assert!(EdgeKind::from(*k).is_bridge(), "{k} is in the bridging edge list");
+            assert!(!EdgeKind::from(*k).is_semantic(), "{k} must not be a semantic edge at the same time");
             assert!(is_bridge_edge(k));
             assert!(!is_semantic_edge(k));
         }
         let mut seen = std::collections::HashSet::new();
         for k in EdgeKind::SEMANTIC.iter().chain(EdgeKind::BRIDGE.iter()) {
-            assert!(seen.insert(*k), "{k} 同时出现在两个列表里");
+            assert!(seen.insert(*k), "{k} appears in both lists");
         }
     }
 
@@ -651,7 +651,7 @@ mod tests {
     #[test]
     fn chain_edges_cover_semantic_bridge_and_two_syntactic_ones_only() {
         for k in EdgeKind::SEMANTIC.iter().chain(EdgeKind::BRIDGE.iter()) {
-            assert!(is_chain_edge(k), "{k} 参与调用链探索");
+            assert!(is_chain_edge(k), "{k} takes part in call-chain exploration");
         }
         assert!(is_chain_edge("Calls"));
         assert!(is_chain_edge("HasCallSite"));
@@ -665,8 +665,8 @@ mod tests {
             EdgeKind::IMPORTS,
             EdgeKind::UNKNOWN,
         ] {
-            assert!(!is_chain_edge(k), "{k} 不该出现在调用链里");
-            assert!(!is_semantic_edge(k), "{k} 不该被计入语义边");
+            assert!(!is_chain_edge(k), "{k} must not appear in a call chain");
+            assert!(!is_semantic_edge(k), "{k} must not be counted as a semantic edge");
         }
         assert!(!is_chain_edge(""));
         // An invented kind not (yet) declared by FKB is nothing at all.
@@ -685,13 +685,13 @@ mod tests {
         register_semantic_kinds(vec![node_kind.clone()]);
         let registered = extra_semantic_kinds();
         let occurrences = registered.iter().filter(|k| **k == node_kind).count();
-        assert_eq!(occurrences, 1, "重复注册同一个 kind 不应产生重复条目");
+        assert_eq!(occurrences, 1, "registering the same kind twice must not produce duplicate entries");
         let sorted = {
             let mut s = registered.clone();
             s.sort();
             s
         };
-        assert_eq!(registered, sorted, "extra_semantic_kinds 返回有序结果");
+        assert_eq!(registered, sorted, "extra_semantic_kinds returns a sorted result");
 
         assert!(!EdgeKind("FanoutWebhookSender".to_string()).is_semantic());
         assert!(!EdgeKind("BridgeRedirect".to_string()).is_bridge());
@@ -719,9 +719,9 @@ mod tests {
             (Language::RUST, "rust"),
             (Language::UNKNOWN, "unknown"),
         ] {
-            assert_eq!(Language::new(c), Language::from(c), "{text} 的两条构造路径要一致");
+            assert_eq!(Language::new(c), Language::from(c), "the two construction paths of {text} must agree");
             assert_eq!(Language::from(c).as_str(), text);
-            assert_eq!(Language::from(c).to_string(), text, "Display 直接写裸字符串");
+            assert_eq!(Language::from(c).to_string(), text, "Display writes the bare string directly");
         }
         assert!(Language::from(Language::PHP).is_php());
         assert!(!Language::from(Language::TYPESCRIPT).is_php());
@@ -746,7 +746,7 @@ mod tests {
         ] {
             assert_eq!(Phase::from(c).as_str(), text);
             let round: Phase = serde_json::from_value(serde_json::json!(text)).unwrap();
-            assert_eq!(round, Phase::from(c), "{text} 必须能原样读回");
+            assert_eq!(round, Phase::from(c), "{text} must be read back verbatim");
         }
         for (c, text) in [
             (AnnotationChannel::FKB_MARK, "FkbMark"),
@@ -776,13 +776,13 @@ mod tests {
     fn derived_hash_and_ordering_follow_the_inner_string() {
         let mut set = std::collections::HashSet::new();
         assert!(set.insert(NodeKind::from("Table")));
-        assert!(!set.insert(NodeKind::new("Table")), "构造器不同但 Hash 必须相同");
+        assert!(!set.insert(NodeKind::new("Table")), "different constructors, but the Hash must be equal");
         assert!(!set.insert(NodeKind("Table".to_string())));
         assert_eq!(set.len(), 1);
 
         let mut kinds = vec![NodeKind::from("Class"), NodeKind::from("Table")];
         kinds.sort();
-        assert_eq!(kinds.first().unwrap().as_str(), "Class", "Ord 按字符串序，保证输出稳定");
+        assert_eq!(kinds.first().unwrap().as_str(), "Class", "Ord follows string order so the output stays stable");
         assert!(EdgeKind::from("ReadsDb") < EdgeKind::from("WritesDb"));
     }
 }

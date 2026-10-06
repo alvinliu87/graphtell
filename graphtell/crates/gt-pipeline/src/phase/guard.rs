@@ -457,8 +457,8 @@ mod tests {
 
         run(&mut ctx);
 
-        let node = ctx.ws.node(mw).expect("中间件类节点应仍然存在");
-        assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE, "kind 应被改成 Middleware");
+        let node = ctx.ws.node(mw).expect("the middleware class node must still exist");
+        assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE, "kind must be changed to Middleware");
         assert_eq!(node.fqn.as_deref(), Some(r"app\api\middleware\AuthTokenMiddleware"));
         // Key: promotion produces no second node — the graph still has only this one, fqn still finds the same id
         assert_eq!(ctx.ws.find_by_name(r"app\api\middleware\AuthTokenMiddleware"), Some(mw));
@@ -466,7 +466,7 @@ mod tests {
         // Promotion must actually persist (the delta carries the kind patch), otherwise re-run loses it
         assert!(
             ctx.ws.take_delta().kind_patches.iter().any(|(id, _)| *id == mw),
-            "晋升必须写进 delta，否则持久化层收不到"
+            "the promotion must be written into the delta, otherwise the persistence layer never sees it"
         );
     }
 
@@ -481,7 +481,7 @@ mod tests {
             serde_json::json!([{ "class": r"think\middleware\SessionInit" }]),
         );
         run(&mut ctx);
-        assert!(guarded_by(&ctx).is_empty(), "类不在图里就不该有边");
+        assert!(guarded_by(&ctx).is_empty(), "a class that is not in the graph must have no edges");
     }
 
     // ------------------------------------------------------- P5.5 `run_capabilities`
@@ -530,7 +530,7 @@ mod tests {
 
         assert!(
             has(&ctx, c, "Authentication", AnnotationChannel::CAPABILITY),
-            "挂载 AuthTokenMiddleware 应打出 Authentication 能力，实际：{:?}",
+            "attaching AuthTokenMiddleware must yield the Authentication capability, got: {:?}",
             stamped(&ctx, c)
         );
     }
@@ -552,7 +552,7 @@ mod tests {
 
         assert!(
             has(&ctx, c, "Authentication", AnnotationChannel::CAPABILITY),
-            "小写 spec 仍应匹配短名 AuthTokenMiddleware，实际：{:?}",
+            "a lower-case spec must still match the short name AuthTokenMiddleware, got: {:?}",
             stamped(&ctx, c)
         );
     }
@@ -574,12 +574,12 @@ mod tests {
 
         assert!(
             has(&ctx, c, OPTIONAL_AUTH, AnnotationChannel::FKB_MARK),
-            "显式可选的挂载应打 auth.optional，实际：{:?}",
+            "an explicitly optional attach must yield auth.optional, got: {:?}",
             stamped(&ctx, c)
         );
         assert!(
             !ctx.ws.has_annotation(c, "Authentication"),
-            "可选挂载不能被当作已具备该能力：{:?}",
+            "an optional attach must not count as already having that capability: {:?}",
             stamped(&ctx, c)
         );
     }
@@ -599,7 +599,7 @@ mod tests {
         run_capabilities(&mut ctx);
         assert!(
             stamped(&ctx, c).is_empty(),
-            "未命中就不该打任何标注：{:?}",
+            "no annotation at all when nothing matches: {:?}",
             stamped(&ctx, c)
         );
 
@@ -614,7 +614,7 @@ mod tests {
         run_capabilities(&mut bare);
         assert!(
             stamped(&bare, c2).is_empty(),
-            "没有能力词汇时应直接返回：{:?}",
+            "must return immediately when there is no capability vocabulary: {:?}",
             stamped(&bare, c2)
         );
     }
@@ -652,30 +652,30 @@ mod tests {
         run(&mut ctx);
 
         let got = guarded_by(&ctx);
-        assert_eq!(got.len(), 1, "应建成一条 PassesThrough 边：{got:?}");
-        assert_eq!(got[0].1, "Authenticate", "应按短名建节点：{got:?}");
+        assert_eq!(got.len(), 1, "exactly one PassesThrough edge must be created: {got:?}");
+        assert_eq!(got[0].1, "Authenticate", "the node must be created from the short name: {got:?}");
 
         let id = ctx
             .ws
             .find_by_name("Authenticate")
-            .expect("合成的中间件节点应可按名找到");
-        let node = ctx.ws.node(id).expect("节点应存在");
-        assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE, "应建成 Middleware 语义节点");
+            .expect("the synthesised middleware node must be findable by name");
+        let node = ctx.ws.node(id).expect("the node must exist");
+        assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE, "a Middleware semantic node must be created");
         assert_eq!(
             node.properties.get("declared_by").and_then(|v| v.as_str()),
             Some("fkb"),
-            "应标记 declared_by=fkb：{:?}",
+            "must be marked declared_by=fkb: {:?}",
             node.properties
         );
         assert_eq!(
             node.properties.get("capability").and_then(|v| v.as_str()),
             Some("Authentication"),
-            "capability 应来自 FKB 声明：{:?}",
+            "the capability must come from the FKB declaration: {:?}",
             node.properties
         );
         assert!(
             (node.confidence - 1.0).abs() < 1e-6,
-            "FKB 声明的节点 confidence 应为 1.0，实际 {}",
+            "a node declared by the FKB must have confidence 1.0, got {}",
             node.confidence
         );
     }
@@ -696,21 +696,21 @@ mod tests {
         run(&mut ctx);
 
         let got = guarded_by(&ctx);
-        assert_eq!(got.len(), 1, "授权合成后应建成一条边：{got:?}");
+        assert_eq!(got.len(), 1, "one edge must be created after the authorised synthesis: {got:?}");
         let id = ctx
             .ws
             .find_by_name(&got[0].1)
-            .expect("合成节点应可按名找到");
-        let node = ctx.ws.node(id).expect("节点应存在");
+            .expect("the synthesised node must be findable by name");
+        let node = ctx.ws.node(id).expect("the node must exist");
         assert_eq!(node.kind.as_str(), NodeKind::MIDDLEWARE);
         assert!(
             node.properties.get("declared_by").is_none(),
-            "未被 FKB 声明就不该标 declared_by：{:?}",
+            "not declared by the FKB means no declared_by marker: {:?}",
             node.properties
         );
         assert!(
             (node.confidence - 0.9).abs() < 1e-6,
-            "未声明的合成节点 confidence 应为 0.9，实际 {}",
+            "an undeclared synthesised node must have confidence 0.9, got {}",
             node.confidence
         );
     }
@@ -724,12 +724,12 @@ mod tests {
     fn real_laravel_fkb_capabilities_are_stamped_on_the_contract() {
         let fkb_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/php/laravel.yaml");
-        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        assert!(fkb_path.is_file(), "the real FKB must exist: {}", fkb_path.display());
         let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
-            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+            .unwrap_or_else(|e| panic!("the real FKB failed to parse: {}: {e}", fkb_path.display()));
         assert!(
             !real_fk.middleware_capabilities.is_empty(),
-            "laravel FKB 应声明 middleware_capabilities"
+            "the laravel FKB must declare middleware_capabilities"
         );
 
         let mut ctx = PipelineContext::new(project());
@@ -751,12 +751,12 @@ mod tests {
         for capability in ["Authentication", "SignedRequest", "RateLimiting"] {
             assert!(
                 has(&ctx, c, capability, AnnotationChannel::CAPABILITY),
-                "真实 FKB 应打出 {capability} 能力，实际：{got:?}"
+                "the real FKB must yield the {capability} capability, got: {got:?}"
             );
         }
         assert!(
             !ctx.ws.has_annotation(c, OPTIONAL_AUTH),
-            "没有可选参数时不应打 auth.optional：{got:?}"
+            "with no optional argument auth.optional must not be applied: {got:?}"
         );
     }
 
@@ -782,11 +782,11 @@ mod tests {
 
         run(&mut ctx);
 
-        let node = ctx.ws.node(mw).expect("类节点应仍在");
+        let node = ctx.ws.node(mw).expect("the class node must still be there");
         assert_eq!(
             node.kind.as_str(),
             NodeKind::MIDDLEWARE,
-            "短名回退找到的类节点应被晋升为 Middleware"
+            "a class node found through the short-name fallback must be promoted to Middleware"
         );
         assert_eq!(
             guarded_by(&ctx),
@@ -818,12 +818,12 @@ mod tests {
 
         assert!(
             has(&ctx, c, "Authentication", AnnotationChannel::CAPABILITY),
-            "存在一个强制挂载就该打能力，实际：{:?}",
+            "a single mandatory attach is enough to apply the capability, got: {:?}",
             stamped(&ctx, c)
         );
         assert!(
             !has(&ctx, c, OPTIONAL_AUTH, AnnotationChannel::FKB_MARK),
-            "不应因为另有可选挂载就改打 auth.optional，实际：{:?}",
+            "an additional optional attach must not switch it to auth.optional, got: {:?}",
             stamped(&ctx, c)
         );
     }
@@ -850,11 +850,11 @@ mod tests {
 
         // Without synthesis: edge laid, but the METHOD node keeps its kind.
         run(&mut ctx);
-        assert_eq!(guarded_by(&ctx).len(), 1, "边应照常建立");
+        assert_eq!(guarded_by(&ctx).len(), 1, "the edge must still be created");
         assert_eq!(
             ctx.ws.node(m).unwrap().kind.as_str(),
             NodeKind::METHOD,
-            "未授权时方法节点不应被晋升"
+            "an unauthorised method node must not be promoted"
         );
 
         // With synthesis: the METHOD node is promoted to Middleware.
@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(
             ctx2.ws.node(m2).unwrap().kind.as_str(),
             NodeKind::MIDDLEWARE,
-            "授权时方法节点应被晋升为 Middleware"
+            "when authorised, the method node must be promoted to Middleware"
         );
     }
 
@@ -901,7 +901,7 @@ mod tests {
                 ("AllowOrigin".to_string(), None),
                 ("PlainName".to_string(), None),
             ],
-            "短名/trim/空跳过/arg 解析应如预期：{got:?}"
+            "short name / trim / empty-skip / arg parsing must behave as expected: {got:?}"
         );
         // Missing `guards` key yields nothing.
         assert!(row_guards(&serde_json::json!({ "handler": "C@m" })).is_empty());
@@ -921,7 +921,7 @@ mod tests {
             serde_json::json!([{ "class": "AuthTokenMiddleware", "arg": "true" }]),
         );
         run_capabilities(&mut ctx);
-        assert!(ctx.ws.annotation_count() == 0, "无契约节点时不应打任何标注");
+        assert!(ctx.ws.annotation_count() == 0, "with no contract node, no annotation must be applied");
     }
 
     /// `run` must link nothing when there are no `HttpContract` nodes to attach edges to (its own
@@ -936,7 +936,7 @@ mod tests {
             serde_json::json!([{ "class": r"app\api\middleware\AuthTokenMiddleware" }]),
         );
         run(&mut ctx);
-        assert!(guarded_by(&ctx).is_empty(), "无契约节点时不应产生任何边");
+        assert!(guarded_by(&ctx).is_empty(), "with no contract node, no edge must be created");
     }
 
     /// A guard whose resolved target *is* the contract node itself must not produce a self-edge
@@ -955,7 +955,7 @@ mod tests {
         run(&mut ctx);
         assert!(
             guarded_by(&ctx).is_empty(),
-            "自引用守卫不应产生自边：{:?}",
+            "a self-referencing guard must not produce a self-edge: {:?}",
             guarded_by(&ctx)
         );
     }
@@ -976,13 +976,13 @@ mod tests {
         run(&mut ctx);
         assert!(
             guarded_by(&ctx).is_empty(),
-            "无 guards 的路由行不应产生边：{:?}",
+            "a route line with no guards must not produce an edge: {:?}",
             guarded_by(&ctx)
         );
         assert_eq!(
             ctx.ws.node(mw).unwrap().kind.as_str(),
             NodeKind::CLASS,
-            "类节点不应被改动"
+            "the class node must not be modified"
         );
     }
 
@@ -1001,7 +1001,7 @@ mod tests {
         run_capabilities(&mut ctx);
         assert!(
             stamped(&ctx, c).is_empty(),
-            "路由键与契约名不匹配时不应打标注：{:?}",
+            "no annotation when the route key does not match the contract name: {:?}",
             stamped(&ctx, c)
         );
     }
@@ -1027,7 +1027,7 @@ mod tests {
             .annotations_of(c)
             .into_iter()
             .find(|a| a.kind == "Authentication")
-            .expect("应有 Authentication 标注");
+            .expect("an Authentication annotation must be present");
         assert_eq!(
             ann.evidence.get("source").and_then(|v| v.as_str()),
             Some("route_guard")
@@ -1036,7 +1036,7 @@ mod tests {
             .evidence
             .get("middleware")
             .and_then(Value::as_array)
-            .expect("middleware 列表");
+            .expect("middleware list");
         assert_eq!(mw.len(), 1);
         assert_eq!(mw[0].as_str(), Some("AuthTokenMiddleware"));
 
@@ -1055,7 +1055,7 @@ mod tests {
             .annotations_of(c2)
             .into_iter()
             .find(|a| a.kind == OPTIONAL_AUTH)
-            .expect("应有 auth.optional 标注");
+            .expect("an auth.optional annotation must be present");
         assert_eq!(
             opt.evidence.get("arg").and_then(|v| v.as_str()),
             Some("false")

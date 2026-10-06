@@ -514,16 +514,16 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&p).unwrap().len(),
             8,
-            "前提：两次写入字节数必须相同，否则这条测试没测到点上"
+            "precondition: both writes must have the same byte count, otherwise this test does not test what it claims"
         );
-        assert_ne!(before, after, "字节数相同但内容不同，指纹必须不同");
+        assert_ne!(before, after, "the same byte count but different content means a different fingerprint");
 
         // Reordering statements keeps the size, so a size-based hash misses it too.
         std::fs::write(&p, "$a = 1;\n$b = 2;\n").unwrap();
         let ordered = fingerprint(&fs, &p, "x");
         std::fs::write(&p, "$b = 2;\n$a = 1;\n").unwrap();
         let swapped = fingerprint(&fs, &p, "x");
-        assert_ne!(ordered, swapped, "仅调换语句顺序也必须改变指纹");
+        assert_ne!(ordered, swapped, "merely reordering statements must also change the fingerprint");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(
             fingerprint(&fs, &a, "a:12"),
             fingerprint(&fs, &b, "b:12"),
-            "内容相同则指纹必须相同"
+            "identical content means an identical fingerprint"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(
             fingerprint(&fs, missing, "fallback:9"),
             hash("fallback:9"),
-            "读不到时应退化为 path:size 指纹"
+            "when the file cannot be read it must degrade to a path:size fingerprint"
         );
     }
 
@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(
             files[0].sub_project_id,
             Some(SubProjectId(2)),
-            "应归到更具体的 app/admin，而不是外层的 app"
+            "must be attributed to the more specific app/admin, not the outer app"
         );
     }
 
@@ -617,12 +617,12 @@ mod tests {
         assert_eq!(
             files[0].sub_project_id,
             None,
-            "`app` 不该匹配 `application/`（前缀必须停在 / 边界）"
+            "`app` must not match `application/` (the prefix must stop at a `/` boundary)"
         );
 
         let mut files = vec![file(2, "app/Model.php")];
         assign_files(&mut files, &subs, root);
-        assert_eq!(files[0].sub_project_id, Some(SubProjectId(1)), "自己目录下的文件仍应归属");
+        assert_eq!(files[0].sub_project_id, Some(SubProjectId(1)), "files under its own directory must still be attributed to it");
     }
 
     /// Outside every sub-project root -> unassigned, never "nearest by proximity".
@@ -655,19 +655,19 @@ mod tests {
     fn validate_root_accepts_a_directory_and_rejects_the_rest() {
         let dir = scratch("root");
         assert_eq!(
-            validate_root(&dir).expect("合法目录应通过"),
+            validate_root(&dir).expect("a valid directory must be accepted"),
             std::fs::canonicalize(&dir).unwrap(),
-            "应返回规范化后的路径"
+            "must return the normalised path"
         );
 
         let missing = dir.join("nope");
-        let err = validate_root(&missing).expect_err("不存在的路径应报错");
-        assert!(err.to_string().contains("does not exist"), "实际：{err}");
+        let err = validate_root(&missing).expect_err("a non-existent path must error");
+        assert!(err.to_string().contains("does not exist"), "got: {err}");
 
         let file = dir.join("f.txt");
         std::fs::write(&file, "x").unwrap();
-        let err = validate_root(&file).expect_err("文件不是目录应报错");
-        assert!(err.to_string().contains("not a directory"), "实际：{err}");
+        let err = validate_root(&file).expect_err("a path that is a file, not a directory, must error");
+        assert!(err.to_string().contains("not a directory"), "got: {err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -839,14 +839,14 @@ mod tests {
         )
         .expect("run ok");
 
-        assert_eq!(res.sub_projects.len(), 1, "无 marker 应退化为单根子项目");
+        assert_eq!(res.sub_projects.len(), 1, "with no marker it must degrade to a single-root sub-project");
         let sub = &res.sub_projects[0];
-        assert_eq!(sub.root_path, root, "退化子项目根应等于项目根");
+        assert_eq!(sub.root_path, root, "the degraded sub-project root must equal the project root");
         assert_eq!(sub.role, "unknown");
         assert_eq!(sub.detected_by, "fallback:root");
         assert_eq!(sub.name, "demo");
         assert_eq!(sub.language, Language::new(Language::UNKNOWN));
-        assert!(scanner.last_request.lock().unwrap().is_some(), "scan 仍应被调用");
+        assert!(scanner.last_request.lock().unwrap().is_some(), "scan must still be called");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -909,7 +909,7 @@ mod tests {
         )
         .expect("run ok");
 
-        assert_eq!(res.sub_projects.len(), 1, "应识别出一个子项目");
+        assert_eq!(res.sub_projects.len(), 1, "exactly one sub-project must be recognised");
         assert_eq!(res.sub_projects[0].root_path, sub_dir);
         assert_eq!(res.sub_projects[0].role, "backend");
 
@@ -917,12 +917,12 @@ mod tests {
         let req = req.as_ref().expect("scan invoked");
         assert!(
             req.extra_excludes.contains(&"public/**".to_string()),
-            "用户配置 glob 应原样保留：{:?}",
+            "the user-configured glob must be kept verbatim: {:?}",
             req.extra_excludes
         );
         assert!(
             req.extra_excludes.contains(&"app/runtime/**".to_string()),
-            "框架 glob 应按子项目前缀拼接：{:?}",
+            "the framework glob must be joined with the sub-project prefix: {:?}",
             req.extra_excludes
         );
 
@@ -968,7 +968,7 @@ mod tests {
             &StaticKb(vec![]),
         )
         .expect("run ok");
-        assert_eq!(res.sub_projects.len(), 1, "同目录两个 marker 应去重为一个子项目");
+        assert_eq!(res.sub_projects.len(), 1, "two markers in the same directory must de-duplicate into one sub-project");
         assert_eq!(res.sub_projects[0].root_path, app);
 
         // Two different directories -> two sub-projects (sanity for the non-dedup path).
@@ -1005,7 +1005,7 @@ mod tests {
             &StaticKb(vec![]),
         )
         .expect("run ok");
-        assert_eq!(res2.sub_projects.len(), 2, "不同目录两个 marker 应各成一个子项目");
+        assert_eq!(res2.sub_projects.len(), 2, "two markers in different directories must each become a sub-project");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&root2);
     }
@@ -1046,12 +1046,12 @@ mod tests {
             &kb,
         )
         .expect("run ok");
-        assert_eq!(res.sub_projects.len(), 1, "退化根级子项目应恰有一个");
+        assert_eq!(res.sub_projects.len(), 1, "there must be exactly one degraded root-level sub-project");
         let req = scanner.last_request.lock().unwrap();
         let req = req.as_ref().expect("scan invoked");
         assert!(
             req.extra_excludes.contains(&"runtime/**".to_string()),
-            "根级子项目的 glob 应原样透传：{:?}",
+            "the root-level sub-project's glob must be passed through verbatim: {:?}",
             req.extra_excludes
         );
         assert!(
@@ -1059,7 +1059,7 @@ mod tests {
                 .extra_excludes
                 .iter()
                 .any(|g| g.contains("root/runtime") || g.starts_with('/')),
-            "不应出现 root/ 前缀或前导斜杠：{:?}",
+            "no root/ prefix and no leading slash: {:?}",
             req.extra_excludes
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -1102,7 +1102,7 @@ mod tests {
         .expect("run ok");
         assert!(
             !res.diagnostics.is_empty(),
-            "无法解析的排除规则应产生诊断：{:?}",
+            "an unresolvable exclude rule must produce a diagnostic: {:?}",
             res.diagnostics
         );
         assert_eq!(res.diagnostics[0].code, "ExcludeRuleUnresolved");
@@ -1150,7 +1150,7 @@ mod tests {
         assert_eq!(
             res.files[0].content_hash,
             hash("<?php\n"),
-            "content_hash 应为文件内容的指纹，而非 path:size 兜底"
+            "content_hash must be the fingerprint of the file content, not the path:size fallback"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

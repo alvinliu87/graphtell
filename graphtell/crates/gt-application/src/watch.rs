@@ -244,8 +244,8 @@ mod tests {
         std::fs::write(dir.join("a.rs"), b"a").unwrap();
         std::fs::write(dir.join("b.rs"), b"b").unwrap();
         let mut mtimes = snapshot(&dir);
-        assert_eq!(mtimes.len(), 2, "snapshot 应记录全部文件");
-        assert!(!scan(&dir, &mut mtimes), "未改动时 scan 应返回 false");
+        assert_eq!(mtimes.len(), 2, "the snapshot must record every file");
+        assert!(!scan(&dir, &mut mtimes), "with no change scan must return false");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -255,7 +255,7 @@ mod tests {
         std::fs::write(dir.join("a.rs"), b"a").unwrap();
         let mut mtimes = snapshot(&dir);
         std::fs::write(dir.join("b.rs"), b"b").unwrap();
-        assert!(scan(&dir, &mut mtimes), "新增文件应被检测到");
+        assert!(scan(&dir, &mut mtimes), "a newly added file must be detected");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -266,7 +266,7 @@ mod tests {
         std::fs::write(dir.join("b.rs"), b"b").unwrap();
         let mut mtimes = snapshot(&dir);
         std::fs::remove_file(dir.join("b.rs")).unwrap();
-        assert!(scan(&dir, &mut mtimes), "删除文件应被检测到");
+        assert!(scan(&dir, &mut mtimes), "a deleted file must be detected");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -283,7 +283,7 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() + Duration::from_secs(3600))
             .unwrap();
-        assert!(scan(&dir, &mut mtimes), "mtime 变更应被检测到");
+        assert!(scan(&dir, &mut mtimes), "an mtime change must be detected");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -299,7 +299,7 @@ mod tests {
         // The gate must be a single global instance shared by every project's watch thread.
         let a: *const _ = rebuild_gate();
         let b: *const _ = rebuild_gate();
-        assert_eq!(a, b, "rebuild_gate 应返回同一全局静态，否则跨工程串行化失效");
+        assert_eq!(a, b, "rebuild_gate must return the same global static, otherwise cross-project serialisation breaks");
     }
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
         acquire_rebuild_slot();
         assert!(
             start.elapsed() < Duration::from_secs(2),
-            "cooldown已过期应立刻拿到重建槽，而非阻塞 30s"
+            "an expired cooldown must grant the rebuild slot immediately instead of blocking for 30s"
         );
         // After acquiring, the gate is advanced to "now" so the next caller waits the full cooldown.
         assert!(lock.lock().unwrap().is_some());

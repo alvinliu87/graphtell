@@ -100,7 +100,7 @@ def rebuild_index():
     pass
 
 
-# 显式指定任务名（而非默认的 "函数名"）
+# 显式指定任务名（而非默认的 "the function name"）
 @celery_app.task(name="tasks.notify_slack")
 def notify_slack(msg):
     pass
@@ -174,7 +174,7 @@ fn contract_for(b: &common::Built, path_fragment: &str) -> Node {
         .find(|n| n.name.contains(path_fragment))
         .unwrap_or_else(|| {
             panic!(
-                "未找到含 {path_fragment} 的 HttpContract，实际有：{:?}",
+                "no HttpContract containing {path_fragment} was found, got: {:?}",
                 nodes_of_kind(b, "HttpContract").iter().map(|n| &n.name).collect::<Vec<_>>()
             )
         })
@@ -206,13 +206,13 @@ fn has_incoming_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
 fn fastapi_features_produce_semantic_nodes_and_edges() {
     let root = synthetic_fastapi_root();
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("合成 FastAPI 工程建图应成功");
+        panic!("graphing the synthetic FastAPI project must succeed");
     };
 
     // The three routes (including in-class decorators) should each become an HttpContract.
     assert!(
         nodes_of_kind(&b, "HttpContract").len() >= 3,
-        "应产出 ≥3 个 HttpContract，实际：{:?}",
+        "at least 3 HttpContracts must be produced, got: {:?}",
         nodes_of_kind(&b, "HttpContract").iter().map(|n| &n.name).collect::<Vec<_>>()
     );
 
@@ -220,14 +220,14 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
     assert_eq!(
         handled_by_targets(&b, &users),
         vec!["list_users".to_string()],
-        "路由 /users 的 HandledBy 应精确连到模块级函数 list_users"
+        "the HandledBy of route /users must connect exactly to the module-level function list_users"
     );
 
     let health = contract_for(&b, "/health");
     assert_eq!(
         handled_by_targets(&b, &health),
         vec!["health".to_string()],
-        "路由 /health 的 HandledBy 应连到 health"
+        "the HandledBy of route /health must connect to health"
     );
 
     // In-class decorator: owner_class is the class, so it should connect to the **method** node, not the class node.
@@ -235,27 +235,27 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
     assert_eq!(
         handled_by_targets(&b, &admin),
         vec!["dashboard".to_string()],
-        "类内装饰器的 HandledBy 应连到方法 dashboard"
+        "the HandledBy of an in-class decorator must connect to the method dashboard"
     );
 
     // Config: `os.environ.get("SECRET_KEY")` -> ConfigKey + ReadsConfig.
     let cfg: Vec<String> = nodes_of_kind(&b, "ConfigKey").iter().map(|n| n.name.clone()).collect();
-    assert!(cfg.iter().any(|n| n == "SECRET_KEY"), "应产出 SECRET_KEY 配置节点，实际：{cfg:?}");
+    assert!(cfg.iter().any(|n| n == "SECRET_KEY"), "the SECRET_KEY config node must be produced, got: {cfg:?}");
     assert!(
         has_incoming_edge(&b, "ConfigKey", "ReadsConfig"),
-        "ConfigKey 应有 ReadsConfig 入边"
+        "the ConfigKey must have a ReadsConfig in-edge"
     );
 
     // Cache: reads (cache.get) and writes (redis_client.set) are separated.
-    assert!(has_incoming_edge(&b, "Cache", "ReadsCache"), "Cache 应有 ReadsCache 入边");
-    assert!(has_incoming_edge(&b, "Cache", "WritesCache"), "Cache 应有 WritesCache 入边");
+    assert!(has_incoming_edge(&b, "Cache", "ReadsCache"), "the Cache must have a ReadsCache in-edge");
+    assert!(has_incoming_edge(&b, "Cache", "WritesCache"), "the Cache must have a WritesCache in-edge");
 
     // Table mapping: `__tablename__ = "users"` becomes a Table via "class attribute -> Property fact -> graph-node selector",
     // and MapsTo must **originate from the model class** (not dangle or point elsewhere).
     let model = nodes_of_kind(&b, "Class")
         .into_iter()
         .find(|n| n.name == "UserModel")
-        .expect("应有 UserModel 类节点");
+        .expect("the UserModel class node must exist");
     let mapped: Vec<String> = b
         .store
         .edges_of(model.id, EdgeDirection::Outgoing)
@@ -268,7 +268,7 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
     assert_eq!(
         mapped,
         vec!["user".to_string()],
-        "UserModel 应经 MapsTo 连到表 user（表名经 singularize 归一）"
+        "UserModel must connect to the user table via MapsTo (the table name is normalised by singularize)"
     );
 }
 
@@ -278,7 +278,7 @@ fn fastapi_features_produce_semantic_nodes_and_edges() {
 fn fastapi_depends_injection_links_handler_to_dependency() {
     let root = synthetic_fastapi_root();
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("合成工程建图应成功");
+        panic!("graphing the synthetic project must succeed");
     };
     let functions = nodes_of_kind(&b, "Function");
     let handler = functions
@@ -286,7 +286,7 @@ fn fastapi_depends_injection_links_handler_to_dependency() {
         .find(|n| n.name == "get_user")
         .unwrap_or_else(|| {
             panic!(
-                "应有 get_user 函数节点，实际：{:?}",
+                "the get_user function node must exist, got: {:?}",
                 functions.iter().map(|n| &n.name).collect::<Vec<_>>()
             )
         });
@@ -302,7 +302,7 @@ fn fastapi_depends_injection_links_handler_to_dependency() {
     assert_eq!(
         deps,
         vec!["get_db".to_string()],
-        "get_user 应 DependsOn 到依赖函数 get_db"
+        "get_user must DependsOn the dependency function get_db"
     );
 }
 
@@ -315,7 +315,7 @@ fn fastapi_depends_injection_links_handler_to_dependency() {
 fn celery_explicit_queue_and_beat_schedule() {
     let root = synthetic_fastapi_root();
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("合成工程建图应成功");
+        panic!("graphing the synthetic project must succeed");
     };
     let queues = nodes_of_kind(&b, "Queue");
     let names: Vec<&str> = queues.iter().map(|n| n.name.as_str()).collect();
@@ -324,7 +324,7 @@ fn celery_explicit_queue_and_beat_schedule() {
     let payments = queues
         .iter()
         .find(|n| n.name == "payments")
-        .unwrap_or_else(|| panic!("应按显式 queue= 产出 payments 队列，实际：{names:?}"));
+        .unwrap_or_else(|| panic!("the payments queue must be produced from the explicit queue=, got: {names:?}"));
     let incoming: Vec<String> = b
         .store
         .edges_of(payments.id, EdgeDirection::Incoming)
@@ -334,13 +334,13 @@ fn celery_explicit_queue_and_beat_schedule() {
         .collect();
     assert!(
         incoming.iter().any(|k| k == "PublishesTo"),
-        "payments 应有 PublishesTo，实际入边 {incoming:?}"
+        "payments must have a PublishesTo, in-edges: {incoming:?}"
     );
 
     // Explicit task name (`@celery_app.task(name="tasks.notify_slack")`) built under that name
     assert!(
         names.contains(&"notify_slack"),
-        "应按显式 name= 落成 notify_slack 队列，实际：{names:?}"
+        "the notify_slack queue must be produced from the explicit name=, got: {names:?}"
     );
 
     // beat schedule
@@ -349,7 +349,7 @@ fn celery_explicit_queue_and_beat_schedule() {
     let schedule = schedules
         .iter()
         .find(|n| n.name == "30.0")
-        .unwrap_or_else(|| panic!("应以间隔字面量建成 Schedule 节点，实际：{detail:?}"));
+        .unwrap_or_else(|| panic!("a Schedule node must be created from the interval literal, got: {detail:?}"));
     let triggers: Vec<String> = b
         .store
         .edges_of(schedule.id, EdgeDirection::Outgoing)
@@ -359,7 +359,7 @@ fn celery_explicit_queue_and_beat_schedule() {
         .collect();
     assert!(
         triggers.iter().any(|k| k == "Triggers"),
-        "Schedule 应有 Triggers 出边，实际出边 {triggers:?}"
+        "the Schedule must have a Triggers out-edge, out-edges: {triggers:?}"
     );
 }
 
@@ -369,18 +369,18 @@ fn celery_explicit_queue_and_beat_schedule() {
 fn celery_tasks_form_publish_subscribe_loop() {
     let root = synthetic_fastapi_root();
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("合成工程建图应成功");
+        panic!("graphing the synthetic project must succeed");
     };
     let queues = nodes_of_kind(&b, "Queue");
     let names: Vec<&str> = queues.iter().map(|n| n.name.as_str()).collect();
 
     assert!(
         has_incoming_edge(&b, "Queue", "ListensTo"),
-        "Queue 应有 ListensTo 入边（任务注册），实际：{names:?}"
+        "the Queue must have a ListensTo in-edge (task registration), got: {names:?}"
     );
     assert!(
         has_incoming_edge(&b, "Queue", "PublishesTo"),
-        "Queue 应有 PublishesTo 入边（任务投递），实际：{names:?}"
+        "the Queue must have a PublishesTo in-edge (task delivery), got: {names:?}"
     );
 
     // The core assertion of type-level merge: the same task name should **simultaneously** carry two in-edges.
@@ -388,7 +388,7 @@ fn celery_tasks_form_publish_subscribe_loop() {
         let node = queues
             .iter()
             .find(|n| n.name == task)
-            .unwrap_or_else(|| panic!("未见任务节点 {task}，实际：{names:?}"));
+            .unwrap_or_else(|| panic!("the task node {task} was not found, got: {names:?}"));
         let incoming: Vec<String> = b
             .store
             .edges_of(node.id, EdgeDirection::Incoming)
@@ -398,11 +398,11 @@ fn celery_tasks_form_publish_subscribe_loop() {
             .collect();
         assert!(
             incoming.iter().any(|k| k == "ListensTo"),
-            "{task} 应有 ListensTo，实际入边 {incoming:?}；全部队列：{names:?}"
+            "{task} must have a ListensTo, in-edges: {incoming:?}; all queues: {names:?}"
         );
         assert!(
             incoming.iter().any(|k| k == "PublishesTo"),
-            "{task} 应有 PublishesTo，实际入边 {incoming:?}；全部队列：{names:?}"
+            "{task} must have a PublishesTo, in-edges: {incoming:?}; all queues: {names:?}"
         );
         // Celery declared no `side` at all historically, so its Queue nodes had no party evidence and were
         // invisible to every side filter. It now inherits `backend` from `fkb/python/celery.yaml`'s top-level
@@ -410,7 +410,7 @@ fn celery_tasks_form_publish_subscribe_loop() {
         assert_eq!(
             node.properties.get("side").and_then(|v| v.as_str()),
             Some("backend"),
-            "{task} 应继承 side=backend，实际 properties={}",
+            "{task} must inherit side=backend, got properties={}",
             node.properties
         );
     }

@@ -1548,7 +1548,7 @@ mod tests {
         assert_eq!(
             split_handler("Login", &["".to_string(), "/".to_string()]),
             ("Login".to_string(), String::new()),
-            "空分隔符应跳过；都不命中时返回 (raw, \"\")"
+            "an empty separator must be skipped; when nothing matches it returns (raw, \"\")"
         );
     }
 
@@ -1595,7 +1595,7 @@ mod tests {
         assert_eq!(
             owner_class_fqn("plain", "::"),
             "plain",
-            "没有分隔符时原样返回"
+            "with no separator it is returned verbatim"
         );
     }
 
@@ -1624,7 +1624,7 @@ mod tests {
         );
         assert!(
             is_db_verb(&ctx, &loc, "delete").is_none(),
-            "未声明的动词不算 DB 动作"
+            "an undeclared verb is not a DB action"
         );
 
         ctx.db_verbs_default = Some(DbVerbsSpec {
@@ -1633,7 +1633,7 @@ mod tests {
         });
         assert!(
             is_db_verb(&ctx, &loc, "select").is_none(),
-            "空声明不应判定任何东西"
+            "an empty declaration must not classify anything"
         );
     }
 
@@ -1657,7 +1657,7 @@ mod tests {
         classify_db_action(&mut ctx, &loc, r"app\model\User", "select");
         assert!(
             has_edge(&ctx, owner, table, EdgeKind::READS_DB),
-            "映射到表的类型上出现读动词应落 ReadsDb"
+            "a read verb on a type mapped to a table must produce ReadsDb"
         );
 
         // Not a declared verb -> nothing.
@@ -1675,7 +1675,7 @@ mod tests {
         classify_db_action(&mut plain, &loc2, r"app\model\User", "toArray");
         assert!(
             !has_edge(&plain, o2, t2, EdgeKind::READS_DB),
-            "非 DB 动词不应落边"
+            "a non-DB verb must not produce an edge"
         );
     }
 
@@ -1709,20 +1709,20 @@ mod tests {
     fn magic_delegation_bridges_the_services_hop_to_the_dao_table() {
         let fkb_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/projects/crmeb.yaml");
-        assert!(fkb_path.is_file(), "真实 FKB 应存在: {}", fkb_path.display());
+        assert!(fkb_path.is_file(), "the real FKB must exist: {}", fkb_path.display());
         let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
-            .unwrap_or_else(|e| panic!("真实 FKB 解析失败: {}: {e}", fkb_path.display()));
+            .unwrap_or_else(|e| panic!("the real FKB failed to parse: {}: {e}", fkb_path.display()));
         let spec = real_fk
             .magic_delegation
             .clone()
-            .expect("crmeb FKB 应声明 magic_delegation");
+            .expect("the crmeb FKB must declare magic_delegation");
 
         let (mut ctx, owner, call, table) = delegation_ctx(Some(spec));
         let loc = locator(owner, call, r"app\services\UserServices::getList");
         classify_db_action(&mut ctx, &loc, r"app\services\UserServices", "getList");
         assert!(
             has_edge(&ctx, owner, table, EdgeKind::READS_DB),
-            "经 magic_delegation 应通过 dao 的类型找到表（否则 Services 这一跳断链）"
+            "through magic_delegation the table must be found via the dao's type (otherwise the Services hop breaks the chain)"
         );
     }
 
@@ -1735,7 +1735,7 @@ mod tests {
         classify_db_action(&mut ctx, &loc, r"app\services\UserServices", "getList");
         assert!(
             !has_edge(&ctx, owner, table, EdgeKind::READS_DB),
-            "没有 magic_delegation 声明时不该落边"
+            "with no magic_delegation declaration, no edge must be created"
         );
     }
 
@@ -1758,11 +1758,11 @@ mod tests {
             )
             .map(|(id, _)| id),
             Some(cls),
-            "已知名字应直接命中"
+            "a known name must hit directly"
         );
         assert!(
             resolve_handler_target(&ctx, "NoSuch/Nope", "app/api/route/pc.php", None, None).is_none(),
-            "解析不到时应返回 None（不猜）"
+            "when it cannot be resolved it must return None (no guessing)"
         );
     }
 
@@ -1778,7 +1778,7 @@ mod tests {
         assert_eq!(
             owner_class_of("plain", "::"),
             "plain",
-            "没有分隔符时原样返回"
+            "with no separator it is returned verbatim"
         );
     }
 
@@ -1790,7 +1790,7 @@ mod tests {
         assert_eq!(fact_to_string(&FactValue::ClassConst("Y".into())), "Y");
         assert!(
             !fact_to_string(&FactValue::Int(5)).is_empty(),
-            "非字符串也应产出可读文本，不 panic"
+            "a non-string must still produce readable text, without panicking"
         );
     }
 
@@ -1823,12 +1823,12 @@ mod tests {
         assert_eq!(
             resolve_impl(&ctx, "app\\repo\\UserRepo"),
             "app\\repo\\UserRepoImpl",
-            "接口应解析到实现类"
+            "an interface must resolve to its implementation class"
         );
         assert_eq!(
             resolve_impl(&ctx, "app\\repo\\Whatever"),
             "app\\repo\\Whatever",
-            "非接口 / 未知类型应原样返回"
+            "a non-interface / unknown type is returned verbatim"
         );
     }
 
@@ -1839,9 +1839,9 @@ mod tests {
         let mut ctx = new_ctx();
         let func = add_node(&mut ctx, "Function", "helper");
         let meth = add_node(&mut ctx, "Method", "m");
-        assert!(is_function_node(&ctx, func), "Function 节点应判为真");
-        assert!(!is_function_node(&ctx, meth), "Method 节点应判为假");
-        assert!(!is_function_node(&ctx, NodeId(99999)), "未知节点应判为假");
+        assert!(is_function_node(&ctx, func), "a Function node must be judged true");
+        assert!(!is_function_node(&ctx, meth), "a Method node must be judged false");
+        assert!(!is_function_node(&ctx, NodeId(99999)), "an unknown node must be judged false");
     }
 
     // ------------------------------------------------------- I. core call-target resolver
@@ -1874,7 +1874,7 @@ mod tests {
         assert_eq!(
             resolve_call_target(&ctx, &static_call),
             Some(target),
-            "静态 Class::method 应解析到方法节点"
+            "a static Class::method must resolve to the method node"
         );
 
         let var_call = CallRecord {
@@ -1885,7 +1885,7 @@ mod tests {
         assert_eq!(
             resolve_call_target(&ctx, &var_call),
             None,
-            "变量接收者不应被解析（宁可缺边也不错边）"
+            "a variable receiver must not be resolved (better a missing edge than a wrong one)"
         );
     }
 
@@ -1920,7 +1920,7 @@ mod tests {
         assert_eq!(
             receiver_type_fqn(&ctx, owner_fqn, "parent", None),
             Some(r"app\Base".to_string()),
-            "parent 应取定义类的直接父类"
+            "`parent` must take the direct parent of the defining class"
         );
         // A class with no recorded parent: `parent` cannot be guessed.
         assert_eq!(receiver_type_fqn(&ctx, r"app\Other::run", "parent", None), None);
@@ -1949,20 +1949,20 @@ mod tests {
         assert_eq!(
             receiver_type_fqn(&ctx, owner_fqn, "$this->repo", None),
             Some(r"app\repo\UserRepo".to_string()),
-            "父类声明的属性应沿继承链上溯找到"
+            "a property declared on a parent class must be found by walking up the inheritance chain"
         );
 
         ctx.ws.add_param_type(owner_fqn, "svc", r"app\Service");
         assert_eq!(
             receiver_type_fqn(&ctx, owner_fqn, "$svc", None),
             Some(r"app\Service".to_string()),
-            "参数类型提示优先"
+            "the parameter type hint takes precedence"
         );
         ctx.ws.set_local_type(owner_fqn, "local", r"app\Local");
         assert_eq!(
             receiver_type_fqn(&ctx, owner_fqn, "$local", None),
             Some(r"app\Local".to_string()),
-            "其次用方法内赋值推断"
+            "next, infer from an assignment inside the method"
         );
         // Untyped variable -> not guessed.
         assert_eq!(receiver_type_fqn(&ctx, owner_fqn, "$unknown", None), None);
@@ -1990,13 +1990,13 @@ mod tests {
         assert_eq!(
             receiver_type_fqn(&java, "app.Ctrl.index", "app.model.User.objects", None),
             Some("app.model.User".to_string()),
-            "整体解析不到时，点号接收者应回退到头部"
+            "when nothing resolves, a dotted receiver falls back to its head"
         );
 
         assert_eq!(
             receiver_type_fqn(&java, "app.Ctrl.index", "nope", None),
             None,
-            "既不是类型也不是字段时应返回 None"
+            "neither a type nor a field means returning None"
         );
     }
 
@@ -2022,7 +2022,7 @@ mod tests {
         assert_eq!(
             resolve_class_node(&ctx, r"app\Nope", Some("app/x.php"), None),
             None,
-            "未知类不应被猜"
+            "an unknown class must not be guessed"
         );
     }
 
@@ -2041,7 +2041,7 @@ mod tests {
         let mut loc = locator(owner, call, r"app\M::run");
         loc.strategy = ResolveStrategy::VariableType;
         apply_resolution(&mut ctx, &loc, &Resolution::resolved(ResolveTier::Exact, target, "t"), &phase);
-        assert!(has_edge(&ctx, owner, target, EdgeKind::CALLS), "实例方法调用应落 Calls");
+        assert!(has_edge(&ctx, owner, target, EdgeKind::CALLS), "an instance method call must produce Calls");
 
         loc.strategy = ResolveStrategy::Event;
         apply_resolution(&mut ctx, &loc, &Resolution::resolved(ResolveTier::Alias, target, "ev"), &phase);
@@ -2054,7 +2054,7 @@ mod tests {
         let before = ctx.ws.diagnostics.len();
         loc.strategy = ResolveStrategy::Container;
         apply_resolution(&mut ctx, &loc, &Resolution::unknown("nope"), &phase);
-        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "容器未解析应报 UnresolvedLink");
+        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "an unresolved container must report UnresolvedLink");
 
         let before2 = ctx.ws.diagnostics.len();
         loc.strategy = ResolveStrategy::Facade;
@@ -2064,7 +2064,7 @@ mod tests {
         assert_eq!(
             ctx.ws.diagnostics.len(),
             before2,
-            "Facade / VariableType 未解析属预期，不应报诊断"
+            "an unresolved Facade / VariableType is expected and must not report a diagnostic"
         );
     }
 
@@ -2091,8 +2091,8 @@ mod tests {
             line: 10,
         });
         resolve_pending_links(&mut ctx, &phase);
-        assert!(has_edge(&ctx, route, handler, EdgeKind::HANDLED_BY), "pending link 应解析成边");
-        assert!(ctx.ws.pending_links.is_empty(), "pending 应被取走，不残留");
+        assert!(has_edge(&ctx, route, handler, EdgeKind::HANDLED_BY), "a pending link must be resolved into an edge");
+        assert!(ctx.ws.pending_links.is_empty(), "the pending entry must be taken, nothing left behind");
 
         ctx.ws.pending_links.push(PendingLink {
             from: route,
@@ -2107,7 +2107,7 @@ mod tests {
         });
         let before = ctx.ws.diagnostics.len();
         resolve_pending_links(&mut ctx, &phase);
-        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "指向不存在 handler 的路由应被报告");
+        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "a route pointing at a non-existent handler must be reported");
     }
 
     // ------------------------------------------------------- emit_db_edge
@@ -2141,17 +2141,17 @@ mod tests {
             .edges()
             .iter()
             .find(|e| e.from_id == owner && e.to_id == table)
-            .expect("应有落下的边");
+            .expect("an edge must have been created");
         assert_eq!(
             edge.properties["evidence"]["location"],
             serde_json::json!("app/x.php:12"),
-            "evidence.location 是视图跳转到调用点的依据"
+            "evidence.location is what the view uses to jump to the call site"
         );
-        assert_eq!(ctx.propagation_seeds.len(), 1, "应注册 P8 传播种子");
+        assert_eq!(ctx.propagation_seeds.len(), 1, "a P8 propagation seed must be registered");
         assert_eq!(ctx.propagation_seeds[0].kind, EdgeKind::WRITES_DB.to_string());
         assert!(
             ctx.ws.annotations_of(call).iter().any(|a| a.kind == "db-write"),
-            "写调用点应标注 db-write"
+            "a write call site must be annotated db-write"
         );
     }
 
@@ -2173,7 +2173,7 @@ mod tests {
         loc.raw = r"app\Service".into();
         let res = resolve_container(&mut ctx, &loc);
         assert_eq!(res.candidates, vec![svc]);
-        assert!(matches!(res.tier, ResolveTier::Exact), "字面 FQN 应算 Exact");
+        assert!(matches!(res.tier, ResolveTier::Exact), "a literal FQN counts as Exact");
 
         // L2: container registry (the file name is whatever FKB declared; the kernel only knows "a binding")
         ctx.ws.put_symbol(
@@ -2186,8 +2186,8 @@ mod tests {
         loc2.strategy = ResolveStrategy::Container;
         loc2.raw = "logger".into();
         let res2 = resolve_container(&mut ctx, &loc2);
-        assert_eq!(res2.candidates, vec![svc], "容器绑定应解析到目标");
-        assert!(matches!(res2.tier, ResolveTier::Registry), "容器绑定应算 Registry");
+        assert_eq!(res2.candidates, vec![svc], "a container binding must resolve to its target");
+        assert!(matches!(res2.tier, ResolveTier::Registry), "a container binding counts as Registry");
 
         // Closure binding: no class target -> unknown.
         ctx.ws.put_symbol(
@@ -2270,6 +2270,6 @@ mod tests {
         loc.strategy = ResolveStrategy::Event;
         loc.raw = "never.fired".into();
         assert!(resolve_event(&mut ctx, &loc).candidates.is_empty());
-        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "未注册事件应报诊断");
+        assert_eq!(ctx.ws.diagnostics.len(), before + 1, "an unregistered event must report a diagnostic");
     }
 }

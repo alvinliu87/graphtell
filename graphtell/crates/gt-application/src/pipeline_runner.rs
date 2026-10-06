@@ -473,7 +473,7 @@ mod tests {
         let declared = vec![decl(&["App\\Http\\Middleware\\AuthMiddleware"], "global", None)];
 
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
-        assert_eq!(d.edges.len(), 2, "global 挂到全部 contract");
+        assert_eq!(d.edges.len(), 2, "global is attached to every contract");
         for e in &d.edges {
             assert_eq!(e.kind.as_str(), "PassesThrough");
         }
@@ -490,7 +490,7 @@ mod tests {
         let declared = vec![decl(&["App\\Http\\Middleware\\AuthMiddleware"], "per_app", Some("/adminapi"))];
 
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
-        assert_eq!(d.edges.len(), 1, "per_app 只命中含 prefix 的 contract");
+        assert_eq!(d.edges.len(), 1, "per_app hits only contracts carrying the prefix");
         assert_eq!(d.edges[0].from_id, NodeId::new(1));
     }
 
@@ -502,7 +502,7 @@ mod tests {
         let declared = vec![decl(&["AuthMiddleware"], "per_app", None)];
 
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
-        assert_eq!(d.edges.len(), 2, "per_app 无 prefix 退化为全部 contract");
+        assert_eq!(d.edges.len(), 2, "per_app with no prefix degrades to every contract");
     }
 
     /// A class already resolved as `Middleware` is hung but **not** re-promoted (no duplicate kind_patch).
@@ -514,7 +514,7 @@ mod tests {
 
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &[], &mws, &Default::default());
         assert_eq!(d.edges.len(), 1);
-        assert!(d.kind_patches.is_empty(), "已为 Middleware 的节点不应再晋升");
+        assert!(d.kind_patches.is_empty(), "a node that is already Middleware must not be promoted again");
     }
 
     /// An `existing` (contract, mw) edge must not be re-created — re-runs are idempotent.
@@ -527,7 +527,7 @@ mod tests {
         existing.insert((NodeId::new(1), NodeId::new(10)));
 
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &existing);
-        assert!(d.edges.is_empty(), "已存在的边不应重复添加");
+        assert!(d.edges.is_empty(), "an existing edge must not be added twice");
         assert!(d.kind_patches.is_empty());
     }
 
@@ -571,7 +571,7 @@ mod tests {
             value: serde_json::json!({ "classes": "AuthMiddleware", "scope": "global" }),
         }];
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
-        assert!(d.is_empty(), "classes 非数组应被忽略");
+        assert!(d.is_empty(), "a non-array classes must be ignored");
     }
 
     /// A non-string entry inside the `classes` array must be skipped while a valid sibling entry still applies.
@@ -586,7 +586,7 @@ mod tests {
             value: serde_json::json!({ "classes": ["AuthMiddleware", 123], "scope": "global" }),
         }];
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
-        assert_eq!(d.edges.len(), 1, "非字符串 class 条目跳过，合法的仍生效");
+        assert_eq!(d.edges.len(), 1, "a non-string class entry is skipped while the valid one still applies");
         assert_eq!(d.kind_patches.len(), 1);
     }
 
@@ -602,7 +602,7 @@ mod tests {
             value: serde_json::json!({ "classes": ["", "AuthMiddleware"], "scope": "global" }),
         }];
         let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
-        assert_eq!(d.edges.len(), 1, "空字符串 class 应跳过");
+        assert_eq!(d.edges.len(), 1, "an empty-string class must be skipped");
     }
 
     // ---- `attach_declared_middleware` (store-only orchestration) ----
@@ -682,7 +682,7 @@ mod tests {
         for c in &contracts {
             let es = store.edges_of(c.id, EdgeDirection::Outgoing).expect("edges_of");
             let pt: Vec<_> = es.iter().filter(|e| e.kind.as_str() == "PassesThrough").collect();
-            assert_eq!(pt.len(), 1, "contract {} 应挂一条 PassesThrough", c.id.get());
+            assert_eq!(pt.len(), 1, "contract {} must get one PassesThrough", c.id.get());
             assert_eq!(pt[0].to_id, NodeId::new(3));
         }
         let promoted = store
@@ -692,6 +692,6 @@ mod tests {
                 ..Default::default()
             })
             .expect("query middleware");
-        assert!(promoted.iter().any(|n| n.id == NodeId::new(3)), "Class(3) 应晋升为 Middleware");
+        assert!(promoted.iter().any(|n| n.id == NodeId::new(3)), "Class(3) must be promoted to Middleware");
     }
 }
