@@ -81,7 +81,7 @@ pub fn resolve_for_sub(
                 Err(reason) => diagnostics.push(ExcludeDiagnostic {
                     code: "ExcludeRuleUnresolved".to_string(),
                     message: format!(
-                        "知识库 {} 的排除规则 `{}` 未能解析：{reason}",
+                        "the exclude rule `{}` of knowledge base {} could not be resolved: {reason}",
                         fk.id, rule.id
                     ),
                     location: Some(sub_root.to_string_lossy().to_string()),
@@ -168,7 +168,7 @@ fn resolve_rule(
         }
     }
 
-    Err("占位符无法解析，且没有存在的 fallback 目录".to_string())
+    Err("the placeholder cannot be resolved and no existing fallback directory was found".to_string())
 }
 
 /// Substitute every `{name}`; `None` when a placeholder has no value (a half-rendered glob would
@@ -197,17 +197,17 @@ fn sanitize(glob: &str) -> Result<String, String> {
     }
     let g = g.trim_matches('/').to_string();
     if g.is_empty() || g == "**" {
-        return Err("glob 解析后为空或覆盖整个子项目".to_string());
+        return Err("the glob resolves to nothing or covers the whole sub-project".to_string());
     }
     let segments: Vec<&str> = g.split('/').collect();
     if segments.iter().any(|s| *s == ".." || s.is_empty()) {
-        return Err(format!("glob `{g}` 含非法片段"));
+        return Err(format!("glob `{g}` contains an illegal segment"));
     }
     // The dangerous case: a rule that resolves to the sub-project root itself (`{app_root}/**` with
     // `app_root = "."`) would exclude every source file. Refuse it outright.
     if let Some(dir) = probe_dir(&g) {
         if dir == "." || dir.is_empty() {
-            return Err(format!("glob `{g}` 会排除整个子项目根，已拒绝"));
+            return Err(format!("glob `{g}` would exclude an entire sub-project root; rejected"));
         }
     }
     Ok(g)

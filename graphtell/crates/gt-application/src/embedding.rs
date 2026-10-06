@@ -130,7 +130,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
     let backend = std::env::var("GT_EMBEDDING_BACKEND").unwrap_or_else(|_| "auto".to_string());
     match backend.as_str() {
         "hash" | "off" | "none" => {
-            set_backend_info("hash (离线词面, 256d)", 256);
+            set_backend_info("hash (offline lexical, 256d)", 256);
             return Arc::new(LocalHashingEmbedder::new(256));
         }
         "url" | "remote" => {
@@ -160,7 +160,7 @@ pub fn resolve_recall_embedder() -> Arc<dyn Embedder> {
                 return e;
             }
             tracing::error!(
-                "GT_EMBEDDING_BACKEND=local 但本地 bge-m3 权重缺失，请先 `graphtell model fetch`"
+                "GT_EMBEDDING_BACKEND=local but the local bge-m3 weights are missing; run `graphtell model fetch` first"
             );
             set_backend_info("hash (local missing)", 256);
             return Arc::new(LocalHashingEmbedder::new(256));

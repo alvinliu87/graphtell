@@ -479,7 +479,7 @@ fn parse_migration_tables(src: &str) -> Vec<(String, Vec<String>)> {
 /// Take column declarations in the Blueprint closure body: `$table->string('email')` → `email`.
 ///
 /// **Only recognize column-declaration methods (whitelist)** — can't simply "take the first string arg":
-/// `->comment('说明')` / `->after('col')` / `->default('x')` modifiers also carry
+/// `->comment('note')` / `->after('col')` / `->default('x')` modifiers also carry
 /// string args, would be mistaken as column names.
 fn columns_of_blueprint(body: &str) -> Vec<String> {
     let b = body.as_bytes();

@@ -833,8 +833,8 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
         semantic
             .iter()
             .any(|(k, n)| k == NodeKind::TABLE && n == "wechat_user"),
-        "应到达业务表 wechat_user（链路 WechatUserDao --ResolvesTo--> WechatUser \
-         --MapsTo--> wechat_user），实际 {semantic:?}"
+        "it must reach the business table wechat_user (chain WechatUserDao --ResolvesTo--> WechatUser \
+         --MapsTo--> wechat_user), got {semantic:?}"
     );
 
     // ① Typed parameter: the handler should have a Calls edge to `WechatServices::appAuth`.
@@ -1570,8 +1570,8 @@ fn facade_short_name_resolves_per_file_import() {
         .count();
     assert_eq!(
         bogus, 0,
-        "CacheService::remember 不应有指向 app\\model\\other\\Cache 的 Calls 边：\
-         `use think\\facade\\Cache;` 是图外的框架类，短名parsing不能退回全局同名类"
+        "CacheService::remember must not have a Calls edge to app\\model\\other\\Cache:\
+         `use think\\facade\\Cache;` is a framework class outside the graph, so short-name resolution must not fall back to a same-named global class"
     );
 
     // That Model's own class-level semantic edges must be intact (the fix is "guessed the wrong call", not "deleted the class").

@@ -250,7 +250,7 @@ fn seed_graph(f: &Fixture) {
 const RULES_YAML: &str = r#"
 rules:
   - id: demo-contract-no-handler
-    title: 契约没有 handler
+    title: contract without a handler
     severity: error
     category: contract
     applies_to:
@@ -259,7 +259,7 @@ rules:
       - no_outgoing: HandledBy
     message: "contract {name} has no handler"
   - id: demo-pii-table
-    title: 含 PII 的表
+    title: table containing PII
     severity: warning
     category: security
     applies_to:
@@ -268,7 +268,7 @@ rules:
       - has_annotation: pii
     message: "table {name} contains PII"
   - id: demo-dead-table
-    title: 无人使用的表
+    title: unused table
     severity: info
     category: deadcode
     applies_to:
@@ -408,7 +408,7 @@ fn predicate_composition_works() {
     let yaml = r#"
 rules:
   - id: composed
-    title: 组合谓词
+    title: combined predicates
     severity: warning
     category: general
     applies_to:
@@ -1730,7 +1730,7 @@ fn disabled_rule_never_produces_violations() {
     const YAML: &str = r#"
 rules:
   - id: off-should-not-run
-    title: 停用规则
+    title: disabled rule
     severity: error
     category: test
     enabled: false
@@ -1740,7 +1740,7 @@ rules:
       - fan_in_gte: 0
     message: "table {name} was hit (it should not have been)"
   - id: on-should-run
-    title: 启用规则
+    title: enabled rule
     severity: info
     category: test
     applies_to:
@@ -1775,7 +1775,7 @@ fn predicates_used_by_shipped_rules_are_covered() {
     const YAML: &str = r#"
 rules:
   - id: t-property-is
-    title: side 为 frontend 的契约
+    title: contract with side=frontend
     severity: warning
     category: contract
     applies_to:
@@ -1784,7 +1784,7 @@ rules:
       - property_is: { name: "side", value: "frontend" }
     message: "contract {name} comes from the frontend"
   - id: t-has-outgoing
-    title: 有 handler 的契约
+    title: contract with a handler
     severity: error
     category: contract
     applies_to:
@@ -1793,7 +1793,7 @@ rules:
       - has_outgoing: HandledBy
     message: "contract {name} has a handler"
   - id: t-fan-in-gte
-    title: 被引用过的表
+    title: referenced table
     severity: info
     category: architecture
     applies_to:
@@ -1836,7 +1836,7 @@ fn framework_gate_skips_rules_for_other_frameworks() {
     const YAML: &str = r#"
 rules:
   - id: tp-only
-    title: 仅 ThinkPHP
+    title: ThinkPHP only
     severity: warning
     category: contract
     applies_to:
@@ -1977,7 +1977,7 @@ fn message_renders_file_and_line() {
     const YAML: &str = r#"
 rules:
   - id: t-file-line
-    title: 位置占位符
+    title: location placeholders
     severity: warning
     category: test
     applies_to:
@@ -2181,7 +2181,7 @@ fn remaining_predicates_are_covered() {
     const YAML: &str = r#"
 rules:
   - id: t-kind-in
-    title: 种类属于 Method
+    title: kind is Method
     severity: info
     category: test
     applies_to:
@@ -2190,7 +2190,7 @@ rules:
       - kind_in: [Method]
     message: "{name} is a method"
   - id: t-name-starts-with
-    title: 名字以 create 开头
+    title: name starts with create
     severity: info
     category: test
     applies_to:
@@ -2199,7 +2199,7 @@ rules:
       - name_starts_with: create
     message: "{name} starts with create"
   - id: t-fqn-contains
-    title: fqn 含 Service
+    title: fqn contains Service
     severity: info
     category: test
     applies_to:
@@ -2208,7 +2208,7 @@ rules:
       - fqn_contains: service
     message: "the fqn of {name} contains Service"
   - id: t-identity-contains
-    title: identity 含 OrderService
+    title: identity contains OrderService
     severity: info
     category: test
     applies_to:
@@ -2217,7 +2217,7 @@ rules:
       - identity_contains: orderservice
     message: "the identity of {name} contains OrderService"
   - id: t-text-contains
-    title: 任一文本含 userDao
+    title: any text contains userDao
     severity: info
     category: test
     applies_to:
@@ -2226,7 +2226,7 @@ rules:
       - text_contains: userdao
     message: "{name} hits the text"
   - id: t-no-annotation
-    title: 没有 pii 标注的表
+    title: table with no pii annotation
     severity: info
     category: test
     applies_to:
@@ -2235,7 +2235,7 @@ rules:
       - no_annotation: pii
     message: "{name} has no pii"
   - id: t-property-missing
-    title: 缺 side 属性的契约
+    title: contract missing the side property
     severity: info
     category: test
     applies_to:
@@ -2244,7 +2244,7 @@ rules:
       - property_missing: side
     message: "{name} has no side property"
   - id: t-fan-out-gte
-    title: 有出边的方法
+    title: method with out-edges
     severity: info
     category: test
     applies_to:
@@ -2253,7 +2253,7 @@ rules:
       - fan_out_gte: 1
     message: "{name} has at least one semantic out-edge"
   - id: t-has-incoming
-    title: 被写过的表
+    title: table that is written
     severity: info
     category: test
     applies_to:
@@ -2262,7 +2262,7 @@ rules:
       - has_incoming: WritesDb
     message: "{name} is written to"
   - id: t-all-of
-    title: 同时满足两个条件
+    title: satisfies both conditions
     severity: info
     category: test
     applies_to:
@@ -2379,7 +2379,7 @@ fn empty_kinds_means_all_kinds() {
     const YAML: &str = r#"
 rules:
   - id: t-any-kind
-    title: 不限种类
+    title: no kind restriction
     severity: info
     category: test
     applies_to:
@@ -2626,8 +2626,8 @@ fn check_does_not_degenerate_quadratically() {
     assert_eq!(hit_big, BIG, "the large scale must hit everything");
     assert!(
         t_big <= budget,
-        "规模 ×8 耗时从 {t_small}ms 涨到 {t_big}ms（预算 {budget}ms）—— \
-         疑似退化成超线性；检查是否引入了逐节点查库或嵌套扫描"
+        "scaling ×8 took the time from {t_small}ms to {t_big}ms (budget {budget}ms) — \
+         it looks super-linear; check whether a per-node DB query or a nested scan was introduced"
     );
 }
 
@@ -2652,8 +2652,8 @@ fn check_completes_within_budget() {
     assert_eq!(hits, N, "everything must be hit");
     assert!(
         ms <= BUDGET_MS,
-        "{N} 个候选的检查耗时 {ms}ms 超过预算 {BUDGET_MS}ms —— \
-         若每节点都多了一次 DB 往返就会出现这种量级"
+        "checking {N} candidates took {ms}ms, over the {BUDGET_MS}ms budget — \
+         an extra DB round trip per node produces an order of magnitude like this"
     );
 }
 

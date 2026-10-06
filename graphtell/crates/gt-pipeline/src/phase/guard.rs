@@ -158,7 +158,7 @@ pub fn run_capabilities(ctx: &mut PipelineContext) {
     }
 
     tracing::info!(
-        "P5.5 守卫能力完成：{} 条能力标注（{} 处挂载显式写着可选，按「宁可缺不可猜」不打能力）",
+        "P5.5 guard capabilities done: {} capability annotations ({} attaches are explicitly optional, so no capability is applied — better missing than guessed)",
         stamped,
         skipped_optional
     );
@@ -327,7 +327,7 @@ pub fn run(ctx: &mut PipelineContext) {
     }
 
     tracing::info!(
-        "P14 路由守卫完成：PassesThrough 边 {} 条 / {} 个晋升为 Middleware / {} 个按名建成 Middleware（中间件不在图里且未授权 {} 处, skipping不猜）",
+        "P14 route guards done: {} PassesThrough edges / {} promoted to Middleware / {} built as Middleware by name ({} middleware absent from the graph and unauthorised, skipped rather than guessed)",
         created,
         promoted,
         synthesized,

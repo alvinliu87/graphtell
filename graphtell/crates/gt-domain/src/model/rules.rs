@@ -1447,10 +1447,10 @@ mod tests {
             "id": "r", "title": "T", "message": "m",
             "when": [
                 { "no_incoming": "Triggers" },
-                { "has_incoming": "triggers" },   // 同一条边，不同大小写 -> 去重
-                { "no_incoming": "Triggers" },     // 完全重复 -> 去重
+                { "has_incoming": "triggers" },   // the same edge with different casing -> de-duplicated
+                { "no_incoming": "Triggers" },     // an exact duplicate -> de-duplicated
                 { "has_annotation": "pii" },
-                { "no_annotation": "PII" },        // 同一注解，不同大小写 -> 去重
+                { "no_annotation": "PII" },        // the same annotation with different casing -> de-duplicated
                 { "no_capability": ["Auth", "auth"] }
             ]
         }))

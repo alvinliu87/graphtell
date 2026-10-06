@@ -4140,7 +4140,7 @@ mod tests {
         assert!(segs.iter().any(|(s, k)| *k && s == "修改"));
         assert!(segs.iter().any(|(s, k)| *k && s == "下单"));
         assert!(segs.iter().any(|(s, k)| *k && s == "优惠"));
-        // 如 / 何 are unrecorded single chars → each its own segment, "何修" won't appear as a whole.
+        // 如 / 何 are unrecorded single chars, so each becomes its own segment and 何修 never appears as a whole.
         assert!(!segs.iter().any(|(s, _)| s == "何修"));
     }
 
@@ -4726,7 +4726,7 @@ mod tests {
         assert!(en_of("地址").iter().any(|e| e == "address"), "地址 must be completed to address");
         assert!(en_of("购物车").iter().any(|e| e == "cart"), "购物车 must be completed to cart");
 
-        // 3) synonyms: 退货 / 售后 (return / after-sales) should both bridge to refund (synonym of 退款).
+        // 3) synonyms: 退货 / 售后 (return / after-sales) must both bridge to refund (the synonym of 退款).
         let refund_terms = expand_intent_aliases("怎么办理退货", &all);
         assert!(refund_terms.iter().any(|t| t == "refund"), "退货 must expand to refund: {refund_terms:?}");
         let aftersale_terms = expand_intent_aliases("售后问题怎么处理", &all);
@@ -4757,7 +4757,7 @@ mod tests {
             ship_terms.iter().any(|t| t == "express"),
             "配送方式 must expand to express: {ship_terms:?}"
         );
-        // Coupon type: 类型 (type) must connect to type, else "add a new coupon type" only has generic add/coupon.
+        // Coupon type: 类型 (type) must bridge to type, otherwise 'add a new coupon type' only has generic add/coupon.
         let coupon_type_terms = expand_intent_aliases("怎么新增一种优惠券类型", &all);
         assert!(
             coupon_type_terms.iter().any(|t| t == "type"),
@@ -4927,8 +4927,8 @@ mod tests {
     fn hub_penalty_suppresses_high_fan_in_only() {
         assert_eq!(hub_penalty(10), 1.0, "a low fan-in must not be penalised");
         assert_eq!(hub_penalty(60), 1.0, "within the threshold there must be no penalty");
-        let mid = hub_penalty(123); // 如 BaseDao::save
-        let hub = hub_penalty(452); // 如 Cache
+        let mid = hub_penalty(123); // e.g. BaseDao::save
+        let hub = hub_penalty(452); // e.g. Cache
         assert!(mid < 1.0 && mid > 0.4, "a medium hub must be partly pushed down, got {mid}");
         assert!(hub < mid, "the larger the fan-in the stronger the decay: {hub} vs {mid}");
         assert!(hub >= 0.4, "the decay must have a floor, got {hub}");
@@ -5105,7 +5105,7 @@ mod tests {
         assert_eq!(strip_hint_words("订单表", hints), "订单");
         assert_eq!(strip_hint_words("查询缓存", hints), "查询");
 
-        // Key regression point: old impl deleted char-by-char, `缓存`'s 存 + `数据库`'s 库 would empty `库存`,
+        // Key regression point: the old implementation stripped character by character, so 存 of `缓存` plus 库 of `数据库` would empty 库存,
         // `消息`'s 消 + `定时`'s 时 would cut `取消时间` to `取`.
         assert_eq!(strip_hint_words("商品库存预警阈值", hints), "商品库存预警阈值");
         assert_eq!(strip_hint_words("修改订单自动取消时间", hints), "修改订单自动取消时间");

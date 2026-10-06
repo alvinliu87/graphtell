@@ -66,7 +66,7 @@ fn run(
     recall: Arc<RecallService>,
 ) {
     info!(
-        "监听工程 #{} 源码变更：{}",
+        "watching project #{} for source changes: {}",
         project_id.get(),
         root.display()
     );
@@ -110,7 +110,7 @@ fn run(
                         Err(e) => {
                             // Building / failed: keep dirty, reset the debounce timer and retry later.
                             warn!(
-                                "工程 #{} 重建未启动（{}），稍后重试",
+                                "project #{} rebuild did not start ({}), retrying later",
                                 project_id.get(),
                                 e
                             );

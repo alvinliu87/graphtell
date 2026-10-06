@@ -76,14 +76,14 @@ fn fkb_resolved_exclusions_keep_generated_dirs_out_of_the_scan() {
     // Positive control first: the scan really ran and picked up ordinary sources.
     assert!(
         paths.iter().any(|p| *p == "app/Http/Controller.php"),
-        "正常源文件应被扫描到，实际：{paths:?}"
+        "an ordinary source file must be scanned, got: {paths:?}"
     );
 
     for forbidden in ["storage/framework/cache/x.php", "bootstrap/cache/y.php"] {
         assert!(
             !paths.iter().any(|p| *p == forbidden),
-            "`{forbidden}` 只可能被 FKB 解析出的排除规则挡住（既不在扫描器内建默认里，也不是 asset 目录），\
-             实际仍被扫描：{paths:?}"
+            "`{forbidden}` can only be blocked by an exclude rule resolved from the FKB (it is neither a scanner built-in nor an asset directory),\
+             but it was still scanned: {paths:?}"
         );
     }
 

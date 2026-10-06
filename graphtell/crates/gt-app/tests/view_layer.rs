@@ -1219,7 +1219,7 @@ fn read_write_at_same_contact_is_reported_together() {
     assert!(checked > 0, "a collapsed edge must be found, but there is none");
     assert!(
         annotated > 0,
-        "样本里应有既读又写的接触点（CRMEB 的 store_bargain / tagDate 都是），\
-         实际一条都没被标注 —— 「读+写」又退化成单边了"
+        "the sample must contain contact points that both read and write (store_bargain / tagDate in CRMEB are such),\
+         but none was annotated — 'read+write' has degraded back to a single mode"
     );
 }

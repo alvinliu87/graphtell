@@ -112,7 +112,7 @@ pub fn run(ctx: &mut PipelineContext) {
         added += 1;
     }
     tracing::info!(
-        "P8 传播完成：{} 个 source，{} 条传播边（共 {} 个根因）",
+        "P8 propagation done: {} sources, {} propagation edges ({} root causes in total)",
         by_source.len(),
         added,
         edge_seeds.values().map(|s| s.len()).sum::<usize>()

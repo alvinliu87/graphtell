@@ -604,7 +604,7 @@ mod tests {
         );
         assert_eq!(reg.view_for_kind_and_side("Cache", Some("backend")).map(|p| p.id.as_str()), Some("cache"));
         assert_eq!(reg.view_for_kind_and_side("Cache", None).map(|p| p.id.as_str()), Some("cache"), "with no side it falls back to node_views");
-        // node_views 没覆盖、也没给出 side 的 kind：即便存在同名 node_kind 的 perspective，无 side 不命中。
+        // a kind covered by neither node_views nor a side: even when a perspective of the same node_kind exists, no side means no hit.
         assert!(reg.view_for_kind_and_side("Table", None).is_none());
     }
 

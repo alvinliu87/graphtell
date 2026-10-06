@@ -133,7 +133,7 @@ impl PipelineService {
             let mut guard = self.running.lock().unwrap_or_else(|e| e.into_inner());
             if !guard.insert(project_id.get()) {
                 return Err(DomainError::Conflict(format!(
-                    "工程 {project_id} 正在建图中"
+                    "project {project_id} is being graphed"
                 )));
             }
         }
@@ -165,7 +165,7 @@ impl PipelineService {
             Ok(out) => {
                 self.store.set_project_status(project_id, ProjectStatus::Ready)?;
                 info!(
-                    "工程 {} 建图完成：{} 子工程 / {} 文件",
+                    "project {} graphed: {} sub-projects / {} files",
                     project.name,
                     out.sub_projects.len(),
                     out.files.len()
@@ -205,7 +205,7 @@ impl PipelineService {
         match self.checks.check(project_id, None, true) {
             Ok(report) => {
                 info!(
-                    "工程 {} 自动合规检查完成：{} 条规则命中 {} 条违规（{} ms）",
+                    "project {}: automatic compliance check done — {} rules matched {} violations ({} ms)",
                     project_name,
                     report.rules_run,
                     report.violations.len(),
@@ -296,7 +296,7 @@ impl PipelineService {
             warn!("declarative middleware chain failed for project {project_id}: {e}");
         } else {
             info!(
-                "工程 {project_id} 声明式中间件挂链完成：{} 条边 / {} 个晋升为 Middleware",
+                "project {project_id}: declarative middleware chaining done — {} edges / {} promoted to Middleware",
                 edge_n, promoted_n
             );
         }

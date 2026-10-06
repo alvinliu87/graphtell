@@ -202,15 +202,15 @@ fn resolve_once(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
 /// When the type can't be found, return unknown —
 fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     let Some(recv) = loc.receiver.as_deref() else {
-        return Resolution::unknown("无接收者".to_string());
+        return Resolution::unknown("no receiver".to_string());
     };
     let method = loc.method.as_deref().unwrap_or("");
     if method.is_empty() {
-        return Resolution::unknown("无方法名".to_string());
+        return Resolution::unknown("no method name".to_string());
     }
     let type_fqn = receiver_type_fqn(ctx, &loc.owner_fqn, recv, loc.sub);
     let Some(type_fqn) = type_fqn else {
-        return Resolution::unknown(format!("接收者 {recv} 的类型未知"));
+        return Resolution::unknown(format!("the type of receiver {recv} is unknown"));
     };
 
     // Target method: first this class, then walk up the inheritance chain (methods are often inherited from a base class).
@@ -232,7 +232,7 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
             return Resolution::resolved(
                 ResolveTier::Convention,
                 id,
-                format!("按变量类型解析 {} -> {method}", t),
+                format!("resolved {} -> {method} from the variable type", t),
             );
         }
         for parent in ctx.ws.parents_of(&t) {
@@ -247,7 +247,7 @@ fn resolve_variable_type(ctx: &mut PipelineContext, loc: &Locator) -> Resolution
     // PHP-shaped `Class::method` string.
     let member_sep = ctx.lang_policy_for_sub(loc.sub).member_separator.clone();
     magic.unwrap_or_else(|| {
-        Resolution::unknown(format!("{type_fqn}{member_sep}{method} 未找到"))
+        Resolution::unknown(format!("{type_fqn}{member_sep}{method} not found"))
     })
 }
 
@@ -273,9 +273,9 @@ fn is_db_verb(
         .filter(|s| !s.write.is_empty() || !s.read.is_empty())?;
     let m = method.to_ascii_lowercase();
     if spec.write.iter().any(|v| v.eq_ignore_ascii_case(&m)) {
-        Some((EdgeKind(EdgeKind::WRITES_DB.to_string()), "写"))
+        Some((EdgeKind(EdgeKind::WRITES_DB.to_string()), "write"))
     } else if spec.read.iter().any(|v| v.eq_ignore_ascii_case(&m)) {
-        Some((EdgeKind(EdgeKind::READS_DB.to_string()), "读"))
+        Some((EdgeKind(EdgeKind::READS_DB.to_string()), "read"))
     } else {
         None
     }
@@ -336,7 +336,7 @@ fn resolve_magic_delegation(
                             tier: ResolveTier::Convention,
                             confidence: spec.confidence,
                             evidence: format!(
-                                "魔法方法转发 {type_fqn}::{method} → {dep}::{method}（经 {}）",
+                                "magic method forwards {type_fqn}::{method} -> {dep}::{method} (via {})",
                                 spec.property
                             ),
                         });
@@ -548,7 +548,7 @@ fn emit_db_edge(
             "evidence": {
                 "rule": "db-verb-classify",
                 "location": location,
-                "evidence": format!("{} 调用 {}（{} 动词）", owner_fqn, method, kind_label(kind)),
+                "evidence": format!("{} calls {} ({} verb)", owner_fqn, method, kind_label(kind)),
             },
             "verb": method,
         }),
@@ -605,8 +605,8 @@ impl DbQuery {
 /// Human-readable labels for `WritesDb` / `ReadsDb` (only for edge-evidence copy).
 fn kind_label(kind: &EdgeKind) -> &'static str {
     match kind.0.as_str() {
-        EdgeKind::WRITES_DB => "写",
-        EdgeKind::READS_DB => "读",
+        EdgeKind::WRITES_DB => "write",
+        EdgeKind::READS_DB => "read",
         _ => "",
     }
 }
@@ -621,11 +621,11 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
 
     // L1: literal FQN
     if let Some(id) = ctx.ws.find_by_name(raw) {
-        return Resolution::resolved(ResolveTier::Exact, id, format!("字面 FQN {raw}"));
+        return Resolution::resolved(ResolveTier::Exact, id, format!("literal FQN {raw}"));
     }
     if let Some(fqn) = ctx.ws.resolve_name_in_file(Some(&loc.file), raw) {
         if let Some(id) = ctx.ws.find_by_name(&fqn) {
-            return Resolution::resolved(ResolveTier::Exact, id, format!("短名解析 {raw} → {fqn}"));
+            return Resolution::resolved(ResolveTier::Exact, id, format!("short name resolved {raw} -> {fqn}"));
         }
     }
 
@@ -652,48 +652,48 @@ fn resolve_container(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
                     id,
                     // The registry file name is whatever FKB declared (`provider.php` on ThinkPHP, a service
                     // container config elsewhere) — the kernel only knows "a container binding".
-                    format!("容器绑定 {raw} → {target}"),
+                    format!("container binding {raw} -> {target}"),
                 );
             }
-            return Resolution::unknown(format!("间接绑定 {raw} → {target}"));
+            return Resolution::unknown(format!("indirect binding {raw} -> {target}"));
         }
-        return Resolution::unknown(format!("闭包绑定 {raw}"));
+        return Resolution::unknown(format!("closure binding {raw}"));
     }
 
     // L4: convention (FQN string) — "looks qualified" means it contains **this language's** namespace separator.
     if raw.contains(|c: char| ns.contains(&c)) {
         if let Some(id) = ctx.ws.find_by_name(raw) {
-            return Resolution::resolved(ResolveTier::Convention, id, format!("约定 {raw}"));
+            return Resolution::resolved(ResolveTier::Convention, id, format!("convention {raw}"));
         }
     }
 
     // L6: intersect with the class short-name universe
     if let Some(fqn) = ctx.ws.resolve_name_in_file(Some(&loc.file), raw) {
         if let Some(id) = ctx.ws.find_by_name(&fqn) {
-            return Resolution::resolved(ResolveTier::Intersection, id, format!("与类全集求交 {raw}"));
+            return Resolution::resolved(ResolveTier::Intersection, id, format!("intersected with the class universe {raw}"));
         }
     }
 
-    Resolution::unknown(format!("容器无法解析 {raw}"))
+    Resolution::unknown(format!("the container cannot resolve {raw}"))
 }
 
 /// Event trigger: query the `by_alias(event_name, x)` registered by P6.
 fn resolve_event(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     match ctx.ws.find_by_alias("event_name", &loc.raw, None) {
-        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("事件别名 {}", loc.raw)),
+        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("event alias {}", loc.raw)),
         None => {
             ctx.ws.diagnose(
                 &Phase(Phase::RESOLVE.to_string()),
                 "EventTriggerUnresolved",
                 Severity::Warning,
                 format!(
-                    "event('{}') 未找到注册的事件节点 —— 若事件注册表中该键为空数组，\
-                     监听器会被整体误判为死代码",
+                    "event('{}') found no registered event node — if that key is an empty array in the event registry,\
+                     its listeners are misjudged as dead code as a whole",
                     loc.raw
                 ),
                 Some(format!("{}:{}", loc.file, loc.line)),
             );
-            Resolution::unknown(format!("事件 {} 未注册", loc.raw))
+            Resolution::unknown(format!("event {} is not registered", loc.raw))
         }
     }
 }
@@ -704,20 +704,20 @@ fn resolve_event(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
 /// the resolution result is used in `apply_resolution` to point the `HandledBy` edge from the event node to arg1's listener class.
 fn resolve_event_listen(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     match ctx.ws.find_by_alias("event_name", &loc.raw, None) {
-        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("事件别名 {}", loc.raw)),
+        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("event alias {}", loc.raw)),
         None => {
             ctx.ws.diagnose(
                 &Phase(Phase::RESOLVE.to_string()),
                 "EventListenUnresolved",
                 Severity::Warning,
                 format!(
-                    "Event::listen('{}', …) 未找到对应事件节点 —— 该事件未在事件注册表注册，\
-                     监听器仍可经 `listener` 标注识别，但无法精确挂到具体事件",
+                    "Event::listen('{}', …) found no matching event node — that event is not registered in the event registry,\
+                     the listener is still recognisable through the `listener` annotation, but cannot be attached to a concrete event",
                     loc.raw
                 ),
                 Some(format!("{}:{}", loc.file, loc.line)),
             );
-            Resolution::unknown(format!("事件 {} 未注册", loc.raw))
+            Resolution::unknown(format!("event {} is not registered", loc.raw))
         }
     }
 }
@@ -755,7 +755,7 @@ fn resolve_facade(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     let ns = ctx.lang_policy_for_sub(loc.sub).ns_separators.clone();
     let receiver = loc.raw.trim_start_matches(|c: char| ns.contains(&c));
     let Some(entry) = ctx.ws.get_symbol("facade_map", receiver).cloned() else {
-        return Resolution::unknown(format!("非门面调用 {receiver}"));
+        return Resolution::unknown(format!("not a facade call {receiver}"));
     };
     let target = entry
         .get("target")
@@ -763,17 +763,17 @@ fn resolve_facade(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
         .unwrap_or_default()
         .to_string();
     match ctx.ws.find_by_name(&target) {
-        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("门面 {receiver} → {target}")),
+        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("facade {receiver} -> {target}")),
         None => {
             // vendor is excluded by P0, the target not being in the graph is **expected**, must not be reported as an error
             ctx.ws.diagnose(
                 &Phase(Phase::RESOLVE.to_string()),
                 "AliasTargetMissing",
                 Severity::Info,
-                format!("门面目标 {target} 不在图内（ExcludedByIngest）"),
+                format!("facade target {target} is not in the graph (ExcludedByIngest)"),
                 Some(format!("{}:{}", loc.file, loc.line)),
             );
-            Resolution::unknown(format!("门面目标 {target} 缺失"))
+            Resolution::unknown(format!("facade target {target} is missing"))
         }
     }
 }
@@ -781,8 +781,8 @@ fn resolve_facade(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
 /// Getter: `$order->status_text` → `getStatusTextAttr` (composite key, avoids name collision).
 fn resolve_accessor(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
     match ctx.ws.find_by_alias("accessor", &loc.raw, None) {
-        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("获取器 {}", loc.raw)),
-        None => Resolution::unknown(format!("获取器 {} 未注册", loc.raw)),
+        Some(id) => Resolution::resolved(ResolveTier::Alias, id, format!("accessor {}", loc.raw)),
+        None => Resolution::unknown(format!("accessor {} is not registered", loc.raw)),
     }
 }
 
@@ -794,7 +794,7 @@ fn resolve_handler(ctx: &mut PipelineContext, loc: &Locator) -> Resolution {
             id,
             format!("handler {}（{}）", loc.raw, note),
         ),
-        None => Resolution::unknown(format!("无法解析 handler {}", loc.raw)),
+        None => Resolution::unknown(format!("cannot resolve handler {}", loc.raw)),
     }
 }
 
@@ -825,7 +825,7 @@ pub fn resolve_handler_target(
     // would silently miss a fully qualified name on every other stack).
     let raw = raw.trim_start_matches(|c: char| policy.ns_separators.contains(&c));
     if let Some(id) = ctx.ws.find_by_name(raw) {
-        return Some((id, "完全限定名直接命中"));
+        return Some((id, "fully qualified name hit directly"));
     }
 
     // ① Split controller / method by the FKB-declared separator.
@@ -880,11 +880,11 @@ pub fn resolve_handler_target(
     if let Some(fqn) = &class_fqn {
         if !method.is_empty() {
             if let Some(id) = ctx.ws.find_by_name(&policy.join_member(fqn, &method)) {
-                return Some((id, "方法精确命中"));
+                return Some((id, "exact method hit"));
             }
         }
         if let Some(id) = ctx.ws.find_by_name(fqn) {
-            return Some((id, "类命中（方法未在图内，可能继承自基类）"));
+            return Some((id, "class hit (the method is not in the graph, it may be inherited from a base class)"));
         }
     }
 
@@ -896,11 +896,11 @@ pub fn resolve_handler_target(
     if let Some(fqn) = ctx.ws.resolve_name_in_file(Some(file), short) {
         if !method.is_empty() {
             if let Some(id) = ctx.ws.find_by_name(&policy.join_member(&fqn, &method)) {
-                return Some((id, "短名方法命中"));
+                return Some((id, "short-name method hit"));
             }
         }
         if let Some(id) = ctx.ws.find_by_name(&fqn) {
-            return Some((id, "短名类命中"));
+            return Some((id, "short-name class hit"));
         }
     }
     None
@@ -971,7 +971,7 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
                             properties: serde_json::json!({
                                 "tier": format!("{:?}", res.tier),
                                 "evidence": evidence_of(loc, res),
-                                "via": "Event::listen/subscribe 运行时注册",
+                                "via": "Event::listen/subscribe runtime registration",
                             }),
                         });
                     } else {
@@ -979,7 +979,7 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
                             phase,
                             "EventListenTargetMissing",
                             Severity::Warning,
-                            format!("Event::listen 监听器 {} 不在图内", consumer),
+                            format!("the Event::listen listener {} is not in the graph", consumer),
                             Some(format!("{}:{}", loc.file, loc.line)),
                         );
                     }
@@ -989,7 +989,7 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
                         phase,
                         "EventListenNoConsumer",
                         Severity::Info,
-                        format!("Event::listen('{}') 缺少监听器参数", loc.raw),
+                        format!("Event::listen('{}') is missing the listener argument", loc.raw),
                         Some(format!("{}:{}", loc.file, loc.line)),
                     );
                 }
@@ -1028,7 +1028,7 @@ fn apply_resolution(ctx: &mut PipelineContext, loc: &Locator, res: &Resolution, 
             phase,
             "UnresolvedLink",
             Severity::Info,
-            format!("{:?} 解析失败: {}", loc.strategy, res.evidence),
+            format!("{:?} failed to resolve: {}", loc.strategy, res.evidence),
             Some(format!("{}:{}", loc.file, loc.line)),
         );
     }
@@ -1076,7 +1076,7 @@ fn resolve_pending_links(ctx: &mut PipelineContext, phase: &Phase) {
                     "UnresolvedLink",
                     Severity::Warning,
                     format!(
-                        "{} 指向 {}，但图中找不到目标 —— 路由指向不存在的 handler 会导致运行时 500",
+                        "{} points at {}, but the target is not in the graph — a route pointing at a non-existent handler returns 500 at runtime",
                         link.kind, link.raw
                     ),
                     Some(link.file.clone()),
@@ -1797,8 +1797,8 @@ mod tests {
     /// `kind_label` renders the human-readable DB-edge direction (used by views / rules); unknown kinds are empty.
     #[test]
     fn kind_label_renders_read_and_write() {
-        assert_eq!(kind_label(&EdgeKind(EdgeKind::WRITES_DB.to_string())), "写");
-        assert_eq!(kind_label(&EdgeKind(EdgeKind::READS_DB.to_string())), "读");
+        assert_eq!(kind_label(&EdgeKind(EdgeKind::WRITES_DB.to_string())), "write");
+        assert_eq!(kind_label(&EdgeKind(EdgeKind::READS_DB.to_string())), "read");
         assert_eq!(kind_label(&EdgeKind("Calls".to_string())), "");
     }
 

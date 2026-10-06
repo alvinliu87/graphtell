@@ -91,7 +91,7 @@ pub trait TechStackAdapter: Send + Sync {
         None
     }
 
-    /// Where the **locale** sits in an i18n file's path: `前缀{locale}后缀` templates, prefix and suffix
+    /// Where the **locale** sits in an i18n file's path: `prefix{locale}suffix` templates, prefix and suffix
     /// matched **literally** (no wildcards) — so write `lang/{locale}/` rather than `lang/{locale}/*.php`.
     ///
     /// Tried in order, first match wins — so the directory form must precede the flat-file form
