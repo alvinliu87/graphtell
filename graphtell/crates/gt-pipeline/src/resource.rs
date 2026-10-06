@@ -307,6 +307,20 @@ mod tests {
         assert!(!detected(&ctx, 1, "MyBatis"));
     }
 
+    /// Completes the truth table: an entry that exists but recorded **nothing** is also not detected. This is a
+    /// different path from a missing entry (the `map` closure runs and `any` returns false on the empty list,
+    /// rather than `unwrap_or(false)` short-circuiting), so P3 must be able to record an empty list safely.
+    #[test]
+    fn detected_is_false_when_p3_recorded_an_empty_framework_list() {
+        let mut ctx = ctx();
+        ctx.frameworks.insert(1, Vec::new());
+
+        assert!(
+            !detected(&ctx, 1, "mybatis"),
+            "an entry with nothing recorded must not be treated as detected"
+        );
+    }
+
     // ---------------------------------------------------------------- `run()` gating
 
     #[test]
@@ -376,6 +390,49 @@ mod tests {
         run(&mut ctx, &reg, &NoFs);
 
         assert_eq!(ctx.ws.calls.len(), 1, "a failing adapter is skipped while the healthy one still injects");
+    }
+
+    /// The adapter loop must **accumulate**, not stop at the first adapter that injected something: with two
+    /// healthy adapters both facts land, each anchored to its own owner (no cross-mixing of facts).
+    #[test]
+    fn run_accumulates_facts_from_every_healthy_adapter() {
+        let mut ctx = ctx();
+        ctx.sub_projects.push(sub(1, "app", "/p/app", "java"));
+        ctx.frameworks
+            .insert(1, vec!["mybatis".to_string(), "hibernate".to_string()]);
+        add_node(&mut ctx, "Method", "a", "com.x.A.find");
+        add_node(&mut ctx, "Method", "b", "com.x.B.find");
+        let reg = registry(vec![
+            FakeAdapter {
+                id: "mybatis".into(),
+                facts: vec![ResourceFact::PseudoCall(pseudo_call("com.x.A.find", None))],
+                fail: false,
+            },
+            FakeAdapter {
+                id: "hibernate".into(),
+                facts: vec![ResourceFact::PseudoCall(pseudo_call("com.x.B.find", None))],
+                fail: false,
+            },
+        ]);
+
+        run(&mut ctx, &reg, &NoFs);
+
+        assert_eq!(
+            ctx.ws.calls.len(),
+            2,
+            "both adapters must contribute; the loop must not stop at the first"
+        );
+        let owners: Vec<&str> = ctx
+            .ws
+            .calls
+            .iter()
+            .map(|c| c.owner_fqn.as_str())
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["com.x.A.find", "com.x.B.find"],
+            "each adapter's fact must anchor to its own owner"
+        );
     }
 
     #[test]
@@ -527,6 +584,39 @@ mod tests {
                 .any(|e| e.kind.as_str() == EdgeKind::HAS_CALL_SITE),
             "no edge is created when the anchor cannot be resolved"
         );
+    }
+
+    /// Completes the owner-resolution truth table: an `owner_class` that is present but **empty** is not a usable
+    /// anchor. It must fall through to "no anchor" rather than resolving to some arbitrary node — the same
+    /// empty-string guard the evaluator applies to `owner_class`.
+    #[test]
+    fn apply_refuses_an_empty_owner_class() {
+        let mut ctx = ctx();
+        let s = sub(1, "app", "/p/app", "java");
+        add_node(&mut ctx, "Class", "UserMapper", "com.x.UserMapper");
+        let phase = Phase("CfAst".to_string());
+
+        // `owner_fqn` unresolvable and `owner_class` is `Some("")` -> refuse.
+        assert!(!apply(
+            &mut ctx,
+            &s,
+            &pseudo_call("com.x.Missing.find", Some("")),
+            &phase
+        ));
+        assert!(
+            ctx.ws.calls.is_empty(),
+            "an empty owner_class must not become an anchor"
+        );
+
+        // ...while the very same fact with the real class name resolves, so the refusal above is caused by the
+        // empty name alone and not by a missing node.
+        assert!(apply(
+            &mut ctx,
+            &s,
+            &pseudo_call("com.x.Missing.find", Some("com.x.UserMapper")),
+            &phase
+        ));
+        assert_eq!(ctx.ws.calls.len(), 1);
     }
 
     /// The line number is part of the identity, so two statements of the same callee stay distinct.

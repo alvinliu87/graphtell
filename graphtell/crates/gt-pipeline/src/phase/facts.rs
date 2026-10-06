@@ -936,4 +936,345 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    // ===================================================================
+    // Negative coverage
+    //
+    // The tests above pin the resolving paths. Below: everything that must resolve to **nothing**
+    // (and must not panic) — unreadable files, malformed manifests, non-scalar pointer targets,
+    // markers that are files rather than directories, detectors that cannot fire before parsing.
+    // Every one of these degrades in the direction "fall through to the caller's fallback".
+    // ===================================================================
+
+    /// A file that exists but cannot be read: `declared_in` must stop at the read failure rather than
+    /// panicking or probing empty text. Uses an injected fs because the real one only fails by absence.
+    struct UnreadableFs;
+
+    impl FileSystem for UnreadableFs {
+        fn exists(&self, _: &Path) -> bool {
+            true
+        }
+        fn is_dir(&self, _: &Path) -> bool {
+            false
+        }
+        fn read_to_string(&self, _: &Path) -> gt_domain::error::Result<String> {
+            Err(gt_domain::error::DomainError::infra("unreadable"))
+        }
+        fn len(&self, _: &Path) -> gt_domain::error::Result<u64> {
+            Err(gt_domain::error::DomainError::infra("unreadable"))
+        }
+    }
+
+    #[test]
+    fn declared_in_is_false_when_the_file_exists_but_cannot_be_read() {
+        let path = PathBuf::from("app/composer.json");
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let php = Language::new("php");
+        assert!(
+            !manifest_has(&path, "topthink/framework", &UnreadableFs, &ts, &php),
+            "an unreadable manifest must be false, not panic"
+        );
+        assert!(
+            !lock_has(&path, "topthink/framework", &UnreadableFs, &ts, &php),
+            "the same holds for a lock file"
+        );
+    }
+
+    /// KNOWN WART, pinned: an empty needle is contained in every name *and* in every text, so an empty
+    /// `dependency` in an FKB detector would claim every project that merely has the manifest. Nothing
+    /// guards against a blank FKB field here.
+    #[test]
+    fn empty_dependency_matches_every_readable_manifest() {
+        let root = scratch_dir("empty-dep");
+        std::fs::write(root.join("composer.json"), r#"{"require": {}}"#).unwrap();
+        std::fs::write(root.join("composer.lock"), r#"{"packages": []}"#).unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let php = Language::new("php");
+
+        assert!(
+            manifest_has(&root.join("composer.json"), "", &fs, &ts, &php),
+            "a blank dependency matches everything"
+        );
+        assert!(lock_has(&root.join("composer.lock"), "", &fs, &ts, &php));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn locale_is_none_when_the_path_does_not_follow_the_convention() {
+        let ts = gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()));
+        let php = Language::new("php");
+        assert_eq!(
+            locale_of_path("app/controller/Index.php", &php, &ts),
+            None,
+            "a stack with conventions still yields None when nothing matches — never a guess"
+        );
+        // KNOWN WART: the locale is taken up to the next `/`, so an empty path segment captures an
+        // empty locale instead of being rejected.
+        assert_eq!(
+            locale_of_path("lang//messages.php", &php, &ts),
+            Some(String::new()),
+            "an empty locale segment currently stamps an empty locale"
+        );
+    }
+
+    /// A *file* that happens to be named like the marker is not a source root: only directories count.
+    #[test]
+    fn directory_exists_ignores_a_file_named_like_the_marker() {
+        let root = scratch_dir("file-marker");
+        std::fs::write(root.join("app"), "not a directory").unwrap();
+        assert_eq!(
+            resolve_directory_exists(&root, "app"),
+            None,
+            "a plain file must not be taken for the source root"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn directory_exists_collapses_repeated_slashes_and_dot_always_hits() {
+        let root = scratch_dir("slashes");
+        std::fs::create_dir_all(root.join("src/main")).unwrap();
+        assert_eq!(
+            resolve_directory_exists(&root, "src//main").map(|(v, _)| v),
+            Some(".".to_string()),
+            "repeated slashes must not add empty path segments"
+        );
+        // KNOWN WART, pinned: only *empty* segments are filtered, so `.` survives as a real segment and
+        // `<root>/.` is of course a directory — a rule probing `.` can therefore never fail to hit, and
+        // silently yields the sub-project root as `app_root`.
+        assert_eq!(
+            resolve_directory_exists(&root, ".").map(|(v, _)| v),
+            Some(".".to_string()),
+            "`.` is not rejected like the empty path is"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_pointer_is_none_for_missing_or_malformed_files() {
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let missing = PathBuf::from("/definitely/not/here/composer.json");
+        assert!(
+            resolve_manifest_pointer(&missing, "a.b", PickStrategy::FirstDir, &fs).is_none(),
+            "a missing manifest degrades to None"
+        );
+
+        let root = scratch_dir("bad-json");
+        let bad = root.join("composer.json");
+        std::fs::write(&bad, "{not json at all").unwrap();
+        assert!(
+            resolve_manifest_pointer(&bad, "a.b", PickStrategy::FirstDir, &fs).is_none(),
+            "malformed JSON degrades to None"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_pointer_is_none_when_the_pointer_misses() {
+        let root = scratch_dir("miss-pointer");
+        let path = root.join("composer.json");
+        std::fs::write(&path, r#"{"extra": {"public-dir": "web"}}"#).unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+
+        assert!(
+            resolve_manifest_pointer(&path, "extra.nope", PickStrategy::FirstDir, &fs).is_none(),
+            "an absent key must yield None"
+        );
+        assert!(
+            resolve_manifest_pointer(&path, "extra.public-dir.deeper", PickStrategy::FirstDir, &fs)
+                .is_none(),
+            "walking past a scalar must yield None"
+        );
+        assert!(
+            resolve_manifest_pointer(&path, "", PickStrategy::FirstDir, &fs).is_none(),
+            "an empty pointer has no segment to walk"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A pointer may land on something that is neither a string nor a map (a list, a number, a bool,
+    /// null) — none of those carry a directory, and none may panic.
+    #[test]
+    fn manifest_pointer_rejects_scalarless_targets() {
+        let root = scratch_dir("scalarless");
+        let path = root.join("composer.json");
+        std::fs::write(&path, r#"{"a": [1, 2], "b": 3, "c": true, "d": null}"#).unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+
+        for pointer in ["a", "b", "c", "d"] {
+            assert!(
+                resolve_manifest_pointer(&path, pointer, PickStrategy::FirstDir, &fs).is_none(),
+                "a non-string, non-object target must yield None: `{pointer}`"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Inside a namespace map, only string values are directory candidates; anything else is ignored
+    /// rather than poisoning the pick.
+    #[test]
+    fn manifest_pointer_ignores_non_string_values_in_a_map() {
+        let root = scratch_dir("map-values");
+        let path = root.join("composer.json");
+        std::fs::write(
+            &path,
+            r#"{"autoload": {"psr-4": {"a\\": 42, "b\\": {"x": 1}, "c\\": "app/"}}}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+
+        assert_eq!(
+            resolve_manifest_pointer(&path, "autoload.psr-4", PickStrategy::ShallowestDir, &fs)
+                .map(|(v, _)| v),
+            Some("app".to_string()),
+            "only the string-valued entry is a candidate"
+        );
+
+        // Every entry non-string -> no candidate at all.
+        let none_path = root.join("none.json");
+        std::fs::write(&none_path, r#"{"autoload": {"psr-4": {"a\\": 1, "b\\": true}}}"#).unwrap();
+        assert!(
+            resolve_manifest_pointer(&none_path, "autoload.psr-4", PickStrategy::FirstDir, &fs)
+                .is_none(),
+            "a map with no string values yields no candidate"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Code-evidence detectors (`import_exists` / `call_exists`) need parsed code, so in P0 they must
+    /// stay silent — a framework recognisable only from code is detected in P3, never here.
+    #[test]
+    fn code_only_detectors_cannot_fire_without_parsed_code() {
+        let root = scratch_dir("code-only");
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let kb = StaticKb(vec![
+            FrameworkKnowledge {
+                id: "import-fw".into(),
+                language: Language::new("php"),
+                detectors: vec![Detector::ImportExists {
+                    symbol: "GuzzleHttp".into(),
+                    confidence: 0.6,
+                }],
+                ..Default::default()
+            },
+            FrameworkKnowledge {
+                id: "call-fw".into(),
+                language: Language::new("php"),
+                detectors: vec![Detector::CallExists {
+                    callee: "Db::query".into(),
+                    confidence: 0.8,
+                }],
+                ..Default::default()
+            },
+        ]);
+        let got = detect_without_code(&kb, &fs, &root, &root, &Language::new("php"), &ts);
+        assert!(
+            got.is_empty(),
+            "import/call detectors must not fire before any code is parsed, got: {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Detections are returned **highest confidence first**: downstream, single-valued facts (`db_verbs`,
+    /// `method_ref` …) are taken with `find_map`, so the order decides which declaration wins.
+    #[test]
+    fn detections_are_ranked_by_confidence() {
+        let root = scratch_dir("rank");
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{"require": {"a/pkg": "^1", "b/pkg": "^1"}}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let kb = StaticKb(vec![
+            FrameworkKnowledge {
+                id: "low".into(),
+                language: Language::new("php"),
+                detectors: vec![Detector::ManifestDependency {
+                    manifest: "composer.json".into(),
+                    dependency: "a/pkg".into(),
+                    confidence: 0.6,
+                }],
+                ..Default::default()
+            },
+            FrameworkKnowledge {
+                id: "high".into(),
+                language: Language::new("php"),
+                detectors: vec![Detector::ManifestDependency {
+                    manifest: "composer.json".into(),
+                    dependency: "b/pkg".into(),
+                    confidence: 0.95,
+                }],
+                ..Default::default()
+            },
+        ]);
+        let got = detect_without_code(&kb, &fs, &root, &root, &Language::new("php"), &ts);
+        assert_eq!(
+            got,
+            vec!["high".to_string(), "low".to_string()],
+            "the more confident detection must come first: {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The `lock_dependency` detector is dispatched like `manifest_dependency`, but reads the installed
+    /// closure — a package the project never declared itself must still be detected.
+    #[test]
+    fn lock_dependency_detector_fires_on_installed_packages() {
+        let root = scratch_dir("lock-detect");
+        std::fs::write(
+            root.join("composer.lock"),
+            r#"{"packages":[{"name":"topthink/framework"}]}"#,
+        )
+        .unwrap();
+        let fs = gt_adapter_fs::StdFileSystem::new();
+        let ts = gt_domain::port::DefaultTechStackRegistry::new();
+        let kb = StaticKb(vec![FrameworkKnowledge {
+            id: "tp-lock".into(),
+            language: Language::new("php"),
+            detectors: vec![Detector::LockDependency {
+                lock: "composer.lock".into(),
+                dependency: "topthink/framework".into(),
+                confidence: 0.95,
+            }],
+            ..Default::default()
+        }]);
+
+        let got = detect_without_code(&kb, &fs, &root, &root, &Language::new("php"), &ts);
+        assert!(got.contains(&"tp-lock".to_string()), "a lock-file dependency must be detected: {got:?}");
+
+        // And a package that is in neither the lock nor anywhere else stays undetected.
+        let other = StaticKb(vec![FrameworkKnowledge {
+            id: "absent".into(),
+            language: Language::new("php"),
+            detectors: vec![Detector::LockDependency {
+                lock: "composer.lock".into(),
+                dependency: "symfony/console".into(),
+                confidence: 0.95,
+            }],
+            ..Default::default()
+        }]);
+        let got = detect_without_code(&other, &fs, &root, &root, &Language::new("php"), &ts);
+        assert!(got.is_empty(), "an absent lock dependency must not be detected: {got:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `provides` entry naming knowledge that is **not in the KB** is still returned: expansion only
+    /// needs it to expand further, and callers must tolerate a dangling id (`exclude.rs` skips it
+    /// silently). Pinned so nobody "cleans up" the list and changes downstream ordering semantics.
+    #[test]
+    fn expand_provided_keeps_a_dangling_provided_id() {
+        let kb = StaticKb(vec![fk("a", &["ghost"])]);
+        let got = expand_provided(vec![("a".into(), 1.0)], &kb);
+        let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["a", "ghost"],
+            "an unknown provided id stays in the list; readers skip unknown ids themselves: {ids:?}"
+        );
+    }
 }

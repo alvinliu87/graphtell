@@ -667,7 +667,7 @@ fn is_builtin_type(t: &str, policy: &NamespacePolicy) -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use gt_domain::error::Result as DomainResult;
+    use gt_domain::error::{DomainError, Result as DomainResult};
     use gt_domain::model::{
         CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
         InheritanceFact, Language, NamespacePolicy, NodeKind, Project, ProjectId, ProjectStatus,
@@ -866,8 +866,8 @@ mod tests {
         }
     }
 
-    /// Drive `run` over a single in-memory file whose parser always returns `facts`.
-    fn run_on(facts: SyntaxFacts) -> PipelineContext {
+    /// Build a context holding the given files (`id`, `path`), all PHP, sharing the PHP notation policy.
+    fn context_with(files: &[(i64, &str)]) -> PipelineContext {
         let mut ctx = PipelineContext::new(Project {
             id: ProjectId(1),
             name: "t".into(),
@@ -879,15 +879,23 @@ mod tests {
             updated_at: 0,
         });
         ctx.lang_policy_default = php_policy();
-        ctx.files.push(SourceFile {
-            id: FileId(1),
-            project_id: ProjectId(1),
-            sub_project_id: None,
-            path: "app/Order.php".into(),
-            language: Language::new("php"),
-            size_bytes: 10,
-            content_hash: "x".into(),
-        });
+        for (id, path) in files {
+            ctx.files.push(SourceFile {
+                id: FileId(*id),
+                project_id: ProjectId(1),
+                sub_project_id: None,
+                path: (*path).into(),
+                language: Language::new("php"),
+                size_bytes: 10,
+                content_hash: "x".into(),
+            });
+        }
+        ctx
+    }
+
+    /// Drive `run` over a single in-memory file whose parser always returns `facts`.
+    fn run_on(facts: SyntaxFacts) -> PipelineContext {
+        let mut ctx = context_with(&[(1, "app/Order.php")]);
         let registry = StubRegistry {
             parser: StubParser { facts },
         };
@@ -1055,28 +1063,117 @@ mod tests {
     /// drop the file) and raise both the human diagnostic and the machine-readable `unsupported_languages`
     /// signal, so the UI can banner the gap.
     fn run_on_no_parser() -> PipelineContext {
-        let mut ctx = PipelineContext::new(Project {
-            id: ProjectId(1),
-            name: "t".into(),
-            root_path: "/t".into(),
-            description: None,
-            status: ProjectStatus::Ready,
-            config: Default::default(),
-            created_at: 0,
-            updated_at: 0,
-        });
-        ctx.lang_policy_default = php_policy();
-        ctx.files.push(SourceFile {
-            id: FileId(1),
-            project_id: ProjectId(1),
-            sub_project_id: None,
-            path: "app/Order.php".into(),
-            language: Language::new("php"),
-            size_bytes: 10,
-            content_hash: "x".into(),
-        });
+        let mut ctx = context_with(&[(1, "app/Order.php")]);
         let registry = NoParserRegistry;
         let fs = MemFs { source: "<?php".into() };
+        let tech = NoTechStack;
+        super::run(&mut ctx, &registry, &fs, &tech);
+        ctx
+    }
+
+    // ---- failure injection: unreadable files, failing parsers, per-file facts ----
+
+    struct ErrFs;
+    impl FileSystem for ErrFs {
+        fn exists(&self, _: &std::path::Path) -> bool {
+            true
+        }
+        fn is_dir(&self, _: &std::path::Path) -> bool {
+            false
+        }
+        fn read_to_string(&self, _: &std::path::Path) -> DomainResult<String> {
+            Err(DomainError::infra("unreadable"))
+        }
+        fn len(&self, _: &std::path::Path) -> DomainResult<u64> {
+            Err(DomainError::infra("unreadable"))
+        }
+    }
+
+    struct FailingParser;
+    impl LanguageParser for FailingParser {
+        fn language(&self) -> Language {
+            Language::new("php")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["php"]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> DomainResult<SyntaxFacts> {
+            Err(DomainError::infra("boom"))
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &['\\']
+        }
+        fn member_separator(&self) -> &'static str {
+            "::"
+        }
+    }
+
+    struct FailingRegistry {
+        parser: FailingParser,
+    }
+    impl ParserRegistry for FailingRegistry {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            Some(&self.parser)
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![Language::new("php")]
+        }
+    }
+
+    /// A parser whose answer depends on the file path, so several files with different facts can go
+    /// through one `run` call.
+    struct MultiParser {
+        by_path: HashMap<String, SyntaxFacts>,
+    }
+    impl LanguageParser for MultiParser {
+        fn language(&self) -> Language {
+            Language::new("php")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["php"]
+        }
+        fn parse(&self, path: &str, _source: &str) -> DomainResult<SyntaxFacts> {
+            Ok(self.by_path.get(path).cloned().unwrap_or_default())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &['\\']
+        }
+        fn member_separator(&self) -> &'static str {
+            "::"
+        }
+    }
+
+    struct MultiRegistry {
+        parser: MultiParser,
+    }
+    impl ParserRegistry for MultiRegistry {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            Some(&self.parser)
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![Language::new("php")]
+        }
+    }
+
+    /// Drive `run` over several files at once (`file id`, `path`, `facts`).
+    fn run_paths(files: Vec<(i64, &str, SyntaxFacts)>) -> PipelineContext {
+        let mut ctx = context_with(
+            &files
+                .iter()
+                .map(|(id, path, _)| (*id, *path))
+                .collect::<Vec<_>>(),
+        );
+        let registry = MultiRegistry {
+            parser: MultiParser {
+                by_path: files
+                    .into_iter()
+                    .map(|(_, path, facts)| (path.to_string(), facts))
+                    .collect(),
+            },
+        };
+        let fs = MemFs {
+            source: "<?php".into(),
+        };
         let tech = NoTechStack;
         super::run(&mut ctx, &registry, &fs, &tech);
         ctx
@@ -1308,5 +1405,603 @@ mod tests {
             Some("Db::name('x')")
         );
         assert_eq!(props.get("in_loop").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    // ===================================================================
+    // Negative / degradation coverage
+    //
+    // The tests above pin the happy paths. Everything below pins what must **not** happen: the
+    // `continue` branches, the malformed-input fallbacks and the precedence rules that are invisible
+    // in production (a silently skipped file looks exactly like an empty project) right up to the
+    // moment someone changes them.
+    // ===================================================================
+
+    // ---- notation policy ----
+
+    /// Regression guard: `NamespacePolicy::default()` used to *be* PHP's policy, so an unknown
+    /// language silently inherited `\` / `::` / PHP's primitives. Empty means "no notation
+    /// knowledge", and every consumer must degrade honestly instead of guessing.
+    #[test]
+    fn resolve_type_without_a_language_policy_never_invents_a_separator() {
+        let policy = NamespacePolicy::default();
+        let empty: HashMap<String, String> = HashMap::new();
+        assert_eq!(
+            super::resolve_type(Some("App"), &empty, "Foo", &policy),
+            "Foo",
+            "no namespace separator -> the bare name stays bare, never `App\\Foo`"
+        );
+        assert_eq!(
+            super::resolve_type(None, &empty, "\\Foo\\Bar", &policy),
+            "\\Foo\\Bar",
+            "without separators nothing can be recognised as rooted"
+        );
+        assert_eq!(
+            super::resolve_type(Some("App"), &empty, "App\\Foo", &policy),
+            "App\\Foo",
+            "nor as already qualified"
+        );
+    }
+
+    #[test]
+    fn resolve_type_import_hit_precedes_namespace_join() {
+        let policy = php_policy();
+        let mut imports: HashMap<String, String> = HashMap::new();
+        imports.insert("foo".to_string(), "App\\Dao\\Foo".to_string());
+        // An imported class wins over the current namespace, otherwise `use`-ed names would be
+        // shadowed by whatever namespace the file happens to declare.
+        assert_eq!(
+            super::resolve_type(Some("App\\Service"), &imports, "Foo", &policy),
+            "App\\Dao\\Foo"
+        );
+    }
+
+    #[test]
+    fn resolve_type_trims_the_written_name() {
+        let policy = php_policy();
+        let empty: HashMap<String, String> = HashMap::new();
+        let mut imports: HashMap<String, String> = HashMap::new();
+        imports.insert("foo".to_string(), "App\\Dao\\Foo".to_string());
+        // Whitespace around the source text must neither leak into the FQN nor break the lookup.
+        assert_eq!(super::resolve_type(Some("App"), &empty, "  Foo  ", &policy), "App\\Foo");
+        assert_eq!(super::resolve_type(None, &imports, " Foo ", &policy), "App\\Dao\\Foo");
+    }
+
+    #[test]
+    fn owner_parent_none_when_the_separator_is_at_the_start() {
+        // `::pay` has an empty parent — distinct from "no separator at all", and it must not be
+        // returned as a class FQN (an empty string would match nothing useful in `by_name`).
+        assert_eq!(super::owner_parent("::pay", "::"), None);
+    }
+
+    #[test]
+    fn owner_parent_splits_on_the_last_separator() {
+        assert_eq!(
+            super::owner_parent("App\\Order::pay::helper", "::"),
+            Some("App\\Order::pay".to_string()),
+            "`rfind` semantics: walk back one level only"
+        );
+    }
+
+    #[test]
+    fn owner_parent_with_an_empty_member_separator_does_not_panic() {
+        // Reachable today: `NamespacePolicy::default()` has an empty member separator, so every
+        // file whose language is not wired up lands here (via the unresolvable-owner fallback).
+        // It degenerates to "the owner is its own parent", which can never resolve to *another*
+        // node, so the caller falls through to the File node.
+        assert_eq!(super::owner_parent("App\\Order", ""), Some("App\\Order".to_string()));
+    }
+
+    #[test]
+    fn is_builtin_type_is_false_for_a_policy_without_primitives() {
+        let policy = NamespacePolicy::default();
+        assert!(!super::is_builtin_type("int", &policy));
+        assert!(!super::is_builtin_type("?string", &policy), "no primitives declared -> nothing is skipped");
+    }
+
+    #[test]
+    fn property_value_falls_back_to_null_on_a_malformed_default() {
+        let decl = |extra| Declaration {
+            kind: NodeKind(NodeKind::PROPERTY.to_string()),
+            name: "x".into(),
+            fqn: "app\\Order::x".into(),
+            parent_fqn: Some("app\\Order".into()),
+            span: Span::default(),
+            extra,
+        };
+        assert_eq!(super::property_value(&decl(serde_json::json!({ "default": 42 }))), FactValue::Null);
+        assert_eq!(
+            super::property_value(&decl(serde_json::json!({ "default": { "t": "Nope", "v": 1 } }))),
+            FactValue::Null,
+            "an unknown FactValue tag must not panic"
+        );
+        assert_eq!(super::property_value(&decl(serde_json::json!({ "other": 1 }))), FactValue::Null);
+        assert_eq!(super::property_value(&decl(serde_json::json!("not-an-object"))), FactValue::Null);
+        assert_eq!(super::property_value(&decl(serde_json::Value::Null)), FactValue::Null);
+    }
+
+    // ---- file-level degradation ----
+
+    #[test]
+    fn run_skips_an_unreadable_file_and_builds_nothing() {
+        let mut ctx = context_with(&[(1, "app/Order.php")]);
+        let registry = StubRegistry {
+            parser: StubParser {
+                facts: SyntaxFacts::default(),
+            },
+        };
+        let tech = NoTechStack;
+        super::run(&mut ctx, &registry, &ErrFs, &tech);
+        assert!(ctx.ws.node_ids().is_empty(), "an unreadable file must produce nothing at all");
+        assert!(
+            ctx.ws.file_node("app/Order.php").is_none(),
+            "not even a File node: Ingest already accounted for it, CfAst must not invent a node for content it never read"
+        );
+        assert!(
+            !ctx.ws.diagnostics.iter().any(|d| d.code == "NoParserForLanguage"),
+            "unreadable is not the same as unsupported — no misleading banner"
+        );
+        assert!(ctx.ws.get_symbol("unsupported_languages", "php").is_none());
+    }
+
+    #[test]
+    fn run_skips_a_file_whose_parse_fails() {
+        let mut ctx = context_with(&[(1, "app/Order.php")]);
+        let tech = NoTechStack;
+        let fs = MemFs {
+            source: "<?php".into(),
+        };
+        super::run(&mut ctx, &FailingRegistry { parser: FailingParser }, &fs, &tech);
+        // Asymmetry worth knowing (pinned here): the *no parser* path still degrades to a File node,
+        // but a file whose parse failed produces nothing. Half-built nodes from broken source would
+        // pollute every downstream phase, so this is a deliberate choice, not an oversight.
+        assert!(ctx.ws.node_ids().is_empty(), "no node may survive a failed parse");
+        assert!(ctx.ws.file_node("app/Order.php").is_none());
+        assert!(ctx.ws.diagnostics.is_empty(), "parse failures are logged (warn!), not diagnosed");
+    }
+
+    #[test]
+    fn run_raises_no_unsupported_language_signal_when_a_parser_exists() {
+        let ctx = run_on(SyntaxFacts::default());
+        assert!(
+            !ctx.ws.diagnostics.iter().any(|d| d.code == "NoParserForLanguage"),
+            "a supported language must never be reported as unsupported"
+        );
+        assert!(ctx.ws.get_symbol("unsupported_languages", "php").is_none());
+    }
+
+    // ---- build_file: what must be dropped, skipped or left unresolved ----
+
+    #[test]
+    fn build_file_ignores_declaration_kinds_it_does_not_model() {
+        let mut facts = SyntaxFacts::default();
+        facts.declarations = vec![Declaration {
+            kind: NodeKind("annotation".into()),
+            name: "Route".into(),
+            fqn: "app\\Order::Route".into(),
+            parent_fqn: Some("app\\Order".into()),
+            span: Span::default(),
+            extra: serde_json::Value::Null,
+        }];
+        let ctx = run_on(facts);
+        assert_eq!(
+            ctx.ws.node_count(),
+            1,
+            "only the File node survives: an unmodelled kind must be dropped, not materialised under a stray NodeKind"
+        );
+        assert!(ctx.ws.find_by_name("app\\Order::Route").is_none());
+    }
+
+    #[test]
+    fn build_file_inheritance_with_an_unknown_child_is_dropped() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.inheritances = vec![InheritanceFact {
+            child_fqn: "app\\Ghost".into(),
+            base_name: "BaseModel".into(),
+            kind: EdgeKind(EdgeKind::EXTENDS.to_string()),
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        assert!(ctx.ws.inherits.is_empty(), "no supertype record without a child node declared in this file");
+        assert!(
+            ctx.ws.find_by_name("app\\BaseModel").is_none(),
+            "no placeholder base either: the clause is skipped wholesale, not half-recorded"
+        );
+        assert!(ctx.ws.edges().is_empty(), "no dangling Extends edge into nowhere");
+    }
+
+    #[test]
+    fn build_file_member_with_an_unknown_parent_gets_no_owner_edge() {
+        let mut facts = SyntaxFacts::default();
+        facts.declarations = vec![Declaration {
+            kind: NodeKind(NodeKind::METHOD.to_string()),
+            name: "pay".into(),
+            fqn: "app\\Ghost::pay".into(),
+            parent_fqn: Some("app\\Ghost".into()),
+            span: Span::default(),
+            extra: serde_json::Value::Null,
+        }];
+        let ctx = run_on(facts);
+        let member = ctx
+            .ws
+            .find_by_name("app\\Ghost::pay")
+            .expect("the member node itself is still built");
+        assert!(
+            !ctx.ws.edges().iter().any(|e| e.to_id == member),
+            "an unresolvable parent must not be invented as an owner"
+        );
+    }
+
+    #[test]
+    fn build_file_call_site_owner_falls_back_to_the_declaring_class() {
+        let mut facts = SyntaxFacts::default();
+        facts.declarations = vec![Declaration {
+            kind: NodeKind(NodeKind::CLASS.to_string()),
+            name: "Order".into(),
+            fqn: "app\\Order".into(),
+            parent_fqn: None,
+            span: Span::default(),
+            extra: serde_json::Value::Null,
+        }];
+        // The method node is absent (parser only reported the class), so `Class::method` must walk
+        // back one level through the member separator and land on the class.
+        facts.call_sites = vec![CallSiteFact {
+            owner_fqn: "app\\Order::pay".into(),
+            owner_class: None,
+            callee_text: "Db::name".into(),
+            receiver: None,
+            method: None,
+            args: vec![],
+            span: Span::default(),
+            snippet: None,
+            db_table: None,
+            in_loop: false,
+            entity: None,
+        }];
+        let ctx = run_on(facts);
+        let class = ctx.ws.find_by_name("app\\Order").expect("class");
+        let call = ctx.ws.nodes_of_kind(NodeKind::CALL_SITE)[0];
+        assert_eq!(ctx.ws.calls[0].owner, class, "owner falls back to the declaring class");
+        assert!(
+            ctx.ws.edges().iter().any(|e| e.from_id == class
+                && e.to_id == call
+                && e.kind.as_str() == EdgeKind::HAS_CALL_SITE),
+            "the class must own the call site"
+        );
+    }
+
+    #[test]
+    fn build_file_call_site_owner_falls_back_to_the_file_node() {
+        let mut facts = SyntaxFacts::default();
+        facts.call_sites = vec![CallSiteFact {
+            owner_fqn: "app\\Ghost::pay".into(),
+            owner_class: None,
+            callee_text: "Db::name".into(),
+            receiver: None,
+            method: None,
+            args: vec![],
+            span: Span::default(),
+            snippet: None,
+            db_table: None,
+            in_loop: false,
+            entity: None,
+        }];
+        let ctx = run_on(facts);
+        let file = ctx.ws.file_node("app/Order.php").expect("file node");
+        let call = ctx.ws.nodes_of_kind(NodeKind::CALL_SITE)[0];
+        assert_eq!(ctx.ws.calls[0].owner, file, "a totally unresolvable owner lands on the File node");
+        assert!(
+            ctx.ws.edges().iter().any(|e| e.from_id == file
+                && e.to_id == call
+                && e.kind.as_str() == EdgeKind::HAS_CALL_SITE),
+            "the file must own the orphan call site rather than it floating unattached"
+        );
+    }
+
+    #[test]
+    fn build_file_call_site_properties_collapse_to_null_when_empty() {
+        let mut facts = SyntaxFacts::default();
+        facts.call_sites = vec![
+            CallSiteFact {
+                owner_fqn: "app\\Order".into(),
+                owner_class: None,
+                callee_text: "plain".into(),
+                receiver: None,
+                method: None,
+                args: vec![],
+                span: Span::default(),
+                snippet: None,
+                db_table: None,
+                in_loop: false,
+                entity: None,
+            },
+            CallSiteFact {
+                owner_fqn: "app\\Order".into(),
+                owner_class: None,
+                callee_text: "looping".into(),
+                receiver: None,
+                method: None,
+                args: vec![],
+                span: Span::default(),
+                snippet: None,
+                db_table: None,
+                in_loop: true,
+                entity: None,
+            },
+        ];
+        let ctx = run_on(facts);
+        let nodes = ctx.ws.nodes_of_kind(NodeKind::CALL_SITE);
+        assert_eq!(nodes.len(), 2);
+        let node_named = |callee: &str| {
+            nodes
+                .iter()
+                .copied()
+                .find(|id| ctx.ws.node(*id).and_then(|n| Some(n.name == callee)).unwrap_or(false))
+                .expect("call node")
+        };
+        let plain = ctx.ws.node(node_named("plain")).unwrap().properties.clone();
+        assert_eq!(
+            plain,
+            serde_json::Value::Null,
+            "a call carrying neither snippet nor loop flag must store Null, not an empty object"
+        );
+        let looping = ctx.ws.node(node_named("looping")).unwrap().properties.clone();
+        assert_eq!(looping.get("in_loop").and_then(|v| v.as_bool()), Some(true));
+        assert!(looping.get("snippet").is_none(), "no snippet key when there is no snippet");
+    }
+
+    #[test]
+    fn build_file_keeps_the_first_import_for_a_colliding_short_name() {
+        let mut a = SyntaxFacts::default();
+        a.imports = vec![ImportFact {
+            alias: None,
+            name: "app\\a\\Client".into(),
+            span: Span::default(),
+        }];
+        let mut b = SyntaxFacts::default();
+        b.imports = vec![ImportFact {
+            alias: None,
+            name: "app\\b\\Client".into(),
+            span: Span::default(),
+        }];
+        let ctx = run_paths(vec![(1, "app/A.php", a), (2, "app/B.php", b)]);
+        // The global short-name table is first-come-first-served and must never be silently
+        // overwritten by a later file ...
+        let global = ctx
+            .ws
+            .get_symbol("imports", "client")
+            .and_then(|v| v.get("fqn"))
+            .and_then(|v| v.as_str());
+        assert_eq!(global, Some("app\\a\\Client"));
+        // ... which is exactly why the per-file table exists: P7 resolves receivers per file.
+        assert_eq!(
+            ctx.ws.imports_of_file(1).and_then(|m| m.get("client")).map(String::as_str),
+            Some("app\\a\\Client")
+        );
+        assert_eq!(
+            ctx.ws.imports_of_file(2).and_then(|m| m.get("client")).map(String::as_str),
+            Some("app\\b\\Client")
+        );
+    }
+
+    #[test]
+    fn build_file_constructor_injection_wins_over_a_declared_assign_type() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::METHOD.to_string()),
+                name: "__construct".into(),
+                fqn: "app\\Order::__construct".into(),
+                parent_fqn: Some("app\\Order".into()),
+                span: Span::default(),
+                extra: serde_json::json!({
+                    "parameters": [{ "name": "svc", "type": "RealService" }],
+                    "this_assigns": [{ "prop": "svc", "var": "svc" }],
+                    "this_assign_types": [{ "prop": "svc", "class": "Declared" }]
+                }),
+            },
+        ];
+        let ctx = run_on(facts);
+        assert_eq!(
+            ctx.ws.prop_type("app\\Order", "svc"),
+            Some("app\\RealService"),
+            "the injected parameter type must win over the declaration-site type already in the index"
+        );
+    }
+
+    #[test]
+    fn build_file_assign_facts_missing_their_fields_are_skipped() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::METHOD.to_string()),
+                name: "save".into(),
+                fqn: "app\\Order::save".into(),
+                parent_fqn: Some("app\\Order".into()),
+                span: Span::default(),
+                extra: serde_json::json!({
+                    "parameters": [{ "name": "svc", "type": "Svc" }],
+                    "this_assigns": [
+                        { "prop": "svc", "var": "nope" },
+                        { "prop": "orphan" },
+                        { "var": "svc" },
+                        42
+                    ],
+                    "local_assign_types": [
+                        { "var": "m", "class": "Model" },
+                        { "class": "NoVar" },
+                        { "var": "x" },
+                        "nope"
+                    ]
+                }),
+            },
+        ];
+        let ctx = run_on(facts);
+        assert_eq!(
+            ctx.ws.prop_type("app\\Order", "svc"),
+            None,
+            "`$this->svc = $nope` with no parameter of that name records nothing (and must not panic)"
+        );
+        assert_eq!(
+            ctx.ws.param_type("app\\Order::save", "svc"),
+            Some("app\\Svc"),
+            "the parameter itself is unaffected"
+        );
+        assert_eq!(
+            ctx.ws.local_type("app\\Order::save", "m"),
+            Some("app\\Model"),
+            "the well-formed local assignment still lands"
+        );
+        assert_eq!(ctx.ws.local_type("app\\Order::save", "x"), None, "the malformed ones are dropped");
+    }
+
+    #[test]
+    fn build_file_this_assign_without_a_parent_class_skips_everything_below_it() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::METHOD.to_string()),
+                name: "__construct".into(),
+                fqn: "app\\Order::__construct".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::json!({
+                    "parameters": [{ "name": "svc", "type": "Real" }],
+                    "this_assigns": [{ "prop": "svc", "var": "svc" }],
+                    "returns_class": ["Dao"]
+                }),
+            },
+        ];
+        let ctx = run_on(facts);
+        let ctor = ctx
+            .ws
+            .find_by_name("app\\Order::__construct")
+            .expect("the node itself is still created");
+        assert!(
+            !ctx.ws.edges().iter().any(|e| e.to_id == ctor),
+            "known wart, pinned: `let Some(class_fqn) = ... else {{ continue }}` targets the *declarations* loop, \
+             so a method carrying `this_assigns` without a `parent_fqn` loses every step below it, including the owner edge"
+        );
+        assert!(ctx.ws.pending_links.is_empty(), "the `returns_class` step is skipped too");
+    }
+
+    #[test]
+    fn build_file_magic_methods_ignore_non_strings_and_empty_names() {
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::json!({ "magic_methods": ["find", 42, null, "", "pay"] }),
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Plain".into(),
+                fqn: "app\\Plain".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+        ];
+        let ctx = run_on(facts);
+        assert!(ctx.ws.declares_magic_method("app\\Order", "find"));
+        assert!(ctx.ws.declares_magic_method("app\\Order", "pay"));
+        assert!(!ctx.ws.declares_magic_method("app\\Order", ""), "empty names must be filtered out");
+        assert!(
+            !ctx.ws.declares_magic_method("app\\Plain", "anything"),
+            "a class without `@method` declares nothing"
+        );
+    }
+
+    #[test]
+    fn build_file_returns_class_needs_a_known_owner_and_string_entries() {
+        // (a) no owning class node -> nothing can be queued.
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![Declaration {
+            kind: NodeKind(NodeKind::METHOD.to_string()),
+            name: "dao".into(),
+            fqn: "app\\Ghost::dao".into(),
+            parent_fqn: None,
+            span: Span::default(),
+            extra: serde_json::json!({ "returns_class": ["Dao"] }),
+        }];
+        let ctx = run_on(facts);
+        assert!(ctx.ws.pending_links.is_empty(), "no owner node -> no link may be queued");
+
+        // (b) non-string entries are dropped; well-formed ones are resolved against the namespace.
+        let mut facts = SyntaxFacts::default();
+        facts.namespace = Some("app".into());
+        facts.declarations = vec![
+            Declaration {
+                kind: NodeKind(NodeKind::CLASS.to_string()),
+                name: "Order".into(),
+                fqn: "app\\Order".into(),
+                parent_fqn: None,
+                span: Span::default(),
+                extra: serde_json::Value::Null,
+            },
+            Declaration {
+                kind: NodeKind(NodeKind::METHOD.to_string()),
+                name: "dao".into(),
+                fqn: "app\\Order::dao".into(),
+                parent_fqn: Some("app\\Order".into()),
+                span: Span::default(),
+                extra: serde_json::json!({ "returns_class": [42, "Dao", null, true] }),
+            },
+        ];
+        let ctx = run_on(facts);
+        assert_eq!(ctx.ws.pending_links.len(), 1, "only the string entry produces a link");
+        assert_eq!(ctx.ws.pending_links[0].raw, "app\\Dao");
+    }
+
+    #[test]
+    fn build_file_config_entry_carries_the_stem_and_no_locale_without_an_adapter() {
+        let mut facts = SyntaxFacts::default();
+        facts.config_entries = vec![ConfigEntryFact {
+            key_path: "listen.order".into(),
+            value: FactValue::Null,
+            span: Span::default(),
+        }];
+        let ctx = run_on(facts);
+        assert_eq!(ctx.ws.configs[0].file, "app/Order.php");
+        assert_eq!(ctx.ws.configs[0].file_stem.as_deref(), Some("Order"));
+        assert_eq!(
+            ctx.ws.configs[0].locale,
+            None,
+            "with no tech-stack adapter for the language no locale layout may be guessed — the old \
+             hard-coded `lang/{{locale}}/*.php` never matched anything and silently left locale empty"
+        );
     }
 }

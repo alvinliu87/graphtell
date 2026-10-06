@@ -918,5 +918,94 @@ mod tests {
             edges[0].confidence
         );
     }
+
+    // ------------------------------------------------------- defensive / negative coverage
+    //
+    // The happy-path and structural tests above pin what *should* happen. These pin the branches that
+    // must degrade gracefully or stay silent — a regression in any of them is silent (wrong edges, or a
+    // panic on a stale / partially-built workspace).
+
+    /// A `Calls` edge whose *source* node no longer exists in the graph must be skipped when building the
+    /// caller index (the `ctx.ws.node(e.from_id)` guard), never panic. Real callers must still propagate.
+    #[test]
+    fn dangling_calls_edge_with_missing_source_node_is_ignored() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let mid = add_method(&mut ctx, "app\\Mid::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls(&mut ctx, top, mid);
+        calls(&mut ctx, mid, leaf);
+        // Dangling edge: caller id 9999 does not exist in the workspace.
+        ctx.ws.add_edge(NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind("Calls".to_string()),
+            from_id: NodeId(9999),
+            to_id: leaf,
+            phase: Phase("Resolve".into()),
+            confidence: 0.7,
+            properties: serde_json::Value::Null,
+        });
+
+        seed(&mut ctx, leaf, queue, "PublishesTo", 0.85);
+        super::run(&mut ctx);
+
+        // Real chain still propagates; the dangling edge contributed nothing and no panic occurred.
+        assert!(has_edge(&ctx, mid, queue, EdgeKind::PUBLISHES_TO));
+        assert!(has_edge(&ctx, top, queue, EdgeKind::PUBLISHES_TO));
+    }
+
+    /// The seed's source self-calls (`A Calls A`): the source must never receive a propagated edge to
+    /// itself. `transitive_callers` materializes every caller *except* the source (`c == src` skip) and
+    /// the best-path guard refuses to revisit the source, so the self-edge is dropped.
+    #[test]
+    fn seed_source_calling_itself_does_not_produce_a_self_edge() {
+        let mut ctx = test_ctx();
+        let a = add_method(&mut ctx, "app\\A::run");
+        let queue = add_node(&mut ctx, "Queue", "Queue:default");
+
+        calls(&mut ctx, a, a); // self-referential call
+        seed(&mut ctx, a, queue, "PublishesTo", 0.85);
+        super::run(&mut ctx);
+
+        assert!(
+            !has_edge(&ctx, a, queue, EdgeKind::PUBLISHES_TO),
+            "the seed source must not emit a propagated edge to itself even when it self-calls"
+        );
+    }
+
+    /// Only the environment-read kinds (`ReadsConfig` / `ReadsCache`) are flagged `indirect`. A real action
+    /// (`ReadsDb`) must NOT be flagged, otherwise downstream would down-weight an action that genuinely
+    /// happened. This pins the *boundary* of `DECAYED_KINDS` — the sibling test
+    /// `both_environment_read_kinds_are_flagged_indirect` asserts the positive side; this asserts the
+    /// negative, so adding a real action to `DECAYED_KINDS` would fail here.
+    #[test]
+    fn action_kind_is_not_flagged_indirect() {
+        let mut ctx = test_ctx();
+        let leaf = add_method(&mut ctx, "app\\Leaf::run");
+        let top = add_method(&mut ctx, "app\\Top::run");
+        let table = add_node(&mut ctx, "Table", "user");
+
+        calls(&mut ctx, top, leaf);
+        seed(&mut ctx, leaf, table, "ReadsDb", 0.85);
+        super::run(&mut ctx);
+
+        let edge = ctx
+            .ws
+            .edges()
+            .iter()
+            .find(|e| {
+                e.from_id == top
+                    && e.to_id == table
+                    && e.kind.as_str() == EdgeKind::READS_DB
+            })
+            .expect("a real action edge must be propagated");
+        assert!(
+            edge.properties.get("indirect").is_none(),
+            "a real action (ReadsDb) must not be flagged indirect: {:?}",
+            edge.properties
+        );
+    }
 }
 

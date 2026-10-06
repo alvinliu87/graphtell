@@ -196,7 +196,11 @@ fn sanitize(glob: &str) -> Result<String, String> {
         g = rest.to_string();
     }
     let g = g.trim_matches('/').to_string();
-    if g.is_empty() || g == "**" {
+    if g.is_empty() || g == "**" || g == "." {
+        // A bare `.` is the resolved form of `{app_root}` when the manifest points the autoload
+        // root at the sub-project root itself. It would exclude every source file in the
+        // sub-project, so it is refused — exactly like the two-segment `./**` form below. Without
+        // this, `probe_dir(".")` returns `None` (single segment) and the root-guard check is skipped.
         return Err("the glob resolves to nothing or covers the whole sub-project".to_string());
     }
     let segments: Vec<&str> = g.split('/').collect();
@@ -296,10 +300,52 @@ mod tests {
             .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()))
     }
 
-    fn resolve_sync(
-        root: &Path,
-        kb: &StaticKb,
-    ) -> SubExcludes {
+    /// A framework with its own id / detector, so several of them can be detected side by side.
+    fn fk_named(
+        id: &str,
+        dependency: &str,
+        exclude_rules: Vec<ExcludeRule>,
+        root_rules: Vec<RootRule>,
+    ) -> FrameworkKnowledge {
+        FrameworkKnowledge {
+            id: id.into(),
+            display_name: id.to_uppercase(),
+            language: Language::new("php"),
+            detectors: vec![Detector::ManifestDependency {
+                manifest: "composer.json".into(),
+                dependency: dependency.into(),
+                confidence: 0.95,
+            }],
+            root_rules,
+            exclude_rules,
+            ..Default::default()
+        }
+    }
+
+    /// A rule with a literal glob: no placeholder, no source, no fallback.
+    fn rule_static(id: &str, glob: &str) -> ExcludeRule {
+        ExcludeRule {
+            id: id.into(),
+            glob: glob.into(),
+            source: None,
+            fallbacks: vec![],
+        }
+    }
+
+    /// A provider that **detects** a framework it cannot then serve — pins the
+    /// `let Some(fk) = kb.by_id(&id) else { continue }` arm.
+    struct DanglingKb(FrameworkKnowledge);
+
+    impl KnowledgeProvider for DanglingKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> {
+            vec![&self.0]
+        }
+        fn by_id(&self, _: &str) -> Option<&FrameworkKnowledge> {
+            None
+        }
+    }
+
+    fn resolve_sync(root: &Path, kb: &dyn KnowledgeProvider) -> SubExcludes {
         let fs = gt_adapter_fs::StdFileSystem::new();
         let parsers = gt_adapter_parser::DefaultParserRegistry::new();
         let ts = techstack();
@@ -755,5 +801,249 @@ mod tests {
             render("{ app_root }/runtime/**", &values),
             Some("app/runtime/**".to_string())
         );
+    }
+
+    // ===================================================================
+    // Negative coverage: detection gaps, fallback-chain filtering, guard refusals
+    //
+    // Everything below pins branches that produce **nothing** (or that must refuse to produce
+    // anything), plus the precedence rules inside the fallback chain. They never show up in the
+    // happy path, and failing in the wrong direction here means silently deleting source from the scan.
+    // ===================================================================
+
+    #[test]
+    fn nothing_detected_yields_no_globs_and_empty_provenance() {
+        let root = scratch("no-detection");
+        // A manifest that exists but declares none of the detector's dependencies.
+        write(&root, "composer.json", r#"{"require": {"some/other": "^1"}}"#);
+        let kb = StaticKb(vec![fk_with(vec![rule_static("runtime-dir", "runtime/**")], vec![])]);
+        let got = resolve_sync(&root, &kb);
+        assert!(got.globs.is_empty(), "an undetected framework contributes no rules");
+        assert!(
+            got.diagnostics.is_empty(),
+            "not detecting a framework is not an error — only an *unresolved* rule is"
+        );
+        assert_eq!(got.facts, json!({ "excludes": [] }), "provenance stays empty");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_detected_framework_the_provider_cannot_serve_is_skipped() {
+        let root = scratch("dangling-id");
+        write(&root, "composer.json", r#"{"require": {"topthink/framework": "^6"}}"#);
+        let kb = DanglingKb(fk_with(vec![rule_static("runtime-dir", "runtime/**")], vec![]));
+        let got = resolve_sync(&root, &kb);
+        assert!(got.globs.is_empty(), "a dangling id must be skipped, not guessed at");
+        assert!(
+            got.diagnostics.is_empty(),
+            "and it must not be reported — nothing was left unresolved, nothing exists to exclude"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn every_detected_framework_contributes_its_own_rules() {
+        let root = scratch("multi-fk");
+        write(
+            &root,
+            "composer.json",
+            r#"{"require": {"topthink/framework": "^6", "vendor/plugin": "^2"}}"#,
+        );
+        let kb = StaticKb(vec![
+            fk_named("tp", "topthink/framework", vec![rule_static("runtime-dir", "runtime/**")], vec![]),
+            fk_named("plugin", "vendor/plugin", vec![rule_static("generated-dir", "generated/**")], vec![]),
+        ]);
+        let got = resolve_sync(&root, &kb);
+        assert_eq!(got.globs.len(), 2, "both frameworks must contribute: {:?}", got.globs);
+        assert!(got.globs.contains(&"runtime/**".to_string()));
+        assert!(got.globs.contains(&"generated/**".to_string()));
+        assert!(got.diagnostics.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn identical_rules_from_two_frameworks_are_not_deduplicated() {
+        // Each detected framework's rules are appended verbatim; a later de-duplication would be a
+        // deliberate change, so the duplication is pinned rather than hidden.
+        let root = scratch("dup-fk");
+        write(
+            &root,
+            "composer.json",
+            r#"{"require": {"topthink/framework": "^6", "vendor/plugin": "^2"}}"#,
+        );
+        let kb = StaticKb(vec![
+            fk_named("tp", "topthink/framework", vec![rule_static("runtime-dir", "runtime/**")], vec![]),
+            fk_named("plugin", "vendor/plugin", vec![rule_static("cache-dir", "runtime/**")], vec![]),
+        ]);
+        let got = resolve_sync(&root, &kb);
+        assert_eq!(
+            got.globs,
+            vec!["runtime/**".to_string(), "runtime/**".to_string()],
+            "the same glob declared twice reaches the caller twice"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fallback_chain_skips_traversal_file_pattern_and_missing_dirs() {
+        let root = scratch("fallback-chain");
+        write(&root, "composer.json", r#"{"require": {"topthink/framework": "^6"}}"#);
+        std::fs::create_dir_all(root.join("web")).unwrap();
+        std::fs::create_dir_all(root.join("later")).unwrap();
+        let kb = StaticKb(vec![fk_with(
+            vec![ExcludeRule {
+                id: "public-dir".into(),
+                glob: "{missing}/**".into(), // unrenderable on purpose
+                source: None,
+                fallbacks: vec![
+                    "../../outside/**".into(), // `sanitize` refuses (path traversal)
+                    "*.log".into(),            // `probe_dir` -> None for a bare file pattern
+                    "nope/**".into(),          // renders fine, but the directory does not exist
+                    "web/**".into(),           // <- accepted
+                    "later/**".into(),         // unreachable: the first existing candidate wins
+                ],
+            }],
+            vec![],
+        )]);
+        let got = resolve_sync(&root, &kb);
+        assert_eq!(got.globs, vec!["web/**".to_string()], "only the first *usable* fallback wins");
+        assert!(got.diagnostics.is_empty());
+        let facts = got.facts.get("excludes").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(
+            facts[0].get("source").and_then(|v| v.as_str()),
+            Some("fallback: web/**"),
+            "provenance must say it came from a fallback"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fallback_placeholders_are_resolved_from_root_rules() {
+        // The fallback list is part of the placeholder scan, so a fallback may itself depend on `app_root`.
+        let root = scratch("fallback-placeholder");
+        write(
+            &root,
+            "composer.json",
+            r#"{"require": {"topthink/framework": "^6"}, "autoload": {"psr-4": {"app\\": "app/"}}}"#,
+        );
+        std::fs::create_dir_all(root.join("app/runtime")).unwrap();
+        let kb = StaticKb(vec![fk_with(
+            vec![ExcludeRule {
+                id: "runtime-dir".into(),
+                glob: "{missing}/**".into(),
+                source: None,
+                fallbacks: vec!["{app_root}/runtime/**".into()],
+            }],
+            vec![app_root_rule()],
+        )]);
+        let got = resolve_sync(&root, &kb);
+        assert_eq!(got.globs, vec!["app/runtime/**".to_string()]);
+        let facts = got.facts.get("excludes").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(
+            facts[0].get("source").and_then(|v| v.as_str()),
+            Some("fallback: {app_root}/runtime/**"),
+            "the provenance records the *template* it came from, not the rendered glob"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_refused_main_glob_does_not_fall_back() {
+        let root = scratch("no-fallback-after-refusal");
+        // `app_root` collapses to the sub-project root, so `{app_root}/**` is refused by `sanitize`.
+        write(
+            &root,
+            "composer.json",
+            r#"{"require": {"topthink/framework": "^6"}, "autoload": {"psr-4": {"app\\": "./"}}}"#,
+        );
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+        let kb = StaticKb(vec![fk_with(
+            vec![ExcludeRule {
+                id: "suicide".into(),
+                glob: "{app_root}/**".into(),
+                source: None,
+                fallbacks: vec!["runtime/**".into()],
+            }],
+            vec![app_root_rule()],
+        )]);
+        let got = resolve_sync(&root, &kb);
+        // `let glob = sanitize(&glob)?` propagates out of the whole rule: once the *declared* glob is
+        // refused, the fallback list is never consulted. Pinned because trying the fallback is equally
+        // plausible — and would let a mis-configured rule quietly exclude a different directory.
+        assert!(got.globs.is_empty(), "the fallback must not rescue a refused glob: {:?}", got.globs);
+        assert_eq!(got.diagnostics.len(), 1);
+        assert!(
+            got.diagnostics[0].message.contains("covers the whole sub-project"),
+            "the diagnostic must report the real refusal reason, got: {}",
+            got.diagnostics[0].message
+        );
+        assert_eq!(
+            got.diagnostics[0].location.as_deref(),
+            Some(root.to_string_lossy().as_ref()),
+            "and point at the sub-project root"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sanitize_normalises_separators_and_strips_leading_slashes() {
+        assert_eq!(
+            sanitize("app\\runtime\\**"),
+            Ok("app/runtime/**".to_string()),
+            "Windows separators are normalised"
+        );
+        assert_eq!(
+            sanitize("/vendor/**"),
+            Ok("vendor/**".to_string()),
+            "a leading slash is trimmed: globs are always sub-root relative, so an absolute-looking \
+             declaration is reinterpreted rather than escaping upwards"
+        );
+        assert_eq!(sanitize("././x/**"), Ok("x/**".to_string()), "every leading `./` is stripped");
+        assert_eq!(sanitize("a/**"), Ok("a/**".to_string()));
+    }
+
+    /// The bare-dot hole is closed: a single segment `.` (the resolved form of `{app_root}` when the
+    /// autoload root points at the sub-project root) would exclude every source file, so `sanitize`
+    /// refuses it — symmetry with the two-segment `./**` form. An *interior* `.` (`a/./b/**`) is a
+    /// no-op segment, not the root, and stays valid.
+    #[test]
+    fn sanitize_refuses_a_bare_dot_that_would_exclude_the_root() {
+        assert!(sanitize(".").is_err(), "a bare `.` would exclude the entire sub-project root");
+        assert_eq!(
+            sanitize("a/./b/**"),
+            Ok("a/./b/**".to_string()),
+            "an interior `.` is a no-op segment, not the root"
+        );
+        assert!(sanitize("./**").is_err(), "the two-segment form of the same thing is refused");
+    }
+
+    #[test]
+    fn render_needs_every_placeholder_and_treats_empty_as_resolved() {
+        let mut values = std::collections::HashMap::new();
+        values.insert("a".to_string(), "x".to_string());
+        values.insert("b".to_string(), "y".to_string());
+        assert_eq!(render("{a}/{b}/**", &values), Some("x/y/**".to_string()));
+        values.remove("b");
+        assert!(
+            render("{a}/{b}/**", &values).is_none(),
+            "one unresolved placeholder kills the whole template"
+        );
+        // An empty value counts as resolved: the directory level silently disappears ...
+        values.insert("b".to_string(), String::new());
+        assert_eq!(render("{a}/{b}/**", &values), Some("x//**".to_string()));
+        // ... and `sanitize` catches it afterwards, so no wrong directory is excluded.
+        assert!(sanitize("x//**").is_err());
+    }
+
+    #[test]
+    fn probe_dir_skips_wildcard_segments_but_needs_two_segments() {
+        assert_eq!(probe_dir("**"), None, "a single-segment glob has no directory part");
+        assert_eq!(probe_dir("a/**"), Some("a".to_string()));
+        assert_eq!(
+            probe_dir("a/*/c/**"),
+            Some("a/c".to_string()),
+            "a wildcard level is skipped, not treated as a literal directory name"
+        );
+        assert_eq!(probe_dir("a/b/c/**"), Some("a/b/c".to_string()));
     }
 }

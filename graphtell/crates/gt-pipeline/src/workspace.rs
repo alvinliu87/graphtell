@@ -2421,4 +2421,226 @@ mod tests {
         }
         assert_eq!(ws.node(n).unwrap().name, "renamed");
     }
+
+    // ===== Residual defensive branches the tests above leave open: the Null-patch guard in
+    // `merge_properties`, the `append_location` list cap, `claimed_by`'s pending-link fallback (the whole
+    // reason the method exists), `resolve_name_at`, and the fqn-less / not-on-graph paths of `has_ancestor`,
+    // `mapped_tables` and `declares_magic_method`. =====
+
+    /// `merge_properties` shallow-merges only when **both** sides are objects; otherwise the patch replaces
+    /// the base — except a `Null` patch, which is a deliberate **no-op** rather than a wipe. That guard is
+    /// load-bearing: a rule that contributes no properties naturally emits `Null`, and blanking a node's
+    /// accumulated properties is invisible until the graph looks empty somewhere downstream.
+    #[test]
+    fn patch_properties_never_wipes_a_node_with_a_null_patch() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("Class", "A", Some("A")));
+        ws.patch_properties(n, json!({ "x": 1, "o": { "a": 1 } }));
+
+        ws.patch_properties(n, Value::Null);
+        assert_eq!(
+            ws.node(n).unwrap().properties["x"],
+            json!(1),
+            "a Null patch must leave the node's properties untouched"
+        );
+        assert_eq!(ws.node(n).unwrap().properties["o"]["a"], json!(1));
+
+        // A non-object patch (array / scalar) replaces the base wholesale.
+        let m = ws.add_node(new_node("Class", "B", Some("B")));
+        ws.patch_properties(m, json!({ "x": 1 }));
+        ws.patch_properties(m, json!([1, 2]));
+        assert_eq!(
+            ws.node(m).unwrap().properties,
+            json!([1, 2]),
+            "the shallow merge applies only when both sides are objects"
+        );
+
+        // Patching an unknown id merges nothing and must not conjure a node.
+        let before = ws.node_count();
+        ws.patch_properties(NodeId(9999), json!({ "y": 1 }));
+        assert_eq!(ws.node_count(), before, "patch_properties never creates a node");
+    }
+
+    /// The co-occurrence list is **capped** (50): a table referenced from thousands of places must not grow
+    /// without bound. (The dedup test above never reaches the cap — it only ever appends two locations.)
+    #[test]
+    fn append_location_caps_the_location_list() {
+        let mut ws = new_ws();
+        let n = ws.add_node(new_node("Table", "user", None));
+        ws.patch_properties(n, json!({}));
+        for i in 0..60u32 {
+            ws.append_location(n, format!("f{}.php", i), i, None, None, None);
+        }
+        let locs = ws
+            .node(n)
+            .unwrap()
+            .properties
+            .get("locations")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(locs.len(), 50, "the location list must stop growing at the cap");
+        assert_eq!(
+            locs[0].get("file").unwrap().as_str(),
+            Some("f0.php"),
+            "the earliest location is kept"
+        );
+        assert!(
+            locs.iter()
+                .all(|l| l.get("file").unwrap().as_str() != Some("f59.php")),
+            "locations past the cap are dropped"
+        );
+    }
+
+    /// `claimed_by`'s whole point is the **pending-link** fallback: P5 can only queue a `PendingLink` (the
+    /// class name is assembled from FKB's template), while convention rules run at P6, before the real edge
+    /// exists at P7 — looking only at in-edges would let explicitly-registered routes be re-covered by a
+    /// convention. None of that, nor the fqn-less early return, is reachable from the in-edge test above.
+    #[test]
+    fn claimed_by_honours_pending_links_and_skips_fqnless_nodes() {
+        let mut ws = new_ws();
+        let handler =
+            ws.add_node(new_node("Class", "UserController", Some("app\\Ctrl\\User::index")));
+
+        let link = |raw: &str| PendingLink {
+            from: NodeId(1),
+            kind: EdgeKind("RouteTo".to_string()),
+            raw: raw.to_string(),
+            method: None,
+            resolve: gt_domain::model::ResolveAs::ClassConst,
+            confidence: 1.0,
+            sub: None,
+            file: "r.php".to_string(),
+            line: 1,
+        };
+
+        // A resource route names only the class, so it takes over the whole controller.
+        ws.pending_links.push(link("app\\Ctrl\\User"));
+        assert!(ws.claimed_by(handler, "RouteTo"), "a resource-route link claims the whole class");
+
+        // With a method name it claims exactly that one method.
+        ws.pending_links.clear();
+        ws.pending_links.push(link("app\\Ctrl\\User/index"));
+        assert!(ws.claimed_by(handler, "RouteTo"), "the matching method is claimed");
+        ws.pending_links.clear();
+        ws.pending_links.push(link("app\\Ctrl\\User/edit"));
+        assert!(!ws.claimed_by(handler, "RouteTo"), "a different method does not claim `index`");
+
+        // A different class never claims, and a link of another kind is ignored entirely.
+        ws.pending_links.clear();
+        ws.pending_links.push(link("app\\Ctrl\\Other/index"));
+        assert!(!ws.claimed_by(handler, "RouteTo"));
+        assert!(!ws.claimed_by(handler, "Calls"), "the pending-link kind must match");
+
+        // A node without an FQN has nothing to match a link against, even one naming the same class.
+        ws.pending_links.clear();
+        ws.pending_links.push(link("app\\Ctrl\\User"));
+        let fqnless = ws.add_node(new_node("Class", "app\\Ctrl\\User", None));
+        assert!(
+            !ws.claimed_by(fqnless, "RouteTo"),
+            "without an fqn the pending-link fallback cannot apply"
+        );
+    }
+
+    /// `resolve_name_at` resolves within the file the **node** belongs to (for resolution points that only
+    /// have a caller node, no file path), then falls back to the global short-name index. Every hop of that
+    /// chain is a distinct `None` path, and none of them is reachable through `resolve_name_in_file`.
+    #[test]
+    fn resolve_name_at_prefers_the_owning_file_then_falls_back() {
+        let mut ws = new_ws();
+        ws.add_node(new_node("Class", "Order", Some("app\\Services\\Order")));
+
+        let mut imports = HashMap::new();
+        imports.insert("order".to_string(), "app\\Aliased\\Order".to_string());
+        ws.record_file_imports(7, "app/Svc.php", imports);
+
+        let mut owned = new_node("Class", "M", Some("app\\Svc::m"));
+        owned.file_id = Some(gt_domain::model::FileId(7));
+        let m = ws.add_node(owned);
+        assert_eq!(
+            ws.resolve_name_at(m, "order"),
+            Some("app\\Aliased\\Order".to_string()),
+            "the owning file's import wins over the global index"
+        );
+
+        // No file on the node → straight to the global index.
+        let orphan = ws.add_node(new_node("Class", "N", Some("app\\N")));
+        assert_eq!(
+            ws.resolve_name_at(orphan, "order"),
+            Some("app\\Services\\Order".to_string())
+        );
+        // An unknown node id is not an error: the global index still answers.
+        assert_eq!(
+            ws.resolve_name_at(NodeId(9999), "order"),
+            Some("app\\Services\\Order".to_string())
+        );
+        assert_eq!(ws.resolve_name_at(NodeId(9999), "ghost"), None);
+    }
+
+    /// `has_ancestor` compares on the FQN but falls back to the **name** — synthesised nodes carry no FQN, so
+    /// without the fallback they could never be matched anywhere on an inheritance chain.
+    #[test]
+    fn has_ancestor_falls_back_to_the_node_name_when_it_has_no_fqn() {
+        let mut ws = new_ws();
+        let base = ws.add_node(new_node("Class", "app\\Base", None));
+        let child = ws.add_node(new_node("Class", "app\\Child", None));
+        ws.add_edge(edge(child, base, "Extends"));
+
+        assert!(
+            ws.has_ancestor(child, "app\\Base"),
+            "an fqn-less node is matched by its name"
+        );
+        assert!(
+            ws.has_ancestor(child, "base"),
+            "the umbrella tail match works on the name too"
+        );
+    }
+
+    /// `mapped_tables` walks a class and its recorded ancestors. An FQN that is **not on the graph** (vendor,
+    /// excluded by P0) must simply contribute nothing — the lookup degrades to id 0 and finds no out-edges,
+    /// rather than panicking — which is exactly what keeps P7's verb upgrade quiet on unknown models.
+    #[test]
+    fn mapped_tables_skips_classes_that_are_not_on_the_graph() {
+        let mut ws = new_ws();
+        // Nothing registered at all: the walk yields nothing and must not panic.
+        assert!(ws.mapped_tables("app\\Ghost", "MapsTo").is_empty());
+
+        let table = ws.add_node(new_node("Table", "user", None));
+        let model = ws.add_node(new_node("Class", "User", Some("app\\User")));
+        ws.add_edge(edge(model, table, "MapsTo"));
+        assert_eq!(ws.mapped_tables("app\\User", "MapsTo"), vec![table]);
+
+        // Reached only through the recorded supertype chain.
+        ws.record_supertype("app\\Child", "app\\User");
+        assert_eq!(
+            ws.mapped_tables("app\\Child", "MapsTo"),
+            vec![table],
+            "the ancestor's mapping counts for the subclass"
+        );
+    }
+
+    /// `declares_magic_method` walks the recorded ancestor chain with the same bounded / visited guards as the
+    /// other name-graph walks, so it must be cycle-safe; and an empty `@method` list is a no-op that must not
+    /// even create an index entry.
+    #[test]
+    fn declares_magic_method_walks_ancestors_and_survives_cycles() {
+        let mut ws = new_ws();
+        ws.set_magic_methods("app\\Base", &["findOrFail".to_string()]);
+        ws.record_supertype("app\\Child", "app\\Base");
+        assert!(ws.declares_magic_method("app\\Child", "findOrFail"), "declared on an ancestor");
+        assert!(!ws.declares_magic_method("app\\Child", "other"));
+
+        // An empty declaration list must not create an index entry at all.
+        ws.set_magic_methods("app\\Empty", &[]);
+        assert!(
+            !ws.magic_methods.contains_key("app\\Empty"),
+            "an empty @method list is a no-op, not an empty entry"
+        );
+        assert!(!ws.declares_magic_method("app\\Empty", "anything"));
+
+        // A cycle must terminate rather than loop forever.
+        ws.record_supertype("app\\A", "app\\B");
+        ws.record_supertype("app\\B", "app\\A");
+        assert!(!ws.declares_magic_method("app\\A", "anything"));
+    }
 }

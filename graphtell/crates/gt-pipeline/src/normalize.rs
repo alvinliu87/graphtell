@@ -514,6 +514,40 @@ mod tests {
         }
     }
 
+    /// `pluralize` only swaps `-y` for `-ies` when a **consonant** precedes the `y`. A `y` after a vowel
+    /// (`day` -> `days`, `boy` -> `boys`) keeps a plain `-s` — the `!matches!(prev, vowel)` arm at line 226.
+    /// Pinned so the negation cannot be dropped (which would wrongly yield `daies` / `boies`).
+    #[test]
+    fn pluralize_keeps_a_plain_s_after_a_vowel_then_y() {
+        assert_eq!(pluralize("day"), "days");
+        assert_eq!(pluralize("boy"), "boys");
+        assert_eq!(pluralize("key"), "keys");
+        // ...and the reverse must hold too.
+        assert_eq!(singularize("days"), "day");
+        assert_eq!(singularize("boys"), "boy");
+        for w in ["day", "boy", "key"] {
+            assert_eq!(singularize(&pluralize(w)), w, "{w} must round-trip");
+        }
+    }
+
+    /// Two `ends_with_sibilant` / `is_plural` sub-branches that the shared OR makes easy to delete by
+    /// accident, because the other arms already pass:
+    ///  - `ends_with("ch")` (line 162): `match` -> `matches` — without it `match` -> `matchs`.
+    ///  - the `!ends_with("is")` guard in `is_plural` (line 191): a word ending in `is` is singular, so it
+    ///    must be pluralised (here to the simplistic `basises`); without the guard `basis` is mistaken for an
+    ///    already-plural word and left unchanged, which both fails the round-trip and silently drops a table.
+    /// Both must round-trip.
+    #[test]
+    fn singularize_and_pluralize_cover_ch_and_is_endings() {
+        assert_eq!(pluralize("match"), "matches");
+        assert_eq!(singularize("matches"), "match");
+        assert_eq!(pluralize("basis"), "basises");
+        assert_eq!(singularize("basises"), "basis");
+        for w in ["match", "basis"] {
+            assert_eq!(singularize(&pluralize(w)), w, "{w} must round-trip");
+        }
+    }
+
     #[test]
     fn snake_plural_and_class_to_topic_follow_their_conventions() {
         assert_eq!(snake_plural("Category"), "categories");

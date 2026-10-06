@@ -704,4 +704,57 @@ mod tests {
             "with no naming convention, do not guess by name"
         );
     }
+
+    // ------------------------------------------------------- defensive / precedence boundaries
+
+    /// A method listed in `hash_calls` is a signature computation no matter what `name_excludes` says:
+    /// `hash_calls` is checked *first* and returns true before the `name_excludes` filter is ever reached
+    /// (`is_sign_calc`, the `hash_calls` branch at line 187 precedes the `name_excludes` filter). This pins
+    /// the precedence so a refactor that reorders the two checks (e.g. excluding by name first) cannot
+    /// silently drop a declared hash call that happens to also match a name-exclusion pattern.
+    #[test]
+    fn hash_calls_takes_precedence_over_name_excludes() {
+        let mut spec = php_spec();
+        // Force a collision: the method is both an explicitly-declared hash call and an excluded name.
+        spec.hash_calls = vec!["md5".into()];
+        spec.name_excludes = vec!["md5".into()];
+        assert!(
+            is_sign_calc(&call("md5", vec![]), &spec),
+            "a method in `hash_calls` must be recognised even when it also appears in `name_excludes`"
+        );
+    }
+
+    /// A weak-hash call with **no arguments** carries no signature hint, so it must not be judged even though
+    /// the algorithm is declared weak: `arg_text` yields an empty string and no `value_hints` entry matches
+    /// it, so the `in_sign_context` guard (run, line ~102) drops it. Without this, an un-parameterised weak
+    /// call would be mis-flagged as a signature computation.
+    #[test]
+    fn weak_hash_call_with_no_args_is_not_judged() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        ctx.ws.calls.push(call("md5", vec![])); // no arguments at all
+        run(&mut ctx);
+        assert_eq!(
+            weak_hits(&ctx, NodeId(1)),
+            0,
+            "a weak algorithm called with no arguments must not be flagged (no sign context)"
+        );
+    }
+
+    /// Two weak-hash calls on the *same* node each earn their own annotation (merge = Coexist, not a
+    /// first-wins dedup). The phase must not silently collapse multiple findings on one method — that would
+    /// hide the second signature use from the compliance view.
+    #[test]
+    fn multiple_weak_hash_calls_on_one_node_are_each_annotated() {
+        let mut ctx = new_ctx();
+        ctx.sign_check_default = Some(php_spec());
+        ctx.ws.calls.push(call("md5", vec![FactValue::String("sign=abc".into())]));
+        ctx.ws.calls.push(call("md5", vec![FactValue::String("sign=abc".into())]));
+        run(&mut ctx);
+        assert_eq!(
+            weak_hits(&ctx, NodeId(1)),
+            2,
+            "each weak-hash call on the node must be annotated separately (Coexist merge)"
+        );
+    }
 }

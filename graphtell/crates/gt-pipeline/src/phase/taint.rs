@@ -1152,4 +1152,52 @@ mod tests {
             "declared in both tables, it must be judged as raw SQL (raw wins over where)"
         );
     }
+
+    // ===== remaining negative / branch-boundary leaves =====
+
+    /// `arg_has_user_var` treats a `String` fact and an `Unknown` fact differently: a `String` literal is
+    /// only judged to carry a variable when it uses the `${…}` interpolation form (line 268), whereas an
+    /// `Unknown` (source we did not fully parse) falls back to `text_has_var` and recognises a bare `$var`
+    /// (line 269). That asymmetry is deliberate — a bare `$x` inside a *string* is not the same signal as a
+    /// bare `$x` in *unparsed* source — and must hold, so a refactor that "unifies" the two branches cannot
+    /// start flagging plain string literals as tainted.
+    #[test]
+    fn arg_has_user_var_rejects_bare_dollar_var_in_string_literal() {
+        let p = php_prefixes();
+        // A `String` fact with a bare `$var` (no brace) must NOT be judged to carry a variable.
+        assert!(
+            !arg_has_user_var(&FactValue::String("$x".into()), &p),
+            "a String fact with a bare $var (no brace) must not be judged to carry a variable"
+        );
+        // The `${x}` interpolation form does count for a String fact.
+        assert!(arg_has_user_var(&FactValue::String("a ${x} b".into()), &p));
+        // An `Unknown` (unparsed) source DOES recognise a bare `$x` via text_has_var.
+        assert!(arg_has_user_var(&FactValue::Unknown(Some("$x".into())), &p));
+    }
+
+    /// The receiver match alone is not enough: the method must also match. `->query()` on a receiver other
+    /// than the declared one, and a matching receiver with a wrong method, must both be rejected.
+    #[test]
+    fn is_raw_sql_sink_requires_method_to_match_not_just_receiver() {
+        let spec = taint_spec(); // raw_sql_sinks = [query @ Db]
+        // Receiver matches the declaration (Db) but the method does not.
+        assert!(
+            !is_raw_sql_sink(&spec, &Some("Db".to_string()), "other"),
+            "a matching receiver with a non-matching method must not be a sink"
+        );
+        // Neither matches.
+        assert!(!is_raw_sql_sink(&spec, &Some("Model".to_string()), "other"));
+        // The declared pair still matches.
+        assert!(is_raw_sql_sink(&spec, &Some("Db".to_string()), "query"));
+    }
+
+    /// A method not in the declared `where_interp_sinks` is not judged as a where-condition sink — the
+    /// positive case is pinned by `sinks_come_from_the_declaration_not_the_kernel`; this pins the negative.
+    #[test]
+    fn is_where_interp_sink_rejects_undeclared_method() {
+        let spec = taint_spec(); // where_interp_sinks = ["where"]
+        assert!(!is_where_interp_sink(&spec, "select"));
+        assert!(!is_where_interp_sink(&spec, "whereRaw"));
+        assert!(is_where_interp_sink(&spec, "where"));
+    }
 }

@@ -731,4 +731,41 @@ mod tests {
         );
         assert_eq!(a.evidence["file"], json!("app/later.php"));
     }
+
+    // ===== remaining branch gaps =====
+
+    /// Two direct `WritesDb` edges that land on the **same** table are one distinct table. The dedup in
+    /// `run` step (1) uses a `HashSet`, so this must stay below the `MIN_TABLES`(2) threshold and NOT be
+    /// annotated — otherwise a method that updates one table twice would be mis-flagged as a multi-table write.
+    #[test]
+    fn two_direct_writes_to_the_same_table_count_as_one() {
+        let mut ctx = ctx_with(vec!["transaction"]);
+        // Two direct writes, same destination table 20 -> only ONE distinct table.
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 20);
+        call(&mut ctx, 10, "save");
+        super::run(&mut ctx);
+        assert!(
+            !annotated(&ctx, 10),
+            "writing the same table twice is still a single-table write, not a multi-table write"
+        );
+    }
+
+    /// The `|| call.callee.eq_ignore_ascii_case(p)` arm is case-insensitive too: a declaration `Db::startTrans`
+    /// must match a call site whose callee text is spelled `DB::STARTTRANS`. Pins the case-insensitive callee
+    /// arm — the qualified-callee test above only exercises the case-exact path.
+    #[test]
+    fn qualified_callee_match_is_case_insensitive() {
+        let mut ctx = ctx_with(vec!["Db::startTrans"]);
+        write(&mut ctx, 10, 20);
+        write(&mut ctx, 10, 21);
+        // Declared `Db::startTrans`; the call's callee text is the same name in a different case.
+        // The split-off `method` (`startTrans`) does NOT equal the declared marker, so only the callee arm applies.
+        call_at(&mut ctx, 10, "DB::STARTTRANS", "startTrans", 10, "app/Svc.php", Some(SUB));
+        super::run(&mut ctx);
+        assert!(
+            !annotated(&ctx, 10),
+            "a case-variant qualified callee must still match the transaction marker"
+        );
+    }
 }

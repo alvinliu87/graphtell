@@ -1165,4 +1165,289 @@ mod tests {
         assert_eq!(role("backend", Path::new("/p/queue")), "backend:worker");
         assert_eq!(role("backend", Path::new("/p/job-worker")), "backend:worker");
     }
+
+    // ------------------------------------------------------- negative / degradation coverage
+    //
+    // The happy-path tests above exercise the won cases; these pin the branches that must *not*
+    // produce anything (or must degrade gracefully), plus the keyword-mapping tables that silently
+    // shrink if a keyword is ever dropped. A wrong bucket or a swallowed failure here is silent: the
+    // graph just ends up missing files or wrongly attributed.
+
+    /// A scanner whose `scan` always fails — pins that `run` propagates the error instead of panicking,
+    /// so a broken filesystem / scanner does not take down the whole ingest.
+    struct ErrScanner;
+    impl FileScanner for ErrScanner {
+        fn scan(&self, _request: &ScanRequest) -> Result<Vec<ScannedFile>> {
+            Err(DomainError::infra("scan exploded"))
+        }
+        fn find_markers(
+            &self,
+            _root: &Path,
+            _names: &[&str],
+            _max_depth: usize,
+        ) -> Result<Vec<PathBuf>> {
+            Ok(vec![])
+        }
+    }
+
+    /// With no sub-projects, *no* file can be attributed — never silently bucketed into a phantom root.
+    #[test]
+    fn assign_files_no_subs_leaves_every_file_unassigned() {
+        let root = Path::new("/p");
+        let mut files = vec![file(1, "app/Model.php"), file(2, "lib/Util.php")];
+        assign_files(&mut files, &[], root);
+        assert_eq!(
+            files[0].sub_project_id, None,
+            "with no sub-projects, no file can be attributed"
+        );
+        assert_eq!(files[1].sub_project_id, None);
+    }
+
+    /// The prefix match has an exact-equal branch (`f.path.len() == prefix.len()`): a file whose path
+    /// *is* the prefix (no trailing `/`) must still match, or a top-level file would fall through.
+    #[test]
+    fn assign_files_exact_prefix_without_trailing_slash_matches() {
+        let root = Path::new("/p");
+        let subs = vec![sub(1, &root.join("app"))];
+        let mut files = vec![file(1, "app")];
+        assign_files(&mut files, &subs, root);
+        assert_eq!(
+            files[0].sub_project_id,
+            Some(SubProjectId(1)),
+            "a path equal to the prefix must still match"
+        );
+    }
+
+    /// A failing scanner must surface as an error from `run`, not a panic.
+    #[test]
+    fn run_propagates_scan_errors() {
+        let root = scratch("run-scanerr");
+        let project = project_at(&root);
+        let res = run(
+            &project,
+            &ErrScanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &StubMarkers { markers: vec![] },
+            &DefaultTechStackRegistry::new(),
+            &StaticKb(vec![]),
+        );
+        assert!(res.is_err(), "a failing scanner must surface as an error, not a panic");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A single scanned file that cannot be read must degrade to a `path:size` fingerprint and let the
+    /// rest of Ingest proceed — never abort the whole ingest because of one unreadable file.
+    #[test]
+    fn run_degrades_to_path_size_hash_for_unreadable_scanned_file() {
+        let root = scratch("run-unreadable");
+        let sub_dir = root.join("app");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        // Marker present, but the scanned file is *not* written to disk.
+        let project = project_at(&root);
+        let scanner = StubScanner {
+            markers: vec![sub_dir.join("composer.json")],
+            scanned: vec![ScannedFile {
+                path: sub_dir.join("Missing.php"),
+                relative: "app/Missing.php".into(),
+                language: Language::new("php"),
+                size_bytes: 0,
+            }],
+            last_request: Mutex::new(None),
+        };
+        let markers = StubMarkers {
+            markers: vec![Marker {
+                file: "composer.json".into(),
+                language: Language::new("php"),
+                role: "backend".into(),
+            }],
+        };
+        let res = run(
+            &project,
+            &scanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &markers,
+            &DefaultTechStackRegistry::new(),
+            &StaticKb(vec![]),
+        )
+        .expect("run must not abort on an unreadable file");
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(
+            res.files[0].content_hash,
+            hash("app/Missing.php:0"),
+            "an unreadable scanned file must degrade to a path:size fingerprint, not abort Ingest"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With no user exclude globs and no framework knowledge, nothing should be excluded — and `run`
+    /// must still succeed (the `extra_excludes` base list stays empty, never `None` or panicking).
+    #[test]
+    fn run_keeps_empty_exclude_list_when_nothing_resolves() {
+        let root = scratch("run-noexclude");
+        let sub_dir = root.join("app");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let project = project_at(&root);
+        let scanner = StubScanner {
+            markers: vec![sub_dir.join("composer.json")],
+            scanned: vec![],
+            last_request: Mutex::new(None),
+        };
+        let markers = StubMarkers {
+            markers: vec![Marker {
+                file: "composer.json".into(),
+                language: Language::new("php"),
+                role: "backend".into(),
+            }],
+        };
+        let res = run(
+            &project,
+            &scanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &markers,
+            &DefaultTechStackRegistry::new(),
+            &StaticKb(vec![]),
+        )
+        .expect("run ok");
+        assert_eq!(res.sub_projects.len(), 1);
+        let req = scanner.last_request.lock().unwrap();
+        let req = req.as_ref().expect("scan invoked");
+        assert!(
+            req.extra_excludes.is_empty(),
+            "with no user glob and no framework, nothing should be excluded: {:?}",
+            req.extra_excludes
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `refine_backend_kind` maps a whole table of directory keywords; dropping any one is a silent
+    /// regression. Pin every entry so a deletion fails loudly.
+    #[test]
+    fn refine_backend_kind_covers_all_worker_and_bff_keywords() {
+        for kw in [
+            "worker", "job", "schedule", "cron", "queue", "consumer", "daemon", "task",
+        ] {
+            assert_eq!(
+                role("backend", &Path::new(&format!("/p/{kw}"))),
+                "backend:worker",
+                "backend keyword `{kw}` must map to worker"
+            );
+        }
+        for kw in ["bff", "gateway", "aggregate"] {
+            assert_eq!(
+                role("backend", &Path::new(&format!("/p/{kw}"))),
+                "backend:bff",
+                "backend keyword `{kw}` must map to bff"
+            );
+        }
+        assert_eq!(role("backend", Path::new("/p/admin")), "backend:admin");
+    }
+
+    /// `refine_frontend_kind` maps three keyword families; pin every entry.
+    #[test]
+    fn refine_frontend_kind_covers_all_keywords() {
+        for kw in [
+            "miniprogram", "mini-program", "miniapp", "weapp", "wxapp", "mp-weixin", "mp-alipay",
+            "wechat", "alipay",
+        ] {
+            assert_eq!(
+                role("frontend", &Path::new(&format!("/p/{kw}"))),
+                "frontend:mini-program",
+                "frontend keyword `{kw}` must map to mini-program"
+            );
+        }
+        for kw in ["admin", "manage", "console", "dashboard", "cms"] {
+            assert_eq!(
+                role("frontend", &Path::new(&format!("/p/{kw}"))),
+                "frontend:admin",
+                "frontend keyword `{kw}` must map to admin"
+            );
+        }
+        for kw in ["mobile", "react-native", "flutter", "ios", "android", "h5"] {
+            assert_eq!(
+                role("frontend", &Path::new(&format!("/p/{kw}"))),
+                "frontend:mobile",
+                "frontend keyword `{kw}` must map to mobile"
+            );
+        }
+    }
+
+    /// Each sub-project's framework exclusion is prefixed with *its own* relative path; two sub-projects
+    /// must not share or leak each other's globs.
+    #[test]
+    fn run_aggregates_excludes_across_multiple_sub_projects() {
+        let root = scratch("run-multisub");
+        let a = root.join("a");
+        let b = root.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let project = project_at(&root);
+        let scanner = StubScanner {
+            markers: vec![a.join("composer.json"), b.join("composer.json")],
+            scanned: vec![],
+            last_request: Mutex::new(None),
+        };
+        let markers = StubMarkers {
+            markers: vec![Marker {
+                file: "composer.json".into(),
+                language: Language::new("php"),
+                role: "backend".into(),
+            }],
+        };
+        let kb = StaticKb(vec![FrameworkKnowledge {
+            id: "tp".into(),
+            display_name: "TP".into(),
+            language: Language::new("php"),
+            apply_without_detection: true,
+            exclude_rules: vec![ExcludeRule {
+                id: "cache".into(),
+                glob: "runtime/**".into(),
+                source: None,
+                fallbacks: vec![],
+            }],
+            ..Default::default()
+        }]);
+        let res = run(
+            &project,
+            &scanner,
+            &StubRegistry { parser: StubParser },
+            &StdFileSystem::new(),
+            &markers,
+            &DefaultTechStackRegistry::new(),
+            &kb,
+        )
+        .expect("run ok");
+        assert_eq!(
+            res.sub_projects.len(), 2,
+            "two directories with a marker each become two sub-projects"
+        );
+        let req = scanner.last_request.lock().unwrap();
+        let req = req.as_ref().expect("scan invoked");
+        assert!(
+            req.extra_excludes.contains(&"a/runtime/**".to_string()),
+            "the first sub's framework glob must be prefixed with its path: {:?}",
+            req.extra_excludes
+        );
+        assert!(
+            req.extra_excludes.contains(&"b/runtime/**".to_string()),
+            "the second sub's framework glob must be prefixed independently: {:?}",
+            req.extra_excludes
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `sub_name` strips the project-root prefix; when the dir is *not* under the root (defensive — a
+    /// malformed sub root), it must fall back to the raw dir path rather than panicking on the strip.
+    #[test]
+    fn sub_name_outside_root_falls_back_to_dir_path() {
+        let root = Path::new("/p");
+        let outside = Path::new("/elsewhere/x/y");
+        assert_eq!(
+            sub_name(ProjectId::new(1), root, outside),
+            "elsewhere-x-y",
+            "when the dir is not under the project root, sub_name must fall back to the raw dir path"
+        );
+    }
 }

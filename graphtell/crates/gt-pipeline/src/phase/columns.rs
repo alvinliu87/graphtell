@@ -99,7 +99,7 @@ pub fn materialize(ctx: &mut PipelineContext) {
 mod tests {
     use gt_domain::model::{
         IdentityKey, Language, NewNode, NodeId, NodeKind, Phase, Project, ProjectId, ProjectStatus,
-        Span,
+        Span, SubProjectId,
     };
     use serde_json::json;
 
@@ -165,6 +165,50 @@ mod tests {
             .iter()
             .filter(|e| e.kind.as_str() == "HasColumn")
             .count()
+    }
+
+    /// Put whatever shape into the `schema` table, so malformed entries can be exercised too.
+    fn put_schema_raw(ctx: &mut PipelineContext, table: &str, value: serde_json::Value) {
+        ctx.ws.put_symbol(ProjectId(1), "schema", table, value);
+    }
+
+    /// A `Table` node built directly (not through the synthesized-identity merge), so language /
+    /// sub-project can differ from the `add_table` default and duplicates stay possible.
+    fn add_table_node(
+        ctx: &mut PipelineContext,
+        name: &str,
+        identity: Option<&str>,
+        lang: &str,
+        sub: Option<SubProjectId>,
+    ) -> NodeId {
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: sub,
+            kind: NodeKind(NodeKind::TABLE.to_string()),
+            name: name.into(),
+            fqn: None,
+            identity: identity.map(IdentityKey::named),
+            file_id: None,
+            span: Span::default(),
+            language: Language::new(lang),
+            phase: Phase(Phase::ANNOTATE_POST.to_string()),
+            confidence: 0.9,
+            properties: serde_json::Value::Null,
+        })
+    }
+
+    fn column_node(ctx: &PipelineContext, identity_value: &str) -> NodeId {
+        ctx.ws
+            .node_ids()
+            .into_iter()
+            .find(|id| {
+                ctx.ws.node(*id).is_some_and(|n| {
+                    n.kind.as_str() == "Column"
+                        && n.identity.as_ref().is_some_and(|i| i.value == identity_value)
+                })
+            })
+            .unwrap_or_else(|| panic!("column node `{identity_value}` should exist"))
     }
 
     #[test]
@@ -331,5 +375,192 @@ mod tests {
         let sources = props.get("sources").and_then(|v| v.as_array()).expect("sources array");
         assert_eq!(sources.len(), 1);
         assert_eq!(sources.get(0).and_then(|v| v.as_str()), Some("schema"));
+    }
+
+    // ===================================================================
+    // Negative / degradation coverage
+    //
+    // Above: the shapes that produce columns. Below: everything that must produce **nothing** —
+    // malformed schema entries, the lookup precedence that is invisible when only one key exists,
+    // and the "re-run must not duplicate" contract every incremental rebuild relies on.
+    // ===================================================================
+
+    #[test]
+    fn materialize_schema_entry_without_usable_columns_yields_nothing() {
+        // An entry that exists but carries no column list must be treated as "no schema", not as a panic
+        // and not as a column named `null`.
+        for value in [
+            json!({ "columns": [] }),
+            json!({ "table": "user" }),
+            json!({ "columns": null }),
+            json!({ "columns": "id,phone" }),
+            json!({ "columns": { "0": "id" } }),
+        ] {
+            let mut ctx = ctx_with_project();
+            add_table(&mut ctx, "user");
+            put_schema_raw(&mut ctx, "user", value.clone());
+            super::materialize(&mut ctx);
+            assert_eq!(
+                column_identities(&ctx).len(),
+                0,
+                "no column node for a schema entry shaped like {value}"
+            );
+            assert_eq!(has_column_count(&ctx), 0, "no edge either for {value}");
+        }
+    }
+
+    #[test]
+    fn materialize_non_string_column_entries_are_dropped() {
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        // `42` / `null` / `true` are not column names; only the real strings survive.
+        put_schema_raw(&mut ctx, "users", json!({ "columns": [42, null, "id", true] }));
+        super::materialize(&mut ctx);
+        let cols = column_identities(&ctx);
+        assert_eq!(cols, vec!["user.id".to_string()], "non-string entries must be filtered out");
+        assert_eq!(has_column_count(&ctx), 1);
+    }
+
+    /// Known wart, pinned: `schema_columns` returns `Some(vec![])` for a key that exists but has no
+    /// columns, and `Option::or_else` short-circuits on `Some`, so the plural fallback never runs. A
+    /// project whose P3 wrote `user` (no columns) next to real columns under `users` silently loses
+    /// those columns at this phase. Fixing it means treating an empty result as a miss.
+    #[test]
+    fn materialize_empty_schema_entry_suppresses_the_plural_fallback() {
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema_raw(&mut ctx, "user", json!({ "columns": [] }));
+        put_schema(&mut ctx, "users", &["id", "phone"]);
+        super::materialize(&mut ctx);
+        assert_eq!(
+            column_identities(&ctx).len(),
+            0,
+            "the empty `user` entry shadows the populated `users` entry"
+        );
+
+        // Control: remove the empty entry and the very same schema is found through the plural fallback.
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "users", &["id", "phone"]);
+        super::materialize(&mut ctx);
+        assert_eq!(column_identities(&ctx).len(), 2, "without the empty entry the fallback works");
+    }
+
+    #[test]
+    fn materialize_exact_key_wins_over_the_plural_fallback() {
+        // Both keys exist with **different** contents: the exact key must win outright — the two lists
+        // must never be merged (that would conjure columns the table does not have).
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "user", &["id"]);
+        put_schema(&mut ctx, "users", &["phone"]);
+        super::materialize(&mut ctx);
+        let cols = column_identities(&ctx);
+        assert_eq!(cols, vec!["user.id".to_string()], "the plural key must not contribute");
+        assert_eq!(has_column_count(&ctx), 1);
+    }
+
+    #[test]
+    fn materialize_falls_back_to_the_node_name_without_an_identity() {
+        // No identity key: the display name is the lookup key.
+        let mut ctx = ctx_with_project();
+        add_table_node(&mut ctx, "order", None, "php", None);
+        put_schema(&mut ctx, "orders", &["id"]);
+        super::materialize(&mut ctx);
+        assert_eq!(
+            column_identities(&ctx),
+            vec!["order.id".to_string()],
+            "the display name must be used when there is no identity"
+        );
+
+        // Nothing usable: no identity *and* an empty name -> skipped, same as the empty-identity case.
+        let mut ctx = ctx_with_project();
+        add_table_node(&mut ctx, "", None, "php", None);
+        put_schema_raw(&mut ctx, "", json!({ "columns": ["id"] }));
+        super::materialize(&mut ctx);
+        assert_eq!(column_identities(&ctx).len(), 0, "an empty resolved name must be skipped");
+    }
+
+    #[test]
+    fn materialize_resolves_a_prefixed_table_via_the_stripped_key() {
+        // Table nodes keep the project's own prefix (`eb_store_order`) while the DDL key may be the bare
+        // name — `schema_columns` tries the stripped form first.
+        let mut ctx = ctx_with_project();
+        ctx.ws.set_table_prefixes(vec!["eb_".to_string()]);
+        add_table(&mut ctx, "eb_store_order");
+        put_schema(&mut ctx, "store_order", &["id"]);
+        super::materialize(&mut ctx);
+        assert_eq!(
+            column_identities(&ctx),
+            vec!["eb_store_order.id".to_string()],
+            "found through the stripped key, but the identity keeps the full name so it cannot collide with a bare `store_order` table"
+        );
+
+        // The plural fallback still runs on the **full** name, so `eb_store_orders` is found as well.
+        let mut ctx = ctx_with_project();
+        ctx.ws.set_table_prefixes(vec!["eb_".to_string()]);
+        add_table(&mut ctx, "eb_store_order");
+        put_schema(&mut ctx, "eb_store_orders", &["phone"]);
+        super::materialize(&mut ctx);
+        assert_eq!(column_identities(&ctx), vec!["eb_store_order.phone".to_string()]);
+    }
+
+    #[test]
+    fn materialize_is_idempotent_across_reruns() {
+        // The phase may be replayed (watch rebuild, idempotent re-annotate); a replay must not add a
+        // second Column node nor a second HasColumn edge.
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "users", &["id", "phone"]);
+        super::materialize(&mut ctx);
+        let once = (column_identities(&ctx).len(), has_column_count(&ctx));
+        assert_eq!(once, (2, 2));
+        super::materialize(&mut ctx);
+        assert_eq!(
+            (column_identities(&ctx).len(), has_column_count(&ctx)),
+            once,
+            "replaying the phase must not duplicate nodes or edges"
+        );
+    }
+
+    #[test]
+    fn materialize_duplicate_column_names_collapse_to_one_node() {
+        // A repeated column in one DDL list must not create two nodes or two parallel edges.
+        let mut ctx = ctx_with_project();
+        add_table(&mut ctx, "user");
+        put_schema(&mut ctx, "users", &["id", "id", "phone"]);
+        super::materialize(&mut ctx);
+        assert_eq!(column_identities(&ctx).len(), 2, "two distinct columns");
+        assert_eq!(has_column_count(&ctx), 2, "the repeated one contributes one edge only");
+        column_node(&ctx, "user.id");
+    }
+
+    #[test]
+    fn materialize_tables_sharing_a_name_share_the_column_node() {
+        // Two Table nodes resolving to the same name converge on **one** Column node (identity merge)
+        // while each keeps its own HasColumn edge.
+        let mut ctx = ctx_with_project();
+        add_table_node(&mut ctx, "user", Some("user"), "php", None);
+        add_table_node(&mut ctx, "user", Some("user"), "php", None);
+        put_schema(&mut ctx, "users", &["id"]);
+        super::materialize(&mut ctx);
+        assert_eq!(column_identities(&ctx), vec!["user.id".to_string()], "one shared node");
+        assert_eq!(has_column_count(&ctx), 2, "one edge per table");
+    }
+
+    #[test]
+    fn materialize_column_node_inherits_language_and_sub_project() {
+        // Nothing here may be hard-coded PHP: the language / sub-project come from the Table node, so
+        // a Java sub-project's columns are attributed to it.
+        let mut ctx = ctx_with_project();
+        add_table_node(&mut ctx, "order", Some("order"), "java", Some(SubProjectId(7)));
+        put_schema(&mut ctx, "orders", &["id"]);
+        super::materialize(&mut ctx);
+        let col = column_node(&ctx, "order.id");
+        let node = ctx.ws.node(col).expect("column node");
+        assert_eq!(node.language.as_str(), "java", "language must come from the table");
+        assert_eq!(node.sub_project_id, Some(SubProjectId(7)), "sub-project likewise");
+        assert_eq!(node.phase.0, Phase::ANNOTATE_POST, "the settle phase owns these nodes");
+        assert_eq!(node.confidence, 0.9);
     }
 }

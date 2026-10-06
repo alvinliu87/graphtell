@@ -281,4 +281,90 @@ mod tests {
         callees.sort_unstable();
         assert_eq!(callees, vec!["curl_exec", "fetch"]);
     }
+
+    /// The annotation's `phase` says which phase produced it, and nothing else here pins it (the
+    /// metadata test above stops at channel / kind / subkind / confidence / evidence). A wrong or
+    /// renamed phase would let every consumer that filters by phase miss these annotations.
+    #[test]
+    fn annotation_is_tagged_with_the_external_phase() {
+        let mut ctx = ctx_with(vec!["curl_exec"]);
+        ctx.ws
+            .calls
+            .push(mk_call(1, "curl_exec", Some("curl_exec"), true, "app/loop.php", 7));
+        run(&mut ctx);
+        let a = ctx.ws.annotations_of(NodeId::new(1))[0];
+        assert_eq!(a.phase.0, "External");
+    }
+
+    /// `evidence.line` is the **start** line of the call site: the span may cover a multi-line call, and
+    /// a human reading the report wants where the call begins.
+    #[test]
+    fn evidence_line_is_the_call_start_line() {
+        let mut ctx = ctx_with(vec!["fetch"]);
+        let mut call = mk_call(1, "fetch", Some("fetch"), true, "app/loop.ts", 10);
+        call.span = Span {
+            start_line: 10,
+            end_line: 25,
+            start_byte: 0,
+            end_byte: 0,
+        };
+        ctx.ws.calls.push(call);
+        run(&mut ctx);
+        let a = ctx.ws.annotations_of(NodeId::new(1))[0];
+        assert_eq!(a.evidence.get("line").and_then(|v| v.as_i64()), Some(10));
+    }
+
+    /// No call records at all: nothing to iterate, no annotation, no panic (the workspace may legitimately
+    /// have zero calls — a config-only project, or everything filtered out before P12).
+    #[test]
+    fn run_without_call_records_produces_nothing() {
+        let mut ctx = ctx_with(vec!["curl_exec"]);
+        run(&mut ctx);
+        assert_eq!(ctx.ws.annotation_count(), 0);
+    }
+
+    /// Matching is **whole-name equality** (case aside) — never prefix, suffix or substring. Loosening it
+    /// would turn `curl` into "every curl_* helper" and `Http::get` into `Http::getToken`, flooding the
+    /// N+1-style report with false positives.
+    #[test]
+    fn matching_is_exact_not_prefix_or_substring() {
+        let ctx = ctx_with(vec!["curl", "Http::get", "send"]);
+        assert!(!is_external_call(&ctx, "curl_exec", Some("curl_exec")), "a longer callee must not match a shorter entry");
+        assert!(!is_external_call(&ctx, "Http::getStatus", Some("getStatus")), "nor a callee that merely starts with the entry");
+        assert!(!is_external_call(&ctx, "MyCurlExecutor", Some("execute")), "no substring matching either");
+        // No trimming: comparison is verbatim, so a padded FKB entry / padded callee simply never matches.
+        assert!(!is_external_call(&ctx, " curl ", None));
+        assert!(!is_external_call(&ctx, " Http::get", None));
+    }
+
+    /// A blank entry in `external_calls` is not a wildcard. Known wart, pinned: `is_empty()` only checks
+    /// the *list*, so a malformed FKB entry survives the short-circuit and matches blank names — which
+    /// never reach here from a parser, hence harmless but worth knowing.
+    #[test]
+    fn blank_entry_in_the_list_is_not_a_wildcard() {
+        let ctx = ctx_with(vec![""]);
+        assert!(!is_external_call(&ctx, "curl_exec", Some("curl_exec")));
+        assert!(!is_external_call(&ctx, "Foo::x", None));
+        assert!(is_external_call(&ctx, "", Some("")), "a blank pattern matches a blank name");
+    }
+
+    /// `MergeStrategy::Coexist` appends unconditionally — even two byte-identical annotations from the
+    /// same node survive. Pinned because the alternative (dedupe by node+kind) would silently under-report
+    /// a loop that calls the external API twice.
+    #[test]
+    fn coexist_keeps_even_identical_annotations() {
+        let mut ctx = ctx_with(vec!["curl_exec"]);
+        ctx.ws
+            .calls
+            .push(mk_call(1, "curl_exec", Some("curl_exec"), true, "a.php", 10));
+        ctx.ws
+            .calls
+            .push(mk_call(1, "curl_exec", Some("curl_exec"), true, "a.php", 10));
+        run(&mut ctx);
+        assert_eq!(
+            ctx.ws.annotations_of(NodeId::new(1)).len(),
+            2,
+            "two recorded loop iterations => two annotations"
+        );
+    }
 }

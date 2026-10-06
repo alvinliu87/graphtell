@@ -308,8 +308,9 @@ mod tests {
     use super::*;
     use gt_domain::error::DomainError;
     use gt_domain::model::{
-        AnnotationChannel, EdgeKind, FrameworkKnowledge, MergeStrategy, NewAnnotation, NewEdge,
-        NewNode, NodeId, NodeKind, ProjectConfig, ProjectId, ProjectStatus, Severity, Span,
+        AnnotationChannel, EdgeKind, FrameworkKnowledge, Language, MergeStrategy, NewAnnotation,
+        NewEdge, NewNode, NewProject, NewSubProject, NewSourceFile, NodeId, NodeKind, ProjectConfig,
+        ProjectId, ProjectPatch, ProjectStatus, Severity, Span, SubProject, SubProjectId,
     };
     use gt_domain::port::{
         DefaultResourceAdapterRegistry, DefaultTechStackRegistry, FileScanner, LanguageParser,
@@ -689,6 +690,7 @@ mod tests {
         graph: FakeSink,
         techstack: DefaultTechStackRegistry,
         resources: DefaultResourceAdapterRegistry,
+        projects: Box<dyn ProjectWriter>,
     }
 
     impl StubInfra {
@@ -697,6 +699,15 @@ mod tests {
                 graph,
                 techstack: DefaultTechStackRegistry::new(),
                 resources: DefaultResourceAdapterRegistry::new(),
+                projects: Box::new(StubProjects),
+            }
+        }
+        /// Builds the infra with a custom `ProjectWriter` — used to pin that `run` propagates an early / late
+        /// infrastructure-write failure instead of swallowing it.
+        fn with_projects(graph: FakeSink, projects: Box<dyn ProjectWriter>) -> Self {
+            Self {
+                projects,
+                ..Self::new(graph)
             }
         }
     }
@@ -724,10 +735,88 @@ mod tests {
             &StubKb
         }
         fn projects(&self) -> &dyn ProjectWriter {
-            &StubProjects
+            &*self.projects
         }
         fn graph(&self) -> &dyn GraphSink {
             &self.graph
+        }
+    }
+
+    /// A `ProjectWriter` whose very first write (`replace_sub_projects`) fails — to verify `run` aborts on an
+    /// early infrastructure error rather than swallowing it with `let _ =` and continuing on an empty graph.
+    struct FailingReplaceSubProjects;
+    impl ProjectWriter for FailingReplaceSubProjects {
+        fn replace_sub_projects(
+            &self,
+            _: ProjectId,
+            _: Vec<NewSubProject>,
+        ) -> Result<Vec<SubProject>> {
+            Err(DomainError::NotFound("replace_sub_projects failed".into()))
+        }
+        fn replace_files(&self, _: ProjectId, _: Vec<NewSourceFile>) -> Result<Vec<SourceFile>> {
+            Ok(Vec::new())
+        }
+        fn set_sub_project_frameworks(&self, _: SubProjectId, _: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+        fn update_sub_project_facts(&self, _: SubProjectId, _: Value) -> Result<()> {
+            Ok(())
+        }
+        fn create_project(&self, _: NewProject) -> Result<Project> {
+            Err(DomainError::NotFound("unused".into()))
+        }
+        fn update_project(&self, _: ProjectId, _: ProjectPatch) -> Result<Project> {
+            Err(DomainError::NotFound("unused".into()))
+        }
+        fn delete_project(&self, _: ProjectId) -> Result<()> {
+            Ok(())
+        }
+        fn set_project_status(&self, _: ProjectId, _: ProjectStatus) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A `ProjectWriter` that accepts the P0 writes but fails the P3 `update_sub_project_facts` write — to verify
+    /// a *late* infrastructure error (after Ingest) still aborts `run`, not just the flush `?`.
+    struct FailingUpdateSubProjectFacts;
+    impl ProjectWriter for FailingUpdateSubProjectFacts {
+        fn replace_sub_projects(
+            &self,
+            _: ProjectId,
+            _: Vec<NewSubProject>,
+        ) -> Result<Vec<SubProject>> {
+            Ok(vec![SubProject {
+                id: SubProjectId::new(1),
+                project_id: ProjectId(1),
+                name: "app".into(),
+                root_path: std::env::temp_dir(),
+                language: Language::new("java"),
+                role: "backend".into(),
+                detected_by: "test".into(),
+                frameworks: Vec::new(),
+                facts: Value::Null,
+            }])
+        }
+        fn replace_files(&self, _: ProjectId, _: Vec<NewSourceFile>) -> Result<Vec<SourceFile>> {
+            Ok(Vec::new())
+        }
+        fn set_sub_project_frameworks(&self, _: SubProjectId, _: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+        fn update_sub_project_facts(&self, _: SubProjectId, _: Value) -> Result<()> {
+            Err(DomainError::NotFound("update_sub_project_facts failed".into()))
+        }
+        fn create_project(&self, _: NewProject) -> Result<Project> {
+            Err(DomainError::NotFound("unused".into()))
+        }
+        fn update_project(&self, _: ProjectId, _: ProjectPatch) -> Result<Project> {
+            Err(DomainError::NotFound("unused".into()))
+        }
+        fn delete_project(&self, _: ProjectId) -> Result<()> {
+            Ok(())
+        }
+        fn set_project_status(&self, _: ProjectId, _: ProjectStatus) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -826,5 +915,34 @@ mod tests {
                 assert!(!d.5, "nothing but the reset delta may carry a reset");
             }
         }
+    }
+
+    /// `run` must abort when an infrastructure write before the first phase fails — the `?` on
+    /// `replace_sub_projects` (line 86) is load-bearing. Swallowing it (e.g. `let _ = ...`) would let the run
+    /// continue on an empty graph, and the existing phase-order / reset tests would still pass, so this pins it.
+    #[test]
+    fn run_aborts_on_an_early_project_write_failure() {
+        let infra =
+            StubInfra::with_projects(FakeSink::default(), Box::new(FailingReplaceSubProjects));
+        let res = run(&project(true), &infra, &FakeObserver::default());
+        assert!(
+            res.is_err(),
+            "an early infrastructure-write failure must abort the pipeline"
+        );
+    }
+
+    /// The same abort contract holds for a *late* write that only runs after Ingest
+    /// (`update_sub_project_facts`, line 166) — reachable in both partial and full pipelines. Its `?` is a
+    /// different site from the flush `?` already covered and from the early write above, so a silent `let _ =`
+    /// there would otherwise slip through every existing test.
+    #[test]
+    fn run_aborts_on_a_late_project_write_failure() {
+        let infra =
+            StubInfra::with_projects(FakeSink::default(), Box::new(FailingUpdateSubProjectFacts));
+        let res = run(&project(true), &infra, &FakeObserver::default());
+        assert!(
+            res.is_err(),
+            "a late infrastructure-write failure must abort the pipeline"
+        );
     }
 }

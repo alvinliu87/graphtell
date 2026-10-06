@@ -61,10 +61,15 @@ pub fn run(
 
         // Route-handler resolution rules + consumer entry-method names: framework-level first, then project-level.
         // Both declared by FKB (how each framework writes handlers / what entry methods are called is framework knowledge).
-        if let Some(mut spec) = frameworks
+        if let Some(mut spec) = kb
+            .all()
             .iter()
-            .chain(projects.iter())
-            .filter_map(|id| kb.by_id(id))
+            .filter(|fk| {
+                fk.language == sub.language
+                    && (frameworks.contains(&fk.id)
+                        || projects.contains(&fk.id)
+                        || fk.apply_without_detection)
+            })
             .find_map(|fk| fk.method_ref.clone())
         {
             // Derive `root_namespaces` / `app_segments` from the tech-stack adapter (PSR-4 autoload for PHP,
@@ -79,10 +84,15 @@ pub fn run(
             ctx.method_ref_specs.insert(sub.id.get(), spec);
         }
         // `@method` magic-method forwarding target: also FKB knowledge (which property to forward to is a framework/project convention).
-        if let Some(spec) = frameworks
+        if let Some(spec) = kb
+            .all()
             .iter()
-            .chain(projects.iter())
-            .filter_map(|id| kb.by_id(id))
+            .filter(|fk| {
+                fk.language == sub.language
+                    && (frameworks.contains(&fk.id)
+                        || projects.contains(&fk.id)
+                        || fk.apply_without_detection)
+            })
             .find_map(|fk| fk.magic_delegation.clone())
             .filter(|s| !s.property.is_empty())
         {
@@ -92,10 +102,15 @@ pub fn run(
             ctx.magic_delegation.insert(sub.id.get(), spec);
         }
         // Data-model read / write verbs: also FKB knowledge (what the framework's Model/Query API is called).
-        if let Some(spec) = frameworks
+        if let Some(spec) = kb
+            .all()
             .iter()
-            .chain(projects.iter())
-            .filter_map(|id| kb.by_id(id))
+            .filter(|fk| {
+                fk.language == sub.language
+                    && (frameworks.contains(&fk.id)
+                        || projects.contains(&fk.id)
+                        || fk.apply_without_detection)
+            })
             .find_map(|fk| fk.db_verbs.clone())
             .filter(|s| !s.write.is_empty() || !s.read.is_empty())
         {
@@ -201,10 +216,15 @@ pub fn run(
                 }
             }
         }
-        if let Some(methods) = frameworks
+        if let Some(methods) = kb
+            .all()
             .iter()
-            .chain(projects.iter())
-            .filter_map(|id| kb.by_id(id))
+            .filter(|fk| {
+                fk.language == sub.language
+                    && (frameworks.contains(&fk.id)
+                        || projects.contains(&fk.id)
+                        || fk.apply_without_detection)
+            })
             .find(|fk| !fk.entry_methods.is_empty())
             .map(|fk| fk.entry_methods.clone())
         {
@@ -2585,5 +2605,344 @@ mod tests {
             "recognised frameworks must be recorded into ctx.frameworks: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------- run: degradation / gating / priority
+    //
+    // `run` is the phase orchestrator; its sub-functions are tested above, but the *wiring* branches —
+    // language gating, the `apply_without_detection` unconditional layer, per-sub isolation, the
+    // "first non-empty sub wins" default priority, and case-insensitive de-duplication — had no direct
+    // coverage. These pin the silent-failure-prone branches.
+
+    fn php_ctx(root: &std::path::Path) -> PipelineContext {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: root.to_path_buf(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        ctx.sub_projects = vec![SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "app".into(),
+            root_path: root.to_path_buf(),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "composer.json".into(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        }];
+        ctx
+    }
+
+    fn php_two_sub_ctx(root: &std::path::Path) -> PipelineContext {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: root.to_path_buf(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        ctx.sub_projects = vec![
+            SubProject {
+                id: SubProjectId(1),
+                project_id: ProjectId::new(1),
+                name: "app".into(),
+                root_path: root.join("app"),
+                language: Language::new(Language::PHP),
+                role: "backend".into(),
+                detected_by: "composer.json".into(),
+                frameworks: Vec::new(),
+                facts: serde_json::Value::Null,
+            },
+            SubProject {
+                id: SubProjectId(2),
+                project_id: ProjectId::new(1),
+                name: "api".into(),
+                root_path: root.join("api"),
+                language: Language::new(Language::PHP),
+                role: "backend".into(),
+                detected_by: "composer.json".into(),
+                frameworks: Vec::new(),
+                facts: serde_json::Value::Null,
+            },
+        ];
+        ctx
+    }
+
+    struct ManyKb(Vec<FrameworkKnowledge>);
+    impl gt_domain::port::KnowledgeProvider for ManyKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> {
+            self.0.iter().collect()
+        }
+        fn by_id(&self, id: &str) -> Option<&FrameworkKnowledge> {
+            self.0.iter().find(|fk| fk.id == id)
+        }
+    }
+
+    struct EmptyParsers;
+    impl gt_domain::port::ParserRegistry for EmptyParsers {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            None
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![]
+        }
+    }
+
+    /// The unconditional language layer (`fkb/php/common.yaml`, no detectors) must still contribute its
+    /// external-call / tx / entry-method vocabulary — `apply_without_detection` is what makes a
+    /// framework-independent layer usable, and dropping it would silently disable P9/P11/P13 for the language.
+    #[test]
+    fn run_applies_unconditional_language_layer_via_apply_without_detection() {
+        let root = std::env::temp_dir().join(format!("gt_prep_apply_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("composer.json"), "{}").unwrap();
+        let mut ctx = php_ctx(&root);
+        let kb = ManyKb(vec![FrameworkKnowledge {
+            id: "phplayer".into(),
+            language: Language::new("php"),
+            scope: KnowledgeScope::Framework,
+            detectors: vec![],
+            apply_without_detection: true,
+            external_calls: vec!["curl_exec".into(), "file_get_contents".into()],
+            tx_calls: vec!["beginTransaction".into()],
+            entry_methods: vec!["handle".into()],
+            ..Default::default()
+        }]);
+        super::run(&mut ctx, &kb, &StdFileSystem::new(), &EmptyParsers, &techstack()).expect("run ok");
+        assert!(
+            ctx.external_calls
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("curl_exec")),
+            "the unconditional language layer must contribute external_calls without a detector: {:?}",
+            ctx.external_calls
+        );
+        assert!(
+            ctx.tx_calls
+                .get(&1)
+                .map(|v| v.iter().any(|c| c.eq_ignore_ascii_case("beginTransaction")))
+                .unwrap_or(false),
+            "tx_calls must be recorded per sub-project"
+        );
+        // The unconditional language layer now also contributes entry_methods — symmetry with
+        // external_calls/tx_calls/sign_check/taint, all of which consult `apply_without_detection`.
+        assert_eq!(
+            ctx.entry_methods.get(&1).map(|v| v.clone()),
+            Some(vec!["handle".to_string()]),
+            "entry_methods must be recorded per sub-project (including the unconditional layer)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Now that `entry_methods` is collected from the *unconditional* language layer too (symmetry with
+    /// `external_calls`/`tx_calls`/`sign_check`/`taint`), a framework-independent `handle` entry method
+    /// must reach the project even though the layer has no detectors.
+    #[test]
+    fn run_entry_methods_also_collected_from_unconditional_layer() {
+        let root = std::env::temp_dir().join(format!("gt_prep_entry_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("composer.json"), "{}").unwrap();
+        let mut ctx = php_ctx(&root);
+        let kb = ManyKb(vec![FrameworkKnowledge {
+            id: "phplayer".into(),
+            language: Language::new("php"),
+            scope: KnowledgeScope::Framework,
+            detectors: vec![],
+            apply_without_detection: true,
+            external_calls: vec!["curl_exec".into()],
+            entry_methods: vec!["handle".into()],
+            ..Default::default()
+        }]);
+        super::run(&mut ctx, &kb, &StdFileSystem::new(), &EmptyParsers, &techstack()).expect("run ok");
+        // The unconditional layer contributes BOTH external_calls ...
+        assert!(
+            ctx.external_calls
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("curl_exec")),
+            "external_calls must come from the unconditional layer"
+        );
+        // ... and entry_methods (the asymmetry that used to drop the latter is now fixed).
+        assert_eq!(
+            ctx.entry_methods.get(&1).map(|v| v.clone()),
+            Some(vec!["handle".to_string()]),
+            "entry_methods must also come from the unconditional layer: {:?}",
+            ctx.entry_methods.get(&1)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A framework whose language does not match the sub-project must not leak its vocabulary into it
+    /// (the `if fk.language != sub.language { continue }` gate). This is the cross-language isolation:
+    /// a PHP framework must never contribute `curl_exec` to a JS sub-project.
+    #[test]
+    fn run_only_collects_external_calls_for_matching_language() {
+        let root = std::env::temp_dir().join(format!("gt_prep_lang_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("package.json"), "{}").unwrap();
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: root.to_path_buf(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        ctx.sub_projects = vec![SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "web".into(),
+            root_path: root.to_path_buf(),
+            language: Language::new(Language::JAVASCRIPT),
+            role: "frontend".into(),
+            detected_by: "package.json".into(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        }];
+        let kb = ManyKb(vec![FrameworkKnowledge {
+            id: "phplayer".into(),
+            language: Language::new("php"),
+            scope: KnowledgeScope::Framework,
+            detectors: vec![],
+            apply_without_detection: true,
+            external_calls: vec!["curl_exec".into()],
+            ..Default::default()
+        }]);
+        super::run(&mut ctx, &kb, &StdFileSystem::new(), &EmptyParsers, &techstack()).expect("run ok");
+        assert!(
+            ctx.external_calls.is_empty(),
+            "a php framework must not contribute external_calls to a js sub: {:?}",
+            ctx.external_calls
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A framework that is neither detected nor unconditional must contribute nothing — the `applies` gate
+    /// (detected || project-knowledge || apply_without_detection) is what stops every framework of a
+    /// language from polluting every project that merely shares the language.
+    #[test]
+    fn run_skips_framework_without_detection_or_unconditional_flag() {
+        let root = std::env::temp_dir().join(format!("gt_prep_skip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("composer.json"), "{}").unwrap();
+        let mut ctx = php_ctx(&root);
+        let kb = ManyKb(vec![FrameworkKnowledge {
+            id: "dormant".into(),
+            language: Language::new("php"),
+            scope: KnowledgeScope::Framework,
+            detectors: vec![],
+            apply_without_detection: false,
+            external_calls: vec!["curl_exec".into()],
+            ..Default::default()
+        }]);
+        super::run(&mut ctx, &kb, &StdFileSystem::new(), &EmptyParsers, &techstack()).expect("run ok");
+        assert!(
+            ctx.external_calls.is_empty(),
+            "an undetected, non-unconditional framework must contribute nothing: {:?}",
+            ctx.external_calls
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// External-call vocabulary is de-duplicated case-insensitively, so `curl_exec` and `CURL_EXEC`
+    /// collapse to one entry — otherwise the same symbol would be judged twice.
+    #[test]
+    fn run_dedup_external_calls_case_insensitively() {
+        let root = std::env::temp_dir().join(format!("gt_prep_dedup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("composer.json"), "{}").unwrap();
+        let mut ctx = php_ctx(&root);
+        let kb = ManyKb(vec![FrameworkKnowledge {
+            id: "dup".into(),
+            language: Language::new("php"),
+            scope: KnowledgeScope::Framework,
+            detectors: vec![],
+            apply_without_detection: true,
+            external_calls: vec!["curl_exec".into(), "CURL_EXEC".into(), "curl_exec".into()],
+            ..Default::default()
+        }]);
+        super::run(&mut ctx, &kb, &StdFileSystem::new(), &EmptyParsers, &techstack()).expect("run ok");
+        assert_eq!(
+            ctx.external_calls.len(),
+            1,
+            "external_calls must be de-duplicated case-insensitively: {:?}",
+            ctx.external_calls
+        );
+        assert_eq!(ctx.external_calls[0], "curl_exec");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Each sub-project is recognised independently, and the shared "default" value (here tx_calls) is
+    /// pinned to the **first** sub that produced a non-empty result and never overwritten by later ones.
+    /// Two frameworks, each detected only inside its own sub-project (via a FileExists marker), must not
+    /// leak their transaction markers across sub-projects.
+    #[test]
+    fn run_isolates_subs_and_pins_default_to_first_non_empty() {
+        let root = std::env::temp_dir().join(format!("gt_prep_iso_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("app");
+        let api = root.join("api");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(&api).unwrap();
+        std::fs::write(app.join("marker_a.php"), "<?php").unwrap();
+        std::fs::write(api.join("marker_b.php"), "<?php").unwrap();
+        let mut ctx = php_two_sub_ctx(&root);
+        let kb = ManyKb(vec![
+            FrameworkKnowledge {
+                id: "fa".into(),
+                language: Language::new("php"),
+                scope: KnowledgeScope::Framework,
+                detectors: vec![Detector::FileExists {
+                    path: "marker_a.php".into(),
+                    confidence: 0.9,
+                }],
+                tx_calls: vec!["TA".into()],
+                ..Default::default()
+            },
+            FrameworkKnowledge {
+                id: "fb".into(),
+                language: Language::new("php"),
+                scope: KnowledgeScope::Framework,
+                detectors: vec![Detector::FileExists {
+                    path: "marker_b.php".into(),
+                    confidence: 0.9,
+                }],
+                tx_calls: vec!["TB".into()],
+                ..Default::default()
+            },
+        ]);
+        super::run(&mut ctx, &kb, &StdFileSystem::new(), &EmptyParsers, &techstack()).expect("run ok");
+
+        let sub1 = ctx.tx_calls.get(&1).expect("sub1 has tx_calls");
+        let sub2 = ctx.tx_calls.get(&2).expect("sub2 has tx_calls");
+        assert!(
+            sub1.iter().any(|c| c == "TA") && !sub1.iter().any(|c| c == "TB"),
+            "sub1 must only carry its own framework's tx_calls: {sub1:?}"
+        );
+        assert!(
+            sub2.iter().any(|c| c == "TB") && !sub2.iter().any(|c| c == "TA"),
+            "sub2 must only carry its own framework's tx_calls: {sub2:?}"
+        );
+        // The default is pinned to the first sub that produced a non-empty value and never overwritten.
+        assert_eq!(
+            ctx.tx_calls_default,
+            vec!["TA".to_string()],
+            "tx_calls_default must be set from the first non-empty sub and stay fixed"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

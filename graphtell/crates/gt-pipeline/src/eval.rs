@@ -1207,4 +1207,68 @@ mod tests {
             Some("app\\Svc".to_string())
         );
     }
+
+    // ===== residual defensive / non-obvious-default branches =====
+
+    /// `field` looks an argument / config array up by key. PHP literals quote their keys (`'url'`), so the
+    /// lookup must tolerate the surrounding single quotes rather than demanding an exact string match — the
+    /// `k.trim_matches('\'') == field` arms at lines 191 and 210. Pinned so the quote-stripping cannot be
+    /// "simplified" into a bare `k == field || k.trim_matches('\'') == field`, which would silently break PHP config / argument key matching.
+    #[test]
+    fn value_source_field_matches_quote_wrapped_keys() {
+        let ws = ws();
+        // `arg` form: the array key is quoted `'url'`.
+        let rec = call(vec![FactValue::Array(vec![(
+            "'url'".into(),
+            FactValue::String("/api".into()),
+        )])]);
+        let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
+        assert_eq!(
+            ev.string(&ValueSource {
+                arg: Some(0),
+                field: Some("url".into()),
+                ..Default::default()
+            }),
+            Some("/api".to_string()),
+            "the quoted key `'url'` must still match field `url` (arg form)"
+        );
+        // The nested `{ source: { arg: 0 }, field }` form has the identical quote tolerance.
+        let nested = ValueSource {
+            source: Some(Box::new(ValueSource {
+                arg: Some(0),
+                ..Default::default()
+            })),
+            field: Some("url".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ev.string(&nested),
+            Some("/api".to_string()),
+            "the quoted key `'url'` must still match field `url` (nested source form)"
+        );
+    }
+
+    /// When `path` lists several parts but `join` is omitted, the parts are concatenated with an **empty**
+    /// separator — the `unwrap_or_default` on the `join` field (line 173). A rule author who forgets `join`
+    /// gets a bare concatenation, not a panic or a space. Non-obvious default; pinned so it cannot change
+    /// without a test failing.
+    #[test]
+    fn path_join_defaults_to_empty_when_omitted() {
+        let ws = ws();
+        let c = cfg(FactValue::Null);
+        let ev = Evaluator::new(&ws, MatchCtx::Config(&c));
+        let joined = ValueSource {
+            path: Some(vec![
+                ValueSource { file_stem: Some(true), ..Default::default() },
+                ValueSource { key_path: Some(true), ..Default::default() },
+            ]),
+            // `join` intentionally omitted.
+            ..Default::default()
+        };
+        assert_eq!(
+            ev.string(&joined),
+            Some("zh-cnuser.greeting.title".to_string()),
+            "missing `join` concatenates parts with an empty separator"
+        );
+    }
 }

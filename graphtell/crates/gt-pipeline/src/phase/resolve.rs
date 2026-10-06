@@ -1450,9 +1450,11 @@ mod tests {
     use crate::workspace::{InheritRecord, PendingLink};
     use gt_adapter_fkb::YamlKnowledgeBase;
     use gt_domain::model::{
-        AliasEntry, DbVerbsSpec, Language, MagicDelegationSpec, NamespacePolicy, NewEdge, NewNode,
-        Project, ProjectConfig, ProjectId, ProjectStatus, ResolveAs, Span,
+        AliasEntry, DbVerbsSpec, FrameworkKnowledge, Language, MagicDelegationSpec, NamespacePolicy,
+        NewEdge, NewNode, Project, ProjectConfig, ProjectId, ProjectStatus, ResolveAs, ResolverSpec,
+        Span,
     };
+    use gt_domain::port::KnowledgeProvider;
 
     /// The **default** notation policy is the empty one (a stack that declares nothing must not borrow
     /// PHP's), so anything reading `member_separator` / `ns_separators` needs an explicit policy.
@@ -2272,5 +2274,153 @@ mod tests {
         loc.raw = "never.fired".into();
         assert!(resolve_event(&mut ctx, &loc).candidates.is_empty());
         assert_eq!(ctx.ws.diagnostics.len(), before + 1, "an unregistered event must report a diagnostic");
+    }
+
+    // ------------------------------------------------------- run() orchestration / defensive branches
+    //
+    // Every individual resolver is exercised above via direct calls; these pin the *collection* logic in
+    // `run` itself, which previously had **no** unit coverage. `run` must skip malformed locators instead
+    // of panicking or emitting bogus edges, and stay a no-op when nothing can resolve.
+
+    struct StubKb(Vec<FrameworkKnowledge>);
+    impl KnowledgeProvider for StubKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> { self.0.iter().collect() }
+        fn by_id(&self, id: &str) -> Option<&FrameworkKnowledge> {
+            self.0.iter().find(|f| f.id == id)
+        }
+    }
+
+    /// A single-resolver knowledge base, so `run` collects exactly one resolver for the test sub-project.
+    fn resolver_kb(call: &str, strategy: ResolveStrategy) -> StubKb {
+        StubKb(vec![FrameworkKnowledge {
+            id: "fk1".into(),
+            resolvers: vec![ResolverSpec {
+                id: "r1".into(),
+                call: Some(call.into()),
+                strategy,
+                from_tier: None,
+            }],
+            ..Default::default()
+        }])
+    }
+
+    fn bare_call(
+        owner: NodeId,
+        node: NodeId,
+        callee: &str,
+        receiver: Option<&str>,
+        method: Option<&str>,
+        args: Vec<FactValue>,
+    ) -> CallRecord {
+        CallRecord {
+            node,
+            owner,
+            owner_fqn: r"app\M::run".into(),
+            owner_class: None,
+            callee: callee.into(),
+            receiver: receiver.map(|s| s.to_string()),
+            method: method.map(|s| s.to_string()),
+            args,
+            db_table: None,
+            in_loop: false,
+            entity: None,
+            span: Span::default(),
+            file: "app/x.php".into(),
+            sub: None,
+            language: Language::default(),
+        }
+    }
+
+    /// With no frameworks and no resolvers, `run` must not panic and must lay / report nothing — the
+    /// fixed-point loop and the three sub-passes (`resolve_pending_links` / `resolve_calls` /
+    /// `classify_facade_db_calls`) are all no-ops on an empty workspace.
+    #[test]
+    fn run_is_noop_when_there_are_no_resolvers() {
+        let kb = StubKb(vec![]);
+        let mut ctx = new_ctx();
+        let edges_before = ctx.ws.edges().len();
+        super::run(&mut ctx, &kb);
+        assert_eq!(ctx.ws.edges().len(), edges_before, "with no resolvers, run must lay nothing");
+        assert!(ctx.ws.diagnostics.is_empty(), "with no resolvers, run must report nothing");
+    }
+
+    /// A locator whose argument exceeds the 256-char cap (run line ~122) must be dropped at collection
+    /// time — never resolved, never reported. A valid sibling call still reaches resolution, so we assert the
+    /// overlong one adds *nothing* on top of the valid call's own (unresolved) diagnostics.
+    #[test]
+    fn run_skips_overlong_argument_locators() {
+        let kb = resolver_kb("event", ResolveStrategy::Event);
+        // Build a workspace with exactly one valid (but unresolvable) event call and return its diagnostic count.
+        let baseline = {
+            let mut ctx = new_ctx();
+            ctx.frameworks.insert(1, vec!["fk1".into()]);
+            let owner = add_node(&mut ctx, "Method", r"app\M::run");
+            let node = add_node(&mut ctx, "CallSite", "event");
+            // `method` matches the resolver pattern (callee alone wouldn't, with no receiver); the arg becomes the raw.
+            ctx.ws.calls.push(bare_call(
+                owner,
+                node,
+                "event",
+                None,
+                Some("event"),
+                vec![FactValue::String("order.created".into())],
+            ));
+            super::run(&mut ctx, &kb);
+            ctx.ws.diagnostics.len()
+        };
+        assert!(baseline > 0, "the valid call must still be reported as unresolved");
+
+        // Now the overlong call shares the workspace: it must be skipped at collection, contributing nothing.
+        let mut ctx = new_ctx();
+        ctx.frameworks.insert(1, vec!["fk1".into()]);
+        let owner = add_node(&mut ctx, "Method", r"app\M::run");
+        let node = add_node(&mut ctx, "CallSite", "event");
+        ctx.ws.calls.push(bare_call(
+            owner,
+            node,
+            "event",
+            None,
+            Some("event"),
+            vec![FactValue::String("order.created".into())],
+        ));
+        let overlong = "x".repeat(300);
+        ctx.ws.calls.push(bare_call(
+            owner,
+            node,
+            "event",
+            None,
+            Some("event"),
+            vec![FactValue::String(overlong)],
+        ));
+        super::run(&mut ctx, &kb);
+        assert_eq!(
+            ctx.ws.diagnostics.len(),
+            baseline,
+            "the overlong-arg locator must be skipped, adding no diagnostic"
+        );
+    }
+
+    /// A `VariableType` locator built from `(owning method + receiver + method)` must be skipped when the
+    /// call is missing either the receiver or the method (run lines ~88-92) — never guessed, never reported.
+    #[test]
+    fn run_skips_variable_type_locators_missing_receiver_or_method() {
+        let kb = resolver_kb("svc", ResolveStrategy::VariableType);
+        let mut ctx = new_ctx();
+        ctx.frameworks.insert(1, vec!["fk1".into()]);
+        let owner = add_node(&mut ctx, "Method", r"app\M::run");
+        let node = add_node(&mut ctx, "CallSite", "svc");
+        // receiver present (and matches the resolver pattern), method missing -> skipped at the receiver/method gate.
+        ctx.ws
+            .calls
+            .push(bare_call(owner, node, "svc", Some("svc"), None, vec![]));
+        // method present (matches the resolver pattern), receiver missing -> skipped at the same gate.
+        ctx.ws
+            .calls
+            .push(bare_call(owner, node, "svc", None, Some("svc"), vec![]));
+        super::run(&mut ctx, &kb);
+        assert!(
+            ctx.ws.diagnostics.is_empty(),
+            "variable-type locators missing receiver/method must be skipped, not reported"
+        );
     }
 }

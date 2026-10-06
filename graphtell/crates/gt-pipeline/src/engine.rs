@@ -2679,5 +2679,106 @@ mod tests {
         assert_eq!(tier_of(ResolveTier::Unknown), ResolveTier::Unknown);
         assert_eq!(default_merge(), MergeStrategy::MaxByKind);
     }
+
+    // ===== coverage-gap leaves (no direct test before this point) =====
+
+    /// `matches_config` wires `file` (after `{app_root}` expansion) → `path_matches`, `key_path` →
+    /// `wildcard_matches`, and the `where` predicates together. It is the only `matches_*` matcher with **no
+    /// direct test** before this one, so a regression in the file / key gating would otherwise go unnoticed.
+    #[test]
+    fn matches_config_combines_file_key_and_predicates() {
+        let ws = GraphWorkspace::new(ProjectId(1));
+        let node = NodeId(1);
+        let cfg = ConfigRecord {
+            file: "app/config/app.php".to_string(),
+            key_path: "db.name".to_string(),
+            value: FactValue::String("x".to_string()),
+            span: Span::default(),
+            sub: None,
+            locale: None,
+            file_stem: None,
+        };
+        // Both file and key match, no predicates.
+        let sel = Selector::ConfigEntry {
+            file: Some("app/config/app.php".to_string()),
+            key_path: Some("db.name".to_string()),
+            r#where: vec![],
+        };
+        assert!(matches_config(&sel, &cfg, node, &ws, "/r"), "file + key both match");
+
+        // A mismatching file is rejected.
+        let bad_file = Selector::ConfigEntry {
+            file: Some("app/other.php".to_string()),
+            key_path: Some("db.name".to_string()),
+            r#where: vec![],
+        };
+        assert!(
+            !matches_config(&bad_file, &cfg, node, &ws, "/r"),
+            "a non-matching file must reject"
+        );
+
+        // A mismatching key is rejected.
+        let bad_key = Selector::ConfigEntry {
+            file: Some("app/config/app.php".to_string()),
+            key_path: Some("cache.ttl".to_string()),
+            r#where: vec![],
+        };
+        assert!(
+            !matches_config(&bad_key, &cfg, node, &ws, "/r"),
+            "a non-matching key must reject"
+        );
+
+        // The file pattern is a suffix match, so a partially-specified (no root) path still matches.
+        let wild = Selector::ConfigEntry {
+            file: Some("config/app.php".to_string()),
+            key_path: Some("db.name".to_string()),
+            r#where: vec![],
+        };
+        assert!(
+            matches_config(&wild, &cfg, node, &ws, "/r"),
+            "a suffix file pattern still matches"
+        );
+    }
+
+    /// `resolve_aliased_call` also restores the alias when the call record carries **no explicit receiver** but
+    /// the callee itself is `Alias::method` — the `else if` branch at line 116. A static call written with the
+    /// bare alias-qualified name must still map to the umbrella pattern.
+    #[test]
+    fn alias_resolution_via_callee_without_explicit_receiver() {
+        let mut ws = GraphWorkspace::new(ProjectId(1));
+        ws.put_symbol(
+            ProjectId(1),
+            "imports",
+            "queuethink",
+            serde_json::json!({ "fqn": "think\\facade\\Queue" }),
+        );
+        // No `receiver`, but the callee `QueueThink::push` carries the alias prefix.
+        let rec = call_record(None, Some("push"), "QueueThink::push");
+        assert!(
+            aliased_callee_matches(&ws, "Queue::push", &rec),
+            "a callee of `Alias::method` form must be resolved through the import alias"
+        );
+        // A non-aliased callee with no receiver is unaffected (no false positive).
+        let plain = call_record(None, Some("push"), "Other::push");
+        assert!(!aliased_callee_matches(&ws, "Queue::push", &plain));
+    }
+
+    /// `recv_matches` last-ditches with `callee == pattern` when the receiver does not match and no umbrella
+    /// tail applies (line 148). A pattern that names a receiver also satisfies an identical callee — kept so a
+    /// bare pattern used as a receiver name is not silently dropped. Exercised via the public `callee_matches`.
+    #[test]
+    fn callee_matches_falls_back_to_callee_text_when_receiver_mismatches() {
+        // Receiver "Other" does not match, but the callee text equals the receiver fragment `Queue`.
+        assert!(callee_matches("Queue::push", "Queue", Some("Other"), Some("push")));
+        // Without the callee equalling the pattern, a mismatched receiver yields no match.
+        assert!(!callee_matches(
+            "Queue::push",
+            "SomethingElse",
+            Some("Other"),
+            Some("push")
+        ));
+        // A `*` receiver pattern still matches any receiver (unchanged behaviour).
+        assert!(callee_matches("*::push", "Whatever::push", Some("Other"), Some("push")));
+    }
 }
 
