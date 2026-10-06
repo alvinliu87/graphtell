@@ -129,6 +129,9 @@ fn under_samples(dir: &Path, names: &[&str], depth: usize) -> Option<PathBuf> {
 ///    directory whose name is in `names`.
 ///
 /// Returns `None` when no sample is found; callers should skip, not fail.
+///
+/// The env override is name-agnostic, which is what the **primary** sample wants (a developer may
+/// have checked it out under any name). Every other sample must use [`find_named_sample`].
 pub fn find_sample(names: &[&str]) -> Option<PathBuf> {
     if let Ok(dir) = std::env::var(SAMPLE_DIR_ENV) {
         let p = PathBuf::from(dir);
@@ -136,6 +139,38 @@ pub fn find_sample(names: &[&str]) -> Option<PathBuf> {
             return Some(p);
         }
     }
+    search_upwards(names)
+}
+
+/// Like [`find_sample`], but the `GRAPHTELL_SAMPLE_DIR` override is honoured only when the checkout
+/// is **named** like this sample (see [`override_matches`]).
+///
+/// Why this exists: one env var, one global override. Pointing it at the ThinkPHP checkout to run the
+/// primary PHP tests used to redirect the `link` and `php_alt` samples to that same directory —
+/// `link_sample` failed three cases on a project that has no frontend, and `php_alt` asserted
+/// Laravel middleware aliases against ThinkPHP. A sample that is not checked out must resolve to
+/// `None` (skip), never to "whatever the env var happens to point at".
+pub fn find_named_sample(names: &[&str]) -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var(SAMPLE_DIR_ENV) {
+        let p = PathBuf::from(dir);
+        if p.is_dir() && override_matches(&p, names) {
+            return Some(p);
+        }
+    }
+    search_upwards(names)
+}
+
+/// Whether a `GRAPHTELL_SAMPLE_DIR` override can plausibly be *this* sample: its directory name must
+/// be one of the names the catalog accepts for it (case-insensitive).
+fn override_matches(dir: &Path, names: &[&str]) -> bool {
+    let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    names.iter().any(|n| name.eq_ignore_ascii_case(n))
+}
+
+/// Bounded-depth search under the nearest `samples/` directory, walking up from this crate.
+fn search_upwards(names: &[&str]) -> Option<PathBuf> {
     let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for _ in 0..6 {
         if let Some(candidate) = under_samples(&cur.join("samples"), names, 3) {
@@ -211,7 +246,7 @@ pub fn link_sample_root() -> Option<PathBuf> {
             }
         }
     }
-    find_sample(&dirs.iter().map(String::as_str).collect::<Vec<_>>())
+    find_named_sample(&dirs.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 /// The checkout directory name of the `link` sample (from the catalog).
@@ -229,24 +264,24 @@ pub fn missing_hint_named(name: &str) -> String {
 
 /// Locate the secondary PHP framework sample root directory.
 ///
-/// Delegates to the single [`find_sample`] discovery (honors the generic `GRAPHTELL_SAMPLE_DIR` env
-/// var, or a bounded search under `samples/`). Returns `None` when no sample is found; callers should
-/// skip, not fail.
+/// Delegates to [`find_named_sample`] (the generic `GRAPHTELL_SAMPLE_DIR` env var counts only when
+/// the checkout is named like this sample, otherwise a bounded search under `samples/`). Returns
+/// `None` when no sample is found; callers should skip, not fail.
 pub fn php_alt_sample_root() -> Option<PathBuf> {
     let dirs = dirs_of("php_alt");
-    find_sample(&dirs.iter().map(String::as_str).collect::<Vec<_>>())
+    find_named_sample(&dirs.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 /// Locate the `(node_a, node_b)` sample root directories.
 ///
-/// Delegates to the single [`find_sample`] discovery for each sample independently. Returns `None`
-/// when either sample is missing; callers should skip, not fail.
+/// Delegates to [`find_named_sample`] for each sample independently. Returns `None` when either
+/// sample is missing; callers should skip, not fail.
 pub fn node_samples_root() -> Option<(PathBuf, PathBuf)> {
     let a = dirs_of("node_a");
     let b = dirs_of("node_b");
     match (
-        find_sample(&a.iter().map(String::as_str).collect::<Vec<_>>()),
-        find_sample(&b.iter().map(String::as_str).collect::<Vec<_>>()),
+        find_named_sample(&a.iter().map(String::as_str).collect::<Vec<_>>()),
+        find_named_sample(&b.iter().map(String::as_str).collect::<Vec<_>>()),
     ) {
         (Some(n), Some(e)) => Some((n, e)),
         _ => None,
@@ -278,6 +313,31 @@ mod tests {
                 "catalog has an empty directory name for `{key}`: {dirs:?}"
             );
         }
+    }
+
+    /// `GRAPHTELL_SAMPLE_DIR` is one global override, so it may only be adopted by the sample it
+    /// actually names — otherwise pointing it at the ThinkPHP checkout makes the `link` / `php_alt`
+    /// tests run (and fail) against that project instead of skipping.
+    #[test]
+    fn override_is_only_adopted_by_the_sample_it_names() {
+        let link = dirs_of("link");
+        let names: Vec<&str> = link.iter().map(String::as_str).collect();
+
+        // Named like the sample: adopted (this is how you point at a checkout outside `samples/`).
+        let named = PathBuf::from("/tmp").join(&link[0]);
+        assert!(override_matches(&named, &names), "{named:?} is a `{link:?}` checkout");
+
+        // The real historical failure: the env var pointed at the primary PHP checkout, and every
+        // other sample silently became that directory.
+        let php = PathBuf::from("/home/alvin/samples/php-projects/thinkphp/CRMEB");
+        assert!(!override_matches(&php, &names), "a ThinkPHP checkout is not the `link` sample");
+
+        // Case-insensitive, so a checkout renamed by a case-preserving tool still matches.
+        let upper = PathBuf::from("/tmp").join(link[0].to_uppercase());
+        assert!(override_matches(&upper, &names));
+
+        // A path with no final component (e.g. `/`) cannot be claimed by anything.
+        assert!(!override_matches(PathBuf::from("/").as_path(), &names));
     }
 
     /// The `sample_project` entry also drives path / FQN building, so its two extra fields must parse.

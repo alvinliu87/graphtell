@@ -33,8 +33,12 @@ rules:
     phase: Synthesize
     selector:
       kind: call
-      # First half = object form / bare call; second half = member form (`request::{get,post,...}` …)
+      # First half = object form / bare call; second half = member form (`request::{get,post,...}` …).
+      # `axios::{...}` is the member form of the most common front-end client: the parser reports it as
+      # receiver `axios` + method `post`, so without this alternative `axios.post('/api/x')` — the single
+      # most frequent way a front end calls a backend — never became a contract (only `axios({...})` did).
       callee: "request|http.request|axios|fetch|\
+        axios::{get,post,put,delete,patch,head,options}|\
         request::{get,post,put,delete,patch,head,options}|\
         http::{get,post,put,delete,patch,head,options}|\
         $http::{get,post,put,delete,patch,head,options}|\

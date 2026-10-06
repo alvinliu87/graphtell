@@ -29,7 +29,15 @@ pub fn run_post(ctx: &mut PipelineContext) {
     let phase = Phase(Phase::ANNOTATE_POST.to_string());
     let rules_by_sub = collect_rules(ctx, &phase);
 
-    // Group by node_kind to avoid walking the whole graph
+    // Group by node_kind to avoid walking the whole graph.
+    //
+    // Deliberately **not** grouped by sub-project, unlike `apply_source_rules` / `apply_inherit_rules`
+    // (which look rules up by the record's own sub): a source record belongs to exactly one sub, a graph
+    // node does not. The contract bridge is the canonical case — a frontend sub and a backend sub
+    // synthesise the *same* `HttpContract` node, which keeps whichever sub created it first, and the
+    // frontend still has to stamp `frontend.called` on it (`fkb/js/common.yaml` `mark-called`). What
+    // gates that rule is not the sub but the graph: `where: [ has_incoming: CallsHttp ]`.
+    // See `tests/link_sample.rs`, which fails the moment sub scoping is added here.
     let mut by_kind: HashMap<String, Vec<Rule>> = HashMap::new();
     let mut wild: Vec<Rule> = Vec::new();
     for (_sub, rules) in rules_by_sub.iter() {
@@ -83,6 +91,7 @@ pub fn run_post(ctx: &mut PipelineContext) {
 fn sub_of(ctx: &PipelineContext, id: gt_domain::model::NodeId) -> Option<SubProjectId> {
     ctx.ws.node(id).and_then(|n| n.sub_project_id)
 }
+
 
 /// Convert an in-project relative path into a "relative to the sub-project" path.
 ///
@@ -344,6 +353,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sub_relative_keeps_paths_outside_the_sub_root() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        // A sibling of the sub root: the prefix is absent, so `strip_prefix` fails -- the path must
+        // survive untouched rather than being truncated at some accidental boundary.
+        assert_eq!(
+            sub_relative(&ctx, Some(SubProjectId::new(SUB)), "other/lib.php"),
+            "other/lib.php"
+        );
+    }
+
+    #[test]
+    fn sub_relative_of_a_sub_that_is_the_project_root() {
+        let mut ctx = PipelineContext::new(project());
+        // Single-sub projects register the project root itself: the prefix collapses to an empty
+        // string and then to "/", which no project-relative path starts with.
+        ctx.sub_projects.push(sub("/p", "php"));
+        assert_eq!(
+            sub_relative(&ctx, Some(SubProjectId::new(SUB)), "app/event.php"),
+            "app/event.php"
+        );
+    }
+
     // ---- collect_rules: global rules are scoped by language; everything filtered by phase ----
 
     #[test]
@@ -425,6 +458,25 @@ mod tests {
     /// Add a graph node belonging to sub `sub`.
     fn node(ctx: &mut PipelineContext, kind: &str, sub: i64) -> NodeId {
         node_with_props(ctx, kind, sub, serde_json::Value::Null)
+    }
+
+    /// Same, but belonging to no sub-project — it takes the cross-project (`None`) rule bucket.
+    fn node_detached(ctx: &mut PipelineContext, kind: &str) -> NodeId {
+        ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind::from(kind),
+            name: kind.to_string(),
+            fqn: Some(kind.to_string()),
+            identity: None,
+            file_id: None,
+            span: span(),
+            language: Language::new("php"),
+            phase: Phase::new(""),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        })
     }
 
     /// Same, carrying properties (so `where: property_is` has something to read).
@@ -645,6 +697,27 @@ mod tests {
         })
     }
 
+    /// Register a `File` node for `path`, so a config entry in that file has a landing point of its own.
+    fn add_file_node(ctx: &mut PipelineContext, path: &str) -> NodeId {
+        let id = ctx.ws.add_node(NewNode {
+            id: None,
+            project_id: ProjectId(1),
+            sub_project_id: Some(SubProjectId::new(SUB)),
+            kind: NodeKind::from("File"),
+            name: path.to_string(),
+            fqn: None,
+            identity: None,
+            file_id: None,
+            span: span(),
+            language: Language::new("php"),
+            phase: Phase::new(""),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        });
+        ctx.ws.record_file_node(path, id);
+        id
+    }
+
     /// Add a node with an explicit name / FQN (so `from_field` can resolve a class reference to it).
     fn node_fqn(ctx: &mut PipelineContext, kind: &str, name: &str, fqn: &str, sub: i64) -> NodeId {
         ctx.ws.add_node(NewNode {
@@ -738,13 +811,25 @@ mod tests {
     }
 
     fn config_rule(id: &str, phase: &str, file: Option<&str>, ann: &str) -> Rule {
+        config_rule_full(id, phase, file, None, vec![], ann)
+    }
+
+    /// A config rule carrying `key_path` and / or `where` predicates.
+    fn config_rule_full(
+        id: &str,
+        phase: &str,
+        file: Option<&str>,
+        key_path: Option<&str>,
+        r#where: Vec<Predicate>,
+        ann: &str,
+    ) -> Rule {
         Rule {
             id: id.to_string(),
             phase: Phase::new(phase),
             selector: Selector::ConfigEntry {
                 file: file.map(|f| f.to_string()),
-                key_path: None,
-                r#where: vec![],
+                key_path: key_path.map(|k| k.to_string()),
+                r#where,
             },
             binding: vec![annotate(ann)],
             confidence: 1.0,
@@ -890,6 +975,58 @@ mod tests {
         assert_eq!(ctx.ws.annotations_of(n).len(), 1);
     }
 
+    #[test]
+    fn run_post_ignores_selectors_that_are_not_node_selectors() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        let m = node(&mut ctx, "Method", SUB);
+        // P6 walks graph nodes; the grouping step drops every non-`node` selector (`_ => {}`), so a
+        // call / config / inheritance rule declared in `AnnotatePost` can never fire.
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![
+                node_rule("ok", "AnnotatePost", Some("Method"), "ok"),
+                call_rule("call-sel", "AnnotatePost", "Db::name", "call-leak"),
+                config_rule("cfg-sel", "AnnotatePost", None, "cfg-leak"),
+                inherit_rule("inh-sel", "AnnotatePost", "Model", "inh-leak"),
+            ],
+        );
+        run_post(&mut ctx);
+        assert!(ctx.ws.has_annotation(m, "ok"), "the control rule must fire");
+        assert_eq!(
+            ctx.ws.annotations_of(m).iter().map(|a| a.kind.clone()).collect::<Vec<_>>(),
+            vec!["ok".to_string()],
+        );
+    }
+
+    #[test]
+    fn run_post_node_rules_reach_every_sub_project() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub_n("/p/api", "php", 1));
+        ctx.sub_projects.push(sub_n("/p/web", "js", 2));
+        let php_node = node(&mut ctx, "Method", 1);
+        let js_node = node(&mut ctx, "Method", 2);
+        let detached = node_detached(&mut ctx, "Method");
+        // Deliberate, and the opposite of `apply_source_rules`: a source record belongs to one sub, a
+        // graph node can be shared by several (the contract bridge synthesises one `HttpContract` from
+        // both sides), so P6 pools node rules by kind and lets the rule's own `where` do the gating.
+        // `tests/link_sample.rs` is the end-to-end nail for this: it stamps `frontend.called` from the
+        // JS sub onto a contract node owned by the PHP sub.
+        ctx.rules_by_sub
+            .insert(1, vec![node_rule("php-only", "AnnotatePost", Some("Method"), "php-only")]);
+        ctx.rules_by_sub
+            .insert(2, vec![node_rule("js-only", "AnnotatePost", Some("Method"), "js-only")]);
+        ctx.rules_global
+            .push((Language::new("php"), node_rule("glob", "AnnotatePost", Some("Method"), "glob")));
+        run_post(&mut ctx);
+
+        assert!(ctx.ws.has_annotation(php_node, "php-only"), "the control rule must fire");
+        assert!(ctx.ws.has_annotation(js_node, "php-only"), "a shared node is not owned by one sub");
+        assert!(ctx.ws.has_annotation(js_node, "js-only"));
+        assert!(ctx.ws.has_annotation(detached, "php-only"), "a node without a sub is not exempt");
+        assert!(ctx.ws.has_annotation(detached, "glob"));
+    }
+
     // ---------------------------------------------------------------- apply_source_rules: call + config
 
     #[test]
@@ -920,6 +1057,51 @@ mod tests {
             .insert(SUB, vec![call_rule("c1", "AnnotatePre", "Db::name", "called")]);
         run_pre(&mut ctx);
         assert!(ctx.ws.has_annotation(m, "called"));
+    }
+
+    #[test]
+    fn run_pre_call_rule_requires_a_matching_callee() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        let m = node(&mut ctx, "Method", SUB);
+        push_call(&mut ctx, m, "Db::name", vec![]);
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![
+                call_rule("hit", "AnnotatePre", "Db::name", "hit"),
+                call_rule("miss", "AnnotatePre", "Db::query", "miss"),
+            ],
+        );
+        run_pre(&mut ctx);
+        // The control fires first: a negative assertion alone would also hold if the phase never ran
+        // or the record were dropped, which is exactly the "vacuous green" failure mode.
+        assert!(ctx.ws.has_annotation(m, "hit"));
+        assert!(!ctx.ws.has_annotation(m, "miss"));
+    }
+
+    #[test]
+    fn run_pre_non_call_selectors_never_match_a_call_record() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        let m = node(&mut ctx, "Method", SUB);
+        push_call(&mut ctx, m, "Db::name", vec![]);
+        // Every other selector variant lives in the same rule list, so `matches_call` is the only
+        // thing standing between a `node` / `config_entry` / `inheritance` rule and a call site.
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![
+                call_rule("ok", "AnnotatePre", "Db::name", "ok"),
+                node_rule("node-sel", "AnnotatePre", Some("Method"), "node-leak"),
+                config_rule("cfg-sel", "AnnotatePre", None, "cfg-leak"),
+                inherit_rule("inh-sel", "AnnotatePre", "Model", "inh-leak"),
+            ],
+        );
+        run_pre(&mut ctx);
+        assert!(ctx.ws.has_annotation(m, "ok"), "the control rule must fire");
+        assert_eq!(
+            ctx.ws.annotations_of(m).iter().map(|a| a.kind.clone()).collect::<Vec<_>>(),
+            vec!["ok".to_string()],
+        );
     }
 
     #[test]
@@ -1058,6 +1240,153 @@ mod tests {
             .insert(SUB, vec![config_rule("cfg0", "AnnotatePre", None, "cfg")]);
         run_pre(&mut ctx);
         assert!(ctx.ws.has_annotation(NodeId(1), "cfg"));
+    }
+
+    #[test]
+    fn run_pre_non_config_selectors_never_match_a_config_record() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        ctx.ws.configs.push(ConfigRecord {
+            file: "sample_project/app/event.php".into(),
+            key_path: "listen.x".into(),
+            value: FactValue::String("v".into()),
+            span: span(),
+            sub: Some(SubProjectId::new(SUB)),
+            locale: None,
+            file_stem: None,
+        });
+        // The config loop guards on `Selector::ConfigEntry` before anything else, so a call rule
+        // sharing the rule list must not treat the entry as a call site.
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![
+                config_rule("ok", "AnnotatePre", None, "ok"),
+                call_rule("call-sel", "AnnotatePre", "Db::name", "call-leak"),
+            ],
+        );
+        run_pre(&mut ctx);
+        assert!(ctx.ws.has_annotation(NodeId(1), "ok"), "the control rule must fire");
+        assert!(!ctx.ws.has_annotation(NodeId(1), "call-leak"));
+    }
+
+    #[test]
+    fn config_records_without_a_sub_only_see_global_rules() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        ctx.ws.configs.push(ConfigRecord {
+            file: "event.php".into(),
+            key_path: "listen.x".into(),
+            value: FactValue::String("v".into()),
+            span: span(),
+            sub: None,
+            locale: None,
+            file_stem: None,
+        });
+        // A record with no sub lands in the `None` bucket, which `collect_rules` fills from
+        // `rules_global` only — a sub-project's own rules must not reach it.
+        ctx.rules_by_sub
+            .insert(SUB, vec![config_rule("sub-only", "AnnotatePre", None, "sub-leak")]);
+        ctx.rules_global
+            .push((Language::new("php"), config_rule("glob", "AnnotatePre", None, "glob-ok")));
+        run_pre(&mut ctx);
+        assert!(ctx.ws.has_annotation(NodeId(1), "glob-ok"));
+        assert!(!ctx.ws.has_annotation(NodeId(1), "sub-leak"));
+    }
+
+    #[test]
+    fn run_pre_config_rule_file_pattern_must_match_the_entry() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        ctx.ws.configs.push(ConfigRecord {
+            file: "sample_project/app/event.php".into(),
+            key_path: "listen.x".into(),
+            value: FactValue::String("v".into()),
+            span: span(),
+            sub: Some(SubProjectId::new(SUB)),
+            locale: None,
+            file_stem: None,
+        });
+        // `file` is a real filter, not decoration: neither the project-relative path nor its
+        // sub-relative form ends with `app/other.php`.
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![
+                config_rule("hit", "AnnotatePre", Some("app/event.php"), "hit"),
+                config_rule("miss", "AnnotatePre", Some("app/other.php"), "miss"),
+            ],
+        );
+        run_pre(&mut ctx);
+        assert!(ctx.ws.has_annotation(NodeId(1), "hit"));
+        assert!(!ctx.ws.has_annotation(NodeId(1), "miss"));
+    }
+
+    #[test]
+    fn run_pre_config_rule_key_path_must_match_the_entry() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        ctx.ws.configs.push(ConfigRecord {
+            file: "sample_project/app/event.php".into(),
+            key_path: "listen.sms_send".into(),
+            value: FactValue::String("v".into()),
+            span: span(),
+            sub: Some(SubProjectId::new(SUB)),
+            locale: None,
+            file_stem: None,
+        });
+        // `key_path` is checked inside `matches_config` (the outer loop only pre-filters `file`),
+        // and it is a wildcard match, not a prefix of convenience.
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![
+                config_rule_full("hit", "AnnotatePre", None, Some("listen.*"), vec![], "hit"),
+                config_rule_full("miss", "AnnotatePre", None, Some("listen.other"), vec![], "miss"),
+            ],
+        );
+        run_pre(&mut ctx);
+        assert!(ctx.ws.has_annotation(NodeId(1), "hit"));
+        assert!(!ctx.ws.has_annotation(NodeId(1), "miss"));
+    }
+
+    #[test]
+    fn run_pre_config_where_predicate_reads_the_entry_itself() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        // Each entry gets its own `File` node, so the two landing points are distinguishable --
+        // without it both annotations would collapse onto the `NodeId(1)` fallback.
+        let single = add_file_node(&mut ctx, "sample_project/app/one.php");
+        let pair = add_file_node(&mut ctx, "sample_project/app/two.php");
+        for (file, len) in [("sample_project/app/one.php", 1), ("sample_project/app/two.php", 2)] {
+            let value = FactValue::Array(
+                (0..len)
+                    .map(|i| (i.to_string(), FactValue::String(format!("c{}", i))))
+                    .collect(),
+            );
+            ctx.ws.configs.push(ConfigRecord {
+                file: file.into(),
+                key_path: "listen.evt".into(),
+                value,
+                span: span(),
+                sub: Some(SubProjectId::new(SUB)),
+                locale: None,
+                file_stem: None,
+            });
+        }
+        // `EntryArityGte` needs the config match-context: a node-only predicate could not tell the
+        // two entries apart, because both land on files of the same kind.
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![config_rule_full(
+                "arity",
+                "AnnotatePre",
+                None,
+                None,
+                vec![Predicate::EntryArityGte(2)],
+                "multi",
+            )],
+        );
+        run_pre(&mut ctx);
+        assert!(ctx.ws.has_annotation(pair, "multi"));
+        assert!(!ctx.ws.has_annotation(single, "multi"));
     }
 
     // ---------------------------------------------------------------- apply_inherit_rules
@@ -1223,6 +1552,30 @@ mod tests {
                 .any(|(k, to)| k == "MapsTo" && *to == table.get()),
             "the child class should point at the synthesised Table"
         );
+    }
+
+    #[test]
+    fn inheritance_rules_only_run_in_the_synthesize_phase() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        let child = node(&mut ctx, "Class", SUB);
+        inherit(&mut ctx, child, "X", "Model", Some(SUB));
+        // `apply_inherit_rules` is called from `run_synthesize` only: the same selector declared in
+        // P4 / P6 must stay silent, otherwise the graph would be rewritten once per phase.
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![
+                inherit_rule("pre", "AnnotatePre", "Model", "pre-leak"),
+                inherit_rule("post", "AnnotatePost", "Model", "post-leak"),
+                inherit_rule("synth", "Synthesize", "Model", "synth-ok"),
+            ],
+        );
+        run_pre(&mut ctx);
+        run_post(&mut ctx);
+        run_synthesize(&mut ctx);
+        assert!(ctx.ws.has_annotation(child, "synth-ok"), "the control rule must fire");
+        assert!(!ctx.ws.has_annotation(child, "pre-leak"));
+        assert!(!ctx.ws.has_annotation(child, "post-leak"));
     }
 
     // ---------------------------------------------------------------- selector `where` predicates
@@ -1800,6 +2153,74 @@ mod tests {
     }
 
     // ---------------------------------------------------------------- collect_rules: sub rule wins over same-id global
+
+    #[test]
+    fn link_action_with_an_unresolvable_end_adds_no_edge() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        let a = node_fqn(&mut ctx, "Method", "run", "App\\A", SUB);
+        // Both ends have to resolve to a real node; a name nobody owns is a missing edge, never an
+        // edge invented from the literal (and never a fallback to the matched node).
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![rule_of(
+                "ghost",
+                "AnnotatePost",
+                node_sel(Some("Method")),
+                vec![link_action(
+                    "Calls",
+                    ValueSource { self_value: Some(true), ..ValueSource::default() },
+                    ValueSource { literal: Some("App\\Ghost".into()), ..ValueSource::default() },
+                )],
+                1.0,
+            )],
+        );
+        run_post(&mut ctx);
+        assert!(
+            !ctx.ws.out_edges_of(a).iter().any(|(k, _)| k == "Calls"),
+            "out edges of a: {:?}",
+            ctx.ws.out_edges_of(a)
+        );
+    }
+
+    #[test]
+    fn project_action_skips_nodes_it_cannot_reach() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub("/p/sample_project/app", "php"));
+        let entity = node(&mut ctx, "Class", SUB);
+        let field = node(&mut ctx, "Field", SUB);
+        let detached = node(&mut ctx, "Class", SUB);
+        // `entity --HasColumn--> field`, but `field` has no `MapsTo`: the landing point is
+        // unreachable. `detached` has no `HasColumn` at all, so `along` never matches.
+        ctx.ws.add_edge(NewEdge {
+            project_id: ProjectId(1),
+            kind: EdgeKind::from("HasColumn"),
+            from_id: entity,
+            to_id: field,
+            phase: Phase::new(""),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        });
+        ctx.rules_by_sub.insert(
+            SUB,
+            vec![rule_of(
+                "p0",
+                "AnnotatePost",
+                node_sel(Some("Class")),
+                vec![project_action("ReadsDb", "HasColumn", vec!["MapsTo".into()])],
+                1.0,
+            )],
+        );
+        run_post(&mut ctx);
+        for (who, id) in [("entity", entity), ("detached", detached)] {
+            assert!(
+                !ctx.ws.out_edges_of(id).iter().any(|(k, _)| k == "ReadsDb"),
+                "{} should get no projected edge: {:?}",
+                who,
+                ctx.ws.out_edges_of(id)
+            );
+        }
+    }
 
     #[test]
     fn collect_rules_sub_rule_wins_over_same_id_global() {

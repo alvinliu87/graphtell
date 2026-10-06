@@ -178,11 +178,12 @@ pub struct AnnotateAction {
     pub target: AnnotateTarget,
     pub annotations: Vec<AnnotationSpec>,
     pub merge: MergeStrategy,
-    /// Scope: `[RouteSelf, EnclosingGroup, Global]`.
-    pub scope: Option<Vec<String>>,
-    pub r#where: Vec<Predicate>,
     /// Confidence decay when inheriting a capability from the scope chain.
     pub confidence_scale: Option<f32>,
+    // `scope: Option<Vec<String>>` and `where: Vec<Predicate>` used to be declared here and were
+    // never read: `exec_binding` gates on the *selector's* `where` (via `matches_*`) and there is no
+    // scope chain to walk, so a rule declaring either parsed fine and did nothing. Removed so that
+    // `deny_unknown_fields` turns such a rule into a load error instead of a silent no-op.
 }
 
 impl Default for AnnotateAction {
@@ -193,8 +194,6 @@ impl Default for AnnotateAction {
             target: AnnotateTarget::Matched,
             annotations: Vec::new(),
             merge: MergeStrategy::MaxByKind,
-            scope: None,
-            r#where: Vec::new(),
             confidence_scale: None,
         }
     }

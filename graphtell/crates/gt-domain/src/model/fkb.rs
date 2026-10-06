@@ -489,8 +489,16 @@ mod tests {
         assert!(a.annotations.is_empty());
         assert!(a.phase.is_none(), "no declared phase = run in the phase the rule belongs to");
         assert!(a.confidence_scale.is_none());
-        assert!(a.scope.is_none());
-        assert!(a.r#where.is_empty());
+
+        // `scope` / `where` were declared on the action but never read by `exec_binding` (only the
+        // *selector's* `where` gates a match), so they were removed: writing them must now fail to
+        // load instead of silently doing nothing.
+        assert!(serde_json::from_value::<AnnotateAction>(json!({ "scope": ["Global"] })).is_err());
+        assert!(
+            serde_json::from_value::<AnnotateAction>(json!({ "where": [{ "arg_count": 1 }] })).is_err(),
+            "an action-level `where` is not a thing; put it on the selector"
+        );
+        assert!(serde_json::from_value::<AnnotateAction>(json!({})).is_ok());
 
         assert!(matches!(AnnotateTarget::default(), AnnotateTarget::Matched));
 
