@@ -217,9 +217,10 @@ Two corollaries that have already cost real bugs:
   stopped being PHP, a unit test broke: it exercised PHP spelling (`think\facade\Db`) without ever stating
   the language. The fix was to inject the policy in the test, not to restore the default.
 
-Where such knowledge belongs: **notation and parser facts → the language adapter** (`gt-adapter-parser`,
-`gt-adapter-php`); **vocabulary and conventions → FKB** (the framework file, or the unconditional language
-layer `fkb/<lang>/common.yaml` with `apply_without_detection: true`).
+Where such knowledge belongs: **notation and parser facts → the language adapter** (`gt-adapter-parser`;
+tech-stack conventions → `gt-adapter-techstack`, e.g. its `php` module); **vocabulary and conventions → FKB**
+(the framework file, or the unconditional language layer `fkb/<lang>/common.yaml` with
+`apply_without_detection: true`).
 
 ### 4. Diagnostics are a first-class product
 

@@ -1,14 +1,22 @@
-//! `gt-adapter-techstack` — cross-language tech-stack knowledge (implementation of the outbound port
-//! `MarkerProvider`).
+//! `gt-adapter-techstack` — cross-language tech-stack knowledge.
 //!
-//! Ingest needs to decide a sub-project's language **before** any FKB is loaded (bootstrap), so the
-//! "which manifest file marks which language / role" table cannot live in FKB. It lives here, in an adapter,
-//! and the kernel only knows the `MarkerProvider` port.
+//! Two pieces of outbound-port knowledge live here, both kept out of the kernel so the prepare phase
+//! stays language-agnostic:
+//!
+//! * `MarkerProvider` — the bootstrap table of "which manifest file marks which language / role". Ingest
+//!   must decide a sub-project's language **before** any FKB is loaded, so this cannot live in FKB.
+//! * `TechStackAdapter` — one module per language (`php`, `js`, …) turning each ecosystem's concrete
+//!   conventions (PSR-4, PHP `return [...]` config, Laravel·ThinkPHP migrations, `package.json` deps, …)
+//!   into the kernel's language-agnostic representation. The kernel only knows the `TechStackAdapter` port.
 
 use std::path::Path;
 
 use gt_domain::model::Language;
 use gt_domain::port::{FileSystem, Marker, MarkerProvider, TechStackAdapter};
+
+/// The PHP tech-stack adapter (PSR-4 / PHP `return [...]` config / Laravel·ThinkPHP migrations).
+pub mod php;
+pub use php::PhpTechStackAdapter;
 
 /// The default sub-project detection markers, one entry per ecosystem.
 pub struct DefaultMarkerProvider;

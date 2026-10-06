@@ -1,6 +1,6 @@
-//! `gt-adapter-php` — the PHP tech-stack adapter (implementation of the outbound port `TechStackAdapter`).
+//! `gt-adapter-techstack` — the PHP tech-stack adapter (implementation of the outbound port `TechStackAdapter`).
 //!
-//! This crate is the **only** place that knows PHP's concrete conventions:
+//! This module is the **only** place that knows PHP's concrete conventions:
 //! * `composer.json` PSR-4 autoload → namespace → directory roots;
 //! * PHP `return [...]` config files (read by dotted pointer, with an `env('K', 'default')` fallback);
 //! * Laravel / ThinkPHP migration syntax (`Schema::create('users', ...)` / `$table->string('email')`).

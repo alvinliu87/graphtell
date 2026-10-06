@@ -70,8 +70,8 @@ loaders:
     from:
       kind: builtin
       # Language-agnostic id: the kernel delegates any built-in name it does not own to the tech-stack adapter
-      # matching the sub-project's language, so PHP's migration parser lives in `gt-adapter-php` and a Java /
-      # Node stack reuses this same name with its own format parser.
+      # matching the sub-project's language, so PHP's migration parser lives in `gt-adapter-techstack` (the
+      # `php` module) and a Java / Node stack reuses this same name with its own format parser.
       name: migration_schema
       params:
         paths: ["database/migrations"]

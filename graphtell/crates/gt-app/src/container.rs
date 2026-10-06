@@ -8,7 +8,7 @@ use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
 use gt_adapter_http::build_router;
 use gt_adapter_parser::DefaultParserRegistry;
-use gt_adapter_php::PhpTechStackAdapter;
+use gt_adapter_techstack::PhpTechStackAdapter;
 use gt_adapter_rules::YamlRuleSet;
 use gt_adapter_sqlite::SqliteStore;
 use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};

@@ -1028,20 +1028,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gt-adapter-php"
-version = "0.1.0"
-dependencies = [
- "gt-adapter-fs",
- "gt-adapter-parser",
- "gt-domain",
- "regex",
- "serde",
- "serde_json",
- "tracing",
- "walkdir",
-]
-
-[[package]]
 name = "gt-adapter-resource"
 version = "0.1.0"
 dependencies = [
@@ -1081,8 +1067,11 @@ name = "gt-adapter-techstack"
 version = "0.1.0"
 dependencies = [
  "gt-adapter-fs",
+ "gt-adapter-parser",
  "gt-domain",
+ "regex",
  "serde_json",
+ "walkdir",
 ]
 
 [[package]]
@@ -1107,7 +1096,6 @@ dependencies = [
  "gt-adapter-fs",
  "gt-adapter-http",
  "gt-adapter-parser",
- "gt-adapter-php",
  "gt-adapter-resource",
  "gt-adapter-rules",
  "gt-adapter-sqlite",
@@ -1135,7 +1123,6 @@ dependencies = [
  "gt-adapter-fkb",
  "gt-adapter-fs",
  "gt-adapter-parser",
- "gt-adapter-php",
  "gt-adapter-resource",
  "gt-adapter-sqlite",
  "gt-adapter-techstack",
@@ -1171,7 +1158,6 @@ dependencies = [
  "gt-adapter-fkb",
  "gt-adapter-fs",
  "gt-adapter-parser",
- "gt-adapter-php",
  "gt-adapter-resource",
  "gt-adapter-sqlite",
  "gt-adapter-techstack",

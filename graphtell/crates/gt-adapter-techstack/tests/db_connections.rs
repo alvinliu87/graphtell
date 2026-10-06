@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use gt_adapter_fs::StdFileSystem;
 use gt_adapter_parser::DefaultParserRegistry;
-use gt_adapter_php::PhpTechStackAdapter;
+use gt_adapter_techstack::PhpTechStackAdapter;
 use gt_domain::model::{EntryField, EntryFieldFrom, Language, ProjectId, SubProject, SubProjectId};
 use gt_domain::port::{ManifestEntry, TechStackAdapter};
 

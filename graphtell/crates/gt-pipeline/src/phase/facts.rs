@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn locale_comes_from_the_stacks_own_path_convention() {
         let ts = gt_domain::port::DefaultTechStackRegistry::new()
-            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()))
             .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()));
         let php = Language::new(Language::PHP);
         let js = Language::new(Language::JAVASCRIPT);
@@ -917,7 +917,7 @@ mod tests {
         .unwrap();
         let fs = gt_adapter_fs::StdFileSystem::new();
         let ts = gt_domain::port::DefaultTechStackRegistry::new()
-            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()));
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()));
         let php = Language::new("php");
 
         assert!(

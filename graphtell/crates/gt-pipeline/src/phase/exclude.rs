@@ -293,7 +293,7 @@ mod tests {
 
     fn techstack() -> gt_domain::port::DefaultTechStackRegistry {
         gt_domain::port::DefaultTechStackRegistry::new()
-            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()))
     }
 
     fn resolve_sync(
@@ -518,7 +518,7 @@ mod tests {
         // JS adapter registered for faithful detection; the plain-text fallback in `detect_without_code`
         // would also match `@nestjs/core`, so detection is robust either way.
         let ts = gt_domain::port::DefaultTechStackRegistry::new()
-            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()))
             .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()));
         let got = resolve_real(&root, &Language::new("javascript"), &kb, &ts);
 
@@ -557,7 +557,7 @@ mod tests {
         // No Python adapter exists, so detection relies on the plain-text probe — faithful to the real
         // pipeline; the PHP adapter registered here is irrelevant but harmless.
         let ts = gt_domain::port::DefaultTechStackRegistry::new()
-            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()));
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()));
         let got = resolve_real(&root, &Language::new("python"), &kb, &ts);
 
         assert!(

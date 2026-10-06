@@ -389,7 +389,7 @@ mod tests {
     /// composer.json / composer.lock are read by the PHP adapter, package-lock.json by the JS one.
     fn techstack() -> gt_domain::port::DefaultTechStackRegistry {
         gt_domain::port::DefaultTechStackRegistry::new()
-            .register(Box::new(gt_adapter_php::PhpTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()))
             .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()))
     }
     use gt_domain::model::{
