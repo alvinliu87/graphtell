@@ -1000,6 +1000,22 @@ mod tests {
         assert_eq!(adapter().language().as_str(), "php");
     }
 
+    /// The default `serves` matches only the adapter's own language; a PHP sub-project must keep its
+    /// adapter (otherwise dependency detection would silently degrade to a whole-file text probe), and a
+    /// TypeScript / JavaScript / Python sub-project must NOT be handed the PHP adapter. Pins the same
+    /// "one ecosystem, several language tags" guard the JS adapter has.
+    #[test]
+    fn php_serves_only_php() {
+        let a = adapter();
+        assert!(a.serves(&Language::new(Language::PHP)));
+        assert!(
+            !a.serves(&Language::new(Language::TYPESCRIPT)),
+            "a TS sub-project must not be served by the PHP adapter"
+        );
+        assert!(!a.serves(&Language::new(Language::JAVASCRIPT)));
+        assert!(!a.serves(&Language::new("python")));
+    }
+
     /// `enrich_method_ref` turns `composer.json`'s PSR-4 into `root_namespaces` and walks each root for
     /// namespace-container subdirectories (modules) — none of this is hard-coded by the kernel.
     #[test]
