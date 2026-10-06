@@ -158,7 +158,7 @@ fn a_caller_without_its_own_db_call_gets_the_edge_by_propagation() {
     // Premise: the emitter holds the DB call, so it gets the edge from its own call site.
     assert!(
         !outgoing(&b, dao.id, "ReadsDb").is_empty(),
-        "持有 DB 调用的方法应自带 ReadsDb（前提不成立则这条测试测不到点上）"
+        "the method holding the DB call must carry ReadsDb itself (if this precondition fails, the test does not test what it claims)"
     );
 
     // The wrapper has no DB call of its own: its ReadsDb can only come from P8.
@@ -171,7 +171,7 @@ fn a_caller_without_its_own_db_call_gets_the_edge_by_propagation() {
         .collect();
     assert!(
         !propagated.is_empty(),
-        "包装方法应经传播拿到 ReadsDb，实际出边：{:?}",
+        "the wrapping method must get ReadsDb through propagation, got out-edges: {:?}",
         b.store
             .edges_of(svc.id, EdgeDirection::Outgoing)
             .expect("edges")
@@ -182,7 +182,7 @@ fn a_caller_without_its_own_db_call_gets_the_edge_by_propagation() {
     assert_eq!(
         propagated[0].properties.get("via").and_then(|v| v.as_str()),
         Some("propagate"),
-        "这条边应被标记为传播所得"
+        "this edge must be marked as propagated"
     );
 
     let _ = std::fs::remove_dir_all(&root);

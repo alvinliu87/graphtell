@@ -85,7 +85,7 @@ fn request_value_interpolated_into_raw_sql_is_annotated() {
     let kinds = annotation_kinds(&b);
     assert!(
         kinds.iter().any(|k| k == "tainted_raw" || k == "tainted_raw_unknown"),
-        "请求值拼进 Db::query 应被 P9 标注: {kinds:?}"
+        "a request value concatenated into Db::query must be annotated by P9: {kinds:?}"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -103,7 +103,7 @@ fn taint_vocabulary_reaches_the_phase_without_framework_detection() {
     // `fkb/php/common.yaml`'s `taint`.
     assert!(
         !annotation_kinds(&b).is_empty(),
-        "未检测到框架时，语言通用层声明的污点词汇仍须生效"
+        "with no framework detected, the taint vocabulary declared by the language-generic layer must still apply"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

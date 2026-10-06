@@ -83,7 +83,7 @@ fn assert_one_in_loop_call_flagged(tag: &str, root: &std::path::Path) {
     let n = count_ext_in_loop(&b);
     assert_eq!(
         n, 1,
-        "{tag}：循环内的外部调用应恰好被标注 1 次（循环外的那次不应被标注），实际 {n} 次，全部注解：{kinds:?}"
+        "{tag}: the external call inside the loop must be annotated exactly once (the one outside the loop must not be), got {n} times, all annotations: {kinds:?}"
     );
     let _ = std::fs::remove_dir_all(root);
 }

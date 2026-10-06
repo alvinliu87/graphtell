@@ -1,6 +1,6 @@
 [package]
 name = "gt-adapter-parser"
-description = "tree-sitter 解析适配器（当前支持 PHP / Java / JavaScript / TypeScript / Python）"
+description = "tree-sitter parsing adapters (currently PHP / Java / JavaScript / TypeScript / Python)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

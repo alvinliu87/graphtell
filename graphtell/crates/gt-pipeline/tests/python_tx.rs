@@ -119,7 +119,7 @@ fn python_multi_write_without_tx_is_flagged() {
     let hits = annotations_of_kind(&b, "multi-write-without-tx");
     assert!(
         !hits.is_empty(),
-        "P13 应在 Django 样本上触发 multi-write-without-tx（place_bad 写两张表且无事务边界），实际无任何命中"
+        "P13 must fire multi-write-without-tx on the Django sample (place_bad writes two tables with no transaction boundary), but nothing was hit"
     );
     assert!(
         hits.iter().any(|a| a
@@ -128,7 +128,7 @@ fn python_multi_write_without_tx_is_flagged() {
             .and_then(|v| v.as_str())
             .map(|s| s.contains("place_bad"))
             .unwrap_or(false)),
-        "被标注的方法应为 place_bad（无事务边界），实际 owner_fqns：{:?}",
+        "the annotated method must be place_bad (no transaction boundary), got owner_fqns: {:?}",
         hits.iter()
             .map(|a| a.evidence.get("owner_fqn"))
             .collect::<Vec<_>>()
@@ -140,7 +140,7 @@ fn python_multi_write_without_tx_is_flagged() {
             .and_then(|v| v.as_str())
             .map(|s| s.contains("place_in_tx"))
             .unwrap_or(false)),
-        "place_in_tx 已被 transaction.atomic 包裹，不应被标注"
+        "place_in_tx is wrapped in transaction.atomic, so it must not be annotated"
     );
     eprintln!("Django multi-write-without-tx hits = {}", hits.len());
 }

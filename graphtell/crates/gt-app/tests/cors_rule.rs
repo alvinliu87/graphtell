@@ -123,7 +123,7 @@ class CorsMiddleware
         .collect();
     assert!(
         !cors.is_empty(),
-        "cors-reflect-origin 应在真实 PHP 样本上至少命中 1 次；实际 violations={:?}",
+        "cors-reflect-origin must hit at least once on the real PHP sample; violations={:?}",
         report
             .violations
             .iter()
@@ -135,7 +135,7 @@ class CorsMiddleware
         cors
             .iter()
             .any(|v| v.node_name.to_ascii_lowercase().contains("origin")),
-        "应命中反射型赋值（rhs 含 origin）；violations={:?}",
+        "the reflected assignment must be hit (rhs contains origin); violations={:?}",
         cors.iter().map(|v| &v.node_name).collect::<Vec<_>>()
     );
     // The fixed allowlist value (rhs contains "trusted", not "origin") must NOT be reported.
@@ -143,7 +143,7 @@ class CorsMiddleware
         cors
             .iter()
             .all(|v| !v.node_name.to_ascii_lowercase().contains("trusted")),
-        "固定值允许源不应被误报；violations={:?}",
+        "a fixed allow-origin value must not be a false positive; violations={:?}",
         cors.iter().map(|v| &v.node_name).collect::<Vec<_>>()
     );
 }

@@ -100,7 +100,7 @@ fn assert_php_root_rules(root: &std::path::Path, framework: &str) {
 
     assert!(
         sub.frameworks.contains(&framework.to_string()),
-        "应识别出 {framework}，实际：{:?}",
+        "{framework} must be recognised, got: {:?}",
         sub.frameworks
     );
 
@@ -109,16 +109,16 @@ fn assert_php_root_rules(root: &std::path::Path, framework: &str) {
     // `app-root`: from composer `autoload.psr-4`, not the fallback directory.
     let app_root = facts
         .get("app_root")
-        .expect("真实 FKB 应解析出 app_root 事实");
+        .expect("the real FKB must resolve the app_root fact");
     assert_eq!(
         app_root.get("value").and_then(|v| v.as_str()),
         Some("app"),
-        "AppRoot 应来自 composer.json 的 autoload.psr-4"
+        "AppRoot must come from autoload.psr-4 in composer.json"
     );
     assert_eq!(
         app_root.get("fallback_used").and_then(|v| v.as_bool()),
         Some(false),
-        "psr-4 命中后不应走兜底目录"
+        "once psr-4 hits, the fallback directory must not be used"
     );
     let source = app_root
         .get("source")
@@ -126,22 +126,22 @@ fn assert_php_root_rules(root: &std::path::Path, framework: &str) {
         .unwrap_or_default();
     assert!(
         source.contains("autoload.psr-4"),
-        "app_root 的 source 必须记录 autoload.psr-4，实际：{source}"
+        "the source of app_root must record autoload.psr-4, got: {source}"
     );
 
     // `db-connections`: `db_prefix` from the default connection's prefix in `config/database.php`.
     let db_prefix = facts
         .get("db_prefix")
-        .expect("真实 FKB 应解析出 db_prefix 事实");
+        .expect("the real FKB must resolve the db_prefix fact");
     assert_eq!(
         db_prefix.get("value").and_then(|v| v.as_str()),
         Some("eb_"),
-        "db_prefix 应来自 config/database.php 默认连接的 prefix"
+        "db_prefix must come from the prefix of the default connection in config/database.php"
     );
     assert_eq!(
         db_prefix.get("fallback_used").and_then(|v| v.as_bool()),
         Some(false),
-        "默认连接存在时应直接命中，不走兜底"
+        "when the default connection exists it hits directly, with no fallback"
     );
 }
 
@@ -215,24 +215,24 @@ fn assert_app_root_probed_from_a_directory(
 
     assert!(
         sub.frameworks.contains(&framework.to_string()),
-        "应识别出 {framework}，实际：{:?}",
+        "{framework} must be recognised, got: {:?}",
         sub.frameworks
     );
 
     let facts: Value = serde_json::from_value(sub.facts.clone()).unwrap_or(Value::Null);
     let app_root = facts
         .get("app_root")
-        .unwrap_or_else(|| panic!("{framework} 的真实 FKB 应解析出 app_root 事实，实际 facts={facts}"));
+        .unwrap_or_else(|| panic!("the real FKB of {framework} must resolve the app_root fact, got facts={facts}"));
 
     assert_eq!(
         app_root.get("value").and_then(|v| v.as_str()),
         Some(expected),
-        "{framework} 的 app_root 应来自 directory_exists 探针"
+        "the app_root of {framework} must come from the directory_exists probe"
     );
     assert_eq!(
         app_root.get("fallback_used").and_then(|v| v.as_bool()),
         Some(false),
-        "探针命中后不应走兜底目录（否则无法区分是探针还是兜底生效）"
+        "once the probe hits, the fallback directory must not be used (otherwise you cannot tell which one took effect)"
     );
     let source = app_root
         .get("source")
@@ -240,7 +240,7 @@ fn assert_app_root_probed_from_a_directory(
         .unwrap_or_default();
     assert!(
         source.contains("directory exists"),
-        "app_root 的 source 必须记录 directory exists，实际：{source}"
+        "the source of app_root must record directory exists, got: {source}"
     );
 }
 

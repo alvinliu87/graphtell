@@ -43,7 +43,7 @@ fn synthetic_frontend_root(tag: &str, package_json: &str, manifest_json: Option<
 /// Role of the `app` sub-project after a full build.
 fn app_role(root: &std::path::Path) -> String {
     let b = common::graph_with_root(root, ProjectConfig::default()).expect("graph build should succeed");
-    let subs = b.store.list_sub_projects(b.project.id).expect("子工程可读");
+    let subs = b.store.list_sub_projects(b.project.id).expect("the sub-projects must be readable");
     subs.into_iter()
         .find(|s| s.name == "app")
         .map(|s| s.role)
@@ -60,7 +60,7 @@ fn react_native_sub_project_classified_as_mobile() {
     assert_eq!(
         app_role(&root),
         "frontend:mobile",
-        "react-native 经完整 pipeline 应被识别为 frontend:mobile"
+        "react-native must be recognised as frontend:mobile through the full pipeline"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -75,7 +75,7 @@ fn uni_app_with_mp_target_classified_as_mini_program() {
     assert_eq!(
         app_role(&root),
         "frontend:mini-program",
-        "uni-app + uni-mp-* 经完整 pipeline 应被识别为 frontend:mini-program"
+        "uni-app + uni-mp-* must be recognised as frontend:mini-program through the full pipeline"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -90,7 +90,7 @@ fn uni_app_without_mp_target_stays_plain_frontend() {
     assert_eq!(
         app_role(&root),
         "frontend",
-        "uni-app 无 mp-* 目标时不应声明 kind，应保持 bare frontend"
+        "uni-app with no mp-* target must not declare a kind; it stays bare frontend"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

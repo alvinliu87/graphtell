@@ -3123,7 +3123,7 @@ mod tests {
         assert_eq!(
             infer_write_by_action("weirdName"),
             None,
-            "an unknown action root falls back to '读'"
+            "an unknown action root falls back to 'read'"
         );
     }
 

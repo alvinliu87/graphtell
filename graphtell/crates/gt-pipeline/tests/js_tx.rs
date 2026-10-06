@@ -138,7 +138,7 @@ fn nestjs_multi_write_without_tx_is_flagged() {
     let hits = annotations_of_kind(&b, "multi-write-without-tx");
     assert!(
         !hits.is_empty(),
-        "P13 应在 NestJS/TypeORM 样本上触发 multi-write-without-tx（createBad 写两张表且无事务边界）"
+        "P13 must fire multi-write-without-tx on the NestJS/TypeORM sample (createBad writes two tables with no transaction boundary)"
     );
     assert!(
         hits.iter().any(|a| a
@@ -147,7 +147,7 @@ fn nestjs_multi_write_without_tx_is_flagged() {
             .and_then(|v| v.as_str())
             .map(|s| s.contains("createBad"))
             .unwrap_or(false)),
-        "被标注的方法应为 createBad（无事务边界），实际 owner_fqns：{:?}",
+        "the annotated method must be createBad (no transaction boundary), got owner_fqns: {:?}",
         hits.iter().map(|a| a.evidence.get("owner_fqn")).collect::<Vec<_>>()
     );
     assert!(
@@ -157,7 +157,7 @@ fn nestjs_multi_write_without_tx_is_flagged() {
             .and_then(|v| v.as_str())
             .map(|s| s.contains("createInTx"))
             .unwrap_or(false)),
-        "createInTx 已被 startTransaction 包裹，不应被标注"
+        "createInTx is wrapped by startTransaction, so it must not be annotated"
     );
     eprintln!("NestJS multi-write-without-tx hits = {}", hits.len());
 }

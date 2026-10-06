@@ -170,7 +170,7 @@ fn java_multi_write_without_tx_is_flagged() {
     let hits = annotations_of_kind(&b, "multi-write-without-tx");
     assert!(
         !hits.is_empty(),
-        "P13 应在 Java 样本上触发 multi-write-without-tx（runBad 写两张表且无事务边界），实际无任何命中"
+        "P13 must fire multi-write-without-tx on the Java sample (runBad writes two tables with no transaction boundary), but nothing was hit"
     );
     assert!(
         hits.iter().any(|a| a
@@ -179,7 +179,7 @@ fn java_multi_write_without_tx_is_flagged() {
             .and_then(|v| v.as_str())
             .map(|s| s.contains("runBad"))
             .unwrap_or(false)),
-        "被标注的方法应为 runBad（无事务边界），实际 owner_fqns：{:?}",
+        "the annotated method must be runBad (no transaction boundary), got owner_fqns: {:?}",
         hits.iter()
             .map(|a| a.evidence.get("owner_fqn"))
             .collect::<Vec<_>>()
@@ -191,7 +191,7 @@ fn java_multi_write_without_tx_is_flagged() {
             .and_then(|v| v.as_str())
             .map(|s| s.contains("runInTx"))
             .unwrap_or(false)),
-        "runInTx 已被事务边界包裹，不应被标注"
+        "runInTx is wrapped by a transaction boundary, so it must not be annotated"
     );
     eprintln!("Java multi-write-without-tx hits = {}", hits.len());
 }

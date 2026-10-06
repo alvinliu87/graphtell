@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "GraphTell 桌面端默认权限：仅访问本机后端与用户选中的路径",
+  "description": "GraphTell desktop default capabilities: only the local backend and user-selected paths",
   "windows": ["main"],
   "permissions": [
     "core:default",

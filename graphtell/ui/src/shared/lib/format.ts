@@ -17,7 +17,7 @@ export function formatDuration(ms: number): string {
 
 export function formatTime(epochMillis: number): string {
   if (!epochMillis) return '-';
-  return new Date(epochMillis).toLocaleString('zh-CN', { hour12: false });
+  return new Date(epochMillis).toLocaleString('en-US', { hour12: false });
 }
 
 /** Take the last segment of an FQN for display. */

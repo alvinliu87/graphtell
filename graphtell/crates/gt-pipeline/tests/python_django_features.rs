@@ -93,21 +93,21 @@ fn django_env_config_produces_configkey() {
     let tables: Vec<String> = nodes_of_kind(&b, "Table").iter().map(|n| n.name.clone()).collect();
     assert!(
         !tables.is_empty(),
-        "Django 模型应被识别并产出 Table 节点，实际：{tables:?}"
+        "a Django model must be recognised and produce a Table node, got: {tables:?}"
     );
 
     // Both env-read forms become ConfigKey nodes.
     let cfg: Vec<String> = nodes_of_kind(&b, "ConfigKey").iter().map(|n| n.name.clone()).collect();
     assert!(
         cfg.iter().any(|n| n == "SECRET_KEY"),
-        "os.environ.get 应产出 SECRET_KEY 配置节点，实际：{cfg:?}"
+        "os.environ.get must produce the SECRET_KEY config node, got: {cfg:?}"
     );
     assert!(
         cfg.iter().any(|n| n == "DB_HOST"),
-        "os.getenv 应产出 DB_HOST 配置节点，实际：{cfg:?}"
+        "os.getenv must produce the DB_HOST config node, got: {cfg:?}"
     );
     assert!(
         has_incoming_edge(&b, "ConfigKey", "ReadsConfig"),
-        "ConfigKey 应有 ReadsConfig 入边"
+        "the ConfigKey must have a ReadsConfig in-edge"
     );
 }

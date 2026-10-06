@@ -96,11 +96,11 @@ fn php_signature_checks_are_annotated_from_fkb_vocabulary() {
     let kinds = annotation_kinds(&b);
     assert!(
         kinds.iter().any(|k| k == "weak_sign_hash"),
-        "弱哈希签名应被标注（md5 + 含 sign 的实参）: {kinds:?}"
+        "a weak-hash signature must be annotated (md5 + an argument containing sign): {kinds:?}"
     );
     assert!(
         kinds.iter().any(|k| k == "weak_sign_compare"),
-        "签名的松散比较应被标注（$sign == $calc）: {kinds:?}"
+        "a loose comparison of the signature must be annotated ($sign == $calc): {kinds:?}"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -119,7 +119,7 @@ fn vocabulary_reaches_the_phase_without_framework_detection() {
     // only have come from `fkb/php/common.yaml`'s `sign_check`.
     assert!(
         !annotation_kinds(&b).is_empty(),
-        "未检测到框架时，语言通用层声明的签名词汇仍须生效"
+        "with no framework detected, the signature vocabulary declared by the language-generic layer must still apply"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
