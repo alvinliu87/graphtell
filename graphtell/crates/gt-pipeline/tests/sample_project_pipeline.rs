@@ -1,4 +1,4 @@
-//! A graph-building integration test using `samples/thinkphp-projects/CRMEB-master` as material.
+//! A graph-building integration test using the PHP `sample_project` checkout as material.
 //!
 //! These cases verify **end-to-end conclusions**, not the return value of some function:
 //! whether sub-projects are recognised correctly, dependency directories are excluded, `AppRoot` is resolved by FKB,
@@ -6,6 +6,7 @@
 
 mod common;
 
+use gt_sample_support::{sample_project_fqn, sample_project_inner_dir, sample_project_rel};
 use gt_domain::model::{NodeKind, ProjectId, SubProjectId};
 use gt_domain::port::{
     DiagnosticSink, EdgeDirection, GraphQuery, NodeFilter, ParserRegistry, ProjectReader,
@@ -36,7 +37,9 @@ fn ingest_detects_three_sub_projects() {
 
     // sample_project is a multi-stack repo: a ThinkPHP backend + two frontend projects
     assert!(
-        names.iter().any(|n| n.contains("crmeb")),
+        names
+            .iter()
+            .any(|n| n.contains(sample_project_inner_dir().as_str())),
         "a backend sub-project must be recognised, got: {names:?}"
     );
     assert!(
@@ -105,8 +108,8 @@ fn ingest_excludes_dependency_and_asset_dirs() {
 
     // But business source must be present
     assert!(
-        files.iter().any(|f| f.path.ends_with("crmeb/app/event.php")),
-        "the business file crmeb/app/event.php must be in the analysis set"
+        files.iter().any(|f| f.path.ends_with(&sample_project_rel("app/event.php"))),
+        "the business file app/event.php must be in the analysis set"
     );
 }
 
@@ -149,10 +152,11 @@ fn ingest_resolves_excludes_from_framework_knowledge() {
     );
 
     let files = b.store.list_files(b.project.id, None).expect("the files must be readable");
-    for forbidden in ["crmeb/runtime/", "crmeb/public/"] {
+    let inner = sample_project_inner_dir();
+    for forbidden in [format!("{inner}/runtime/"), format!("{inner}/public/")] {
         let leaked: Vec<&str> = files
             .iter()
-            .filter(|f| f.path.contains(forbidden))
+            .filter(|f| f.path.contains(&forbidden))
             .map(|f| f.path.as_str())
             .take(3)
             .collect();
@@ -888,7 +892,7 @@ fn fkb_resolves_apple_login_chain_to_semantics() {
     }
 }
 
-/// Specifically verify this route in `samples/thinkphp-projects/CRMEB-master/crmeb/app/api/route/v1.php`:
+/// Specifically verify this route in the sample's `app/api/route/v1.php`:
 ///
 /// ```php
 /// Route::post('apple_login', 'v1.LoginController/appleLogin')->name('appleLogin');
@@ -1264,7 +1268,7 @@ fn v1_php_routes_are_in_graph() {
     assert!(
         files
             .iter()
-            .any(|f| f.path.ends_with("crmeb/app/api/route/v1.php")),
+            .any(|f| f.path.ends_with(&sample_project_rel("app/api/route/v1.php"))),
         "v1.php must be scanned into the graph"
     );
 
@@ -1318,7 +1322,7 @@ fn v1_php_routes_are_in_graph() {
 /// Look directly at v1.php's parse product (raw call sites), without going through the whole graph.
 /// Queue semantic nodes should be detected by the **framework-level** FKB (no project-level FKB needed).
 ///
-/// sample_project uses `think\facade\Queue` via `QueueTrait::dispatch` / `crmeb\utils\Queue`; the framework rule `thinkphp-queue-topic`
+/// sample_project uses `think\facade\Queue` via `QueueTrait::dispatch` / the sample's `utils\Queue`; the framework rule `thinkphp-queue-topic`
 /// synthesises the queue topic through `arg:0` (the Job class) + `owner_class` fallback (the class that produces the call);
 /// propagation then walks the `PublishesTo` edge up to each Service.
 #[test]
@@ -1396,7 +1400,7 @@ fn synthesize_detects_schedules_from_project_fkb() {
     eprintln!("Schedule nodes detected in sample_project = {}", schedules.len());
     assert!(
         !schedules.is_empty(),
-        "the project-level FKB (crmeb.yaml) must synthesise crontab/* routes into Schedule nodes"
+        "the project-level FKB must synthesise crontab/* routes into Schedule nodes"
     );
     // Every Schedule node should HandledBy to its corresponding CrontabController method.
     let with_handler = schedules
@@ -1476,7 +1480,9 @@ fn v1_php_parse_result() {
         eprintln!("{}", common::skip_reason());
         return;
     };
-    let path = root.join("crmeb/app/api/route/v1.php");
+    let path = root
+        .join(sample_project_inner_dir())
+        .join("app/api/route/v1.php");
     let src = std::fs::read_to_string(&path).expect("reading v1.php");
     let reg = gt_adapter_parser::DefaultParserRegistry::new();
     let parser = reg
@@ -1520,7 +1526,7 @@ fn v1_php_parse_result() {
 
 /// Facade short names must be resolved by **the file's own `use`**, not fall back to the global short-name index to guess.
 ///
-/// `crmeb/crmeb/services/CacheService.php` writes `use think\facade\Cache;`, while the project happens to have a Model named
+/// the sample's `services/CacheService.php` writes `use think\facade\Cache;`, while the project happens to have a Model named
 /// `app\model\other\Cache` (`protected $name = 'cache'`). With global short-name-index resolution, `Cache::tag($tag)->remember(...)`
 /// would be treated as that Model, so every cache call would spuriously gain a `Calls` edge and drag the
 /// `Model --MapsTo--> Table(cache)` class-level semantic edge onto every route along the call chain.
@@ -1553,7 +1559,7 @@ fn facade_short_name_resolves_per_file_import() {
         eprintln!("the graph has no app\\model\\other\\Cache, skipping");
         return;
     };
-    let remember = by_fqn("crmeb\\services\\CacheService::remember");
+    let remember = by_fqn(&sample_project_fqn("services\\CacheService::remember"));
     let Some(remember) = remember else {
         eprintln!("the graph has no CacheService::remember, skipping");
         return;

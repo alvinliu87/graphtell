@@ -1,42 +1,21 @@
-//! Verify the graph-building result for Laravel / ThinkPHP against **real open-source samples**.
+//! Verify the graph-building result for the secondary PHP framework sample against **real open-source samples**.
 //!
-//! Where the samples come from: this directory's `samples/php-projects/laravel-starter` (the official
-//! `laravel/laravel` skeleton; `git`-ignored, not committed, downloaded by the developer). When a sample is
-//! missing the test **skips** rather than fails, so CI can run without samples.
+//! Where the samples come from: `samples/php-projects/<php-framework>` (a real PHP framework
+//! skeleton; `git`-ignored, not committed, downloaded by the developer), located by
+//! `gt_sample_support::php_alt_sample_root` (the `GRAPHTELL_SAMPLE_DIR` env var pointing at the
+//! checkout, or a bounded search under `samples/`). When the sample is missing the
+//! test **skips** rather than fails, so CI can run without samples.
 //!
-//! The focus: Laravel 11 middleware aliases can be resolved statically back into classes and attached to contracts
+//! The focus: the framework's middleware aliases can be resolved statically back into classes and attached to contracts
 //! —
-//! * framework default aliases (`throttle` … from `vendor/`, declared by the FKB `laravel-default-aliases`);
+//! * framework default aliases (`throttle` … from `vendor/`, declared by the framework's default-aliases FKB);
 //! * application-level custom aliases (`logreq` … from `$middleware->alias([...])` in `bootstrap/app.php`).
 
 mod common;
 
-use std::path::PathBuf;
-
 use gt_domain::model::{NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery};
-
-/// Locate the real Laravel sample root: try the environment variable `GRAPHTELL_PHP_SAMPLE_DIR` first,
-/// then fall back to the in-repo relative path `samples/php-projects/laravel-starter`.
-fn php_sample() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("GRAPHTELL_PHP_SAMPLE_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..7 {
-        let laravel = cur.join("samples/php-projects/laravel-starter");
-        if laravel.is_dir() {
-            return Some(laravel);
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    None
-}
+use gt_sample_support::{php_alt_sample_root, missing_hint_named};
 
 fn nodes_of_kind<'a>(b: &'a common::Built, kind: &str) -> Vec<gt_domain::model::Node> {
     b.store
@@ -65,9 +44,9 @@ fn has_incoming_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
 /// resolved back into classes, and the routes using them should connect to the corresponding `Middleware` node via
 /// `PassesThrough`.
 #[test]
-fn laravel_real_sample_middleware_alias() {
-    let Some(root) = php_sample() else {
-        eprintln!("skip: Laravel sample not found (samples/php-projects/laravel-starter)");
+fn php_alt_real_sample_middleware_alias() {
+    let Some(root) = php_alt_sample_root() else {
+        eprintln!("skipped: {}", missing_hint_named("php-alt-sample"));
         return;
     };
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {

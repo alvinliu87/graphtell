@@ -5,7 +5,7 @@
 //! and really keep the files out.
 //!
 //! Why this is not just another sample-gated test: the only existing assertion of that half lives in
-//! `sample_project_pipeline.rs` (which skips without the sample), and it asserts on `crmeb/runtime/` — a directory
+//! `sample_project_pipeline.rs` (which skips without the sample), and it asserts on the sample's `runtime/` — a directory
 //! the scanner's **built-in** defaults (`**/runtime/**`) exclude anyway. So it cannot tell "FKB resolved
 //! it" from "a built-in caught it".
 //!

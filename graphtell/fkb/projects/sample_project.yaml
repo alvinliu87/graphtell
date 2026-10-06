@@ -1,9 +1,10 @@
-id: crmeb
-display_name: CRMEB
+id: sample_project
+display_name: sample_project
 language: php
 scope: project
 version_hint: "standard / multi-merchant"
 detectors:
+  # `path` must match the directory as it exists on disk inside the checkout, so it stays literal.
   - kind: file_exists
     path: crmeb
     confidence: 0.7

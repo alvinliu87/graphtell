@@ -46,7 +46,7 @@ A JSON object: keys are Chinese intent words, values are arrays of the English t
 ## How to find the tokens to fill in
 
 1. Grep the codebase for domain nouns and see what English the class names / method names actually
-   use (e.g. CRMEB's `StoreSeckillServices` → `seckill`; litemall's `LitemallGroupon` → `groupon`).
+   use (e.g. a seckill service → `seckill`; a groupon model → `groupon`).
 2. Run `graphtell recall --query "你的中文问题" --markdown` once and look at the Chinese words and
    English expansions listed under **"missed concepts"** in the quality assessment -- those are what
    you should add.
@@ -55,6 +55,6 @@ A JSON object: keys are Chinese intent words, values are arrays of the English t
 
 A few reference examples ship in this repo:
 
-- CRMEB: `samples/php-projects/thinkphp/CRMEB/.graphtell/aliases.json`
-- Bagisto: `samples/php-projects/laravel/bagisto/.graphtell/aliases.json`
-- litemall: `samples/java-projects/litemall/.graphtell/aliases.json`
+- PHP / ThinkPHP: `samples/php-projects/thinkphp/<project>/.graphtell/aliases.json`
+- PHP / Laravel: `samples/php-projects/laravel/<project>/.graphtell/aliases.json`
+- Java: `samples/java-projects/<project>/.graphtell/aliases.json`

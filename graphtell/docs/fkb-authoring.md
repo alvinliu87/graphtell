@@ -357,9 +357,9 @@ Why the namespace exists at all:
    language-common + project) and `dedup_rules` keeps the **first** id it sees, so two knowledge bases
    sharing an id means one of them is **silently dropped** — decided by concatenation order. That is a
    real failure mode, not a hypothetical one: one product's knowledge split across two files that both
-   declare `id: crmeb` means the project-level one is shadowed whole — its rules (including crontab
+   declare the same `id` means the project-level one is shadowed whole — its rules (including crontab
    routes -> `Schedule`) never run. Hence **one product, one knowledge file, one gate**
-   (`fkb/projects/crmeb.yaml`).
+   (`fkb/projects/sample_project.yaml`).
 
 Why it is added at load time rather than typed by hand: repeating it on forty rules is exactly how an
 author ends up forgetting it (the same argument that moved `side` to the top level, §5.1).

@@ -58,7 +58,7 @@ const SUB_ROLE_LABEL: Record<string, string> = {
  * Upper bound for reading persisted violation rows (matches the backend's `DEFAULT_VIOLATION_LIMIT`).
  *
  * Must not be set small: it is a "full fetch before paging", and the page pages 20 at a time itself. It was once 500,
- * while a single likeshop check produced 996 rows -- so right after a run you saw the complete result,
+ * while a single check produced 996 rows -- so right after a run you saw the complete result,
  * but after refreshing the page only the truncated 500 remained (truncated by write order, so all critical ones were cut),
  * which looked like "it wasn't persisted and went back to old data".
  */

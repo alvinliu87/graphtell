@@ -515,7 +515,7 @@ const dict: Record<Lang, Record<string, string>> = {
     'Click to view graph': '点击查看图',
     'Project name': '工程名称',
     'Please enter a name': '请输入名称',
-    'e.g. CRMEB': '例如：CRMEB',
+    'e.g. my-project': '例如：my-project',
     'Codebase root': '代码库根目录',
     'Please select a directory': '请选择目录',
     'Sub-projects are auto-detected (composer.json / package.json / pom.xml, etc.)': '将自动识别其中的子工程（composer.json / package.json / pom.xml 等）',

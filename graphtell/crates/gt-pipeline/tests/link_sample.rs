@@ -1,6 +1,6 @@
 //! Self-check: a frontend sub-project's HTTP calls to the backend should be connected by the build mechanism into a "contract bridge".
 //!
-//! Not depending on an external sample_project sample: run the full pipeline on `samples/frontend-backend-link`, a tiny
+//! Not depending on an external sample_project sample: run the full pipeline on the synthetic `link` sample, a tiny
 //! synthetic repo (a ThinkPHP backend + an axios frontend), asserting:
 //!   1. the frontend `axios.post('/api/delete')` is wrapped in `export function deleteItem`,
 //!      synthesises an `HttpContract` with an **incoming `CallsHttp`** edge whose source is the frontend **function node**
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use gt_domain::model::NodeKind;
 use gt_domain::model::ProjectConfig;
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter, ProjectReader};
-use gt_sample_support::frontend_backend_link_root;
+use gt_sample_support::{link_sample_dir_name, link_sample_root};
 
 /// A synthetic sample directory inside the repo (shipped with the repo).
 ///
@@ -32,7 +32,7 @@ use gt_sample_support::frontend_backend_link_root;
 /// caller's assert raises a diagnosable missing-path message (this file deliberately requires failure
 /// rather than skip).
 fn synth_root() -> PathBuf {
-    if let Some(p) = frontend_backend_link_root() {
+    if let Some(p) = link_sample_root() {
         return p;
     }
     // Fallback: the repo root — `crates/gt-pipeline` -> `crates` -> workspace -> repo root — so the assert
@@ -41,7 +41,7 @@ fn synth_root() -> PathBuf {
     p.pop();
     p.pop();
     p.pop();
-    p.join("samples/frontend-backend-link")
+    p.join("samples").join(link_sample_dir_name())
 }
 
 #[test]

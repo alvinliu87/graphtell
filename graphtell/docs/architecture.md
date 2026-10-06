@@ -12,7 +12,7 @@ query, annotate, and analyze for blast radius and dead code.
 - Frontend: React + TypeScript + Ant Design (**top-down** layering)
 - Desktop resident app: Tauri (the backend starts an HTTP service **in-process**; the desktop and web
   apps share the same `/api` contract)
-- Goal: cover all mainstream stacks via tree-sitter -- currently landed **PHP** (ThinkPHP 6 / CRMEB /
+- Goal: cover all mainstream stacks via tree-sitter -- currently landed **PHP** (ThinkPHP 6 /
   Laravel / Uni-app backend contracts), **Java** (Spring Boot), **JavaScript/TypeScript** (Uni-app
   frontend / NestJS·Express backend / TypeORM entity mapping) and **Python** (FastAPI / Flask /
   Celery / SQLAlchemy). The full support matrix and known boundaries are in
@@ -34,7 +34,7 @@ Once the graph is built it can answer two more questions:
 cargo build
 
 # 2) create a project and build the graph automatically (P0 → P7)
-./target/debug/graphtell create --name CRMEB --path /path/to/CRMEB-master
+./target/debug/graphtell create --name my-project --path /path/to/my-project
 
 # 3) start the HTTP service (shared by web / Tauri frontends)
 ./target/debug/graphtell serve --port 5177
@@ -179,13 +179,13 @@ Backend `Route::post('apple_login', 'Login/appleLogin')` and frontend
 
 Each YAML under `fkb/` declares: how to recognize the framework, how to resolve `AppRoot`, which
 authoritative tables to load, which rules run at which phase. Adding a framework = adding one YAML.
-The core knows nothing about ThinkPHP, CRMEB or Uni-app.
+The core knows nothing about ThinkPHP or Uni-app.
 
 For example, `AppRoot` resolution (`autoload.psr-4` in `composer.json`):
 
 ```json
 {"value": "app", "confidence": 1.0,
- "source": ".../crmeb/composer.json autoload.psr-4 (map_dir=app/)",
+ "source": ".../<sample>/composer.json autoload.psr-4 (map_dir=app/)",
  "fallback_used": false}
 ```
 
@@ -278,7 +278,7 @@ switch, the breadcrumb can go back, the old center is kept as a neighbor marked 
 level-2 list highlights in sync.
 
 The middleware perspective deliberately uses only `depth: 1`: one auth middleware often guards
-hundreds of endpoints (CRMEB's `AllowOriginMiddleware` guards 280), and expanding one more hop
+hundreds of endpoints (a project's `AllowOriginMiddleware` guards 280), and expanding one more hop
 would pull in every table / config touched by the endpoints it guards -- that's not "who this
 middleware guards", it's a whole graph. To see what resources a given endpoint later touches, click
 that endpoint to switch to the route perspective.
@@ -418,11 +418,11 @@ established facts, never judge vulnerabilities** -- the fix is left to people an
 
 | Rule | Why "table count" instead of "write-verb count" | Why it may under-report |
 | --- | --- | --- |
-| `multi-write-without-tx` | "≥2 write verbs at call sites" would count two `if/else` branches writing the same table (`CartLogic::add`'s `update` / `insert`) as two writes -- those are mutually exclusive branches with no partial success. Switching to "≥2 tables" makes such false positives disappear (likeshop dropped from 105 to 20) | the transaction may open in an outer caller (cross-procedure), invisible on the graph → the text says "no transaction boundary identified", not "no transaction" |
+| `multi-write-without-tx` | "≥2 write verbs at call sites" would count two `if/else` branches writing the same table (`CartLogic::add`'s `update` / `insert`) as two writes -- those are mutually exclusive branches with no partial success. Switching to "≥2 tables" makes such false positives disappear (one project dropped from 105 to 20) | the transaction may open in an outer caller (cross-procedure), invisible on the graph → the text says "no transaction boundary identified", not "no transaction" |
 
 Measured (12 samples): `ext-call-in-loop` hits 0 in most projects (remote calls inside loops really
-are rare in mature e-commerce code; bagisto has just 1), while `multi-write-without-tx` has 14–65 hits
-on likeshop / beikeshop / shopxo / bagisto / CRMEB, mostly at entries that genuinely need a
+are rare in mature e-commerce code; one project has just 1), while `multi-write-without-tx` has 14–65 hits
+on several real projects, mostly at entries that genuinely need a
 transaction such as refunds / stock deduction / withdrawals (`OrderGoodsLogic::decStock`,
 `WithdrawLogic::confirm`).
 
@@ -444,7 +444,7 @@ re-discussed later):
 | Event bus emitted without listener / listened without emitter | 12 hits sampled and verified, ~70% are genuinely dead code | **Shipped**, level `info`, with text stating both possibilities (following the honest style of `frontend-calls-missing-backend`) |
 | Table written but never read | hits are log / audit tables like `system_event` / `wechat_message` | **Rejected** ("write-only" is normal design for log tables) |
 | Table written but no model mapping (`MapsTo`) | 100% hits on Java projects (that edge isn't produced on the Java side at all); PHP hits mix in dirty aliased table names like `goods g` | **Rejected** (a graph gap, not a code problem) |
-| A method reads/writes more than N tables ("god method") | at threshold 15 on shopxo, 215 methods hit, topped by `Index` / `Add` (one method touching 48 tables looks more like an over-join) | **Rejected** (noise-dominated) |
+| A method reads/writes more than N tables ("god method") | at threshold 15 on one project, 215 methods hit, topped by `Index` / `Add` (one method touching 48 tables looks more like an over-join) | **Rejected** (noise-dominated) |
 | Queue delivered but no consumer | hit names `app` / `rule` / `module` are products of dynamic queue names; `product_stock_job` can't be grepped in source | **Rejected** (unverifiable) |
 | GET contract whose name contains `create` / `edit` | the hit is `GET /agent/level/create` -- in a ThinkPHP admin this **renders a form page**, so GET is legitimate | **Rejected** (naming heuristics inevitably misfire on admin frameworks) |
 | Page with no entry navigation | 0 hits on all 7 projects | **Rejected** (silent failure) |
@@ -612,9 +612,9 @@ online. The weights directory is set by the environment variable `GT_BGE_MODEL` 
 The output `markdown` field is a context pack you can paste straight into an LLM (seeds + related
 code + `path:line` + source snippets + graph relations).
 
-## Measured on the CRMEB sample
+## Measured on the sample project
 
-Sample: `samples/php-projects/thinkphp/CRMEB` (**v6.0.0**, 3 sub-projects, 2189 source files).
+Sample: the PHP `sample_project` checkout (**v6.0.0**, 3 sub-projects, 2189 source files).
 A full build takes about **25 seconds** (time dominated by CfAst, ~18s):
 
 | Phase | Nodes | Edges | Annotations | Time |
@@ -639,12 +639,12 @@ The built graph has **96 241 nodes / 125 368 edges** in total; main node output:
 `Class` 1043, `Method` 6724, `CallSite` 80 263, **`HttpContract` 1603**, **`Table` 156**,
 `Function` 1907, `ConfigKey` 278, `Cache` 42, `Queue` 27, `Event` 20, **`Schedule` 17**.
 
-Of these, `Schedule` comes from CRMEB's **project-level** FKB synthesizing `crontab/...` routes.
+Of these, `Schedule` comes from the **project-level** FKB synthesizing `crontab/...` routes.
 Annotations cover channels such as `pii.phone` (including `store_order`
 identified via the `user_phone` variant column name), `data.criticality`, `config.storage:Database`
 and `entrypoint.login`.
 
-> **About samples and release packages**: large third-party projects like CRMEB / Bagisto are **not
+> **About samples and release packages**: large third-party projects are **not
 > distributed with the repo** (licensing + size); set `GRAPHTELL_SAMPLE_DIR` and supply them yourself
 > to reproduce the numbers above (they correspond to **v6.0.0**; other versions differ). The light
 > samples shipped in the repo (see `samples/`) are always available and have been auto-generated into
@@ -674,7 +674,7 @@ No model weights needed (recall falls back to hashing). Regenerate locally:
 `./tools/gen_demo.sh --build` (the sample tree defaults to the repo-root `samples/`, overridable via
 `GRAPHTELL_SAMPLES_DIR`). Sample discovery for both the demo script and the integration tests is centralized
 in `gt-sample-support`: it honors `GRAPHTELL_SAMPLE_DIR` (pointing directly at a sample checkout — the
-canonical form, shared with the CRMEB pipeline) as well as the legacy `GRAPHTELL_SAMPLES_DIR` (pointing at
+canonical form) as well as the legacy `GRAPHTELL_SAMPLES_DIR` (pointing at
 the `samples/` parent).
 
 Publishing: repo **Settings → Pages → Source "GitHub Actions"** (one-time); afterwards pushing

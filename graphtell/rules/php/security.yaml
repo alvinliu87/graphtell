@@ -11,7 +11,7 @@ rules:
   # Why disabled: this rule's criterion is **negative evidence** (`no_capability` + `no_annotation`),
   # and negative evidence only holds when positive evidence actually existed at some point. Measured
   # across 8 projects, the `Capability` channel was **entirely empty** (not a single capability
-  # annotation), and project 5 had 0 RouteGroup nodes, so FKB's `crmeb-public-endpoint` marked 1529 of
+  # annotation), and project 5 had 0 RouteGroup nodes, so a project-level public-endpoint rule marked 1529 of
   # 1603 contracts as `auth.public` (`none_of_capability` always true = a tautology).
   # Result: this rule always reports 0 — not "the code is fine", but "the rule went blind".
   # A security rule that **always reports clean** is more dangerous than having no rule at all (it
@@ -21,7 +21,7 @@ rules:
   # Note: even if enabled now it would be blocked automatically by `rules_unavailable` (the Capability
   # channel is empty); disabling is a second lock — leaving no room for "it can run" wishful thinking.
   #
-  # Status: this rule is not blocked by `rules_unavailable` (it runs on CRMEB), but gets **0 hits
+  # Status: this rule is not blocked by `rules_unavailable` (it runs on the sample project), but gets **0 hits
   # out of 1603 candidates** — because it is structurally hollowed out by `thinkphp-public-endpoint`
   # in `fkb/php/thinkphp.yaml`: the latter uses `none_of_capability` to judge "public endpoint", which is
   # exactly the complement of this rule's `no_capability`; on the **same evidence source** the two are
@@ -61,7 +61,7 @@ rules:
 
   # ⚠️ The positive replacement for the rule above. The difference is the **nature of the criterion**:
   #   `write-endpoint-without-auth` uses a negative criterion ("no auth evidence") — always true when the
-  #   evidence does not exist, and in practice hollowed out by `crmeb-public-endpoint`
+  #   evidence does not exist, and in practice hollowed out by a project-level public-endpoint rule
   #   (complementary and exhaustive → always 0 hits);
   #   this one uses a **positive criterion** ("the graph really saw: an auth middleware is attached and
   #   its argument explicitly says false"), which only holds on hard evidence and is therefore unaffected
@@ -72,7 +72,7 @@ rules:
     title: Write endpoint auth is optional (reachable without login)
     description: >-
       The endpoint has an auth middleware attached, but the attached argument explicitly says optional
-      (CRMEB's `AuthTokenMiddleware::class, false`): if you are logged in the identity is attached, if
+      (a project's `AuthTokenMiddleware::class, false`): if you are logged in the identity is attached, if
       not you are let through anyway.
       "Optional" is not the same as "absent", so this is only reported when the graph actually saw that
       argument — if it did not see it, it stays silent (that is the graph failing to resolve, not the code

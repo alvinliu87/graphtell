@@ -857,7 +857,7 @@ mod tests {
     /// NestJS `MiddlewareConsumer`: `consumer.apply(AuthMiddleware).forRoutes({path, method})`'s **object-literal** arg
     /// must be parsed into (path, verb) and landed on the corresponding route by "path + verb".
     ///
-    /// Reproduces the realworld project's `user.module.ts` style — without it `forRoutes` would only recognize
+    /// Reproduces a real project's `user.module.ts` style — without it `forRoutes` would only recognize
     /// string / `Unknown` names, object literals would be treated as nameless args, and the whole module would
     /// get 0 guard hits.
     #[test]

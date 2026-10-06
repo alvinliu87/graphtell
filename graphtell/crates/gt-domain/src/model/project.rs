@@ -105,7 +105,7 @@ impl std::fmt::Display for ProjectStatus {
 
 /// A sub-project: an independently analysable unit inside a project.
 ///
-/// For example, `CRMEB-master` contains both a ThinkPHP backend and a Uni-app frontend; they differ in language and
+/// For example, a monorepo may bundle a server backend and a separate web/admin frontend; they differ in language and
 /// in FKB, so they must be analysed as two sub-projects and only converge across projects on contract nodes such as
 /// `HttpContract`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,8 +279,8 @@ mod tests {
     fn project_sub_project_and_source_file_records_round_trip() {
         let p = Project {
             id: ProjectId(1),
-            name: "sample_project".to_string(),
-            root_path: PathBuf::from("/samples/php-projects/thinkphp/sample_project"),
+            name: "demo-project".to_string(),
+            root_path: PathBuf::from("/tmp/demo-project"),
             description: Some("e-commerce".to_string()),
             config: ProjectConfig { full_pipeline: false, ..Default::default() },
             status: ProjectStatus::Ready,
@@ -289,7 +289,7 @@ mod tests {
         };
         let back: Project = round_trip(&p);
         assert_eq!(back.id, ProjectId(1));
-        assert_eq!(back.root_path, PathBuf::from("/samples/php-projects/thinkphp/sample_project"));
+        assert_eq!(back.root_path, PathBuf::from("/tmp/demo-project"));
         assert_eq!(back.description.as_deref(), Some("e-commerce"));
         assert_eq!(back.status, ProjectStatus::Ready);
         assert_eq!((back.created_at, back.updated_at), (1_700_000_000, 1_700_000_123));
@@ -302,13 +302,13 @@ mod tests {
 
         // A project created without any configuration must not fail to load later.
         let np = NewProject {
-            name: "bagisto".to_string(),
-            root_path: PathBuf::from("/samples/bagisto"),
+            name: "another-project".to_string(),
+            root_path: PathBuf::from("/tmp/another-project"),
             description: None,
             config: None,
         };
         let back: NewProject = round_trip(&np);
-        assert_eq!(back.name, "bagisto");
+        assert_eq!(back.name, "another-project");
         assert!(back.description.is_none() && back.config.is_none());
 
         let sp = SubProject {

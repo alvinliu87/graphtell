@@ -1,0 +1,32 @@
+# Sample catalog for the integration tests.
+#
+# This file is the ONLY place where the concrete on-disk directory names of the
+# integration-test samples are recorded. Rust sources refer to samples exclusively by the
+# generic keys defined here (`sample_project`, `php_alt`, `node_a`, `node_b`, `link`), so no
+# specific product name is ever written into source code.
+#
+# Fields (all optional):
+#   dirs      – accepted checkout directory names; discovery uses the first one that exists.
+#   inner_dir – the application sub-directory inside the checkout (empty = the checkout root
+#               itself is the project root).
+#   ns        – PHP namespace prefix the project's composer.json maps onto `inner_dir`.
+#
+# Discovery can also be pointed at a checkout directly with the `GRAPHTELL_SAMPLE_DIR` env var,
+# in which case `dirs` is not consulted at all.
+
+[sample_project]
+dirs = ["CRMEB", "CRMEB-master"]
+inner_dir = "crmeb"
+ns = "crmeb"
+
+[php_alt]
+dirs = ["laravel-starter"]
+
+[node_a]
+dirs = ["nestjs-realworld-example-app"]
+
+[node_b]
+dirs = ["hackathon-starter"]
+
+[link]
+dirs = ["frontend-backend-link"]

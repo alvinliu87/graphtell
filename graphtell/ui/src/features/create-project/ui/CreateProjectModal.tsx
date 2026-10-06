@@ -221,7 +221,7 @@ export function CreateProjectModal({
               label={t('Project name')}
               rules={[{ required: true, message: t('Please enter a name') }]}
             >
-              <Input placeholder={t('e.g. CRMEB')} />
+              <Input placeholder={t('e.g. my-project')} />
             </Form.Item>
             <Form.Item
               name="root_path"

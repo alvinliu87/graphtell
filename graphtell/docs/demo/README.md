@@ -4,8 +4,7 @@ This is a purely static site (no backend dependency) generated with the **real p
 recorded API replay**; it can be hosted on GitHub Pages or any static hosting.
 
 ## What you can do in this demo
-- **Browse projects**: the home page lists the recorded sample projects (CRMEB / Bagisto /
-  self-made fixture).
+- **Browse projects**: the home page lists the recorded sample projects.
 - **Semantic graph**: open a project's "graph" tab to see the semantic dependency graph by
   perspective (routes / tables / events …); click a node to expand its chain (object view).
 - **Rule checking**: the `compliance` tab shows rule hits and diagnostics.
@@ -14,8 +13,8 @@ recorded API replay**; it can be hosted on GitHub Pages or any static hosting.
 
 ## UI preview (real screenshots, from running this demo locally)
 ![Project overview](../screenshots/home.png)
-![Semantic graph](../screenshots/graph-crmeb.png)
-![Rule checking: violations table](../screenshots/rules-crmeb.png)
+![Semantic graph](../screenshots/graph.png)
+![Rule checking: violations table](../screenshots/rules.png)
 ![Prompt augmentation](../screenshots/recall.png)
 
 ## Limitations (by design, not bugs)

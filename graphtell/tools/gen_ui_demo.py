@@ -45,17 +45,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ROOT / "docs" / "demo"
 
-# Default demo samples: prefer real well-known projects (CRMEB / Bagisto), plus one self-made fixture.
+# Default demo sample: this project's **own synthetic fixture** -- no third-party project is named in
+# this repository. Point DEMO_SAMPLE_DIRS at your own checkouts to record extra ones
+# (format: `slug=path`, comma-separated).
 DEFAULT_SAMPLES = [
-    ("CRMEB", "/home/alvin/graphtell/samples/php-projects/thinkphp/CRMEB"),
-    ("bagisto", "/home/alvin/graphtell/samples/php-projects/laravel/bagisto"),
-    ("frontend-backend-link", "/home/alvin/graphtell/samples/frontend-backend-link"),
+    ("frontend-backend-link", str(ROOT.parent / "samples" / "frontend-backend-link")),
 ]
 
 # Recall queries for the demo (Chinese, showing the "Chinese intent -> English node" bridge)
 DEFAULT_QUERIES = {
-    "CRMEB": ["订单支付流程", "商品库存扣减", "用户优惠券"],
-    "bagisto": ["购物车结算", "商品分类查询"],
     "frontend-backend-link": ["订单创建流程", "用户登录入口"],
 }
 
@@ -219,8 +217,7 @@ This is a purely static site (no backend dependency) generated with the **real p
 recorded API replay**; it can be hosted on GitHub Pages or any static hosting.
 
 ## What you can do in this demo
-- **Browse projects**: the home page lists the recorded sample projects (CRMEB / Bagisto /
-  self-made fixture).
+- **Browse projects**: the home page lists the recorded sample projects.
 - **Semantic graph**: open a project's "graph" tab to see the semantic dependency graph by
   perspective (routes / tables / events …); click a node to expand its chain (object view).
 - **Rule checking**: the `compliance` tab shows rule hits and diagnostics.
@@ -229,8 +226,8 @@ recorded API replay**; it can be hosted on GitHub Pages or any static hosting.
 
 ## UI preview (real screenshots, from running this demo locally)
 ![Project overview](../screenshots/home.png)
-![Semantic graph](../screenshots/graph-crmeb.png)
-![Rule checking: violations table](../screenshots/rules-crmeb.png)
+![Semantic graph](../screenshots/graph.png)
+![Rule checking: violations table](../screenshots/rules.png)
 ![Prompt augmentation](../screenshots/recall.png)
 
 ## Limitations (by design, not bugs)

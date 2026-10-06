@@ -12,7 +12,7 @@ authoring see [`docs/fkb-authoring.md`](./docs/fkb-authoring.md).
 
 | Language | Framework / form | Semantic extraction | Compliance rules |
 | --- | --- | --- | --- |
-| **PHP** | ThinkPHP (5.1 / 6.x / 8.x) / CRMEB / Laravel / Uni-app backend contracts / **Symfony (PHP 8 attribute routes, §3.3)** | complete (tables / **ORM relations** / **table foreign keys** / routes / config / i18n / cache / events / queues / signature verification …, §3.2) | complete (including N+1, signature verification, external call in loop, multi-write without tx) |
+| **PHP** | ThinkPHP (5.1 / 6.x / 8.x) / Laravel / Uni-app backend contracts / **Symfony (PHP 8 attribute routes, §3.3)** | complete (tables / **ORM relations** / **table foreign keys** / routes / config / i18n / cache / events / queues / signature verification …, §3.2) | complete (including N+1, signature verification, external call in loop, multi-write without tx) |
 | **Java** | Spring Boot (Spring Cache / ApplicationEvent / Spring AMQP / Spring Kafka / Spring Scheduling / JPA / MyBatis-Plus) | complete (§2) | reuses `rules/global/` (topology-based rules); framework-specific rules (`orphan-event` / `orphan-queue` …) not yet written for Java |
 | **JavaScript / TypeScript** | Uni-app frontend (event bus / local storage / pages / Store) | complete | `rules/js/` (frontend event bus dead code) |
 | **JavaScript / TypeScript** | **Node backend**: NestJS (decorator routes / controllers) / Express (member-style routes) / **Koa** / **Fastify** | route contracts (NestJS additionally links `HandledBy` to method nodes, §3.1) | reuses `rules/global/` (topology-based); framework-specific rules not yet written for Node |
@@ -353,7 +353,7 @@ constant, not information**; drawing it would just repeat the same tautology on 
 the same lesson as `write-endpoint-without-auth` being disabled: treating a global fact as an
 endpoint-level fact judged 1529 of 1603 contracts as public).
 
-Measured on CRMEB (pipeline rerun): `route_list` keys and contract names matched **1265 / 1265** →
+Measured on the sample project (pipeline rerun): `route_list` keys and contract names matched **1265 / 1265** →
 **4436** `PassesThrough` edges, **10** classes promoted to `Middleware`, and `auth.public` dropped from
 1529 to 894 (endpoints wrongly judged "public" got corrected).
 Combination distribution: 12 kinds, the largest at **63%** -- the accurate statement is that
@@ -364,19 +364,19 @@ discriminative power lies **not between individual endpoints but between apps** 
 
 | Project | Measurement |
 | --- | --- |
-| bagisto | `route_list` **0 → 207** rows (previously Laravel projects had no route table at all, so the "route table registers handler" conclusion never showed); 24 contracts with guards |
-| aimeos | 16 contracts with guards (`auth:sanctum` / `guest` …) |
+| laravel-sample-a | `route_list` **0 → 207** rows (previously Laravel projects had no route table at all, so the "route table registers handler" conclusion never showed); 24 contracts with guards |
+| laravel-sample-b | 16 contracts with guards (`auth:sanctum` / `guest` …) |
 
 Two things resolved: ① the modifier-first form `Route::middleware('auth')->group(fn)` -- the chain root
 now takes `group`; ② the array form `->middleware(['auth','throttle:60'])` -- each item counts as one
 mount.
 
 Known boundaries (stated honestly, not papered over for these forms):
-- **Alias → class** depends on `$routeMiddleware` in `app/Http/Kernel.php`. Of the 3 samples only aimeos
+- **Alias → class** depends on `$routeMiddleware` in `app/Http/Kernel.php`. Of the 3 samples only one
   has `Http/Kernel.php`, and it does **not** declare `$routeMiddleware` (it uses Laravel's built-in
   aliases), so aliases mostly can't be restored to class names: guard names still show (`web` / `guest`
   / `throttle:5,1`), but they **don't link to class nodes**. Bare short names (`NoCacheMiddleware`) fall
-  back through `resolve_short_name` and can link (4 edges measured on bagisto); ambiguous short names
+  back through `resolve_short_name` and can link (4 edges measured on one sample); ambiguous short names
   are always rejected.
 - Laravel's built-in middleware classes (`auth` / `guest` / `throttle`) live in `vendor`, already
   excluded at P0 -- even a successful alias restore may find no node to link. That's a **boundary of

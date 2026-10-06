@@ -7,11 +7,6 @@
 # `**/samples/*` 只排除内容，父目录还在，下面的例外才能生效。
 **/samples/*
 !**/samples/frontend-backend-link/
-references/
-codebase-memory-mcp-main/
-codebase-memory-mcp-main.zip
-CRMEB-master/
-CRMEB-master.zip
 
 # 本地临时/辅助脚本
 *.local.sh

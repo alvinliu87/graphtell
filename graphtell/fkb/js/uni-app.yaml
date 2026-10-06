@@ -1,4 +1,4 @@
-# Front-end uni-app-specific knowledge (multi-end projects such as CRMEB)
+# Front-end uni-app-specific knowledge (multi-end projects)
 #
 # Division of labour with `fkb/js/common.yaml` (the language-common layer):
 #   * common.yaml holds spellings **common across front-end frameworks** (axios / fetch / localStorage /
@@ -26,7 +26,7 @@ side: frontend
 semantic_kinds: [Store, Page, EventBus]
 
 detectors:
-  # uni-app / CRMEB-style multi-end projects
+  # uni-app-style multi-end projects
   - kind: manifest_dependency
     manifest: package.json
     dependency: "@dcloudio/uni-app"

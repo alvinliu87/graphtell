@@ -1685,7 +1685,7 @@ mod tests {
     /// `$this->dao` (a `UserDao`, which does map to the table). Without the FKB-declared
     /// `magic_delegation.property` the "… -> Services -> Dao -> table" chain breaks at the Services hop.
     ///
-    /// This declaration lives **only** in `fkb/projects/crmeb.yaml`, whose sole test (`sample_project_pipeline.rs`)
+    /// This declaration lives **only** in `fkb/projects/sample_project.yaml`, whose sole test (`sample_project_pipeline.rs`)
     /// is sample-gated — the real FKB is loaded here so the path has always-on coverage.
     fn delegation_ctx(delegation: Option<MagicDelegationSpec>) -> (PipelineContext, NodeId, NodeId, NodeId) {
         let mut ctx = new_ctx();
@@ -1708,14 +1708,15 @@ mod tests {
     #[test]
     fn magic_delegation_bridges_the_services_hop_to_the_dao_table() {
         let fkb_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fkb/projects/crmeb.yaml");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fkb/projects/sample_project.yaml");
         assert!(fkb_path.is_file(), "the real FKB must exist: {}", fkb_path.display());
         let real_fk = YamlKnowledgeBase::load_file(&fkb_path)
             .unwrap_or_else(|e| panic!("the real FKB failed to parse: {}: {e}", fkb_path.display()));
         let spec = real_fk
             .magic_delegation
             .clone()
-            .expect("the crmeb FKB must declare magic_delegation");
+            .expect("the project-level FKB must declare magic_delegation");
 
         let (mut ctx, owner, call, table) = delegation_ctx(Some(spec));
         let loc = locator(owner, call, r"app\services\UserServices::getList");

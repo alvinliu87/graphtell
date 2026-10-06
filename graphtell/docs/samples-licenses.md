@@ -16,7 +16,7 @@ used only as test material and demo assets.
 | `nestjs-realworld-example-app` | third-party OSS | https://github.com/lujakob/nestjs-realworld-example-app | ISC | ⚠️ not shipped upstream; standard text added per the `package.json` declaration |
 | `typescript-starter` | third-party OSS | https://github.com/nestjs/typescript-starter | MIT | ⚠️ not shipped upstream; standard text added per the `package.json` declaration |
 | `php-projects/laravel-starter` | third-party OSS (official Laravel skeleton) | https://github.com/laravel/laravel | MIT © Taylor Otwell | ⚠️ standard text added per the `composer.json` declaration |
-| CRMEB / Bagisto | large third-party projects | — | non-standard permissive | **not included in this repo**: set `GRAPHTELL_SAMPLE_DIR` and supply them yourself |
+| large third-party e-commerce systems | — | non-standard permissive | **not included in this repo**: set `GRAPHTELL_SAMPLE_DIR` and supply them yourself |
 
 ## Notes
 
@@ -27,8 +27,8 @@ used only as test material and demo assets.
 - **`frontend-backend-link` is a self-made fixture**: written by this project to cover cross-end
   chains like "frontend ↔ backend" and semantic nodes such as `Cache` / `Store` / `ConfigKey`. It
   contains no third-party code, so it is free to use in the public demo.
-- **CRMEB / Bagisto are not vendored**: they are large e-commerce systems whose licenses are not
-  standard permissive ones (CRMEB leans commercial / open-core), so this repo does not distribute
+- **Large third-party e-commerce systems are not vendored**: their licenses are not
+  standard permissive ones (several lean commercial / open-core), so this repo does not distribute
   their source; related tests and docs skip automatically when the samples are absent.
 - **Were the samples modified?** Samples are taken essentially as-is from upstream; some may carry
   this project's own `.graphtell/aliases.json` (project-level intent alias config -- a config file

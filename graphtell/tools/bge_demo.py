@@ -36,7 +36,7 @@ def main():
     print(">> loading bge-m3 ...", flush=True)
     model = SentenceTransformer(path)
 
-    # Candidate "business node" texts (CRMEB-style code, English naming)
+    # Candidate "business node" texts (sample project code, English naming)
     nodes = {
         "placeOrder (Method)": "placeOrder",
         "applyDiscount (Method)": "applyDiscount",

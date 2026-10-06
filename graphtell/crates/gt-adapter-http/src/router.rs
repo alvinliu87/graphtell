@@ -656,7 +656,7 @@ fn parse_sub_project_ids(raw: &Option<String>) -> Option<Vec<SubProjectId>> {
 /// Read the violations persisted by the previous check (without re-running rules).
 /// The **default count** for reading persisted violations.
 ///
-/// One measured likeshop check produced 996 violations, so the cap must clear that: at 500, "just ran,
+/// One measured check produced 996 violations, so the cap must clear that: at 500, "just ran,
 /// see 996 / 59 critical" and "refresh, see 500 / 0 critical" disagree, and are read as
 /// "nothing was persisted / back to old data".
 /// Reading the violation table is a full fetch before pagination (the UI pages 20 at a time itself), so this is

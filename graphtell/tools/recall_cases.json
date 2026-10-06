@@ -9,21 +9,21 @@
     "  因此它只能保证至少一个意图被召回；要断言两个意图各自命中，请像下面那样为每个意图单独建 case。",
     "batch=1 第一批（动作意图 / 跨语言）；batch=2 第二批「真实开发场景」（2026-09-26）；",
     "batch=3 第三批「故障现象描述」（2026-09-27）：开发者按症状提问题（超卖 / 密码错了 / 超时没取消 / JWT 校验），",
-    "  靠 PACK_SYMPTOM（现象→实现面）架桥。跨项目交叉验证：同一个「密码」桥既要在 mall 找到",
+    "  靠 PACK_SYMPTOM（现象→实现面）架桥。跨项目交叉验证：同一个「密码」桥既要在 示例项目 找到",
     "  passwordEncoder，也要在 likeadmin 找到 PasswordValidate —— 若只在出问题的工程上通过，说明是硬编码而非泛化。",
     "  （2026-09-26 增补，全部 targets 已在源码里核实存在）。它们的文案照搬开发者在 IDE 里的原话：",
     "  点名标识符（StoreOrderCreateServices / decGoodsStock）、用故障现象描述问题（超卖 / 邮件发不出去）、",
     "  以及「改需求」型提问。用于守住三件事：",
     "  a) 标识符锚点：点名的符号必须排到前排（batch2 的 #1/#24-1 曾整屏都是 *Listener / *Example）；",
-    "  b) 生成器样板降权：mall-mbg 的 andXxxEqualTo / createCriteria 不能占位；",
+    "  b) 生成器样板降权：mbg 模块 的 andXxxEqualTo / createCriteria 不能占位；",
     "  c) test/** 降权：单测辅助函数（makeFakeUser / fixtureFilename）不能占位。"
   ],
   "projects": {
-    "1": "CRMEB（PHP 电商，含 i18n）",
+    "1": "示例项目（PHP 电商，含 i18n）",
     "11": "likeadmin（PHP 后台管理系统）",
     "13": "nestjs-realworld（NestJS 博客/CMS，非电商、无 i18n）",
     "15": "express-hackathon-starter（Node/Express，非电商）",
-    "24": "mall（Java/SpringBoot 电商）",
+    "24": "示例项目（Java/SpringBoot 电商）",
     "31": "fastapi-demo（Python/FastAPI）"
   },
   "cases": [

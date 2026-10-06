@@ -22,7 +22,7 @@ declare global {
 }
 
 const at = (line: number, note: string, snippet: string): SourceLocation => ({
-  file: 'crmeb/app/services/product/product/StoreProductServices.php',
+  file: 'app/services/product/ProductServices.php',
   line,
   symbol: null,
   note,

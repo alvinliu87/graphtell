@@ -1,6 +1,6 @@
 //! gt-app view-layer integration tests (composition root → build graph → view slicing).
 //!
-//! Uses the real `sample_project` (CRMEB) checkout (3 sub-projects, 2178 source files) as material,
+//! Uses the real `sample_project` checkout (3 sub-projects, 2178 source files) as material,
 //! located by `gt_sample_support::sample_root()`, assembles all adapters via `Container`,
 //! runs a full build, then uses `ViewService` to verify the first/second-level filters and each view slice.
 //!
@@ -607,7 +607,7 @@ fn folded_semantic_edges_end_at_real_contact() {
 /// otherwise when filling `to_call_site` there's no evidence to rely on, and it would pick any same-resource reader in the loop.
 ///
 /// Measured counterexample: `PUT /setting/seckill_data/set_status/:id/:status` via
-/// `SystemGroupData::set_status` → `CacheService::clear()` → `Cache::tag('crmeb')->clear()`
+/// `SystemGroupData::set_status` → `CacheService::clear()` → `Cache::tag('<sample-tag>')->clear()`
 /// (`CacheService.php:98`) reaches the cache; but the cache perspective stops `via` at `set_status`, then treats
 /// `DataMigrationServices.php:53`'s `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)` as "where this chain accesses the cache" — that route never touched that key.
 #[test]

@@ -3,7 +3,7 @@
  *
  * Why grouping is mandatory: diagnostics are inherently **long-tail and
  * repetitive** — one engine diagnostic fires once per file in hundreds of files
- * (on CRMEB `IdentityUnresolved` alone has 349 entries), and a single
+ * (on a real project `IdentityUnresolved` alone has 349 entries), and a single
  * `UnresolvedLink` only ever says the same thing: "the target is not in the
  * graph". Laid out flat as a table the user reads "349 problems" while the truth
  * is "1 problem type occurred 349 times" — an order-of-magnitude difference that

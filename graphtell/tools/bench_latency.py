@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare recall latency of the old vs new serve binary on CRMEB (project=1).
+"""Compare recall latency of the old vs new serve binary on the sample project (project=1).
 
 Scenarios:
   warmup : first query (cold: candidate loading / node encoding / persistence / query encoding all run)

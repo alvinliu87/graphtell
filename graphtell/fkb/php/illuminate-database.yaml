@@ -84,7 +84,7 @@ bridge_edge_kinds: [References]
 
 rules:
   # ===== P5 Synthesize: Table =====
-  # `DB::table('product_flat')` — measured 200+ places in bagisto.
+  # `DB::table('product_flat')` — measured 200+ places in real projects.
   - id: table
     phase: Synthesize
     selector:

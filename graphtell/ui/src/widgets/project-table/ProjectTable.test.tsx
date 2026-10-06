@@ -16,8 +16,8 @@ import { mountWithRouter } from '@/test/render';
 
 const sample: Project = {
   id: 1,
-  name: 'CRMEB',
-  root_path: '/code/crmeb',
+  name: 'SampleProject',
+  root_path: '/code/sample-project',
   status: 'ready',
   description: '',
   config: { full_pipeline: true, exclude_globs: [], required_locales: [], table_prefixes: [] },
@@ -30,7 +30,7 @@ describe('ProjectTable', () => {
     const { container } = mountWithRouter(
       <ProjectTable projects={[sample]} loading={false} onDeleted={() => {}} />,
     );
-    expect(container.textContent).toContain('CRMEB');
+    expect(container.textContent).toContain('SampleProject');
     expect(container.textContent).toContain('Ready');
   });
 

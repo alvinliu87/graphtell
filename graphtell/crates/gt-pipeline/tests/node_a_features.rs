@@ -1,10 +1,10 @@
-//! End-to-end self-check of NestJS (Node / TypeScript) route contracts.
+//! End-to-end self-check of the Node.js framework (TypeScript) route contracts.
 //!
 //! Covers the chain "decorator -> call site -> HttpContract + HandledBy", and pins one deliberate behaviour:
 //! **a decorator with no path argument (`@Get()`) builds no contract** (if the path cannot be obtained, no contract
 //! is built — better missing than guessed, otherwise the contract bridge gets polluted).
 //!
-//! Real sample (not in CI): `samples/node-projects/nestjs/nestjs-realworld-example-app`
+//! Real sample (not in CI): the `node_a` checkout (`samples/**/node_a`)
 //! Measured: all 17 route contracts connect to a handler (`http-contract-without-handler` matched 0 times).
 
 use gt_domain::model::{Node, NodeKind, ProjectConfig};
@@ -12,9 +12,9 @@ use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter};
 
 mod common;
 
-fn synthetic_nestjs_root() -> std::path::PathBuf {
+fn synthetic_node_a_root() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "graphtell-nestjs-{}-{}",
+        "graphtell-node-a-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -95,10 +95,10 @@ fn contract_targets(b: &common::Built) -> Vec<(String, String)> {
 }
 
 #[test]
-fn nestjs_decorators_produce_contracts_linked_to_handlers() {
-    let root = synthetic_nestjs_root();
+fn node_a_decorators_produce_contracts_linked_to_handlers() {
+    let root = synthetic_node_a_root();
     let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
-        panic!("the graph build of the synthetic NestJS project should succeed");
+        panic!("the graph build of the synthetic Node framework project should succeed");
     };
     let pairs = contract_targets(&b);
 

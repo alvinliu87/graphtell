@@ -1,6 +1,6 @@
 [package]
 name = "gt-sample-support"
-description = "Shared test support: locating the real sample_project (CRMEB) checkout for integration tests"
+description = "Shared test support: locating the real sample_project checkout for integration tests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -6,7 +6,7 @@
 
 # Why these two are not `error`:
 #
-# On CRMEB this rule once reported 128 errors, and after checking them one by one **not a single one
+# On a real project this rule once reported 128 errors, and after checking them one by one **not a single one
 # was a real bug** — their `handler` property held a route string like `v1.marketing.liveGoods/setShow`
 # or a closure; the route really exists in `route.php` and works at runtime, FKB just did not resolve
 # it into a Method node. On the graph you cannot distinguish "the route really has no handler" from

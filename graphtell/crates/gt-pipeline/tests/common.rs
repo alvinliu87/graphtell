@@ -2,7 +2,7 @@
 //!
 //! # Where the samples come from
 //!
-//! The tests use the real `sample_project` (CRMEB) checkout as material, located by
+//! The tests use the real `sample_project` checkout as material, located by
 //! `gt_sample_support::sample_root` (the `GRAPHTELL_SAMPLE_DIR` env var, or a bounded-depth search
 //! under `samples/`). So that CI can run on a machine without samples, a missing sample makes the
 //! test **skip** rather than fail.
@@ -29,7 +29,7 @@ use gt_pipeline::runner::{PipelineInfrastructure, PipelineOutcome};
 
 pub const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
-/// Locate the `sample_project` (CRMEB) sample root directory.
+/// Locate the `sample_project` sample root directory.
 ///
 /// Delegates to `gt_sample_support::sample_root`, the single source of truth for where the real,
 /// oversized sample checkout lives (the `GRAPHTELL_SAMPLE_DIR` env var, or a bounded-depth search

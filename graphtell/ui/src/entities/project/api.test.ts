@@ -22,12 +22,12 @@ describe('projectApi', () => {
   });
 
   it('create posts the input and update puts a partial', async () => {
-    const input = { name: 'CRMEB', root_path: '/code/crmeb' };
+    const input = { name: 'MyProject', root_path: '/code/my-project' };
     await projectApi.create(input);
     expect(http.post).toHaveBeenCalledWith('/api/projects', input);
 
-    await projectApi.update(2, { name: 'CRMEB2' });
-    expect(http.put).toHaveBeenCalledWith('/api/projects/2', { name: 'CRMEB2' });
+    await projectApi.update(2, { name: 'MyProject2' });
+    expect(http.put).toHaveBeenCalledWith('/api/projects/2', { name: 'MyProject2' });
   });
 
   it('remove deletes the project', async () => {

@@ -349,7 +349,7 @@ impl CheckRule {
     /// Whether the environment matches: **any** sub-project matching the language is enough, and likewise for
     /// frameworks.
     ///
-    /// A project is often multi-language (sample_project = php + javascript, litemall = java + javascript), so this is
+    /// A project is often multi-language (e.g. a backend with an embedded JS admin bundle), so this is
     /// "a match exists" rather than "all match" — as long as there is a PHP sub-project, PHP rules should run.
     pub fn applies_to_env(&self, languages: &[String], frameworks: &[String]) -> bool {
         let lang_ok = self.applies_to.languages.is_empty()

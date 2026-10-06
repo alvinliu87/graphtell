@@ -1,8 +1,8 @@
 # Laravel framework knowledge
 #
-# **Driven by the real projects under samples/laravel-projects** (aimeos-laravel / bagisto / beikeshop,
-# covering Laravel 10 ~ 12), rather than listing APIs from the framework docs — only spellings that
-# **actually occur** in those three projects are written here.
+# **Driven by the real projects under samples/laravel-projects** (covering Laravel 10 ~ 12),
+# rather than listing APIs from the framework docs — only spellings that
+# **actually occur** in those projects are written here.
 #
 # Shape differences from ThinkPHP (same language, same DSL, pure data differences):
 #   | concept         | ThinkPHP 6              | Laravel                                   |
@@ -123,10 +123,10 @@ entry_methods: ["handle", "__invoke"]
 
 # Eloquent / Query Builder CRUD verbs -> read / write classification (pairs with `MapsTo`; see P7 verb classification).
 #
-# Why Laravel needs this copy: without its own declaration the three Laravel projects
-# (aimeos / bagisto / beikeshop) would have **not a single `WritesDb` edge** — and `n1-query-in-loop` /
+# Why Laravel needs this copy: without its own declaration the Laravel projects
+# would have **not a single `WritesDb` edge** — and `n1-query-in-loop` /
 # `n1-write-in-loop` / `read-only-table` / `write-only-table` were all judged `rules_unavailable`
-# (measured on bagisto: 11 of 28 rules unavailable).
+# (measured: 11 of 28 rules unavailable).
 #
 # Only verbs that **really hit the database** are listed, and intermediate methods that merely build a query
 # without executing it (`where` / `select` / `orderBy`) are deliberately excluded — otherwise one chained call
@@ -374,7 +374,7 @@ rules:
 
   # ===== P5 Synthesize: HTTP contract =====
   #
-  # Laravel handlers come in three shapes (measured on bagisto / beikeshop):
+  # Laravel handlers come in three shapes (measured on real projects):
   #   ① `[WebMcpController::class, 'product']` array — the **main form**; it needs "the class at array index 0
   #      + the method name at index 1", which the existing `ValueSource` cannot express (it only has `arg` /
   #      `field`), so `to` resolution fails here and degrades to a PendingLink;

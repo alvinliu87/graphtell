@@ -17,7 +17,7 @@ import { useLocale } from '@/shared/lib/i18n';
 /**
  * Location list.
  *
- * A synthesized node (`Table:user` and the like) **necessarily comes from multiple co-occurrences**: both the `crmeb.sql` CREATE TABLE statement
+ * A synthesized node (`Table:user` and the like) **necessarily comes from multiple co-occurrences**: both the project's schema `.sql` CREATE TABLE statement
  * and the Model's `$table` definition. Always give a **multi-location list** here; never fabricate a single location.
  */
 export function LocationList({

@@ -110,7 +110,7 @@ needed.
 ## 5. Tests and verification
 
 - **Engine / rule unit tests**: `cargo test -p gt-pipeline -p gt-domain -p gt-adapter-parser`.
-- **End-to-end build tests**: `crates/gt-pipeline/tests/crmeb_pipeline.rs` (PHP sample),
+- **End-to-end build tests**: `crates/gt-pipeline/tests/sample_project_pipeline.rs` (PHP sample),
   `crates/gt-pipeline/tests/java_spring_features.rs` (synthetic Java sample),
   `tests/python_fastapi_features.rs` / `tests/python_flask_features.rs` (synthetic Python samples),
   `tests/node_real_samples.rs` (synthetic NestJS / Express + real samples),

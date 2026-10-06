@@ -19,7 +19,7 @@
 //! Why "table count" rather than "write-verb call-site count": the latter counts one table written once in each of
 //! two `if/else` branches (`CartLogic::add`'s `update` / `insert`) as two writes — those are **mutually exclusive
 //! branches**, where partial success is not a thing. Measured: after switching the threshold from ">= 2 write
-//! verbs" to ">= 2 tables", likeshop's hit count dropped from 105 to a far more credible level and the false
+//! verbs" to ">= 2 tables", one project's hit count dropped from 105 to a far more credible level and the false
 //! positives on mutually exclusive branches disappeared naturally.
 //!
 //! The conservative direction is **better a false negative**: the transaction may be opened by an outer caller

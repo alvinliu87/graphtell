@@ -9,7 +9,7 @@
 #      We don't commit the 13G model weights -- recall falls back to hashing, enough for a demo.
 #   * The sample tree has been merged into the **repo-root samples/** (the old inner samples/ is deleted). Override with
 #     GRAPHTELL_SAMPLES_DIR. Missing samples are skipped, consistent with the integration tests' soft dependency.
-#   * A large project's (CRMEB ~96k nodes) **full graph can't be handed to the browser directly**: here we filter by
+#   * A large project's (~96k nodes) **full graph can't be handed to the browser directly**: here we filter by
 #     "interesting node kinds" and truncate to MAX_NODES, exporting only a subgraph; the full scale is stated honestly in meta.
 #   * Artifacts are pure static files: push to the default branch and GitHub renders them; together with
 #     .github/workflows/deploy-demo.yml they can be published to GitHub Pages (no domain needed).
@@ -18,7 +18,7 @@
 #   ./tools/gen_demo.sh                 # use an existing target/release|debug/graphtell
 #   ./tools/gen_demo.sh --build         # compile with --no-default-features first (portable, no model needed)
 #   GT_BINARY=/path/to/graphtell ./tools/gen_demo.sh
-#   DEMO_ONLY=express ./tools/gen_demo.sh            # run a single sample only
+#   DEMO_ONLY=frontend-backend-link ./tools/gen_demo.sh   # run a single sample only
 #   GRAPHTELL_SAMPLES_DIR=/path/to/samples ./tools/gen_demo.sh
 #
 set -euo pipefail
@@ -67,14 +67,19 @@ mkdir -p "$OUT"
 MAX_NODES="${DEMO_MAX_NODES:-400}"
 
 # Sample manifest: slug | path relative to the sample tree | blurb | license | upstream
-# Only projects with a clear license are chosen (permissive license + self-made fixture); attribution goes on the demo page.
+#
+# The committed default is this project's **own synthetic fixture** only: no third-party project is
+# named anywhere in this repository. To record extra checkouts, point GRAPHTELL_SAMPLES_DIR at your own
+# sample tree and pass them via DEMO_SAMPLES (same `slug|relpath|blurb|license|upstream` format, one
+# entry per line); attribution for those stays with whoever runs the generator.
 SAMPLES=(
   "frontend-backend-link|frontend-backend-link|self-made synthetic fixture: frontend ↔ backend cross-end chain|owned by this project|—"
-  "express|node-projects/express|Express starter project (Node)|MIT|https://github.com/expressjs/express"
-  "litemall|java-projects/litemall|litemall e-commerce system (Java/SpringBoot)|MIT|https://github.com/linlinjava/litemall"
-  "bagisto|php-projects/laravel/bagisto|Bagisto e-commerce system (PHP/Laravel)|MIT|https://github.com/bagisto/bagisto"
-  "CRMEB|php-projects/thinkphp/CRMEB|CRMEB mall system (PHP/ThinkPHP)|Apache-2.0|https://github.com/crmeb/CRMEB"
 )
+if [[ -n "${DEMO_SAMPLES:-}" ]]; then
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] && SAMPLES+=("$entry")
+  done <<< "$DEMO_SAMPLES"
+fi
 
 if [[ -n "${DEMO_ONLY:-}" ]]; then
   filtered=()
@@ -87,10 +92,6 @@ fi
 # Demo recall queries per sample (Chinese, verifying the "Chinese intent -> English node" bridge)
 declare -A QUERIES=(
   ["frontend-backend-link"]="订单创建流程|用户登录入口"
-  ["express"]="中间件处理逻辑|路由定义"
-  ["litemall"]="订单支付流程|商品库存扣减"
-  ["bagisto"]="购物车结算|商品分类查询"
-  ["CRMEB"]="订单支付流程|商品库存扣减|用户优惠券"
 )
 
 # Turn the check --json report (an object with a violations array) into a Markdown table.
@@ -176,10 +177,10 @@ for k in SEED:
     seeds.extend(by_kind.get(k, []))
 
 # BFS from the seeds until maxn -- yielding a **connected** subgraph.
-# (Truncating directly by id gives a pile of unrelated sand: measured on CRMEB, 400 nodes had 0 edges.)
+# (Truncating directly by id gives a pile of unrelated sand: measured on a large project, 400 nodes had 0 edges.)
 from collections import deque
 seen, queue = set(), deque()
-# Seeds take only part of the budget: CRMEB alone has 1603 HttpContracts; if seeds filled maxn directly,
+# Seeds take only part of the budget: A large project alone has 1603 HttpContracts; if seeds filled maxn directly,
 # BFS would never get a chance to expand, and the result would be a bag of unrelated contract nodes (measured: 400 nodes / 0 edges).
 # Reserve ~3/4 of the budget for BFS so the connecting middle nodes (CallSite / Method / Dao …) get pulled in.
 seed_budget = max(1, maxn // 4)

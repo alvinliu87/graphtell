@@ -9,11 +9,11 @@
 use gt_adapter_parser::DefaultParserRegistry;
 use gt_domain::model::{Language, SyntaxFacts};
 use gt_domain::port::ParserRegistry;
-use gt_sample_support::{missing_hint, sample_root};
+use gt_sample_support::{missing_hint, sample_project_inner_dir, sample_root};
 
 fn parse_php(rel: &str) -> Option<SyntaxFacts> {
     let root = sample_root()?;
-    let path = root.join(rel);
+    let path = root.join(sample_project_inner_dir()).join(rel);
     let content = std::fs::read_to_string(&path).ok()?;
     let registry = DefaultParserRegistry::new();
     let parser = registry
@@ -25,7 +25,7 @@ fn parse_php(rel: &str) -> Option<SyntaxFacts> {
 #[test]
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_model_namespace_and_fqn() {
-    let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
+    let Some(facts) = parse_php("app/model/order/StoreOrder.php") else {
         panic!("{}", missing_hint());
     };
     let class = facts
@@ -56,7 +56,7 @@ fn parses_model_namespace_and_fqn() {
 #[test]
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_model_name_and_pk_properties() {
-    let Some(facts) = parse_php("crmeb/app/model/order/StoreOrder.php") else {
+    let Some(facts) = parse_php("app/model/order/StoreOrder.php") else {
         panic!("{}", missing_hint());
     };
     let class = facts
@@ -92,7 +92,7 @@ fn parses_model_name_and_pk_properties() {
 #[test]
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_event_php_config_entries() {
-    let Some(facts) = parse_php("crmeb/app/event.php") else {
+    let Some(facts) = parse_php("app/event.php") else {
         panic!("{}", missing_hint());
     };
     let pay_success = facts
@@ -118,7 +118,7 @@ fn parses_event_php_config_entries() {
 #[test]
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_provider_php_bindings() {
-    let Some(facts) = parse_php("crmeb/app/provider.php") else {
+    let Some(facts) = parse_php("app/provider.php") else {
         panic!("{}", missing_hint());
     };
     let entry = |key: &str| {
@@ -143,7 +143,7 @@ fn parses_provider_php_bindings() {
 #[test]
 #[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
 fn parses_route_call_sites_inside_closures() {
-    let Some(facts) = parse_php("crmeb/app/api/route/v1.php") else {
+    let Some(facts) = parse_php("app/api/route/v1.php") else {
         panic!("{}", missing_hint());
     };
     // Route registration is written inside a closure: `Route::post('apple_login', 'Login/appleLogin')`

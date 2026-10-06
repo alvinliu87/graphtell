@@ -1,6 +1,6 @@
 # Spring Boot framework knowledge
 #
-# **Driven by the real Java projects under samples/** (mall / crmeb_java-3.0 / snowy-master, etc.);
+# **Driven by the real Java projects under samples/** ;
 # only annotations that **actually occur** in those projects are written here. Measured distribution:
 #   @RequestMapping 890+ · @GetMapping 219 · @PostMapping 213
 #   @Table 330 · @TableName 143 · @Value 58 · @Mapper 7
@@ -178,7 +178,7 @@ rules:
   # produces no `Table` node from these annotations.
 
   # ===== P5 Synthesize: MyBatis mapper XML (plain MyBatis, no annotation to go on) =====
-  # In newbee-mall / litemall / mall, all table access lives in `resources/mapper/*.xml`.
+  # In several real projects, all table access lives in `resources/mapper/*.xml`.
   # The pipeline (gt-pipeline::mybatis) injects each statement x table as a pseudo call site:
   # `mybatis::select|insert|update|delete(table-name)`, owner = the Mapper interface method (namespace.id).
   # `<select>` is a read, `<insert|update|delete>` are writes.

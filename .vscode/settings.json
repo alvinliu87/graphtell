@@ -21,7 +21,6 @@
         "**/.references/**": true,
         "**/codebase-memory-mcp-main/**": true,
         "**/.playwright-cli/**": true,
-        "CRMEB-master": true,
         "**/.git/**": true,
         "**/graphtell/docs/**": true,
         "**/samples/**": true

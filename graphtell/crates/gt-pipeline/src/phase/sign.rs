@@ -148,7 +148,7 @@ fn subkind_of(kind: &str) -> &'static str {
 /// 1. One side of the comparison is itself a call (`$this->hashEncrypt($str) == $signVerify`,
 ///    `md5($body.$secret) != $_SERVER['HTTP_KWAISIGN']`) — take that call site directly.
 ///    This step cannot be skipped: a home-grown verification function need not have `sign` in its name
-///    (beikeshop's `hashEncrypt` does not), and recognising by name alone misses the whole project.
+///    (one project's `hashEncrypt` does not), and recognising by name alone misses the whole project.
 /// 2. Both sides are variables (`$sign == $ipay_signature`) — fall back to a hash / `*Sign()` call in the same function.
 fn find_sign_calc(
     ctx: &PipelineContext,

@@ -2,7 +2,7 @@
 //!
 //! A project's behaviour often lives in files the language parser never touches — MyBatis mapper XML, an ORM
 //! mapping file, a code-generated descriptor. Those files are invisible to the graph: without them a project like
-//! `mall` has zero table semantics, because every SQL statement sits in `resources/mapper/*.xml`. The kidney of a
+//! one measured project has zero table semantics, because every SQL statement sits in `resources/mapper/*.xml`. The kidney of a
 //! resource adapter is therefore to synthesise **pseudo facts** the rule pipeline can consume like any other fact.
 //!
 //! This is the counterpart of [`crate::port::techstack`] (prepare-time knowledge), following the same contract:

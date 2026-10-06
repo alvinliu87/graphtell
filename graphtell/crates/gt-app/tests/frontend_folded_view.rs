@@ -1,6 +1,6 @@
-//! Self-check of how the frontend chain renders in the **folded view** (synthetic sample `samples/frontend-backend-link`).
+//! Self-check of how the frontend chain renders in the **folded view** (synthetic sample `samples/link`).
 //!
-//! The build layer (`gt-pipeline/tests/frontend_backend_link.rs`) only proves "the edges are built";
+//! The build layer (`gt-pipeline/tests/link_sample.rs`) only proves "the edges are built";
 //! this proves the **render layer** treats the frontend as a first-class citizen:
 //!   1. frontend functions (`deleteItem`) are folded into the `via` chain as **syntax nodes**,
 //!      not degraded into a `File` node directly wired to the contract (isomorphic to a backend `Method`);
@@ -17,7 +17,7 @@ use gt_app::{AppConfig, Container};
 use gt_application::{PipelineService, ProjectService, ViewService};
 use gt_domain::model::{NewProject, NodeKind};
 use gt_domain::port::{GraphQuery, NoopObserver, NodeFilter, SystemClock};
-use gt_sample_support::frontend_backend_link_root;
+use gt_sample_support::link_sample_root;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
@@ -32,7 +32,7 @@ fn built() -> Option<Arc<Built>> {
     static CACHE: OnceLock<Option<Arc<Built>>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let root = frontend_backend_link_root()?;
+            let root = link_sample_root()?;
             if !root.is_dir() {
                 return None;
             }
@@ -70,7 +70,7 @@ fn built() -> Option<Arc<Built>> {
 
             let project = projects
                 .create(NewProject {
-                    name: "frontend-backend-link".into(),
+                    name: "link-sample".into(),
                     root_path: root,
                     description: None,
                     config: None,
@@ -98,9 +98,9 @@ fn view_svc(b: &Built) -> ViewService {
 fn skip() -> String {
     format!(
         "skip: synthetic sample not found {}",
-        frontend_backend_link_root()
+        link_sample_root()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "samples/frontend-backend-link".to_string())
+            .unwrap_or_else(|| "samples/link-sample".to_string())
     )
 }
 

@@ -1,40 +1,19 @@
-//! Validate NestJS / Express graph build with **real open-source samples**.
+//! Validate the Node.js web-framework samples' graph build with **real open-source samples**.
 //!
-//! Where samples come from: `samples/nestjs-realworld-example-app` and `samples/hackathon-starter` in this directory
-//! (downloaded by developers, git-ignored, not in the repo). When a sample is missing the test **skips** rather than fails, so CI runs without samples.
+//! Where samples come from: the `node_a` and `node_b` checkouts under `samples/`
+//! (downloaded by developers, git-ignored, not in the repo), located by
+//! `gt_sample_support::node_samples_root` (the `GRAPHTELL_SAMPLE_DIR` env var pointing at a checkout,
+//! or a bounded search under `samples/`). When a sample is missing the
+//! test **skips** rather than fails, so CI runs without samples.
 //!
-//! These cases verify end-to-end conclusions: whether a real NestJS controller's `@Get/@Post` becomes an HttpContract
-//! with HandledBy to a method node; whether a real Express `app.get` becomes an HttpContract.
+//! These cases verify end-to-end conclusions: whether a real Node.js controller's `@Get/@Post` becomes an HttpContract
+//! with HandledBy to a method node; whether a real Node.js `app.get` becomes an HttpContract.
 
 mod common;
 
-use std::path::PathBuf;
-
 use gt_domain::model::{NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery};
-
-/// Locate the real Node sample root: try env var `GRAPHTELL_NODE_SAMPLE_DIR` first,
-/// then fall back to the in-repo relative path. Returns an Option tuple of (nestjs root, express root).
-fn node_samples() -> Option<(PathBuf, PathBuf)> {
-    if let Ok(dir) = std::env::var("GRAPHTELL_NODE_SAMPLE_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some((p.clone(), p));
-        }
-    }
-    let mut cur = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..7 {
-        let nest = cur.join("samples/nestjs-realworld-example-app");
-        let expr = cur.join("samples/hackathon-starter");
-        if nest.is_dir() && expr.is_dir() {
-            return Some((nest, expr));
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    None
-}
+use gt_sample_support::{missing_hint_named, node_samples_root};
 
 fn nodes_of_kind<'a>(
     b: &'a common::Built,
@@ -62,7 +41,7 @@ fn has_outgoing_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
     })
 }
 
-/// Synthetic-project self-check (self-consistent, no external sample needed): covers both NestJS decorator routes and Express member-style routes,
+/// Synthetic-project self-check (self-consistent, no external sample needed): covers both Node.js decorator routes and web-framework member-style routes,
 /// verifying the JS parser + FKB produce HttpContract + HandledBy on synthetic code, so CI guards without samples.
 #[test]
 fn synthetic_nestjs_and_express_graph() {
@@ -70,7 +49,7 @@ fn synthetic_nestjs_and_express_graph() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    // NestJS sub-project
+    // node_a sub-project
     std::fs::write(
         dir.join("package.json"),
         r#"{
@@ -146,7 +125,7 @@ export class UserController {
 "#,
     )
     .unwrap();
-    // Express sub-project (same root as nestjs, distinguished by the `express` dependency in package.json)
+    // node_b sub-project (same root as node_a, distinguished by the web-framework dependency in package.json)
     std::fs::write(
         dir.join("app.js"),
         r#"const express = require('express');
@@ -162,21 +141,21 @@ app.post('/login', (req, res) => { res.send('ok'); });
         panic!("graphing the synthetic project must succeed");
     };
 
-    // NestJS: decorator → HttpContract, and HandledBy points to a method node
+    // node_a: decorator → HttpContract, and HandledBy points to a method node
     let nest_contracts = nodes_of_kind(&b, "HttpContract");
     let nest_names: Vec<&str> = nest_contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
         nest_names.iter().any(|n| n.contains("user")),
-        "NestJS must produce user-related contracts, got: {nest_names:?}"
+        "node_a must produce user-related contracts, got: {nest_names:?}"
     );
     assert!(
         has_outgoing_edge(&b, "HttpContract", "HandledBy"),
-        "a NestJS HttpContract must have a HandledBy out-edge (to the handler method), got: {nest_names:?}"
+        "a node_a HttpContract must have a HandledBy out-edge (to the handler method), got: {nest_names:?}"
     );
 
-    // Express: member-style `app.get` → HttpContract (path from arg0, method from member name)
-    let express_root = dir.join("app.js");
-    let _ = express_root;
+    // node_b: member-style `app.get` → HttpContract (path from arg0, method from member name)
+    let web_root = dir.join("app.js");
+    let _ = web_root;
     // find the /login contract among all nodes
     let all = b
         .store
@@ -193,10 +172,10 @@ app.post('/login', (req, res) => { res.send('ok'); });
         .collect();
     assert!(
         login.iter().any(|n| n.starts_with("GET /login") || n.starts_with("POST /login")),
-        "Express must produce the /login contract, got: {login:?}"
+        "node_b must produce the /login contract, got: {login:?}"
     );
 
-    // NestJS DI: `constructor(private readonly userService: UserService)`
+    // node_a DI: `constructor(private readonly userService: UserService)`
     // → `UserController --DependsOn--> UserService`
     assert!(
         class_links_to_named(&b, "UserController", "DependsOn", "UserService"),
@@ -248,7 +227,7 @@ app.post('/login', (req, res) => { res.send('ok'); });
 
 /// Whether a node (located by `kind`) has an out-edge of the given kind to a node named `target`.
 ///
-/// All three relation-edge kinds go through here: NestJS constructor injection `DependsOn`, TypeORM entity relation `References`
+/// All three relation-edge kinds go through here: constructor injection `DependsOn`, TypeORM entity relation `References`
 /// (foreign-key holder → referenced entity), table-level foreign key `ForeignKey` (table → table).
 fn node_links_to_named(
     b: &common::Built,
@@ -290,9 +269,9 @@ fn class_links_to(b: &common::Built, class: &str, edge: &str) -> bool {
 }
 
 #[test]
-fn nestjs_real_sample_produces_route_contracts() {
-    let Some((nest_root, _)) = node_samples() else {
-        eprintln!("skipped: real NestJS sample not found (samples/nestjs-realworld-example-app)");
+fn node_a_real_sample_produces_route_contracts() {
+    let Some((nest_root, _)) = node_samples_root() else {
+        eprintln!("skipped: {}", missing_hint_named("node-sample-a"));
         return;
     };
     let Some(b) = common::graph_with_root(&nest_root, ProjectConfig::default()) else {
@@ -302,7 +281,7 @@ fn nestjs_real_sample_produces_route_contracts() {
     let names: Vec<&str> = contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
         !names.is_empty(),
-        "the real NestJS sample must produce an HttpContract, but the node list is empty"
+        "the real node_a sample must produce an HttpContract, but the node list is empty"
     );
     // `@Get('user')` / `@Post('users')` etc. in `user.controller.ts` should become
     assert!(
@@ -375,7 +354,7 @@ fn nestjs_real_sample_produces_route_contracts() {
         "the user table must connect to the article table via a foreign key (@ManyToMany favorites)"
     );
     eprintln!(
-        "real NestJS sample: contracts = {}, table examples: {:?}, tables = {}, columns = {}",
+        "real node_a sample: contracts = {}, table examples: {:?}, tables = {}, columns = {}",
         names.len(),
         &names[..names.len().min(8)],
         tables.len(),
@@ -387,9 +366,9 @@ fn nestjs_real_sample_produces_route_contracts() {
 /// must turn `AuthMiddleware` into a `Middleware` semantic node, and let the protected routes point to it via `PassesThrough`
 /// (reproducing the earlier "object-literal arg-0 misses" regression).
 #[test]
-fn nestjs_real_sample_consumer_middleware() {
-    let Some((nest_root, _)) = node_samples() else {
-        eprintln!("skipped: real NestJS sample not found (samples/nestjs-realworld-example-app)");
+fn node_a_real_sample_consumer_middleware() {
+    let Some((nest_root, _)) = node_samples_root() else {
+        eprintln!("skipped: {}", missing_hint_named("node-sample-a"));
         return;
     };
     let Some(b) = common::graph_with_root(&nest_root, ProjectConfig::default()) else {
@@ -424,13 +403,13 @@ fn nestjs_real_sample_consumer_middleware() {
         .flat_map(|m| b.store.edges_of(m.id, EdgeDirection::Incoming).expect("edges"))
         .filter(|e| e.kind.as_str() == "PassesThrough")
         .count();
-    eprintln!("contracts guarded by AuthMiddleware in the real NestJS sample = {count}");
+    eprintln!("contracts guarded by AuthMiddleware in the real node_a sample = {count}");
 }
 
 #[test]
-fn express_real_sample_produces_route_contracts() {
-    let Some((_, expr_root)) = node_samples() else {
-        eprintln!("skipped: real Express sample not found (samples/hackathon-starter)");
+fn node_b_real_sample_produces_route_contracts() {
+    let Some((_, expr_root)) = node_samples_root() else {
+        eprintln!("skipped: {}", missing_hint_named("node-sample-b"));
         return;
     };
     let Some(b) = common::graph_with_root(&expr_root, ProjectConfig::default()) else {
@@ -440,14 +419,14 @@ fn express_real_sample_produces_route_contracts() {
     let names: Vec<&str> = contracts.iter().map(|n| n.name.as_str()).collect();
     assert!(
         !names.is_empty(),
-        "the real Express sample must produce an HttpContract, but the node list is empty"
+        "the real node_b sample must produce an HttpContract, but the node list is empty"
     );
     // `app.get('/login', ...)` should become
     assert!(
         names.iter().any(|n| n.contains("login")),
         "the /login contract must be included, got: {names:?}"
     );
-    eprintln!("contract count in the real Express sample = {}, examples: {:?}", names.len(), &names[..names.len().min(8)]);
+    eprintln!("contract count in the real node_b sample = {}, examples: {:?}", names.len(), &names[..names.len().min(8)]);
 }
 
 

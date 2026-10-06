@@ -245,7 +245,7 @@ pub struct GraphWorkspace {
     supertypes: HashMap<String, Vec<String>>,
     /// Subtype-name index (inheritance chain downstream): `parent FQN → [child FQN]`, reversed from `supertypes`.
     ///
-    /// Used to reverse-lookup the tables mapped by instances (subclasses) for "read / write verbs in base-class methods": yoshop / sample_project's
+    /// Used to reverse-lookup the tables mapped by instances (subclasses) for "read / write verbs in base-class methods": a project's
     /// read verbs (`$this->select` / `getAll`) are often written in base classes like `app\common\model\X`,
     /// while `MapsTo` edges only hang on concrete subclasses (`app\api\model\X`) — without walking to subclasses, these verbs
     /// can never produce `ReadsDb`, and the route can only fall back to a vague "maps to".

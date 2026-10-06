@@ -11,7 +11,7 @@ describe('fsApi', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('browse URL-encodes the path', async () => {
-    await fsApi.browse('/code/crmeb app');
-    expect(http.get).toHaveBeenCalledWith('/api/fs/browse?path=' + encodeURIComponent('/code/crmeb app'));
+    await fsApi.browse('/code/sample app');
+    expect(http.get).toHaveBeenCalledWith('/api/fs/browse?path=' + encodeURIComponent('/code/sample app'));
   });
 });

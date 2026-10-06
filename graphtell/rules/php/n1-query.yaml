@@ -44,7 +44,7 @@ rules:
       - property_is: { name: in_loop, value: "true" }
       - has_annotation: db-query
       # Exclude migrations / seed scripts: looping writes there are a **one-off installation action**,
-      # not a production hot path. Without this, 9 of the 11 hits measured on bagisto came from
+      # not a production hot path. Without this, 9 of the 11 hits measured on a real project came from
       # `Database/Migrations` and `Database/Seeders` — noise that buries the real runtime N+1.
       - not:
           any_of:

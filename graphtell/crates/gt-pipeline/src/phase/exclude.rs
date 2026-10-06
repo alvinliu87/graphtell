@@ -500,8 +500,8 @@ mod tests {
     /// pins that a real non-PHP FKB parses and its rules survive end-to-end — the hand-built `StaticKb`
     /// unit tests never exercise a real JS/TS FKB.
     #[test]
-    fn real_nestjs_fkb_exclude_rules_resolve_without_diagnostics() {
-        let root = scratch("real-fkb-nestjs");
+    fn real_js_framework_fkb_exclude_rules_resolve_without_diagnostics() {
+        let root = scratch("real-fkb-js-framework");
         write(
             &root,
             "package.json",
@@ -584,7 +584,7 @@ mod tests {
     /// source (`public-dir` reads `composer.json`'s `extra.public-dir`) with static globs
     /// (`storage/framework/**`, `storage/logs/**`, `bootstrap/cache/**`). This pins that the real FKB's
     /// *manifest-sourced* rule resolves end-to-end (not just the static/fallback paths the thinkphp and
-    /// nestjs/django tests exercise), with zero diagnostics.
+    /// JS/TS and Python framework tests exercise), with zero diagnostics.
     #[test]
     fn real_laravel_fkb_exclude_rules_resolve_without_diagnostics() {
         let root = scratch("real-fkb-laravel");

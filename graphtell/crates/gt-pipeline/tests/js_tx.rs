@@ -1,5 +1,5 @@
 //! End-to-end self-check that P13 Tx (**multi-table write without a transaction boundary**) fires on a
-//! TypeScript / NestJS + TypeORM sample — proving the kernel's language-agnostic Tx rule serves a third stack,
+//! TypeScript Node framework + ORM sample — proving the kernel's language-agnostic Tx rule serves a third stack,
 //! not just PHP and Java. The transaction markers come from `fkb/js/typeorm.yaml`'s `tx_calls:`; the `WritesDb`
 //! edges come from that file's `db_verbs:` plus the JS analyzer unwrapping `Repository<Entity>` to the entity,
 //! whose `MapsTo` Table is built by the `@Entity` rule. So `createBad` (2 tables, no tx) is flagged, and
@@ -12,7 +12,7 @@ mod common;
 
 fn synthetic_nestjs_tx_root() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "graphtell-nestjs-tx-{}-{}",
+        "graphtell-node-a-tx-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -123,7 +123,7 @@ fn annotations_of_kind(b: &common::Built, kind: &str) -> Vec<Annotation> {
 fn nestjs_multi_write_without_tx_is_flagged() {
     let dir = synthetic_nestjs_tx_root();
     let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
-        panic!("the graph build of the synthetic NestJS project should succeed");
+        panic!("the graph build of the synthetic Node framework project should succeed");
     };
 
     // Sanity: the two tables the service writes to must exist (the `@Entity` rule synthesises them).
@@ -138,7 +138,7 @@ fn nestjs_multi_write_without_tx_is_flagged() {
     let hits = annotations_of_kind(&b, "multi-write-without-tx");
     assert!(
         !hits.is_empty(),
-        "P13 must fire multi-write-without-tx on the NestJS/TypeORM sample (createBad writes two tables with no transaction boundary)"
+        "P13 must fire multi-write-without-tx on the Node framework/ORM sample (createBad writes two tables with no transaction boundary)"
     );
     assert!(
         hits.iter().any(|a| a
@@ -159,5 +159,5 @@ fn nestjs_multi_write_without_tx_is_flagged() {
             .unwrap_or(false)),
         "createInTx is wrapped by startTransaction, so it must not be annotated"
     );
-    eprintln!("NestJS multi-write-without-tx hits = {}", hits.len());
+    eprintln!("Node framework multi-write-without-tx hits = {}", hits.len());
 }

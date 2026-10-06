@@ -27,7 +27,7 @@ use gt_domain::model::{
 use gt_domain::port::{
     DiagnosticSink, GraphDelta, GraphSink, Persistence, ProjectWriter, RuleProvider,
 };
-use gt_sample_support::{frontend_backend_link_root, missing_hint_named};
+use gt_sample_support::{link_sample_root, missing_hint_named};
 
 struct Fixture {
     container: gt_app::Container,
@@ -46,7 +46,7 @@ fn fixture() -> Option<Fixture> {
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
     // Soft-skip when the sample is missing (release package / partial checkout); set `GRAPHTELL_SAMPLE_DIR` (or `GRAPHTELL_SAMPLES_DIR`) to point at it.
-    let samples = frontend_backend_link_root()?;
+    let samples = link_sample_root()?;
     let data_dir = std::env::temp_dir().join(format!(
         "graphtell-rules-{}-{}-{}",
         std::process::id(),
@@ -258,7 +258,7 @@ rules:
 #[test]
 fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -304,7 +304,7 @@ fn rules_are_defined_in_yaml_and_evaluated_on_graph() {
 #[test]
 fn partial_rerun_only_replaces_its_own_violations() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -334,7 +334,7 @@ fn partial_rerun_only_replaces_its_own_violations() {
 #[test]
 fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -362,7 +362,7 @@ fn violations_persist_as_diagnostics_and_are_replaced_on_rerun() {
 #[test]
 fn check_can_run_a_subset_of_rules() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -398,7 +398,7 @@ rules:
     message: "hit {name}"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -416,7 +416,7 @@ rules:
 #[test]
 fn builtin_rules_yaml_loads() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     let set = &f.container.rules;
@@ -442,7 +442,7 @@ fn builtin_rules_yaml_loads() {
 #[test]
 fn recall_expands_from_seed_along_graph() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -513,7 +513,7 @@ fn recall_expands_from_seed_along_graph() {
 #[test]
 fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -594,7 +594,7 @@ fn recall_candidate_snapshot_refreshes_when_graph_changes_without_notice() {
 #[test]
 fn recall_chinese_intent_bridges_to_english_nodes() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     let store = &f.container.store;
@@ -727,7 +727,7 @@ fn recall_chinese_intent_bridges_to_english_nodes() {
 #[test]
 fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     let store = &f.container.store;
@@ -858,7 +858,7 @@ fn recall_modify_order_discount_keeps_business_edit_above_shipping_crud() {
 #[test]
 fn recall_event_driven_listener_surfaces_without_quality_collapse() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     let store = &f.container.store;
@@ -1075,7 +1075,7 @@ fn recall_real_bge_model_chinese_to_english() {
     }
 
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     let store = &f.container.store;
@@ -1194,7 +1194,7 @@ fn recall_real_bge_model_chinese_to_english() {
 #[test]
 fn recall_understands_chinese_kind_hints() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1233,7 +1233,7 @@ fn recall_understands_chinese_kind_hints() {
 #[test]
 fn build_runs_check_automatically() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
 
@@ -1303,7 +1303,7 @@ fn set_stack(f: &Fixture, language: &str, frameworks: &[&str]) {
 #[test]
 fn php_only_rules_are_skipped_on_java_project() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1342,7 +1342,7 @@ fn php_only_rules_are_skipped_on_java_project() {
 #[test]
 fn php_only_rules_run_on_php_project() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1372,7 +1372,7 @@ fn php_only_rules_run_on_php_project() {
 #[test]
 fn js_only_rules_are_skipped_on_backend_only_project() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1479,7 +1479,7 @@ fn ext_call_in_loop_runs_on_every_stack_that_declares_external_calls() {
 #[test]
 fn rule_is_disabled_when_its_edge_never_occurs() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     // The criterion's edge kind truly doesn't exist on the graph → the rule must deactivate
@@ -1543,7 +1543,7 @@ fn builtin_rules_are_organised_per_language() {
 #[test]
 fn recall_splits_chinese_sentence_into_bigrams() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1592,7 +1592,7 @@ fn recall_splits_chinese_sentence_into_bigrams() {
 #[test]
 fn recall_keeps_snake_case_identifiers_intact() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1629,7 +1629,7 @@ fn recall_keeps_snake_case_identifiers_intact() {
 #[test]
 fn recall_produces_markdown_context_pack() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1727,7 +1727,7 @@ rules:
     message: "table {name} was hit"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1780,7 +1780,7 @@ rules:
     message: "table {name} has a {kind} reference"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1824,7 +1824,7 @@ rules:
     message: "table {name}"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -1860,7 +1860,7 @@ rules:
 #[test]
 fn java_n1_query_rule_fires_on_loop_db_read() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     set_stack(&f, "java", &["spring-boot"]);
@@ -1964,7 +1964,7 @@ rules:
     message: "location {file}:{line}, name {name}"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2002,7 +2002,7 @@ rules:
 #[test]
 fn recall_kinds_filters_seeds_not_results() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2055,7 +2055,7 @@ fn recall_kinds_filters_seeds_not_results() {
 #[test]
 fn recall_limit_truncates_results() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2088,7 +2088,7 @@ fn recall_limit_truncates_results() {
 #[test]
 fn recall_handles_empty_query() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2251,7 +2251,7 @@ rules:
     message: "{name} has neither pii nor any reference"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2295,7 +2295,7 @@ rules:
     message: "table {name} has no recognised auth capability"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2366,7 +2366,7 @@ rules:
     message: "{name} is hit"
 "#;
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2386,7 +2386,7 @@ rules:
 #[test]
 fn recall_reads_snippet_from_real_file() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     // Register a file that really exists on disk (a backend controller in the synthetic sample)
@@ -2619,7 +2619,7 @@ fn check_completes_within_budget() {
     const BUDGET_MS: u128 = 2_000;
 
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_many_tables(&f, N);
@@ -2641,7 +2641,7 @@ fn check_completes_within_budget() {
 #[test]
 fn recall_with_snippets_is_safe_when_file_missing() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2679,7 +2679,7 @@ fn recall_with_snippets_is_safe_when_file_missing() {
 #[tokio::test]
 async fn recall_http_get_endpoint_returns_hits() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2714,7 +2714,7 @@ async fn recall_http_get_endpoint_returns_hits() {
 #[tokio::test]
 async fn recall_http_post_endpoint_returns_hits() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2753,7 +2753,7 @@ async fn recall_http_post_endpoint_returns_hits() {
 #[tokio::test]
 async fn recall_http_include_body_appends_full_file_section() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2791,7 +2791,7 @@ async fn recall_http_include_body_appends_full_file_section() {
 #[tokio::test]
 async fn recall_http_without_include_body_has_no_full_file_section() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);
@@ -2822,7 +2822,7 @@ async fn recall_http_without_include_body_has_no_full_file_section() {
 #[tokio::test]
 async fn warmup_http_endpoint_returns_status_fields() {
     let Some(f) = fixture() else {
-        eprintln!("skipped: {}", missing_hint_named("frontend-backend-link"));
+        eprintln!("skipped: {}", missing_hint_named("link-sample"));
         return;
     };
     seed_graph(&f);

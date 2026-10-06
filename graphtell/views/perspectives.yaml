@@ -58,8 +58,8 @@ perspectives:
     layout: radial
     # Why 4 and not 2: the view **renders semantic nodes only**, and the whole intermediate syntax
     # layer (Controller / Services / Dao / Model) is folded. In a four-layer architecture
-    # (CRMEB: Controller → Services → Dao → Model → Table) the first table only appears at hop 4, so
-    # with depth=2 the route perspective is almost empty — measured on 60 sampled CRMEB contracts,
+    # (a real project: Controller → Services → Dao → Model → Table) the first table only appears at hop 4, so
+    # with depth=2 the route perspective is almost empty — measured on 60 sampled contracts,
     # "no semantic neighbour at all" drops from 43/60 to 28/60 (depth=5 gives 26/60, then saturates).
     depth: 4
     collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
@@ -136,7 +136,7 @@ perspectives:
     # "entry → controller → service → dao → table" call flow, and after folding the syntax layer it
     # takes 4 hops to reach the semantic resources.
     depth: 4
-    description: Execution chain of scheduled tasks (Schedule nodes are synthesized by project-level FKB, e.g. CRMEB crontab routes)
+    description: Execution chain of scheduled tasks (Schedule nodes are synthesized by project-level FKB, e.g. crontab routes)
 
   - id: topic
     label: Message topic
@@ -151,7 +151,7 @@ perspectives:
   # "which endpoints pass this guard".
   #
   # `depth` is deliberately **1** and not 2: one auth middleware often guards hundreds of endpoints
-  # (CRMEB's AllowOriginMiddleware guards 280), and expanding one more hop would pull in every table /
+  # (a project's AllowOriginMiddleware guards 280), and expanding one more hop would pull in every table /
   # config touched by the endpoints it guards — that is not "who does this middleware guard", it is the
   # whole graph. To see what resources a given endpoint touches afterwards, click the endpoint and
   # switch to the route perspective.

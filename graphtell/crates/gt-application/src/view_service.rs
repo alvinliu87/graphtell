@@ -2792,7 +2792,7 @@ pub fn access_rank(kind: &str) -> u8 {
 /// Same for cache: when `Cache::get($k)` and `Cache::set($k)` coexist, label as write.
 ///
 /// If it degrades to "smaller edge id wins", the displayed result depends on build phase order (P5 before P7),
-/// but phase order is unrelated to semantics: measured shopxo had 1825 write operations thus crushed into "read DB", without exception.
+/// but phase order is unrelated to semantics: one measured project had 1825 write operations thus crushed into "read DB", without exception.
 pub fn action_strength(kind: &str) -> u8 {
     match kind {
         "WritesDb" | "WritesCache" => 2,

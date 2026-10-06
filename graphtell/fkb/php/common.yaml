@@ -8,7 +8,7 @@
 #
 # Note: this file only holds rules whose "spelling is identical across PHP frameworks"; rules carrying strong
 # framework assumptions (table access `Db::name` vs `DB::table`, route handler shape, event registration style…)
-# stay in each framework's own FKB, and conventions belonging to a single product (CRMEB's `sys_config()`)
+# stay in each framework's own FKB, and conventions belonging to a single product (e.g. a project's `sys_config()`)
 # go to `fkb/projects/<product>.yaml`, so framework A's knowledge is never used to explain framework B's code.
 #
 # On `loaders`: an unconditional FKB's loaders **do** run, so a framework-independent loader can live here

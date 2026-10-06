@@ -70,11 +70,12 @@ fn scan_excludes_vendor_and_assets() {
         });
     assert!(!has_asset, "static assets must not enter the set to analyse");
 
-    // Business source code must be present
+    // Business source code must be present (assert on the file name, not the sample's internal
+    // directory layout, so the check survives a sample checkout being renamed).
     assert!(
         files
             .iter()
-            .any(|f| f.relative == "crmeb/app/event.php"),
+            .any(|f| f.relative.ends_with("app/event.php")),
         "app/event.php must be in the scan result"
     );
 }

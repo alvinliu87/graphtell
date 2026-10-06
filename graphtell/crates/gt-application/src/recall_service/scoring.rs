@@ -58,10 +58,10 @@ pub(crate) const ANCHOR_FQN_BOOST: f64 = 1.6;
 /// downweighting they can still be recalled, just without occupying slots.
 pub(crate) const TEST_FILE_DISCOUNT: f64 = 0.55;
 
-/// Discount factor for **generator boilerplate files** (MyBatis Generator `mall-mbg`/`generated-sources`…).
+/// Discount factor for **generator boilerplate files** (MyBatis Generator `*-mbg`/`generated-sources`…).
 ///
 /// Such files are full of `andPaymentTimeIsNull`/`createCriteria`; a Chinese query gets full marks by lexical match yet has
-/// zero business semantics — measured: 7 of mall's top8 came from here.
+/// zero business semantics — measured: 7 of one project's top8 came from here.
 pub(crate) const GENERATED_FILE_DISCOUNT: f64 = 0.5;
 
 /// Discount for Criteria / Example DSL chained method names.

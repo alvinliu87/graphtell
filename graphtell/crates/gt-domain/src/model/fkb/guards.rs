@@ -293,7 +293,7 @@ pub struct DecoratorGuardSpec {
     ///
     /// Why this has to exist: broad containment patterns cause collateral damage —
     /// * The Swagger / OpenAPI **documentation** decorator `@ApiBearerAuth()` has `auth` in its name but performs
-    ///   no authentication at all (measured: 17 routes in the NestJS realworld sample were mislabelled as
+    ///   no authentication at all (measured: 17 routes in a real Node sample were mislabelled as
     ///   "guard passed" because of it);
     /// * NestJS **parameter** decorators `@User('email')` / `@Body()` / `@Param()` only read values, they are not
     ///   guards; and local variable names (`_user`) should not become middleware either.

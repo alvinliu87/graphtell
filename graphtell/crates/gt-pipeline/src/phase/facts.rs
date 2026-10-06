@@ -191,7 +191,7 @@ pub fn provisional_sub(sub_root: &Path, language: &Language) -> SubProject {
 /// semantics `app_root` needs: the source root, not `src/main/java` itself).
 ///
 /// A single-module project hitting directly under the root returns `"."`; a multi-module project returns
-/// the first hit module's relative dir (e.g. `mall-admin`). Only when the whole tree cannot be found do we
+/// the first hit module's relative dir (e.g. `shop-admin`). Only when the whole tree cannot be found do we
 /// return `None` (triggering fallback / a diagnostic).
 pub fn resolve_directory_exists(root: &Path, rel: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
@@ -450,11 +450,11 @@ mod tests {
     #[test]
     fn directory_exists_prefers_the_shallowest_module() {
         let root = scratch_dir("shallow");
-        std::fs::create_dir_all(root.join("mall-admin/src/main/java")).unwrap();
+        std::fs::create_dir_all(root.join("shop-admin/src/main/java")).unwrap();
         std::fs::create_dir_all(root.join("deep/x/y/src/main/java")).unwrap();
 
         let (value, _) = resolve_directory_exists(&root, "src/main/java").expect("there must be a hit");
-        assert_eq!(value, "mall-admin", "must return the directory of the shallowest matching module, got: {value}");
+        assert_eq!(value, "shop-admin", "must return the directory of the shallowest matching module, got: {value}");
     }
 
     /// The probe is depth-limited (a large repo must not be walked whole); one level past the limit the

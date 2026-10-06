@@ -615,11 +615,11 @@ mod tests {
     #[test]
     fn generated_paths_are_detected_by_module_segment() {
         // MyBatis Generator output: the whole module is query builders like `OmsOrderItemExample`.
-        assert!(is_generated_path("mall-mbg/src/main/java/com/macro/mall/model/OmsOrderItemExample.java"));
+        assert!(is_generated_path("shop-mbg/src/main/java/com/example/shop/model/OrderItemExample.java"));
         assert!(is_generated_path("target/generated-sources/foo/Bar.java"));
         assert!(is_generated_path("app/build/generated/model/pb_model.dart"));
         // Business code unaffected.
-        assert!(!is_generated_path("mall-admin/src/main/java/com/macro/mall/controller/OmsOrderController.java"));
+        assert!(!is_generated_path("shop-admin/src/main/java/com/example/shop/controller/OrderController.java"));
         assert!(!is_generated_path("app/services/order/StoreOrderCreateServices.php"));
     }
 
