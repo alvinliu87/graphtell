@@ -968,6 +968,11 @@ impl Rule {
 
 
 /// A selector: decides what a rule acts on.
+///
+/// **Every variant must be consumed by one of the `matches_*` functions in `gt-pipeline/src/engine.rs`.**
+/// A variant that no matcher reads is dead model — the rule parses, the test suite is green, and the rule
+/// silently never fires (this is exactly how `exclude_globs` and the two removed variants below lived on).
+/// `engine::selector_has_matcher` is the exhaustive-`match` guard that enforces it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Selector {
@@ -998,26 +1003,15 @@ pub enum Selector {
         #[serde(default)]
         r#where: Vec<Predicate>,
     },
-    /// A syntax declaration.
-    Declaration {
-        #[serde(default)]
-        node_kind: Option<NodeKind>,
-        #[serde(default)]
-        fqn_matches: Option<String>,
-    },
     /// **A node on the graph** (P6 only: the selector is a node rather than source code).
+    ///
+    /// Note: the `declaration` and `dynamic` variants once declared here were removed — no matcher ever
+    /// read them and no FKB/rule used them, so a rule carrying them parsed fine and never fired.
     Node {
         #[serde(default)]
         node_kind: Option<NodeKind>,
         #[serde(default)]
         r#where: Vec<Predicate>,
-    },
-    /// P7 dynamic resolution: container make / event trigger / facade call / getters, etc.
-    Dynamic {
-        #[serde(default)]
-        call: Option<String>,
-        #[serde(default)]
-        channel: Option<String>,
     },
 }
 
@@ -1836,7 +1830,7 @@ mod tests {
 
     #[test]
     fn guard_attach_specs_normalises_one_and_many() {
-        assert_eq!(GuardAttach::default().specs().len(), 1, "默认 = 单个 positional");
+        assert_eq!(GuardAttach::default().specs().len(), 1, "the default is a single positional spec");
         assert!(matches!(
             GuardAttach::default(),
             GuardAttach::One(GuardAttachSpec::Positional)
@@ -1915,7 +1909,7 @@ mod tests {
 
         assert!(
             ResolveTier::Intersection.base_confidence() > ResolveTier::ConstProp.base_confidence(),
-            "L6 比 L5 更可信（有限全集求交 vs 常量传播）"
+            "L6 is more trustworthy than L5 (intersection over a finite universe vs constant propagation)"
         );
         for t in [
             ResolveTier::Unknown,
@@ -1934,14 +1928,14 @@ mod tests {
     fn resolution_unknown_and_resolved() {
         let u = Resolution::unknown("no candidate");
         assert_eq!(u.tier, ResolveTier::Unknown);
-        assert!(u.candidates.is_empty(), "未解析 = 没有候选");
+        assert!(u.candidates.is_empty(), "unresolved = no candidates");
         assert!((u.confidence - ResolveTier::Unknown.base_confidence()).abs() < 1e-6);
         assert_eq!(u.evidence, "no candidate");
 
         let r = Resolution::resolved(ResolveTier::Alias, crate::model::ids::NodeId(7), "facade_map");
         assert_eq!(r.tier, ResolveTier::Alias);
         assert_eq!(r.candidates, vec![crate::model::ids::NodeId(7)]);
-        assert!((r.confidence - 0.85).abs() < 1e-6, "置信度取该层的基础值");
+        assert!((r.confidence - 0.85).abs() < 1e-6, "confidence takes that layer's base value");
         assert_eq!(r.evidence, "facade_map");
     }
 
@@ -1973,7 +1967,7 @@ mod tests {
         assert!(matches!(a.target, AnnotateTarget::Matched));
         assert!(matches!(a.merge, MergeStrategy::MaxByKind));
         assert!(a.annotations.is_empty());
-        assert!(a.phase.is_none(), "未声明相位 = 随规则所在相位执行");
+        assert!(a.phase.is_none(), "no declared phase = run in the phase the rule belongs to");
         assert!(a.confidence_scale.is_none());
         assert!(a.scope.is_none());
         assert!(a.r#where.is_empty());
@@ -1981,7 +1975,7 @@ mod tests {
         assert!(matches!(AnnotateTarget::default(), AnnotateTarget::Matched));
 
         let s = AnnotationSpec::default();
-        assert!((s.confidence - 1.0).abs() < 1e-6, "未声明置信度时不衰减");
+        assert!((s.confidence - 1.0).abs() < 1e-6, "an undeclared confidence means no decay");
         assert!(s.kind.is_empty());
         assert!(s.subkind.is_none());
         assert!(s.channel.is_none());
@@ -1992,7 +1986,7 @@ mod tests {
     #[test]
     fn synthesize_and_expand_defaults_are_empty_and_unknown() {
         let s = SynthesizeAction::default();
-        assert_eq!(s.node.as_str(), NodeKind::UNKNOWN, "节点类型必须由 FKB 声明");
+        assert_eq!(s.node.as_str(), NodeKind::UNKNOWN, "the node kind must be declared by the FKB");
         assert!((s.confidence - 0.9).abs() < 1e-6);
         assert!(s.subtype.is_none());
         assert!(s.fields.is_empty());
@@ -2002,7 +1996,7 @@ mod tests {
         assert!(s.modifiers.is_empty());
 
         let e = ExpandSpec::default();
-        assert!(e.variants.is_empty(), "没有变体 = 不展开（合成单个节点）");
+        assert!(e.variants.is_empty(), "no variants = no expansion (a single node is synthesised)");
         assert!(e.only.is_none());
         assert!(e.except.is_none());
     }
@@ -2010,11 +2004,11 @@ mod tests {
     #[test]
     fn magic_delegation_and_method_ref_defaults() {
         let m = MagicDelegationSpec::default();
-        assert!(m.property.is_empty(), "转发目标属性必须由 FKB 声明");
-        assert!((m.confidence - 0.7).abs() < 1e-6, "注解声明应低于精确命中");
+        assert!(m.property.is_empty(), "the forwarded target property must be declared by the FKB");
+        assert!((m.confidence - 0.7).abs() < 1e-6, "a declared annotation scores below an exact hit");
 
         let r = MethodRefSpec::default();
-        assert_eq!(r.method_separators, vec!["/".to_string()], "ThinkPHP 的 `Login/appleLogin` 约定");
+        assert_eq!(r.method_separators, vec!["/".to_string()], "ThinkPHP's `Login/appleLogin` convention");
         assert_eq!(r.controller_layer_depth, 1);
         assert!(r.hierarchy_separators.is_empty());
         assert!(r.root_namespaces.is_empty());
@@ -2039,8 +2033,8 @@ mod tests {
         }))
         .expect("minimal FKB must deserialize with struct defaults");
         assert_eq!(fk.id, "tp");
-        assert_eq!(fk.scope, KnowledgeScope::Framework, "scope 默认 framework");
-        assert!(!fk.apply_without_detection, "apply_without_detection 默认 false");
+        assert_eq!(fk.scope, KnowledgeScope::Framework, "scope defaults to framework");
+        assert!(!fk.apply_without_detection, "apply_without_detection defaults to false");
         assert!(fk.provides.is_empty());
         assert!(fk.side.is_none());
         assert!(fk.detectors.is_empty());
@@ -2116,7 +2110,7 @@ mod tests {
         }))
         .expect("well-formed rule must deserialize");
         assert!(matches!(r.selector, Selector::Node { .. }));
-        assert_eq!(r.confidence, 0.9, "Rule 默认置信度 0.9");
+        assert_eq!(r.confidence, 0.9, "a Rule's default confidence is 0.9");
         assert!(r.applies_to(&Language::new("java"), &Language::new("php")));
         assert!(!r.applies_to(&Language::new("java"), &Language::new("java")));
     }
@@ -2289,7 +2283,7 @@ mod tests {
             }))
             .unwrap_or_else(|e| panic!("loader spec must deserialize: {e}"));
             assert_eq!(ls.table, "schema");
-            assert!((ls.confidence - 0.9).abs() < 1e-6, "LoaderSpec 默认置信度");
+            assert!((ls.confidence - 0.9).abs() < 1e-6, "the LoaderSpec default confidence");
         }
     }
 
@@ -2327,7 +2321,7 @@ mod tests {
     // contract of one group of types (defaults + which fields are mandatory + dead-field rejection). =====
 
     macro_rules! assert_fields_none {
-        ($v:expr, [$($f:ident),* $(,)?]) => {{ $(assert!($v.$f.is_none(), "{} 应默认 None", stringify!($f));)* }};
+        ($v:expr, [$($f:ident),* $(,)?]) => {{ $(assert!($v.$f.is_none(), "{} should default to None", stringify!($f));)* }};
     }
 
     /// `ValueSource` is the most-used type in FKB (identities, fields and links are all built from it) and
@@ -2347,7 +2341,7 @@ mod tests {
         ]);
 
         let selfy: ValueSource = serde_json::from_value(json!({ "self": true })).unwrap();
-        assert_eq!(selfy.self_value, Some(true), "`self` 必须映射到 self_value");
+        assert_eq!(selfy.self_value, Some(true), "`self` must map to self_value");
         assert!(
             serde_json::from_value::<ValueSource>(json!({ "self_value": true })).is_err(),
             "the Rust field name is not part of the YAML spelling"
@@ -2377,7 +2371,7 @@ mod tests {
         let tx = t.transform.as_ref().expect("transform must deserialize");
         assert_eq!(tx.snake_plural, Some(true));
         assert_eq!(tx.strip_namespace, Some(true));
-        assert_eq!(tx.snake, None, "未声明的转换保持关闭，而不是默认全开");
+        assert_eq!(tx.snake, None, "an undeclared conversion stays off rather than defaulting to everything on");
 
         let n: ValueSource = serde_json::from_value(json!({
             "owner_class": true,
@@ -2435,11 +2429,15 @@ mod tests {
         assert_eq!(serde_json::from_value::<ResolveAs>(json!("by_alias")).unwrap(), ResolveAs::ByAlias);
         assert_eq!(serde_json::from_value::<ResolveAs>(json!("as_is")).unwrap(), ResolveAs::AsIs);
 
-        assert_eq!(Direction::default(), Direction::Incoming, "未声明 direction = 边的起点是被匹配的 caller");
+        assert_eq!(
+            Direction::default(),
+            Direction::Incoming,
+            "no declared direction = the edge starts at the matched caller"
+        );
         assert_eq!(serde_json::from_value::<Direction>(json!("outgoing")).unwrap(), Direction::Outgoing);
         assert_eq!(serde_json::from_value::<Direction>(json!("to_target")).unwrap(), Direction::ToTarget);
         let d: LinkSpec = serde_json::from_value(json!({ "kind": "HandledBy", "to": { "arg": 1 } })).unwrap();
-        assert_eq!(d.direction, Direction::Incoming, "LinkSpec 继承同一个默认值");
+        assert_eq!(d.direction, Direction::Incoming, "LinkSpec inherits the same default");
     }
 
     /// Field / link / alias / expand specs: which halves are mandatory, which default away.
@@ -2448,10 +2446,10 @@ mod tests {
         let f: FieldSpec = serde_json::from_value(json!({ "name": "text", "value": { "locale": true } })).unwrap();
         assert_eq!(f.name, "text");
         assert!(f.value.is_some());
-        assert!(f.accumulate.is_none(), "普通字段不是累积合并");
+        assert!(f.accumulate.is_none(), "a normal field is not an accumulating merge");
         assert!(f.from_symbol_table.is_none());
         let bare: FieldSpec = serde_json::from_value(json!({})).unwrap();
-        assert!(bare.name.is_empty() && bare.value.is_none(), "FieldSpec 全字段可选");
+        assert!(bare.name.is_empty() && bare.value.is_none(), "every FieldSpec field is optional");
 
         // Accumulate is a pair (`{key, value}`) — either half missing is a declaration mistake.
         let acc: AccumulateSpec =
@@ -2461,11 +2459,11 @@ mod tests {
         // Symbol-table enrichment needs to know which table and which column.
         let sym: SymbolFieldSpec = serde_json::from_value(json!({ "table": "schema", "field": "table_name" })).unwrap();
         assert_eq!(sym.table, "schema");
-        assert!(sym.of.is_none(), "of 省略 = 作用于当前值");
+        assert!(sym.of.is_none(), "omitting `of` = act on the current value");
         assert!(serde_json::from_value::<SymbolFieldSpec>(json!({ "table": "schema" })).is_err());
 
         let l: LinkSpec = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(l.kind, EdgeKind::default(), "未声明 kind 落在 Unknown 而不是随机 kind");
+        assert_eq!(l.kind, EdgeKind::default(), "an undeclared kind falls back to Unknown, not a random kind");
         assert!(l.to.is_none() && l.to_method.is_none() && l.to_fallback.is_none() && l.confidence.is_none());
         let l2: LinkSpec = serde_json::from_value(json!({
             "kind": "HandledBy",
@@ -2483,7 +2481,7 @@ mod tests {
 
         let a: AliasSpec = serde_json::from_value(json!({})).unwrap();
         assert!(a.namespace.is_empty() && a.qualifier.is_none());
-        assert_eq!(a.key.arg, None, "key 自身也是 ValueSource，默认全 None");
+        assert_eq!(a.key.arg, None, "key is itself a ValueSource, all-None by default");
         let a2: AliasSpec =
             serde_json::from_value(json!({ "namespace": "event", "key": { "arg": 0 }, "qualifier": { "method_name": true } }))
                 .unwrap();
@@ -2507,10 +2505,10 @@ mod tests {
     #[test]
     fn identity_spec_defaults_and_takes_an_explicit_fallback() {
         let i: IdentitySpec = serde_json::from_value(json!({ "kind": "fqn", "value": { "arg": 0 } })).unwrap();
-        assert!(i.kind.eq_ignore_ascii_case(SynthesizedKind::FQN), "kind 是开放字符串，大小写不敏感");
+        assert!(i.kind.eq_ignore_ascii_case(SynthesizedKind::FQN), "kind is an open string, matched case-insensitively");
         assert!(i.value.is_some());
         assert!(i.method.is_none() && i.path.is_none());
-        assert!(i.normalize.is_empty(), "未声明 normalize = 原样使用");
+        assert!(i.normalize.is_empty(), "no declared normalize = used verbatim");
         assert!(i.value_fallback.is_none());
 
         let full: IdentitySpec = serde_json::from_value(json!({
@@ -2583,7 +2581,10 @@ mod tests {
                 Action::Annotate(_) | Action::Synthesize(_) | Action::Link(_) | Action::Project(_)
             ));
         }
-        assert!(serde_json::from_value::<Action>(json!({ "annotate": {} })).is_err(), "tag 是 PascalCase");
+        assert!(
+            serde_json::from_value::<Action>(json!({ "annotate": {} })).is_err(),
+            "the tag is PascalCase"
+        );
 
         let s: Action = serde_json::from_value(json!({
             "Synthesize": { "node": "Table", "identity": { "kind": "named", "value": { "arg": 0 } }, "confidence": 0.95 }
@@ -2625,7 +2626,10 @@ mod tests {
         let p: ProjectAction = serde_json::from_value(json!({})).unwrap();
         assert_eq!(p.kind, EdgeKind::default());
         assert_eq!(p.along, EdgeKind::default());
-        assert!(p.from.is_empty() && p.to.is_empty(), "空链 = 落点就是边的端点本身");
+        assert!(
+            p.from.is_empty() && p.to.is_empty(),
+            "an empty chain = the landing point is the edge's endpoint itself"
+        );
         let p2: ProjectAction = serde_json::from_value(json!({
             "kind": "HasForeignKey", "along": "MapsTo", "from": ["Extends"], "to": ["MapsTo"], "confidence": 0.7
         }))
@@ -2637,37 +2641,151 @@ mod tests {
         assert!(serde_json::from_value::<ProjectAction>(json!({ "alongs": "MapsTo" })).is_err());
     }
 
-    /// The five selector variants other than `node` — each variant only accepts **its own** keys, so a rule
-    /// cannot accidentally carry a `callee` into a `declaration` selector.
+    /// Every selector variant must keep a parseable spelling **and** reject keys that belong to another
+    /// variant (that is what `deny_unknown_fields` buys: a `where` nested in the wrong place is a load
+    /// error instead of a silently-ignored condition). The positive rows double as an inventory: adding a
+    /// variant to `Selector` means adding a row here **and** a matcher in `engine.rs`.
     #[test]
-    fn remaining_selector_variants_roundtrip() {
-        let call: Selector =
-            serde_json::from_value(json!({ "kind": "call", "callee": "Db::name", "where": [{ "arg_count": 1 }] }))
-                .unwrap();
-        assert!(matches!(call, Selector::Call { callee: Some(_), .. }));
-        let inherit: Selector =
-            serde_json::from_value(json!({ "kind": "inheritance", "base": "Model", "with_property": "table" })).unwrap();
-        assert!(matches!(inherit, Selector::Inheritance { .. }));
-        let cfg: Selector = serde_json::from_value(json!({
-            "kind": "config_entry", "file": "config/database.php", "key_path": "connections.*"
+    fn selector_variants_roundtrip_and_reject_foreign_keys() {
+        // ── Positive: one row per variant, every field asserted (including `config_entry.where`, the one
+        // field this test used to skip even though `matches_config` reads it).
+        let call: Selector = serde_json::from_value(json!({
+            "kind": "call", "callee": "Db::name", "where": [{ "arg_count": 1 }]
         }))
-        .unwrap();
-        assert!(matches!(cfg, Selector::ConfigEntry { .. }));
-        let decl: Selector =
-            serde_json::from_value(json!({ "kind": "declaration", "node_kind": "Class", "fqn_matches": "controller" }))
-                .unwrap();
-        match decl {
-            Selector::Declaration { node_kind, fqn_matches } => {
-                assert_eq!(node_kind.as_ref().map(|k| k.as_str()), Some("Class"));
-                assert_eq!(fqn_matches.as_deref(), Some("controller"));
+        .expect("call selector must deserialize");
+        match call {
+            Selector::Call { callee, r#where } => {
+                assert_eq!(callee.as_deref(), Some("Db::name"));
+                assert_eq!(r#where.len(), 1);
             }
-            _ => panic!("expected a Declaration selector"),
+            _ => panic!("expected a Call selector"),
         }
-        let dyn_sel: Selector =
-            serde_json::from_value(json!({ "kind": "dynamic", "call": "app()->make", "channel": "alias" })).unwrap();
-        assert!(matches!(dyn_sel, Selector::Dynamic { .. }));
 
-        assert!(serde_json::from_value::<Selector>(json!({ "kind": "call", "node_kind": "Class" })).is_err());
+        let inherit: Selector = serde_json::from_value(json!({
+            "kind": "inheritance", "base": "Model", "with_property": "table"
+        }))
+        .expect("inheritance selector must deserialize");
+        match inherit {
+            Selector::Inheritance { base, with_property } => {
+                assert_eq!(base.as_deref(), Some("Model"));
+                assert_eq!(with_property.as_deref(), Some("table"));
+            }
+            _ => panic!("expected an Inheritance selector"),
+        }
+
+        let cfg: Selector = serde_json::from_value(json!({
+            "kind": "config_entry",
+            "file": "config/database.php",
+            "key_path": "connections.*",
+            "where": [{ "name_matches": "mysql" }]
+        }))
+        .expect("config_entry selector must deserialize");
+        match cfg {
+            Selector::ConfigEntry { file, key_path, r#where } => {
+                assert_eq!(file.as_deref(), Some("config/database.php"));
+                assert_eq!(key_path.as_deref(), Some("connections.*"));
+                assert_eq!(r#where.len(), 1, "`config_entry` carries `where` predicates too");
+            }
+            _ => panic!("expected a ConfigEntry selector"),
+        }
+
+        // Every field is optional: a bare `kind` must deserialize to the all-default variant.
+        let bare: Selector =
+            serde_json::from_value(json!({ "kind": "node" })).expect("a bare node selector must deserialize");
+        match bare {
+            Selector::Node { node_kind, r#where } => {
+                assert!(node_kind.is_none());
+                assert!(r#where.is_empty());
+            }
+            _ => panic!("expected a Node selector"),
+        }
+
+        // ── Negative: the `kind` tag is mandatory, and a key belonging to another variant must be rejected.
+        assert!(
+            serde_json::from_value::<Selector>(json!({ "node_kind": "Class" })).is_err(),
+            "a selector without `kind` must be rejected"
+        );
+        assert!(
+            serde_json::from_value::<Selector>(json!({ "kind": "call", "node_kind": "Class" })).is_err(),
+            "`node_kind` belongs to the node selector, not the call selector"
+        );
+        assert!(
+            serde_json::from_value::<Selector>(json!({ "kind": "inheritance", "where": [] })).is_err(),
+            "`where` exists on call / config_entry / node only — not on inheritance"
+        );
+        assert!(
+            serde_json::from_value::<Selector>(json!({ "kind": "config_entry", "callee": "Db::name" })).is_err(),
+            "`callee` belongs to the call selector"
+        );
+        assert!(
+            serde_json::from_value::<Selector>(json!({ "kind": "node", "base": "Model" })).is_err(),
+            "`base` belongs to the inheritance selector"
+        );
+
+        // A misspelled field name must not degrade into an all-default selector that matches everything.
+        for (kind, typo) in [
+            ("config_entry", json!({ "keypath": "connections.*" })),
+            ("inheritance", json!({ "with_properties": ["table"] })),
+            ("call", json!({ "callees": "Db::name" })),
+            ("node", json!({ "node_kinds": ["Class"] })),
+        ] {
+            let mut obj = json!({ "kind": kind });
+            obj.as_object_mut()
+                .unwrap()
+                .extend(typo.as_object().unwrap().clone().into_iter());
+            assert!(
+                serde_json::from_value::<Selector>(obj).is_err(),
+                "a misspelled field on the `{kind}` selector must be rejected"
+            );
+        }
+
+        // The two variants removed for having no matcher must stay rejected (rather than being silently
+        // accepted and never firing).
+        for dead in ["declaration", "dynamic"] {
+            assert!(
+                serde_json::from_value::<Selector>(json!({ "kind": dead })).is_err(),
+                "`{dead}` was removed — it must not parse"
+            );
+        }
+    }
+
+    /// The **write** direction is part of the contract too: the `kind` tag must stay snake_case and the
+    /// `r#where` field must be emitted as `where`, otherwise a re-serialised rule is no longer readable.
+    #[test]
+    fn selector_serialises_its_kind_tag_and_where_field() {
+        let cases: Vec<(Selector, &str)> = vec![
+            (
+                Selector::Call { callee: Some("Db::name".into()), r#where: vec![] },
+                "call",
+            ),
+            (
+                Selector::Inheritance { base: Some("Model".into()), with_property: None },
+                "inheritance",
+            ),
+            (
+                Selector::ConfigEntry { file: None, key_path: None, r#where: vec![] },
+                "config_entry",
+            ),
+            (Selector::Node { node_kind: None, r#where: vec![] }, "node"),
+        ];
+        for (sel, kind) in cases {
+            let written = serde_json::to_value(&sel).expect("selector must serialize");
+            assert_eq!(written["kind"], kind, "the `kind` tag must stay snake_case");
+            let back: Selector = serde_json::from_value(written).expect("a written selector must be readable");
+            assert_eq!(
+                std::mem::discriminant(&back),
+                std::mem::discriminant(&sel),
+                "`{kind}` must round-trip as the same variant"
+            );
+        }
+
+        let with_pred = serde_json::to_value(&Selector::Node {
+            node_kind: None,
+            r#where: vec![Predicate::HasProperty("dao".into())],
+        })
+        .expect("node selector must serialize");
+        assert!(with_pred.get("where").is_some(), "`r#where` must be written as `where`");
+        assert!(with_pred.get("r#where").is_none());
     }
 
     /// Every predicate variant must keep a parseable YAML spelling. The list doubles as an inventory: adding
@@ -2711,9 +2829,12 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(t.raw_sql_sinks[0].receiver.as_deref(), Some("Db"));
-        assert!(t.raw_sql_sinks[1].receiver.is_none(), "不声明 receiver = 任何接收者都算");
+        assert!(t.raw_sql_sinks[1].receiver.is_none(), "no declared receiver = any receiver counts");
         assert_eq!(t.where_interp_sinks, vec!["where".to_string()]);
-        assert!(serde_json::from_value::<TaintSink>(json!({ "receiver": "Db" })).is_err(), "sink 的 method 必需");
+        assert!(
+            serde_json::from_value::<TaintSink>(json!({ "receiver": "Db" })).is_err(),
+            "a sink's method is required"
+        );
         assert!(TaintSpec::default().raw_sql_sinks.is_empty());
 
         let s: SignCheckSpec = serde_json::from_value(json!({
@@ -2723,7 +2844,7 @@ mod tests {
         .unwrap();
         assert_eq!(s.hash_calls, vec!["md5".to_string()]);
         assert_eq!(s.name_contains.as_deref(), Some("sign"));
-        assert!(SignCheckSpec::default().name_contains.is_none(), "未声明 = 不按名字猜");
+        assert!(SignCheckSpec::default().name_contains.is_none(), "undeclared = do not guess by name");
 
         let d: DbVerbsSpec = serde_json::from_value(json!({ "write": ["save"], "read": ["find"] })).unwrap();
         assert_eq!(d.write, vec!["save".to_string()]);
@@ -2765,14 +2886,14 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(spec.route_calls.len(), 1);
-        assert_eq!(spec.guard_attach.specs().len(), 4, "多种挂载形态取并集");
+        assert_eq!(spec.guard_attach.specs().len(), 4, "the different attach forms are unioned");
         assert_eq!(spec.alias_table.as_deref(), Some("middleware_aliases"));
         assert!(spec.synthesize_unresolved);
 
         let empty: RouteGuardSpec = serde_json::from_value(json!({})).unwrap();
         assert!(empty.route_calls.is_empty());
         assert!(matches!(empty.guard_attach, GuardAttach::One(GuardAttachSpec::Positional)));
-        assert!(!empty.synthesize_unresolved, "默认不猜未知 guard 的节点");
+        assert!(!empty.synthesize_unresolved, "by default the node of an unknown guard is not guessed");
         assert!(empty.alias_table.is_none());
         assert!(serde_json::from_value::<RouteGuardSpec>(json!({ "guard_attachs": [] })).is_err());
     }
@@ -2783,7 +2904,7 @@ mod tests {
     #[test]
     fn chain_and_decorator_guard_defaults() {
         let c: ChainGuardSpec = serde_json::from_value(json!({})).unwrap();
-        assert!(c.method.is_empty(), "挂载方法名必须由 FKB 声明");
+        assert!(c.method.is_empty(), "the attach method name must be declared by the FKB");
         assert_eq!(c.arg_index, 0);
         assert!(c.arg2_index.is_none());
         let c2: ChainGuardSpec =
@@ -2794,9 +2915,9 @@ mod tests {
         let d = DecoratorGuardSpec::default();
         assert!(d.route_decorators.is_empty() && d.guard_decorators.is_empty());
         assert!(d.guard_name_patterns.is_empty() && d.guard_exclude_patterns.is_empty());
-        assert!(d.name_from_args, "默认取参数里的守卫类（`@UseGuards(X)`）");
-        assert!(d.include_class_level, "默认也认类级守卫");
-        assert!(!d.require_at_prefix, "默认不要求 callee 带 `@` 前缀");
+        assert!(d.name_from_args, "by default the guard class is taken from the arguments (`@UseGuards(X)`)");
+        assert!(d.include_class_level, "class-level guards are recognised by default too");
+        assert!(!d.require_at_prefix, "by default the callee need not carry an `@` prefix");
         assert!(!d.require_no_receiver);
         assert!(d.link_via_handler_arg.is_none());
 
@@ -2809,7 +2930,7 @@ mod tests {
             "guard_exclude_patterns": ["ApiBearerAuth"]
         }))
         .unwrap();
-        assert!(!d2.name_from_args, "Spring 的 `@PreAuthorize` 里守卫是注解自身");
+        assert!(!d2.name_from_args, "in Spring's `@PreAuthorize` the guard is the annotation itself");
         assert!(!d2.include_class_level);
         assert!(d2.require_at_prefix);
         assert_eq!(d2.link_via_handler_arg, Some(1));
@@ -2825,7 +2946,7 @@ mod tests {
         assert_eq!(r.id, "container-make");
         assert_eq!(r.strategy, ResolveStrategy::Container);
         assert!(r.call.is_none());
-        assert!(r.from_tier.is_none(), "起始层由策略决定，不能默认");
+        assert!(r.from_tier.is_none(), "the starting tier is decided by the strategy, it must not default");
 
         let r2: ResolverSpec = serde_json::from_value(json!({
             "id": "facade", "call": "Cache::*", "strategy": "facade", "from_tier": "alias"
@@ -2834,11 +2955,14 @@ mod tests {
         assert_eq!(r2.call.as_deref(), Some("Cache::*"));
         assert_eq!(r2.from_tier, Some(ResolveTier::Alias));
 
-        assert!(serde_json::from_value::<ResolverSpec>(json!({ "id": "x" })).is_err(), "缺 strategy 必须报错");
+        assert!(
+            serde_json::from_value::<ResolverSpec>(json!({ "id": "x" })).is_err(),
+            "a missing strategy must error"
+        );
         assert!(
             serde_json::from_value::<ResolverSpec>(json!({ "id": "x", "strategy": "container", "stratergy": "event" }))
                 .is_err(),
-            "拼错的键不能静默忽略"
+            "a misspelled key must not be silently ignored"
         );
     }
 }

@@ -315,6 +315,21 @@ pub fn matches_node(sel: &Selector, id: NodeId, ws: &GraphWorkspace) -> bool {
         .all(|p| eval_predicate(p, id, Some(MatchCtx::Node(id)), ws, &ev))
 }
 
+/// Whether a rule carrying this selector can ever fire.
+///
+/// This exists as a **guard, not as logic**: the `match` below is exhaustive, so adding a variant to
+/// `Selector` breaks compilation here until someone decides which `matches_*` function consumes it.
+/// That is the defence against a dead variant — before `declaration` / `dynamic` were removed, both
+/// parsed happily, had a green round-trip test, and no rule using them could ever match anything.
+pub fn selector_has_matcher(sel: &Selector) -> bool {
+    match sel {
+        Selector::Call { .. } => true,
+        Selector::ConfigEntry { .. } => true,
+        Selector::Inheritance { .. } => true,
+        Selector::Node { .. } => true,
+    }
+}
+
 /// Turn a node property value into a string for `property_is` comparison.
 ///
 /// Supports both string and boolean: the parser writes `in_loop` as a JSON boolean (`true` / `false`),
@@ -1545,7 +1560,7 @@ mod tests {
         ));
         assert!(
             !callee_matches("", "Db::name", Some("Db"), Some("name")),
-            "空模式没有任何候选项，不应匹配"
+            "an empty pattern has no candidates, so it must not match"
         );
 
         // `A::{b,c}` method lists.
@@ -1680,15 +1695,35 @@ mod tests {
         assert!(path_matches("lang/{locale}.php", "lang/en-us.php"));
         assert!(path_matches("*.php", "app/deep/x.php"));
         assert!(path_matches("lang/*", "lang/zh-cn"));
-        assert!(path_matches("", "anything"), "空模式匹配一切");
+        assert!(path_matches("", "anything"), "an empty pattern matches everything");
         // A pattern without `*` is a **suffix** match (paths are given from the project root).
         assert!(path_matches("config/app.php", "crmeb/config/app.php"));
         // A pattern that does contain `*` is anchored at its first segment, so a deeper path fails.
         assert!(
             !path_matches("lang/*", "crmeb/lang/zh-cn"),
-            "带通配符的模式按首段锚定（与非通配符的后缀匹配不同）"
+            "a pattern containing `*` is anchored at its first segment (unlike the suffix match used without one)"
         );
-        assert!(!path_matches("*.php", "x.php.bak"), "末段必须真的是路径结尾");
+        assert!(
+            !path_matches("*.php", "x.php.bak"),
+            "the last segment must really be the end of the path"
+        );
+    }
+
+    /// Every `Selector` variant must be reachable by one of the `matches_*` functions. A variant nobody
+    /// matches is dead model: the rule loads, the round-trip test is green, and it never fires — which is
+    /// how the removed `declaration` / `dynamic` variants survived. `selector_has_matcher` is exhaustive,
+    /// so a new variant cannot be added without deciding its matcher.
+    #[test]
+    fn every_selector_variant_has_a_matcher() {
+        let variants = vec![
+            Selector::Call { callee: None, r#where: vec![] },
+            Selector::ConfigEntry { file: None, key_path: None, r#where: vec![] },
+            Selector::Inheritance { base: None, with_property: None },
+            Selector::Node { node_kind: None, r#where: vec![] },
+        ];
+        for sel in &variants {
+            assert!(selector_has_matcher(sel), "{sel:?} must be matched by some rule phase");
+        }
     }
 
     #[test]
@@ -1721,7 +1756,7 @@ mod tests {
         assert!(column_matches("USER_ID", "id"));
         assert!(
             !column_matches("identity", "id"),
-            "`identity` 不是 `id` 列：只有 `_id` 结尾才算"
+            "`identity` is not an `id` column: only an `_id` suffix counts"
         );
 
         let mut ctx = ctx();
@@ -1774,7 +1809,7 @@ mod tests {
         assert_eq!(v[0], "\\\\a\\\\b");
         assert!(v.iter().all(|x| !x.is_empty()));
         let mut seen = std::collections::HashSet::new();
-        assert!(v.iter().all(|x| seen.insert(x.clone())), "候选不应重复");
+        assert!(v.iter().all(|x| seen.insert(x.clone())), "candidates must not repeat");
     }
 
     // ---------------------------------------------------------------- entry methods / target resolution
@@ -2227,6 +2262,21 @@ mod tests {
             ),
             None
         );
+
+        // A node carrying no `required_locales` of its own falls back to the project default — and
+        // that default is English-first, so the English gap is reported before the Chinese one.
+        let bare = node(&mut ctx, "I18nKey", "bare", "i18n:bare");
+        ctx.ws.patch_properties(bare, serde_json::json!({ "texts": {} }));
+        assert_eq!(
+            resolve_subkind(
+                &ctx,
+                &Some(SubkindSource::Computed("missing_locales".to_string())),
+                bare,
+                MatchCtx::Node(bare)
+            ),
+            Some("en-us,zh-cn".to_string()),
+            "without `required_locales` the project default applies, and it leads with English"
+        );
     }
 
     #[test]
@@ -2271,7 +2321,7 @@ mod tests {
         // spec.confidence * rule.confidence * confidence_scale = 0.5 * 0.8 * 0.5
         assert!(
             (got[0].confidence - 0.2).abs() < 1e-6,
-            "置信度应为 0.5*0.8*0.5=0.2，实际 {}",
+            "confidence should be 0.5*0.8*0.5=0.2, got {}",
             got[0].confidence
         );
         assert_eq!(got[0].evidence["hook"], serde_json::json!("r"));
@@ -2309,7 +2359,7 @@ mod tests {
         );
         assert!(
             !ctx.ws.has_annotation(m, "leak"),
-            "声明为 Post 的动作不应在 Pre 阶段执行"
+            "an action declared as Post must not run in the Pre phase"
         );
     }
 
@@ -2351,7 +2401,7 @@ mod tests {
         );
         assert!(
             ctx.ws.annotations_of(m).is_empty(),
-            "目标解析不到时不应产生注解"
+            "no annotation is produced when the target does not resolve"
         );
         // Once a node has been synthesised the same target resolves to it.
         let synth = node(&mut ctx, "Queue", "q", "queue:q");
@@ -2366,7 +2416,7 @@ mod tests {
             &Phase("AnnotatePre".to_string()),
             &mut last,
         );
-        assert!(ctx.ws.has_annotation(synth, "x"), "有 @last 时应落到该节点");
+        assert!(ctx.ws.has_annotation(synth, "x"), "with @last the annotation lands on that node");
     }
 
     /// `Project` exists for one-to-many: every `along` out-edge yields its own edge, and a self-reference
@@ -2420,7 +2470,7 @@ mod tests {
         assert_eq!(
             written,
             vec![(a.get(), t1.get()), (a.get(), t2.get())],
-            "每条 along 出边投影一条，自环跳过"
+            "one projection per `along` out-edge, self-loops skipped"
         );
         assert!(
             ctx.ws
@@ -2428,7 +2478,7 @@ mod tests {
                 .iter()
                 .filter(|e| e.kind.as_str() == "WritesDb")
                 .all(|e| (e.confidence - 0.9).abs() < 1e-6),
-            "未声明置信度时取规则的置信度"
+            "without a declared confidence the rule's confidence is used"
         );
     }
 
@@ -2496,8 +2546,8 @@ mod tests {
             &mut last,
         );
 
-        let synth = last.expect("synthesise 应产生一个节点作为 @last");
-        let n = ctx.ws.node(synth).expect("合成节点应存在");
+        let synth = last.expect("synthesise must produce a node as @last");
+        let n = ctx.ws.node(synth).expect("the synthesised node must exist");
         assert_eq!(n.kind.as_str(), "Queue");
         assert_eq!(
             n.properties.get("category").and_then(|v| v.as_str()),
@@ -2510,7 +2560,7 @@ mod tests {
             .edges()
             .iter()
             .find(|e| e.kind.as_str() == "PublishesTo" && e.to_id == synth);
-        assert!(edge.is_some(), "应有一条 owner -> 合成节点 的 PublishesTo 边");
+        assert!(edge.is_some(), "there must be a PublishesTo edge from owner to the synthesised node");
         assert_eq!(edge.unwrap().from_id, owner);
 
         // A propagation seed was recorded so the action can be replicated to callers.
@@ -2574,7 +2624,7 @@ mod tests {
                 &rec2,
                 &ctx.ws
             ),
-            "经 BaseModel 传递继承到 Model"
+            "inheritance reaches Model transitively via BaseModel"
         );
         // No base declared -> base check skipped.
         assert!(matches_inherit(

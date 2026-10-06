@@ -1576,7 +1576,8 @@ mod tests {
         let mut ctx = PipelineContext::new(project());
         ctx.sub_projects.push(sub("/p/crmeb/app", "php"));
         // Two locale files, same key: they must merge into **one** node whose `texts` holds both locales.
-        for (locale, text) in [("zh", "你好"), ("en", "hello")] {
+        // English comes first — it is the source language and leads the i18n baseline.
+        for (locale, text) in [("en", "hello-en"), ("zh", "hello-zh")] {
             ctx.ws.configs.push(ConfigRecord {
                 file: format!("crmeb/app/lang/{}/messages.php", locale),
                 key_path: "greeting".into(),
@@ -1596,7 +1597,7 @@ mod tests {
         let keys = ctx.ws.nodes_of_kind("I18nKey");
         assert_eq!(keys.len(), 1, "both locales must merge into one node");
         let texts = ctx.ws.node(keys[0]).and_then(|n| n.properties.get("texts").cloned());
-        assert_eq!(texts, Some(json!({ "zh": "你好", "en": "hello" })), "texts: {:?}", texts);
+        assert_eq!(texts, Some(json!({ "en": "hello-en", "zh": "hello-zh" })), "texts: {:?}", texts);
     }
 
     #[test]

@@ -424,15 +424,15 @@ mod tests {
         ctx.rules_global.push((Language::new("*"), rule("g_any", "P", None)));
 
         let got = ids(&ctx.rules_for(Some(SubProjectId::new(SUB_PHP)), &Phase::new("P")));
-        assert!(got.contains(&"own".to_string()), "子项目自己的规则总在里面");
+        assert!(got.contains(&"own".to_string()), "a sub-project's own rules are always included");
         assert!(got.contains(&"g_php".to_string()));
         assert!(
             !got.contains(&"g_java".to_string()),
-            "Java 的全局规则不应进入 PHP 子项目"
+            "a global Java rule must not reach a PHP sub-project"
         );
         assert!(
             got.contains(&"g_any".to_string()),
-            "声明语言为 * 的 FKB 对任何语言都适用"
+            "an FKB declared for language `*` applies to every language"
         );
     }
 
@@ -457,16 +457,13 @@ mod tests {
         let got = ids(&ctx.rules_for(Some(SubProjectId::new(SUB_PHP)), &Phase::new("P")));
         assert!(
             got.contains(&"java_fk_php_rule".to_string()),
-            "规则自身声明 php 时即生效（覆盖 FKB 的语言）"
+            "a rule that declares `php` itself applies (overriding the FKB's language)"
         );
         assert!(
             !got.contains(&"java_fk_inherited".to_string()),
-            "继承 FKB 语言 java 的规则对 php 子项目无效"
+            "a rule inheriting the FKB language `java` does not apply to a php sub-project"
         );
-        assert!(
-            got.contains(&"wildcard".to_string()),
-            "* 哨兵表示全语言适用"
-        );
+        assert!(got.contains(&"wildcard".to_string()), "the `*` sentinel means every language");
     }
 
     /// Cross-project nodes (no sub) take every global rule and **no** sub-project rule: there is no language
@@ -543,12 +540,12 @@ mod tests {
         assert_eq!(
             ctx.sub_of_path("crmeb/app/S.php"),
             Some(SubProjectId::new(2)),
-            "更长的前缀仍优先"
+            "the longer prefix still wins"
         );
         assert_eq!(
             ctx.sub_of_path("anything/else.php"),
             Some(SubProjectId::new(1)),
-            "根级子项目兜底"
+            "the root-level sub-project is the catch-all"
         );
     }
 
@@ -572,10 +569,18 @@ mod tests {
     #[test]
     fn sub_of_path_returns_none_when_nothing_matches() {
         let mut ctx = ctx_at("/p");
-        assert_eq!(ctx.sub_of_path("crmeb/app/S.php"), None, "没有子项目时无从归属");
+        assert_eq!(
+            ctx.sub_of_path("crmeb/app/S.php"),
+            None,
+            "with no sub-project there is nothing to attribute it to"
+        );
 
         ctx.sub_projects.push(sub(1, "/p/crmeb/app", Language::PHP));
-        assert_eq!(ctx.sub_of_path("other/lib.php"), None, "落在所有子项目之外");
+        assert_eq!(
+            ctx.sub_of_path("other/lib.php"),
+            None,
+            "a path outside every sub-project"
+        );
     }
 
     /// `relative_root` normalises separators, and keeps a root that is not under the project root verbatim.
@@ -586,14 +591,14 @@ mod tests {
         assert_eq!(
             ctx.sub_of_path("crmeb/app/S.php"),
             Some(SubProjectId::new(1)),
-            "以反斜杠记录的路径仍应匹配"
+            "a root recorded with backslashes still matches"
         );
 
         ctx.sub_projects.push(sub(2, "/elsewhere/lib", Language::PHP));
         assert_eq!(
             ctx.sub_of_path("elsewhere/lib/S.php"),
             Some(SubProjectId::new(2)),
-            "不在项目根下的路径原样使用"
+            "a root outside the project root is used verbatim"
         );
     }
 
@@ -620,7 +625,8 @@ mod tests {
         let mut ctx = ctx_at("/p");
         assert_eq!(
             ctx.config().required_locales,
-            vec!["zh-cn".to_string(), "en-us".to_string()]
+            vec!["en-us".to_string(), "zh-cn".to_string()],
+            "English is the default i18n language (Chinese is still required, but comes second)"
         );
         ctx.project.config.table_prefixes = vec!["eb_".to_string()];
         assert_eq!(ctx.config().table_prefixes, vec!["eb_".to_string()]);
@@ -645,7 +651,7 @@ mod tests {
             ctx.lang_policy_for_sub(Some(SubProjectId::new(SUB_JS)))
                 .member_separator,
             "#",
-            "已注册子项目但语言未登记：不能借用 PHP 的 ::"
+            "a registered sub-project whose language is not registered must not borrow PHP's `::`"
         );
 
         // A language that is not even a known constant behaves identically.
@@ -669,7 +675,7 @@ mod tests {
             .push((Language::new(Language::JAVA), rule("g_java", "P", None)));
 
         let got = ids(&ctx.rules_for(Some(SubProjectId::new(SUB_PHP)), &Phase::new("P")));
-        assert_eq!(got, vec!["g_php".to_string()], "Java 全局规则按语言排除");
+        assert_eq!(got, vec!["g_php".to_string()], "the Java global rule is filtered out by language");
     }
 
     /// `sub_of_path` must treat a trailing slash as "the directory itself" (a one-segment-below entry still
@@ -682,7 +688,7 @@ mod tests {
         assert_eq!(
             ctx.sub_of_path("crmeb/app/"),
             Some(SubProjectId::new(1)),
-            "末尾斜杠仍命中（目录项）"
+            "a trailing slash still matches (a directory entry)"
         );
 
         // A project-rooted sub-project (empty prefix) is a catch-all down to an empty relative path.
@@ -691,7 +697,7 @@ mod tests {
         assert_eq!(
             root.sub_of_path(""),
             Some(SubProjectId::new(2)),
-            "空相对路径归根级子项目"
+            "an empty relative path belongs to the root-level sub-project"
         );
     }
 }

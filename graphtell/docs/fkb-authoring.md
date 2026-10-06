@@ -527,8 +527,10 @@ selector:
   where: []                                      # optional narrowing predicates (see the Predicate enum in source)
 ```
 
-Other selectors: `inheritance` (extends / implements), `config_entry` (config item), `declaration`
-(syntax declaration), `node` (an existing graph node), `dynamic` (P7 dynamic-resolution call).
+Other selectors: `inheritance` (extends / implements), `config_entry` (config item), `node` (an
+existing graph node). Only `call` / `config_entry` / `node` accept `where:`; that list is exactly
+the set of variants the engine has a matcher for (`engine::selector_has_matcher`), so a selector
+kind outside it will not load.
 
 ### 3.3 Action (binding)
 

@@ -51,6 +51,10 @@ pub struct ProjectConfig {
     /// `storage/logs/**`), not as bare directory names.
     pub exclude_globs: Vec<String>,
     /// The list of locales required by the i18n coverage check.
+    ///
+    /// Defaults to `["en-us", "zh-cn"]`: English is the source language, so it comes first and the
+    /// `missing_locales` subkind reports what is absent in that order. Projects that need a different
+    /// set (or a single locale) override it explicitly — nothing is inferred from the codebase.
     pub required_locales: Vec<String>,
     /// Database table prefix (used for identity normalisation, e.g. `eb_`).
     ///
@@ -66,7 +70,7 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             exclude_globs: Vec::new(),
-            required_locales: vec!["zh-cn".into(), "en-us".into()],
+            required_locales: vec!["en-us".into(), "zh-cn".into()],
             table_prefixes: Vec::new(),
             full_pipeline: true,
         }
@@ -176,13 +180,23 @@ mod tests {
     fn project_config_defaults_apply_when_keys_are_absent() {
         let d = ProjectConfig::default();
         assert!(d.exclude_globs.is_empty());
-        assert!(d.table_prefixes.is_empty(), "表前缀不能带任何项目默认值（CRMEB 的 `eb_` 不许泄漏）");
-        assert!(d.full_pipeline, "默认跑完整流水线");
+        assert!(
+            d.table_prefixes.is_empty(),
+            "no project-specific default may leak into the table prefixes (CRMEB's `eb_` must not)"
+        );
+        assert!(d.full_pipeline, "the full pipeline runs by default");
         // The one non-empty default in an otherwise "nothing hard-coded" struct: the i18n coverage check needs
         // a baseline, and `gt-pipeline::Config` readers rely on exactly this pair.
-        assert_eq!(d.required_locales, vec!["zh-cn".to_string(), "en-us".to_string()]);
+        assert_eq!(d.required_locales, vec!["en-us".to_string(), "zh-cn".to_string()]);
+        // English is the source language, so it leads the i18n baseline: `missing_locales` reports the
+        // absent locales in this order, and a reader must not treat the first entry as "whatever came first".
+        assert_eq!(
+            d.required_locales.first().map(String::as_str),
+            Some("en-us"),
+            "English is the default i18n language; Chinese is only the second required locale"
+        );
 
-        let empty: ProjectConfig = serde_json::from_value(json!({})).expect("空配置必须能反序列化");
+        let empty: ProjectConfig = serde_json::from_value(json!({})).expect("an empty config object must deserialise");
         assert!(empty.exclude_globs.is_empty());
         assert_eq!(empty.required_locales, d.required_locales);
         assert!(empty.table_prefixes.is_empty());
@@ -204,7 +218,7 @@ mod tests {
         assert_eq!(explicit.exclude_globs, vec!["storage/logs/**".to_string()]);
         assert_eq!(explicit.required_locales, vec!["fr-fr".to_string()]);
         assert_eq!(explicit.table_prefixes, vec!["eb_".to_string()]);
-        assert!(!explicit.full_pipeline, "显式 false 不能被默认值覆盖");
+        assert!(!explicit.full_pipeline, "an explicit false must not be overwritten by the default");
 
         assert_eq!(round_trip(&explicit).required_locales, explicit.required_locales);
     }
@@ -216,20 +230,23 @@ mod tests {
         let d = ProjectPatch::default();
         assert!(d.name.is_none() && d.root_path.is_none() && d.description.is_none() && d.config.is_none());
 
-        let empty: ProjectPatch = serde_json::from_value(json!({})).expect("空 PATCH 体必须能反序列化");
+        let empty: ProjectPatch = serde_json::from_value(json!({})).expect("an empty PATCH body must deserialise");
         assert!(empty.name.is_none() && empty.config.is_none());
 
         let partial: ProjectPatch = serde_json::from_value(json!({ "name": "renamed" })).unwrap();
         assert_eq!(partial.name.as_deref(), Some("renamed"));
-        assert!(partial.root_path.is_none(), "未提交的字段必须保持 None");
+        assert!(partial.root_path.is_none(), "a field that was not submitted must stay None");
         assert!(partial.description.is_none());
         assert!(partial.config.is_none());
 
         let nulled: ProjectPatch = serde_json::from_value(json!({ "description": null })).unwrap();
-        assert!(nulled.description.is_none(), "null 等同未提交：patch 不能清空字段");
+        assert!(
+            nulled.description.is_none(),
+            "null counts as 'not submitted': a patch cannot clear a field"
+        );
 
         let full: ProjectPatch = serde_json::from_value(json!({ "config": { "full_pipeline": false } })).unwrap();
-        let cfg = full.config.as_ref().expect("config 必须能整块替换");
+        let cfg = full.config.as_ref().expect("config must be replaceable as a whole");
         assert!(!cfg.full_pipeline);
     }
 
@@ -248,7 +265,10 @@ mod tests {
             assert_eq!(serde_json::to_value(variant).unwrap(), json!(text));
             assert_eq!(serde_json::from_value::<ProjectStatus>(json!(text)).unwrap(), variant);
         }
-        assert!(serde_json::from_value::<ProjectStatus>(json!("done")).is_err(), "未知状态拼写必须报错");
+        assert!(
+            serde_json::from_value::<ProjectStatus>(json!("done")).is_err(),
+            "an unknown status spelling must be rejected"
+        );
         assert_eq!(ProjectStatus::Ready, ProjectStatus::Ready);
         assert_ne!(ProjectStatus::Created, ProjectStatus::Failed);
     }
@@ -275,7 +295,10 @@ mod tests {
         assert_eq!((back.created_at, back.updated_at), (1_700_000_000, 1_700_000_123));
         assert!(!back.config.full_pipeline);
         let serialized = serde_json::to_value(&p).unwrap();
-        assert!(serialized["root_path"].is_string(), "PathBuf 必须是裸字符串，不能变成对象");
+        assert!(
+            serialized["root_path"].is_string(),
+            "PathBuf must serialise as a bare string, not as an object"
+        );
 
         // A project created without any configuration must not fail to load later.
         let np = NewProject {
@@ -301,7 +324,7 @@ mod tests {
         };
         let back: SubProject = round_trip(&sp);
         assert_eq!(back.id, SubProjectId(2));
-        assert_eq!(back.role, "frontend:admin", "role 是 `tier` 或 `tier:kind`，按原样存取");
+        assert_eq!(back.role, "frontend:admin", "role is `tier` or `tier:kind`, stored and read verbatim");
         assert_eq!(back.detected_by, "pages.json");
         assert_eq!(back.frameworks, vec!["uni-app".to_string()]);
         assert_eq!(back.facts, json!({ "app_root": "src" }));
