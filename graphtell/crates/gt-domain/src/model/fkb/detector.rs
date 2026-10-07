@@ -264,3 +264,253 @@ pub enum LoaderSource {
         params: Value,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ------------------------------------------------------- template_placeholders (the only logic-bearing fn)
+
+    /// Placeholders are returned in order of appearance and de-duplicated.
+    #[test]
+    fn template_placeholders_in_order_and_dedup() {
+        assert_eq!(
+            template_placeholders("{value}{app_root}"),
+            vec!["value".to_string(), "app_root".to_string()]
+        );
+        assert_eq!(
+            template_placeholders("{value}{value}"),
+            vec!["value".to_string()],
+            "a repeated placeholder appears once"
+        );
+        assert_eq!(
+            template_placeholders("pre{value}mid{app_root}post"),
+            vec!["value".to_string(), "app_root".to_string()],
+            "text around braces is ignored"
+        );
+    }
+
+    /// No braces, empty input, an unmatched `{`, and an empty `{}` all yield no placeholders.
+    #[test]
+    fn template_placeholders_empty_and_negative() {
+        assert!(template_placeholders("").is_empty(), "empty template -> no placeholders");
+        assert!(
+            template_placeholders("no braces here").is_empty(),
+            "a template with no braces yields nothing"
+        );
+        assert!(
+            template_placeholders("{value").is_empty(),
+            "an unmatched `{{` yields no placeholder (never a partial)"
+        );
+        assert!(
+            template_placeholders("{}").is_empty(),
+            "an empty `{{}}` is not a placeholder"
+        );
+    }
+
+    /// Whitespace inside the braces is trimmed, so `{ value }` is the `value` placeholder.
+    #[test]
+    fn template_placeholders_trims_whitespace() {
+        assert_eq!(
+            template_placeholders("{  value  }"),
+            vec!["value".to_string()]
+        );
+    }
+
+    // ------------------------------------------------------- Detector::confidence / default_conf
+
+    /// `confidence()` reads the per-variant field; the `default_conf()` fallback (0.9) applies when the
+    /// field is omitted on deserialization — never a hard-coded magic number at the call site.
+    #[test]
+    fn detector_confidence_per_variant_and_default() {
+        assert_eq!(default_conf(), 0.9);
+
+        let explicit = Detector::FileExists {
+            path: "x".into(),
+            confidence: 0.5,
+        };
+        assert_eq!(explicit.confidence(), 0.5);
+
+        let via_default: Detector = serde_json::from_value(json!({
+            "kind": "file_exists", "path": "x"
+        }))
+        .unwrap();
+        assert_eq!(via_default.confidence(), 0.9, "omitted confidence falls back to default_conf");
+
+        // Every variant exposes the same accessor (the match is exhaustive, so a new variant is a compile error).
+        for d in [
+            Detector::ManifestDependency { manifest: "c".into(), dependency: "d".into(), confidence: 0.3 },
+            Detector::ImportExists { symbol: "s".into(), confidence: 0.4 },
+            Detector::LockDependency { lock: "l".into(), dependency: "d".into(), confidence: 0.6 },
+            Detector::CallExists { callee: "c".into(), confidence: 0.7 },
+        ] {
+            assert!((d.confidence() > 0.0 && d.confidence() < 1.0));
+        }
+    }
+
+    // ------------------------------------------------------- snake_case variant tags (positive round-trips)
+
+    #[test]
+    fn detector_variant_tags_are_snake_case() {
+        assert_eq!(
+            serde_json::to_value(Detector::ManifestDependency {
+                manifest: "c".into(),
+                dependency: "d".into(),
+                confidence: 0.9
+            })
+            .unwrap()["kind"],
+            json!("manifest_dependency")
+        );
+        assert_eq!(
+            serde_json::to_value(Detector::FileExists { path: "x".into(), confidence: 0.9 }).unwrap()["kind"],
+            json!("file_exists")
+        );
+        assert_eq!(
+            serde_json::to_value(Detector::ImportExists { symbol: "s".into(), confidence: 0.9 }).unwrap()["kind"],
+            json!("import_exists")
+        );
+        assert_eq!(
+            serde_json::to_value(Detector::LockDependency {
+                lock: "l".into(),
+                dependency: "d".into(),
+                confidence: 0.9
+            })
+            .unwrap()["kind"],
+            json!("lock_dependency")
+        );
+        assert_eq!(
+            serde_json::to_value(Detector::CallExists { callee: "c".into(), confidence: 0.9 }).unwrap()["kind"],
+            json!("call_exists")
+        );
+    }
+
+    #[test]
+    fn root_source_and_loader_source_tags_are_snake_case() {
+        assert_eq!(
+            serde_json::to_value(RootSource::DirectoryExists { path: "app".into() }).unwrap()["kind"],
+            json!("directory_exists")
+        );
+        assert_eq!(
+            serde_json::to_value(RootSource::ManifestJson {
+                manifest: "c".into(),
+                pointer: "p".into(),
+                pick: PickStrategy::FirstDir,
+            })
+            .unwrap()["kind"],
+            json!("manifest_json")
+        );
+        assert_eq!(
+            serde_json::to_value(LoaderSource::File { path: "x".into(), key_path: None }).unwrap()["kind"],
+            json!("file")
+        );
+        assert_eq!(
+            serde_json::to_value(LoaderSource::Inline { rows: vec![json!({"k": "v"})] }).unwrap()["kind"],
+            json!("inline")
+        );
+    }
+
+    #[test]
+    fn pick_strategy_and_entry_field_from_snake_case() {
+        assert_eq!(serde_json::to_value(PickStrategy::ShallowestDir).unwrap(), json!("shallowest_dir"));
+        assert_eq!(serde_json::to_value(PickStrategy::FirstDir).unwrap(), json!("first_dir"));
+        assert_eq!(
+            serde_json::to_value(PickStrategy::ByNamespaceKey).unwrap(),
+            json!("by_namespace_key")
+        );
+        // Round-trip both ways.
+        assert_eq!(
+            serde_json::from_value::<PickStrategy>(json!("by_namespace_key")).unwrap(),
+            PickStrategy::ByNamespaceKey
+        );
+        assert_eq!(serde_json::to_value(EntryFieldFrom::Key).unwrap(), json!("key"));
+        assert_eq!(
+            serde_json::from_value::<EntryFieldFrom>(json!("key")).unwrap(),
+            EntryFieldFrom::Key
+        );
+    }
+
+    // ------------------------------------------------------- deny_unknown_fields (unknown key = load error, never silent)
+
+    /// A field the model does not have is a field the kernel cannot read; `deny_unknown_fields` turns a
+    /// silent no-op into a hard load error — these tests lock that contract in for every struct/enum here.
+    #[test]
+    fn detector_unknown_field_rejected() {
+        assert!(serde_json::from_value::<Detector>(
+            json!({ "kind": "file_exists", "path": "x", "bogus": 1 })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn root_rule_unknown_field_rejected() {
+        assert!(serde_json::from_value::<RootRule>(json!({
+            "id": "r", "key": "app_root",
+            "source": { "kind": "directory_exists", "path": "app" },
+            "bogus": 1
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn root_source_unknown_variant_and_field_rejected() {
+        assert!(serde_json::from_value::<RootSource>(json!({ "kind": "no_such_source" })).is_err());
+        assert!(serde_json::from_value::<RootSource>(json!({
+            "kind": "directory_exists", "path": "app", "extra": 1
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn entry_field_unknown_field_rejected() {
+        assert!(serde_json::from_value::<EntryField>(json!({
+            "name": "driver", "pointer": "x.driver", "bogus": 1
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn exclude_rule_unknown_field_rejected() {
+        assert!(serde_json::from_value::<ExcludeRule>(json!({
+            "id": "e", "glob": "{app_root}/runtime/**", "bogus": 1
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn loader_spec_format_field_removed_rejected() {
+        // The retired `format:` key must still be rejected (a key the kernel cannot read must error, not
+        // sit in FKB looking effective).
+        assert!(serde_json::from_value::<LoaderSpec>(json!({
+            "id": "l", "table": "t",
+            "from": { "kind": "file", "path": "x" },
+            "format": "php"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn loader_source_unknown_variant_and_key_path_default() {
+        assert!(serde_json::from_value::<LoaderSource>(json!({ "kind": "bogus" })).is_err());
+        // `key_path` defaults to None when omitted, and is read when present.
+        let file: LoaderSource =
+            serde_json::from_value(json!({ "kind": "file", "path": "x" })).unwrap();
+        match file {
+            LoaderSource::File { path, key_path } => {
+                assert_eq!(path, "x");
+                assert!(key_path.is_none(), "key_path defaults to None");
+            }
+            _ => panic!("expected File loader source"),
+        }
+        let file_kp: LoaderSource =
+            serde_json::from_value(json!({ "kind": "file", "path": "x", "key_path": "db" })).unwrap();
+        match file_kp {
+            LoaderSource::File { path, key_path } => {
+                assert_eq!(path, "x");
+                assert_eq!(key_path.as_deref(), Some("db"));
+            }
+            _ => panic!("expected File loader source"),
+        }
+    }
+}
+

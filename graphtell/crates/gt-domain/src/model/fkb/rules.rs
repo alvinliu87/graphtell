@@ -402,3 +402,220 @@ pub struct IdentitySpec {
     #[serde(default)]
     pub value_fallback: Option<ValueSource>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::kinds::{Language, Phase};
+    use serde_json::json;
+
+    fn rule_with_languages(langs: Option<Vec<Language>>) -> Rule {
+        Rule {
+            id: "r".into(),
+            phase: Phase::SYNTHESIZE.into(),
+            selector: Selector::Call { callee: None, r#where: vec![] },
+            binding: vec![],
+            confidence: 0.9,
+            languages: langs,
+        }
+    }
+
+    // ------------------------------------------------------- Rule::applies_to (the only logic-bearing method)
+
+    #[test]
+    fn rule_applies_to_language_scoping() {
+        let php = Language::new("php");
+        let py = Language::new("python");
+        let star = Language::new("*");
+
+        // `None` inherits from the declaring FKB's language.
+        let inherit = rule_with_languages(None);
+        assert!(!inherit.applies_to(&php, &py), "fk=php, sub=py -> no match");
+        assert!(inherit.applies_to(&php, &php), "fk=php, sub=php -> match");
+        assert!(inherit.applies_to(&star, &py), "fk=* (universal) -> match any sub");
+
+        // `Some(list)`: the FKB's own language is IGNORED — only the list decides.
+        let scoped = rule_with_languages(Some(vec![php.clone()]));
+        assert!(scoped.applies_to(&py, &php), "sub in list -> match even when fk differs");
+        assert!(!scoped.applies_to(&php, &py), "sub not in list -> no match");
+
+        // The `Language("*")` sentinel opts a rule into every sub-project language.
+        let universal = rule_with_languages(Some(vec![star.clone()]));
+        assert!(universal.applies_to(&py, &py), "list with `*` matches any sub");
+    }
+
+    // ------------------------------------------------------- Rule: confidence default + required fields + deny_unknown_fields
+
+    #[test]
+    fn rule_confidence_default_and_contract() {
+        // Omitting `confidence` falls back to `default_conf()` (0.9).
+        let r: Rule = serde_json::from_value(json!({
+            "id": "r", "phase": "Synthesize", "selector": { "kind": "call" }, "binding": []
+        }))
+        .unwrap();
+        assert_eq!(r.confidence, 0.9);
+        assert!(r.languages.is_none());
+
+        // A fully valid declaration with `languages` set.
+        let r2: Rule = serde_json::from_value(json!({
+            "id": "r", "phase": "Synthesize", "selector": { "kind": "call" },
+            "binding": [], "languages": ["php"]
+        }))
+        .unwrap();
+        assert!(r2.languages.is_some());
+
+        // Required fields are required; unknown keys are rejected.
+        assert!(serde_json::from_value::<Rule>(json!({ "phase": "Synthesize", "selector": { "kind": "call" }, "binding": [] })).is_err(), "missing id");
+        assert!(serde_json::from_value::<Rule>(json!({ "id": "r", "phase": "Synthesize", "binding": [] })).is_err(), "missing selector");
+        assert!(serde_json::from_value::<Rule>(json!({
+            "id": "r", "phase": "Synthesize", "selector": { "kind": "call" }, "binding": [], "bogus": 1
+        }))
+        .is_err());
+    }
+
+    // ------------------------------------------------------- Selector: internally-tagged, snake_case, `where` key
+
+    #[test]
+    fn selector_tags_and_where_key() {
+        // `r#where` serialises as `where` (raw identifier). Option/Vec fields render as explicit null, so we
+        // check the `kind` tag and round-trip rather than byte-exact shape.
+        let v = serde_json::to_value(Selector::Call { callee: None, r#where: vec![] }).unwrap();
+        assert_eq!(v["kind"], json!("call"));
+        assert!(serde_json::from_value::<Selector>(json!({ "kind": "call", "where": [] })).is_ok());
+
+        for (s, tag) in [
+            (Selector::Inheritance { base: None, with_property: None }, "inheritance"),
+            (Selector::ConfigEntry { file: None, key_path: None, r#where: vec![] }, "config_entry"),
+            (Selector::Node { node_kind: None, r#where: vec![] }, "node"),
+        ] {
+            assert_eq!(serde_json::to_value(s).unwrap()["kind"], json!(tag));
+        }
+
+        assert!(serde_json::from_value::<Selector>(json!({ "kind": "call", "bogus": 1 })).is_err());
+        assert!(serde_json::from_value::<Selector>(json!({ "kind": "bogus" })).is_err());
+    }
+
+    // ------------------------------------------------------- Predicate: externally-tagged, snake_case, deny_unknown_fields
+
+    #[test]
+    fn predicate_tags_and_round_trip() {
+        // Predicates that carry no `ValueSource` serialise compactly (Option fields are not nested), so the
+        // exact tag+shape assertion holds; each also round-trips.
+        let cases: Vec<(Predicate, serde_json::Value)> = vec![
+            (Predicate::HasProperty("x".into()), json!({ "has_property": "x" })),
+            (Predicate::NameMatches("c".into()), json!({ "name_matches": "c" })),
+            (Predicate::FqnMatches("ns".into()), json!({ "fqn_matches": "ns" })),
+            (Predicate::HasMissing(true), json!({ "has_missing": true })),
+            (Predicate::FanInGte(5), json!({ "fan_in_gte": 5 })),
+            (Predicate::ArgCount(2), json!({ "arg_count": 2 })),
+            (Predicate::EntryArityGte(1), json!({ "entry_arity_gte": 1 })),
+            (Predicate::NameNotIn(vec!["a".into()]), json!({ "name_not_in": ["a"] })),
+            (Predicate::NoneOfCapability(vec!["c".into()]), json!({ "none_of_capability": ["c"] })),
+            (Predicate::NotClaimedBy("e".into()), json!({ "not_claimed_by": "e" })),
+            (Predicate::HasIncoming("k".into()), json!({ "has_incoming": "k" })),
+            (Predicate::ColumnsMatch { table: "t".into(), names: vec!["n".into()] }, json!({ "columns_match": { "table": "t", "names": ["n"] } })),
+            (Predicate::HasAnnotation { kind: "k".into() }, json!({ "has_annotation": { "kind": "k" } })),
+            (Predicate::PropertyIs { name: "n".into(), value: "v".into() }, json!({ "property_is": { "name": "n", "value": "v" } })),
+            (Predicate::ArgStartsWith { arg: 0, prefix: "p".into() }, json!({ "arg_starts_with": { "arg": 0, "prefix": "p" } })),
+        ];
+        for (p, expected) in cases {
+            assert_eq!(serde_json::to_value(&p).unwrap(), expected, "serialised tag/shape");
+            assert!(serde_json::from_value::<Predicate>(expected).is_ok(), "round-trip");
+        }
+
+        // `InSymbolTable` carries a `ValueSource`, which serde renders with explicit `null`s for every Option
+        // field — assert the tag is present and the whole thing round-trips (rather than byte-exact shape).
+        let in_sym = Predicate::InSymbolTable {
+            table: "t".into(),
+            key_of: ValueSource { arg: Some(0), ..Default::default() },
+        };
+        let v = serde_json::to_value(&in_sym).unwrap();
+        assert!(v.get("in_symbol_table").is_some());
+        assert!(serde_json::from_value::<Predicate>(v).is_ok());
+
+        // `deny_unknown_fields` on a struct variant rejects stray keys.
+        assert!(serde_json::from_value::<Predicate>(json!({ "in_symbol_table": { "table": "t", "key_of": { "arg": 0 }, "bogus": 1 } })).is_err());
+    }
+
+    // ------------------------------------------------------- Action: PascalCase, externally-tagged
+
+    #[test]
+    fn action_pascal_case_tag() {
+        let a = serde_json::to_value(Action::Annotate(AnnotateAction::default())).unwrap();
+        assert!(a.get("Annotate").is_some() && a.get("Synthesize").is_none());
+        let s = serde_json::to_value(Action::Synthesize(SynthesizeAction::default())).unwrap();
+        assert!(s.get("Synthesize").is_some());
+        let l = serde_json::to_value(Action::Link(LinkAction::default())).unwrap();
+        assert!(l.get("Link").is_some());
+        let p = serde_json::to_value(Action::Project(ProjectAction::default())).unwrap();
+        assert!(p.get("Project").is_some());
+        // PascalCase variant tags are authorable directly.
+        assert!(matches!(serde_json::from_value::<Action>(json!({ "Annotate": {} })).unwrap(), Action::Annotate(_)));
+        assert!(matches!(serde_json::from_value::<Action>(json!({ "Synthesize": {} })).unwrap(), Action::Synthesize(_)));
+    }
+
+    // ------------------------------------------------------- AnnotateAction: manual Default + removed-field contract
+
+    #[test]
+    fn annotate_action_default_and_removed_fields_rejected() {
+        let a: AnnotateAction = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(a.channel.0, AnnotationChannel::FKB_MARK, "default channel is FkbMark");
+        assert!(matches!(a.target, AnnotateTarget::Matched));
+        assert!(a.confidence_scale.is_none());
+        assert!(a.phase.is_none());
+        assert!(a.annotations.is_empty());
+
+        // The fields that were removed because they were never read must now be a load error, not a silent no-op.
+        assert!(serde_json::from_value::<AnnotateAction>(json!({ "scope": ["x"] })).is_err());
+        assert!(serde_json::from_value::<AnnotateAction>(json!({ "where": [] })).is_err());
+        assert!(serde_json::from_value::<AnnotateAction>(json!({ "bogus": 1 })).is_err());
+    }
+
+    // ------------------------------------------------------- other action/selector sub-types
+
+    #[test]
+    fn annotate_target_and_subkind_source_tags() {
+        assert_eq!(serde_json::to_value(AnnotateTarget::Matched).unwrap(), json!("matched"));
+        assert_eq!(serde_json::to_value(AnnotateTarget::SynthesizedRef("x".into())).unwrap(), json!({ "synthesized_ref": "x" }));
+        assert!(serde_json::from_value::<AnnotateTarget>(json!({ "from_field": { "source": { "arg": 0 } } })).is_ok());
+        assert!(matches!(AnnotateTarget::default(), AnnotateTarget::Matched));
+
+        assert_eq!(serde_json::to_value(SubkindSource::Literal("x".into())).unwrap(), json!({ "literal": "x" }));
+        assert_eq!(serde_json::to_value(SubkindSource::Computed("x".into())).unwrap(), json!({ "computed": "x" }));
+        assert!(serde_json::from_value::<SubkindSource>(json!({ "from_symbol_table": { "table": "t", "field": "f" } })).is_ok());
+        assert!(serde_json::from_value::<SubkindSource>(json!({ "from_fan_in": { "thresholds": { "high": 1, "medium": 1 } } })).is_ok());
+        // `deny_unknown_fields` on the enum's struct variant.
+        assert!(serde_json::from_value::<SubkindSource>(json!({ "literal": "x", "bogus": 1 })).is_err());
+    }
+
+    #[test]
+    fn spec_defaults_and_unknown_fields() {
+        // AnnotationSpec: confidence defaults to 1.0; unknown field rejected.
+        let aspec: AnnotationSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(aspec.confidence, 1.0);
+        assert_eq!(aspec.kind, "");
+        assert!(serde_json::from_value::<AnnotationSpec>(json!({ "bogus": 1 })).is_err());
+
+        // SynthesizeAction: confidence defaults to 0.9; unknown field rejected.
+        let syn: SynthesizeAction = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(syn.confidence, 0.9);
+        assert!(serde_json::from_value::<SynthesizeAction>(json!({ "bogus": 1 })).is_err());
+
+        // BridgeSpec / ExpandSpec / IdentitySpec / ExpandVariant accept `{}` (struct default) and reject extras.
+        assert!(serde_json::from_value::<BridgeSpec>(json!({})).is_ok());
+        assert!(serde_json::from_value::<BridgeSpec>(json!({ "bogus": 1 })).is_err());
+        assert!(serde_json::from_value::<ExpandSpec>(json!({})).is_ok());
+        assert!(serde_json::from_value::<ExpandSpec>(json!({ "bogus": 1 })).is_err());
+        assert!(serde_json::from_value::<IdentitySpec>(json!({})).is_ok());
+        assert!(serde_json::from_value::<IdentitySpec>(json!({ "bogus": 1 })).is_err());
+        let ev: ExpandVariant = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(ev.name, "");
+        assert!(serde_json::from_value::<ExpandVariant>(json!({ "bogus": 1 })).is_err());
+
+        // FanInThresholds: `high`/`medium` required.
+        assert!(serde_json::from_value::<FanInThresholds>(json!({})).is_err(), "missing high/medium");
+        assert!(serde_json::from_value::<FanInThresholds>(json!({ "high": 10, "medium": 3, "bogus": 1 })).is_err());
+        assert!(serde_json::from_value::<FanInThresholds>(json!({ "high": 10, "medium": 3 })).is_ok());
+    }
+}
+

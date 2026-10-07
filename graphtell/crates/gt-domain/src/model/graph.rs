@@ -784,4 +784,64 @@ mod tests {
         assert!(serde_json::from_value::<MergeStrategy>(json!("max_by_kind")).is_err());
         assert!(serde_json::from_value::<MergeStrategy>(json!("MAXBYKIND")).is_err());
     }
+
+    /// Like the persisted records, the *input* records (`NewNode` / `NewEdge`) are written then read back by the
+    /// store, so a renamed field would also silently drop. Pin their round-trip plus the on-wire field names.
+    #[test]
+    fn new_node_and_new_edge_round_trip() {
+        let mut nn = NewNode::new(ProjectId(7), NodeKind("Class".to_string()), "User");
+        nn.id = Some(NodeId(3));
+        nn.sub_project_id = Some(SubProjectId(9));
+        nn.fqn = Some("app\\User".to_string());
+        nn.identity = Some(IdentityKey::named("user"));
+        nn.file_id = Some(FileId(4));
+        nn.language = Language::new("php");
+        nn.phase = Phase("Synthesize".to_string());
+        nn.confidence = 0.8;
+        nn.properties = json!({ "cols": 2 });
+        let back: NewNode = round_trip(&nn);
+        assert_eq!(back.id, Some(NodeId(3)));
+        assert_eq!(back.sub_project_id, Some(SubProjectId(9)));
+        assert_eq!(back.name, "User");
+        assert_eq!(back.fqn.as_deref(), Some("app\\User"));
+        assert_eq!(back.kind.as_str(), "Class");
+        assert_eq!(back.identity.map(|i| i.value), Some("user".to_string()));
+        assert_eq!(back.confidence, 0.8);
+        assert_eq!(back.properties, json!({ "cols": 2 }));
+        // The field names must be exactly these on the wire — a rename reloads as an emptied record.
+        let v = serde_json::to_value(&nn).unwrap();
+        for f in [
+            "project_id", "kind", "name", "fqn", "identity", "file_id", "span", "language", "phase",
+            "confidence", "properties",
+        ] {
+            assert!(v.get(f).is_some(), "NewNode field {f} must be present on the wire");
+        }
+
+        let ne = NewEdge::new(ProjectId(1), EdgeKind("Calls".to_string()), NodeId(1), NodeId(2));
+        let back: NewEdge = round_trip(&ne);
+        assert_eq!((back.from_id, back.to_id), (NodeId(1), NodeId(2)));
+        assert_eq!(back.kind.as_str(), "Calls");
+        assert_eq!(back.phase.0, Phase::CF_AST);
+    }
+
+    /// `Node.sub_project_id` is the partition key; it must survive a round-trip when set (the `node` helper above
+    /// leaves it `None`, so that path was untested).
+    #[test]
+    fn node_keeps_sub_project_id_through_round_trip() {
+        let mut n = node("Svc", Some("app\\Svc"), None);
+        n.sub_project_id = Some(SubProjectId(5));
+        let back: Node = round_trip(&n);
+        assert_eq!(back.sub_project_id, Some(SubProjectId(5)));
+        assert_eq!(back.display_name(), "app\\Svc");
+    }
+
+    /// `Severity` crosses the API/DB boundary; only the exact lower-case spellings are valid, so a typo or any
+    /// unknown level must error rather than degrade to `Info` (the four valid spellings are pinned by
+    /// `severity_round_trips_in_snake_case`).
+    #[test]
+    fn severity_rejects_unknown_and_misspelled_variants() {
+        for bad in ["fatal", "warn", "Error", "WARNING", "trace", ""] {
+            assert!(serde_json::from_value::<Severity>(json!(bad)).is_err(), "{bad} is not a valid Severity");
+        }
+    }
 }

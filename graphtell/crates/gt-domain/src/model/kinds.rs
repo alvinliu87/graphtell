@@ -785,4 +785,68 @@ mod tests {
         assert_eq!(kinds.first().unwrap().as_str(), "Class", "Ord follows string order so the output stays stable");
         assert!(EdgeKind::from("ReadsDb") < EdgeKind::from("WritesDb"));
     }
+
+    /// `AnnotationKind` is also macro-generated (like `NodeKind` / `EdgeKind`) but had no dedicated test: pin its
+    /// constant spellings (persisted on every annotation row), the bare-string serde shape, the `Default` contract
+    /// (the literal `"Unknown"` — `AnnotationKind` has no `UNKNOWN` constant of its own), the `is` /
+    /// `eq_ignore_ascii_case` helpers, and registry idempotency.
+    #[test]
+    fn annotation_kind_spellings_default_and_match_helpers() {
+        for (c, text) in [
+            (AnnotationKind::PII, "pii"),
+            (AnnotationKind::DATA_CRITICALITY, "data.criticality"),
+            (AnnotationKind::CONFIG_STORAGE, "config.storage"),
+            (AnnotationKind::CONFIG_MUTABILITY, "config.mutability"),
+            (AnnotationKind::AUTH_PUBLIC, "auth.public"),
+            (AnnotationKind::I18N_MISSING_LOCALE, "i18n.missing_locale"),
+        ] {
+            assert_eq!(AnnotationKind::from(c).as_str(), text, "constant {text} spelling is part of the persisted contract");
+            let round: AnnotationKind = serde_json::from_value(serde_json::json!(text)).unwrap();
+            assert_eq!(round, AnnotationKind::from(c), "{text} must round-trip verbatim");
+            assert_eq!(round.to_string(), text, "Display writes the bare string");
+        }
+
+        // Macro-generated `Default` is the literal "Unknown" string — `AnnotationKind` has no `UNKNOWN` constant,
+        // so this is intentionally *not* any of the real kinds.
+        assert_eq!(AnnotationKind::default().as_str(), "Unknown");
+        assert_ne!(AnnotationKind::default(), AnnotationKind::from(AnnotationKind::PII));
+
+        // Generated `is` (exact) and `eq_ignore_ascii_case` helpers.
+        assert!(AnnotationKind::from("pii").is("pii"));
+        assert!(!AnnotationKind::from("pii").is("PII"));
+        assert!(AnnotationKind::from("pii").eq_ignore_ascii_case("PII"));
+        assert!(!AnnotationKind::from("pii").eq_ignore_ascii_case("pi"));
+
+        // `new` and `From<String>` build the same value.
+        assert_eq!(AnnotationKind::new("x"), AnnotationKind::from("x".to_string()));
+
+        // The registry merges idempotently (globals are shared across parallel tests, so use a unique kind and
+        // assert membership only).
+        let k = "graph.edge.dead".to_string();
+        assert!(!extra_annotation_kinds().contains(&k));
+        register_annotation_kinds(vec![k.clone(), k.clone()]);
+        assert_eq!(
+            extra_annotation_kinds().iter().filter(|x| **x == k).count(),
+            1,
+            "duplicate registration must not add the kind twice"
+        );
+    }
+
+    /// `Language::default()` is the **empty** string (not "unknown"); an empty language must survive the
+    /// `#[serde(transparent)]` round-trip — the existing `language_covers_its_constants...` test never exercised
+    /// the default / `From<String>` / empty path.
+    #[test]
+    fn language_default_is_empty_and_round_trips_as_a_bare_string() {
+        assert_eq!(Language::default().as_str(), "");
+        assert_eq!(Language::default(), Language::new(""));
+        let empty: Language = serde_json::from_value(serde_json::json!("")).unwrap();
+        assert_eq!(empty, Language::default(), "an empty language round-trips as the empty default");
+        assert!(!empty.is_php(), "the empty language is not php");
+
+        // `From<&str>` and `new` agree (note `Language` is hand-written and has no `From<String>`, unlike the
+        // macro-generated kinds).
+        assert_eq!(Language::from("go"), Language::new("go"));
+        assert!(!Language::from("go").is_php());
+        assert_eq!(Language::new("Rust").to_string(), "Rust", "Display writes the bare string");
+    }
 }

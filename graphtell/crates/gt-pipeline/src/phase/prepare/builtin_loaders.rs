@@ -1405,4 +1405,376 @@ pub(crate) fn load_declared_middleware(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::PipelineContext;
+    use gt_adapter_fs::StdFileSystem;
+    use gt_domain::model::{
+        FactValue, FrameworkKnowledge, Language, NodeId, NormalizeStep, Phase, Project, ProjectId,
+        ProjectStatus, Span, SubProject, SubProjectId,
+    };
+    use crate::workspace::CallRecord;
+    use gt_domain::port::{
+        FileSystem, LanguageParser, ParserRegistry, TechStackAdapter, TechStackRegistry,
+    };
+    use serde_json::json;
+    use std::path::Path;
 
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "graphtell-builtin-neg-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir scratch dir");
+        dir
+    }
+
+    fn new_ctx(root: &Path) -> PipelineContext {
+        PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: root.to_path_buf(),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        })
+    }
+
+    fn php_sub(root: &Path) -> SubProject {
+        SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "backend".into(),
+            root_path: root.to_path_buf(),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        }
+    }
+
+    /// Minimal call-site builder (mirrors the helper used throughout the prepare tests).
+    fn call(
+        file: &str,
+        receiver: &str,
+        method: &str,
+        args: Vec<FactValue>,
+        start_line: u32,
+        end_line: u32,
+        byte: u32,
+        end_byte: u32,
+    ) -> CallRecord {
+        CallRecord {
+            node: NodeId::new(0),
+            owner: NodeId::new(0),
+            owner_fqn: "<file>".into(),
+            owner_class: None,
+            callee: format!("{}::{}", receiver, method),
+            receiver: Some(receiver.into()),
+            method: Some(method.into()),
+            args,
+            db_table: None,
+            in_loop: false,
+            entity: None,
+            span: Span {
+                start_line,
+                end_line,
+                start_byte: byte,
+                end_byte,
+            },
+            file: file.into(),
+            sub: None,
+            language: Language::new(Language::PHP),
+        }
+    }
+
+    /// A registry with no adapter for any language — exercises the `adapter_for(...) == None` early-return.
+    struct EmptyRegistry;
+    impl TechStackRegistry for EmptyRegistry {
+        fn adapter_for(&self, _language: &Language) -> Option<&dyn TechStackAdapter> {
+            None
+        }
+    }
+
+    struct NullParsers;
+    impl ParserRegistry for NullParsers {
+        fn parser_for(&self, _: &Language) -> Option<&dyn LanguageParser> {
+            None
+        }
+        fn language_for_extension(&self, _: &str) -> Option<Language> {
+            None
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            Vec::new()
+        }
+    }
+
+    // ------------------------------------------------------- load_config_keys
+
+    /// "Which callables read config" is **stack knowledge** declared by FKB. Declaring nothing must collect
+    /// nothing — the old kernel default (`sys_config` / `::get`) silently applied one product's helpers to
+    /// every stack. This pins the empty-params guard at the top of `load_config_keys`.
+    #[test]
+    fn config_keys_collects_nothing_without_declared_accessors() {
+        let mut ctx = new_ctx(Path::new("/t"));
+        // A call that *would* match the old `::get` default, to prove even a plausible call is ignored.
+        ctx.ws.calls.push(call(
+            "config/sys.php",
+            "Config",
+            "get",
+            vec![FactValue::String("sys.site_name".into())],
+            3,
+            3,
+            10,
+            40,
+        ));
+        let sub = php_sub(Path::new("/t"));
+        load_config_keys(&mut ctx, &json!({}), &sub);
+        assert!(
+            ctx.ws.symbols.get("config_keys").map_or(true, |t| t.is_empty()),
+            "with no declared accessors / suffixes, no config key may be collected"
+        );
+    }
+
+    /// A key that is empty or carried in a non-string arg must not be written — even when a suffix is declared.
+    #[test]
+    fn config_keys_skips_empty_and_non_string_args() {
+        let mut ctx = new_ctx(Path::new("/t"));
+        let f = "config/sys.php";
+        ctx.ws.calls = vec![
+            call(f, "Config", "get", vec![FactValue::String("".into())], 1, 1, 10, 20),
+            call(f, "Config", "get", vec![FactValue::Bool(true)], 2, 2, 30, 40),
+            call(f, "Config", "get", vec![FactValue::Int(5)], 3, 3, 50, 60),
+        ];
+        let sub = php_sub(Path::new("/t"));
+        load_config_keys(&mut ctx, &json!({ "suffixes": ["::get"] }), &sub);
+        assert!(
+            ctx.ws.symbols.get("config_keys").map_or(true, |t| t.is_empty()),
+            "empty / non-string config keys must not be written"
+        );
+    }
+
+    // ------------------------------------------------------- load_middleware_aliases
+
+    /// `end` / `separator` / `extensions` are stack syntax; the kernel has no default for them. Omitting any
+    /// of them must write **no** alias facts (and log), not silently apply one stack's syntax.
+    #[test]
+    fn middleware_aliases_requires_declared_stack_syntax() {
+        let mut ctx = new_ctx(Path::new("/t"));
+        let sub = php_sub(Path::new("/t"));
+        // `paths` is present (so we clear the paths-empty guard) but the stack syntax is omitted.
+        load_middleware_aliases(
+            &mut ctx,
+            &sub,
+            Path::new("/t"),
+            &json!({ "paths": ["app/mw.php"], "markers": ["$routeMiddleware"] }),
+        );
+        assert!(
+            ctx.ws.symbols.get("middleware_aliases").map_or(true, |t| t.is_empty()),
+            "missing stack syntax must write no alias facts (no kernel default)"
+        );
+    }
+
+    /// `require_namespace` declares "a value must carry a namespace separator to count as a class"; a bare
+    /// identifier (`Auth`) must then be skipped, not guessed into a class.
+    #[test]
+    fn middleware_aliases_requires_namespace_when_declared() {
+        let dir = scratch_dir("mw-ns");
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(
+            dir.join("app").join("mw.php"),
+            "<?php return [\n  'auth' => Auth::class,\n];\n",
+        )
+        .unwrap();
+        let mut ctx = new_ctx(&dir);
+        let sub = php_sub(&dir);
+        load_middleware_aliases(
+            &mut ctx,
+            &sub,
+            &dir,
+            &json!({
+                "paths": ["app/mw.php"],
+                "markers": ["return"],
+                "end": "];",
+                "separator": "=>",
+                "extensions": ["php"],
+                "class_suffix": "::class",
+                "require_namespace": true,
+            }),
+        );
+        assert!(
+            ctx.ws.symbols.get("middleware_aliases").map_or(true, |t| t.is_empty()),
+            "without a namespace separator a value must not count as a class when require_namespace is set"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When the declared block marker is absent from a file, the block is not found and the file contributes
+    /// nothing — a silent full-file scan would collect unrelated `key => ...` lines.
+    #[test]
+    fn middleware_aliases_skips_file_without_marker() {
+        let dir = scratch_dir("mw-marker");
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(
+            dir.join("app").join("mw.php"),
+            "<?php return [\n  'auth' => App\\Auth::class,\n];\n",
+        )
+        .unwrap();
+        let mut ctx = new_ctx(&dir);
+        let sub = php_sub(&dir);
+        load_middleware_aliases(
+            &mut ctx,
+            &sub,
+            &dir,
+            &json!({
+                "paths": ["app/mw.php"],
+                "markers": ["$nonexistentMarker"],
+                "end": "];",
+                "separator": "=>",
+                "extensions": ["php"],
+                "class_suffix": "::class",
+            }),
+        );
+        assert!(
+            ctx.ws.symbols.get("middleware_aliases").map_or(true, |t| t.is_empty()),
+            "a file without the declared marker must contribute no aliases"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------- load_declared_middleware
+
+    /// The array *syntax* (`open` / `close` / `extensions`) is stack knowledge; the kernel has no default.
+    /// Omitting it must write **no** facts, not fall back to a PHP array shape.
+    #[test]
+    fn declared_middleware_requires_declared_array_syntax() {
+        let mut ctx = new_ctx(Path::new("/t"));
+        let sub = php_sub(Path::new("/t"));
+        load_declared_middleware(
+            &mut ctx,
+            &sub,
+            Path::new("/t"),
+            &json!({ "paths": ["app/middleware.php"] }),
+        );
+        assert!(
+            ctx.ws.symbols.get("declared_middleware").map_or(true, |t| t.is_empty()),
+            "missing array-syntax params must write no facts (no kernel default)"
+        );
+    }
+
+    // ------------------------------------------------------- load_nginx
+
+    /// A `.conf` file with none of `server_name` / `root` / `location` is not an nginx server block — it must
+    /// produce no `nginx` symbol rather than an empty one.
+    #[test]
+    fn nginx_skips_files_with_no_directives() {
+        let dir = scratch_dir("nginx-neg");
+        std::fs::write(dir.join("blank.conf"), "this is not an nginx config\n").unwrap();
+        let mut ctx = new_ctx(&dir);
+        let sub = php_sub(&dir);
+        load_nginx(&mut ctx, &sub, &dir, &StdFileSystem::new());
+        assert!(
+            ctx.ws.symbols.get("nginx").map_or(true, |t| t.is_empty()),
+            "a file with no server_name/root/location must not produce an nginx symbol"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------- resolve_guard_class
+
+    /// An unresolvable alias must not be fabricated — return `None` and let the caller skip. This is the
+    /// deliberate "better missing than guessed" behaviour; a default that invented a class would silently
+    /// attach the wrong middleware node.
+    #[test]
+    fn resolve_guard_class_returns_none_when_alias_missing() {
+        let ctx = new_ctx(Path::new("/t"));
+        // Plain alias not present in the table.
+        assert_eq!(
+            resolve_guard_class(&ctx, "auth", Some("middleware_aliases"), &[]),
+            None,
+            "an unresolvable alias must not be fabricated"
+        );
+        // Param-bearing alias (`throttle:60`): the part before the colon is looked up and, when missing,
+        // must still resolve to None rather than to `throttle`.
+        assert_eq!(
+            resolve_guard_class(&ctx, "throttle:60", Some("middleware_aliases"), &[]),
+            None,
+            "a param-bearing alias whose base is missing must not be fabricated"
+        );
+    }
+
+    // ------------------------------------------------------- run_builtin / run_adapter_loader
+
+    /// The `routes` built-in only acts when `fk.route_guards` is declared; with no spec it must be a no-op
+    /// (no route groups, no route guard scopes, no route_list) — a hard-coded route table would otherwise
+    /// be synthesized for every framework.
+    #[test]
+    fn run_builtin_routes_noop_without_route_guards() {
+        let mut ctx = new_ctx(Path::new("/t"));
+        ctx.ws.calls.push(call(
+            "app/r.php",
+            "Route",
+            "get",
+            vec![FactValue::String("info".into())],
+            1,
+            1,
+            0,
+            10,
+        ));
+        let sub = php_sub(Path::new("/t"));
+        let fk = FrameworkKnowledge {
+            id: "x".into(),
+            ..Default::default()
+        }; // route_guards == None
+        let contract_steps: Vec<NormalizeStep> = Vec::new();
+        run_builtin(
+            &mut ctx,
+            "routes",
+            &json!({}),
+            &sub,
+            Path::new("/t"),
+            &StdFileSystem::new(),
+            &NullParsers,
+            &Phase(Phase::PREPARE.to_string()),
+            &contract_steps,
+            &fk,
+            &EmptyRegistry,
+        );
+        assert!(
+            ctx.ws.route_guard_scopes().is_empty(),
+            "routes loader with no route_guards must not add guard scopes"
+        );
+        assert!(
+            ctx.ws.symbols.get("route_list").map_or(true, |t| t.is_empty()),
+            "routes loader with no route_guards must not add route_list"
+        );
+    }
+
+    /// A stack-specific loader name with no adapter for the sub-project's language must be a silent no-op,
+    /// not fall back to adopting PHP behaviour.
+    #[test]
+    fn adapter_loader_noop_without_matching_adapter() {
+        let mut ctx = new_ctx(Path::new("/t"));
+        let sub = php_sub(Path::new("/t"));
+        run_adapter_loader(
+            &mut ctx,
+            &EmptyRegistry,
+            &sub,
+            Path::new("/t"),
+            &StdFileSystem::new(),
+            &NullParsers,
+            "migration_schema",
+            &json!({}),
+        );
+        assert!(
+            ctx.ws.symbols.get("schema").map_or(true, |t| t.is_empty()),
+            "with no adapter for the language, the loader must be a no-op (no PHP behaviour adopted)"
+        );
+    }
+}

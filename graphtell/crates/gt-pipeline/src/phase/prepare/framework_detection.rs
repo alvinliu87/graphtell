@@ -157,3 +157,423 @@ pub(crate) fn collect_code_evidence(ctx: &PipelineContext, sub: &gt_domain::mode
     ev
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        collect_code_evidence, detect_frameworks, CodeEvidence,
+    };
+    use crate::context::PipelineContext;
+    use crate::workspace::CallRecord;
+    use gt_domain::model::{
+        Detector, FrameworkKnowledge, KnowledgeScope, Language, NodeId, Project, ProjectId,
+        ProjectStatus, Span, SubProject, SubProjectId,
+    };
+    use gt_domain::port::{FileSystem, KnowledgeProvider, TechStackAdapter, TechStackRegistry};
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    /// A knowledge base of exactly the given entries, so detection needs no YAML directory.
+    struct StaticKb(Vec<FrameworkKnowledge>);
+    impl KnowledgeProvider for StaticKb {
+        fn all(&self) -> Vec<&FrameworkKnowledge> {
+            self.0.iter().collect()
+        }
+        fn by_id(&self, id: &str) -> Option<&FrameworkKnowledge> {
+            self.0.iter().find(|fk| fk.id == id)
+        }
+    }
+
+    /// A filesystem where nothing exists: the detectors under test never touch the disk.
+    struct NoFs;
+    impl FileSystem for NoFs {
+        fn exists(&self, _: &Path) -> bool {
+            false
+        }
+        fn is_dir(&self, _: &Path) -> bool {
+            false
+        }
+        fn read_to_string(&self, _: &Path) -> gt_domain::error::Result<String> {
+            Err(gt_domain::error::DomainError::infra("no fs"))
+        }
+        fn len(&self, _: &Path) -> gt_domain::error::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    /// A registry with no adapter — fine for the negative paths below, where the manifest / lock file is
+    /// absent and `manifest_has` / `lock_has` short-circuit on the missing read before reaching the adapter.
+    struct EmptyTechStack;
+    impl TechStackRegistry for EmptyTechStack {
+        fn adapter_for(&self, _: &Language) -> Option<&dyn TechStackAdapter> {
+            None
+        }
+    }
+
+    fn fk(
+        id: &str,
+        scope: KnowledgeScope,
+        language: Language,
+        detectors: Vec<Detector>,
+    ) -> FrameworkKnowledge {
+        FrameworkKnowledge {
+            id: id.into(),
+            display_name: id.into(),
+            language,
+            scope,
+            detectors,
+            ..Default::default()
+        }
+    }
+
+    fn sub(root: &Path, language: Language) -> SubProject {
+        SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId(1),
+            name: "app".into(),
+            root_path: root.to_path_buf(),
+            language,
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        }
+    }
+
+    fn evidence(
+        imports: &[&str],
+        callees: &[(&str, Option<&str>, Option<&str>)],
+    ) -> CodeEvidence {
+        CodeEvidence {
+            imports: imports.iter().map(|s| s.to_ascii_lowercase()).collect(),
+            callees: callees
+                .iter()
+                .map(|(c, r, m)| (c.to_string(), (r.map(str::to_string), m.map(str::to_string))))
+                .collect(),
+        }
+    }
+
+    fn call(
+        file: &str,
+        sub_id: Option<SubProjectId>,
+        callee: &str,
+        receiver: Option<&str>,
+        method: Option<&str>,
+    ) -> CallRecord {
+        CallRecord {
+            node: NodeId::new(0),
+            owner: NodeId::new(0),
+            owner_fqn: String::new(),
+            owner_class: None,
+            callee: callee.to_string(),
+            receiver: receiver.map(str::to_string),
+            method: method.map(str::to_string),
+            args: Vec::new(),
+            db_table: None,
+            in_loop: false,
+            entity: None,
+            span: Span {
+                start_line: 0,
+                end_line: 0,
+                start_byte: 0,
+                end_byte: 0,
+            },
+            file: file.to_string(),
+            sub: sub_id,
+            language: Language::new(Language::PHP),
+        }
+    }
+
+    // ------------------------------------------------------- detect_frameworks gates
+
+    /// The scope gate: a framework whose `scope` differs from the one being detected must be excluded even
+    /// when its detector *would* match the evidence. This pins the `if fk.scope != scope` early `continue`.
+    #[test]
+    fn scope_mismatch_excludes_framework() {
+        let root = Path::new("/p");
+        let sub = sub(root, Language::new(Language::PHP));
+        // A `Project`-scoped framework whose detector would match — excluded because we asked for `Framework`.
+        let kb = StaticKb(vec![fk(
+            "proj-kb",
+            KnowledgeScope::Project,
+            Language::new(Language::PHP),
+            vec![Detector::ImportExists {
+                symbol: "GuzzleHttp\\Client".into(),
+                confidence: 0.9,
+            }],
+        )]);
+        let ev = evidence(&["guzzlehttp\\client"], &[]);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev, &EmptyTechStack);
+        assert!(
+            hits.is_empty(),
+            "a framework whose scope != requested scope must be excluded even though its detector matches"
+        );
+
+        // Positive control: a framework in the requested scope with matching evidence does fire.
+        let kb2 = StaticKb(vec![fk(
+            "php-fw",
+            KnowledgeScope::Framework,
+            Language::new(Language::PHP),
+            vec![Detector::ImportExists {
+                symbol: "GuzzleHttp\\Client".into(),
+                confidence: 0.9,
+            }],
+        )]);
+        let ev2 = evidence(&["guzzlehttp\\client"], &[]);
+        let hits2 = detect_frameworks(
+            &kb2,
+            &NoFs,
+            &sub,
+            root,
+            KnowledgeScope::Framework,
+            &ev2,
+            &EmptyTechStack,
+        );
+        assert_eq!(
+            hits2,
+            vec!["php-fw".to_string()],
+            "a framework in the requested scope with matching evidence must fire"
+        );
+    }
+
+    /// The language gate: a framework declared for another language must be excluded even when its detector
+    /// matches the (unrelated) sub-project's evidence — pinned by `if fk.language != sub.language && ...`.
+    #[test]
+    fn language_mismatch_excludes_framework() {
+        let root = Path::new("/p");
+        let sub = sub(root, Language::new(Language::PHP));
+        let ev = evidence(&["guzzlehttp\\client"], &[]);
+        // A JS framework whose detector matches the PHP code evidence.
+        let kb = StaticKb(vec![fk(
+            "js-fw",
+            KnowledgeScope::Framework,
+            Language::new(Language::JAVASCRIPT),
+            vec![Detector::ImportExists {
+                symbol: "GuzzleHttp\\Client".into(),
+                confidence: 0.9,
+            }],
+        )]);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev, &EmptyTechStack);
+        assert!(
+            hits.is_empty(),
+            "a framework for another language must be excluded even when its detector matches"
+        );
+    }
+
+    /// When the sub-project's language is `UNKNOWN`, the language gate is bypassed (`sub.language.as_str()
+    /// != Language::UNKNOWN` short-circuits) so a framework of any language may still be recognised.
+    #[test]
+    fn unknown_language_sub_bypasses_language_gate() {
+        let root = Path::new("/p");
+        // An unknown-language sub-project.
+        let sub = sub(root, Language::new(Language::UNKNOWN));
+        let ev = evidence(&["guzzlehttp\\client"], &[]);
+        let kb = StaticKb(vec![fk(
+            "js-fw",
+            KnowledgeScope::Framework,
+            Language::new(Language::JAVASCRIPT),
+            vec![Detector::ImportExists {
+                symbol: "GuzzleHttp\\Client".into(),
+                confidence: 0.9,
+            }],
+        )]);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev, &EmptyTechStack);
+        assert_eq!(
+            hits,
+            vec!["js-fw".to_string()],
+            "an unknown-language sub must bypass the language gate and still recognise frameworks"
+        );
+    }
+
+    // ------------------------------------------------------- detector-absent negatives
+
+    /// `Detector::FileExists` whose characteristic file is absent (on both the sub root and the project root)
+    /// must not activate the framework.
+    #[test]
+    fn file_exists_absent_is_not_a_hit() {
+        let root = Path::new("/p");
+        let sub = sub(root, Language::new(Language::PHP));
+        let kb = StaticKb(vec![fk(
+            "fw",
+            KnowledgeScope::Framework,
+            Language::new(Language::PHP),
+            vec![Detector::FileExists {
+                path: "composer.json".into(),
+                confidence: 0.9,
+            }],
+        )]);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &evidence(&[], &[]), &EmptyTechStack);
+        assert!(
+            hits.is_empty(),
+            "a missing characteristic file must not activate the framework"
+        );
+    }
+
+    /// `Detector::ManifestDependency` whose manifest is absent must not activate the framework.
+    #[test]
+    fn manifest_dependency_absent_is_not_a_hit() {
+        let root = Path::new("/p");
+        let sub = sub(root, Language::new(Language::PHP));
+        let kb = StaticKb(vec![fk(
+            "fw",
+            KnowledgeScope::Framework,
+            Language::new(Language::PHP),
+            vec![Detector::ManifestDependency {
+                manifest: "composer.json".into(),
+                dependency: "laravel/framework".into(),
+                confidence: 0.9,
+            }],
+        )]);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &evidence(&[], &[]), &EmptyTechStack);
+        assert!(
+            hits.is_empty(),
+            "an absent manifest dependency must not activate the framework"
+        );
+    }
+
+    /// `Detector::LockDependency` whose lock file is absent must not activate the framework.
+    #[test]
+    fn lock_dependency_absent_is_not_a_hit() {
+        let root = Path::new("/p");
+        let sub = sub(root, Language::new(Language::PHP));
+        let kb = StaticKb(vec![fk(
+            "fw",
+            KnowledgeScope::Framework,
+            Language::new(Language::PHP),
+            vec![Detector::LockDependency {
+                lock: "composer.lock".into(),
+                dependency: "laravel/framework".into(),
+                confidence: 0.9,
+            }],
+        )]);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &evidence(&[], &[]), &EmptyTechStack);
+        assert!(
+            hits.is_empty(),
+            "an absent lock dependency must not activate the framework"
+        );
+    }
+
+    // ------------------------------------------------------- ordering
+
+    /// Multiple matching frameworks are returned in descending confidence order (the `sort_by` at the end
+    /// of `detect_frameworks`), independent of the order they appear in the knowledge base.
+    #[test]
+    fn frameworks_sorted_by_confidence_desc() {
+        let root = Path::new("/p");
+        let sub = sub(root, Language::new(Language::PHP));
+        let ev = evidence(&["guzzlehttp\\client"], &[]);
+        let kb = StaticKb(vec![
+            fk(
+                "low",
+                KnowledgeScope::Framework,
+                Language::new(Language::PHP),
+                vec![Detector::ImportExists {
+                    symbol: "GuzzleHttp\\Client".into(),
+                    confidence: 0.6,
+                }],
+            ),
+            fk(
+                "high",
+                KnowledgeScope::Framework,
+                Language::new(Language::PHP),
+                vec![Detector::ImportExists {
+                    symbol: "GuzzleHttp\\Client".into(),
+                    confidence: 0.95,
+                }],
+            ),
+        ]);
+        let hits =
+            detect_frameworks(&kb, &NoFs, &sub, root, KnowledgeScope::Framework, &ev, &EmptyTechStack);
+        assert_eq!(
+            hits,
+            vec!["high".to_string(), "low".to_string()],
+            "frameworks must be returned in descending confidence order"
+        );
+    }
+
+    // ------------------------------------------------------- collect_code_evidence isolation
+
+    /// `collect_code_evidence` must attribute imports / calls to the **requested** sub-project only: a file
+    /// outside the sub's prefix is dropped, a call assigned to another sub is dropped, while the two cases
+    /// that *should* count (owned call, and an unassigned call whose file still sits under the sub) remain.
+    #[test]
+    fn collect_code_evidence_isolates_by_sub_project() {
+        let mut ctx = PipelineContext::new(Project {
+            id: ProjectId::new(1),
+            name: "t".into(),
+            root_path: std::path::PathBuf::from("/p"),
+            description: None,
+            status: ProjectStatus::Ready,
+            config: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        });
+        // The sub lives at `/p/app`, so its file-prefix is `app/`.
+        let sub = SubProject {
+            id: SubProjectId(1),
+            project_id: ProjectId::new(1),
+            name: "app".into(),
+            root_path: std::path::PathBuf::from("/p/app"),
+            language: Language::new(Language::PHP),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: Vec::new(),
+            facts: serde_json::Value::Null,
+        };
+        // Imports: one file inside the sub, one outside it. The FQN is the *value* of the import map
+        // (see `all_imported_fqns`, which reads `.values()`).
+        ctx.ws.record_file_imports(
+            1,
+            "app/foo.php",
+            HashMap::from([("order".to_string(), "app\\services\\order".to_string())]),
+        );
+        ctx.ws.record_file_imports(
+            2,
+            "lib/bar.php",
+            HashMap::from([("thing".to_string(), "other\\thing".to_string())]),
+        );
+        ctx.ws.calls = vec![
+            // (a) owned by the sub, inside its prefix -> collected.
+            call("app/foo.php", Some(SubProjectId(1)), "A::used", Some("A"), Some("used")),
+            // (b) no sub and outside the prefix -> excluded.
+            call("lib/bar.php", None, "B::miss", Some("B"), Some("miss")),
+            // (c) no sub but inside the prefix -> collected (the rare unassigned-file case).
+            call("app/baz.php", None, "C::rare", Some("C"), Some("rare")),
+            // (d) assigned to a *different* sub -> excluded.
+            call("app/foo.php", Some(SubProjectId(99)), "D::other", Some("D"), Some("other")),
+        ];
+
+        let ev = collect_code_evidence(&ctx, &sub);
+        assert!(
+            ev.imports.contains("app\\services\\order"),
+            "an import from a file inside the sub must be collected"
+        );
+        assert!(
+            !ev.imports.contains("other\\thing"),
+            "an import from a file outside the sub must be excluded"
+        );
+        assert!(
+            ev.callees.contains_key("A::used"),
+            "a call owned by the sub must be collected"
+        );
+        assert!(
+            !ev.callees.contains_key("B::miss"),
+            "a call in a foreign file with no sub must be excluded"
+        );
+        assert!(
+            ev.callees.contains_key("C::rare"),
+            "an unassigned call whose file is under the sub must be collected"
+        );
+        assert!(
+            !ev.callees.contains_key("D::other"),
+            "a call assigned to a different sub must be excluded"
+        );
+    }
+}
+
+

@@ -1493,4 +1493,32 @@ mod tests {
             "a misspelled key must not be silently ignored"
         );
     }
+
+    /// `KnowledgeScope` is this file's own enum. The `scope` flag decides whether knowledge applies only to a
+    /// recognised project (`project`) or to any project on the framework (`framework`), so an unrecognised
+    /// value must be a load error rather than silently falling back to `framework` (which would bleed
+    /// project-specific conventions into every project on the framework).
+    #[test]
+    fn knowledge_scope_variant_contract_and_apply_without_detection() {
+        assert_eq!(KnowledgeScope::default(), KnowledgeScope::Framework);
+
+        // Unknown scope variant -> error, both directly and when nested in `FrameworkKnowledge`.
+        assert!(serde_json::from_value::<KnowledgeScope>(json!("bogus")).is_err());
+        assert!(
+            serde_json::from_value::<FrameworkKnowledge>(json!({
+                "id": "tp", "display_name": "ThinkPHP", "language": "php", "scope": "bogus"
+            }))
+            .is_err(),
+            "an unrecognised scope must be rejected"
+        );
+
+        // The explicit-on case of `apply_without_detection` (the whole reason the field exists — generic
+        // language fallbacks that carry no concrete framework assumption) must deserialize and be honoured.
+        let fk: FrameworkKnowledge = serde_json::from_value(json!({
+            "id": "tp", "display_name": "ThinkPHP", "language": "php",
+            "apply_without_detection": true
+        }))
+        .expect("apply_without_detection: true must deserialize");
+        assert!(fk.apply_without_detection, "explicit opt-in is honoured");
+    }
 }

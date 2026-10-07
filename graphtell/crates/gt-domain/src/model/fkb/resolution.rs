@@ -407,3 +407,223 @@ pub enum ResolveStrategy {
     VariableType,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ids::NodeId;
+    use serde_json::json;
+
+    // ------------------------------------------------------- ResolveTier: base confidence + funnel ordering
+
+    #[test]
+    fn resolve_tier_base_confidence_each_level() {
+        assert_eq!(ResolveTier::Exact.base_confidence(), 1.0);
+        assert_eq!(ResolveTier::Registry.base_confidence(), 0.95);
+        assert_eq!(ResolveTier::Alias.base_confidence(), 0.85);
+        assert_eq!(ResolveTier::Convention.base_confidence(), 0.8);
+        assert_eq!(ResolveTier::ConstProp.base_confidence(), 0.6);
+        assert_eq!(ResolveTier::Intersection.base_confidence(), 0.7);
+        assert_eq!(ResolveTier::Unknown.base_confidence(), 0.3);
+    }
+
+    /// The funnel levels are explicitly numbered 1..=7; ordering (used by the resolver to pick the highest
+    /// tier that resolved) must follow that numbering.
+    #[test]
+    fn resolve_tier_discriminant_and_ordering() {
+        assert_eq!(ResolveTier::Exact as u8, 1);
+        assert_eq!(ResolveTier::Registry as u8, 2);
+        assert_eq!(ResolveTier::Alias as u8, 3);
+        assert_eq!(ResolveTier::Convention as u8, 4);
+        assert_eq!(ResolveTier::ConstProp as u8, 5);
+        assert_eq!(ResolveTier::Intersection as u8, 6);
+        assert_eq!(ResolveTier::Unknown as u8, 7);
+
+        assert!(ResolveTier::Exact < ResolveTier::Registry);
+        assert!(ResolveTier::Registry < ResolveTier::Alias);
+        assert!(ResolveTier::Alias < ResolveTier::Convention);
+        assert!(ResolveTier::Convention < ResolveTier::ConstProp);
+        assert!(ResolveTier::ConstProp < ResolveTier::Intersection);
+        assert!(ResolveTier::Intersection < ResolveTier::Unknown);
+    }
+
+    // ------------------------------------------------------- Resolution constructors
+
+    #[test]
+    fn resolution_unknown_and_resolved() {
+        let u = Resolution::unknown("cannot resolve");
+        assert_eq!(u.tier, ResolveTier::Unknown);
+        assert!(u.candidates.is_empty());
+        assert_eq!(u.confidence, 0.3);
+        assert_eq!(u.evidence, "cannot resolve");
+
+        let r = Resolution::resolved(ResolveTier::Exact, NodeId::new(7), "literal FQN");
+        assert_eq!(r.tier, ResolveTier::Exact);
+        assert_eq!(r.candidates, vec![NodeId::new(7)]);
+        assert_eq!(r.confidence, 1.0);
+        assert_eq!(r.evidence, "literal FQN");
+    }
+
+    // ------------------------------------------------------- snake_case enum tags (positive round-trips)
+
+    #[test]
+    fn direction_snake_case_and_default() {
+        assert_eq!(serde_json::to_value(Direction::Incoming).unwrap(), json!("incoming"));
+        assert_eq!(serde_json::to_value(Direction::Outgoing).unwrap(), json!("outgoing"));
+        assert_eq!(serde_json::to_value(Direction::ToTarget).unwrap(), json!("to_target"));
+        assert_eq!(Direction::default(), Direction::Incoming);
+        assert_eq!(serde_json::from_value::<Direction>(json!("to_target")).unwrap(), Direction::ToTarget);
+    }
+
+    #[test]
+    fn resolve_as_snake_case() {
+        for (v, tag) in [
+            (ResolveAs::ClassConst, "class_const"),
+            (ResolveAs::AsIs, "as_is"),
+            (ResolveAs::ByAlias, "by_alias"),
+            (ResolveAs::MethodRef, "method_ref"),
+        ] {
+            assert_eq!(serde_json::to_value(v).unwrap(), json!(tag));
+        }
+        assert_eq!(serde_json::from_value::<ResolveAs>(json!("method_ref")).unwrap(), ResolveAs::MethodRef);
+    }
+
+    #[test]
+    fn resolve_strategy_snake_case() {
+        for (v, tag) in [
+            (ResolveStrategy::Container, "container"),
+            (ResolveStrategy::Event, "event"),
+            (ResolveStrategy::EventListen, "event_listen"),
+            (ResolveStrategy::Facade, "facade"),
+            (ResolveStrategy::Accessor, "accessor"),
+            (ResolveStrategy::Handler, "handler"),
+            (ResolveStrategy::VariableType, "variable_type"),
+        ] {
+            assert_eq!(serde_json::to_value(v).unwrap(), json!(tag));
+        }
+        assert_eq!(
+            serde_json::from_value::<ResolveStrategy>(json!("variable_type")).unwrap(),
+            ResolveStrategy::VariableType
+        );
+    }
+
+    #[test]
+    fn normalize_step_tags_and_round_trip() {
+        // `NormalizeStep` is **externally tagged** (no `tag`), so a unit variant serialises to a bare string,
+        // a newtype variant to `{"tag": payload}`, and a struct variant to `{"tag": {...}}`.
+        assert_eq!(serde_json::to_value(NormalizeStep::Lower).unwrap(), json!("lower"));
+        assert_eq!(
+            serde_json::to_value(NormalizeStep::StripPrefix(vec!["a".into(), "b".into()])).unwrap(),
+            json!({ "strip_prefix": ["a", "b"] })
+        );
+        assert_eq!(
+            serde_json::to_value(NormalizeStep::Replace { from: "x".into(), to: "y".into() }).unwrap(),
+            json!({ "replace": { "from": "x", "to": "y" } })
+        );
+        // Every variant round-trips (exercises the newtype `StripPrefix` payload and the `Replace` struct).
+        let steps = vec![
+            NormalizeStep::Lower,
+            NormalizeStep::Upper,
+            NormalizeStep::LeadingSlash,
+            NormalizeStep::Singularize,
+            NormalizeStep::SnakePlural,
+            NormalizeStep::StripNamespace,
+            NormalizeStep::ShortName,
+            NormalizeStep::ParamWildcard,
+            NormalizeStep::StripQuery,
+            NormalizeStep::Trim,
+            NormalizeStep::StripPrefix(vec!["a".into(), "b".into()]),
+            NormalizeStep::Replace { from: "x".into(), to: "y".into() },
+        ];
+        for s in steps {
+            assert_eq!(serde_json::from_value::<NormalizeStep>(serde_json::to_value(&s).unwrap()).unwrap(), s);
+        }
+        // Unknown variant -> error.
+        assert!(serde_json::from_value::<NormalizeStep>(json!("nope")).is_err());
+        // `Replace`'s `deny_unknown_fields` rejects extra keys inside the payload object.
+        assert!(serde_json::from_value::<NormalizeStep>(json!({ "replace": { "from": "x", "to": "y", "bogus": 1 } })).is_err());
+    }
+
+    // ------------------------------------------------------- ValueSource: `self` rename + defaults + deny_unknown_fields
+
+    #[test]
+    fn value_source_self_rename_and_defaults() {
+        // `self_value` is serialised as the YAML/JSON key `self` (reserved word).
+        let vs = ValueSource { self_value: Some(true), arg: Some(0), ..Default::default() };
+        let v = serde_json::to_value(&vs).unwrap();
+        assert_eq!(v["self"], json!(true));
+        assert!(v.get("self_value").is_none(), "serialised under `self`, not `self_value`");
+        assert_eq!(v["arg"], json!(0));
+
+        let back: ValueSource = serde_json::from_value(json!({ "self": true })).unwrap();
+        assert_eq!(back.self_value, Some(true));
+        assert!(back.arg.is_none());
+
+        assert!(ValueSource::default().arg.is_none() && ValueSource::default().self_value.is_none());
+    }
+
+    #[test]
+    fn value_source_rejects_unknown_field() {
+        assert!(serde_json::from_value::<ValueSource>(json!({ "bogus": 1 })).is_err());
+    }
+
+    // ------------------------------------------------------- required fields + deny_unknown_fields on each struct
+
+    /// Structs with `#[serde(deny_unknown_fields)]` reject unknown keys, and those with non-`Option` required
+    /// fields reject a missing required field.
+    #[test]
+    fn struct_default_and_unknown_fields() {
+        // Structs WITHOUT a struct-level default: required fields must be present, unknown keys rejected.
+        assert!(serde_json::from_value::<AccumulateSpec>(json!({})).is_err(), "AccumulateSpec requires key+value");
+        assert!(serde_json::from_value::<AccumulateSpec>(json!({
+            "key": { "arg": 0 }, "value": { "arg": 1 }, "bogus": 1
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<SymbolFieldSpec>(json!({})).is_err(), "SymbolFieldSpec requires table+field");
+        assert!(serde_json::from_value::<SymbolFieldSpec>(json!({
+            "table": "t", "field": "f", "bogus": 1
+        }))
+        .is_err());
+
+        // ResolverSpec: `id` + `strategy` required; `call`/`from_tier` optional; unknown key rejected.
+        assert!(serde_json::from_value::<ResolverSpec>(json!({ "strategy": "handler" })).is_err(), "missing id");
+        assert!(serde_json::from_value::<ResolverSpec>(json!({ "id": "r" })).is_err(), "missing strategy");
+        assert!(serde_json::from_value::<ResolverSpec>(json!({
+            "id": "r", "strategy": "handler", "call": "x", "bogus": 1
+        }))
+        .is_err());
+        let ok: ResolverSpec =
+            serde_json::from_value(json!({ "id": "r", "strategy": "handler" })).unwrap();
+        assert!(ok.call.is_none() && ok.from_tier.is_none());
+
+        // Structs WITH a struct-level default: `{}` is valid (defaults applied) and unknown keys are rejected.
+        let fs: FieldSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(fs.name, "", "name defaults to empty string via struct Default");
+        assert!(serde_json::from_value::<FieldSpec>(json!({ "name": "x", "bogus": 1 })).is_err());
+
+        let ls: LinkSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(ls.direction, Direction::Incoming, "direction defaults to Incoming");
+        assert!(serde_json::from_value::<LinkSpec>(json!({
+            "kind": "calls", "direction": "incoming", "bogus": 1
+        }))
+        .is_err());
+
+        let al: AliasSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(al.namespace, "");
+        assert!(al.qualifier.is_none());
+        assert!(serde_json::from_value::<AliasSpec>(json!({
+            "namespace": "n", "key": { "arg": 0 }, "bogus": 1
+        }))
+        .is_err());
+
+        assert!(serde_json::from_value::<LinkAction>(json!({})).is_ok(), "LinkAction has struct default");
+        assert!(serde_json::from_value::<LinkAction>(json!({ "kind": "calls", "bogus": 1 })).is_err());
+
+        assert!(serde_json::from_value::<ProjectAction>(json!({})).is_ok(), "ProjectAction has struct default");
+        assert!(serde_json::from_value::<ProjectAction>(json!({
+            "kind": "maps_to", "along": "maps_to", "bogus": 1
+        }))
+        .is_err());
+    }
+}
+
+

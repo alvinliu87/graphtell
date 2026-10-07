@@ -465,3 +465,223 @@ impl Default for MethodRefSpec {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ------------------------------------------------------- GuardAttach::specs (the only logic-bearing method)
+
+    #[test]
+    fn guard_attach_specs_one_and_many() {
+        // A single spec is normalised to a one-element list.
+        let one: GuardAttach =
+            serde_json::from_value(json!({ "kind": "chain", "method": "middleware", "arg_index": 0 }))
+                .unwrap();
+        assert_eq!(one.specs().len(), 1);
+        match one {
+            GuardAttach::One(GuardAttachSpec::Chain(c)) => assert_eq!(c.method, "middleware"),
+            _ => panic!("expected One(Chain)"),
+        }
+
+        // A list is kept as-is.
+        let many: GuardAttach = serde_json::from_value(json!([
+            { "kind": "chain", "method": "m", "arg_index": 0 },
+            { "kind": "positional" }
+        ]))
+        .unwrap();
+        assert_eq!(many.specs().len(), 2);
+        match many {
+            GuardAttach::Many(ref v) => assert_eq!(v.len(), 2),
+            _ => panic!("expected Many"),
+        }
+
+        // An empty list yields zero specs (no panic).
+        let empty: GuardAttach = serde_json::from_value(json!([])).unwrap();
+        assert!(empty.specs().is_empty());
+    }
+
+    // ------------------------------------------------------- Default contracts (incl. the non-trivial ones)
+
+    /// `MethodRefSpec::default()` fixes `controller_layer_depth = 1` and `method_separators = ["/"]`.
+    #[test]
+    fn method_ref_spec_default() {
+        let d = MethodRefSpec::default();
+        assert_eq!(d.controller_layer_depth, 1);
+        assert_eq!(d.method_separators, vec!["/".to_string()]);
+        assert!(d.hierarchy_separators.is_empty());
+        assert!(d.root_namespaces.is_empty());
+        assert_eq!(d.app_fallback, "");
+        assert!(d.app_anchor_dir.is_none());
+    }
+
+    /// `#[serde(default)]` on `RouteGuardSpec` means `{}` is a valid, fully-defaulted spec — and
+    /// `guard_attach` falls back to `GuardAttach::default()` (`One(Positional)`), `synthesize_unresolved` to false.
+    #[test]
+    fn route_guard_spec_empty_default() {
+        let rg: RouteGuardSpec = serde_json::from_value(json!({})).unwrap();
+        assert!(!rg.synthesize_unresolved, "false by default (PHP: never fabricate a missing node)");
+        assert!(rg.alias_table.is_none());
+        assert!(rg.route_calls.is_empty());
+        match rg.guard_attach {
+            GuardAttach::One(GuardAttachSpec::Positional) => {}
+            _ => panic!("guard_attach defaults to One(Positional)"),
+        }
+    }
+
+    /// `RouteCallSpec::default()` must apply `default_zero` (path_arg 0) and the enum default (by = Receiver).
+    #[test]
+    fn route_call_spec_defaults() {
+        let rc: RouteCallSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(rc.path_arg, 0, "default_zero() gives 0");
+        assert_eq!(rc.by, RouteMatchBy::Receiver, "enum default");
+        assert!(rc.verb_methods.is_empty());
+        assert!(rc.handler_arg.is_none());
+        assert_eq!(rc.receiver, "");
+        assert!(!rc.receiver_ends_with);
+        assert!(!rc.accept_identifier, "PHP: never pull a dynamic identifier arg as middleware");
+    }
+
+    /// The two "on by default" switches must be `true` via serde `{}` — NOT the `false` a bare
+    /// `#[serde(default)]` would give. This pins the contract the struct's manual `Default` exists to guard.
+    #[test]
+    fn decorator_guard_spec_defaults_true() {
+        let d: DecoratorGuardSpec = serde_json::from_value(json!({})).unwrap();
+        assert!(d.name_from_args, "defaults to true (argument carries the guard name)");
+        assert!(d.include_class_level, "defaults to true (class-level guards apply)");
+        assert!(!d.require_at_prefix);
+        assert!(!d.require_no_receiver);
+        // The Rust `Default` path must agree with the serde `{}` path.
+        let r = DecoratorGuardSpec::default();
+        assert!(r.name_from_args && r.include_class_level);
+    }
+
+    #[test]
+    fn consumer_guard_spec_default() {
+        let c: ConsumerGuardSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(c.receiver, "consumer");
+        assert_eq!(c.apply_method, "apply");
+        assert_eq!(c.for_routes_method, "forRoutes");
+        assert_eq!(c.wildcards, vec!["*".to_string()]);
+        assert_eq!(c.scope, ConsumerScope::Directory);
+    }
+
+    #[test]
+    fn chain_guard_spec_default_arg_index_zero() {
+        let c: ChainGuardSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(c.arg_index, 0, "default_zero()");
+        assert!(c.arg2_index.is_none());
+        assert_eq!(c.method, "");
+    }
+
+    #[test]
+    fn magic_delegation_default_confidence() {
+        let m = MagicDelegationSpec::default();
+        assert_eq!(m.property, "");
+        assert_eq!(m.confidence, 0.7);
+    }
+
+    #[test]
+    fn trivial_container_defaults() {
+        let db: DbVerbsSpec = serde_json::from_value(json!({})).unwrap();
+        assert!(db.write.is_empty() && db.read.is_empty());
+        let t: TaintSpec = serde_json::from_value(json!({})).unwrap();
+        assert!(t.raw_sql_sinks.is_empty() && t.where_interp_sinks.is_empty() && t.request_sources.is_empty());
+        let s: SignCheckSpec = serde_json::from_value(json!({})).unwrap();
+        assert!(s.hash_calls.is_empty());
+        assert!(s.name_contains.is_none());
+        // TaintSink's `receiver` defaults to None.
+        let sink: TaintSink = serde_json::from_value(json!({ "method": "query" })).unwrap();
+        assert!(sink.receiver.is_none());
+    }
+
+    // ------------------------------------------------------- snake_case enum tags (positive round-trips)
+
+    #[test]
+    fn route_match_by_snake_case() {
+        assert_eq!(serde_json::to_value(RouteMatchBy::Receiver).unwrap(), json!("receiver"));
+        assert_eq!(serde_json::to_value(RouteMatchBy::Callee).unwrap(), json!("callee"));
+        assert_eq!(serde_json::from_value::<RouteMatchBy>(json!("callee")).unwrap(), RouteMatchBy::Callee);
+        assert_eq!(serde_json::from_value::<RouteMatchBy>(json!("receiver")).unwrap(), RouteMatchBy::Receiver);
+    }
+
+    #[test]
+    fn consumer_scope_snake_case_and_default() {
+        assert_eq!(serde_json::to_value(ConsumerScope::ExplicitOnly).unwrap(), json!("explicit_only"));
+        assert_eq!(serde_json::to_value(ConsumerScope::Directory).unwrap(), json!("directory"));
+        assert_eq!(serde_json::to_value(ConsumerScope::All).unwrap(), json!("all"));
+        assert_eq!(ConsumerScope::default(), ConsumerScope::Directory);
+        assert_eq!(serde_json::from_value::<ConsumerScope>(json!("all")).unwrap(), ConsumerScope::All);
+    }
+
+    #[test]
+    fn guard_attach_spec_variant_tags() {
+        assert_eq!(
+            serde_json::to_value(GuardAttachSpec::Chain(ChainGuardSpec::default())).unwrap()["kind"],
+            json!("chain")
+        );
+        assert_eq!(
+            serde_json::to_value(GuardAttachSpec::Positional).unwrap()["kind"],
+            json!("positional")
+        );
+        assert_eq!(
+            serde_json::to_value(GuardAttachSpec::Decorator(DecoratorGuardSpec::default())).unwrap()["kind"],
+            json!("decorator")
+        );
+        assert_eq!(
+            serde_json::to_value(GuardAttachSpec::Consumer(ConsumerGuardSpec::default())).unwrap()["kind"],
+            json!("consumer")
+        );
+        assert!(matches!(GuardAttachSpec::default(), GuardAttachSpec::Positional));
+    }
+
+    // ------------------------------------------------------- deny_unknown_fields (unknown key = load error)
+
+    /// Every `#[serde(deny_unknown_fields)]` struct here must reject a field the model does not have —
+    /// a key the kernel cannot read must error, never be silently dropped.
+    #[test]
+    fn deny_unknown_fields_rejects_extra_keys() {
+        let structs: Vec<(&str, serde_json::Value)> = vec![
+            ("MethodRefSpec", json!({ "bogus": 1 })),
+            ("MiddlewareCapability", json!({ "matches": "x", "capability": "y", "bogus": 1 })),
+            ("RouteGuardSpec", json!({ "bogus": 1 })),
+            ("RouteCallSpec", json!({ "bogus": 1 })),
+            ("ConsumerGuardSpec", json!({ "bogus": 1 })),
+            ("ChainGuardSpec", json!({ "bogus": 1 })),
+            ("DecoratorGuardSpec", json!({ "bogus": 1 })),
+            ("DbVerbsSpec", json!({ "bogus": 1 })),
+            ("TaintSpec", json!({ "bogus": 1 })),
+            ("SignCheckSpec", json!({ "bogus": 1 })),
+            ("MagicDelegationSpec", json!({ "property": "p", "bogus": 1 })),
+            ("TaintSink", json!({ "method": "m", "bogus": 1 })),
+        ];
+        for (name, value) in structs {
+            let ok = match name {
+                "MethodRefSpec" => serde_json::from_value::<MethodRefSpec>(value).is_ok(),
+                "MiddlewareCapability" => serde_json::from_value::<MiddlewareCapability>(value).is_ok(),
+                "RouteGuardSpec" => serde_json::from_value::<RouteGuardSpec>(value).is_ok(),
+                "RouteCallSpec" => serde_json::from_value::<RouteCallSpec>(value).is_ok(),
+                "ConsumerGuardSpec" => serde_json::from_value::<ConsumerGuardSpec>(value).is_ok(),
+                "ChainGuardSpec" => serde_json::from_value::<ChainGuardSpec>(value).is_ok(),
+                "DecoratorGuardSpec" => serde_json::from_value::<DecoratorGuardSpec>(value).is_ok(),
+                "DbVerbsSpec" => serde_json::from_value::<DbVerbsSpec>(value).is_ok(),
+                "TaintSpec" => serde_json::from_value::<TaintSpec>(value).is_ok(),
+                "SignCheckSpec" => serde_json::from_value::<SignCheckSpec>(value).is_ok(),
+                "MagicDelegationSpec" => serde_json::from_value::<MagicDelegationSpec>(value).is_ok(),
+                "TaintSink" => serde_json::from_value::<TaintSink>(value).is_ok(),
+                _ => unreachable!(),
+            };
+            assert!(!ok, "{} must reject unknown field", name);
+        }
+    }
+
+    /// Enums reject an unknown `kind` / variant.
+    #[test]
+    fn deny_unknown_variants_rejected() {
+        assert!(serde_json::from_value::<GuardAttachSpec>(json!({ "kind": "bogus" })).is_err());
+        assert!(serde_json::from_value::<RouteMatchBy>(json!("bogus")).is_err());
+        assert!(serde_json::from_value::<ConsumerScope>(json!("bogus")).is_err());
+    }
+}
+
