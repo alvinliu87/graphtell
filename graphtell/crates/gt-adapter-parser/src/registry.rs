@@ -14,6 +14,7 @@ use crate::js::JsFrontendParser;
 use crate::json::JsonParser;
 use crate::php::PhpParser;
 use crate::python::PythonParser;
+use crate::rust::RustParser;
 
 /// The default registry.
 pub struct DefaultParserRegistry {
@@ -40,6 +41,9 @@ impl DefaultParserRegistry {
         }
         if let Ok(p) = JsonParser::new() {
             parsers.insert(Language::new("json").to_string(), Box::new(p));
+        }
+        if let Ok(p) = RustParser::new() {
+            parsers.insert(Language::RUST.to_string(), Box::new(p));
         }
         Self { parsers }
     }
@@ -120,10 +124,10 @@ mod tests {
             .iter()
             .map(|l| l.as_str().to_string())
             .collect();
-        for want in ["php", "java", "python", "javascript", "typescript", "json"] {
+        for want in ["php", "java", "python", "javascript", "typescript", "json", "rust"] {
             assert!(langs.iter().any(|l| l == want), "missing language `{want}`: {langs:?}");
         }
-        assert_eq!(langs.len(), 6, "no extra or duplicated language may be registered: {langs:?}");
+        assert_eq!(langs.len(), 7, "no extra or duplicated language may be registered: {langs:?}");
         let mut sorted = langs.clone();
         sorted.sort();
         assert_eq!(langs, sorted, "supported_languages must be sorted (the order is passed up to the enumeration)");

@@ -18,6 +18,18 @@ use gt_domain::port::{FileSystem, Marker, MarkerProvider, TechStackAdapter};
 pub mod php;
 pub use php::PhpTechStackAdapter;
 
+/// The Java tech-stack adapter (Maven `pom.xml` / Gradle `build.gradle` dependency resolution).
+pub mod java;
+pub use java::JavaTechStackAdapter;
+
+/// The Python tech-stack adapter (requirements / pyproject / Pipfile + Django locale directories).
+pub mod python;
+pub use python::PythonTechStackAdapter;
+
+/// The Rust tech-stack adapter (Cargo.toml / Cargo.lock dependency resolution).
+pub mod rust;
+pub use rust::RustTechStackAdapter;
+
 /// The default sub-project detection markers, one entry per ecosystem.
 pub struct DefaultMarkerProvider;
 

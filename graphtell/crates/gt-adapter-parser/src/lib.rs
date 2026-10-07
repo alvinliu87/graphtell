@@ -11,6 +11,7 @@ pub mod ts_util;
 pub mod json;
 pub mod php;
 pub mod python;
+pub mod rust;
 pub mod registry;
 
 pub use registry::{require_parser, DefaultParserRegistry};

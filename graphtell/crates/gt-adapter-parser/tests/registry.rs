@@ -11,7 +11,7 @@ use gt_domain::model::Language;
 use gt_domain::port::ParserRegistry;
 
 /// Languages the pipeline / inbound adapters assume are always available.
-const EXPECTED: &[&str] = &["php", "java", "python", "javascript", "typescript", "json"];
+const EXPECTED: &[&str] = &["php", "java", "python", "javascript", "typescript", "json", "rust"];
 
 #[test]
 fn registry_exposes_every_required_language() {
@@ -47,7 +47,6 @@ fn supported_languages_contains_all_expected_and_is_sorted() {
 fn unknown_language_is_not_registered() {
     let reg = DefaultParserRegistry::new();
     assert!(reg.parser_for(&Language::new("go")).is_none());
-    assert!(reg.parser_for(&Language::new("rust")).is_none());
     assert!(reg.parser_for(&Language::new("cobol")).is_none());
 }
 

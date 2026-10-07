@@ -8,10 +8,12 @@ use gt_adapter_fkb::YamlKnowledgeBase;
 use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
 use gt_adapter_http::build_router;
 use gt_adapter_parser::DefaultParserRegistry;
-use gt_adapter_techstack::PhpTechStackAdapter;
 use gt_adapter_rules::YamlRuleSet;
 use gt_adapter_sqlite::SqliteStore;
-use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};
+use gt_adapter_techstack::{
+    DefaultMarkerProvider, JavaTechStackAdapter, JsTechStackAdapter, PhpTechStackAdapter,
+    PythonTechStackAdapter, RustTechStackAdapter,
+};
 use gt_adapter_resource::MyBatisMapperAdapter;
 use gt_adapter_views::YamlViewRegistry;
 use gt_application::pipeline_runner::PipelineDeps;
@@ -56,7 +58,10 @@ impl Container {
         let techstack: Arc<dyn TechStackRegistry> = Arc::new(
             DefaultTechStackRegistry::new()
                 .register(Box::new(PhpTechStackAdapter::new()))
-                .register(Box::new(JsTechStackAdapter::new())),
+                .register(Box::new(JsTechStackAdapter::new()))
+                .register(Box::new(JavaTechStackAdapter::new()))
+                .register(Box::new(PythonTechStackAdapter::new()))
+                .register(Box::new(RustTechStackAdapter::new())),
         );
         let deps = Arc::new(PipelineDeps {
             fs: Arc::new(StdFileSystem::new()),
