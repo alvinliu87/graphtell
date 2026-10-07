@@ -1282,4 +1282,152 @@ mod tests {
         assert!(cfgs.contains_key("a"));
         assert!(cfgs.contains_key("b"));
     }
+
+    /// A project-level `enabled=false` override must drop the rule from selection when `only=None` (this is the
+    /// `is_enabled` closure's `unwrap_or(rule.enabled)` → false path; with no override the YAML default true wins).
+    #[test]
+    fn check_skips_disabled_rule_via_config() {
+        let (store, pid) = seed_store();
+        let svc = RuleService::new(
+            store,
+            Arc::new(TestProvider {
+                rules: vec![rule(
+                    "contract-no-handler",
+                    &["HttpContract"],
+                    &["php"],
+                    vec![CheckPredicate::NoIncoming("HandledBy".into())],
+                )],
+            }),
+        );
+        svc.apply_rule_config(
+            pid,
+            RuleConfigPatch {
+                rule_id: "contract-no-handler".into(),
+                enabled: Some(false),
+                options: None,
+            },
+        )
+        .unwrap();
+        let rep = svc.check(pid, None, false).unwrap();
+        assert_eq!(rep.rules_total, 1);
+        assert_eq!(rep.rules_run, 0, "a disabled rule must not be selected when only=None");
+        // a disabled rule is neither env-inapplicable nor missing-requirement; both lists stay empty
+        assert!(rep.rules_not_applicable.is_empty());
+        assert!(rep.rules_unavailable.is_empty());
+    }
+
+    /// A rule whose environment matches but whose required graph fact is absent must be marked `unavailable` and skipped
+    /// (the `missing_requirement` → `unavailable_rules` branch inside `check`, which the unit test of `ProjectEnv` alone does not exercise).
+    #[test]
+    fn check_marks_rule_unavailable_when_requirement_missing() {
+        let (store, pid) = seed_store();
+        // `NoIncoming("Triggers")` makes `requirements()` derive an edge dependency on `Triggers`; the seeded graph
+        // only has a `HandledBy` edge, so the requirement cannot hold and the rule is marked unavailable.
+        let r = rule(
+            "needs-trigger",
+            &["Method"],
+            &["php"],
+            vec![CheckPredicate::NoIncoming("Triggers".into())],
+        );
+        let svc = RuleService::new(store, Arc::new(TestProvider { rules: vec![r] }));
+        let rep = svc.check(pid, None, false).unwrap();
+        assert_eq!(rep.rules_run, 0, "a rule whose required edge is absent must not run");
+        assert!(
+            !rep.rules_unavailable.is_empty(),
+            "the unavailable reason must be recorded"
+        );
+        assert!(rep.rules_unavailable.iter().any(|s| s.contains("needs-trigger")));
+    }
+
+    /// `persist` with `only=Some(..)` must clear and rewrite only the named rule's diagnostics (the `Some(_)` arm),
+    /// distinct from the `only=None` arm that clears the whole `RULE_CODE_PREFIX` namespace.
+    #[test]
+    fn check_persist_with_only_clears_named_rule_code() {
+        let (store, pid) = seed_store();
+        let svc = RuleService::new(
+            store,
+            Arc::new(TestProvider {
+                rules: vec![rule(
+                    "contract-no-handler",
+                    &["HttpContract"],
+                    &["php"],
+                    vec![CheckPredicate::NoIncoming("HandledBy".into())],
+                )],
+            }),
+        );
+        let rep = svc
+            .check(pid, Some(&["contract-no-handler".to_string()]), true)
+            .unwrap();
+        assert_eq!(rep.violations.len(), 1);
+        let vs = svc.violations(pid, 100, None).unwrap();
+        assert_eq!(
+            vs.len(),
+            1,
+            "persist with only=Some must write only that rule's diagnostics"
+        );
+        assert_eq!(vs[0].rule_id, "contract-no-handler");
+    }
+
+    /// `apply_rule_config` with no pre-existing override must create a fresh row from the patch (the `existing == None`
+    /// branch: `enabled` and `options` both come straight from the patch, options defaulting to an empty object).
+    #[test]
+    fn apply_rule_config_without_prior_config_creates_fresh() {
+        let store = Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let svc = RuleService::new(store, Arc::new(StubProvider));
+        let pid = ProjectId::new(1);
+        svc.apply_rule_config(
+            pid,
+            RuleConfigPatch {
+                rule_id: "r1".into(),
+                enabled: Some(true),
+                options: Some(json!({ "k": 1 })),
+            },
+        )
+        .unwrap();
+        let cfg = svc.rule_configs(pid).unwrap().get("r1").cloned().expect("config created");
+        assert_eq!(cfg.enabled, Some(true));
+        assert_eq!(
+            cfg.options.as_object().unwrap().get("k").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+    }
+
+    /// A patch carrying an *empty* options object must keep the prior options (the `new_obj.is_empty()` branch), not
+    /// overwrite them with an empty map — otherwise clicking "enable/disable" after tuning would wipe the params.
+    #[test]
+    fn apply_rule_config_empty_options_keep_existing() {
+        let store = Arc::new(SqliteStore::in_memory().expect("in-memory store"));
+        let svc = RuleService::new(store, Arc::new(StubProvider));
+        let pid = ProjectId::new(1);
+        svc.set_rule_config(ProjectRuleConfig {
+            project_id: pid,
+            rule_id: "r1".into(),
+            enabled: Some(true),
+            options: json!({ "threshold": 5, "ignore": "x" }),
+        })
+        .unwrap();
+        svc.apply_rule_config(
+            pid,
+            RuleConfigPatch {
+                rule_id: "r1".into(),
+                enabled: None,
+                options: Some(json!({})), // empty → keep old
+            },
+        )
+        .unwrap();
+        let cfg = svc.rule_configs(pid).unwrap().get("r1").cloned().expect("config exists");
+        let opts = cfg.options.as_object().unwrap();
+        assert_eq!(opts.get("threshold").and_then(|v| v.as_i64()), Some(5));
+        assert_eq!(opts.get("ignore").and_then(|v| v.as_str()), Some("x"));
+    }
+
+    #[test]
+    fn eval_fan_in_lte_upper_bounds() {
+        let n = node(1, "Method", "m");
+        let mut inc: HashMap<i64, Vec<Edge>> = HashMap::new();
+        inc.insert(n.id.get(), vec![edge("ReadsDb", 99, n.id.get())]); // one semantic in-edge → fan_in=1
+        let f = facts(HashMap::new(), inc, HashMap::new(), HashMap::new());
+        assert!(eval(&CheckPredicate::FanInLte(NumOrParam::Num(1)), &n, &f, &empty_params()));
+        assert!(!eval(&CheckPredicate::FanInLte(NumOrParam::Num(0)), &n, &f, &empty_params()));
+    }
 }

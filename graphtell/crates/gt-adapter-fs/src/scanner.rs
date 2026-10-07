@@ -692,4 +692,81 @@ mod tests {
         assert_eq!(scoped[0], root.join("composer.json"));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// A typo'd project glob (the `[` is unclosed) must be dropped, not abort the scan — the comment at `build_set`
+    /// guarantees "one typo in a project's config must not cost the whole graph". This exercises the drop path
+    /// *through* `scan`, which is where `build_set` is actually invoked for `extra_excludes` (a valid sibling rule
+    /// in the same request must still fire).
+    #[test]
+    fn scan_tolerates_an_invalid_extra_glob() {
+        let root = tmp("scan-bad-glob");
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("storage/logs")).unwrap();
+        std::fs::write(root.join("app/A.php"), b"<?php").unwrap();
+        std::fs::write(root.join("storage/logs/Generated.php"), b"<?php").unwrap();
+        // One valid rule plus one stray invalid one — what a real typo'd config looks like.
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec!["[".to_string(), "storage/logs/**".to_string()],
+                languages: vec![],
+                language_extensions: vec![],
+            })
+            .expect("a bad glob must not abort the scan");
+        let rel: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert!(rel.contains(&"app/A.php"), "ordinary source must still be scanned: {rel:?}");
+        assert!(
+            !rel.contains(&"storage/logs/Generated.php"),
+            "the valid sibling rule must still exclude its directory: {rel:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// When `extra_excludes` is set, the per-scan set is OR-ed with the built-in defaults (line 113), not an
+    /// overwrite: a file in a default-excluded directory must still be dropped even though the extra set never
+    /// mentions it.
+    #[test]
+    fn scan_extra_globs_combine_with_the_default_excludes() {
+        let root = tmp("scan-or");
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("public")).unwrap(); // default-excluded via **/public/**
+        std::fs::create_dir_all(root.join("storage/logs")).unwrap(); // extra-excluded
+        std::fs::write(root.join("app/A.php"), b"<?php").unwrap();
+        std::fs::write(root.join("public/logo.png"), b"png").unwrap();
+        std::fs::write(root.join("storage/logs/Generated.php"), b"<?php").unwrap();
+        let files = WalkDirScanner::default()
+            .scan(&ScanRequest {
+                root: root.clone(),
+                extra_excludes: vec!["storage/logs/**".to_string()],
+                languages: vec![],
+                language_extensions: vec![],
+            })
+            .unwrap();
+        let rel: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        assert!(rel.contains(&"app/A.php"), "ordinary source kept: {rel:?}");
+        assert!(
+            !rel.contains(&"public/logo.png"),
+            "a default-excluded asset must stay excluded even when extra is set (OR, not replace): {rel:?}"
+        );
+        assert!(
+            !rel.contains(&"storage/logs/Generated.php"),
+            "the extra glob must fire too: {rel:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `find_markers` must locate every marker whose name is in the `names` slice, not just the first — the
+    /// `names.iter().any(..)` over multiple candidate names is never exercised by the single-name tests.
+    #[test]
+    fn find_markers_matches_any_of_several_names() {
+        let root = tmp("markers-many");
+        std::fs::write(root.join("composer.json"), b"{}").unwrap();
+        std::fs::write(root.join("go.mod"), b"module x").unwrap();
+        std::fs::write(root.join("pyproject.toml"), b"#").unwrap();
+        let found = WalkDirScanner::default()
+            .find_markers(&root, &["composer.json", "go.mod", "pyproject.toml"], 3)
+            .unwrap();
+        assert_eq!(found.len(), 3, "all three distinct marker names must be found: {found:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

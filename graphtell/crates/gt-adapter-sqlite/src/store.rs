@@ -449,11 +449,15 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use gt_domain::model::{NewAnnotation, EdgeKind, NewEdge, NewNode, NodeKind};
+    use gt_domain::model::{
+        AliasEntry, EdgeKind, FileId, Language, NewAnnotation, NewEdge, NewNode, NewSourceFile,
+        NodeKind, SourceLocation,
+    };
     use gt_domain::port::{
         DiagnosticSink, EdgeDirection, GraphQuery, GraphSink, ProjectReader, ProjectWriter,
         RuleConfigStore, SymbolTableReader,
     };
+    use rusqlite::params;
 
     fn store() -> SqliteStore {
         SqliteStore::in_memory().expect("in-memory store")
@@ -711,6 +715,92 @@ mod tests {
         assert_eq!(s.list_files(p.id, None).unwrap().len(), 1);
         assert_eq!(s.list_files(p.id, Some(sub)).unwrap().len(), 1);
         assert_eq!(s.list_files(p.id, Some(SubProjectId(999))).unwrap().len(), 0);
+    }
+
+    // ---------------------------------------------------------- sub-project fact / framework writers (previously untested)
+
+    /// `update_sub_project_facts` rewrites the `facts` JSON of a sub-project (written by P3 to persist discovered
+    /// facts); reading it back via `list_sub_projects` must reflect the new value.
+    #[test]
+    fn update_sub_project_facts_roundtrip() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let subs = s
+            .replace_sub_projects(p.id, vec![NewSubProject {
+                project_id: p.id,
+                name: "be".into(),
+                root_path: PathBuf::from("/be"),
+                language: Language::new("php"),
+                role: "backend".into(),
+                detected_by: "x".into(),
+                frameworks: vec![],
+                facts: Value::Null,
+            }])
+            .unwrap();
+        let sub = subs[0].id;
+
+        s.update_sub_project_facts(sub, serde_json::json!({ "app_root": "/x", "ns": "App" }))
+            .unwrap();
+        let got = s.list_sub_projects(p.id).unwrap();
+        assert_eq!(
+            got[0].facts,
+            serde_json::json!({ "app_root": "/x", "ns": "App" }),
+            "facts must be updated and re-readable"
+        );
+
+        // A non-existent sub-project id must not error: the UPDATE simply matches 0 rows.
+        s.update_sub_project_facts(SubProjectId(99999), Value::Null).unwrap();
+    }
+
+    /// `set_sub_project_frameworks` rewrites the `frameworks` array; reading it back must reflect the new list.
+    #[test]
+    fn set_sub_project_frameworks_roundtrip() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let subs = s
+            .replace_sub_projects(p.id, vec![NewSubProject {
+                project_id: p.id,
+                name: "be".into(),
+                root_path: PathBuf::from("/be"),
+                language: Language::new("php"),
+                role: "backend".into(),
+                detected_by: "x".into(),
+                frameworks: vec!["thinkphp".into()],
+                facts: Value::Null,
+            }])
+            .unwrap();
+        let sub = subs[0].id;
+
+        s.set_sub_project_frameworks(sub, vec!["laravel".into(), "symfony".into()])
+            .unwrap();
+        let got = s.list_sub_projects(p.id).unwrap();
+        assert_eq!(
+            got[0].frameworks,
+            vec!["laravel".to_string(), "symfony".to_string()],
+            "frameworks must be updated and re-readable"
+        );
+
+        // A non-existent sub-project id must not error: the UPDATE simply matches 0 rows.
+        s.set_sub_project_frameworks(SubProjectId(99999), vec![]).unwrap();
+    }
+
+    /// `update_project` on a project that does not exist must fail with `NotFound`, not silently upsert a row —
+    /// the `ok_or_else(NotFound)` guard is the only thing standing between a typo'd id and a phantom project.
+    #[test]
+    fn update_project_missing_id_is_not_found() {
+        let s = store();
+        let err = s
+            .update_project(
+                ProjectId::new(424242),
+                ProjectPatch {
+                    name: Some("ghost".into()),
+                    description: None,
+                    root_path: None,
+                    config: None,
+                },
+            )
+            .expect_err("updating a non-existent project must error");
+        assert!(matches!(err, DomainError::NotFound(_)), "actual error: {err:?}");
     }
 
     // ---------------------------------------------------------- graph queries
@@ -995,6 +1085,203 @@ mod tests {
         assert_eq!(excl_map.get("warning"), Some(&1));
     }
 
+    /// `get_symbol` must return `None` for a missing key/table, and must stay isolated across projects — fetching a
+    /// symbol that exists under another project must not leak.
+    #[test]
+    fn get_symbol_missing_returns_none() {
+        let s = store();
+        let a = s.create_project(new_project("a")).unwrap();
+        let b = s.create_project(new_project("b")).unwrap();
+        let mut d = GraphDelta::new(a.id);
+        d.symbols.push(SymbolEntry {
+            project_id: a.id,
+            table: "schema".into(),
+            key: "users".into(),
+            value: serde_json::json!({ "cols": 1 }),
+        });
+        s.apply(&d).unwrap();
+        assert_eq!(s.get_symbol(a.id, "schema", "users").unwrap(), Some(serde_json::json!({ "cols": 1 })));
+        assert_eq!(s.get_symbol(a.id, "schema", "nope").unwrap(), None, "missing key -> None");
+        assert_eq!(s.get_symbol(a.id, "other", "users").unwrap(), None, "missing table -> None");
+        assert_eq!(s.get_symbol(b.id, "schema", "users").unwrap(), None, "another project must not see the symbol");
+    }
+
+    /// A `value` column holding non-JSON (e.g. corrupted externally) must yield `None` rather than error, via the
+    /// `serde_json::from_str(...).ok()` fallback in `get_symbol`.
+    #[test]
+    fn get_symbol_corrupt_value_falls_back_to_none() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO symbol_tables (project_id, table_name, key, value) VALUES (?1, 't', 'k', 'not json at all')",
+                params![p.id.get()],
+            )
+            .unwrap();
+        assert_eq!(
+            s.get_symbol(p.id, "t", "k").unwrap(),
+            None,
+            "corrupt JSON in the value column must yield None, not error"
+        );
+    }
+
+    /// `list_symbols` on a table with no entries must return an empty vector, not error.
+    #[test]
+    fn list_symbols_empty_table_is_empty() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        assert!(s.list_symbols(p.id, "nope").unwrap().is_empty());
+    }
+
+    /// A non-JSON `value` in `list_symbols` must fall back to `Value::Null` per entry (the `parse_json(...).unwrap_or(Value::Null)`).
+    #[test]
+    fn list_symbols_corrupt_value_falls_back_to_null() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO symbol_tables (project_id, table_name, key, value) VALUES (?1, 't', 'k', 'not json')",
+                params![p.id.get()],
+            )
+            .unwrap();
+        let got = s.list_symbols(p.id, "t").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].key, "k");
+        assert_eq!(got[0].value, Value::Null, "corrupt JSON value must fall back to Value::Null");
+    }
+
+    /// `list_diagnostics` must tolerate a `NULL` `payload` column (the column is nullable) and fall back to
+    /// `Value::Null` rather than erroring — via the `unwrap_or_else(|_| "null")` branch.
+    #[test]
+    fn list_diagnostics_tolerates_null_payload() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO diagnostics (project_id, sub_project_id, phase, code, severity, message, location, payload)
+                 VALUES (?1, NULL, 'cf_ast', 'rule:x', '\"info\"', 'm', NULL, NULL)",
+                params![p.id.get()],
+            )
+            .unwrap();
+        let got = s.list_diagnostics(p.id, 100).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].payload,
+            Value::Null,
+            "a NULL payload column must fall back to Value::Null, not error"
+        );
+    }
+
+    /// `list_diagnostics` returns newest-first (`ORDER BY id DESC`); a small `LIMIT` must keep the most recent row.
+    #[test]
+    fn list_diagnostics_ordered_by_id_desc() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |msg: &str| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: "rule:x".into(),
+            severity: Severity::Info,
+            message: msg.into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk("first"), mk("second"), mk("third")]).unwrap();
+        let got = s.list_diagnostics(p.id, 100).unwrap();
+        assert_eq!(got[0].message, "third");
+        assert_eq!(got[2].message, "first");
+        let limited = s.list_diagnostics(p.id, 1).unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].message, "third", "LIMIT must retain the newest row (id DESC)");
+    }
+
+    /// `list_diagnostics_by_code` with an **empty** sub-project slice must NOT append an `IN ()` clause (invalid SQL);
+    /// it should match every diagnostic under the code prefix.
+    #[test]
+    fn list_diagnostics_by_code_empty_sub_project_filter_returns_all() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |sub: Option<SubProjectId>| Diagnostic {
+            project_id: p.id,
+            sub_project_id: sub,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: "rule:x".into(),
+            severity: Severity::Error,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk(Some(SubProjectId(1))), mk(Some(SubProjectId(2)))]).unwrap();
+        let all = s.list_diagnostics_by_code(p.id, "rule:", Some(&[]), 100).unwrap();
+        assert_eq!(
+            all.len(),
+            2,
+            "empty sub-project filter must match all (no IN clause injected): {all:?}"
+        );
+    }
+
+    /// `count_diagnostics_by_code` with a non-empty sub-project filter must apply the `IN` clause and still keep the
+    /// shared (NULL) diagnostic.
+    #[test]
+    fn count_diagnostics_by_code_filters_by_sub_project() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |sub: Option<SubProjectId>, sev: Severity| Diagnostic {
+            project_id: p.id,
+            sub_project_id: sub,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: "rule:x".into(),
+            severity: sev,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[
+            mk(Some(SubProjectId(1)), Severity::Error),
+            mk(Some(SubProjectId(2)), Severity::Warning),
+            mk(None, Severity::Info),
+        ])
+        .unwrap();
+        let counts = s.count_diagnostics_by_code(p.id, "rule:", Some(&[SubProjectId(1)])).unwrap();
+        let map: std::collections::HashMap<&str, u64> =
+            counts.iter().map(|(s, c)| (s.as_str(), *c)).collect();
+        assert_eq!(map.get("error"), Some(&1));
+        assert_eq!(map.get("warning"), None, "the other sub-project must be excluded");
+        assert_eq!(
+            map.get("info"),
+            Some(&1),
+            "the shared (NULL sub_project_id) diagnostic must survive the filter"
+        );
+    }
+
+    /// `clear_diagnostics` with a prefix that matches nothing must remove zero rows and return 0 (no error).
+    #[test]
+    fn clear_diagnostics_non_matching_prefix_is_noop() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |code: &str| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.into(),
+            severity: Severity::Error,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk("rule:x")]).unwrap();
+        let n = s.clear_diagnostics(p.id, "lint:").unwrap();
+        assert_eq!(n, 0, "clearing a non-matching prefix must remove nothing and return 0");
+        assert_eq!(s.list_diagnostics(p.id, 100).unwrap().len(), 1, "the diagnostic must remain");
+    }
+
     // ---------------------------------------------------------- rule config
     #[test]
     fn rule_config_set_get_delete_roundtrip() {
@@ -1039,6 +1326,117 @@ mod tests {
         assert!(
             s.get_rule_configs(p.id).unwrap().is_empty(),
             "an empty override (enabled=None with empty options) must delete the row"
+        );
+    }
+
+    // ---------------------------------------------------------- rule_config negative / branch coverage
+
+    /// A "disable" override (`enabled = Some(false)`, no options) is a *real* override, not "back to inherited" —
+    /// so it must be stored, and `enabled` must round-trip as `false` (the `e != 0` mapping). The empty-override
+    /// test only covers the delete path, so this pins the keep path and the boolean mapping.
+    #[test]
+    fn rule_config_disabled_override_persists() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: Some(false),
+            options: Value::Object(Default::default()),
+        })
+        .unwrap();
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(got.len(), 1, "a disabled override must be stored, not deleted");
+        assert_eq!(
+            got["r"].enabled,
+            Some(false),
+            "enabled=false must round-trip as false, not be dropped or flipped to true"
+        );
+    }
+
+    /// `enabled = None` with non-empty `options` is still a real override (only options are pinned) — it must be
+    /// stored, not deleted by the `is_empty` check (which requires *both* enabled-None and empty options).
+    #[test]
+    fn rule_config_options_only_override_persists() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: None,
+            options: serde_json::json!({ "k": "v" }),
+        })
+        .unwrap();
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(got.len(), 1, "an options-only override must be stored, not deleted");
+        assert_eq!(got["r"].enabled, None, "enabled=None must round-trip as None");
+        assert_eq!(got["r"].options, serde_json::json!({ "k": "v" }));
+    }
+
+    /// Setting the same `rule_id` twice must *upsert* (ON CONFLICT DO UPDATE), not append a second row — this is
+    /// what makes repeated pipeline runs replace the config instead of accumulating duplicates.
+    #[test]
+    fn set_rule_config_upserts_existing_row() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: Some(true),
+            options: serde_json::json!({ "a": 1 }),
+        })
+        .unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: Some(false),
+            options: serde_json::json!({ "a": 2 }),
+        })
+        .unwrap();
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(got.len(), 1, "the second set must upsert, not add a second row");
+        assert_eq!(got["r"].enabled, Some(false));
+        assert_eq!(
+            got["r"].options,
+            serde_json::json!({ "a": 2 }),
+            "the override must reflect the latest write"
+        );
+    }
+
+    /// Deleting a rule config that does not exist is a harmless no-op (the DELETE matches 0 rows) — it must not error.
+    #[test]
+    fn delete_rule_config_missing_is_ok() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.delete_rule_config(p.id, "no-such-rule").unwrap();
+        assert!(
+            s.get_rule_configs(p.id).unwrap().is_empty(),
+            "deleting a non-existent rule must leave the config map empty, not error"
+        );
+    }
+
+    /// `get_rule_configs` must tolerate corrupt `options` JSON in the column (the `unwrap_or` fallback) rather than
+    /// erroring or panicking — the row is still returned with an empty-object options.
+    #[test]
+    fn get_rule_configs_tolerates_corrupt_options_json() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        // Inject a row whose `options` is not valid JSON (the writer never produces this, so it must be guarded against).
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO project_rule_config(project_id, rule_id, enabled, options) VALUES (?1, ?2, ?3, ?4)",
+                params![p.id.get(), "r", 1i64, "{not valid json"],
+            )
+            .unwrap();
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(got.len(), 1, "the row must still be returned");
+        assert_eq!(got["r"].enabled, Some(true));
+        assert_eq!(
+            got["r"].options,
+            Value::Object(Default::default()),
+            "corrupt options must fall back to an empty object, not error/panic"
         );
     }
 
@@ -1111,6 +1509,340 @@ mod tests {
         // the plain `Contains` edge (1->3) must appear in none of the three maps: the exact-value asserts above
         // already guarantee it was dropped (no trailing 3 in out[1], no 1 in inc[3], and no key 1/2 in sem_inc).
         assert!(!sem_inc.contains_key(&1) && !sem_inc.contains_key(&2));
+    }
+
+    // ---------------------------------------------------------- graph.rs untested branches & negative cases
+
+    /// `location_patches` appends co-occurrence locations into `properties.locations` on an **existing** node, and
+    /// the merge caps the array at 50 (`if arr.len() < 50`). A patch for a node that does not exist must be a silent
+    /// no-op (the `UPDATE` affects 0 rows) — not an error, and it must not create a phantom properties blob.
+    #[test]
+    fn apply_location_patches_append_cap_and_skip_missing() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        let mut a = node(p.id, 1, "A");
+        // `location_patches` only attaches when the node already carries an object `properties` (a `Null`
+        // properties yields `as_object_mut() == None` and the patch is skipped), so seed it first.
+        a.properties = serde_json::json!({});
+        d.nodes.push(a);
+        s.apply(&d).unwrap();
+
+        let loc = |i: u32| SourceLocation {
+            file: format!("f{i}.php"),
+            line: i,
+            symbol: None,
+            note: None,
+            snippet: None,
+        };
+
+        let mut one = GraphDelta::new(p.id);
+        one.location_patches.push((NodeId(1), loc(1)));
+        s.apply(&one).unwrap();
+        let props = s.get_node(NodeId(1)).unwrap().unwrap().properties;
+        assert_eq!(
+            props["locations"].as_array().unwrap().len(),
+            1,
+            "exactly one location should be appended: {props}"
+        );
+
+        // Missing node: must not error; nothing to update.
+        let mut missing = GraphDelta::new(p.id);
+        missing.location_patches.push((NodeId(999), loc(999)));
+        s.apply(&missing).unwrap();
+        assert!(
+            s.get_node(NodeId(999)).unwrap().is_none(),
+            "a location patch for a non-existent node must not materialise anything"
+        );
+
+        // Boundary: 51 distinct locations must be capped to 50 (the `< 50` guard).
+        let mut many = GraphDelta::new(p.id);
+        for i in 1..=51 {
+            many.location_patches.push((NodeId(1), loc(i)));
+        }
+        s.apply(&many).unwrap();
+        let props = s.get_node(NodeId(1)).unwrap().unwrap().properties;
+        assert_eq!(
+            props["locations"].as_array().unwrap().len(),
+            50,
+            "locations must be capped at 50: {props}"
+        );
+    }
+
+    /// `apply` writes `aliases` rows. The table's `UNIQUE(project_id, namespace, key, qualifier)` means a later
+    /// `INSERT OR REPLACE` with the same composite key **overwrites** rather than errors or duplicates — asserted
+    /// here against the raw table (there is no alias reader in the public API).
+    #[test]
+    fn apply_writes_aliases_and_overwrites_on_conflict() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let alias = |nid: i64| AliasEntry {
+            project_id: p.id,
+            namespace: "accessor".into(),
+            key: "status_text".into(),
+            qualifier: Some("app\\model\\order\\StoreOrder".into()),
+            node_id: NodeId(nid),
+            confidence: 1.0,
+            evidence: Value::Null,
+        };
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        d.aliases.push(alias(1));
+        s.apply(&d).unwrap();
+        let count: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM aliases WHERE project_id = ?1",
+                params![p.id.get()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "exactly one alias row must be written");
+
+        // Same composite key, different node -> INSERT OR REPLACE overwrites, count stays 1.
+        let mut d2 = GraphDelta::new(p.id);
+        d2.nodes.push(node(p.id, 2, "B"));
+        d2.aliases.push(alias(2));
+        s.apply(&d2).unwrap();
+        let (count, node_id): (i64, i64) = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*), node_id FROM aliases WHERE project_id = ?1",
+                params![p.id.get()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "INSERT OR REPLACE must overwrite, not duplicate");
+        assert_eq!(node_id, 2, "the alias must now point at the new node");
+    }
+
+    /// `file_path` / `file_paths` read the `source_files` table populated by `replace_files`. A missing file id or a
+    /// project with no files must return `None` / an empty map, never an error.
+    #[test]
+    fn file_paths_and_file_path_roundtrip_and_missing() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        // Negative first: nothing has been written yet.
+        assert!(
+            s.file_path(FileId(1)).unwrap().is_none(),
+            "a missing file id must return None"
+        );
+        assert!(
+            s.file_paths(p.id).unwrap().is_empty(),
+            "a project with no files must yield an empty map"
+        );
+
+        s.replace_files(
+            p.id,
+            vec![NewSourceFile {
+                project_id: p.id,
+                sub_project_id: None,
+                path: "src/main.php".into(),
+                language: Language::new("php"),
+                size_bytes: 10,
+                content_hash: "h".into(),
+            }],
+        )
+        .unwrap();
+        let paths = s.file_paths(p.id).unwrap();
+        assert_eq!(paths.len(), 1, "exactly the one written file must be present");
+        let (id, path) = paths.into_iter().next().unwrap();
+        assert_eq!(path, "src/main.php");
+        assert_eq!(
+            s.file_path(FileId(id)).unwrap().as_deref(),
+            Some("src/main.php"),
+            "file_path must round-trip the written path"
+        );
+
+        // Negative: a file id that was never written returns None.
+        assert!(s.file_path(FileId(9999)).unwrap().is_none());
+    }
+
+    /// Annotation queries must return empty collections (not error) for nodes / projects that carry no annotations.
+    #[test]
+    fn annotations_of_without_any_returns_empty() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        s.apply(&d).unwrap();
+        assert!(
+            s.annotations_of(NodeId(1)).unwrap().is_empty(),
+            "a node with no annotations must yield an empty vec"
+        );
+        assert!(
+            s.annotations_of_project(p.id).unwrap().is_empty(),
+            "a project with no annotations must yield an empty map"
+        );
+    }
+
+    /// `query_nodes` with a filter that matches nothing (or a project that has no nodes) must return an empty vec,
+    /// not error — the filter string is still bound and the query still runs.
+    #[test]
+    fn query_nodes_with_no_match_returns_empty() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "User"));
+        s.apply(&d).unwrap();
+
+        let none = s
+            .query_nodes(&NodeFilter {
+                project_id: p.id,
+                name_contains: Some("Nope".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            none.is_empty(),
+            "a non-matching filter must return an empty vec, not error: {none:?}"
+        );
+        let other = s
+            .query_nodes(&NodeFilter {
+                project_id: ProjectId::new(999),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            other.is_empty(),
+            "a project with no nodes must return an empty vec: {other:?}"
+        );
+    }
+
+    // ---- database-upgrade compatibility (the functions `open`/`in_memory` fall back to on old databases) ----
+
+    /// `ensure_node_fks` rebuilds the old tables (no FK) into FK-bearing ones, and in doing so **drops rows that
+    /// point at nodes which no longer exist** — the exact fix for "edges/annotations/aliases left behind after a
+    /// node was overwritten". The rebuilt tables must both keep the valid rows and now reject orphan references.
+    #[test]
+    fn ensure_node_fks_adds_constraints_and_drops_dangling_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Old schema: same columns but WITHOUT the `REFERENCES nodes` foreign keys.
+        conn.execute_batch(
+            "CREATE TABLE nodes (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL);
+             CREATE TABLE edges (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, kind TEXT NOT NULL, from_id INTEGER NOT NULL, to_id INTEGER NOT NULL, phase TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 1.0, properties TEXT);
+             CREATE TABLE node_annotations (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL, channel TEXT NOT NULL, kind TEXT NOT NULL, subkind TEXT, confidence REAL NOT NULL DEFAULT 1.0, evidence TEXT, phase TEXT NOT NULL DEFAULT '');
+             CREATE TABLE aliases (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, qualifier TEXT NOT NULL DEFAULT '', node_id INTEGER NOT NULL, confidence REAL NOT NULL DEFAULT 1.0, evidence TEXT);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO nodes (id, project_id, kind, name) VALUES (1, 1, 'Class', 'C')", [])
+            .unwrap();
+        // One valid row and one dangling row per table (dangling points at the non-existent node 999).
+        conn.execute("INSERT INTO edges (id, project_id, kind, from_id, to_id) VALUES (10, 1, 'Calls', 1, 1)", [])
+            .unwrap();
+        conn.execute("INSERT INTO edges (id, project_id, kind, from_id, to_id) VALUES (11, 1, 'Calls', 999, 999)", [])
+            .unwrap();
+        conn.execute("INSERT INTO node_annotations (id, node_id, channel, kind) VALUES (20, 1, 'c', 'k')", [])
+            .unwrap();
+        conn.execute("INSERT INTO node_annotations (id, node_id, channel, kind) VALUES (21, 999, 'c', 'k')", [])
+            .unwrap();
+        conn.execute("INSERT INTO aliases (id, project_id, namespace, key, node_id) VALUES (30, 1, 'ns', 'k', 1)", [])
+            .unwrap();
+        conn.execute("INSERT INTO aliases (id, project_id, namespace, key, node_id) VALUES (31, 1, 'ns', 'k2', 999)", [])
+            .unwrap();
+
+        ensure_node_fks(&conn).unwrap();
+
+        let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap();
+        let anns: i64 = conn.query_row("SELECT COUNT(*) FROM node_annotations", [], |r| r.get(0)).unwrap();
+        let aliases: i64 = conn.query_row("SELECT COUNT(*) FROM aliases", [], |r| r.get(0)).unwrap();
+        assert_eq!(edges, 1, "the dangling edge must be dropped");
+        assert_eq!(anns, 1, "the dangling annotation must be dropped");
+        assert_eq!(aliases, 1, "the dangling alias must be dropped");
+
+        // The rebuilt tables must now actually carry the foreign key to nodes.
+        for t in ["edges", "node_annotations", "aliases"] {
+            let fk: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM pragma_foreign_key_list('{t}')"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(fk > 0, "{t} must now have a foreign key to nodes");
+        }
+        // And the FK must now be enforced.
+        let orphan = conn.execute(
+            "INSERT INTO edges (id, project_id, kind, from_id, to_id) VALUES (99, 1, 'Calls', 999, 999)",
+            [],
+        );
+        assert!(
+            orphan.is_err(),
+            "after rebuild the FK must reject an edge to a missing node: {orphan:?}"
+        );
+    }
+
+    /// `ensure_annotation_project` adds the `project_id` column to an old `node_annotations` (which had only
+    /// `node_id`), back-fills it from `nodes`, and creates the project index — otherwise per-project annotation
+    /// cleanup could only be written via a sub-query that breaks once the nodes are cleared first.
+    #[test]
+    fn ensure_annotation_project_adds_column_and_backfills() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Old `node_annotations`: no `project_id` column.
+        conn.execute_batch(
+            "CREATE TABLE nodes (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL);
+             CREATE TABLE node_annotations (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL, channel TEXT NOT NULL, kind TEXT NOT NULL, subkind TEXT, confidence REAL NOT NULL DEFAULT 1.0, evidence TEXT, phase TEXT NOT NULL DEFAULT '');",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO nodes (id, project_id, kind, name) VALUES (1, 7, 'Class', 'C')", [])
+            .unwrap();
+        conn.execute("INSERT INTO node_annotations (id, node_id, channel, kind) VALUES (20, 1, 'c', 'k')", [])
+            .unwrap();
+
+        ensure_annotation_project(&conn).unwrap();
+
+        let pid: i64 = conn
+            .query_row("SELECT project_id FROM node_annotations WHERE id = 20", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pid, 7, "project_id must be back-filled from the node");
+        let has_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_annotations_project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_idx > 0, "idx_annotations_project must be created");
+    }
+
+    /// `merge_into` must also handle a **non-object base**: when the base is a scalar/array, any non-null patch
+    /// replaces it wholesale (the `_ =>` branch) — that is what lets a top-level scalar config be overwritten.
+    #[test]
+    fn merge_into_replaces_non_object_base() {
+        let mut base = serde_json::json!(5);
+        merge_into(&mut base, &serde_json::json!({ "a": 1 }));
+        assert_eq!(base, serde_json::json!({ "a": 1 }), "a scalar base must be replaced by an object patch");
+
+        let mut arr = serde_json::json!([1, 2]);
+        merge_into(&mut arr, &serde_json::json!([3]));
+        assert_eq!(arr, serde_json::json!([3]), "an array base must be replaced by an array patch");
+    }
+
+    /// `row_to_node`'s `properties` column is parsed defensively: corrupt JSON must fall back to `Value::Null`
+    /// rather than erroring the whole read.
+    #[test]
+    fn get_node_corrupt_properties_falls_back_to_null() {
+        let s = store();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO nodes (id, project_id, sub_project_id, kind, name, fqn, identity, file_id,
+                                    start_line, end_line, start_byte, end_byte, language, phase, confidence, properties)
+                 VALUES (1, 1, NULL, 'Class', 'C', NULL, NULL, NULL, 0, 0, 0, 0, 'rust', '', 1.0, 'not json')",
+                [],
+            )
+            .unwrap();
+        let n = s.get_node(NodeId(1)).unwrap().expect("node must be found");
+        assert_eq!(
+            n.properties,
+            Value::Null,
+            "corrupt properties JSON must fall back to Value::Null"
+        );
     }
 }
 

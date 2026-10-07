@@ -101,6 +101,19 @@ mod tests {
         assert_eq!(normalize(Path::new("a/b/../..")), Path::new(""));
     }
 
+    /// The `ParentDir` arm has two sub-branches: when `out.pop()` *succeeds* it discards a real component (the
+    /// cases above and the integration test), but when it *fails* — the path starts with `..`, or `..` tries to
+    /// escape an absolute root whose root cannot be popped — it must `push("..")` back rather than silently
+    /// dropping the `..`. That failure branch is never exercised by the other unit tests, so it lives here.
+    #[test]
+    fn normalize_dotdot_that_cannot_pop_pushes_dotdot() {
+        // Leading `..` against an empty accumulator: `pop()` fails, so `..` is preserved (one `..` only —
+        // a second `..` would `pop()` the first back and is therefore *not* a failure-branch example).
+        assert_eq!(normalize(Path::new("../a")), Path::new("../a"));
+        // `..` against an absolute root: the root cannot be popped, so the `..` stays — it never escapes the root.
+        assert_eq!(normalize(Path::new("/../a")), Path::new("/../a"));
+    }
+
     // ---- the adapter itself: `StdFileSystem` had no unit coverage at all ----
 
     /// `exists` / `is_dir` are the gates every phase checks before reading: a file must not read as a

@@ -409,4 +409,61 @@ rules:
         assert!(err.to_string().contains("id"), "actual error: {err}");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// `load_dir` must also tolerate a file that parses to valid YAML but fails `validate` (e.g. an empty
+    /// `message`), not just a YAML-syntax error — otherwise a single semantically-broken rule file in a user or
+    /// built-in directory would silently drop the rest. Both failure kinds hit the same `warn!` skip branch.
+    #[test]
+    fn load_dir_skips_validation_failing_file_but_keeps_others() {
+        let root = std::env::temp_dir().join(format!("gtar_rules_valfail_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("good.yaml"),
+            "rules:\n  - id: good\n    title: t\n    message: \"m\"\n",
+        )
+        .unwrap();
+        // Valid YAML, but the rule has an empty message -> validate() rejects it.
+        std::fs::write(
+            root.join("broken.yaml"),
+            "rules:\n  - id: broken\n    title: t\n    message: \"\"\n",
+        )
+        .unwrap();
+
+        let set = YamlRuleSet::load_dir(&root).expect("load_dir must tolerate a validation failure");
+        assert_eq!(set.rules().len(), 1, "only the valid file should load");
+        assert_eq!(set.rules()[0].id, "good");
+        assert_eq!(set.sources().len(), 1, "the broken file must not be recorded as a source");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Blank input is not valid YAML (not a mapping or sequence) and must be rejected on the parse path,
+    /// distinct from the `validate` "at least one rule" path.
+    #[test]
+    fn from_str_rejects_blank_input() {
+        let err = YamlRuleSet::from_str("").expect_err("blank input must be rejected");
+        assert!(err.to_string().contains("rules YAML"), "actual error: {err}");
+    }
+
+    /// A bare `[]` (no `rules:` wrapper) is the empty-set case for the `Bare` variant of `RuleFile`, and must be
+    /// rejected by `validate` exactly like `rules: []`.
+    #[test]
+    fn from_str_rejects_empty_bare_array() {
+        let err = YamlRuleSet::from_str("[]\n").expect_err("an empty bare array must be rejected");
+        assert!(err.to_string().contains("at least one rule"), "actual error: {err}");
+    }
+
+    /// `load_file` on a directory (not a file) must error on the read path, not silently return an empty rule list.
+    #[test]
+    fn load_file_on_a_directory_errors() {
+        let dir = std::env::temp_dir().join(format!("gtar_rules_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let res = YamlRuleSet::load_file(&dir);
+        assert!(
+            res.is_err(),
+            "load_file on a directory must error, not yield an empty list: {res:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

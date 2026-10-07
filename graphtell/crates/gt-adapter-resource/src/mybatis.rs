@@ -387,4 +387,90 @@ mod tests {
     fn adapter_id_is_the_knowledge_id() {
         assert_eq!(MyBatisMapperAdapter::new().id(), "mybatis");
     }
+
+    /// A relative `root_path` must be resolved against `project_root` (the absolute case is exercised by every other
+    /// test, which hands `scan` an absolute temp dir). This is the `else` branch of the `is_absolute()` check.
+    #[test]
+    fn relative_root_path_is_resolved_against_project_root() {
+        let dir = std::env::temp_dir().join(format!("gt_mybatis_rel_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("mappers")).unwrap();
+        std::fs::write(
+            dir.join("mappers/M.xml"),
+            "<mapper namespace=\"ns.M\">\n<select id=\"q\">select * from tb_a</select>\n</mapper>\n",
+        )
+        .unwrap();
+        // `sub` sets `root_path` to whatever we pass; here it is relative.
+        let s = sub("mappers".into());
+        let out = MyBatisMapperAdapter::new()
+            .scan(&s, &dir, &StdFileSystem::new())
+            .expect("scan should succeed");
+        let _ = std::fs::remove_dir_all(&dir);
+        let calls = pseudo(&out);
+        assert_eq!(calls.len(), 1, "relative root_path must be joined with project_root: {calls:?}");
+        assert_eq!(calls[0].file, "M.xml");
+    }
+
+    /// The verb is matched case-insensitively by the regex but normalised to lowercase before becoming the callee /
+    /// method — `<SELECT>` must come out as `select`, not `SELECT`.
+    #[test]
+    fn verb_is_normalized_to_lowercase() {
+        let facts = scan_files(&[(
+            "m.xml",
+            "<mapper namespace=\"ns.M\">\n<SELECT id=\"q\">select * from tb_a</SELECT>\n</mapper>\n",
+        )]);
+        let calls = pseudo(&facts);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].callee, "mybatis::select", "the verb must be lowercased");
+        assert_eq!(calls[0].method.as_deref(), Some("select"));
+    }
+
+    /// An empty `namespace=""` or empty `id=""` must be skipped (the `is_empty()` guards), not synthesised as a
+    /// pseudo call with a blank owner FQN.
+    #[test]
+    fn empty_namespace_and_empty_id_are_skipped() {
+        let facts = scan_files(&[
+            (
+                "emptyns.xml",
+                "<mapper namespace=\"\">\n<select id=\"q\">select * from tb_a</select>\n</mapper>\n",
+            ),
+            (
+                "emptyid.xml",
+                "<mapper namespace=\"ns.M\">\n<select id=\"\">select * from tb_b</select>\n</mapper>\n",
+            ),
+        ]);
+        assert!(
+            facts.is_empty(),
+            "empty namespace / empty id must not produce facts: {facts:?}"
+        );
+    }
+
+    /// The safety cap must actually bound the scan: with one mapper past `MAX_XML_PER_SUB`, only `MAX_XML_PER_SUB`
+    /// are read — a weird third-party library dumping thousands of mappers must not slow the scan down.
+    #[test]
+    fn mapper_scan_is_capped_at_max_xml_per_sub() {
+        let dir = std::env::temp_dir().join(format!("gt_mybatis_cap_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..(MAX_XML_PER_SUB + 1) {
+            std::fs::write(
+                dir.join(format!("m{}.xml", i)),
+                format!(
+                    "<mapper namespace=\"ns.M\">\n<select id=\"q{0}\">select * from tb_{0}</select>\n</mapper>\n",
+                    i
+                ),
+            )
+            .unwrap();
+        }
+        let s = sub(dir.clone());
+        let out = MyBatisMapperAdapter::new()
+            .scan(&s, &dir, &StdFileSystem::new())
+            .expect("scan should succeed");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            pseudo(&out).len(),
+            MAX_XML_PER_SUB,
+            "only up to MAX_XML_PER_SUB mappers must be scanned, not all of them"
+        );
+    }
 }

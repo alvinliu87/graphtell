@@ -413,4 +413,136 @@ mod tests {
             .unwrap();
         assert_eq!(remaining, 0, "deleting a node must cascade to its edges");
     }
+
+    /// `node_annotations` and `aliases` also carry `REFERENCES nodes ON DELETE CASCADE` (the same protection
+    /// `edges` gets). Without it, deleting a node leaves dangling annotations/aliases that no UI reflects and that
+    /// a re-run build (which clears nodes first) can never clean up.
+    #[test]
+    fn node_deletion_cascades_to_annotations_and_aliases() {
+        let conn = apply_all();
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, project_id, kind, name) VALUES (100, 1, 'Class', 'C')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO node_annotations (project_id, node_id, channel, kind) VALUES (1, 100, 'c', 'k')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO aliases (project_id, namespace, key, node_id) VALUES (1, 'ns', 'k', 100)",
+            [],
+        )
+        .unwrap();
+
+        // Orphan rows (pointing at a missing node) must be rejected.
+        let orphan_ann = conn.execute(
+            "INSERT INTO node_annotations (project_id, node_id, channel, kind) VALUES (1, 999, 'c', 'k')",
+            [],
+        );
+        assert!(
+            orphan_ann.is_err(),
+            "an annotation to a missing node must be rejected: {orphan_ann:?}"
+        );
+        let orphan_alias = conn.execute(
+            "INSERT INTO aliases (project_id, namespace, key, node_id) VALUES (1, 'ns', 'k2', 999)",
+            [],
+        );
+        assert!(
+            orphan_alias.is_err(),
+            "an alias to a missing node must be rejected: {orphan_alias:?}"
+        );
+
+        // Cascade: deleting the node removes its annotations and aliases.
+        conn.execute("DELETE FROM nodes WHERE id = 100", []).unwrap();
+        let ann: i64 = conn
+            .query_row("SELECT COUNT(*) FROM node_annotations WHERE node_id = 100", [], |r| r.get(0))
+            .unwrap();
+        let alias: i64 = conn
+            .query_row("SELECT COUNT(*) FROM aliases WHERE node_id = 100", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ann, 0, "deleting a node must cascade to its annotations");
+        assert_eq!(alias, 0, "deleting a node must cascade to its aliases");
+    }
+
+    /// `sub_projects` and `source_files` carry `REFERENCES projects(id) ON DELETE CASCADE`. If it does not fire,
+    /// deleting a project leaves orphaned sub-projects and files that inflate counts and confuse every later query.
+    #[test]
+    fn project_deletion_cascades_to_sub_projects_and_source_files() {
+        let conn = apply_all();
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+        conn.execute("INSERT INTO projects (id, name, root_path) VALUES (1, 'p', '/p')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sub_projects (id, project_id, name, root_path) VALUES (10, 1, 's', '/s')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO source_files (id, project_id, path) VALUES (20, 1, '/f')", [])
+            .unwrap();
+
+        // Orphan rows (pointing at a missing project) must be rejected.
+        let orphan_sp = conn.execute(
+            "INSERT INTO sub_projects (id, project_id, name, root_path) VALUES (11, 999, 's', '/s')",
+            [],
+        );
+        assert!(
+            orphan_sp.is_err(),
+            "a sub_project to a missing project must be rejected: {orphan_sp:?}"
+        );
+        let orphan_file = conn.execute(
+            "INSERT INTO source_files (id, project_id, path) VALUES (21, 999, '/f')",
+            [],
+        );
+        assert!(
+            orphan_file.is_err(),
+            "a source_file to a missing project must be rejected: {orphan_file:?}"
+        );
+
+        // Cascade: deleting the project removes its sub_projects and source_files.
+        conn.execute("DELETE FROM projects WHERE id = 1", []).unwrap();
+        let sp: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sub_projects WHERE project_id = 1", [], |r| r.get(0))
+            .unwrap();
+        let f: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_files WHERE project_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sp, 0, "deleting a project must cascade to its sub_projects");
+        assert_eq!(f, 0, "deleting a project must cascade to its source_files");
+    }
+
+    /// The edge `UNIQUE(project_id, kind, from_id, to_id)` key is scoped **per project**: the same
+    /// (kind, from, to) under a different `project_id` is a distinct key and must be allowed — this is exactly the
+    /// cross-project isolation that prevents one build from clobbering another's edges (the "10 projects overwrite
+    /// each other's nodes" incident). Within a project the duplicate is still rejected.
+    #[test]
+    fn edge_unique_key_is_scoped_per_project() {
+        let conn = apply_all();
+        // FK off so the arbitrary from_id/to_id ids don't trip the node reference check.
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (1, 'Calls', 10, 20)",
+            [],
+        )
+        .unwrap();
+        // Same (kind, from, to) under a different project -> distinct key -> allowed.
+        conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (2, 'Calls', 10, 20)",
+            [],
+        )
+        .unwrap();
+        // Within project 1 the same tuple is still rejected.
+        let dup = conn.execute(
+            "INSERT INTO edges (project_id, kind, from_id, to_id) VALUES (1, 'Calls', 10, 20)",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "the per-project edge unique key must reject the duplicate within project 1: {dup:?}"
+        );
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap();
+        assert_eq!(total, 2, "each project keeps exactly one row of the shared (kind, from, to)");
+    }
 }

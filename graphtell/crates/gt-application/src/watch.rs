@@ -209,6 +209,11 @@ mod tests {
     use super::*;
     use std::fs::OpenOptions;
 
+    // The rebuild gate is a process-global static, so the tests below that mutate it must run serialized
+    // (cargo runs tests in parallel); otherwise one test's `acquire_rebuild_slot` arms the gate to `now` and
+    // races another test's pending wait into a full-30s stall. This lock serializes only the gate-mutating tests.
+    static GATE_TEST_SER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn poll_interval_scales_with_project_size() {
         // Large projects are expensive to walk, must slow down: main cause of the "resident 7 cores saturated", the tier boundary must be locked.
@@ -304,6 +309,7 @@ mod tests {
 
     #[test]
     fn acquire_rebuild_slot_returns_immediately_after_cooldown() {
+        let _ser = GATE_TEST_SER.lock().unwrap();
         // Force the last rebuild far in the past so the cooldown is satisfied → must not block.
         let (lock, _cv) = rebuild_gate();
         *lock.lock().unwrap() = Some(Instant::now() - REBUILD_COOLDOWN - Duration::from_secs(1));
@@ -315,5 +321,50 @@ mod tests {
         );
         // After acquiring, the gate is advanced to "now" so the next caller waits the full cooldown.
         assert!(lock.lock().unwrap().is_some());
+    }
+
+    /// The gate must actually *block* while the cooldown is still pending — this is the whole point of serializing
+    /// rebuilds; without it every project would rebuild the whole DB at once ("resident 7 cores saturated").
+    ///
+    /// We arm the gate to just under the cooldown so the blocking wait is only ~50ms (not the full 30s) — deterministic
+    /// and fast, while still exercising the `cv.wait_timeout` branch.
+    #[test]
+    fn acquire_rebuild_slot_blocks_while_cooldown_pending() {
+        let _ser = GATE_TEST_SER.lock().unwrap();
+        let (lock, _cv) = rebuild_gate();
+        *lock.lock().unwrap() = Some(Instant::now() - (REBUILD_COOLDOWN - Duration::from_millis(50)));
+        let start = Instant::now();
+        acquire_rebuild_slot();
+        let waited = start.elapsed();
+        assert!(
+            waited >= Duration::from_millis(40),
+            "slot must block for the remaining cooldown (~50ms), got {:?}",
+            waited
+        );
+        assert!(
+            waited < Duration::from_secs(2),
+            "must not wait the full 30s when already near expiry, got {:?}",
+            waited
+        );
+        // And it must have advanced the gate to ~now so the next caller is forced to wait again.
+        assert!(lock.lock().unwrap().is_some());
+    }
+
+    /// First ever rebuild (`None` in the gate) must not block and must arm the gate so the next caller waits.
+    #[test]
+    fn acquire_rebuild_slot_first_call_is_immediate() {
+        let _ser = GATE_TEST_SER.lock().unwrap();
+        let (lock, _cv) = rebuild_gate();
+        *lock.lock().unwrap() = None;
+        let start = Instant::now();
+        acquire_rebuild_slot();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "first ever rebuild must not block (no prior cooldown)"
+        );
+        assert!(
+            lock.lock().unwrap().is_some(),
+            "gate must be armed after the first acquire so subsequent callers wait"
+        );
     }
 }

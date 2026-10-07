@@ -202,6 +202,26 @@ mod tests {
         );
     }
 
+    /// A path that exists but is a regular file (not a directory) must be rejected via the `!is_dir()` half of the
+    /// guard — distinct from the "does not exist" half exercised by `create_rejects_missing_root_dir`.
+    #[test]
+    fn create_rejects_file_as_root_dir() {
+        let s = svc();
+        let file = std::env::temp_dir().join(format!("gt_proj_it_file_{}", std::process::id()));
+        std::fs::write(&file, b"x").expect("write temp file");
+        let r = s.create(NewProject {
+            name: "x".into(),
+            root_path: file.clone(),
+            description: None,
+            config: None,
+        });
+        let _ = std::fs::remove_file(&file);
+        assert!(
+            matches!(r, Err(DomainError::InvalidArgument(_))),
+            "a path that exists but is a file (not a dir) must be rejected"
+        );
+    }
+
     #[test]
     fn create_succeeds_and_get_finds_it() {
         let s = svc();
@@ -278,6 +298,17 @@ mod tests {
             matches!(r, Err(DomainError::InvalidArgument(_))),
             "an illegal root in update must be rejected"
         );
+    }
+
+    /// `RunProgress::new` must start clear: no phase, no reports, not finished — the observer only fills these in later.
+    #[test]
+    fn run_progress_defaults_are_clear() {
+        let pid = ProjectId::new(11);
+        let p = RunProgress::new(pid);
+        assert_eq!(p.project_id, pid);
+        assert!(p.current_phase.is_none());
+        assert!(p.reports.is_empty());
+        assert!(!p.finished);
     }
 
     /// `ProgressObserver` must capture the current phase on start and accumulate phase reports on end (the UI polls

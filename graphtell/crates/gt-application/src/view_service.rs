@@ -2924,6 +2924,7 @@ fn action_words(s: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use gt_adapter_sqlite::SqliteStore;
+    use gt_domain::error::DomainError;
     use gt_domain::model::{
         Edge, EdgeId, EdgeKind, GraphDelta, Language, LayoutMode, NewEdge, NewNode, NewProject,
         Phase, Span, ViewMode,
@@ -3399,5 +3400,169 @@ mod tests {
             all.contains(&NodeId::new(2)),
             "reverse discovery must put the reader among the centre's neighbours"
         );
+    }
+
+    // ---- `NotFound` negative paths on the public surface ----
+
+    #[test]
+    fn candidates_unknown_perspective_is_not_found() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_tables(&store, &[("t", 1)]);
+        let r = svc.candidates(pid, "ghost", 10, None, None);
+        assert!(
+            matches!(r, Err(DomainError::NotFound(_))),
+            "an unknown perspective id must be NotFound"
+        );
+    }
+
+    #[test]
+    fn aggregate_view_unknown_perspective_is_not_found() {
+        let (svc, store) = svc_with(vec![p_agg("table", "Table")]);
+        let pid = seed_tables(&store, &[("t", 1)]);
+        let r = svc.aggregate_view(pid, "ghost", 5);
+        assert!(
+            matches!(r, Err(DomainError::NotFound(_))),
+            "an unknown perspective id must be NotFound"
+        );
+    }
+
+    #[test]
+    fn object_view_unknown_perspective_is_not_found() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_tables(&store, &[("t", 1)]);
+        let r = svc.object_view(pid, "ghost", NodeId::new(1), None);
+        assert!(
+            matches!(r, Err(DomainError::NotFound(_))),
+            "an unknown perspective id must be NotFound before resolving the centre"
+        );
+    }
+
+    #[test]
+    fn object_view_unknown_center_node_is_not_found() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_tables(&store, &[("t", 1)]);
+        let r = svc.object_view(pid, "table", NodeId::new(999), None);
+        assert!(
+            matches!(r, Err(DomainError::NotFound(_))),
+            "an unknown centre node id must be NotFound"
+        );
+    }
+
+    #[test]
+    fn node_locations_unknown_node_is_not_found() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_tables(&store, &[("t", 1)]);
+        let _ = pid;
+        let r = svc.node_locations(NodeId::new(999));
+        assert!(
+            matches!(r, Err(DomainError::NotFound(_))),
+            "an unknown node id must be NotFound"
+        );
+    }
+
+    // ---- candidate / perspective selection branches ----
+
+    /// A perspective with no `node_kind` resolves nothing; `candidates` returns an empty list rather than querying.
+    #[test]
+    fn candidates_without_node_kind_returns_empty() {
+        let (svc, store) = svc_with(vec![PerspectiveSpec {
+            id: "x".into(),
+            label: "x".into(),
+            mode: ViewMode::Object,
+            node_kind: None,
+            ..PerspectiveSpec::default()
+        }]);
+        let pid = seed_tables(&store, &[("t", 1), ("u", 2)]);
+        let cs = svc.candidates(pid, "x", 10, None, None).unwrap();
+        assert!(cs.is_empty(), "a kind-less perspective yields no candidates");
+    }
+
+    /// `candidates` filters by `sub_project_id`: only nodes of that sub-project survive the `retain`.
+    #[test]
+    fn candidates_filters_by_sub_project() {
+        let (svc, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_project(&store);
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(new_node(pid, 1, "Table", "no_sub", Value::Null));
+        let mut in_sub = new_node(pid, 2, "Table", "in_sub", Value::Null);
+        in_sub.sub_project_id = Some(SubProjectId::new(7));
+        d.nodes.push(in_sub);
+        store.apply(&d).unwrap();
+
+        assert_eq!(svc.candidates(pid, "table", 10, None, None).unwrap().len(), 2);
+        let sub = svc
+            .candidates(pid, "table", 10, None, Some(SubProjectId::new(7)))
+            .unwrap();
+        assert_eq!(sub.len(), 1, "only the sub-project-7 node must survive");
+        assert_eq!(sub[0].id, NodeId::new(2));
+    }
+
+    /// `perspectives` for a non-Object spec (here an Aggregate mode) falls through to the `_` arm → `available` is the
+    /// total node count, ignoring the (absent) `node_kind`. With 2 seeded Tables and a `Class` node_kind, the Object arm
+    /// would have returned 0 (neither by_kind nor by_category has `Class`), so `available == 2` proves the `_` arm.
+    #[test]
+    fn perspectives_non_object_mode_reports_total_nodes() {
+        let (svc, store) = svc_with(vec![p_agg("agg", "Class")]);
+        let pid = seed_tables(&store, &[("a", 1), ("b", 2)]);
+        let ps = svc.perspectives(pid).unwrap();
+        let avail = ps[0].get("available").and_then(|v| v.as_u64()).unwrap();
+        assert_eq!(avail, 2, "a non-Object perspective reports the total node count");
+    }
+
+    /// `aggregate_view` in Matrix layout returns a `matrix` payload (cluster list empty), not the Compound bucket list.
+    #[test]
+    fn aggregate_view_matrix_returns_matrix_not_clusters() {
+        let (svc, store) = svc_with(vec![PerspectiveSpec {
+            id: "m".into(),
+            label: "m".into(),
+            mode: ViewMode::Aggregate,
+            node_kind: Some("Table".into()),
+            layout: LayoutMode::Matrix,
+            group_by: Some(GroupBy::NodeKind),
+            ..PerspectiveSpec::default()
+        }]);
+        let pid = seed_tables(&store, &[("a", 1), ("b", 2)]);
+        let av = svc.aggregate_view(pid, "m", 5).unwrap();
+        assert!(av.clusters.is_empty(), "Matrix layout produces no clusters");
+        let m = av.matrix.expect("Matrix layout must produce a matrix");
+        assert_eq!(m.cells.iter().flatten().sum::<u32>(), 2, "all 2 Tables fall in the matrix");
+    }
+
+    // ---- pure classification helpers (delegating to kinds.rs, but the view layer's own wrappers must hold) ----
+
+    #[test]
+    fn chain_edge_covers_call_and_semantic_and_bridge() {
+        assert!(is_chain_edge("Calls"));
+        assert!(is_chain_edge("HasCallSite"));
+        assert!(is_chain_edge("ReadsDb"), "a semantic edge is traversable as a chain");
+        assert!(is_chain_edge("HandledBy"), "a bridge edge is traversable as a chain");
+        assert!(!is_chain_edge("Whatever"));
+    }
+
+    #[test]
+    fn semantic_edge_excludes_syntax_chain() {
+        assert!(is_semantic_edge("ReadsDb"));
+        assert!(!is_semantic_edge("Calls"), "a pure call edge is not itself semantic");
+    }
+
+    #[test]
+    fn bridge_edge_matches_known_bridge() {
+        assert!(is_bridge_edge("HandledBy"));
+        assert!(is_bridge_edge("CallsHttp"));
+        assert!(!is_bridge_edge("ReadsDb"));
+    }
+
+    #[test]
+    fn node_is_semantic_classifies_by_kind() {
+        let (_, store) = svc_with(vec![p_spec("table", "Table")]);
+        let pid = seed_project(&store);
+        let mut d = GraphDelta::new(pid);
+        d.nodes.push(new_node(pid, 1, "Table", "t", Value::Null));
+        d.nodes.push(new_node(pid, 2, "Method", "m", Value::Null));
+        store.apply(&d).unwrap();
+        let table = store.get_node(NodeId::new(1)).unwrap().unwrap();
+        let method = store.get_node(NodeId::new(2)).unwrap().unwrap();
+        assert!(node_is_semantic(&table));
+        assert!(!node_is_semantic(&method));
     }
 }

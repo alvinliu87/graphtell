@@ -300,7 +300,7 @@ pub fn deserialize_knowledge(text: &str) -> Result<FrameworkKnowledge> {
 mod tests {
     use super::*;
     use gt_domain::model::fkb::{Rule, Selector};
-    use gt_domain::model::kinds::Phase;
+    use gt_domain::model::kinds::{extra_annotation_kinds, EdgeKind, NodeKind, Phase};
     use gt_domain::model::Language;
 
     fn rule_with_langs(langs: Option<Vec<Language>>) -> Rule {
@@ -934,6 +934,144 @@ exclude_rules:
         assert!(
             !gt_domain::model::kinds::EdgeKind::from("ResolvesToContract").is_bridge(),
             "it connects two semantic nodes, so it is not a semantic↔syntax bridge edge"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- load_dir: the three FKB-declared *registration* branches (loader.rs:54 / 62 / 72) ----
+
+    /// Semantic **node** kinds declared by FKB are registered at load time (loader.rs:54); without this a
+    /// `Store` / `Widget` node the FKB introduces is a plain syntactic node and never shows in the folded graph.
+    /// The existing bridge test only covers edge kinds, so this node-kind branch is otherwise untested.
+    #[test]
+    fn loading_the_real_fkb_registers_semantic_node_kinds() {
+        let dir = tmp_dir("sem-node");
+        std::fs::write(
+            &dir.join("fe.yaml"),
+            "id: fe\nlanguage: javascript\nsemantic_kinds: [FkbStore, FkbWidget]\nrules: []\n",
+        )
+        .unwrap();
+        YamlKnowledgeBase::load_dir(&dir).expect("load ok");
+        assert!(
+            NodeKind::from("FkbStore").is_semantic(),
+            "a semantic node kind declared by FKB must classify as semantic"
+        );
+        assert!(NodeKind::from("FkbWidget").is_semantic());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Business-specific **annotation** kinds declared by FKB are registered at load time (loader.rs:72);
+    /// otherwise an annotation the FKB emits is unknown to the kernel and silently dropped.
+    #[test]
+    fn loading_the_real_fkb_registers_annotation_kinds() {
+        let dir = tmp_dir("annot");
+        std::fs::write(
+            &dir.join("a.yaml"),
+            "id: ann\nannotation_kinds: [Pii, Compliance]\nrules: []\n",
+        )
+        .unwrap();
+        YamlKnowledgeBase::load_dir(&dir).expect("load ok");
+        let registered = extra_annotation_kinds();
+        assert!(
+            registered.contains(&"Pii".to_string()),
+            "a Pii annotation declared by FKB must be registered: {registered:?}"
+        );
+        assert!(registered.contains(&"Compliance".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Bridge (semantic↔syntax) edge kinds declared by FKB are registered the same way as semantic edges
+    /// (loader.rs:62, the `bridge_edge_kinds` half of the OR); a bridge kind must classify as a **bridge**
+    /// edge, not a semantic one. The existing test only feeds `semantic_edge_kinds`, so this half is otherwise
+    /// untested.
+    #[test]
+    fn loading_the_real_fkb_registers_bridge_edge_kinds() {
+        let dir = tmp_dir("bridge-edge");
+        std::fs::write(
+            &dir.join("be.yaml"),
+            "id: be\nlanguage: java\nbridge_edge_kinds: [ImplementsInterface]\nrules: []\n",
+        )
+        .unwrap();
+        YamlKnowledgeBase::load_dir(&dir).expect("load ok");
+        let k = EdgeKind::from("ImplementsInterface");
+        assert!(
+            k.is_bridge(),
+            "a bridge edge declared by FKB must classify as a bridge edge"
+        );
+        assert!(!k.is_semantic());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- apply_side_defaults: the two branches the existing tests never reach ----
+
+    /// `apply_side_defaults` only looks at `Synthesize` actions (loader.rs:223 `else continue`): a non-Synthesize
+    /// action (e.g. `Annotate`) must be left untouched, even for a side-aware node kind.
+    #[test]
+    fn apply_side_defaults_ignores_non_synthesize_actions() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: demo
+language: php
+side: backend
+rules:
+  - id: ann
+    phase: AnnotatePost
+    selector: { kind: call, callee: "Db::name" }
+    binding:
+      - Annotate:
+          channel: fkb_mark
+          annotations: []
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            side_of_first_synth(&fk),
+            None,
+            "no Synthesize action means no side field is injected"
+        );
+    }
+
+    /// When a `Synthesize` action omits `subtype`, the node kind itself is used for the side-aware check
+    /// (loader.rs:225 `unwrap_or_else`): a side-aware `node: Cache` with no subtype must still receive `side`.
+    /// The existing inject test always sets `subtype`, so this fallback branch is otherwise untested.
+    #[test]
+    fn apply_side_defaults_falls_back_to_node_when_subtype_missing() {
+        let fk = YamlKnowledgeBase::from_str(
+            r#"
+id: demo
+language: php
+side: backend
+rules:
+  - id: cache-read
+    phase: Synthesize
+    selector: { kind: call, callee: "Cache::get" }
+    binding:
+      - Synthesize:
+          node: Cache
+          identity: { kind: Named, value: { literal: "Cache" } }
+          fields: []
+          confidence: 0.9
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            side_of_first_synth(&fk).as_deref(),
+            Some("backend"),
+            "a side-aware node with no subtype must still get side"
+        );
+    }
+
+    // ---- load_file: the read-error arm, distinct from a YAML parse error ----
+
+    /// `load_file` must surface a **read** failure (e.g. a directory passed where a file is expected) as an
+    /// `Err`, not panic or treat it as an empty document — this is the `read_to_string` arm of load_file
+    /// (loader.rs:88), distinct from the YAML parse failure the `load_dir` corrupt-file test exercises.
+    #[test]
+    fn load_file_read_error_is_an_error() {
+        let dir = tmp_dir("read-err");
+        assert!(
+            YamlKnowledgeBase::load_file(&dir).is_err(),
+            "reading a directory as a file must error"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

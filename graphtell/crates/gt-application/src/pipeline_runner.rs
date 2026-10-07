@@ -605,6 +605,69 @@ mod tests {
         assert_eq!(d.edges.len(), 1, "an empty-string class must be skipped");
     }
 
+    /// A non-string `scope` (e.g. a numeric id from a malformed probe) must fall back to `global` via
+    /// `as_str().unwrap_or("global")`, not be treated as a literal scope name — so it still attaches to every contract.
+    #[test]
+    fn non_string_scope_defaults_to_global() {
+        let contracts = vec![node(1, "HttpContract", "/x", None), node(2, "HttpContract", "/y", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![SymbolEntry {
+            project_id: ProjectId::new(1),
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            value: serde_json::json!({ "classes": ["AuthMiddleware"], "scope": 123 }),
+        }];
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 2, "a non-string scope must degrade to global (every contract)");
+        assert_eq!(d.kind_patches.len(), 1);
+    }
+
+    /// In `per_app`, a non-string `prefix` yields `None`, so `prefix.map_or(true, …)` matches every contract rather
+    /// than silently filtering to nothing.
+    #[test]
+    fn non_string_prefix_in_per_app_matches_all() {
+        let contracts = vec![node(1, "HttpContract", "/adminapi/order", None), node(2, "HttpContract", "/api/user", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![SymbolEntry {
+            project_id: ProjectId::new(1),
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            value: serde_json::json!({ "classes": ["AuthMiddleware"], "scope": "per_app", "prefix": 123 }),
+        }];
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 2, "a non-string per_app prefix must degrade to every contract");
+    }
+
+    /// A declared class given as an FQN only matches a node whose **short name** (namespace stripped) lines up, via the
+    /// `.or_else(|| short rsplit)` branch — not its full name / fqn.
+    #[test]
+    fn declared_fqn_resolves_by_node_short_name() {
+        let contracts = vec![node(1, "HttpContract", "/x", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)]; // no fqn; short name == "AuthMiddleware"
+        let declared = vec![SymbolEntry {
+            project_id: ProjectId::new(1),
+            table: "declared_middleware".into(),
+            key: "k".into(),
+            // FQN that is not the node's name/fqn, but shares the short name after stripping `App\`
+            value: serde_json::json!({ "classes": ["App\\AuthMiddleware"], "scope": "global" }),
+        }];
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert_eq!(d.edges.len(), 1, "the FQN should resolve through the node's short name");
+        assert_eq!(d.kind_patches, vec![(NodeId::new(10), NodeKind::from("Middleware"))]);
+    }
+
+    /// A `per_app` prefix that matches no contract yields an empty target set — no edges are produced (never an error).
+    #[test]
+    fn per_app_prefix_matching_no_contract_yields_no_edges() {
+        let contracts = vec![node(1, "HttpContract", "/api/user", None)];
+        let classes = vec![node(10, "Class", "AuthMiddleware", None)];
+        let declared = vec![decl(&["AuthMiddleware"], "per_app", Some("/adminapi"))];
+
+        let d = build_middleware_delta(ProjectId::new(1), &declared, &contracts, &classes, &[], &Default::default());
+        assert!(d.edges.is_empty(), "a per_app prefix with no match must produce no edges");
+        assert!(d.kind_patches.is_empty());
+    }
+
     // ---- `attach_declared_middleware` (store-only orchestration) ----
     // The dependency bundle is only needed to satisfy `PipelineService::new`; `attach_declared_middleware` touches nothing
     // but `self.store`, so the real adapters are inert here.
