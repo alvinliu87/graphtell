@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::graph::MergeStrategy;
-use crate::model::kinds::{AnnotationChannel, Language, NodeKind, Phase, SynthesizedKind};
+use crate::model::kinds::{AnnotationChannel, EdgeKind, Language, NodeKind, Phase, SynthesizedKind};
 
 // `default_conf` lives in the `detector` submodule but is also the serde default for `Rule`'s
 // confidence field, so we pull it in explicitly here.
@@ -288,6 +288,17 @@ pub struct SynthesizeAction {
     pub identity: IdentitySpec,
     pub fields: Vec<FieldSpec>,
     pub link: Option<LinkSpec>,
+    /// Declare that this node is **the same thing as the node another sub-project declares under the same
+    /// identity** — expressed as an edge, because the two are two nodes.
+    ///
+    /// The canonical case is the contract bridge: a sub-project's node is owned by that sub-project (the identity
+    /// scope carries it), so the front end's `POST /login` and the back end's `ANY /login` stay two nodes, and
+    /// "the front end's call resolves to that route" becomes `HttpContract --ResolvesToContract--> HttpContract`.
+    ///
+    /// Which pair counts as "the same thing" is still knowledge (declared here); the kernel only knows "another
+    /// sub-project, same identity value, and for contracts the method-agnostic `ANY` / `RULE` spelling".
+    #[serde(default)]
+    pub bridge: Option<BridgeSpec>,
     pub confidence: f32,
     /// `MergeBy(key)` — several data sources merge into different fields of one node rather than into several nodes.
     pub modifiers: Vec<String>,
@@ -302,6 +313,17 @@ pub struct SynthesizeAction {
     /// into the two sources `{ expand_method: true }` / `{ expand_entry: true }`, and appends `path_suffix` to the
     /// computed path (after the `Route::group` prefix).
     pub expand: Option<ExpandSpec>,
+}
+
+/// A cross-sub-project bridge: an edge from the synthesised node to the node another sub-project declares
+/// under the same identity.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BridgeSpec {
+    /// The edge kind produced (e.g. `ResolvesToContract`).
+    pub kind: EdgeKind,
+    /// Overrides the inherited confidence (`SynthesizeAction::confidence * Rule::confidence`).
+    pub confidence: Option<f32>,
 }
 
 /// An expansion table: one call -> N semantic nodes.
@@ -346,6 +368,7 @@ impl Default for SynthesizeAction {
             identity: IdentitySpec::default(),
             fields: Vec::new(),
             link: None,
+            bridge: None,
             confidence: 0.9,
             modifiers: Vec::new(),
             alias: None,

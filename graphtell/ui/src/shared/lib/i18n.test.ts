@@ -29,6 +29,14 @@ describe('edgeKindLabel', () => {
     const onlySingle = (k: string) => (k === 'edge.WritesDb' ? 'writes' : k);
     expect(edgeKindLabel(onlySingle, 'WritesDb', ['ReadsDb'])).toBe('writes');
   });
+
+  it('resolves the cross-sub ResolvesToContract bridge edge to a human label (never the raw key)', () => {
+    // The cross-sub-project contract bridge edge must render as "resolves to contract" (zh: "解析到契约"),
+    // not as the raw key `edge.ResolvesToContract` — a raw key on the canvas means the label entry is missing.
+    const label = edgeKindLabel(translate, 'ResolvesToContract');
+    expect(label).not.toBe('edge.ResolvesToContract');
+    expect(label).toBe('resolves to contract');
+  });
 });
 
 describe('translate', () => {

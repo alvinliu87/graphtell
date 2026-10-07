@@ -120,13 +120,12 @@ fn node_and_edge_roundtrip() {
     assert_eq!(out[0].to_id, NodeId(101));
 }
 
-/// `count_nodes` asks "does any of these parties have evidence" — reading the derived `sides` set, with the
-/// scalar kept as a fallback so rows written before `sides` existed still count (no rebuild). Comparing one
-/// scalar (`$.side = ?`) would make any node several parties had written invisible to a side-filtered
-/// perspective: a contract bridge reads `side = bridge` and matches **neither** `side = frontend` nor
-/// `side = backend`, so "the backend participates" would quietly drop every contract the front end touched.
+/// `count_nodes` asks "is this node owned by the requested party": a node is owned by exactly one sub-project,
+/// so `side` is one scalar and the comparison is equality (`$.side = ?`). It used to be set semantics over a
+/// derived `sides` set, because a contract bridge merged several parties onto one node; that node shape no
+/// longer exists, so there is nothing for a set to express.
 #[test]
-fn count_nodes_accepts_any_party_with_evidence() {
+fn count_nodes_filters_on_the_owning_party() {
     let store = make_store();
     let pid = seed_project(&store);
 
@@ -146,36 +145,30 @@ fn count_nodes_accepts_any_party_with_evidence() {
         properties: props,
     };
     let nodes = vec![
-        // Written by both sides: the derived label is `bridge`, the parties live in the set.
-        node(201, "HttpContract", "bridged", serde_json::json!({ "side": "bridge", "sides": ["backend", "frontend"] })),
-        // One party each.
-        node(202, "HttpContract", "backend-only", serde_json::json!({ "side": "backend", "sides": ["backend"] })),
-        node(203, "HttpContract", "frontend-only", serde_json::json!({ "side": "frontend", "sides": ["frontend"] })),
+        // One party each: the same endpoint declared by two sub-projects is two nodes, not one shared one.
+        node(202, "HttpContract", "backend-only", serde_json::json!({ "side": "backend" })),
+        node(203, "HttpContract", "frontend-only", serde_json::json!({ "side": "frontend" })),
         // No side evidence at all (e.g. a knowledge base that never declared `side`).
         node(204, "HttpContract", "anonymous", serde_json::json!({})),
-        // A legacy row: scalar only, no `sides` set.
         node(205, "Cache", "token", serde_json::json!({ "side": "backend" })),
     ];
     store
         .apply(&GraphDelta { project_id: Some(pid), nodes, ..Default::default() })
         .expect("persisting the graph should succeed");
 
-    let count = |kind: Option<&str>, sides: &[&str]| -> u64 {
-        let sides: Vec<String> = sides.iter().map(|s| s.to_string()).collect();
+    let count = |kind: Option<&str>, side: Option<&str>| -> u64 {
         match kind {
-            Some(k) => store.count_nodes(pid, Some(&NodeKind::new(k)), &sides),
-            None => store.count_nodes(pid, None, &sides),
+            Some(k) => store.count_nodes(pid, Some(&NodeKind::new(k)), side),
+            None => store.count_nodes(pid, None, side),
         }
         .expect("count_nodes should succeed")
     };
 
     let contracts = Some("HttpContract");
-    assert_eq!(count(contracts, &["backend"]), 2, "bridge + backend-only");
-    assert_eq!(count(contracts, &["frontend"]), 2, "bridge + frontend-only");
-    assert_eq!(count(contracts, &["backend", "frontend"]), 3, "each of the three sides counts on demand, with no double counting");
-    assert_eq!(count(contracts, &["external"]), 0, "a side with no evidence must not match");
-    assert_eq!(count(contracts, &[]), 4, "an empty set = no filtering");
-    // Legacy rows (scalar only) keep working, which is what makes the filter safe without a rebuild.
-    assert_eq!(count(Some("Cache"), &["backend"]), 1);
-    assert_eq!(count(Some("Cache"), &["frontend"]), 0);
+    assert_eq!(count(contracts, Some("backend")), 1, "only the backend's own contract");
+    assert_eq!(count(contracts, Some("frontend")), 1, "only the frontend's own contract");
+    assert_eq!(count(contracts, Some("external")), 0, "a side with no evidence must not match");
+    assert_eq!(count(contracts, None), 3, "no side = no filtering");
+    assert_eq!(count(Some("Cache"), Some("backend")), 1);
+    assert_eq!(count(Some("Cache"), Some("frontend")), 0);
 }

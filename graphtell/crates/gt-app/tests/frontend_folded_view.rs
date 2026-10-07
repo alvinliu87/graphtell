@@ -8,7 +8,9 @@
 //!      so the frontend drawer has a "folded syntax call chain" to display;
 //!   3. a cross-file frontend chain (`App.onDelete -> api.deleteItem`) is also gathered into one `via`.
 //!
-//! The whole group skips when the sample is missing.
+//! The single test below builds the in-repo synthetic `link` sample (`samples/link`, shipped with the
+//! repo); if it is somehow absent the test now fails loudly via `.expect` rather than soft-skipping into
+//! a false pass.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -95,14 +97,6 @@ fn view_svc(b: &Built) -> ViewService {
     )
 }
 
-fn skip() -> String {
-    format!(
-        "skip: synthetic sample not found {}",
-        link_sample_root()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "samples/link-sample".to_string())
-    )
-}
 
 /// Find the contract node `POST /api/delete` (the front-back convergence point).
 fn contract_id(b: &Built) -> Option<gt_domain::model::NodeId> {
@@ -117,7 +111,14 @@ fn contract_id(b: &Built) -> Option<gt_domain::model::NodeId> {
             offset: Some(0),
         })
         .ok()?;
-    nodes.into_iter().next().map(|n| n.id)
+    let nodes: Vec<_> = nodes;
+    // Two sub-projects now name the same endpoint and each owns its own node; this test is about the
+    // **frontend's** contract (the one carrying the `CallsHttp` in-edge from the axios call site).
+    nodes
+        .iter()
+        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("frontend"))
+        .or_else(|| nodes.first())
+        .map(|n| n.id)
 }
 
 /// Print the folded view "as the canvas shows it": centre / each ring / each edge's via chain and per-hop call sites.
@@ -179,10 +180,9 @@ fn dump_view(ov: &gt_domain::model::ObjectView, names: &std::collections::HashMa
 /// The frontend chain must be visible in the **folded view**, carrying an expandable per-hop call chain.
 #[test]
 fn frontend_chain_visible_in_folded_route_view() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "frontend folded-view test requires the synthetic `link` sample (samples/link), which ships with the repo; a missing sample means the checkout is incomplete",
+    );
     let views = view_svc(&b);
     let Some(cid) = contract_id(&b) else {
         eprintln!("no /api/delete contract in the graph, skipping");

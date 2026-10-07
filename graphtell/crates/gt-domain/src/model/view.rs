@@ -72,22 +72,12 @@ pub struct PerspectiveSpec {
     pub mode: ViewMode,
     /// The node kind an object-style perspective covers.
     pub node_kind: Option<String>,
-    /// Only include nodes of a given "side": `frontend` / `backend` (filtered on the node property `side`).
-    /// Used to split nodes that "share a kind but differ in side" into different perspectives — e.g. both the
-    /// backend `Cache` and the frontend `uni.setStorageSync` synthesise a `Cache` node, and `side` splits them
-    /// into "cache perspective / local-storage perspective".
+    /// Only include nodes owned by a given "side": `frontend` / `backend` (compared against the node property
+    /// `side`). Used to split nodes that "share a kind but differ in side" into different perspectives — e.g.
+    /// both the backend `Cache` and the frontend `uni.setStorageSync` synthesise a `Cache` node, and `side`
+    /// splits them into "cache perspective / local-storage perspective".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<String>,
-    /// Accept a node as soon as **any** of these parties has evidence on it (set semantics), instead of
-    /// requiring the node's scalar `side` to equal one value.
-    ///
-    /// This is the honest way to filter nodes several parties may write: a contract bridge carries both sides'
-    /// evidence, so its derived `side` reads `bridge` and it matches **neither** `side: frontend` nor
-    /// `side: backend`. Writing the intent as `side_any: [backend]` — "the backend participates" — keeps those
-    /// nodes in view. Nodes written by an older pipeline (scalar `side` only, no derived `sides` set) are still
-    /// matched through that scalar, so enabling a `side_any` filter never forces a rebuild.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub side_any: Option<Vec<String>>,
     /// Default layout algorithm.
     pub layout: LayoutMode,
     /// Grouping dimension of an aggregate perspective.
@@ -105,44 +95,25 @@ pub struct PerspectiveSpec {
 }
 
 impl PerspectiveSpec {
-    /// The sides this perspective accepts, `side` (one required party) and `side_any` (any one suffices)
-    /// combined. Empty ⇒ no side filtering at all.
+    /// The side this perspective accepts; `None` ⇒ no side filtering at all.
     ///
     /// Kept in one place so the three filtering sites (availability count / object candidates / aggregate
     /// candidates) cannot drift apart, and so the SQL counting path and the in-memory one agree.
-    pub fn accepted_sides(&self) -> Vec<&str> {
-        let mut out: Vec<&str> = Vec::new();
-        if let Some(s) = &self.side {
-            out.push(s.as_str());
-        }
-        if let Some(list) = &self.side_any {
-            out.extend(list.iter().map(|s| s.as_str()));
-        }
-        out
+    pub fn accepted_side(&self) -> Option<&str> {
+        self.side.as_deref()
     }
 
     /// Whether a node qualifies for this perspective's side filter, given its persisted properties.
     ///
-    /// `#` `#` A node qualifies when **any** accepted party has evidence: either it is present in the derived
-    /// set `sides` (written by the current pipeline), or — for rows written before `sides` existed — the
-    /// scalar `side` equals it. Nodes with no side evidence at all never qualify, same as before.
+    /// A node is owned by exactly one sub-project, so `side` is a **scalar** naming the party that declares it
+    /// and the test is plain equality. (It used to be a `sides` set with a derived `bridge` label, because one
+    /// node could carry several parties' evidence; that is impossible now, so the set was removed rather than
+    /// left as a second, easier-to-get-wrong way to say the same thing.)
     pub fn matches_sides(&self, props: &Value) -> bool {
-        let accepted = self.accepted_sides();
-        if accepted.is_empty() {
-            return true;
+        match self.accepted_side() {
+            None => true,
+            Some(want) => props.get("side").and_then(|v| v.as_str()) == Some(want),
         }
-        let sides: Vec<String> = props
-            .get("sides")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        if sides.iter().any(|s| accepted.contains(&s.as_str())) {
-            return true;
-        }
-        props
-            .get("side")
-            .and_then(|v| v.as_str())
-            .map(|s| accepted.contains(&s))
-            .unwrap_or(false)
     }
 }
 
@@ -154,7 +125,6 @@ impl Default for PerspectiveSpec {
             mode: ViewMode::Object,
             node_kind: None,
             side: None,
-            side_any: None,
             layout: LayoutMode::Radial,
             group_by: None,
             row_from: None,
@@ -495,71 +465,53 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn spec(side: Option<&str>, side_any: Option<&[&str]>) -> PerspectiveSpec {
+    fn spec(side: Option<&str>) -> PerspectiveSpec {
         PerspectiveSpec {
             id: "t".into(),
             side: side.map(|s| s.to_string()),
-            side_any: side_any.map(|l| l.iter().map(|s| s.to_string()).collect()),
             ..PerspectiveSpec::default()
         }
     }
 
-    /// A contract written by **both** sides: the derived label is `bridge`, the parties live in `sides`.
-    fn bridge() -> Value {
-        json!({ "side": "bridge", "sides": ["backend", "frontend"] })
+    /// A contract declared by the backend: one party, one scalar label.
+    fn backend() -> Value {
+        json!({ "side": "backend" })
     }
 
-    /// A row written before `sides` existed: only the scalar present.
-    fn legacy() -> Value {
-        json!({ "side": "backend" })
+    /// The same endpoint as declared by the frontend — its own node, its own label.
+    fn frontend() -> Value {
+        json!({ "side": "frontend" })
     }
 
     #[test]
     fn no_side_filter_accepts_everything() {
-        let s = spec(None, None);
-        assert!(s.accepted_sides().is_empty());
-        assert!(s.matches_sides(&bridge()));
+        let s = spec(None);
+        assert!(s.accepted_side().is_none());
+        assert!(s.matches_sides(&backend()));
+        assert!(s.matches_sides(&frontend()));
         assert!(s.matches_sides(&json!({})));
     }
 
+    /// A node is owned by one party, so the filter is plain equality — and the two parties' nodes for the same
+    /// endpoint land in **different** perspectives instead of both matching.
     #[test]
-    fn bridge_node_matches_each_of_its_parties() {
-        // Why this matters: with a strict scalar reading, a bridge node matches neither `side: frontend` nor
-        // `side: backend`, so "the backend participates" silently dropped every node the front end had touched.
-        for side in ["backend", "frontend"] {
-            let s = spec(Some(side), None);
-            assert!(s.matches_sides(&bridge()), "bridge must match {side}");
-            let s_any = spec(None, Some(&[side]));
-            assert!(s_any.matches_sides(&bridge()), "side_any: bridge must match {side}");
-        }
-    }
-
-    #[test]
-    fn single_party_node_only_matches_that_party() {
-        let s = spec(Some("backend"), None);
-        assert!(s.matches_sides(&json!({ "side": "backend", "sides": ["backend"] })));
-        assert!(!s.matches_sides(&json!({ "side": "frontend", "sides": ["frontend"] })));
-    }
-
-    #[test]
-    fn legacy_rows_without_sides_still_match_through_the_scalar() {
-        // So switching a perspective to a side filter never forces a rebuild of existing projects.
-        assert!(spec(Some("backend"), None).matches_sides(&legacy()));
-        assert!(!spec(Some("frontend"), None).matches_sides(&legacy()));
+    fn each_party_owns_its_own_node() {
+        assert!(spec(Some("backend")).matches_sides(&backend()));
+        assert!(!spec(Some("frontend")).matches_sides(&backend()));
+        assert!(spec(Some("frontend")).matches_sides(&frontend()));
+        assert!(!spec(Some("backend")).matches_sides(&frontend()));
     }
 
     #[test]
     fn nodes_without_any_side_evidence_never_match() {
-        assert!(!spec(Some("backend"), None).matches_sides(&json!({})));
-        assert!(!spec(None, Some(&["backend"])).matches_sides(&json!({ "other": 1 })));
+        assert!(!spec(Some("backend")).matches_sides(&json!({})));
+        assert!(!spec(Some("backend")).matches_sides(&json!({ "other": 1 })));
     }
 
     #[test]
-    fn accepted_sides_unions_both_declarations() {
-        let s = spec(Some("backend"), Some(&["frontend", "external"]));
-        let mut got = s.accepted_sides();
-        got.sort_unstable();
-        assert_eq!(got, vec!["backend", "external", "frontend"]);
+    fn accepted_side_is_the_declared_party() {
+        assert_eq!(spec(Some("backend")).accepted_side(), Some("backend"));
+        assert_eq!(spec(None).accepted_side(), None, "no declaration = no side filtering");
     }
 
     // ===== `ViewRegistry` lookup: the side-aware "click to switch" resolution (a `Cache` node must land on the
@@ -648,7 +600,6 @@ mod tests {
         assert_eq!(d.layout, LayoutMode::Radial);
         assert_eq!(d.depth, 2);
         assert!(d.side.is_none());
-        assert!(d.side_any.is_none());
         assert!(d.node_kind.is_none());
         assert!(d.collapsed_kinds.is_empty());
     }
@@ -908,7 +859,7 @@ mod tests {
         assert_eq!(empty.layout, LayoutMode::Radial);
         assert_eq!(empty.depth, 2);
         assert!(empty.id.is_empty() && empty.label.is_empty());
-        assert!(empty.node_kind.is_none() && empty.side.is_none() && empty.side_any.is_none());
+        assert!(empty.node_kind.is_none() && empty.side.is_none());
         assert!(empty.group_by.is_none() && empty.row_from.is_none() && empty.col_from.is_none());
         assert!(empty.description.is_none() && empty.collapsed_kinds.is_empty());
 
@@ -917,8 +868,7 @@ mod tests {
             label: "Routes".into(),
             mode: ViewMode::Object,
             node_kind: Some("HttpContract".into()),
-            side: None,
-            side_any: Some(vec!["backend".into()]),
+            side: Some("backend".into()),
             layout: LayoutMode::Layered,
             group_by: Some(GroupBy::NodeKind),
             row_from: None,
@@ -928,32 +878,24 @@ mod tests {
             collapsed_kinds: vec!["Method".into()],
         };
         let back = round_trip(&full);
-        assert_eq!(back.side_any, Some(vec!["backend".to_string()]));
+        assert_eq!(back.side.as_deref(), Some("backend"));
         assert_eq!(back.layout, LayoutMode::Layered);
         assert_eq!(back.depth, 3);
         assert_eq!(back.collapsed_kinds, vec!["Method".to_string()]);
         let v = serde_json::to_value(&full).unwrap();
-        assert!(v.get("side").is_none(), "an undeclared side must be omitted (skip_serializing_if)");
-        assert!(v.get("side_any").is_some());
+        assert!(v.get("side").is_some());
     }
 
     /// Whatever else happens, a perspective never silently becomes "no filter" / "everything matches" by accident:
-    /// an **empty** `side_any` list is no filter, a malformed `sides` value falls through to the scalar `side`,
-    /// and a non-string `side` simply does not match.
+    /// no `side` declared really is "no filter", and a non-string `side` simply does not match.
     #[test]
     fn side_matching_degrades_honestly_on_malformed_properties() {
-        let empty_any = spec(None, Some(&[]));
-        assert!(empty_any.accepted_sides().is_empty(), "an empty side_any = no side filtering");
-        assert!(empty_any.matches_sides(&json!({ "side": "anything" })));
-
-        // `sides` not a string array -> ignored, the scalar `side` is consulted instead.
-        assert!(spec(Some("backend"), None).matches_sides(&json!({ "side": "backend", "sides": "backend" })));
-        assert!(!spec(Some("frontend"), None).matches_sides(&json!({ "side": "backend", "sides": "backend" })));
-        assert!(spec(Some("backend"), None).matches_sides(&json!({ "side": "backend", "sides": [] })));
-
+        assert!(spec(None).matches_sides(&json!({ "side": "anything" })), "no side = no filter");
+        assert!(spec(Some("backend")).matches_sides(&json!({ "side": "backend", "sides": ["backend"] })));
+        assert!(!spec(Some("frontend")).matches_sides(&json!({ "side": "backend", "sides": ["backend"] })));
         // A non-string `side` never matches (no panic, no guess).
-        assert!(!spec(Some("backend"), None).matches_sides(&json!({ "side": 1 })));
-        assert!(!spec(None, Some(&["backend"])).matches_sides(&json!({ "sides": [1, 2] })));
+        assert!(!spec(Some("backend")).matches_sides(&json!({ "side": 1 })));
+        assert!(!spec(Some("backend")).matches_sides(&json!({ "sides": [1, 2] })));
     }
 
     /// Registry resolution edges: a `node_views` entry pointing at a perspective that does not exist resolves to

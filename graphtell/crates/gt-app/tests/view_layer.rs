@@ -5,13 +5,12 @@
 //! runs a full build, then uses `ViewService` to verify the first/second-level filters and each view slice.
 //!
 //! **Depends on an oversized real sample (not in repo, see `samples/`'s .gitignore rules):**
-//! when the sample exists, run normally; when absent, each case takes `built()`'s soft-skip branch (prints "skip" then
-//! return), and will **not** disguise absence as passing.
+//! every test here is `#[ignore]`d by default, so `cargo test` reports them as *ignored* — never as a
+//! false pass — when the corpus is absent. To actually exercise them, provision the corpus
+//! (`GRAPHTELL_SAMPLE_DIR`) and run `cargo test -p gt-app -- --ignored`.
 //!
-//! Two exceptions still marked `#[ignore]` (each states why):
-//!   * `object_view_characterization_invoice_detail` — characterization snapshot needs recalibration against the reference sample;
-//!   * `eval_recall_scenarios` (in `eval_recall.rs`) — needs bge-m3 model weights.
-//! To force ignored cases: `cargo test -p gt-app -- --ignored`.
+//! Each test's `#[ignore]` reason states the external resource it needs (the corpus, or model weights
+//! for `eval_recall_scenarios` in `eval_recall.rs`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -22,7 +21,7 @@ use gt_domain::model::{NewProject, NodeKind};
 use gt_domain::port::{
     EdgeDirection, GraphQuery, NodeFilter, NoopObserver, Persistence, RuleProvider, SystemClock,
 };
-use gt_sample_support::{missing_hint, sample_root};
+use gt_sample_support::sample_root;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
@@ -89,9 +88,6 @@ fn view_svc(b: &Built) -> ViewService {
     ViewService::new(b.container.store.clone(), b.container.views())
 }
 
-fn skip() -> String {
-    format!("skipped: {}", missing_hint())
-}
 
 /// Whether this perspective is registered in `views/perspectives.yaml` (unregistered aggregate perspectives can't be asserted).
 fn registered(views: &ViewService, pid: gt_domain::model::ProjectId, id: &str) -> bool {
@@ -125,12 +121,12 @@ fn first_object_target(
     None
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn container_assembles_adapters() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     assert!(b.container.framework_count() > 0, "framework knowledge must be loaded");
     let views_provider = b.container.views();
     let registry = views_provider.registry();
@@ -148,12 +144,12 @@ fn container_assembles_adapters() {
     let _router = b.container.router();
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn perspectives_reported_with_counts() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let list = views.perspectives(b.project_id).expect("perspectives");
     assert!(!list.is_empty(), "the perspective list must not be empty");
@@ -163,12 +159,12 @@ fn perspectives_reported_with_counts() {
     assert!(any_available, "at least one perspective in the graph has data");
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn aggregate_deploy_unit_clusters() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     if !registered(&views, b.project_id, "deploy_unit") {
         eprintln!("skipped: the deploy_unit perspective is not enabled in views/perspectives.yaml");
@@ -185,12 +181,12 @@ fn aggregate_deploy_unit_clusters() {
     assert!(agg.clusters.iter().any(|c| c.count > 0));
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn aggregate_platform_matrix() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     if !registered(&views, b.project_id, "platform") {
         eprintln!("skipped: the platform perspective is not enabled in views/perspectives.yaml");
@@ -209,12 +205,12 @@ fn aggregate_platform_matrix() {
     }
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn object_view_chain_and_hidden() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let Some((pid, nid)) = first_object_target(&views, b.project_id) else {
         eprintln!("no usable object-perspective candidates; skipping the object_view assertion");
@@ -250,12 +246,12 @@ fn assert_visible_node_ok(_ov: &gt_domain::model::ObjectView, n: &gt_domain::mod
     );
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn object_view_default_is_semantic_only() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let Some((pid, _)) = first_object_target(&views, b.project_id) else {
         eprintln!("no usable object-perspective candidates, skipping");
@@ -310,14 +306,14 @@ fn object_view_default_is_semantic_only() {
     }
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn object_view_resource_center_shows_its_users() {
     // Resource-kind centers (Table / ConfigKey / Cache…) have **reversed** relation direction:
     // semantic edges point from the user to the resource, so the view must answer "who is using it", not show an empty graph.
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let cands = views
         .candidates(b.project_id, "table", 1, None, None)
@@ -377,12 +373,12 @@ fn object_view_resource_center_shows_its_users() {
 /// Orphan access (direct accessors with no semantic entry upstream) must be **downgraded to accounting, not lit up**:
 /// * not appear on the canvas (neither in `rings` nor as any edge endpoint);
 /// * but must appear in `orphans`, carrying name and "what it did to the resource" —
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn orphan_access_is_accounted_not_drawn() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let cands = views
         .candidates(b.project_id, "table", 30, None, None)
@@ -429,12 +425,12 @@ fn orphan_access_is_accounted_not_drawn() {
 /// * other general direct accessors still downgrade into `ObjectView.orphans` accounting (with touch-point location).
 ///
 /// This case verifies: ① the `Triggers` edge on the canvas (if a trigger exists) has its trigger endpoint as a visible node and carries the dispatch call site; ② the `HandledBy` edge's listener endpoint is visible; ③ the view isn't empty.
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn event_view_syntactic_accessors_collapse_to_orphans() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let cands = views
         .candidates(b.project_id, "event", 20, None, None)
@@ -495,12 +491,12 @@ fn event_view_syntactic_accessors_collapse_to_orphans() {
     );
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn node_locations_returns_sources() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let Some(nid) = first_object_target(&views, b.project_id).map(|(_, n)| n) else {
         eprintln!("no object node; skipping the locations assertion");
@@ -511,12 +507,12 @@ fn node_locations_returns_sources() {
     assert!(!locs.locations.is_empty(), "a syntactic node must have at least one definition location");
 }
 
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn edge_evidence_verifies_chain() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let Some((_pid, nid)) = first_object_target(&views, b.project_id) else {
         eprintln!("no object node; skipping the edge assertion");
@@ -547,12 +543,12 @@ fn edge_evidence_verifies_chain() {
 /// Counterexample: a P8 propagation edge only states "upstream reachable to this resource", it **is not a path**. If used as the `via` end,
 /// the chain breaks at discovery depth, drawing fake paths like "the route itself read the cache" (the real touch point is several hops away).
 /// This invariant is independent of edge kind (read DB / read cache / publish…), should hold for any repo.
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn folded_semantic_edges_end_at_real_contact() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let store = &b.container.store;
     let cands = match views.candidates(b.project_id, "route", 6, None, None) {
@@ -610,12 +606,12 @@ fn folded_semantic_edges_end_at_real_contact() {
 /// `SystemGroupData::set_status` → `CacheService::clear()` → `Cache::tag('<sample-tag>')->clear()`
 /// (`CacheService.php:98`) reaches the cache; but the cache perspective stops `via` at `set_status`, then treats
 /// `DataMigrationServices.php:53`'s `Cache::get(self::MIGRATION_STATUS_PREFIX . $name)` as "where this chain accesses the cache" — that route never touched that key.
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn cache_view_folded_edges_end_at_real_contact() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let store = &b.container.store;
     let cands = views
@@ -704,12 +700,12 @@ fn cache_view_folded_edges_end_at_real_contact() {
 /// The real situation has only **two complete arrival paths**, both converging on the same touch point `CacheService::remember`:
 ///   detail → tidyOrder → SystemConfigService::more → CacheService::remember
 ///   detail → getQRCodePath → UploadService::init → SystemConfigService::more → CacheService::remember
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn invoice_detail_route_cache_edges_have_complete_paths() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let store = &b.container.store;
     let nodes = store
@@ -721,7 +717,13 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
             offset: Some(0),
         })
         .expect("query_nodes");
-    let Some(contract) = nodes.first() else {
+    // The same endpoint is now declared by two sub-projects and each owns its own node; these views are about
+    // the **backend's** declaration, so pin the centre explicitly instead of taking whichever comes first.
+    let Some(contract) = nodes
+        .iter()
+        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("backend"))
+        .or_else(|| nodes.first())
+    else {
         eprintln!("the graph has no invoice_detail route, skipping");
         return;
     };
@@ -775,12 +777,12 @@ fn invoice_detail_route_cache_edges_have_complete_paths() {
 /// so `detail`'s own call site should be the **route registration** (`Route::get('invoice_detail', …)`).
 /// `HttpContract` is a synthesized node (no `file_id`), `node_source_location` returns `None`,
 /// so `call_site_between` uses `node_locations` to get the route file+line it converges on.
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn invoice_detail_route_first_hop_has_call_site() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let store = &b.container.store;
     let nodes = store
@@ -792,7 +794,13 @@ fn invoice_detail_route_first_hop_has_call_site() {
             offset: Some(0),
         })
         .expect("query_nodes");
-    let Some(contract) = nodes.first() else {
+    // The same endpoint is now declared by two sub-projects and each owns its own node; these views are about
+    // the **backend's** declaration, so pin the centre explicitly instead of taking whichever comes first.
+    let Some(contract) = nodes
+        .iter()
+        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("backend"))
+        .or_else(|| nodes.first())
+    else {
         eprintln!("the graph has no invoice_detail route, skipping");
         return;
     };
@@ -827,16 +835,16 @@ fn invoice_detail_route_first_hop_has_call_site() {
 // It guards "behavior unchanged", not "correctness" — once numbers change, they must be **explicitly** accepted and the reason written,
 // never silently passed.
 //
-// This snapshot is calibrated against the current reference sample (sample_project v6.0.0): edge total 35, of which 4 are
-// `{ForeignKey: 1, PassesThrough: 3}` — P6 table foreign keys and P14 middleware promotion, both **direct structural
-// edges**, so `indirect` (31) is less than the edge total (35).
+// This snapshot is calibrated against the current reference sample (sample_project v6.0.0): edge total 36, of which 5 are
+// `{ForeignKey: 1, PassesThrough: 3, ResolvesToContract: 1}` — P6 table foreign keys, P14 middleware promotion and the contract
+// bridge, all **direct structural edges**, so `indirect` (31) is less than the edge total (36).
 // Core metrics unchanged: ReadsCache 2, ReadsConfig 28, longest via chain 5 hops.
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn object_view_characterization_invoice_detail() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let store = &b.container.store;
     let nodes = store
@@ -848,7 +856,13 @@ fn object_view_characterization_invoice_detail() {
             offset: Some(0),
         })
         .expect("query_nodes");
-    let Some(contract) = nodes.first() else {
+    // The same endpoint is now declared by two sub-projects and each owns its own node; these views are about
+    // the **backend's** declaration, so pin the centre explicitly instead of taking whichever comes first.
+    let Some(contract) = nodes
+        .iter()
+        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("backend"))
+        .or_else(|| nodes.first())
+    else {
         eprintln!("the graph has no invoice_detail route, skipping");
         return;
     };
@@ -883,14 +897,13 @@ fn object_view_characterization_invoice_detail() {
         ov.orphans.iter().filter(|o| o.edge_kind == "CallsHttp").count(),
     );
 
-    assert_eq!(ov.edges.len(), 35, "the total edge count changed: {:?}", by_kind);
+    // 36 = the old 35 plus the `ResolvesToContract` bridge edge to the frontend's own contract node. The frontend's
+    // `CallsHttp` is accounted on **that** node (see `frontend_folded_view.rs`), no longer on the backend's.
+    assert_eq!(ov.edges.len(), 36, "the total edge count changed: {:?}", by_kind);
     assert_eq!(
-        ov.orphans
-            .iter()
-            .filter(|o| o.edge_kind == "CallsHttp")
-            .count(),
+        by_kind.get("ResolvesToContract").copied().unwrap_or(0),
         1,
-        "the CallsHttp of a frontend call to this contract must be tallied in orphans; a change means the contract bridge was broken"
+        "the backend contract must carry one ResolvesTo bridge edge to the frontend's contract node"
     );
     assert_eq!(
         by_kind.get("ReadsCache").copied().unwrap_or(0),
@@ -906,9 +919,9 @@ fn object_view_characterization_invoice_detail() {
         indirect, 31,
         "the indirect (hoisted / propagated) edge count changed, so the indirect judgement was broken"
     );
-    // 34 can give a resource-access location; the missing 1 is a structural edge (no call site to cite), expected.
+    // 35 can give a resource-access location; the missing 1 is a structural edge (no call site to cite), expected.
     assert_eq!(
-        with_loc, 34,
+        with_loc, 35,
         "the number of edges able to give an access location changed, so evidence selection was broken"
     );
     // Key: **the longest chain must reach 5 hops** (detail → getQRCodePath → init → more → remember),
@@ -924,6 +937,83 @@ fn object_view_characterization_invoice_detail() {
     );
 }
 
+/// Regression for the cross-sub-project contract bridge **on the canvas**: the `ResolvesToContract`
+/// edge must not only be counted (see the characterization test above) — the node at its far end
+/// (the *other* sub-project's half of the same endpoint) must be pulled into the view, otherwise the
+/// edge renders dangling / the front↔back pair looks broken. Covers BOTH directions: centering on the
+/// backend contract must surface the frontend node, and centering on the frontend contract must surface
+/// the backend node.
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
+#[test]
+fn bridge_edge_brings_opposite_side_node_into_view() {
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
+    let views = view_svc(&b);
+    let store = &b.container.store;
+    let nodes = store
+        .query_nodes(&NodeFilter {
+            project_id: b.project_id,
+            kind: Some(NodeKind("HttpContract".into())),
+            name_contains: Some("invoice_detail".into()),
+            limit: Some(10),
+            offset: Some(0),
+        })
+        .expect("query_nodes");
+    let Some(fe) = nodes
+        .iter()
+        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("frontend"))
+    else {
+        eprintln!("no frontend invoice_detail contract, skipping");
+        return;
+    };
+    let Some(be) = nodes
+        .iter()
+        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("backend"))
+    else {
+        eprintln!("no backend invoice_detail contract, skipping");
+        return;
+    };
+
+    // Center on the BACKEND contract: the view must carry the bridge edge AND the frontend node.
+    let ov = views
+        .object_view(b.project_id, "route", be.id, Some(2))
+        .expect("object_view");
+    assert!(
+        ov.edges.iter().any(|e| e.kind == "ResolvesToContract"),
+        "the backend-centered view must surface the ResolvesToContract bridge edge"
+    );
+    let fe_present = ov.center.id == fe.id
+        || ov.rings.iter().flatten().any(|n| n.id == fe.id)
+        || ov.edges
+            .iter()
+            .any(|e| e.from == fe.id || e.to == fe.id || e.via.iter().any(|v| v.id == fe.id));
+    assert!(
+        fe_present,
+        "the opposite (frontend) contract node must be pulled into the backend-centered view, \
+         otherwise the ResolvesToContract bridge edge is dangling"
+    );
+
+    // Center on the FRONTEND contract: symmetric — the backend node must appear too.
+    let ov2 = views
+        .object_view(b.project_id, "route", fe.id, Some(2))
+        .expect("object_view");
+    assert!(
+        ov2.edges.iter().any(|e| e.kind == "ResolvesToContract"),
+        "the frontend-centered view must surface the ResolvesToContract bridge edge"
+    );
+    let be_present = ov2.center.id == be.id
+        || ov2.rings.iter().flatten().any(|n| n.id == be.id)
+        || ov2.edges
+            .iter()
+            .any(|e| e.from == be.id || e.to == be.id || e.via.iter().any(|v| v.id == be.id));
+    assert!(
+        be_present,
+        "the opposite (backend) contract node must be pulled into the frontend-centered view, \
+         otherwise the ResolvesToContract bridge edge is dangling"
+    );
+}
+
 /// Schedule perspective: `Schedule` is an **entry-kind** node (sample_project's project-level FKB synthesizes `crontab/...` routes into
 /// Schedule nodes), its dependencies are all in **out-edges**: `Schedule --HandledBy--> handler →Calls→ … → ReadsCache`,
 /// in-edges always 0. Once treated as a "resource-kind center" and walked back along in-edges ⇒ not a single edge reachable: rings all empty, `hidden.total = 0`,
@@ -932,12 +1022,12 @@ fn object_view_characterization_invoice_detail() {
 ///
 /// Concretely: `crontab/set_open/:id/:is_open` via `SystemCrontab::setTimerStatus`
 /// → `SystemCrontabServices::setTimerStatus` reads cache, the view must show this dependency.
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn schedule_view_follows_outgoing_chain() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
     let cands = views
         .candidates(b.project_id, "schedule", 30, None, None)
@@ -1048,12 +1138,12 @@ fn schedule_view_follows_outgoing_chain() {
 ///
 /// Invariant: **empty graph ⇔ with hint**, the two must appear / disappear together —
 /// otherwise either an empty graph has no explanation (looks broken), or a real chain still gets a forced hint (misleading).
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn empty_entry_view_carries_hint() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
 
     let mut empty_seen = 0usize;
@@ -1105,12 +1195,12 @@ fn empty_entry_view_carries_hint() {
 ///
 /// Contract: the suppressed other half must be recorded on `EdgeView::also_kinds`, and **only** the other half of the same resource
 /// (DB ↔ DB, cache ↔ cache), no cross-resource mixing (that would mean mislabeled).
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
 #[test]
 fn read_write_at_same_contact_is_reported_together() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
     let views = view_svc(&b);
 
     let pairs: &[(&str, &str)] = &[("table", "Db"), ("cache", "Cache")];

@@ -20,7 +20,7 @@ use gt_app::{AppConfig, Container};
 use gt_application::{PipelineService, ProjectService, RecallQuality, RecallQuery, RecallService};
 use gt_domain::model::NewProject;
 use gt_domain::port::{NoopObserver, Persistence, SystemClock};
-use gt_sample_support::{missing_hint, sample_root};
+use gt_sample_support::sample_root;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")
@@ -83,9 +83,6 @@ fn built() -> Option<Arc<Built>> {
         .clone()
 }
 
-fn skip() -> String {
-    format!("skipped: {}", missing_hint())
-}
 
 /// Parse a quality-tier string into a comparable ordinal.
 fn quality_ord(q: &RecallQuality) -> u8 {
@@ -113,10 +110,9 @@ fn threshold_ord(s: &str) -> u8 {
 #[test]
 #[ignore = "needs bge-m3 model weights (GT_BGE_MODEL): under the hash fallback the quality tier is not met; an encoder issue, not a recall-logic bug"]
 fn eval_recall_scenarios() {
-    let Some(b) = built() else {
-        eprintln!("{}", skip());
-        return;
-    };
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
 
     let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/eval/recall_scenarios.jsonl");

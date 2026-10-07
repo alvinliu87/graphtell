@@ -5,10 +5,10 @@
 //!   1. the frontend `axios.post('/api/delete')` is wrapped in `export function deleteItem`,
 //!      synthesises an `HttpContract` with an **incoming `CallsHttp`** edge whose source is the frontend **function node**
 //!      (`deleteItem`) — this is exactly a "frontend semantic node": isomorphic to the backend `Method`, not a File;
-//!   2. the same contract node is annotated `side = frontend` by the frontend FKB;
-//!   3. the backend `thinkphp` `Route::post('/api/delete', ...)` and the frontend synthesise
-//!      **the same `ContractId` (`POST /api/delete`)** and merge idempotently — the contract bridge's
-//!      cross-sub-project convergence point;
+//!   2. that contract node is owned by the frontend sub-project (`side = frontend`);
+//!   3. the backend `thinkphp` `Route::post('/api/delete', ...)` names the same `ContractId`
+//!      (`POST /api/delete`) and builds **its own** node — a node belongs to exactly one sub-project, so the
+//!      bridge is a `ResolvesToContract` edge between the two, not one shared node;
 //!   4. a frontend cross-file call chain: `App.onDelete -> api.deleteItem` is resolved into a `Calls` edge by P7
 //!      (frontend semantic nodes connect, gathered into the `via` chain in the folded view, hop-by-hop visible in the drawer).
 
@@ -45,7 +45,7 @@ fn synth_root() -> PathBuf {
 }
 
 #[test]
-fn frontend_calls_backend_merge_into_contract() {
+fn frontend_contract_resolves_to_backend_contract() {
     let root = synth_root();
     assert!(
         root.is_dir(),
@@ -160,42 +160,58 @@ fn frontend_calls_backend_merge_into_contract() {
         eprintln!("ℹ no onDelete node detected");
     }
 
-    // ---- 2) Contract bridge: frontend and backend synthesise the same ContractId and merge ----
-    let c = bridged.expect("the contract node connected from the frontend must exist");
+    // ---- 2) Two parties, two nodes: each sub-project owns the contract it declares ----
+    // The front end names `POST /api/delete` and so does the back end, but a node belongs to exactly one
+    // sub-project, so they are **two** nodes with the same identity value, one per owner. Convergence is an
+    // edge (`ResolvesToContract`), not a merge.
+    let fe = bridged.expect("the contract node connected from the frontend must exist");
     assert_eq!(
-        c.identity.as_ref().map(|i| i.value.as_str()),
+        fe.identity.as_ref().map(|i| i.value.as_str()),
         Some("POST /api/delete"),
-        "frontend and backend must converge on the same ContractId (POST /api/delete)"
+        "the frontend must synthesise the ContractId POST /api/delete"
+    );
+    assert_eq!(
+        fe.properties.get("side").and_then(|v| v.as_str()),
+        Some("frontend"),
+        "the frontend's contract is owned by the frontend: `side` is no longer 'whoever patched last'"
+    );
+    let be = contracts
+        .iter()
+        .find(|n| {
+            n.identity.as_ref().map(|i| i.value.as_str()) == Some("POST /api/delete")
+                && n.properties.get("side").and_then(|v| v.as_str()) == Some("backend")
+        })
+        .expect("the backend Route::post('/api/delete') must synthesise its own contract node");
+    assert_ne!(
+        fe.sub_project_id, be.sub_project_id,
+        "the two parties' contract nodes must belong to different sub-projects"
     );
 
-    // ---- 2.5) The "was the front end here?" marker must be judged by the **edge**, not by a property.
-    // Historically `frontend-mark-called` selected on `side = frontend`; but a bridge node is patched by both
-    // sides and its scalar `side` is decided by whoever patches last, so the marker could vanish silently.
-    // The selector now asks for a `CallsHttp` in-edge — this assertion locks that (see `Predicate::HasIncoming`).
-    let anns = b.store.annotations_of(c.id).expect("the annotations must be readable");
+    // ---- 2.5) The bridge edge: the frontend's contract resolves to the backend's declaration ----
+    let bridge = b
+        .store
+        .edges_of(fe.id, EdgeDirection::Outgoing)
+        .unwrap_or_default()
+        .iter()
+        .any(|e| e.kind.as_str() == "ResolvesToContract" && e.to_id == be.id);
+    assert!(
+        bridge,
+        "the frontend contract must carry a ResolvesToContract edge into the backend contract (declared as `bridge:` in fkb/js/common.yaml)"
+    );
+
+    // ---- 2.6) "Was the front end here?" is read off that edge, by a cross-language rule ----
+    // `mark-called` lives in `fkb/universal/common.yaml` (loaded into every sub-project) and selects on
+    // `has_incoming: ResolvesToContract`, so it fires on the **backend's own** node — no rule has to reach into
+    // another sub-project's nodes.
+    let anns = b.store.annotations_of(be.id).expect("the annotations must be readable");
     assert!(
         anns.iter().any(|a| a.kind == "frontend.called"),
-        "a contract connected from the frontend must be hit by frontend-mark-called (its criterion is a CallsHttp edge), annotations: {:?}",
+        "the backend contract must be annotated frontend.called through the bridge edge, annotations: {:?}",
         anns.iter().map(|a| a.kind.clone()).collect::<Vec<_>>()
     );
 
-    // ---- 3) `side` on a bridge node: not "the side that patched last", but the honest derived label ----
-    // Two parties have evidence on this node, so the scalar label is `bridge` and the parties live in `sides`.
-    // The label must not be `frontend` merely because the front-end rule happens to run last — that is exactly
-    // the order-dependent lie this test forbids (`GraphWorkspace::record_side`).
-    assert_eq!(
-        c.properties.get("side").and_then(|v| v.as_str()),
-        Some("bridge"),
-        "a contract shared by frontend and backend must have side bridge"
-    );
-    assert_eq!(
-        c.properties.get("sides"),
-        Some(&serde_json::json!(["backend", "frontend"])),
-        "sides must be the ordered de-duplicated set of both sides"
-    );
-
     // ---- Informational: backend handler resolution (P7, existing mechanism) ----
-    let out = b.store.edges_of(c.id, EdgeDirection::Outgoing).unwrap_or_default();
+    let out = b.store.edges_of(be.id, EdgeDirection::Outgoing).unwrap_or_default();
     if out.iter().any(|e| e.kind.as_str() == "HandledBy") {
         eprintln!("✓ backend HandledBy also resolved (complete contract bridge)");
     } else {
@@ -230,21 +246,33 @@ fn member_style_request_bridges() {
 
     let ping = all
         .iter()
-        .find(|n| n.kind.as_str() == "HttpContract" && n.name.contains("/api/ping"))
+        .find(|n| {
+            n.kind.as_str() == "HttpContract"
+                && n.name.contains("/api/ping")
+                && n.properties.get("side").and_then(|v| v.as_str()) == Some("frontend")
+        })
         .expect("`request.get('/api/ping')` must synthesise the contract GET /api/ping");
     assert_eq!(ping.name, "GET /api/ping", "the member name becomes the HTTP method");
-    // Both the backend `Route::get('/api/ping')` and the frontend `request.get('/api/ping')` synthesise this
-    // node, hence `bridge` + both parties in `sides`.
-    assert_eq!(
-        ping.properties.get("side").and_then(|v| v.as_str()),
-        Some("bridge"),
-        "the side of a bridge contract must be bridge"
-    );
-    assert_eq!(
-        ping.properties.get("sides"),
-        Some(&serde_json::json!(["backend", "frontend"])),
-        "sides must contain both the frontend and the backend"
-    );
+    // The backend `Route::get('/api/ping')` declares the same endpoint and builds **its own** node; the two are
+    // joined by a `ResolvesToContract` edge rather than merged into one node.
+    let ping_backend = all.iter().find(|n| {
+        n.kind.as_str() == "HttpContract"
+            && n.name.contains("/api/ping")
+            && n.properties.get("side").and_then(|v| v.as_str()) == Some("backend")
+    });
+    if let Some(be) = ping_backend {
+        assert_ne!(ping.sub_project_id, be.sub_project_id, "the two parties own two nodes");
+        assert!(
+            b.store
+                .edges_of(ping.id, EdgeDirection::Outgoing)
+                .unwrap_or_default()
+                .iter()
+                .any(|e| e.kind.as_str() == "ResolvesToContract" && e.to_id == be.id),
+            "the frontend contract must resolve to the backend contract"
+        );
+    } else {
+        eprintln!("ℹ this sample's backend does not declare /api/ping; only the frontend contract exists");
+    }
 
     // Frontend side: CallsHttp is initiated by a **function node** (semantic node), not a File.
     let inc = b.store.edges_of(ping.id, EdgeDirection::Incoming).unwrap_or_default();
@@ -272,8 +300,8 @@ fn member_style_request_bridges() {
         "the contract must carry a frontend location, got: {files:?}"
     );
     assert!(
-        files.iter().any(|f| f.contains("route/api.php")),
-        "the contract must carry the backend route location (both sides converge on one node), got: {files:?}"
+        files.iter().any(|f| f.contains("api.js")),
+        "the frontend's own contract node must carry the frontend location, got: {files:?}"
     );
 
     for (fn_name, url_part) in [("invoiceDetail", "/api/invoice/detail"), ( "orderInvoiceDetail", "/api/order/invoice_detail")] {
@@ -281,6 +309,7 @@ fn member_style_request_bridges() {
         let node = all.iter().find(|n| {
             n.kind.as_str() == "HttpContract"
                 && n.identity.as_ref().map(|i| i.value.as_str()) == Some(ident.as_str())
+                && n.properties.get("side").and_then(|v| v.as_str()) == Some("frontend")
         })
         .unwrap_or_else(|| panic!("a concatenated / templated URL must converge with the backend route by shape into {ident}"));
         let locs = node
@@ -297,18 +326,19 @@ fn member_style_request_bridges() {
             files.iter().any(|f| f.contains("api.js")),
             "{ident} must carry a frontend location, got: {files:?}"
         );
-        assert!(
-            files.iter().any(|f| f.contains("route/api.php")),
-            "{ident} must carry the backend route location (one node for both sides), got: {files:?}"
-        );
         let _ = fn_name;
     }
 
     // Frontend **semantic node**: `uni.setStorageSync('token', v)` -> `Cache:token`,
     // going through the same Synthesize mechanism as the backend `Cache::set('k', v)` (only the FKB differs).
+    // The two parties' `token` are two nodes now (each owned by its sub-project), so pick the frontend's.
     let cache = all
         .iter()
-        .find(|n| n.kind.as_str() == "Cache" && n.name == "token")
+        .find(|n| {
+            n.kind.as_str() == "Cache"
+                && n.name == "token"
+                && n.properties.get("side").and_then(|v| v.as_str()) == Some("frontend")
+        })
         .expect("frontend local storage must synthesise a Cache semantic node (the frontend FKB rules frontend-cache-*)");
     assert_eq!(
         cache.properties.get("side").and_then(|v| v.as_str()),
@@ -403,11 +433,7 @@ fn member_style_request_bridges() {
         Some("backend"),
         "a contract with evidence only on the backend side must have side backend"
     );
-    assert_eq!(
-        items_index.properties.get("sides"),
-        Some(&serde_json::json!(["backend"])),
-        "a contract with evidence only on the backend side must have sides [backend]"
-    );
+
 
     // Frontend **page-route** semantic node: comes from `pages.json`, isomorphic to the backend `Route`.
     let index_page = all

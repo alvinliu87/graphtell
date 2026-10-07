@@ -127,6 +127,13 @@ impl<'a> Evaluator<'a> {
             let resolved = apply_table_prefix_steps(steps, self.ws.table_prefixes());
             s = apply_normalize(&s, &resolved);
         }
+        // Checked **after** normalisation: `leading_slash` turns `https://x/y` into `/https://x/y`, so testing
+        // the raw value would miss exactly the case this guard exists for.
+        if let Some(needles) = &src.reject_contains {
+            if needles.iter().any(|n| !n.is_empty() && s.contains(n.as_str())) {
+                return None;
+            }
+        }
         Some(s)
     }
 
@@ -516,6 +523,35 @@ mod tests {
         // Scalars count as literals.
         assert_eq!(ev.string(&src(2, true)), Some("3".to_string()));
         assert_eq!(ev.string(&src(3, true)), Some("false".to_string()));
+    }
+
+    /// `reject_contains` is a **scope** guard, checked after normalisation: the canonical case is a front end
+    /// calling a third-party API — the URL is a literal, so `require_literal` happily accepts it, and only this
+    /// test keeps an invented `HttpContract` off the graph. It must run after `leading_slash`, which rewrites
+    /// `https://x/y` into `/https://x/y`, i.e. the scheme stops being at the start of the string.
+    #[test]
+    fn string_reject_contains_drops_out_of_scope_values_after_normalisation() {
+        let ws = ws();
+        let rec = call(vec![
+            FactValue::String("https://api.paypal.com/v2/checkout/orders".into()),
+            FactValue::String("/api/delete".into()),
+        ]);
+        let ev = Evaluator::new(&ws, MatchCtx::Call(&rec));
+        let src = |i: usize, reject: bool| ValueSource {
+            arg: Some(i),
+            require_literal: Some(true),
+            reject_contains: if reject { Some(vec!["://".to_string()]) } else { None },
+            normalize: Some(vec![NormalizeStep::LeadingSlash]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ev.string(&src(0, true)),
+            None,
+            "a URL with a scheme names a third-party endpoint, not one this repository declares"
+        );
+        assert_eq!(ev.string(&src(0, false)), Some("/https://api.paypal.com/v2/checkout/orders".to_string()));
+        assert_eq!(ev.string(&src(1, true)), Some("/api/delete".to_string()), "a same-origin path is kept");
     }
 
     #[test]

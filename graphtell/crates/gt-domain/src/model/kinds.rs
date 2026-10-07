@@ -69,7 +69,7 @@ declare_open_kind! { NodeKind => "Graph node kinds (syntax nodes + synthetic nod
     // ---- synthetic nodes (materialised by the Synthesize phase per FKB rules) ----
     TABLE      = "Table"         => "database table (Mediator; converges 200-odd references)",
     COLUMN     = "Column"        => "table column (the landing point of field-level impact)",
-    HTTP_CONTRACT = "HttpContract" => "HTTP contract bridge (where frontend and backend converge)",
+    HTTP_CONTRACT = "HttpContract" => "HTTP contract (one endpoint as declared or called by one sub-project; two parties are two nodes joined by `ResolvesToContract`)",
     CONFIG_KEY = "ConfigKey"   => "config key",
     I18N_KEY   = "I18nKey"     => "i18n key",
     // Out-of-process mediators: each is its own kind — the naming granularity matches Table / ConfigKey, and

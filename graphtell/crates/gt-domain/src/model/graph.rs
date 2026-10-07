@@ -172,9 +172,10 @@ impl IdentityKey {
 /// The wildcard HTTP method: means "no method restriction".
 ///
 /// ThinkPHP auto-routing (the PATH_INFO convention) and `Route::rule` bind no concrete method in the source, so they
-/// are equivalent to "accept any HTTP method". This kind of contract bridge should be treated as matching any
-/// front-end call method rather than as a concrete verb — during graph building it converges with front-end `POST` /
-/// `GET` calls onto one node, and the read/write heuristics use that to skip the "unknown -> read" misjudgement.
+/// are equivalent to "accept any HTTP method". This kind of contract should be treated as matching any call method
+/// rather than as a concrete verb. Two places honour that: a wildcard and a concrete method **inside one sub-project**
+/// still merge onto one node, and the `ResolvesToContract` bridge falls back to the wildcard spelling when another
+/// sub-project's call names a concrete method that only an auto-route declares.
 pub fn is_wildcard_http_method(method: &str) -> bool {
     matches!(method.to_ascii_uppercase().as_str(), "ANY" | "RULE")
 }

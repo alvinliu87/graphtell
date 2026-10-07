@@ -205,14 +205,13 @@ pub trait GraphQuery: Send + Sync {
     /// The view layer uses it to compute candidate counts for perspectives with a side filter (such as the
     /// front-end local-storage / back-end cache split).
     ///
-    /// `sides` is **set semantics**: a node counts when any listed party appears in its derived `sides` set, or
-    /// — for rows written before that set existed — equals its scalar `side`. An empty slice means no restriction
-    /// on the side; `kind` = `None` means no restriction on the kind.
+    /// `side` is **scalar**: a node is owned by exactly one party, so it counts when its `side` property equals
+    /// the requested party. `None` means no restriction on the side; `kind` = `None` means none on the kind.
     fn count_nodes(
         &self,
         project_id: ProjectId,
         kind: Option<&NodeKind>,
-        sides: &[String],
+        side: Option<&str>,
     ) -> Result<u64>;
     /// Fetch an edge by primary key (for the "edge evidence chain" query).
     fn find_edge(&self, id: crate::model::EdgeId) -> Result<Option<Edge>>;

@@ -913,8 +913,9 @@ rules:
   # consistent with TP6's URL conversion (`Url` folds `goods_category` into `GoodsCategory`).
   #
   # `method` takes `ANY` (wildcard): like `Route::rule`, auto-routing is "not restricted to one HTTP method",
-  # and the kernel recognises both `ANY` / `RULE` as wildcard methods — contracts for concrete front-end methods
-  # (POST / GET…) converge onto the same node instead of fabricating a GET/POST.
+  # and the kernel recognises both `ANY` / `RULE` as wildcard methods — within this sub-project a concrete method
+  # merges with the wildcard onto one node, and the frontend's concrete `POST` / `GET…` reaches it through the
+  # `ResolvesToContract` bridge instead of fabricating a GET/POST.
   # Confidence is deliberately pushed down to 0.5 — this is **convention inference**, not explicit source text
   # (the semantics may break due to project config `url_route_must`, middleware or an inherited `__call`), and
   # the node carries `auto_route: true` so upper layers can tell it apart.

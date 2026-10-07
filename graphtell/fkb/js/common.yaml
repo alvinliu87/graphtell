@@ -21,6 +21,11 @@ display_name: Front-end JS common
 language: javascript
 version_hint: "*"
 side: frontend
+# `ResolvesToContract` is this file's own semantic edge: the bridge between two sub-projects' contract nodes.
+# It is declared here rather than in the kernel's `EdgeKind::SEMANTIC` because it is front-end knowledge (only
+# the front end's `http-contract` rule produces it); declaring it makes it counted and drawn like `ReadsDb`,
+# and keeps "adding a semantic edge costs no kernel change" true.
+semantic_edge_kinds: [ResolvesToContract]
 # No detectors declared: this file is not "a detected framework", just a common layer effective for every JS front-end project.
 apply_without_detection: true
 
@@ -65,12 +70,22 @@ rules:
               # Concatenated (`'x/' + id`) and template-string forms are not dynamic: their shape is statically
               # determined, and non-literal segments have already been folded into `:param` placeholders.
               require_literal: true
+              # A URL carrying a scheme names a **third-party** endpoint (`fetch('https://api.paypal.com/...')`),
+              # not one this repository declares. It is still a literal, so `require_literal` lets it through —
+              # without this guard the pipeline invents contracts no route serves, and those pollute the route
+              # list and the recall ranking.
+              reject_contains: ["://"]
               normalize:
                 - strip_prefix: ["api/"]
                 - leading_slash
                 # The parameter name does not matter, the shape does: `/:param` ≡ the backend's `/:id`
                 - param_wildcard
           link: { kind: CallsHttp, direction: incoming }
+          # The contract this sub-project builds is **owned by this sub-project**; the back end's route
+          # declaration is a different node. "This call resolves to that route" is therefore an edge, not a
+          # merge — the kernel links to the same `METHOD /path` owned by another sub-project (falling back to
+          # the method-agnostic `ANY` / `RULE` spelling when only an auto-route declares the path).
+          bridge: { kind: ResolvesToContract, confidence: 0.9 }
           confidence: 0.9
 
   # ===== P5 Synthesize: Cache (web-standard local storage, cross-framework common) =====
@@ -135,8 +150,9 @@ rules:
           confidence: 0.8
 
   # ===== P5 Synthesize: I18nKey (localised copy, cross-framework common) =====
-  # `i18n.t('k')` / `this.$t('k')`: the same kind as the I18nKey synthesized from the backend's `lang/*.php`,
-  # and with the same identity front-end and back-end copy converge onto one node.
+  # `i18n.t('k')` / `this.$t('k')`: the same kind as the I18nKey synthesized from the backend's `lang/*.php`.
+  # The two no longer converge: each sub-project owns the copy it declares, so "which locales exist" is answered
+  # per party instead of as a union that hides a missing translation on one side.
   - id: i18n-key
     phase: Synthesize
     selector:
@@ -150,30 +166,9 @@ rules:
             value: { arg: 0, require_literal: true }
           confidence: 0.85
 
-  # Front-end contract call marker: annotate contracts that really have a `CallsHttp` in-edge
-  # with `frontend.called`.
-  #
-  # The criterion **must be the edge, not the `side` property**: a bridge contract is synthesised by
-  # **both** sides onto the same node, so its `side` property is decided by whoever patches last and is no
-  # longer "the side" (it becomes `bridge` as soon as more than one party has evidence on it — see the
-  # derived `sides` set in `engine.rs`). The edge is the only honest witness of "the front end really calls
-  # this", which is also why `has_incoming` was added to the selector predicate vocabulary (`Predicate`).
-  - id: mark-called
-    phase: AnnotatePost
-    selector:
-      kind: node
-      node_kind: HttpContract
-      where:
-        - has_incoming: CallsHttp
-    binding:
-      - Annotate:
-          phase: Post
-          channel: FkbMark
-          target: matched
-          annotations:
-            - kind: frontend.called
-              confidence: 0.9
-          merge: Coexist
+  # (`mark-called` used to live here. It is a **cross-sub-project** fact — "some other sub-project really
+  # calls this endpoint" — and a per-sub-project rule can no longer see the other side's node, so it moved to
+  # `fkb/universal/common.yaml`, which is loaded into every sub-project's rule set.)
 
 # External-system call list (used by the "external call inside a loop" judgement, P12).
 #

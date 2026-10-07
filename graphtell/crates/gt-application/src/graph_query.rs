@@ -323,7 +323,7 @@ mod tests {
         fn stats(&self, _: ProjectId) -> Result<GraphStats> {
             Ok(self.stats.clone())
         }
-        fn count_nodes(&self, _: ProjectId, _: Option<&NodeKind>, _: &[String]) -> Result<u64> {
+        fn count_nodes(&self, _: ProjectId, _: Option<&NodeKind>, _: Option<&str>) -> Result<u64> {
             unimplemented!()
         }
         fn find_edge(&self, _: EdgeId) -> Result<Option<Edge>> { unimplemented!() }

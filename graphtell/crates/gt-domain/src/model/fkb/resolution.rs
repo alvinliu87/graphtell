@@ -151,6 +151,17 @@ pub struct ValueSource {
     /// `self::X . $y` as an identity and conjure garbage semantic nodes. Symmetric with `require_class`: if the
     /// test fails, return `None` overall and let `value_fallback` cover it.
     pub require_literal: Option<bool>,
+    /// Reject the value when, **after** normalisation, it contains any of these substrings; the whole source
+    /// then counts as unavailable (so `value_fallback` / `default` can cover it).
+    ///
+    /// The point is scope, not syntax: a value can be a perfectly good literal and still name something outside
+    /// this repository. A front end's `fetch('https://api.paypal.com/v2/checkout/orders')` is a literal URL, but
+    /// it names a **third-party** endpoint — synthesising an `HttpContract` for it invents an endpoint no route
+    /// in the project declares, and those invented endpoints then compete with the real ones in every list and
+    /// every recall. Which substrings mean "out of scope" is declared by the FKB (`reject_contains: ["://"]`),
+    /// the kernel only performs the test.
+    #[serde(default)]
+    pub reject_contains: Option<Vec<String>>,
     /// A literal.
     pub literal: Option<String>,
     /// A nested source: `{ source: { arg: 1 }, field: 'url' }`.

@@ -11,10 +11,10 @@
     },
     "top5": [
       "findAll",
+      "findComments",
       "findAll",
       "findOne",
-      "findComments",
-      "ArticleService"
+      "getFeed"
     ]
   },
   {
@@ -23,16 +23,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
+      "5": true,
       "10": true,
       "20": true
     },
     "top5": [
-      "GET /:slug",
-      "GET /:slug/comments",
-      "GET /:username",
-      "GET /feed",
-      "GET /user"
+      "findComments",
+      "findOne",
+      "findAll",
+      "getFeed",
+      "slugify"
     ]
   },
   {
@@ -46,11 +46,11 @@
       "20": true
     },
     "top5": [
-      "create",
-      "create",
-      "addComment",
       "createComment",
-      "CreateArticleDto"
+      "create",
+      "findComments",
+      "deleteComment",
+      "ArticleController"
     ]
   },
   {
@@ -64,11 +64,11 @@
       "20": true
     },
     "top5": [
-      "delete",
-      "delete",
-      "DELETE /:slug",
       "deleteComment",
-      "deleteComment"
+      "ArticleController",
+      "@ApiOperation",
+      "@ApiResponse",
+      "ArticleService"
     ]
   },
   {
@@ -77,16 +77,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
-      "10": false,
-      "20": false
+      "5": true,
+      "10": true,
+      "20": true
     },
     "top5": [
-      "GET /user",
-      "GET /:username",
+      "getFeed",
+      "getUserIdFromToken",
       "findMe",
-      "findAll",
-      "getUserIdFromToken"
+      "follow",
+      "follow"
     ]
   },
   {
@@ -96,7 +96,7 @@
     "warm": true,
     "hit": {
       "5": false,
-      "10": true,
+      "10": false,
       "20": true
     },
     "top5": [
@@ -104,7 +104,7 @@
       "ArticleService",
       "ArticleController",
       "ArticleModule",
-      "ArticleEntity"
+      "ArticleEntity.id"
     ]
   },
   {
@@ -115,14 +115,14 @@
     "hit": {
       "5": false,
       "10": false,
-      "20": false
+      "20": true
     },
     "top5": [
-      "/pages/activity/goods_combination/index",
-      "/pages/goods/goods_details_store/index",
-      "/pages/goods/order_details/index",
-      "商品",
-      "details"
+      "decGoodsStock",
+      "decGoodsStock",
+      "decCombinationStock",
+      "decSeckillStock",
+      "decProductStock"
     ]
   },
   {
@@ -132,20 +132,20 @@
     "warm": true,
     "hit": {
       "5": false,
-      "10": false,
-      "20": false
+      "10": true,
+      "20": true
     },
     "top5": [
-      "update",
-      "save",
       "edit",
-      "update",
-      "save"
+      "order",
+      "save",
+      "saveCoupon",
+      "orderCoupon"
     ]
   },
   {
     "project": 1,
-    "query": "支付回调通知商户",
+    "query": "如何修改下单优惠",
     "lang": "zh",
     "warm": true,
     "hit": {
@@ -154,11 +154,65 @@
       "20": true
     },
     "top5": [
-      "paymentOrder",
-      "paymentService",
-      "paymentService",
-      "paymentPrepare",
-      "paymentPrepare"
+      "edit",
+      "order",
+      "save",
+      "computeOrderProductCoupon",
+      "saveCoupon"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "订单总价里优惠是怎么算进去的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "order",
+      "orderCoupon",
+      "orderPayGiveCoupon",
+      "getCouponListByOrder",
+      "getOrderProductCoupon"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "如何修改下单优惠、订单总价里优惠是怎么算进去的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "edit",
+      "order",
+      "save",
+      "orderCoupon",
+      "computeOrderProductCoupon"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "支付回调通知商户",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": false,
+      "10": false,
+      "20": true
+    },
+    "top5": [
+      "NotifyListener",
+      "handle",
+      "NotifyListener",
+      "handleOrderPaySuccess",
+      "handleOrderPayFalse"
     ]
   },
   {
@@ -167,16 +221,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
-      "10": false,
-      "20": false
+      "5": true,
+      "10": true,
+      "20": true
     },
     "top5": [
-      "GET /order/cashier/:*/:*",
-      "GET /order/cashier/:*/[:type]",
       "cashier",
-      "余额不足",
-      "getCashierOrder"
+      "createorder",
+      "getCashierOrder",
+      "memberCouponUserGroupBymonth",
+      "memberIssueUserCoupon"
     ]
   },
   {
@@ -190,11 +244,11 @@
       "20": true
     },
     "top5": [
-      "product_stock_job",
-      "PUT /product/stock/upload",
       "ProductStockJob",
       "checkoutProductStock",
-      "checkProductStock"
+      "checkProductStock",
+      "getProductStock",
+      "decProductStock"
     ]
   },
   {
@@ -203,16 +257,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
-      "10": false,
-      "20": false
+      "5": true,
+      "10": true,
+      "20": true
     },
     "top5": [
-      "passport.authorize",
-      "passport.authenticate",
-      "loginLimiter",
-      "restoreRequireShim",
-      "GET /auth/tumblr/callback"
+      "saveOAuth2UserTokens",
+      "revokeToken",
+      "revokeProviderTokens",
+      "revokeAllProviderTokens",
+      "getPayPalAccessToken"
     ]
   },
   {
@@ -226,11 +280,11 @@
       "20": true
     },
     "top5": [
-      "GET /https://api.twitch.tv/helix/users?login=:param",
-      "GET /login/webauthn-start",
-      "POST /login/webauthn-verify",
-      "POST /login/webauthn-start",
-      "saveOAuth2UserTokens"
+      "saveOAuth2UserTokens",
+      "config/passport.js",
+      "handleAuthLogin",
+      "User.findById",
+      "generateOAuth1Header"
     ]
   },
   {
@@ -239,16 +293,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
+      "5": true,
       "10": true,
       "20": true
     },
     "top5": [
-      "checkUrl",
-      "GET /account/verify",
       "validateReCAPTCHA",
-      "POST /https://api.sandbox.paypal.com/v2/checkout/orders",
-      "checkList"
+      "getCheckpointer",
+      "isSafeRedirect",
+      "controllers/contact.js",
+      "fetch"
     ]
   },
   {
@@ -263,10 +317,10 @@
     },
     "top5": [
       "loadPdfDocuments",
-      "writeMinimalPdf",
       "searchWikipedia",
-      "passport.authenticate",
-      "rewritePath"
+      "validateReCAPTCHA",
+      "getPageExtract",
+      "controllers/ai.js"
     ]
   },
   {
@@ -280,10 +334,10 @@
       "20": true
     },
     "top5": [
-      "POST /https://api.sandbox.paypal.com/v1/oauth2/token",
-      "revokeProviderTokens",
       "revokeToken",
+      "revokeProviderTokens",
       "revokeAllProviderTokens",
+      "getPayPalAccessToken",
       "saveOAuth2UserTokens"
     ]
   },
@@ -295,14 +349,14 @@
     "hit": {
       "5": false,
       "10": false,
-      "20": false
+      "20": true
     },
     "top5": [
-      "testGetAllEsProductList",
-      "getAllEsProductList",
+      "getRecommendBrandList",
+      "getBrandList",
       "getList",
-      "getPageNum",
-      "getPageSize"
+      "getList",
+      "getAllEsProductList"
     ]
   },
   {
@@ -311,16 +365,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
-      "10": false,
-      "20": false
+      "5": true,
+      "10": true,
+      "20": true
     },
     "top5": [
       "create",
-      "insert",
       "create",
-      "insertSelective",
-      "insert"
+      "createBrand",
+      "PmsBrandController",
+      "Operation"
     ]
   },
   {
@@ -337,8 +391,8 @@
       "delete",
       "delete",
       "deleteBrand",
-      "deleteBrand",
-      "EsProductController"
+      "PmsBrandController",
+      "Operation"
     ]
   },
   {
@@ -347,16 +401,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
-      "10": false,
-      "20": false
+      "5": true,
+      "10": true,
+      "20": true
     },
     "top5": [
-      "getMemberUsername",
-      "getMemberUsername",
       "getUsername",
-      "getUsername",
-      "getByUsername"
+      "getByUsername",
+      "getByUsername",
+      "getAdminByUsername",
+      "getAdminByUsername"
     ]
   },
   {
@@ -365,16 +419,16 @@
     "lang": "en",
     "warm": true,
     "hit": {
-      "5": false,
+      "5": true,
       "10": true,
       "20": true
     },
     "top5": [
-      "brand",
       "ANY /brand/list",
-      "ANY /brand",
-      "pms_brand",
-      "sms_home_brand"
+      "ANY /brand/listAll",
+      "brand",
+      "listBrand",
+      "listBrand"
     ]
   },
   {
@@ -383,16 +437,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
-      "10": false,
+      "5": true,
+      "10": true,
       "20": true
     },
     "top5": [
+      "getData",
       "getUploadUrl",
-      "getDownloadUrl",
-      "GET /workbench/index",
-      "get",
-      "GET /file/listCate"
+      "getWorkbench",
+      "getDictData",
+      "getEncryData"
     ]
   },
   {
@@ -407,10 +461,10 @@
     },
     "top5": [
       "rechargeConfig",
-      "recharge_order.pay_status",
-      "sceneAgain",
+      "GET /recharge/config",
+      "GET /recharge.recharge/getConfig",
       "POST /recharge.recharge/setConfig",
-      "request.get"
+      "ANY /adminapi/recharge/recharge_controller/get_config"
     ]
   },
   {
@@ -419,16 +473,16 @@
     "lang": "zh",
     "warm": true,
     "hit": {
-      "5": false,
-      "10": false,
-      "20": false
+      "5": true,
+      "10": true,
+      "20": true
     },
     "top5": [
-      "getUploadUrl",
-      "getDownloadUrl",
-      "get",
-      "GET /article.articleCate/detail",
-      "GET /file/listCate"
+      "getDictData",
+      "getDictDataContent",
+      "getDictDataApiContent",
+      "getDictDataContent",
+      "getStatusDescAttr"
     ]
   },
   {
@@ -437,16 +491,16 @@
     "lang": "en",
     "warm": true,
     "hit": {
-      "5": false,
+      "5": true,
       "10": true,
       "20": true
     },
     "top5": [
-      "GET /workbench/index",
-      "GET /setting.dict.dict_data/lists",
-      "GET /decorate.data/article",
-      "GET /setting.dict.dict_data/detail",
-      "GET /decorate.data/pc"
+      "getData",
+      "getWorkbench",
+      "getData",
+      "getDictData",
+      "getFieldDataContent"
     ]
   },
   {
@@ -478,11 +532,11 @@
       "20": true
     },
     "top5": [
-      "DELETE /users/{user_id}",
       "delete_user",
+      "main",
       "get_current_user",
-      "requires_admin",
-      "main"
+      "Depends",
+      "DELETE /users/{user_id}"
     ]
   },
   {
@@ -496,11 +550,11 @@
       "20": true
     },
     "top5": [
-      "GET /users",
-      "get_current_user",
       "get_current_user",
       "login",
-      "list_users"
+      "get_current_user",
+      "main",
+      "me"
     ]
   },
   {
@@ -515,10 +569,10 @@
     },
     "top5": [
       "requires_admin",
-      "requires_admin",
       "login",
-      "get_current_user",
-      "GET /me"
+      "requires_admin",
+      "list_users",
+      "me"
     ]
   },
   {
@@ -533,10 +587,280 @@
     },
     "top5": [
       "GET /users",
-      "DELETE /users/{user_id}",
       "list_users",
+      "DELETE /users/{user_id}",
       "get_current_user",
-      "get_current_user"
+      "login"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "StoreOrderCreateServices 里 createOrder 之后调了哪些下游方法",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "createOrder",
+      "StoreOrderCreateServices",
+      "app",
+      "createOrder",
+      "createorder"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "decGoodsStock 扣库存的时候有没有加事务",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "decGoodsStock",
+      "decGoodsStock",
+      "app",
+      "StoreIntegralOrderServices",
+      "createOrder"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "用户退款申请后台审核通过之后，钱是怎么退回的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": false,
+      "10": false,
+      "20": false
+    },
+    "top5": [
+      "handleOrderRefund",
+      "handleSendOrderRefundNoStatus",
+      "handleRechargeOrderRefundStatus",
+      "handleSendOrderApplyRefund",
+      "OrderRefundCancelAfterListener"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "StoreOrderCreateServices createOrder downstream methods",
+    "lang": "en",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "createOrder",
+      "StoreOrderCreateServices",
+      "createOrder",
+      "createorder",
+      "app"
+    ]
+  },
+  {
+    "project": 24,
+    "query": "订单超过 30 分钟未支付自动取消，这个定时任务在哪实现的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "cancelTimeOutOrder",
+      "OrderTimeOutCancelTask",
+      "cancelOrder",
+      "ums_member_task",
+      "paySuccessByOrderSn"
+    ]
+  },
+  {
+    "project": 24,
+    "query": "后台管理员登录报密码错误，密码加密比对在哪做的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "ums_admin_login_log",
+      "passwordEncoder",
+      "ums_admin_login_log",
+      "passwordEncoder",
+      "login"
+    ]
+  },
+  {
+    "project": 13,
+    "query": "JWT 是在哪里统一校验的，我要加白名单",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "generateJWT",
+      "DELETE /:username/follow",
+      "constructor",
+      "AuthMiddleware",
+      "use"
+    ]
+  },
+  {
+    "project": 13,
+    "query": "新用户注册成功后自动关注几个默认作者",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "POST /:username/follow",
+      "DELETE /:username/follow",
+      "follow",
+      "follow",
+      "user"
+    ]
+  },
+  {
+    "project": 15,
+    "query": "修改密码邮件发不出去，负责发邮件的代码在哪",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "sendTwoFactorEmail",
+      "sendContactEmail",
+      "controllers/user.js",
+      "nodemailerConfig.sendMail",
+      "POST /account/2fa/email/enable"
+    ]
+  },
+  {
+    "project": 11,
+    "query": "上传文件要限制大小和后缀类型，现在在哪校验的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": false,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "ANY /adminapi/upload_controller/file",
+      "checkPid",
+      "uploadFile",
+      "checkExpression",
+      "uploadFile"
+    ]
+  },
+  {
+    "project": 1,
+    "query": "商品超卖了，扣库存的地方到底有没有加锁",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "decGoodsStock",
+      "lock",
+      "decGoodsStock",
+      "lock",
+      "decCombinationStock"
+    ]
+  },
+  {
+    "project": 11,
+    "query": "改密码的时候，密码规则是在哪里校验的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "PasswordValidate",
+      "sceneResetPassword",
+      "POST /user/changePassword",
+      "sceneChangePassword",
+      "POST /user/resetPassword"
+    ]
+  },
+  {
+    "project": 13,
+    "query": "JWT 令牌是在哪里签发的",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "generateJWT",
+      "constructor",
+      "use",
+      "login",
+      "UserService"
+    ]
+  },
+  {
+    "project": 24,
+    "query": "订单超时了却没自动取消，我该从哪个定时任务开始排查",
+    "lang": "zh",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "ANY /cancelTimeOutOrder",
+      "ums_member_task",
+      "OrderTimeOutCancelTask",
+      "ums_member_task",
+      "cancelTimeOutOrder"
+    ]
+  },
+  {
+    "project": 24,
+    "query": "orders are not cancelled after payment timeout, find the scheduled task",
+    "lang": "en",
+    "warm": true,
+    "hit": {
+      "5": true,
+      "10": true,
+      "20": true
+    },
+    "top5": [
+      "getTimeOutOrders",
+      "ANY /sku",
+      "cancelTimeOutOrder",
+      "ums_member_task",
+      "updateNote"
     ]
   }
 ]

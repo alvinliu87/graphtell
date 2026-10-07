@@ -3,7 +3,9 @@
 //! Each phase builds, queries, and annotates the graph in memory; after all phases the application layer persists the accumulated
 //! [`GraphDelta`] in one shot (guaranteeing phase-level atomicity while keeping domain logic free of transaction APIs).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use tracing::warn;
 
 use gt_domain::model::{
     AliasEntry, Annotation, Diagnostic, Edge, EdgeKind, FactValue, GraphDelta, IdentityKey,
@@ -162,6 +164,18 @@ fn node_id_base(project_id: ProjectId) -> i64 {
     project_id.get().saturating_mul(NODE_ID_STRIDE) + 1
 }
 
+/// The `contract_path_index` key: **the identity scope plus the contract path**.
+///
+/// The scope (the owning sub-project) must be part of the key — the wildcard-method convergence below is a merge,
+/// and without the scope a front-end `POST /login` and a back-end `ANY /login` would merge into one node again,
+/// which is exactly what the per-sub-project ownership refactor forbids.
+fn contract_index_key(scope: Option<&str>, path: &str) -> String {
+    match scope {
+        Some(s) if !s.is_empty() => format!("{}|{}", s, path),
+        _ => path.to_string(),
+    }
+}
+
 /// Graph workspace.
 pub struct GraphWorkspace {
     project_id: ProjectId,
@@ -174,9 +188,18 @@ pub struct GraphWorkspace {
     annotations: Vec<Annotation>,
     by_fqn: HashMap<String, i64>,
     by_identity: HashMap<String, i64>,
-    /// Contract bridge (HttpContract) indexed by `path` to node id, and tags whether the node is a wildcard method
-    /// (`ANY` / `RULE`). Used to converge "method-agnostic" auto-route endpoints with the frontend's concrete method
-    /// (`POST` / `GET`...) onto the same node, otherwise the route view can't align frontend and backend.
+    /// Every synthesised node indexed by **identity value without the scope** (`{kind}:{value}` → node ids).
+    ///
+    /// `by_identity` is keyed by `IdentityKey::key()`, which folds the owning sub-project in, so it can only
+    /// answer "does *this* sub-project already have this node". The bridge step needs the opposite question —
+    /// "which *other* sub-projects declare the same endpoint / key" — which is what this index answers.
+    by_identity_value: HashMap<String, Vec<i64>>,
+    /// Contract bridge (HttpContract) indexed by **`(scope, path)`** to node id, and tags whether the node is a
+    /// wildcard method (`ANY` / `RULE`). Used to converge "method-agnostic" auto-route endpoints with a concrete
+    /// method (`POST` / `GET`...) onto the same node.
+    ///
+    /// The scope belongs in the key: two sub-projects may both declare `/login`, and the wildcard convergence
+    /// must stay inside one sub-project, otherwise the parties would silently re-merge through this index.
     contract_path_index: HashMap<String, (i64, bool)>,
     by_alias: BTreeMap<(String, String, String), i64>,
     fan_in: HashMap<i64, u32>,
@@ -286,6 +309,7 @@ impl GraphWorkspace {
             by_fqn: HashMap::new(),
             by_identity: HashMap::new(),
             contract_path_index: HashMap::new(),
+            by_identity_value: HashMap::new(),
             by_alias: BTreeMap::new(),
             fan_in: HashMap::new(),
             fan_out: HashMap::new(),
@@ -534,6 +558,15 @@ impl GraphWorkspace {
         if new.kind.as_str() == NodeKind::TABLE && !new.name.is_empty() {
             self.by_table_name.entry(new.name.clone()).or_insert(id.get());
         }
+        // Indexed by identity **value only** (scope stripped) so the bridge step can find "the same endpoint /
+        // key as declared by another sub-project". Distinct owners still produce distinct nodes because the
+        // merge key (`by_identity`) includes the scope.
+        if let Some(idk) = &new.identity {
+            self.by_identity_value
+                .entry(format!("{}:{}", idk.kind, idk.value))
+                .or_default()
+                .push(id.get());
+        }
         new.id = Some(id);
         self.delta.nodes.push(new);
         self.nodes.insert(id.get(), node);
@@ -556,13 +589,16 @@ impl GraphWorkspace {
                 self.merge_synthesized(existing, &new);
                 return (NodeId(existing), false);
             }
-            // 2) wildcard-method-aware merge
+            // 2) wildcard-method-aware merge — **inside one scope only**. The scope is the owning sub-project
+            // (see `IdentityKey::scope`), so a front-end `POST /login` never merges with the back end's
+            // `ANY /login` through this path; they are two nodes joined by a `ResolvesTo` edge instead.
             if new.kind.as_str() == NodeKind::HTTP_CONTRACT
                 && identity.kind.as_str() == SynthesizedKind::CONTRACT_ID
             {
                 if let Some((method, path)) = identity.contract_parts() {
                     let new_is_wild = gt_domain::model::is_wildcard_http_method(&method);
-                    if let Some(&(eid, e_is_wild)) = self.contract_path_index.get(&path) {
+                    let scope_key = contract_index_key(identity.scope.as_deref(), &path);
+                    if let Some(&(eid, e_is_wild)) = self.contract_path_index.get(&scope_key) {
                         if e_is_wild || new_is_wild {
                             self.merge_synthesized(eid, &new);
                             return (NodeId(eid), false);
@@ -573,21 +609,35 @@ impl GraphWorkspace {
             // Register the contract bridge into the path index (wildcard or concrete both registered, for wildcard-merge hits).
             // Must be computed before `add_node` moves `new` (path and wildcard flag are both owned values).
             let contract_entry = if new.kind.as_str() == NodeKind::HTTP_CONTRACT {
-                identity
-                    .contract_parts()
-                    .map(|(method, path)| (path, gt_domain::model::is_wildcard_http_method(&method)))
+                identity.contract_parts().map(|(method, path)| {
+                    (
+                        contract_index_key(identity.scope.as_deref(), &path),
+                        gt_domain::model::is_wildcard_http_method(&method),
+                    )
+                })
             } else {
                 None
             };
             let id = self.add_node(new);
             self.by_identity.insert(key, id.get());
-            if let Some((path, is_wild)) = contract_entry {
-                self.contract_path_index.entry(path).or_insert((id.get(), is_wild));
+            if let Some((path_key, is_wild)) = contract_entry {
+                self.contract_path_index.entry(path_key).or_insert((id.get(), is_wild));
             }
             return (NodeId(id.get()), true);
         }
         let id = self.add_node(new);
         (id, true)
+    }
+
+    /// Synthesised nodes declaring the same identity **value**, whichever sub-project owns them.
+    ///
+    /// The scope is deliberately left out: this is how the bridge step asks "which other party declares this
+    /// same endpoint / key", while `by_identity` (scoped) answers "does this sub-project already have it".
+    pub fn nodes_with_identity_value(&self, kind: &str, value: &str) -> Vec<NodeId> {
+        self.by_identity_value
+            .get(&format!("{}:{}", kind, value))
+            .map(|ids| ids.iter().map(|&i| NodeId(i)).collect())
+            .unwrap_or_default()
     }
 
     /// When reusing an existing synthesized node, merge confidence (take max) and properties.
@@ -618,30 +668,34 @@ impl GraphWorkspace {
         self.delta.property_patches.push((id, patch));
     }
 
-    /// Record one party's claim on a synthesised node: `sides` grows as a **sorted set** (so the result is
-    /// independent of the order in which the parties happen to run), and `side` stays a plain scalar label for
-    /// display / UI colouring — one party ⇒ that party, several parties ⇒ `bridge`.
+    /// Record which party declares this synthesised node: `side` is a **scalar**, because a node is owned by
+    /// exactly one sub-project and exactly one party declares it.
     ///
-    /// Why a set and not an overwrite: a node like an `HttpContract` is deliberately synthesised **twice**, once
-    /// from the backend route and once from the frontend call site, and both rules declare `side`. Overwriting
-    /// made the node claim to belong to whichever side ran last (and silently broke every consumer reading
-    /// `side`, e.g. `frontend-mark-called`). See [`crate::engine::exec_synthesize_one`].
+    /// It used to be a `sides` set with a derived `bridge` label, because one node could carry several parties'
+    /// evidence (a contract bridge merged the backend route and the frontend call site onto one node) and the
+    /// label must never depend on which rule happened to run last. Sharing is gone, so the set had nothing left
+    /// to express. A second, different claim is now a modelling mistake rather than a case to accommodate: the
+    /// first one wins and the conflict is logged, instead of being silently absorbed into a label.
     pub fn record_side(&mut self, id: NodeId, side: &str) {
         if side.is_empty() {
             return;
         }
-        let mut sides: BTreeSet<String> = self
+        let existing = self
             .nodes
             .get(&id.0)
-            .and_then(|n| n.properties.get("sides"))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        if !sides.insert(side.to_string()) {
-            return;
+            .and_then(|n| n.properties.get("side"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        match existing {
+            Some(prev) if prev == side => {}
+            Some(prev) => {
+                warn!(
+                    "node {} is claimed by party `{side}` but already declares `{prev}`; a node must be owned by one party",
+                    id.0
+                );
+            }
+            None => self.patch_properties(id, json!({ "side": side })),
         }
-        let list: Vec<String> = sides.into_iter().collect();
-        let label = if list.len() > 1 { "bridge".to_string() } else { list[0].clone() };
-        self.patch_properties(id, json!({ "sides": list, "side": label }));
     }
 
     pub fn node_count(&self) -> usize {
@@ -1812,27 +1866,30 @@ mod tests {
     /// `sides` is a sorted set (order-independent) and `side` is only the derived display label:
     /// one party ⇒ that party, several ⇒ `bridge`.
     #[test]
-    fn record_side_accumulates_into_a_bridge_label() {
+    fn record_side_names_the_owning_party_and_refuses_a_second_one() {
         let mut ws = new_ws();
         let n = ws.add_node(new_node("HttpContract", "x", None));
 
         ws.record_side(n, "backend");
         assert_eq!(ws.node(n).unwrap().properties["side"], json!("backend"));
-        assert_eq!(ws.node(n).unwrap().properties["sides"], json!(["backend"]));
 
+        // A node is owned by one party: a second, different claim is a modelling mistake, not a case to merge —
+        // the first one stands (and the conflict is logged) instead of the label flipping by write order.
         ws.record_side(n, "frontend");
-        assert_eq!(ws.node(n).unwrap().properties["side"], json!("bridge"));
         assert_eq!(
-            ws.node(n).unwrap().properties["sides"],
-            json!(["backend", "frontend"]),
-            "the collection is ordered, so the result does not depend on write order"
+            ws.node(n).unwrap().properties["side"],
+            json!("backend"),
+            "the owning party must not depend on which rule ran last"
+        );
+        assert!(
+            ws.node(n).unwrap().properties.get("sides").is_none(),
+            "there is no derived `sides` set any more"
         );
 
         // Re-recording the same side, or an empty one, changes nothing.
-        ws.record_side(n, "frontend");
+        ws.record_side(n, "backend");
         ws.record_side(n, "");
-        assert_eq!(ws.node(n).unwrap().properties["sides"], json!(["backend", "frontend"]));
-        assert_eq!(ws.node(n).unwrap().properties["side"], json!("bridge"));
+        assert_eq!(ws.node(n).unwrap().properties["side"], json!("backend"));
     }
 
     // ---------------------------------------------------------------- edges

@@ -609,7 +609,6 @@ pub(crate) fn persist_vectors(
         out
     }
 
-
     /// Assess recall quality (see [`RecallQuality`]).
     ///
     /// Uses three **project-independent** signals, so it holds on any project:
@@ -1253,10 +1252,36 @@ pub(crate) fn persist_vectors(
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.node_id.get().cmp(&b.node_id.get()))
         });
+        // Bridged kinds (HttpContract): the front/back copies share a name and must not both
+        // occupy top-k slots. Collapse to the single primary copy (backend preferred). Other kinds
+        // keep the original per-name cap so behaviour is unchanged for them.
+        let http_keep = select_bridged_primary(
+            hits
+                .iter()
+                .filter(|h| h.kind.as_str() == "HttpContract")
+                .map(|h| {
+                    let is_backend = index
+                        .get(&h.node_id.get())
+                        .and_then(|n| n.properties.get("side").and_then(|v| v.as_str()))
+                        == Some("backend");
+                    (h.node_id.get(), h.name.as_str(), h.score, is_backend)
+                }),
+        );
         const MAX_SAME_NAME: usize = 2;
         let mut same: HashMap<String, usize> = HashMap::new();
         let mut kept: Vec<RecallHit> = Vec::with_capacity(hits.len());
         for h in hits {
+            if h.kind.as_str() == "HttpContract" {
+                if !http_keep.contains(&h.node_id.get()) {
+                    continue;
+                }
+                let c = same.entry(h.name.clone()).or_insert(0);
+                if *c < 1 {
+                    *c += 1;
+                    kept.push(h);
+                }
+                continue;
+            }
             let c = same.entry(h.name.clone()).or_insert(0);
             if *c < MAX_SAME_NAME {
                 *c += 1;
@@ -1521,4 +1546,69 @@ pub(crate) fn scan_kinds(store: &dyn Persistence, project_id: ProjectId) -> Vec<
         Err(e) => tracing::warn!("failed to read node kinds, falling back to the built-in list: {e}"),
     }
     FALLBACK_SCAN_KINDS.iter().map(|s| s.to_string()).collect()
+}
+
+/// Bridged kinds (e.g. `HttpContract`) are emitted as one node per sub-project — a frontend
+/// call site and a backend handler — bridged by a `ResolvesTo` edge. In the flat recall list
+/// only one copy should appear, otherwise the front/back duplicates waste top-k slots. This
+/// picks the `node_id` to keep per name: prefer the backend (implementation) copy, tie-break
+/// by score. Pure and side-agnostic so it can be unit-tested without a `Node`.
+fn select_bridged_primary<'a>(
+    items: impl Iterator<Item = (i64, &'a str, f64, bool)>,
+) -> HashSet<i64> {
+    let mut best: HashMap<String, (i64, f64, bool)> = HashMap::new();
+    for (id, name, score, is_backend) in items {
+        let better = match best.get(name) {
+            None => true,
+            Some((_, s, b)) => is_backend && !*b || (is_backend == *b && score > *s),
+        };
+        if better {
+            best.insert(name.to_string(), (id, score, is_backend));
+        }
+    }
+    best.into_values().map(|(id, _, _)| id).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_bridged_primary_prefers_backend_then_higher_score() {
+        // Same endpoint emitted twice (frontend call site + backend handler): keep the backend.
+        let keep = select_bridged_primary(
+            [
+                (1i64, "GET /order", 50.0, false), // frontend
+                (2i64, "GET /order", 90.0, true),  // backend
+            ]
+            .into_iter(),
+        );
+        assert_eq!(keep, HashSet::from([2i64]));
+
+        // Only a frontend copy exists: keep it (no backend to prefer).
+        let keep = select_bridged_primary(
+            [(3i64, "GET /cart", 10.0, false)].into_iter(),
+        );
+        assert_eq!(keep, HashSet::from([3i64]));
+
+        // Two backend copies of the same name: keep the higher-scored one.
+        let keep = select_bridged_primary(
+            [
+                (4i64, "GET /pay", 10.0, true),
+                (5i64, "GET /pay", 80.0, true),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(keep, HashSet::from([5i64]));
+
+        // Distinct endpoints are independent.
+        let keep = select_bridged_primary(
+            [
+                (6i64, "GET /a", 10.0, true),
+                (7i64, "GET /b", 20.0, true),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(keep, HashSet::from([6i64, 7i64]));
+    }
 }

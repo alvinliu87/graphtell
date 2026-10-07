@@ -10,7 +10,7 @@ pub mod syntax;
 pub mod view;
 
 pub use fkb::{
-    Action, AliasSpec, AnnotateAction, AnnotateTarget, AnnotationSpec, CallContext, ChainGuardSpec,
+    Action, AliasSpec, AnnotateAction, AnnotateTarget, AnnotationSpec, BridgeSpec, CallContext, ChainGuardSpec,
     ConsumerGuardSpec, ConsumerScope, DecoratorGuardSpec, Detector, GuardAttach, Direction,
     EntryField, EntryFieldFrom, ExpandSpec, ExpandVariant, ExcludeRule, FanInThresholds, FieldSpec,
     FrameworkKnowledge, GuardAttachSpec, MethodRefSpec, MagicDelegationSpec,

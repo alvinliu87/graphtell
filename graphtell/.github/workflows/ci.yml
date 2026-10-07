@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger (e.g. after populating the sample cache) and a nightly run to
+  # keep the corpus cache warm and catch regressions in the heavy integration tests.
+  workflow_dispatch:
+  schedule:
+    - cron: '37 2 * * *'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -47,6 +52,61 @@ jobs:
         run: npm run build
       - name: Unit tests
         run: npm test
+
+  real-samples:
+    name: Real-sample integration tests (needs sample_project / CRMEB corpus)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Heavy integration tests over the proprietary `sample_project` (CRMEB) corpus
+    # (e.g. the cross-sub-project `ResolvesToContract` bridge edge). The corpus is
+    # intentionally NOT in the repo (licensing + size), so it must be supplied by the
+    # CI runner that wants these tests:
+    #   * a populated GitHub Actions cache (key: graphtell-samples-v1), OR
+    #   * the SAMPLE_TARBALL_URL secret — a tarball whose top-level dir is `CRMEB`.
+    # The ignored tests themselves already `skip` (never pass) when the corpus is
+    # absent; this job goes further and does NOT execute them at all unless the corpus
+    # is found, so a run without the corpus can never produce a false green.
+    env:
+      SAMPLE_TARBALL_URL: ${{ secrets.SAMPLE_TARBALL_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Restore sample corpus from cache
+        id: cache-samples
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/samples
+          key: graphtell-samples-v1
+          restore-keys: graphtell-samples-
+      - name: Download sample corpus tarball (if SAMPLE_TARBALL_URL is set)
+        if: steps.cache-samples.outputs.cache-hit != 'true' && env.SAMPLE_TARBALL_URL != ''
+        run: |
+          mkdir -p "${{ runner.temp }}/samples"
+          curl -fsSL "$SAMPLE_TARBALL_URL" | tar -xz -C "${{ runner.temp }}/samples"
+      - name: Locate CRMEB checkout
+        id: locate
+        run: |
+          D="${{ runner.temp }}/samples"
+          CRMEB="$(find "$D" -maxdepth 4 -type d -name CRMEB -print -quit 2>/dev/null || true)"
+          if [ -n "$CRMEB" ]; then
+            echo "dir=$CRMEB" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run real-sample tests
+        if: steps.locate.outputs.found == 'true'
+        env:
+          GRAPHTELL_SAMPLE_DIR: ${{ steps.locate.outputs.dir }}
+        run: cargo test --workspace -- --ignored --no-fail-fast
+      - name: Corpus not supplied — skipping
+        if: steps.locate.outputs.found != 'true'
+        run: |
+          echo "::warning::sample_project (CRMEB) corpus not found; skipping real-sample integration tests."
+          echo "Enable them by populating the 'graphtell-samples' cache (key graphtell-samples-v1) or setting the SAMPLE_TARBALL_URL secret to a tarball rooted at 'CRMEB'."
 
   build-docker:
     name: Docker image build

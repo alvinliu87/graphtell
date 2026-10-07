@@ -51,3 +51,30 @@ rules:
               value: { literal: "backend" }
           link: { kind: WritesCache, direction: incoming, confidence: 0.85 }
           confidence: 0.85
+
+  # ===== P6: the cross-sub-project contract bridge =====
+  #
+  # Two sub-projects naming the same endpoint build **two** `HttpContract` nodes (a node is owned by exactly one
+  # sub-project) joined by a `ResolvesToContract` edge, so "some other sub-project really calls this endpoint" is
+  # read off that edge — not off a `side` property, which only ever describes one party.
+  #
+  # This is **cross-language by nature**, so it belongs here (`language: "*"` + `apply_without_detection`):
+  # this file's rules are loaded into every sub-project's rule set, so each sub-project runs it against its own
+  # contracts and still sees the incoming bridge edge from the other side.
+  - id: mark-called
+    languages: ["*"]
+    phase: AnnotatePost
+    selector:
+      kind: node
+      node_kind: HttpContract
+      where:
+        - has_incoming: ResolvesToContract
+    binding:
+      - Annotate:
+          phase: Post
+          channel: FkbMark
+          target: matched
+          annotations:
+            - kind: frontend.called
+              confidence: 0.9
+          merge: Coexist

@@ -154,6 +154,10 @@ export const EDGE_COLORS: Record<string, string> = {
   Declares: '#e5e7eb',
   Contains: '#e5e7eb',
   ResolvesTo: '#38bdf8',
+  // Cross-sub-project contract bridge: the front end's contract node -> the back end's declaration of the same
+  // endpoint. Same hue family as `CallsHttp` (both are "the front end reaches this endpoint") but in cyan, so it
+  // reads as "the two halves of one endpoint" rather than as another caller.
+  ResolvesToContract: '#06b6d4',
   // Middleware edge: the middleware sky blue, kept apart from `HandledBy` (red = who handles this endpoint) —
   // one is "who you pass through", the other is "where you land".
   PassesThrough: '#0ea5e9',

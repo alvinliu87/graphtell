@@ -301,7 +301,7 @@ impl GraphQuery for SqliteStore {
         &self,
         project_id: ProjectId,
         kind: Option<&NodeKind>,
-        sides: &[String],
+        side: Option<&str>,
     ) -> Result<u64> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from("SELECT COUNT(*) FROM nodes WHERE project_id = ?1");
@@ -313,32 +313,11 @@ impl GraphQuery for SqliteStore {
             ));
             binds.push(Box::new(kind.to_string()));
         }
-        if !sides.is_empty() {
-            // Set semantics instead of one scalar: a node counts when any listed party appears in its derived
-            // `sides` set (current pipeline), **or** equals its scalar `side` (rows written before `sides`
-            // existed — so switching a perspective to a side filter never forces a rebuild).
-            let base = binds.len();
-            let mut scalar_ph = Vec::with_capacity(sides.len());
-            let mut set_ph = Vec::with_capacity(sides.len());
-            for i in 0..sides.len() {
-                scalar_ph.push(format!("?{}", base + 1 + i));
-                set_ph.push(format!("?{}", base + 1 + sides.len() + i));
-            }
-            // `json_each` over a missing key yields no rows, so `EXISTS` degrades to false and the scalar branch
-            // carries legacy rows; each placeholder gets its own bind, hence pushing the list twice.
-            sql.push_str(&format!(
-                " AND ( json_extract(properties, '$.side') IN ({scalar})
-                        OR EXISTS (SELECT 1 FROM json_each(COALESCE(properties, '{{}}'), '$.sides')
-                                   WHERE json_each.value IN ({set})) )",
-                scalar = scalar_ph.join(","),
-                set = set_ph.join(","),
-            ));
-            for s in sides {
-                binds.push(Box::new(s.clone()));
-            }
-            for s in sides {
-                binds.push(Box::new(s.clone()));
-            }
+        if let Some(side) = side {
+            // Scalar equality: a node is owned by exactly one party, so `side` names it — no set to walk.
+            let p = binds.len() + 1;
+            sql.push_str(&format!(" AND json_extract(properties, '$.side') = ?{p}"));
+            binds.push(Box::new(side.to_string()));
         }
         conn.query_row(&sql, rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), |r| r.get(0))
             .map(|c: i64| c as u64)

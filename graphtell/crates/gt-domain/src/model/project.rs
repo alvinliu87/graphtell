@@ -106,8 +106,9 @@ impl std::fmt::Display for ProjectStatus {
 /// A sub-project: an independently analysable unit inside a project.
 ///
 /// For example, a monorepo may bundle a server backend and a separate web/admin frontend; they differ in language and
-/// in FKB, so they must be analysed as two sub-projects and only converge across projects on contract nodes such as
-/// `HttpContract`.
+/// in FKB, so they must be analysed as two sub-projects. Nothing is shared between them: each node — including a
+/// semantic one such as `HttpContract` — is owned by one sub-project, and the only thing crossing the boundary is an
+/// **edge** (a frontend contract carries `ResolvesToContract` into the backend contract that declares the same endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubProject {
     pub id: SubProjectId,

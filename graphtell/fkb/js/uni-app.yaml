@@ -7,9 +7,9 @@
 #     `$store`, `pages.json`, `uni.navigateTo`, `uni.$emit`, … so uni-app knowledge is never used to
 #     explain a Vue / React project.
 #
-# Front-end and back-end sub-projects each build their own HttpContract nodes, and they merge on the
-# **same identity** — that is the contract bridge pairing. Dead-endpoint / phantom-call detection then
-# follows automatically:
+# Front-end and back-end sub-projects each build **their own** HttpContract node (a node is owned by exactly
+# one sub-project) and the two are joined by a `ResolvesToContract` edge — that is the contract bridge pairing.
+# Dead-endpoint / phantom-call detection then follows automatically:
 #   * HandledBy but no CallsHttp = a dead backend endpoint (nobody calls it)
 #   * CallsHttp but no HandledBy = a front-end phantom call (calling a route that does not exist)
 
@@ -80,11 +80,15 @@ rules:
               arg: 0
               field: "url"
               require_literal: true
+              # Same scope guard as `js/common.yaml`: a scheme means a third-party endpoint, not one this
+              # repository declares.
+              reject_contains: ["://"]
               normalize:
                 - strip_prefix: ["api/"]
                 - leading_slash
                 - param_wildcard
           link: { kind: CallsHttp, direction: incoming }
+          bridge: { kind: ResolvesToContract, confidence: 0.9 }
           confidence: 0.9
 
   # ===== P5 Synthesize: local storage (Cache, uni-app-specific spelling) =====

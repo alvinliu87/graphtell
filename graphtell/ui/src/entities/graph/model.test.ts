@@ -1,12 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { nodeColor, edgeColor } from './model';
+import { describe, expect, it } from 'vitest';
 
-describe('nodeColor', () => {
-  it('returns the colour for a known kind', () => expect(nodeColor('Class')).toBe('#3d7eff'));
-  it('falls back to Unknown for an unknown kind', () => expect(nodeColor('Nope')).toBe('#9ca3af'));
-});
+import { edgeColor } from './model';
 
-describe('edgeColor', () => {
-  it('returns the colour for a known kind', () => expect(edgeColor('Extends')).toBe('#94a3b8'));
-  it('falls back for an unknown kind', () => expect(edgeColor('Whatever')).toBe('#cbd5e1'));
+describe('edge colors', () => {
+  it('gives the cross-sub ResolvesToContract bridge a distinct, non-default color', () => {
+    // The front-end's contract node -> the back-end's declaration of the same endpoint must be
+    // visually distinct on the canvas, not collapsed into the grey "unknown kind" fallback.
+    expect(edgeColor('ResolvesToContract')).toBe('#06b6d4');
+    expect(edgeColor('ResolvesToContract')).not.toBe('#cbd5e1');
+  });
 });

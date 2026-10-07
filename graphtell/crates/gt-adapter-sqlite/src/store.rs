@@ -859,16 +859,16 @@ mod tests {
         d.nodes.push(node(p.id, 1, "A"));
         d.nodes.push(node(p.id, 2, "B"));
         s.apply(&d).unwrap();
-        assert_eq!(s.count_nodes(p.id, None, &[]).unwrap(), 2);
-        assert_eq!(s.count_nodes(p.id, Some(&NodeKind::new("Class")), &[]).unwrap(), 2);
+        assert_eq!(s.count_nodes(p.id, None, None).unwrap(), 2);
+        assert_eq!(s.count_nodes(p.id, Some(&NodeKind::new("Class")), None).unwrap(), 2);
 
         let mut d2 = GraphDelta::new(p.id);
         let mut n = node(p.id, 3, "C");
         n.properties = serde_json::json!({ "side": "frontend" });
         d2.nodes.push(n);
         s.apply(&d2).unwrap();
-        assert_eq!(s.count_nodes(p.id, None, &["frontend".to_string()]).unwrap(), 1);
-        assert_eq!(s.count_nodes(p.id, None, &["backend".to_string()]).unwrap(), 0);
+        assert_eq!(s.count_nodes(p.id, None, Some("frontend")).unwrap(), 1);
+        assert_eq!(s.count_nodes(p.id, None, Some("backend")).unwrap(), 0);
     }
 
     // ---------------------------------------------------------- symbol tables

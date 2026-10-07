@@ -913,4 +913,28 @@ exclude_rules:
         assert_eq!(kb.sources().len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The cross-sub-project bridge edge is **declared by the FKB**, not by the kernel: loading the tree must
+    /// register `ResolvesToContract` as a semantic edge kind, otherwise it is built but never drawn nor counted.
+    #[test]
+    fn loading_the_real_fkb_registers_the_contract_bridge_edge_kind() {
+        let dir = tmp_dir("bridge-kind");
+        std::fs::write(
+            &dir.join("fe.yaml"),
+            "id: fe\nlanguage: javascript\nside: frontend\nsemantic_edge_kinds: [ResolvesToContract]\nrules: []\n",
+        )
+        .unwrap();
+
+        YamlKnowledgeBase::load_dir(&dir).expect("load ok");
+
+        assert!(
+            gt_domain::model::kinds::EdgeKind::from("ResolvesToContract").is_semantic(),
+            "a bridge edge declared by FKB must be a semantic edge, so the canvas draws it"
+        );
+        assert!(
+            !gt_domain::model::kinds::EdgeKind::from("ResolvesToContract").is_bridge(),
+            "it connects two semantic nodes, so it is not a semantic↔syntax bridge edge"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

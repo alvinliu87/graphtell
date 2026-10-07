@@ -29,30 +29,37 @@ pub fn run_post(ctx: &mut PipelineContext) {
     let phase = Phase(Phase::ANNOTATE_POST.to_string());
     let rules_by_sub = collect_rules(ctx, &phase);
 
-    // Group by node_kind to avoid walking the whole graph.
+    // Group by **(sub-project, node_kind)** to avoid walking the whole graph, and so a rule only ever sees the
+    // nodes **its own sub-project owns** — the same scoping `apply_source_rules` / `apply_inherit_rules` use.
     //
-    // Deliberately **not** grouped by sub-project, unlike `apply_source_rules` / `apply_inherit_rules`
-    // (which look rules up by the record's own sub): a source record belongs to exactly one sub, a graph
-    // node does not. The contract bridge is the canonical case — a frontend sub and a backend sub
-    // synthesise the *same* `HttpContract` node, which keeps whichever sub created it first, and the
-    // frontend still has to stamp `frontend.called` on it (`fkb/js/common.yaml` `mark-called`). What
-    // gates that rule is not the sub but the graph: `where: [ has_incoming: CallsHttp ]`.
-    // See `tests/link_sample.rs`, which fails the moment sub scoping is added here.
-    let mut by_kind: HashMap<String, Vec<Rule>> = HashMap::new();
-    let mut wild: Vec<Rule> = Vec::new();
-    for (_sub, rules) in rules_by_sub.iter() {
+    // This scoping only became sound once a node stopped being shared: a synthesised node now carries its owning
+    // sub-project in its identity scope, so a front end and a back end naming the same endpoint build two nodes
+    // joined by a `ResolvesTo` edge instead of one node whose owner depended on whoever ran first. Before that
+    // split, scoping here silently dropped every cross-party rule (see `tests/link_sample.rs`).
+    //
+    // Cross-sub-project facts are still readable: `where` predicates walk the graph, so `has_incoming: ResolvesTo`
+    // sees an edge arriving from another sub-project. The rules that need it are cross-language by nature and
+    // live in `fkb/universal/common.yaml`, which is loaded into **every** sub-project's rule set.
+    let mut by_sub_kind: HashMap<Option<i64>, HashMap<String, Vec<Rule>>> = HashMap::new();
+    let mut wild_by_sub: HashMap<Option<i64>, Vec<Rule>> = HashMap::new();
+    for (sub, rules) in rules_by_sub.iter() {
         for r in rules {
             match &r.selector {
                 Selector::Node { node_kind, .. } => match node_kind {
                     Some(k) => {
-                        let slot = by_kind.entry(k.to_string()).or_default();
+                        let slot = by_sub_kind
+                            .entry(*sub)
+                            .or_default()
+                            .entry(k.to_string())
+                            .or_default();
                         if !slot.iter().any(|x: &Rule| x.id == r.id) {
                             slot.push(r.clone());
                         }
                     }
                     None => {
-                        if !wild.iter().any(|x: &Rule| x.id == r.id) {
-                            wild.push(r.clone());
+                        let slot = wild_by_sub.entry(*sub).or_default();
+                        if !slot.iter().any(|x: &Rule| x.id == r.id) {
+                            slot.push(r.clone());
                         }
                     }
                 },
@@ -62,14 +69,24 @@ pub fn run_post(ctx: &mut PipelineContext) {
     }
 
     let mut targets: Vec<(gt_domain::model::NodeId, Option<SubProjectId>, Vec<Rule>)> = Vec::new();
-    for (kind, rules) in by_kind {
-        for id in ctx.ws.nodes_of_kind(&kind) {
-            targets.push((id, sub_of(ctx, id), rules.clone()));
+    for (sub_key, kind_map) in by_sub_kind {
+        for (kind, rules) in kind_map {
+            for id in ctx.ws.nodes_of_kind(&kind) {
+                let sub = sub_of(ctx, id);
+                if sub.map(|s| s.get()) != sub_key {
+                    continue;
+                }
+                targets.push((id, sub, rules.clone()));
+            }
         }
     }
-    if !wild.is_empty() {
+    for (sub_key, rules) in wild_by_sub {
         for id in ctx.ws.node_ids() {
-            targets.push((id, sub_of(ctx, id), wild.clone()));
+            let sub = sub_of(ctx, id);
+            if sub.map(|s| s.get()) != sub_key {
+                continue;
+            }
+            targets.push((id, sub, rules.clone()));
         }
     }
 
@@ -999,19 +1016,21 @@ mod tests {
         );
     }
 
+    /// A node is owned by exactly one sub-project, so P6 scopes every node rule to the sub that owns both.
+    ///
+    /// This is the **inverted** form of the old `run_post_node_rules_reach_every_sub_project`: back then a
+    /// synthesised node could be shared (the contract bridge merged both parties onto one node, whose owner was
+    /// whoever ran first), so scoping here would silently drop cross-party rules. Sharing is gone — the two
+    /// parties build two nodes joined by a `ResolvesTo` edge — so scoping is now sound and is what keeps a
+    /// rule from leaking into a sub-project it does not belong to.
     #[test]
-    fn run_post_node_rules_reach_every_sub_project() {
+    fn run_post_node_rules_are_scoped_to_their_sub_project() {
         let mut ctx = PipelineContext::new(project());
         ctx.sub_projects.push(sub_n("/p/api", "php", 1));
         ctx.sub_projects.push(sub_n("/p/web", "js", 2));
         let php_node = node(&mut ctx, "Method", 1);
         let js_node = node(&mut ctx, "Method", 2);
         let detached = node_detached(&mut ctx, "Method");
-        // Deliberate, and the opposite of `apply_source_rules`: a source record belongs to one sub, a
-        // graph node can be shared by several (the contract bridge synthesises one `HttpContract` from
-        // both sides), so P6 pools node rules by kind and lets the rule's own `where` do the gating.
-        // `tests/link_sample.rs` is the end-to-end nail for this: it stamps `frontend.called` from the
-        // JS sub onto a contract node owned by the PHP sub.
         ctx.rules_by_sub
             .insert(1, vec![node_rule("php-only", "AnnotatePost", Some("Method"), "php-only")]);
         ctx.rules_by_sub
@@ -1021,10 +1040,55 @@ mod tests {
         run_post(&mut ctx);
 
         assert!(ctx.ws.has_annotation(php_node, "php-only"), "the control rule must fire");
-        assert!(ctx.ws.has_annotation(js_node, "php-only"), "a shared node is not owned by one sub");
         assert!(ctx.ws.has_annotation(js_node, "js-only"));
-        assert!(ctx.ws.has_annotation(detached, "php-only"), "a node without a sub is not exempt");
+        // The whole point: a sub-project's rule must not touch another sub-project's node.
+        assert!(!ctx.ws.has_annotation(js_node, "php-only"), "a sub-project rule must not leak");
+        assert!(!ctx.ws.has_annotation(php_node, "js-only"));
+        // A node with no sub-project only sees the cross-project (`None`) bucket.
+        assert!(!ctx.ws.has_annotation(detached, "php-only"), "a node without a sub is its own scope");
         assert!(ctx.ws.has_annotation(detached, "glob"));
+    }
+
+    /// Scoping the **rule** to a sub-project must not scope the **graph**: a `where` predicate still reads an
+    /// edge arriving from another sub-project's node. This is what makes the contract bridge work after the
+    /// split — `fkb/universal/common.yaml`'s `mark-called` runs inside the backend sub-project and reads the
+    /// `ResolvesTo` edge coming from the frontend's own contract node.
+    #[test]
+    fn run_post_predicates_read_edges_from_other_sub_projects() {
+        let mut ctx = PipelineContext::new(project());
+        ctx.sub_projects.push(sub_n("/p/api", "php", 1));
+        ctx.sub_projects.push(sub_n("/p/web", "js", 2));
+        let php_node = node(&mut ctx, "HttpContract", 1);
+        let js_node = node(&mut ctx, "HttpContract", 2);
+        ctx.ws.add_edge(NewEdge {
+            project_id: ctx.project.id,
+            kind: EdgeKind::from("ResolvesToContract"),
+            from_id: js_node,
+            to_id: php_node,
+            phase: Phase::new("Synthesize"),
+            confidence: 0.9,
+            properties: serde_json::Value::Null,
+        });
+        ctx.rules_by_sub.insert(
+            1,
+            vec![node_rule_where(
+                "bridged",
+                "AnnotatePost",
+                Some("HttpContract"),
+                vec![Predicate::HasIncoming("ResolvesToContract".to_string())],
+                "frontend.called",
+            )],
+        );
+        run_post(&mut ctx);
+
+        assert!(
+            ctx.ws.has_annotation(php_node, "frontend.called"),
+            "the predicate must see the edge coming from the other sub-project"
+        );
+        assert!(
+            !ctx.ws.has_annotation(js_node, "frontend.called"),
+            "the rule belongs to sub 1, so it never runs on sub 2's node"
+        );
     }
 
     // ---------------------------------------------------------------- apply_source_rules: call + config

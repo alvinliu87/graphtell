@@ -833,6 +833,73 @@ fn ev_of<'a>(
     Evaluator::new(ws, mctx).with_variant(variant.cloned())
 }
 
+/// Build the cross-sub-project bridge edges declared by `SynthesizeAction::bridge`.
+///
+/// A synthesised node is owned by exactly one sub-project, so "another sub-project declares the same thing" can
+/// no longer be expressed by merging the nodes; it becomes an edge to every node carrying the same identity
+/// value under a **different** owner. For contracts the method-agnostic spelling (`ANY` / `RULE`, produced by
+/// auto-routing) is tried only when the exact `(METHOD, path)` counterpart does not exist — a concrete method is
+/// stronger evidence than a wildcard.
+fn link_bridge(
+    ctx: &mut PipelineContext,
+    rule: &Rule,
+    bridge: &gt_domain::model::BridgeSpec,
+    identity: &IdentityKey,
+    node_id: gt_domain::model::NodeId,
+    phase: &gt_domain::model::Phase,
+    action_confidence: f32,
+) {
+    let kind_key = identity.kind.as_str().to_string();
+    let own_sub = ctx.ws.node(node_id).and_then(|n| n.sub_project_id);
+    let mut values = vec![identity.value.clone()];
+    if kind_key == SynthesizedKind::CONTRACT_ID {
+        if let Some((_method, path)) = identity.contract_parts() {
+            for wild in ["ANY", "RULE"] {
+                values.push(format!("{} {}", wild, path));
+            }
+        }
+    }
+    let confidence = bridge.confidence.unwrap_or(action_confidence * rule.confidence);
+    let mut linked = false;
+    for (idx, value) in values.iter().enumerate() {
+        // Index > 0 holds the wildcard spellings: only tried when the exact identity found no counterpart.
+        if idx > 0 && linked {
+            break;
+        }
+        for other in ctx.ws.nodes_with_identity_value(&kind_key, value) {
+            if other == node_id {
+                continue;
+            }
+            let Some(other_node) = ctx.ws.node(other) else { continue };
+            if other_node.sub_project_id == own_sub {
+                continue;
+            }
+            ctx.ws.add_edge(NewEdge {
+                project_id: ctx.project.id,
+                kind: bridge.kind.clone(),
+                from_id: node_id,
+                to_id: other,
+                phase: phase.clone(),
+                confidence,
+                properties: json!({ "evidence": { "rule": rule.id, "target": value } }),
+            });
+            linked = true;
+        }
+    }
+    if !linked {
+        ctx.ws.diagnose(
+            phase,
+            "BridgeUnresolved",
+            Severity::Info,
+            format!(
+                "rule {}: no counterpart for `{}` in another sub-project",
+                rule.id, identity.value
+            ),
+            None,
+        );
+    }
+}
+
 fn exec_synthesize_one(
     ctx: &mut PipelineContext,
     rule: &Rule,
@@ -857,17 +924,29 @@ fn exec_synthesize_one(
         return matched;
     };
 
-    if identity.kind.as_str() != SynthesizedKind::CONTRACT_ID {
-        if let Some(side) = s
-            .fields
-            .iter()
-            .find(|f| f.name == "side")
-            .and_then(|f| f.value.as_ref())
-            .and_then(|vs| ev.string(vs))
-        {
-            identity = identity.with_scope(side);
-        }
+    // A synthesised node belongs to **exactly one sub-project**, so the owning sub is always folded into the
+    // identity scope: two parties (a front end and a back end) that name the same endpoint / key / cache entry
+    // now produce **two nodes**, never one shared node. This used to be special-cased away for `ContractId`
+    // ("let the two ends converge"), which made `sub_project_id` a lie — it recorded whichever party ran first
+    // — and forced every downstream consumer to second-guess ownership (`side` / `sides`).
+    //
+    // Cross-sub-project facts are expressed by **edges** (`ResolvesTo`), declared by FKB as
+    // `SynthesizeAction::bridge`. A `side` field, when the knowledge declares one, is appended so that a single
+    // sub-project holding two parties can still keep them apart.
+    let mut scope = sub
+        .map(|s| format!("sub{}", s.get()))
+        .unwrap_or_else(|| "cross".to_string());
+    if let Some(side) = s
+        .fields
+        .iter()
+        .find(|f| f.name == "side")
+        .and_then(|f| f.value.as_ref())
+        .and_then(|vs| ev.string(vs))
+    {
+        scope.push(':');
+        scope.push_str(&side);
     }
+    identity = identity.with_scope(scope);
 
     let kind = match &s.subtype {
         Some(sub) if !sub.is_empty() => NodeKind(sub.clone()),
@@ -928,6 +1007,12 @@ fn exec_synthesize_one(
             }
             ctx.ws.patch_properties(node_id, json!({ "sources": sources }));
         }
+    }
+
+    // Cross-sub-project bridge: "the node I just built" and "the same thing as declared by another
+    // sub-project" are two nodes, so the equivalence becomes an edge.
+    if let Some(bridge) = &s.bridge {
+        link_bridge(ctx, rule, bridge, &identity, node_id, phase, s.confidence);
     }
 
     // fields
@@ -2509,6 +2594,7 @@ mod tests {
                 value_fallback: None,
             },
             fields: vec![],
+            bridge: None,
             link: Some(LinkSpec {
                 kind: EdgeKind("PublishesTo".to_string()),
                 to: None,

@@ -85,17 +85,14 @@ impl ViewService {
         for spec in &self.views.registry().perspectives {
             let available = match (&spec.mode, &spec.node_kind) {
                 (gt_domain::model::ViewMode::Object, Some(kind)) => {
-                    // Perspectives with a side filter: count precisely by `kind + sides` (frontend/backend
-                    // cache split, or the set-semantics `side_any` form).
-                    let accepted = spec.accepted_sides();
-                    if !accepted.is_empty() {
-                        let sides: Vec<String> =
-                            accepted.iter().map(|s| s.to_string()).collect();
+                    // Perspectives with a side filter: count precisely by `kind + side` (frontend/backend
+                    // cache split, frontend contract vs backend contract, …).
+                    if let Some(side) = spec.accepted_side() {
                         self.store
                             .count_nodes(
                                 project_id,
                                 Some(&gt_domain::model::NodeKind(kind.clone())),
-                                &sides,
+                                Some(side),
                             )
                             .unwrap_or(0)
                     } else {
@@ -156,10 +153,10 @@ impl ViewService {
             nodes.retain(|n| n.sub_project_id == Some(sid));
         }
 
-        // Filter by side: split nodes that share a kind but differ in side (e.g. frontend/backend cache) into
-        // their own perspectives. Nodes with no side evidence, or with none of the accepted parties, are dropped;
-        // a perspective declaring neither `side` nor `side_any` applies no filtering.
-        if !spec.accepted_sides().is_empty() {
+        // Filter by side: split nodes that share a kind but differ in owner (e.g. frontend/backend cache, or the
+        // two sub-projects' own contract nodes) into their own perspectives. A perspective declaring no `side`
+        // applies no filtering.
+        if spec.accepted_side().is_some() {
             nodes.retain(|n| spec.matches_sides(&n.properties));
         }
 
@@ -1601,8 +1598,8 @@ impl ViewService {
             limit: Some(2000),
             offset: Some(0),
         })?;
-        // Filter by side (frontend/backend cache split, or the "any of these parties" form).
-        if !spec.accepted_sides().is_empty() {
+        // Filter by side (frontend/backend cache split, frontend contract vs backend contract, …).
+        if spec.accepted_side().is_some() {
             nodes.retain(|n| spec.matches_sides(&n.properties));
         }
 

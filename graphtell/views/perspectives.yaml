@@ -13,7 +13,7 @@
 # Object perspectives are **folded by default**: only "semantic nodes" (Table / HttpContract /
 # ConfigKey / I18nKey / Event / Queue / Cache / Topic / Schedule…) and "semantic edges" (HandledBy /
 # CallsHttp / Triggers / PublishesTo / ReadsDb / WritesDb / MapsTo / ReadsConfig / ReadsCache /
-# ResolvesTo) are rendered; the authority for that decision is `gt-domain/src/model/kinds.rs`. Syntax
+# ResolvesToContract) are rendered; the authority for that decision is `gt-domain/src/model/kinds.rs`. Syntax
 # nodes (Method / CallSite / Class…) are folded and can be expanded by clicking to inspect the call chain.
 #
 # Out-of-process mediators (Event / Queue / Cache / Topic) are each their own kind, and perspectives
@@ -29,18 +29,15 @@
 # Inspector on the right — asset / structural nodes such as ConfigKey / KeyPattern / Component /
 # SecretLocation have no "single link" semantics.
 #
-# The two ways to filter by side:
-#   side: backend       — at least one party's evidence must be `backend` (see below). Historically it was a
-#                         strict `$.side == "backend"` equality; that reading silently dropped every node
-#                         several parties had written, because those carry more than one label.
-#   side_any: [backend] — same thing written explicitly; prefer this form for anything a **bridge** node can
-#                         appear in (a `HttpContract` is written by both the front end and the back end).
+# Filtering by side:
+#   side: backend — the node must be **owned** by the backend (`$.side == "backend"`).
 #
-# Why both are set semantics: the pipeline accumulates each party's claim into a sorted `sides` set and turns
-# the scalar `side` into a mere display label — one party ⇒ that party, several ⇒ `bridge`. So "the backend
-# participates" cannot be phrased as "the label equals backend": a bridged node would answer no and
-# vanish. Rows written by an older pipeline carry only the scalar and still match, so enabling a side filter
-# never forces a rebuild. Nodes with no side evidence at all match neither form, as before.
+# `side` is one scalar per node: a node belongs to exactly one sub-project, so exactly one party declares it and
+# there is nothing to accumulate. It used to be a `sides` set with a derived `bridge` label, because one node
+# could carry several parties' evidence (a contract bridge merged the front end's and the back end's writes onto
+# one node) and the label must never depend on which rule happened to run last. Sharing is gone — the two parties
+# build their own nodes, joined by a `ResolvesTo` edge — so the set had nothing left to express and was removed.
+# Nodes with no side evidence at all match no party, as before.
 
 perspectives:
   # ---------------- object perspectives (single link) ----------------
@@ -48,6 +45,11 @@ perspectives:
     label: Route perspective
     mode: object
     node_kind: HttpContract
+    # Two sub-projects naming the same endpoint build two nodes now, so without a side filter the dropdown would
+    # list the same `POST /api/x` twice (once per owner). This perspective is the **backend's** declaration; the
+    # front end's own contracts have their own perspective below, which is also where a call with no matching
+    # route ("phantom call") shows up instead of being hidden.
+    side: backend
     # After folding the syntax layer, the graph handed to the layout for the route view is an
     # **approximate star** (almost every edge touches the centre; only a few inter-table ForeignKeys
     # are leaf-to-leaf edges) — for a star, top-down layering has no advantage: the
@@ -64,6 +66,24 @@ perspectives:
     depth: 4
     collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
     description: One HTTP contract at the centre — who handles it, who calls it, which tables it reads and writes
+
+  # The front end's half of the bridge: the contract **it** synthesises from `axios.get('/api/x')` /
+  # `request.get('/api/x')`. Same kind, other owner — hence its own perspective, exactly like the backend/frontend
+  # split for cache and events.
+  #
+  # What makes it worth a perspective of its own rather than a filter hiding it: a front-end contract with **no**
+  # `ResolvesTo` edge is a call to an endpoint this repository does not declare (a phantom call / a typo / a
+  # third-party API), and a backend contract with none is a dead endpoint. Both are only visible if each side's
+  # nodes are listed somewhere.
+  - id: frontend_call
+    label: Front-end call perspective
+    mode: object
+    node_kind: HttpContract
+    side: frontend
+    layout: radial
+    depth: 3
+    collapsed_kinds: [Method, Function, CallSite, Property, Const, Namespace, File, Directory, Interface, Trait, Class, HttpContract]
+    description: One endpoint as the front end calls it — which call sites reach it, and whether it resolves to a backend route
 
   - id: table
     label: Table perspective

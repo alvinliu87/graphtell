@@ -934,7 +934,8 @@ fn collect_invocation(call: Node, ctx: &mut Ctx, owner: &str, is_new: bool) {
 /// The URL is not limited to a pure literal: the **concatenated** form (`'v2/invoice/detail/' + id`) and the
 /// **template string** form (`` `v2/order/invoice_detail/${id}` ``) also have a statically determinable shape —
 /// non-literal segments fold into `:param` placeholders, and together with FKB's `param_wildcard` normalisation
-/// they converge on the same `ContractId` as a backend route's `/:id`.
+/// they carry the same shape as a backend route's `/:id` — which is what lets the frontend's contract find its
+/// `ResolvesToContract` counterpart instead of fabricating a separate endpoint.
 /// Only when the **first segment** is a variable (`BASE + '/api' + url`) is the whole thing abandoned (returns
 /// `None`): a URL whose prefix cannot be anchored has a shape that would be pure guesswork.
 
