@@ -1521,6 +1521,118 @@ return [
         assert!(paths.contains(&"db.host"), "nested keys must be expanded into dotted paths: {paths:?}");
         assert!(paths.contains(&"debug"), "{paths:?}");
     }
+
+    /// PHP 8's nullsafe operator: `$u?->getAddress()` shares the `member_call_expression` branch and must reach
+    /// the graph like any other member call — otherwise a modern code base silently loses every call behind `?->`.
+    #[test]
+    fn nullsafe_member_call_is_collected_like_a_member_call() {
+        let src = "<?php
+class M {
+    public function run($u) {
+        $u?->getAddress();
+    }
+}
+";
+        let facts = PhpParser::new().unwrap().parse("m.php", src).unwrap();
+        let c = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("getAddress"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "a nullsafe member call must be captured: {:?}",
+                    facts.call_sites.iter().map(|c| &c.callee_text).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(c.receiver.as_deref(), Some("$u"));
+        assert_eq!(c.callee_text, "$u->getAddress", "`?->` normalises to the same callee shape as `->`");
+    }
+
+    /// `snippet_of` had no coverage, and it is the one place that **slices a string by byte index** — an
+    /// abnormal (very long) line must be truncated at a UTF-8 boundary rather than panicking, while ordinary
+    /// lines are carried verbatim (the UI shows this text for human verification).
+    #[test]
+    fn snippet_is_truncated_at_a_utf8_boundary_and_short_lines_are_kept() {
+        let long = "中".repeat(60); // 180 bytes — far past the 160-byte cap
+        let src = format!(
+            "<?php
+class M {{
+    public function run($o) {{
+        $o->m('{long}');
+        $o->short('abc');
+    }}
+}}
+"
+        );
+        let facts = PhpParser::new().unwrap().parse("m.php", &src).unwrap();
+
+        let long_line = format!("$o->m('{long}');");
+        let long_call = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("m"))
+            .unwrap_or_else(|| panic!("the `m` call must be captured: {:?}", facts.call_sites));
+        let snippet = long_call.snippet.as_deref().expect("a call site carries its line's snippet");
+        assert!(snippet.len() < long_line.len(), "an over-long line must be truncated, not carried whole");
+        assert!(snippet.ends_with('…'), "a truncated snippet is marked with an ellipsis: {snippet}");
+        assert!(
+            snippet.len() <= 160 + '…'.len_utf8(),
+            "the kept prefix is capped at 160 bytes, got {} bytes: {snippet}",
+            snippet.len()
+        );
+
+        let short_call = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("short"))
+            .expect("the `short` call must be captured");
+        assert_eq!(
+            short_call.snippet.as_deref(),
+            Some("$o->short('abc');"),
+            "a line under the cap is carried verbatim"
+        );
+    }
+
+    /// `new Foo(1, 'x')` becomes a `new Foo` call site, but its **arguments are dropped**: `args_of` reads the
+    /// argument list only through `child_by_field_name("arguments")`, and tree-sitter-php exposes that node on
+    /// `object_creation_expression` merely as a child (kind `arguments`), not as a named field — member and
+    /// scoped calls *do* have the field, hence the asymmetry below.
+    ///
+    /// Pinned as-is rather than adjusted: if `args_of` later falls back to locating the `arguments` child by
+    /// kind, this assertion is the one to update. A rule reading `arg:0` of a `new X(...)` currently matches
+    /// nothing.
+    #[test]
+    fn object_creation_becomes_a_call_site_and_pins_its_missing_arguments() {
+        let src = "<?php
+class M {
+    public function run($o) {
+        $a = new Foo(1, 'x');
+        $o->m(1, 'x');
+    }
+}
+";
+        let facts = PhpParser::new().unwrap().parse("m.php", src).unwrap();
+        let new_call = facts
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text == "new Foo")
+            .unwrap_or_else(|| panic!("`new Foo` must become a call site: {:?}", facts.call_sites));
+        assert_eq!(new_call.method.as_deref(), Some("Foo"));
+        assert!(new_call.receiver.is_none(), "a construction has no receiver: {:?}", new_call.receiver);
+        assert!(
+            new_call.args.is_empty(),
+            "pinned: object-creation arguments are currently dropped by `args_of`, got {:?}",
+            new_call.args
+        );
+
+        // The contrast that makes it visible: the same arguments on a member call are captured.
+        let member = facts
+            .call_sites
+            .iter()
+            .find(|c| c.method.as_deref() == Some("m"))
+            .expect("the member call must be captured");
+        assert_eq!(member.args.len(), 2, "a member call keeps its arguments: {:?}", member.args);
+    }
 }
 
 /// Extract "equality comparisons of a signature value": `$sign == $ipay_signature` /

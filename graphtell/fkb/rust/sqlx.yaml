@@ -1,0 +1,71 @@
+# SQLx framework knowledge
+#
+# SQLx database access is done through macros that embed SQL: `sqlx::query!` / `query_as!` / `query_scalar!`
+# (reads) and `execute!` (writes). The Rust parser captures these as call sites with a bare macro name
+# (`query!` / `execute!` …), so we synthesise an `ExternalSystem(Database)` node and hang `ReadsDb` / `WritesDb`
+# edges off the calling method — the same "out-of-process mediator" shape as the front-end's
+# `localStorage` -> `ExternalSystem(Cache)`.
+
+id: sqlx
+display_name: SQLx
+language: rust
+version_hint: "*"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: Cargo.toml
+    dependency: sqlx
+    confidence: 0.95
+
+exclude_rules:
+  - id: target-dir
+    glob: "target/**"
+
+root_rules:
+  - id: source-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: src
+    confidence: 1.0
+    fallbacks:
+      - src
+
+rules:
+  # ===== P5 Synthesize: database read =====
+  - id: sqlx-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "query!|query_as!|query_scalar!"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Database
+          identity:
+            kind: Named
+            value: { literal: "DB" }
+          link:
+            kind: ReadsDb
+            direction: incoming
+          confidence: 0.85
+
+  # ===== P5 Synthesize: database write =====
+  - id: sqlx-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "execute!"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Database
+          identity:
+            kind: Named
+            value: { literal: "DB" }
+          link:
+            kind: WritesDb
+            direction: incoming
+          confidence: 0.85

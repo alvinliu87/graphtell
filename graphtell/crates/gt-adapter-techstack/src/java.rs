@@ -176,6 +176,100 @@ mod tests {
             .is_none());
     }
 
+    /// `serves` is not overridden here — the source comment at the impl states that is deliberate ("no other
+    /// language tag shares the Java parser"). That claim was never asserted: a JVM-ecosystem tag must NOT be
+    /// served by this adapter, or a Kotlin / Scala / Groovy file would silently pick up Maven / Gradle rules.
+    #[test]
+    fn serves_only_the_java_language_tag() {
+        let a = JavaTechStackAdapter::new();
+        assert!(a.serves(&Language::new(Language::JAVA)), "java must be served");
+        for other in ["kotlin", "scala", "groovy", "typescript", ""] {
+            assert!(!a.serves(&Language::new(other)), "`{other}` must not be served by the Java adapter");
+        }
+    }
+
+    /// The documented shapes: a bare artifact (`implementation 'junit'`) keeps its own name, and the same
+    /// artifact declared in two configurations collapses to one entry (the dedup contract).
+    #[test]
+    fn gradle_dedupes_and_handles_a_bare_artifact() {
+        assert_eq!(deps_from_gradle("implementation 'junit'"), vec!["junit".to_string()], "a bare artifact keeps its own name");
+        assert_eq!(
+            deps_from_gradle("implementation 'a:b:1'\ntestImplementation \"a:b:2\""),
+            vec!["b".to_string()],
+            "one artifact declared in two configurations must be reported once"
+        );
+    }
+
+    /// Coordinate shapes, pinned as-is. `deps_from_gradle` takes `parts[parts.len() - 2]`, which is the
+    /// artifact **only for the 3-segment `group:artifact:version` form**:
+    /// * `g:a:v`            -> `a`  (correct)
+    /// * `org.example:lib`  -> `org.example`  — the **group**, though the doc comment promises the artifact
+    /// * `g:a:jar:1.0`      -> `jar`          — the classifier, same root cause
+    ///
+    /// The artifact of a Gradle coordinate is the segment at index 1 in every form above, so
+    /// `parts.get(1)` (falling back to `parts[0]` for a bare name) would match the documented intent.
+    /// Pinned rather than fixed; if it is corrected, these two assertions are the ones to update.
+    #[test]
+    fn gradle_coordinate_shapes_are_pinned_as_is() {
+        assert_eq!(
+            deps_from_gradle("implementation 'com.example:lib:1.0'"),
+            vec!["lib".to_string()],
+            "the 3-segment form is what the code is right about"
+        );
+        assert_eq!(
+            deps_from_gradle("implementation 'org.example:lib'"),
+            vec!["org.example".to_string()],
+            "pinned: a 2-segment coordinate currently yields the group, not the artifact"
+        );
+        assert_eq!(
+            deps_from_gradle("implementation 'g:a:jar:1.0'"),
+            vec!["jar".to_string()],
+            "pinned: a 4-segment coordinate currently yields the classifier"
+        );
+    }
+
+    /// `deps_from_pom` is deliberately broad — FKB detectors match by substring (`data-jpa`, `hibernate`), so
+    /// every `<artifactId>` counts, including the project's own and plugin ones. It is also the one extractor
+    /// that does **not** dedupe (unlike the Gradle paths).
+    ///
+    /// Also pinned: `manifest_dependencies("pom.xml", "")` is `Some(empty)`, not `None` — "recognised and
+    /// empty" must not fall back to the kernel's plain-text probe.
+    #[test]
+    fn pom_extraction_is_broad_keeps_duplicates_and_never_falls_back() {
+        let pom = r#"<project><artifactId>my-app</artifactId>
+          <dependency><artifactId>hibernate-core</artifactId></dependency>
+          <build><plugin><artifactId>maven-surefire</artifactId></plugin></build></project>"#;
+        let deps = deps_from_pom(pom);
+        assert!(deps.contains(&"my-app".to_string()), "the project's own artifactId is included: {deps:?}");
+        assert!(deps.contains(&"maven-surefire".to_string()), "plugin artifactIds are included: {deps:?}");
+        assert!(deps.contains(&"hibernate-core".to_string()));
+
+        assert_eq!(
+            deps_from_pom("<artifactId>x</artifactId><artifactId>x</artifactId>"),
+            vec!["x".to_string(), "x".to_string()],
+            "unlike the Gradle paths, the POM path does not dedupe"
+        );
+
+        let a = JavaTechStackAdapter::new();
+        assert_eq!(
+            a.manifest_dependencies("pom.xml", ""),
+            Some(Vec::new()),
+            "an empty but recognised manifest returns Some(empty), not None (None would trigger the text probe)"
+        );
+    }
+
+    /// Lock-file lines are `group:name:version=constraint`: a line with no `:` carries no artifact and must be
+    /// skipped, and the same artifact pinned twice collapses to one entry.
+    #[test]
+    fn gradle_lockfile_skips_malformed_lines_and_dedupes() {
+        let lock = "nocolonline\ncom.example:lib:1.0=r\ncom.example:lib:2.0=r\n\n";
+        assert_eq!(
+            deps_from_gradle_lockfile(lock),
+            vec!["lib".to_string()],
+            "a line without a `:` is skipped and a repeated artifact is reported once"
+        );
+    }
+
     #[test]
     fn no_i18n_pattern_for_java() {
         assert!(JavaTechStackAdapter::new().i18n_path_patterns().is_empty());

@@ -394,3 +394,123 @@ fn field_string(args: &str, key: &str) -> Option<String> {
     }
     first_string(rest)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::syntax::FactValue;
+
+    /// `decode_string` is the decoder every literal answer goes through: interpolation is not statically
+    /// evaluable, and a missing closing quote / empty content must degrade to `None` rather than yielding a
+    /// partial or wrong string (downstream that would become a wrong identity).
+    #[test]
+    fn decode_string_handles_quotes_and_escapes_and_rejects_unevaluable() {
+        assert_eq!(decode_string("\"x\""), Some("x".to_string()));
+        assert_eq!(decode_string("'x'"), Some("x".to_string()));
+        assert_eq!(decode_string("`plain`"), Some("plain".to_string()), "a template without interpolation is a literal");
+        assert_eq!(decode_string("`a${b}`"), None, "interpolation cannot be evaluated statically");
+        assert_eq!(decode_string("'x"), None, "a missing closing quote is not a literal");
+        assert_eq!(decode_string("''"), None, "empty content carries no fact");
+        assert_eq!(decode_string("\"\""), None);
+        // Minimal unescaping.
+        assert_eq!(decode_string("\"a\\\"b\""), Some("a\"b".to_string()));
+        assert_eq!(decode_string("'a\\'b'"), Some("a'b".to_string()));
+        assert_eq!(decode_string("'a\\\\b'"), Some("a\\b".to_string()));
+    }
+
+    /// `first_string`: the first literal inside a fragment; a template holding `${` is not evaluable.
+    #[test]
+    fn first_string_picks_the_first_literal() {
+        assert_eq!(first_string("foo('x', 3)"), Some("x".to_string()));
+        assert_eq!(first_string("foo(3, 'x')"), Some("x".to_string()));
+        assert_eq!(first_string("foo(3, 4)"), None, "no string literal at all");
+        assert_eq!(first_string("bar(`a${b}`)"), None, "a template with interpolation is not evaluable");
+    }
+
+    /// `field_string` (the HTTP `method` lookup) differs from `field_expr` in that the value **must** be a string
+    /// literal, so `url: url` can never overrun into a later string value — with the same `base_url:` prefix rule.
+    #[test]
+    fn field_string_requires_a_string_literal_and_respects_the_prefix_rule() {
+        assert_eq!(field_string("{ method: 'post' }", "method").as_deref(), Some("post"));
+        assert_eq!(field_string("{ url: '/a', method: 'GET' }", "method").as_deref(), Some("GET"));
+        assert_eq!(
+            field_string("url: url, method: 'get'", "method").as_deref(),
+            Some("get"),
+            "a variable value must stop at the key instead of overrunning into a later literal"
+        );
+        assert_eq!(
+            field_string("base_url: '/x', url: '/y'", "url").as_deref(),
+            Some("/y"),
+            "`base_url:` must not be taken for `url:`"
+        );
+        assert_eq!(field_string("foo: 123", "foo"), None, "a non-string value is not a literal");
+        assert_eq!(field_string("bar: 'x'", "key"), None, "an absent key");
+    }
+
+    /// `first_arg_expr`: the text of the **first** top-level argument — how `request.get(url, data)` and
+    /// `fetch(url, opts)` anchor their URL.
+    #[test]
+    fn first_arg_expr_takes_the_first_argument_only() {
+        assert_eq!(first_arg_expr("foo('a/' + id, data)").as_deref(), Some("'a/' + id"));
+        assert_eq!(first_arg_expr("f('a', ('b'))").as_deref(), Some("'a'"));
+        assert_eq!(first_arg_expr("foo()"), None, "no arguments ⇒ nothing to anchor on");
+        assert_eq!(first_arg_expr("foo"), None, "no parentheses at all");
+    }
+
+    /// `line_snippet` is what the view shows as the call site: an off-by-one here points at the wrong code.
+    #[test]
+    fn line_snippet_returns_the_line_the_offset_sits_on() {
+        let src = "line one\nfunction f() {\n  g();\n}\n";
+        assert_eq!(line_snippet(src, src.find("g();").unwrap()).as_deref(), Some("g();"), "the owning line, trimmed");
+        assert_eq!(line_snippet(src, src.find("function").unwrap()).as_deref(), Some("function f() {"));
+        assert_eq!(line_snippet(src, 0).as_deref(), Some("line one"));
+        // A byte offset past the end clamps rather than panicking (no unwrap of a byte slice).
+        assert_eq!(line_snippet(src, src.len() + 100), None);
+        assert_eq!(line_snippet("", 0), None, "empty source has no lines");
+    }
+
+    /// The `<script>` block of a Vue SFC, padded with leading newlines so line numbers stay aligned — and the two
+    /// rejection paths (no block / unterminated block), which are what keeps a non-SFC file from being misread.
+    #[test]
+    fn extract_vue_script_pads_lines_and_rejects_missing_or_unterminated_blocks() {
+        let src = "<template>\n<div/></template>\n<script>\nconst a = 1;\n</script>\n";
+        let got = extract_vue_script(src).expect("a well-formed SFC has a script block");
+        assert!(got.contains("const a = 1;"), "the script body is returned: {got:?}");
+        assert!(
+            got.starts_with("\n\n\n"),
+            "the leading padding keeps the inner line numbers aligned with the original file: {got:?}"
+        );
+
+        assert!(extract_vue_script("<template/>\n<style/>").is_none(), "no <script> block ⇒ None");
+        assert!(extract_vue_script("<script>const a = 1;").is_none(), "an unterminated <script> ⇒ None");
+    }
+
+    /// `literal_args` — the ordinary (non-HTTP) argument path that feeds FKB's `{ arg: 0 }` identity: literals
+    /// fold into their value, everything else into `Unknown` so a variable can never become identity.
+    #[test]
+    fn literal_args_folds_each_argument_into_a_fact_value() {
+        let a = literal_args("('x', 3, true)");
+        assert!(matches!(a[0], FactValue::String(ref s) if s == "x"));
+        assert!(matches!(a[1], FactValue::Int(3)));
+        assert!(matches!(a[2], FactValue::Bool(true)));
+
+        // A concatenation / a bare variable is not statically determinable ⇒ Unknown.
+        let b = literal_args("('v2/' + id, data)");
+        assert!(matches!(b[0], FactValue::Unknown(_)), "got: {b:?}");
+        assert!(matches!(b[1], FactValue::Unknown(_)), "got: {b:?}");
+
+        // Array / object literals fold recursively.
+        match literal_args("([1, 'a'])").first() {
+            Some(FactValue::Array(items)) => assert_eq!(items.len(), 2),
+            other => panic!("an array literal must fold into Array: {other:?}"),
+        }
+        match literal_args("({a: 1})").first() {
+            Some(FactValue::Array(items)) => assert_eq!(items[0].0, "a"),
+            other => panic!("an object literal must fold into a key-value Array: {other:?}"),
+        }
+
+        // No arguments ⇒ empty.
+        assert!(literal_args("()").is_empty());
+        assert!(literal_args("( )").is_empty());
+    }
+}

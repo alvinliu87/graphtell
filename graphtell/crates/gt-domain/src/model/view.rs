@@ -918,4 +918,36 @@ mod tests {
         assert_eq!(dup.by_id("first").map(|p| p.id.as_str()), Some("first"));
         assert!(dup.by_id("second").is_some());
     }
+
+    /// The three `#[serde(rename_all = "snake_case")]` enums must reject anything that is not an exact known
+    /// spelling — a config typo or a renamed variant would otherwise silently degrade to a default layout / mode
+    /// and a wrong canvas, with no error to surface it. The round-trip tests above only pin the *valid* spellings.
+    #[test]
+    fn enum_variants_reject_unknown_and_misspelled() {
+        // `ViewMode`: exactly `object` / `aggregate`.
+        assert!(serde_json::from_value::<ViewMode>(json!("object")).is_ok());
+        assert!(serde_json::from_value::<ViewMode>(json!("aggregate")).is_ok());
+        for bad in ["flow", "Object", "AGGREGATE", "objectx", ""] {
+            assert!(serde_json::from_value::<ViewMode>(json!(bad)).is_err(), "{bad} is not a ViewMode");
+        }
+
+        // `LayoutMode`: the six known snake_case spellings; a capitalised or made-up one errors.
+        for bad in ["grid", "Radial", "LAYOUT", "force", "flow", ""] {
+            assert!(serde_json::from_value::<LayoutMode>(json!(bad)).is_err(), "{bad} is not a LayoutMode");
+        }
+
+        // `GroupBy`: `node_kind` / `sub_project` / `{"property": "x"}` are valid; a bare unknown string, a
+        // capitalised spelling, a non-string property, or a wrong key all error rather than silently becoming `NodeKind`.
+        assert!(serde_json::from_value::<GroupBy>(json!("node_kind")).is_ok());
+        assert!(serde_json::from_value::<GroupBy>(json!("sub_project")).is_ok());
+        assert!(serde_json::from_value::<GroupBy>(json!({ "property": "domain" })).is_ok());
+        for bad in [
+            json!("weird"),
+            json!("NodeKind"),
+            json!({ "property": 5 }),
+            json!({ "other": "x" }),
+        ] {
+            assert!(serde_json::from_value::<GroupBy>(bad.clone()).is_err(), "{bad} is not a GroupBy");
+        }
+    }
 }

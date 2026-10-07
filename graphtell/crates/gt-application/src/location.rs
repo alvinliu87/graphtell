@@ -107,6 +107,13 @@ mod tests {
         assert_eq!(absolute("app/Order.php", None), "app/Order.php");
     }
 
+    /// A degenerate empty stored path joins to the root itself (with a trailing separator on Unix); pin this so a
+    /// future change that special-cases empty input stays intentional.
+    #[test]
+    fn absolute_joins_empty_relative_path_to_root() {
+        assert_eq!(absolute("", Some(Path::new("/root"))), "/root/");
+    }
+
     // ---- node_location() ----
 
     #[test]
@@ -258,5 +265,38 @@ mod tests {
         let (path, line) = node_location(&n, &HashMap::new(), None);
         assert_eq!(path, Some("sql/a.sql".to_string()));
         assert_eq!(line, Some(3));
+    }
+
+    /// A synthetic location whose `file` is a non-string (e.g. a numeric id from a malformed probe) must not be
+    /// coerced into a bogus path: `as_str().unwrap_or_default()` yields `""`, so it degrades to line-only `(None, line)`.
+    #[test]
+    fn synthetic_location_file_non_string_degrades_to_line_only() {
+        let mut n = tnode(14, "Table", "x", None, Some("Table:x"));
+        n.properties = serde_json::json!({ "locations": [{ "file": 123, "line": 5 }] });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, None, "non-string `file` must not become a path");
+        assert_eq!(line, Some(5));
+    }
+
+    /// The first synthetic location entry may carry neither `file` nor `line` (a stale `{kind:"x"}` probe); both
+    /// lookups miss, so the result is `(None, None)` — not an empty-string path.
+    #[test]
+    fn synthetic_first_location_has_neither_file_nor_line() {
+        let mut n = tnode(15, "Table", "x", None, Some("Table:x"));
+        n.properties = serde_json::json!({ "locations": [{ "kind": "definition" }] });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, None);
+        assert_eq!(line, None);
+    }
+
+    /// A synthetic location whose `line` is a non-integer (e.g. a string from a malformed probe) must not be
+    /// coerced into a bogus line; `as_u64()` returns `None`, so the line is `None`.
+    #[test]
+    fn synthetic_location_line_non_numeric_yields_none_line() {
+        let mut n = tnode(16, "Table", "x", None, Some("Table:x"));
+        n.properties = serde_json::json!({ "locations": [{ "file": "sql/a.sql", "line": "ten" }] });
+        let (path, line) = node_location(&n, &HashMap::new(), Some(Path::new("/root")));
+        assert_eq!(path, Some("/root/sql/a.sql".to_string()));
+        assert_eq!(line, None, "non-integer `line` must not be exposed");
     }
 }

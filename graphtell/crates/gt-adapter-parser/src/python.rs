@@ -1130,6 +1130,113 @@ def get_user(user_id: int, db=Depends(get_db)):
 
     /// An absolute import must be returned **unchanged** — composing it with a parent package would produce a
     /// module that does not exist. Levels beyond the root are clamped rather than panicking.
+    /// The `literal_value` arms the existing tests do not reach: numpy-style `True` / `False` / `None`, a
+    /// **tuple** (keyed by index exactly like a list), a numeric literal (carried as its **source text**, not as
+    /// `Int`/`Float`, because FKB matches arguments textually), and a bare name / attribute.
+    ///
+    /// Note: a bare identifier / attribute yields `Unknown(Some(text))` — it *does* carry the source text, which
+    /// is wider than what the doc comment on `literal_value` states ("without the source text"). Pinned as-is;
+    /// if it is ever tightened to `Unknown(None)`, this is the assertion to update.
+    #[test]
+    fn literal_value_maps_every_remaining_kind() {
+        let facts = parse_src(
+            "app/t.py",
+            r#"def run(conf, x):
+    helper(1.5)
+    helper(True)
+    helper(False)
+    helper(None)
+    helper((1, 2))
+    helper(User)
+    helper(conf.key)
+"#,
+        );
+        let calls: Vec<&CallSiteFact> =
+            facts.call_sites.iter().filter(|c| c.method.as_deref() == Some("helper")).collect();
+        assert_eq!(calls.len(), 7, "every helper call must be captured");
+        let arg = |i: usize| calls[i].args.first().cloned();
+
+        assert_eq!(arg(0), Some(FactValue::String("1.5".into())), "a numeric literal keeps its source text");
+        assert_eq!(arg(1), Some(FactValue::Bool(true)), "Python's `True` is an uppercase boolean");
+        assert_eq!(arg(2), Some(FactValue::Bool(false)));
+        assert_eq!(arg(3), Some(FactValue::Null), "Python's `None` is the null literal");
+        assert_eq!(
+            arg(4),
+            Some(FactValue::Array(vec![
+                ("0".to_string(), FactValue::String("1".into())),
+                ("1".to_string(), FactValue::String("2".into())),
+            ])),
+            "a tuple is keyed by index, exactly like a list"
+        );
+        assert_eq!(arg(5), Some(FactValue::Unknown(Some("User".into()))), "a bare name is not a literal");
+        assert_eq!(arg(6), Some(FactValue::Unknown(Some("conf.key".into()))), "an attribute chain is not a literal");
+    }
+
+    /// `snippet_of` had no coverage, and it is the one place that **slices a string by byte index** — an
+    /// abnormal (very long) line must be truncated at a UTF-8 boundary rather than panicking, while ordinary
+    /// lines are carried verbatim.
+    #[test]
+    fn snippet_is_truncated_at_a_utf8_boundary_and_short_lines_are_kept() {
+        let long = "中".repeat(60); // 180 bytes — far past the 160-byte cap
+        let src = format!("def run():\n    helper('{long}')\n    helper('abc')\n");
+        let facts = parse_src("app/s.py", &src);
+        let calls: Vec<&CallSiteFact> =
+            facts.call_sites.iter().filter(|c| c.method.as_deref() == Some("helper")).collect();
+        assert_eq!(calls.len(), 2, "both calls must be captured");
+
+        let long_line = format!("helper('{long}');");
+        let snippet = calls[0].snippet.as_deref().expect("a call site carries its line's snippet");
+        assert!(snippet.len() < long_line.len(), "an over-long line must be truncated, not carried whole");
+        assert!(snippet.ends_with('…'), "a truncated snippet is marked with an ellipsis: {snippet}");
+        assert!(
+            snippet.len() <= 160 + '…'.len_utf8(),
+            "the kept prefix is capped at 160 bytes, got {} bytes: {snippet}",
+            snippet.len()
+        );
+
+        assert_eq!(
+            calls[1].snippet.as_deref(),
+            Some("helper('abc')"),
+            "a line under the cap is carried verbatim"
+        );
+    }
+
+    /// Two modules exporting the same short name: **every** import fact is still recorded (the facts are the
+    /// audit trail), but the short-name index keeps the **first** binding, so `Repo` resolves to `app.a.Repo` —
+    /// a shadowing import must not silently redirect resolution. Also covers `from x import y as z`.
+    #[test]
+    fn duplicate_short_names_keep_the_first_binding_and_aliases_resolve() {
+        let facts = parse_src(
+            "app/dup.py",
+            r#"from app.a import Repo
+from app.b import Repo
+from app.c import Thing as T
+
+def f(x=Depends(Repo), y=Depends(T)):
+    pass
+"#,
+        );
+        let got: Vec<(&str, Option<&str>)> =
+            facts.imports.iter().map(|i| (i.name.as_str(), i.alias.as_deref())).collect();
+        assert_eq!(
+            got,
+            vec![("app.a.Repo", None), ("app.b.Repo", None), ("app.c.Thing", Some("T"))],
+            "both duplicating imports are recorded, and a from-import alias is kept: {got:?}"
+        );
+
+        let deps: Vec<Option<&str>> = facts
+            .call_sites
+            .iter()
+            .filter(|c| c.method.as_deref() == Some("Depends"))
+            .map(|c| c.entity.as_deref())
+            .collect();
+        assert_eq!(
+            deps,
+            vec![Some("app.a.Repo"), Some("app.c.Thing")],
+            "`Repo` must resolve to the first binding and `T` through its alias: {deps:?}"
+        );
+    }
+
     #[test]
     fn resolve_relative_module_keeps_absolute_and_clamps_level() {
         assert_eq!(

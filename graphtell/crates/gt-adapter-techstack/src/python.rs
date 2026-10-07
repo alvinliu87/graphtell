@@ -210,6 +210,83 @@ fn deps_from_pipfile_lock(text: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
+    /// `setup.py` is one of the four recognised manifests (see `manifest_dependencies`) but had **no test at
+    /// all** — a project that never adopted `pyproject.toml` would silently contribute no dependencies.
+    #[test]
+    fn setup_py_yields_install_requires() {
+        let a = PythonTechStackAdapter::new();
+        let mut deps = a
+            .manifest_dependencies("setup.py", "setup(name='x', install_requires=['flask>=2', 'django'])")
+            .unwrap();
+        deps.sort();
+        assert!(deps.contains(&"flask".to_string()), "a version constraint must be stripped: {deps:?}");
+        assert!(deps.contains(&"django".to_string()));
+        assert!(
+            !deps.contains(&"x".to_string()),
+            "the project's own name comes from `name=`, not from install_requires: {deps:?}"
+        );
+
+        // A `setup.py` with no `install_requires` is still *recognised*: `Some(empty)`, not `None` (which
+        // would hand the file to the kernel's plain-text probe).
+        assert_eq!(a.manifest_dependencies("setup.py", "print(1)"), Some(Vec::new()));
+
+        // Pinned: an **extras** marker truncates the list. `install_requires` is matched with `[^\]]*`, so the
+        // first `]` — the one inside `requests[security]` — ends the body and every later entry is lost.
+        let truncated = a
+            .manifest_dependencies("setup.py", "install_requires=['flask', 'requests[security]', 'django']")
+            .unwrap();
+        assert!(truncated.contains(&"flask".to_string()), "{truncated:?}");
+        assert!(
+            !truncated.contains(&"django".to_string()),
+            "entries after an extras marker are currently lost: {truncated:?}"
+        );
+    }
+
+    /// "Recognised but empty" must stay distinct from "not recognised": `None` means "this stack does not own
+    /// the file" and the kernel then falls back to a whole-file text probe, while `Some(empty)` means the stack
+    /// owns it and it declares nothing.
+    #[test]
+    fn recognised_manifests_return_some_empty_not_none() {
+        let a = PythonTechStackAdapter::new();
+        for f in ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"] {
+            assert_eq!(
+                a.manifest_dependencies(f, ""),
+                Some(Vec::new()),
+                "`{f}` is a recognised Python manifest, so an empty body must be Some(empty)"
+            );
+        }
+        assert_eq!(a.manifest_dependencies("pom.xml", ""), None, "a non-Python manifest must stay None");
+    }
+
+    /// The extractors are **deliberately broad** — the port contract accepts over-detection rather than silence
+    /// ("missing a framework is worse than mistaking one"), so the skip-lists only exclude the project's own
+    /// metadata keys. Pinned so the behaviour is visible instead of silently relied upon; if the skip-lists are
+    /// extended, these are the assertions to update.
+    ///
+    /// * `pyproject.toml` — any `key = {…}` / `key = "…"` at line start counts, so `license = { text = … }` is
+    ///   collected although it is project metadata, not a package;
+    /// * `Pipfile` — the same rule reaches `[scripts]`, so a script name becomes a "dependency";
+    /// * `requirements.txt` — a VCS / URL requirement has no version separator, so the whole spec is taken as
+    ///   the package name.
+    #[test]
+    fn dependency_extraction_is_deliberately_broad() {
+        assert_eq!(
+            deps_from_pyproject("[project]\nname = 'x'\nlicense = { text = 'MIT' }\n"),
+            vec!["license".to_string()],
+            "only name / version / description / readme / python / requires-python are skipped"
+        );
+        assert_eq!(
+            deps_from_pipfile("[packages]\nflask = \"*\"\n[scripts]\nserve = \"python app.py\"\n"),
+            vec!["flask".to_string(), "serve".to_string()],
+            "only python_version / source / requires are skipped, so a script name is collected"
+        );
+        assert_eq!(
+            deps_from_requirements("git+https://github.com/x/y.git\n"),
+            vec!["git+https://github.com/x/y.git".to_string()],
+            "a VCS requirement carries no version separator, so the whole spec becomes the name"
+        );
+    }
+
     #[test]
     fn language_is_python() {
         assert_eq!(PythonTechStackAdapter::new().language().as_str(), "python");

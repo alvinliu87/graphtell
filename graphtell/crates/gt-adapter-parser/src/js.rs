@@ -1586,4 +1586,101 @@ mod tests {
         assert!(!is_http_client_recv("storage"));
         assert!(!is_http_client_recv("$store"));
     }
+
+    /// `export default { ... }` / `module.exports = { ... }` are how front-end config is written (route tables,
+    /// site config): collecting them as `ConfigEntryFact` makes the `kind: config_entry` selector work for the
+    /// front end exactly as it does for PHP's `return [...]`. This whole feature had **no coverage** — only the
+    /// producing push existed, never an assertion.
+    ///
+    /// The rule pinned here is "**scalar leaves only**, joined by `.`": a method / arrow function is deliberately
+    /// not expanded (otherwise every Vue component's `methods` would become config), and a value that cannot be
+    /// evaluated statically is not invented.
+    #[test]
+    fn exported_object_literals_become_config_entries_only_at_scalar_leaves() {
+        let facts = parse_src(
+            r#"export default {
+  name: 'myapp',
+  port: 3000,
+  debug: true,
+  nested: { a: 'x', deep: { b: 'y' } },
+  handler() { return 1; },
+  arrow: () => 1,
+  interp: `hi ${x}`,
+  ref: someVar,
+  "quoted-key": 'v',
+  empty: {},
+};
+"#,
+        );
+        let get = |k: &str| facts.config_entries.iter().find(|e| e.key_path == k).map(|e| e.value.clone());
+
+        // Scalar leaves keep their own kind, nested objects are flattened into dotted key paths.
+        assert_eq!(get("name"), Some(FactValue::String("myapp".into())), "{:?}", facts.config_entries);
+        assert_eq!(get("port"), Some(FactValue::Int(3000)));
+        assert_eq!(get("debug"), Some(FactValue::Bool(true)));
+        assert_eq!(get("nested.a"), Some(FactValue::String("x".into())), "nested objects join their keys with `.`");
+        assert_eq!(get("nested.deep.b"), Some(FactValue::String("y".into())));
+        assert_eq!(get("quoted-key"), Some(FactValue::String("v".into())), "quotes around a key are trimmed");
+
+        // What must NOT appear: non-scalar values and anything not statically known.
+        assert_eq!(get("handler"), None, "a method is not a scalar leaf");
+        assert_eq!(get("arrow"), None, "an arrow function is not a scalar leaf");
+        assert_eq!(get("interp"), None, "an interpolated template is not statically evaluable");
+        assert_eq!(get("ref"), None, "a variable reference must never be guessed into config");
+        assert!(facts.config_entries.iter().all(|e| !e.key_path.starts_with("empty")), "an empty nested object has no leaf");
+        assert!(
+            facts.config_entries.iter().all(|e| !e.key_path.starts_with("list")),
+            "array values are not flattened into entries: {:?}",
+            facts.config_entries
+        );
+
+        // `module.exports = { ... }` (the CommonJS spelling) is collected by the same rule.
+        let cjs = parse_src("module.exports = { timeout: 5, nested2: { k: 'v' } };");
+        let cjs_get = |k: &str| cjs.config_entries.iter().find(|e| e.key_path == k).map(|e| e.value.clone());
+        assert_eq!(cjs_get("timeout"), Some(FactValue::Int(5)), "{:?}", cjs.config_entries);
+        assert_eq!(cjs_get("nested2.k"), Some(FactValue::String("v".into())));
+    }
+
+    /// Only an **object literal** counts as config, and an anonymous default export must not invent a node for
+    /// itself — its body's calls belong to the enclosing scope.
+    #[test]
+    fn non_object_exports_produce_no_config_and_no_anonymous_node() {
+        let f = parse_src("export default function () { return 1; }");
+        assert!(f.config_entries.is_empty(), "a function export is not a config table: {:?}", f.config_entries);
+        assert!(
+            f.declarations.iter().all(|d| d.kind.as_str() != NodeKind::FUNCTION),
+            "an anonymous default export must not build a FUNCTION node: {:?}",
+            f.declarations
+        );
+
+        assert!(
+            parse_src("export default someIdentifier;").config_entries.is_empty(),
+            "exporting an identifier is not config"
+        );
+
+        // No invented node, but the body is still walked so the call is collected with the outer owner.
+        let arrow = parse_src("export default () => { helper(); };");
+        assert!(arrow.declarations.is_empty(), "no node for an anonymous export: {:?}", arrow.declarations);
+        assert!(
+            arrow.call_sites.iter().any(|c| c.callee_text == "helper"),
+            "calls inside an anonymous body still belong to the outer scope: {:?}",
+            arrow.call_sites
+        );
+    }
+
+    /// The decorator branch existing tests never exercise: a **bare** decorator (`@Injectable`, no call form).
+    /// It still becomes a call site so FKB can match it, and it records no `owner_class` (unlike the call form,
+    /// which inherits one from `collect_invocation`).
+    #[test]
+    fn bare_decorator_without_arguments_becomes_a_call_site() {
+        let facts = parse_src("@Injectable\nclass Foo { run() {} }");
+        let d = facts
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text == "@Injectable")
+            .unwrap_or_else(|| panic!("a bare decorator must become a call site: {:?}", facts.call_sites));
+        assert_eq!(d.method.as_deref(), Some("Injectable"), "the decorator name is also the method field");
+        assert!(d.args.is_empty(), "no argument list ⇒ no arguments, got: {:?}", d.args);
+        assert_eq!(d.owner_class, None, "the bare form records no owner_class (the call form does)");
+    }
 }

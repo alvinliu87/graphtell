@@ -995,6 +995,86 @@ mod tests {
 
     // ---- port surface that the kernel depends on but wasn't pinned yet ----
 
+    /// `psr4_roots` only accepts a **string** directory value (`if let Some(d) = dir.as_str()`). PSR-4 also
+    /// allows an array of directories (`"Other\\": ["src/", "lib/"]`), and such an entry is currently dropped
+    /// silently — a project declaring **only** the array form yields no namespaces at all, which leaves
+    /// `enrich_method_ref_spec` with an empty `root_namespaces`. Pinned as the current contract; if array
+    /// support is added, this is the assertion to update.
+    #[test]
+    fn psr4_roots_skips_entries_whose_directory_is_not_a_string() {
+        let dir = std::env::temp_dir().join(format!("phpad_test_psr4_arr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A mixed map: the string entry is kept, the array one is dropped.
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{ "autoload": { "psr-4": { "app\\": "app/", "Other\\": ["src/", "lib/"] } } }"#,
+        )
+        .unwrap();
+        let roots = psr4_roots(&dir, &dir);
+        let namespaces: Vec<&str> = roots.iter().map(|(ns, _)| ns.as_str()).collect();
+        assert_eq!(namespaces, vec!["app"], "only the string-valued entry is kept: {namespaces:?}");
+        assert_eq!(
+            roots[0].1,
+            dir.join("app"),
+            "the directory is resolved against the composer.json's own base"
+        );
+
+        // Array-only: the whole namespace map is lost, not just that one entry.
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{ "autoload": { "psr-4": { "Only\\": ["src/"] } } }"#,
+        )
+        .unwrap();
+        assert!(
+            psr4_roots(&dir, &dir).is_empty(),
+            "an array-only psr-4 map currently yields no namespaces"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Migration scanning must not pick up dependency copies: a `vendor/` (or `node_modules/`, `target/`, …)
+    /// directory can contain a path fragment identical to the real migrations dir, and scanning it would add
+    /// phantom tables / columns from third-party packages to the schema symbol table.
+    #[test]
+    fn scan_migration_files_skips_dependency_directories() {
+        let root = std::env::temp_dir().join(format!("phpad_test_scan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let real = root.join("database/migrations");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(
+            real.join("create_users.php"),
+            "<?php Schema::create('users', function ($t) { $t->string('email'); });",
+        )
+        .unwrap();
+
+        // The same path fragment inside dependency dirs — must be skipped.
+        for dep in ["vendor/pkg/database/migrations", "node_modules/x/database/migrations"] {
+            let d = root.join(dep);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("create_dep.php"),
+                "<?php Schema::create('dep', function ($t) { $t->string('x'); });",
+            )
+            .unwrap();
+        }
+
+        let files =
+            scan_migration_files(&root, &["database/migrations".to_string()], &["php".to_string()]);
+        let rel: Vec<&str> = files.iter().map(|(r, _)| r.as_str()).collect();
+        assert_eq!(
+            rel,
+            vec!["database/migrations/create_users.php"],
+            "only the project's own migration is scanned: {rel:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn language_is_php() {
         assert_eq!(adapter().language().as_str(), "php");

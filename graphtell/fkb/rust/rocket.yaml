@@ -1,0 +1,145 @@
+# Rocket framework knowledge
+#
+# Route attributes (`#[get("/x")]` / `#[post]` / `#[route("/x", method = "GET")]`) are modelled by the Rust
+# parser as **call sites** on the handler method, decorated with a leading `@` (`@get` / `@post` / `@route`),
+# with the path and verb captured as `args`. Same mechanism as Actix-web (see `actix-web.yaml`); Rocket's
+# `#[route]` spells the verb as a named argument (`method = "GET"`), which still lands in `arg: 1`.
+
+id: rocket
+display_name: Rocket
+language: rust
+version_hint: "*"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: Cargo.toml
+    dependency: rocket
+    confidence: 0.95
+
+exclude_rules:
+  - id: target-dir
+    glob: "target/**"
+
+root_rules:
+  - id: source-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: src
+    confidence: 1.0
+    fallbacks:
+      - src
+
+loaders:
+  - id: route-list
+    table: route_list
+    from:
+      kind: builtin
+      name: routes
+      params: {}
+
+route_guards:
+  route_calls:
+    - receiver: "@get"
+      by: callee
+      verb_methods: { "@get": GET }
+      path_arg: 0
+    - receiver: "@post"
+      by: callee
+      verb_methods: { "@post": POST }
+      path_arg: 0
+    - receiver: "@put"
+      by: callee
+      verb_methods: { "@put": PUT }
+      path_arg: 0
+    - receiver: "@delete"
+      by: callee
+      verb_methods: { "@delete": DELETE }
+      path_arg: 0
+    - receiver: "@patch"
+      by: callee
+      verb_methods: { "@patch": PATCH }
+      path_arg: 0
+    - receiver: "@head"
+      by: callee
+      verb_methods: { "@head": HEAD }
+      path_arg: 0
+    - receiver: "@options"
+      by: callee
+      verb_methods: { "@options": OPTIONS }
+      path_arg: 0
+    - receiver: "@route"
+      by: callee
+      verb_methods: { "@route": ANY }
+      path_arg: 0
+
+rules:
+  # ===== P5 Synthesize: HTTP contract (verb attributes) =====
+  - id: http-contract-verb
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "@get|@post|@put|@delete|@patch|@head|@options"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - replace: { from: "@", to: "" }
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9
+
+  # ===== P5 Synthesize: HTTP contract (`#[route]` with explicit verb) =====
+  - id: http-contract-route
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "@route"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              arg: 1
+              require_literal: true
+              normalize:
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9
+
+# ===== P13 Tx: transaction-boundary markers (library knowledge) =====
+tx_calls:
+  - "begin"
+  - "commit"
+  - "rollback"

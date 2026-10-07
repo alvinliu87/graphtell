@@ -13,7 +13,7 @@ use std::cell::RefCell;
 
 use gt_domain::error::Result;
 use gt_domain::model::{
-    CallSiteFact, Declaration, EdgeKind, FieldTypeFact, ImportFact, InheritanceFact,
+    CallSiteFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact, InheritanceFact,
     Language, NodeKind, SyntaxFacts,
 };
 use gt_domain::port::LanguageParser;
@@ -284,13 +284,28 @@ fn walk(node: Node, ctx: &mut Ctx) {
         "call_expression" => {
             let func = node.child_by_field_name("function");
             let (callee_text, receiver, method) = split_callee(func, ctx.src);
+            let args = call_positional_args(node, ctx.src);
+            // Axum-style routing: `Router::route("/x", get(handler))` — the HTTP verb lives in the second
+            // argument (a bare function like `get`). Rewrite the call into `route.<verb>` so the verb is
+            // first-class and the FKB can synthesise an `HttpContract` exactly like actix / rocket attributes.
+            // Neutral: only triggers on a method literally named `route` whose 2nd argument is a bare call.
+            let (callee_text, method) = if method.as_deref() == Some("route") {
+                if let Some(FactValue::String(verb)) = args.get(1) {
+                    let v = verb.to_ascii_lowercase();
+                    (format!("route.{}", v), Some(v))
+                } else {
+                    (callee_text, method)
+                }
+            } else {
+                (callee_text, method)
+            };
             ctx.facts.call_sites.push(CallSiteFact {
                 owner_fqn: ctx.current(),
                 owner_class: ctx.owner_class(),
                 callee_text,
                 receiver,
                 method,
-                args: Vec::new(),
+                args,
                 span: span_of(node),
                 snippet: None,
                 db_table: None,
@@ -300,18 +315,22 @@ fn walk(node: Node, ctx: &mut Ctx) {
             walk_children(node, ctx);
         }
         "macro_invocation" => {
+            // Keep only the final segment of the macro path (`sqlx::query!` -> `query!`) so FKB rules can
+            // match the bare macro name regardless of its crate prefix.
             let mac = node
                 .child_by_field_name("macro")
                 .map(|n| t(n, ctx.src))
                 .unwrap_or_default();
+            let mac = mac.rsplit("::").next().unwrap_or(&mac).to_string();
             let name = format!("{}!", mac);
+            let args = collect_string_literals(node, ctx.src);
             ctx.facts.call_sites.push(CallSiteFact {
                 owner_fqn: ctx.current(),
                 owner_class: ctx.owner_class(),
                 callee_text: name.clone(),
                 receiver: None,
                 method: Some(name),
-                args: Vec::new(),
+                args,
                 span: span_of(node),
                 snippet: None,
                 db_table: None,
@@ -323,9 +342,15 @@ fn walk(node: Node, ctx: &mut Ctx) {
         "attribute_item" => {
             // A `#[derive(Debug)]` / `#[get("/x")]` is modelled as a call site on the decorated item, so FKB
             // can match framework attributes (`#[get]`, `#[route]`, `#[tokio::test]`, …) exactly like an
-            // annotation / decorator in Java / Python.
+            // annotation / decorator in Java / Python. String-literal arguments (the route path, the
+            // `#[route(.., method = "POST")]` verb, …) are captured as `args` so an FKB `Synthesize` rule
+            // can read `path: { arg: 0 }` / `method: { arg: 1 }` exactly like Java / Spring annotations.
+            //
+            // The callee is decorated with a leading `@` (mirroring the TS decorator convention): a Rust
+            // framework attribute `#[get]` would otherwise collide with an ordinary method call `HashMap::get`,
+            // whose name also resolves to `get`. The `@`-prefixed callee is matched verbatim by FKB route rules.
             let raw = t(node, ctx.src);
-            let callee = raw
+            let bare = raw
                 .trim_start_matches('#')
                 .trim_start_matches('[')
                 .trim_end_matches(']')
@@ -333,14 +358,16 @@ fn walk(node: Node, ctx: &mut Ctx) {
                 .next()
                 .unwrap_or("")
                 .to_string();
-            if !callee.is_empty() {
+            if !bare.is_empty() {
+                let callee = format!("@{}", bare);
+                let args = collect_string_literals(node, ctx.src);
                 ctx.facts.call_sites.push(CallSiteFact {
                     owner_fqn: ctx.current(),
                     owner_class: ctx.owner_class(),
                     callee_text: callee.clone(),
                     receiver: None,
                     method: Some(callee),
-                    args: Vec::new(),
+                    args,
                     span: span_of(node),
                     snippet: None,
                     db_table: None,
@@ -395,6 +422,55 @@ fn split_callee(func: Option<Node>, src: &[u8]) -> (String, Option<String>, Opti
         }
         _ => (full.clone(), None, Some(full)),
     }
+}
+
+/// Recursively collect string-literal arguments (quotes stripped) from an attribute / macro body, in
+/// source order. Used so `#[get("/health")]` / `#[route("/x", method = "POST")]` / `info!("hi")` expose their
+/// literals as `CallSiteFact.args` for FKB `Synthesize` rules.
+fn collect_string_literals(node: Node, src: &[u8]) -> Vec<FactValue> {
+    let mut out = Vec::new();
+    collect_string_literals_inner(node, src, &mut out);
+    out
+}
+
+fn collect_string_literals_inner(node: Node, src: &[u8], out: &mut Vec<FactValue>) {
+    if node.kind() == "string_literal" {
+        let s = t(node, src);
+        out.push(FactValue::String(s.trim_matches('"').to_string()));
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_string_literals_inner(child, src, out);
+    }
+}
+
+/// Positional arguments of a call: the i-th argument yields `String(literal)` when it is a string
+/// literal, `String(fn_name)` when it is a bare function call (`get(handler)` — the Axum verb), otherwise
+/// `Unknown`. Mirrors the Java parser's `positional_args` so FKB can read `arg: 0` / `arg: 1`.
+fn call_positional_args(node: Node, src: &[u8]) -> Vec<FactValue> {
+    let mut out = Vec::new();
+    if let Some(args) = node.child_by_field_name("arguments") {
+        let mut cursor = args.walk();
+        for child in args.named_children(&mut cursor) {
+            match child.kind() {
+                "string_literal" => {
+                    let s = t(child, src);
+                    out.push(FactValue::String(s.trim_matches('"').to_string()));
+                }
+                "call_expression" => {
+                    let fn_name = split_callee(child.child_by_field_name("function"), src).2;
+                    if let Some(name) = fn_name {
+                        out.push(FactValue::String(name));
+                    } else {
+                        out.push(FactValue::Unknown(None));
+                    }
+                }
+                _ => out.push(FactValue::Unknown(None)),
+            }
+        }
+    }
+    out
 }
 
 /// Derive a dotted module FQN from a file path: everything after `src/`, `/` and `-` collapsed to `.`,
@@ -563,8 +639,74 @@ pub fn health() -> String { "ok".to_string() }
             "macro must be a call site"
         );
         assert!(
-            f.call_sites.iter().any(|c| c.callee_text == "get"),
-            "the #[get(...)] attribute must be a call site"
+            f.call_sites.iter().any(|c| c.callee_text == "@get"),
+            "the #[get(...)] attribute must be a call site (decorated with @)"
+        );
+    }
+
+    #[test]
+    fn route_attribute_captures_path_and_verb_args() {
+        let src = r#"
+#[get("/health")]
+pub fn health() -> String { "ok".into() }
+
+#[route("/orders", method = "POST")]
+pub fn create_order() {}
+
+pub fn build_routes() {
+    let _app = Router::route("/users", get(list_users));
+}
+"#;
+        let f = RustParser::new()
+            .unwrap()
+            .parse("crates/app/src/routes.rs", src)
+            .unwrap();
+        // `#[get("/health")]` -> callee `@get`, path is arg0.
+        let get = f
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text == "@get")
+            .expect("get attribute must be a call site");
+        assert_eq!(
+            get.args.first(),
+            Some(&FactValue::String("/health".into())),
+            "route path must land in arg0"
+        );
+        // `#[route("/orders", method = "POST")]` -> callee `@route`, path arg0, verb arg1.
+        let route = f
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text == "@route")
+            .expect("route attribute must be a call site");
+        assert_eq!(route.args.first(), Some(&FactValue::String("/orders".into())));
+        assert_eq!(route.args.get(1), Some(&FactValue::String("POST".into())));
+        // Axum `Router::route("/users", get(list_users))` is rewritten to `route.get`.
+        let axum = f
+            .call_sites
+            .iter()
+            .find(|c| c.callee_text == "route.get")
+            .expect("axum route must be rewritten to route.get");
+        assert_eq!(
+            axum.args.first(),
+            Some(&FactValue::String("/users".into())),
+            "axum route path must land in arg0"
+        );
+
+        // An ordinary method call named `get` must NOT be decorated, so it is never mistaken for a route.
+        let src2 = r#"pub fn f(m: std::collections::HashMap<String, i32>) { m.get("k"); }"#;
+        let f2 = RustParser::new()
+            .unwrap()
+            .parse("crates/app/src/x.rs", src2)
+            .unwrap();
+        assert!(
+            !f2.call_sites.iter().any(|c| c.callee_text == "@get"),
+            "HashMap::get must not be mistaken for a route attribute"
+        );
+        assert!(
+            f2.call_sites
+                .iter()
+                .any(|c| c.method.as_deref() == Some("get")),
+            "HashMap::get stays an ordinary call with method `get`"
         );
     }
 
@@ -580,5 +722,85 @@ pub fn health() -> String { "ok".to_string() }
             !fqn.contains("src"),
             "the `src` boundary must be stripped: {fqn}"
         );
+    }
+
+    /// Dog-feeding smoke test: parse real GraphTell Rust source (this module + the app container) through
+    /// the tree-sitter front end. Production Rust uses `async fn`, generics, `impl` blocks, `#[derive]`
+    /// attributes and macros — all of which must survive the walk without panicking and must yield a
+    /// non-empty, well-formed graph. This is the "Rust code gets built into a graph" half of dog feeding;
+    /// recall itself is language-agnostic once the graph exists.
+    /// The pluggable-language surface — the one thing every other adapter pins and this one never did: the
+    /// kernel must learn Rust's notation from the adapter instead of assuming PHP's (`\` / `::` / `$this`).
+    ///
+    /// Two of these are deliberately **undeclared** here, so the inherited trait defaults are what applies:
+    /// `builtin_types` is empty (unlike PHP, Rust supplies no vocabulary to separate `i32` / `usize` / `String`
+    /// from project types) and `bare_field_receivers` is `false` (unlike Java / Python, a receiver is always an
+    /// explicit `self.field`, never a bare identifier). Pinned so neither changes silently.
+    #[test]
+    fn parser_declares_the_rust_notation() {
+        let p = RustParser::new().unwrap();
+        assert_eq!(p.language(), Language::new(Language::RUST));
+        assert_eq!(p.extensions(), &["rs"]);
+        assert_eq!(
+            p.namespace_separator(),
+            &[':'],
+            "a single `:`, not `::` — the kernel splits on one char, so `a::b` reads as two separators"
+        );
+        assert_eq!(p.member_separator(), ".", "a method call is `obj.method()` (path calls use `::`)");
+        assert!(
+            p.manifest_files().contains(&"Cargo.toml") && p.manifest_files().contains(&"Cargo.lock"),
+            "both Cargo files count as manifests: {:?}",
+            p.manifest_files()
+        );
+        assert!(p.exclude_dirs().contains(&"target"));
+        assert!(
+            p.builtin_types().is_empty(),
+            "Rust declares no builtin-type vocabulary, so `i32` / `String` are not separated from project types: {:?}",
+            p.builtin_types()
+        );
+        assert!(!p.bare_field_receivers(), "Rust receivers are never bare identifiers");
+    }
+
+    /// The `module_fqn` branch matrix: `src/` is the boundary, and Rust's three special file names collapse to
+    /// their **directory** instead of becoming a segment (`mod.rs` → the dir itself, `lib.rs` / `main.rs` → the
+    /// crate root). Without this, `api/mod.rs` and `api.rs` would produce two different module FQNs for one
+    /// module.
+    #[test]
+    fn module_fqn_collapses_rust_module_boundaries() {
+        assert_eq!(module_fqn("crates/app/src/api/order.rs"), "api.order", "everything after `src/`");
+        assert_eq!(module_fqn("crates/app/src/api/mod.rs"), "api", "`mod.rs` is its own directory");
+        assert_eq!(module_fqn("crates/app/src/deep/nested/mod.rs"), "deep.nested");
+        assert_eq!(module_fqn("crates/app/src/lib.rs"), "crate", "`lib.rs` is the crate root");
+        assert_eq!(module_fqn("crates/app/src/main.rs"), "crate", "`main.rs` is the crate root");
+        assert_eq!(module_fqn("src/lib.rs"), "crate");
+        assert_eq!(module_fqn("foo.rs"), "foo", "with no `src/` boundary the whole path is dotted");
+        assert_eq!(module_fqn(""), "crate", "an empty path degrades to the crate root");
+    }
+
+    #[test]
+    fn dogfood_parses_real_graphtell_rust_source() {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+        let targets = [
+            format!("{}/src/rust.rs", manifest),
+            format!("{}/../gt-app/src/container.rs", manifest),
+        ];
+        for path in targets {
+            let src = std::fs::read_to_string(&path).expect("read a real rust file");
+            let f = RustParser::new().unwrap().parse(&path, &src).unwrap();
+            assert!(!f.declarations.is_empty(), "must yield declarations for {path}");
+            assert!(!f.imports.is_empty(), "must capture `use` for {path}");
+            let kinds: Vec<&str> = f.declarations.iter().map(|d| d.kind.as_str()).collect();
+            assert!(
+                kinds.iter().any(|k| *k == "Function" || *k == "Method"),
+                "must extract fns for {path}: {kinds:?}"
+            );
+            eprintln!(
+                "dogfood {path}: {} declarations, {} call_sites, {} imports, {} field_types",
+                f.declarations.len(),
+                f.call_sites.len(),
+                f.imports.len(),
+                f.field_types.len()
+            );
+        }
     }
 }

@@ -1,0 +1,113 @@
+# Axum framework knowledge
+#
+# Axum routes are declared as a call: `Router::route("/x", get(handler))`. The Rust parser rewrites such a call
+# into a `route.<verb>` call site (`route.get` / `route.post` / …) with the path as `arg: 0` and the verb as the
+# call-site method, so the same `Synthesize` `HttpContract` mechanism applies as Actix-web / Rocket attributes.
+# (`route.<verb>` is unambiguous, so no `@` decoration is needed — unlike attributes, a method literally named
+# `route` is rare outside Axum's router.)
+
+id: axum
+display_name: Axum
+language: rust
+version_hint: "*"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: Cargo.toml
+    dependency: axum
+    confidence: 0.95
+
+exclude_rules:
+  - id: target-dir
+    glob: "target/**"
+
+root_rules:
+  - id: source-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: src
+    confidence: 1.0
+    fallbacks:
+      - src
+
+loaders:
+  - id: route-list
+    table: route_list
+    from:
+      kind: builtin
+      name: routes
+      params: {}
+
+route_guards:
+  route_calls:
+    - receiver: "route.get"
+      by: callee
+      verb_methods: { "route.get": GET }
+      path_arg: 0
+    - receiver: "route.post"
+      by: callee
+      verb_methods: { "route.post": POST }
+      path_arg: 0
+    - receiver: "route.put"
+      by: callee
+      verb_methods: { "route.put": PUT }
+      path_arg: 0
+    - receiver: "route.delete"
+      by: callee
+      verb_methods: { "route.delete": DELETE }
+      path_arg: 0
+    - receiver: "route.patch"
+      by: callee
+      verb_methods: { "route.patch": PATCH }
+      path_arg: 0
+    - receiver: "route.head"
+      by: callee
+      verb_methods: { "route.head": HEAD }
+      path_arg: 0
+    - receiver: "route.options"
+      by: callee
+      verb_methods: { "route.options": OPTIONS }
+      path_arg: 0
+
+rules:
+  # ===== P5 Synthesize: HTTP contract =====
+  # `Router::route("/users", get(list_users))` -> `route.get` with path in `arg: 0`;
+  # the verb is pulled from the call-site name (`route.get` -> `get` -> GET).
+  - id: http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "route.get|route.post|route.put|route.delete|route.patch|route.head|route.options"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method:
+              method_name: true
+              normalize:
+                - replace: { from: "route.", to: "" }
+                - upper
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { owner_class: true, resolve: class_const }
+            to_method: { owner_member: true }
+          confidence: 0.9
+
+# ===== P13 Tx: transaction-boundary markers (library knowledge) =====
+tx_calls:
+  - "begin"
+  - "commit"
+  - "rollback"

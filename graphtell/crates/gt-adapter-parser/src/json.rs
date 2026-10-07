@@ -369,4 +369,57 @@ mod tests {
             "several pages in a sub-package must be indexed by position: {got:?}"
         );
     }
+
+    /// The `subPackages` counterpart of `pages_that_is_not_an_array_is_ignored`: the guard at `parse` line 71 is a
+    /// separate branch, and a non-array `subPackages` must be ignored rather than coerced into one entry.
+    #[test]
+    fn subpackages_that_is_not_an_array_is_ignored() {
+        for src in [
+            r#"{ "subPackages": { "0": { "root": "A", "pages": ["a/a"] } } }"#,
+            r#"{ "subPackages": "A" }"#,
+            r#"{ "subPackages": null }"#,
+            r#"{ "subPackages": 42 }"#,
+        ] {
+            let facts = parse_src(src);
+            assert!(
+                facts.config_entries.is_empty(),
+                "a non-array `subPackages` must be ignored, not coerced into an entry: {src} -> {:?}",
+                facts.config_entries
+            );
+        }
+    }
+
+    /// Three `subPackages` branches `malformed_subpackage_entries_are_skipped` does not reach, all of which must
+    /// degrade to "no root prefix" instead of fabricating one:
+    /// * no `root` key **at all** (the common case, distinct from an explicit `""`);
+    /// * `root` present but **not a string** (`null` / a number) → `unwrap_or("")` fallback;
+    /// * non-string entries inside a sub-package's `pages` array → skipped (only tested for main `pages`).
+    #[test]
+    fn subpackage_root_and_page_entries_degrade_honestly() {
+        let facts = parse_src(
+            r#"{ "subPackages": [ { "pages": ["a/a"] }, { "root": null, "pages": ["b/b"] }, { "root": 5, "pages": ["c/c", 7, null] } ] }"#,
+        );
+        let got: Vec<(&str, &str)> = facts
+            .config_entries
+            .iter()
+            .map(|e| {
+                (
+                    e.key_path.as_str(),
+                    match &e.value {
+                        FactValue::String(s) => s.as_str(),
+                        _ => "<non-string>",
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("subPackages.0.pages.0", "/a/a"),
+                ("subPackages.1.pages.0", "/b/b"),
+                ("subPackages.2.pages.0", "/c/c"),
+            ],
+            "a missing / non-string `root` must not prefix a phantom segment, and non-string pages must be skipped: {got:?}"
+        );
+    }
 }

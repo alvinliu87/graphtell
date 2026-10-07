@@ -593,6 +593,96 @@ mod tests {
         );
     }
 
+    /// The `None` half of `nodes` (the existing test only passes `Some`): an absent kind / name filter must stay
+    /// `None` in the `NodeFilter` rather than becoming `Some("")`, which would make the store filter on an empty
+    /// string and silently return nothing.
+    #[test]
+    fn nodes_leaves_absent_filters_as_none() {
+        let (s, arc) = svc(MemStore::default());
+        let _ = s.nodes(ProjectId::new(1), None, None, 10, 0).unwrap();
+        let f = arc.last_filter.lock().unwrap().clone().expect("query_nodes must be called");
+        assert_eq!(f.kind, None, "no kind ⇒ None, not Some(empty)");
+        assert_eq!(f.name_contains, None);
+        assert_eq!(f.limit, Some(10));
+        assert_eq!(f.offset, Some(0), "offset 0 must be forwarded, not dropped");
+    }
+
+    /// The two fields added later (`unsupported_languages` / `by_code`) carry `#[serde(default)]` precisely so an
+    /// old frontend or an old snapshot missing them still loads — and every field name is snake_case. Pinning
+    /// this matters because a renamed field would silently reload as empty, i.e. a badge reading "0 problems".
+    #[test]
+    fn diagnostic_summary_survives_an_old_payload_and_keeps_snake_case() {
+        let old: DiagnosticSummary = serde_json::from_value(serde_json::json!({
+            "critical": 1, "error": 2, "warning": 3, "info": 4
+        }))
+        .expect("an old payload without the newer fields must still load");
+        assert_eq!((old.critical, old.error, old.warning, old.info), (1, 2, 3, 4));
+        assert!(old.unsupported_languages.is_empty(), "absent ⇒ empty, not an error");
+        assert!(old.by_code.is_empty(), "absent ⇒ empty, not an error");
+
+        let full = DiagnosticSummary {
+            critical: 1,
+            error: 2,
+            warning: 3,
+            info: 4,
+            unsupported_languages: vec!["go".into()],
+            by_code: vec![DiagnosticCodeCount {
+                code: "missing_root".into(),
+                severity: "critical".into(),
+                count: 2,
+            }],
+        };
+        let v = serde_json::to_value(&full).unwrap();
+        for f in ["critical", "error", "warning", "info", "unsupported_languages", "by_code"] {
+            assert!(v.get(f).is_some(), "DiagnosticSummary field {f} must be present on the wire");
+        }
+        let back: DiagnosticSummary = serde_json::from_value(v).unwrap();
+        assert_eq!(back.by_code.len(), 1, "by_code must survive a round-trip");
+        assert_eq!(back.unsupported_languages, vec!["go".to_string()]);
+    }
+
+    /// Degenerate bounds. `depth = 0` is clamped to 1 (`0..=depth.max(1)`), so a UI asking for "0 hops" still
+    /// gets the root plus its neighbours. `max_nodes = 0` still returns the root: the cap stops *further*
+    /// expansion, it does not drop the node the caller explicitly asked for.
+    #[test]
+    fn subgraph_clamps_a_zero_depth_and_a_degenerate_cap() {
+        let mut store = MemStore::default();
+        store.nodes.insert(1, node(1, "A", "a"));
+        store.nodes.insert(2, node(2, "A", "b"));
+        store.edges = vec![edge(1, 1, 2, "E")];
+        let (s, _arc) = svc(store);
+
+        let zero_depth = s.subgraph(NodeId::new(1), 0, 100).unwrap();
+        assert_eq!(
+            zero_depth.nodes.iter().map(|n| n.id.get()).collect::<Vec<_>>(),
+            vec![1, 2],
+            "depth 0 is clamped to 1: the root plus its direct neighbours"
+        );
+
+        let zero_cap = s.subgraph(NodeId::new(1), 5, 0).unwrap();
+        assert_eq!(
+            zero_cap.nodes.iter().map(|n| n.id.get()).collect::<Vec<_>>(),
+            vec![1],
+            "the requested root is still returned; the cap only stops further expansion"
+        );
+    }
+
+    /// An edge whose other endpoint has no node record must not become a phantom node (or panic): the traversal
+    /// follows edges, but a node is only emitted when the store actually holds it.
+    #[test]
+    fn subgraph_skips_edge_endpoints_with_no_node_record() {
+        let mut store = MemStore::default();
+        store.nodes.insert(1, node(1, "A", "a"));
+        store.edges = vec![edge(1, 1, 42, "E")]; // 42 has no record
+        let (s, _arc) = svc(store);
+        let g = s.subgraph(NodeId::new(1), 2, 100).unwrap();
+        assert_eq!(
+            g.nodes.iter().map(|n| n.id.get()).collect::<Vec<_>>(),
+            vec![1],
+            "a dangling endpoint must not become a node"
+        );
+    }
+
     /// `diagnostics_summary` must also thread `RULE_CODE_PREFIX` into every `*_excluding` store call.
     #[test]
     fn diagnostics_summary_excludes_rule_prefix() {

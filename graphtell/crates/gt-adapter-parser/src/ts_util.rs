@@ -164,6 +164,73 @@ mod tests {
         assert_eq!(field_children(class, "nonexistent").len(), 0);
     }
 
+    fn parse_php(src: &str) -> tree_sitter::Tree {
+        let mut p = Parser::new();
+        p.set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("php language");
+        p.parse(src, None).expect("parse")
+    }
+
+    /// Walk down to the first node of a given kind.
+    fn find_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut c = node.walk();
+        let found = node.named_children(&mut c).find_map(|n| find_kind(n, kind));
+        found
+    }
+
+    /// The case this helper exists for, and the one the existing test does not reach: a field that occurs
+    /// **more than once**. PHP's `if_statement` exposes both the `elseif` clause and the `else` clause under
+    /// the same `alternative` field, and `child_by_field_name` hands back only the first — so a caller using
+    /// it would silently drop the `else` branch (php.rs relies on `field_children` for exactly this).
+    #[test]
+    fn field_children_returns_every_child_of_a_repeated_field() {
+        let src = "<?php if ($a) { f(); } elseif ($b) { g(); } else { h(); }";
+        let tree = parse_php(src);
+        let bytes = src.as_bytes();
+        let if_stmt = find_kind(tree.root_node(), "if_statement").expect("an if statement");
+
+        let all = field_children(if_stmt, "alternative");
+        let texts: Vec<Option<&str>> = all.iter().map(|n| n.utf8_text(bytes).ok()).collect();
+        assert_eq!(all.len(), 2, "both clauses must be collected: {texts:?}");
+        assert!(
+            texts.iter().any(|t| t.unwrap_or("").contains("else {")),
+            "the `else` clause must not be lost: {texts:?}"
+        );
+        // `child_by_field_name` agrees with the FIRST entry only — that is the gap this helper fills.
+        assert_eq!(
+            if_stmt.child_by_field_name("alternative").map(|n| n.utf8_text(bytes).ok()),
+            texts.first().copied(),
+            "child_by_field_name returns only the first of the two"
+        );
+    }
+
+    /// `span_of_str` is the `&str`-source shim that keeps js call sites unchanged; it must be a pure
+    /// delegation, so both conventions produce identical spans (a divergence would mis-place evidence).
+    #[test]
+    fn span_of_str_delegates_to_span_of() {
+        let src = "class A {\n    void m() {}\n}\n";
+        let tree = parse(src);
+        let node = tree.root_node();
+        assert_eq!(span_of_str(node, src), span_of(node), "the shim must delegate to span_of");
+        let s = span_of_str(node, src);
+        assert_eq!(s.start_line, 1, "still 1-based");
+        assert_eq!(s.end_line, 4, "the end row is 1-based too");
+    }
+
+    /// A type name that is *only* a shell (`[]` / `<X>`) or empty has no bare name to keep — it must degrade
+    /// to an empty string rather than panic or leak the shell.
+    #[test]
+    fn bare_type_name_degrades_to_empty_for_a_shell_only_type() {
+        assert_eq!(bare_type_name("[]".to_string()), "");
+        assert_eq!(bare_type_name("<X>".to_string()), "");
+        assert_eq!(bare_type_name("[Foo]".to_string()), "", "a leading `[` leaves nothing before the shell");
+        assert_eq!(bare_type_name("".to_string()), "");
+        assert_eq!(bare_type_name("   ".to_string()), "", "whitespace-only trims to empty");
+    }
+
     #[test]
     fn bare_type_name_strips_generics_and_arrays_and_trims() {
         assert_eq!(bare_type_name("List<Order>".to_string()), "List");

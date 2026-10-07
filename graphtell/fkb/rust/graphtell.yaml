@@ -1,0 +1,60 @@
+# GraphTell architecture knowledge (self / bootstrap)
+#
+# GraphTell's signature architecture is **ports + adapters**: the kernel crate `gt-domain` defines *ports* as
+# traits (`LanguageParser`, `TechStackAdapter`, `RuleConfigStore`, `GraphSink`, `GraphQuery`, …) and every
+# `gt-adapter-*` crate implements them. The Rust parser records each `impl <Port> for <Adapter>` as an
+# `inheritance` fact, so this rule turns that fact into an explicit `DomainPort` hub node that every adapter
+# connects to via `ImplementsPort` — making the architectural boundary navigable on the graph instead of being
+# implicit in the code.
+#
+# Scope note: this is GraphTell-specific, but it keys off the `gt-domain` ports, so it applies to *any* project
+# that depends on `gt-domain` (GraphTell itself and GraphTell-based extensions). Hence `scope: framework` with a
+# `gt-domain` dependency detector — it fires whenever the project is recognised as GraphTell-shaped, including
+# GraphTell analysing itself (the bootstrap use case).
+
+id: graphtell
+display_name: GraphTell (self / bootstrap)
+language: rust
+version_hint: "*"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: Cargo.toml
+    dependency: gt-domain
+    confidence: 0.9
+
+exclude_rules:
+  - id: target-dir
+    glob: "target/**"
+
+root_rules:
+  - id: source-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: src
+    confidence: 1.0
+    fallbacks:
+      - src
+
+rules:
+  # Every `impl <gt-domain port> for <adapter>` becomes an edge Adapter --ImplementsPort--> DomainPort.
+  # `base` uses trait-name tail matching, so both `impl LanguageParser for RustParser` and
+  # `impl gt_domain::port::LanguageParser for RustParser` are caught.
+  - id: adapter-implements-domain-port
+    phase: Synthesize
+    selector:
+      kind: inheritance
+      base: "LanguageParser|TechStackAdapter|MarkerProvider|ResourceAdapter|RuleConfigStore|SymbolTableReader|GraphSink|GraphQuery|ProjectReader|ProjectWriter|DiagnosticSink|Persistence|ViewRegistryProvider|KnowledgeProvider|RuleProvider|FileSystem|FileScanner|ParserRegistry|TechStackRegistry|ResourceAdapterRegistry|PipelineObserver|Clock"
+    binding:
+      - Synthesize:
+          node: DomainPort
+          identity:
+            kind: Named
+            value: { literal: "graphtell::domain" }
+          link:
+            kind: ImplementsPort
+            direction: incoming
+          confidence: 0.8

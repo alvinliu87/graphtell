@@ -1,0 +1,77 @@
+# Diesel framework knowledge
+#
+# Diesel exposes database access through a method chain on table structs: `.load()` / `.get_result()` (reads)
+# and `.execute()` / `.save()` / `.update()` / `.delete()` / `insert_into(..)` (writes). These are modelled by
+# the Rust parser as call sites (`users.load`, `diesel::insert_into`, …); we synthesise an
+# `ExternalSystem(Database)` node and hang `ReadsDb` / `WritesDb` edges off the calling method.
+#
+# (A full Model -> Table mapping à la Eloquent / JPA would mean resolving `table!` macros and
+# `#[derive(Queryable)]` structs; that richer graph is future work. This layer makes DB access visible on the
+# graph today, and `db_verbs` feeds P7's read / write classification when a receiver type carries a `MapsTo`.)
+
+id: diesel
+display_name: Diesel
+language: rust
+version_hint: "*"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: Cargo.toml
+    dependency: diesel
+    confidence: 0.95
+
+exclude_rules:
+  - id: target-dir
+    glob: "target/**"
+
+root_rules:
+  - id: source-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: src
+    confidence: 1.0
+    fallbacks:
+      - src
+
+# Read / write verbs for P7 classification (consumed when a receiver type has a `MapsTo` edge).
+db_verbs:
+  write: ["save", "save_changes", "insert", "insert_into", "update", "delete", "execute"]
+  read: ["load", "get_result", "get_results", "first", "count", "select", "find", "filter"]
+
+rules:
+  - id: diesel-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "load|get_result|get_results|first|count|select|find|filter"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Database
+          identity:
+            kind: Named
+            value: { literal: "DB" }
+          link:
+            kind: ReadsDb
+            direction: incoming
+          confidence: 0.8
+
+  - id: diesel-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "save|save_changes|insert|insert_into|update|delete|execute"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Database
+          identity:
+            kind: Named
+            value: { literal: "DB" }
+          link:
+            kind: WritesDb
+            direction: incoming
+          confidence: 0.8

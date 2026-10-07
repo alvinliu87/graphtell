@@ -1618,4 +1618,71 @@ mod tests {
         assert!(matches!(NumOrParam::default(), NumOrParam::Num(0)));
         assert!(matches!(StrOrParam::default(), StrOrParam::Str(ref s) if s.is_empty()));
     }
+
+    /// `resolve_num` with a literal `NumOrParam::Num` returns the number directly — the table-independent path that
+    /// the existing tests never exercised (they only call it with `Param`). And `resolve_param_values` must ignore a
+    /// **non-object** override (`as_object()` is `None`) and fall back to the declared defaults.
+    #[test]
+    fn resolve_num_literal_path_and_non_object_overrides() {
+        assert_eq!(resolve_num(&NumOrParam::Num(7), &ParamValues::new()), 7);
+        // A literal wins even when the table carries a conflicting value for some param.
+        let mut table = ParamValues::new();
+        table.insert("x".into(), json!(99));
+        assert_eq!(resolve_num(&NumOrParam::Num(7), &table), 7);
+
+        // A scalar / array override is not a param map, so the rule defaults stand.
+        let r = rule_with_params();
+        let defaults = resolve_param_values(&r, &json!([1, 2, 3]));
+        assert_eq!(resolve_num(&NumOrParam::Param("min_fan_in".into()), &defaults), 50);
+    }
+
+    /// `applies_to_env` restricts on `frameworks` **independently** of `languages`: a language-agnostic rule (empty
+    /// `languages`) must still not run when the project lacks the required framework. The existing test only covered
+    /// the case where both `languages` and `frameworks` were set.
+    #[test]
+    fn applies_to_env_framework_only_restriction_is_enforced() {
+        let r: CheckRule = serde_json::from_value(json!({
+            "id": "r", "title": "T", "message": "m",
+            "applies_to": { "frameworks": ["thinkphp"] }   // no `languages` ⇒ language-agnostic
+        }))
+        .unwrap();
+        assert!(
+            r.applies_to_env(&["java".into()], &["thinkphp".into()]),
+            "the framework matches, so the language is irrelevant"
+        );
+        assert!(
+            !r.applies_to_env(&["java".into()], &["laravel".into()]),
+            "a framework mismatch blocks it even with no language restriction"
+        );
+    }
+
+    /// `RuleScope` is deserialized from `applies_to`; its `name_contains` / `limit` accept a **literal** (no `$`
+    /// prefix) as well as a `$param` reference. Pin the literal path (only the `$param` path was tested) and that
+    /// every field survives a round-trip (a renamed field would silently drop the restriction).
+    #[test]
+    fn rule_scope_literal_values_round_trip_and_keep_fields() {
+        let scope: RuleScope = serde_json::from_value(json!({
+            "kinds": ["Table"],
+            "name_contains": "order",
+            "limit": 50,
+            "languages": ["php"],
+            "frameworks": ["thinkphp"]
+        }))
+        .unwrap();
+        assert!(matches!(scope.name_contains, Some(StrOrParam::Str(ref s)) if s == "order"));
+        assert!(matches!(scope.limit, NumOrParam::Num(50)));
+        assert_eq!(scope.kinds, vec!["Table".to_string()]);
+
+        let wire = serde_json::to_value(&scope).unwrap();
+        for f in ["kinds", "name_contains", "limit", "languages", "frameworks"] {
+            assert!(wire.get(f).is_some(), "RuleScope field {f} must be present on the wire");
+        }
+        let back = round_trip(&scope);
+        assert!(
+            matches!(back.name_contains, Some(StrOrParam::Str(ref s)) if s == "order"),
+            "name_contains literal must round-trip unchanged"
+        );
+        assert!(matches!(back.limit, NumOrParam::Num(50)));
+        assert_eq!(back.frameworks, vec!["thinkphp".to_string()]);
+    }
 }

@@ -106,6 +106,59 @@ fn deps_from_cargo_lock(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// `serves` is not overridden here, so the trait default (own language only) applies — exactly what the
+    /// module docs claim. That was never asserted: a `.rs` sub-project must keep this adapter, and no other
+    /// language tag may borrow Rust's Cargo conventions.
+    #[test]
+    fn serves_only_the_rust_language_tag() {
+        let a = RustTechStackAdapter::new();
+        assert!(a.serves(&Language::new(Language::RUST)), "rust must be served");
+        for other in ["javascript", "typescript", "php", "python", ""] {
+            assert!(!a.serves(&Language::new(other)), "`{other}` must not be served by the Rust adapter");
+        }
+    }
+
+    /// "Recognised but empty" must stay distinct from "not recognised": `None` hands the file to the kernel's
+    /// plain-text probe, `Some(empty)` says this stack owns the file and it declares nothing.
+    #[test]
+    fn recognised_manifests_return_some_empty_not_none() {
+        let a = RustTechStackAdapter::new();
+        assert_eq!(a.manifest_dependencies("Cargo.toml", ""), Some(Vec::new()));
+        assert_eq!(a.lock_dependencies("Cargo.lock", ""), Some(Vec::new()));
+        assert_eq!(a.manifest_dependencies("package.json", ""), None, "a non-Rust manifest must stay None");
+        assert_eq!(a.lock_dependencies("package-lock.json", ""), None);
+    }
+
+    /// The `[dependencies]` collector matches **any** `key = "…"` / `key = { … }` at line start and skips only
+    /// eight package-metadata keys (version / edition / name / authors / description / license / publish /
+    /// workspace) — so the rest of `[package]` is collected as if it were a crate. Pinned so the breadth is
+    /// visible rather than silently relied upon; if the skip-list grows, this is the assertion to update.
+    ///
+    /// The port tolerates over-detection over silence ("missing a framework is worse than mistaking one"), so
+    /// this is acceptable — but these names do reach FKB's `manifest_dependency` detectors.
+    #[test]
+    fn cargo_toml_metadata_keys_leak_as_crate_names() {
+        let deps = deps_from_cargo_toml(
+            "[package]\nname = \"x\"\nversion = \"0.1\"\nrepository = \"https://github.com/a/b\"\nreadme = \"README.md\"\nrust-version = \"1.70\"\n",
+        );
+        assert!(!deps.contains(&"x".to_string()), "the package name itself is skipped: {deps:?}");
+        for leaked in ["repository", "readme", "rust-version"] {
+            assert!(deps.contains(&leaked.to_string()), "`{leaked}` is collected as a crate name: {deps:?}");
+        }
+    }
+
+    /// One entry per crate: the same crate in several `[[package]]` blocks (pulled transitively at different
+    /// versions) must collapse to a single name.
+    #[test]
+    fn cargo_lock_dedupes_repeated_names() {
+        assert_eq!(
+            deps_from_cargo_lock(
+                "[[package]]\nname = \"a\"\n[[package]]\nname = \"a\"\n[[package]]\nname = \"b\"\n"
+            ),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
     #[test]
     fn language_is_rust() {
         assert_eq!(RustTechStackAdapter::new().language().as_str(), "rust");

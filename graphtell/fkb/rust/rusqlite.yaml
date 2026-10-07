@@ -1,0 +1,72 @@
+# Rusqlite framework knowledge
+#
+# Rusqlite (the bundled-SQLite driver GraphTell itself uses) accesses the database through method calls on a
+# `Connection` / `Transaction`: `conn.query_row(...)` / `conn.query_map(...)` (reads) and `conn.execute(...)`
+# (writes), usually via `conn.prepare("SQL").query_map(...)`. The Rust parser captures these as ordinary call
+# sites whose *method* is `query_row` / `query_map` / `prepare` / `execute`, so we match on the method name and
+# synthesise the same `ExternalSystem(Database)` node + `ReadsDb` / `WritesDb` edges as SQLx — keeping every
+# Rust backend (sqlx, diesel, rusqlite) consistent on the graph.
+
+id: rusqlite
+display_name: Rusqlite
+language: rust
+version_hint: "*"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: Cargo.toml
+    dependency: rusqlite
+    confidence: 0.95
+
+exclude_rules:
+  - id: target-dir
+    glob: "target/**"
+
+root_rules:
+  - id: source-root
+    key: app_root
+    source:
+      kind: directory_exists
+      path: src
+    confidence: 1.0
+    fallbacks:
+      - src
+
+rules:
+  # ===== P5 Synthesize: database read =====
+  - id: rusqlite-read
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "query_row|query_map|prepare|prepare_cached"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Database
+          identity:
+            kind: Named
+            value: { literal: "DB" }
+          link:
+            kind: ReadsDb
+            direction: incoming
+          confidence: 0.85
+
+  # ===== P5 Synthesize: database write =====
+  - id: rusqlite-write
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "execute"
+    binding:
+      - Synthesize:
+          node: ExternalSystem
+          subtype: Database
+          identity:
+            kind: Named
+            value: { literal: "DB" }
+          link:
+            kind: WritesDb
+            direction: incoming
+          confidence: 0.85

@@ -1146,4 +1146,129 @@ class Svc {
         assert_eq!(ins.span.start_line, 5, "it must be 1-based line 5: {:?}", ins.span);
         assert!(ins.span.end_byte > ins.span.start_byte, "the span must cover the node range");
     }
+
+    /// Imports are what turn a short name back into an FQN (`resolve_java_type`), and the whole short-name
+    /// index P2 restores decls by — yet the collection itself had no test. Pinned: the **full dotted name**,
+    /// never an alias (Java has none), `static` stripped, and a wildcard keeps no `.*` marker.
+    #[test]
+    fn imports_are_collected_with_their_full_name() {
+        let src = r#"package com.demo;
+
+import java.util.List;
+import java.util.*;
+import static org.junit.Assert.assertEquals;
+
+class Svc {}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Svc.java", src).unwrap();
+        let got: Vec<(&str, Option<&str>)> =
+            facts.imports.iter().map(|i| (i.name.as_str(), i.alias.as_deref())).collect();
+
+        assert_eq!(got.len(), 3, "every import statement must be collected: {got:?}");
+        assert!(got.contains(&("java.util.List", None)), "a plain import keeps its full dotted name: {got:?}");
+        assert!(
+            got.contains(&("org.junit.Assert.assertEquals", None)),
+            "the `static` modifier is not part of the imported name: {got:?}"
+        );
+        assert!(
+            got.iter().all(|(_, alias)| alias.is_none()),
+            "Java imports have no alias, and none must be invented: {got:?}"
+        );
+        assert!(
+            got.iter().any(|(n, _)| *n == "java.util"),
+            "a wildcard import drops the trailing `.*` rather than carrying it into the index: {got:?}"
+        );
+    }
+
+    /// An annotation may be written fully qualified (`@java.lang.SuppressWarnings`): the callee must keep the
+    /// dotted name so the FKB rule matches on what the source says. A marker annotation has no argument list,
+    /// and an empty list must stay empty rather than becoming one bogus `Unknown` argument.
+    #[test]
+    fn annotation_names_and_argument_lists_keep_their_source_shape() {
+        let src = r#"package com.demo;
+
+class Svc {
+    @java.lang.SuppressWarnings("unchecked")
+    @Transactional
+    void run() {}
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Svc.java", src).unwrap();
+        let get = |m: &str| facts.call_sites.iter().find(|c| c.method.as_deref() == Some(m));
+
+        let qualified = get("java.lang.SuppressWarnings")
+            .unwrap_or_else(|| panic!("a fully-qualified annotation must be captured: {:?}", facts.call_sites));
+        assert_eq!(qualified.callee_text, "java.lang.SuppressWarnings", "the dotted name is kept verbatim");
+        assert_eq!(arg_strings(&qualified.args), vec![Some("unchecked".to_string())]);
+
+        let marker = get("Transactional").expect("a marker annotation must become a call site");
+        assert!(marker.args.is_empty(), "no argument list ⇒ no arguments at all, got: {:?}", marker.args);
+    }
+
+    /// The `positional_args` branches the existing test does not reach: a **numeric** literal is captured by its
+    /// source text (`String("1")`, not an `Int`) because FKB matches arguments textually, an empty arg list stays
+    /// empty, and a nested call takes exactly one slot — so `arg:0` never shifts.
+    #[test]
+    fn positional_args_cover_numeric_empty_and_nested_expressions() {
+        let src = r#"package com.demo;
+
+class Svc {
+    void run() {
+        helper(1);
+        helper(1, "a");
+        helper();
+        helper(this.build(2));
+    }
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Svc.java", src).unwrap();
+        let calls: Vec<&CallSiteFact> =
+            facts.call_sites.iter().filter(|c| c.method.as_deref() == Some("helper")).collect();
+        assert_eq!(calls.len(), 4, "all four helper calls must be captured: {calls:?}");
+
+        assert_eq!(
+            arg_strings(&calls[0].args),
+            vec![Some("1".to_string())],
+            "a numeric literal is captured as its source text"
+        );
+        assert_eq!(arg_strings(&calls[1].args), vec![Some("1".to_string()), Some("a".to_string())]);
+        assert!(calls[2].args.is_empty(), "no arguments ⇒ an empty list, got: {:?}", calls[2].args);
+        assert_eq!(
+            arg_strings(&calls[3].args),
+            vec![None],
+            "a nested call is one non-literal argument ⇒ one placeholder, positions must not shift"
+        );
+    }
+
+    /// The `@EventListener` side already pins "no parameter ⇒ no event type"; the publisher side needs the same
+    /// honesty: `publishEvent(evt)` (an existing variable, no `new`) must infer **nothing** rather than guess the
+    /// variable name as the event type, which would create a phantom `Event` node that merges with nothing.
+    #[test]
+    fn publish_event_without_a_new_expression_infers_no_entity() {
+        let src = r#"package com.demo;
+
+class Svc {
+    private Publisher publisher;
+
+    void run(Object evt) {
+        publisher.publishEvent(evt);
+        publisher.publishEvent(new OrderPlacedEvent("a"));
+    }
+}
+"#;
+        let facts = JavaParser::new().unwrap().parse("Svc.java", src).unwrap();
+        let calls: Vec<&CallSiteFact> =
+            facts.call_sites.iter().filter(|c| c.method.as_deref() == Some("publishEvent")).collect();
+        assert_eq!(calls.len(), 2, "both publishEvent calls must be captured: {calls:?}");
+
+        assert_eq!(
+            calls[0].entity, None,
+            "an already-built variable gives no event type; guessing it would fabricate a phantom Event"
+        );
+        assert_eq!(
+            calls[1].entity.as_deref(),
+            Some("OrderPlacedEvent"),
+            "`new X(...)` still derives X"
+        );
+    }
 }

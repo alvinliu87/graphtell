@@ -767,6 +767,63 @@ mod tests {
         assert_eq!(unknown.join_member("App\\Foo", "bar"), "App\\Foobar", "an empty separator ⇒ plain concatenation (the caller must check for empty first)");
     }
 
+    /// `from_parser` must NOT fall back to a PHP `\` separator when the parser declares none — the "honest unknown"
+    /// contract pinned for `Default` must also hold at the parser boundary (`ns_separator: seps.first().copied()`).
+    struct EmptySepParser;
+    impl LanguageParser for EmptySepParser {
+        fn language(&self) -> Language { Language::new("cobol") }
+        fn extensions(&self) -> &'static [&'static str] { &["cbl"] }
+        fn parse(&self, _p: &str, _s: &str) -> crate::error::Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] { &[] }
+        fn member_separator(&self) -> &'static str { "" }
+        fn variable_prefixes(&self) -> &'static [&'static str] { &[] }
+        fn builtin_types(&self) -> &'static [&'static str] { &[] }
+        fn bare_field_receivers(&self) -> bool { false }
+    }
+
+    #[test]
+    fn namespace_policy_from_parser_with_no_separators_stays_unknown() {
+        let p = NamespacePolicy::from_parser(&EmptySepParser);
+        assert!(p.ns_separator.is_none(), "no namespace separator declared ⇒ unknown, not PHP's \\");
+        assert!(p.ns_separators.is_empty());
+        assert!(p.member_separator.is_empty());
+        assert!(p.variable_prefixes.is_empty());
+        assert!(p.builtin_types.is_empty());
+    }
+
+    /// `SyntaxFacts` is the contract between a parser adapter and the pipeline. `namespace` is an `Option` (a renamed
+    /// field would silently load as `None`) and `variable_assignments` is `#[serde(default)]` (a renamed field would
+    /// silently load as empty). Pin every field name on the wire — none may disappear.
+    #[test]
+    fn syntax_facts_keep_every_field_name_on_the_wire() {
+        let v = serde_json::to_value(&SyntaxFacts::default()).unwrap();
+        for f in [
+            "namespace",
+            "declarations",
+            "imports",
+            "inheritances",
+            "call_sites",
+            "field_types",
+            "config_entries",
+            "header_assignments",
+            "sign_compares",
+            "variable_assignments",
+        ] {
+            assert!(v.get(f).is_some(), "SyntaxFacts field {f} must be present on the wire — a rename silently drops the fact");
+        }
+    }
+
+    /// `as_str` is only `Some` for the two text variants; `Float` was missing from the variant matrix. A float is a
+    /// number, never a textual FQN / literal, so it must return `None` (a rule reading `callee_text` must not treat a
+    /// numeric fact as a string).
+    #[test]
+    fn fact_value_float_as_str_is_none() {
+        assert!(FactValue::Float(1.5).as_str().is_none());
+        assert!(FactValue::Float(-2.0).as_str().is_none());
+    }
+
     fn round_trip<T: Serialize + for<'de> Deserialize<'de>>(v: &T) -> T {
         serde_json::from_value(serde_json::to_value(v).expect("serialize")).expect("deserialize")
     }

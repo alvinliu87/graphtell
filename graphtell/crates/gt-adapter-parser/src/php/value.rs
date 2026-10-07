@@ -406,4 +406,138 @@ EOT);
             all[0][0]
         );
     }
+
+    /// Array keys are not always strings: an int key and even a variable key must still yield a stable string
+    /// key (`to_string_repr`), arrays must nest, and an empty literal must stay an empty Array rather than
+    /// vanishing. These are the `eval_array` branches the string-keyed test above never reaches.
+    #[test]
+    fn array_keys_fall_back_to_the_key_repr_and_arrays_nest() {
+        let src = r#"<?php
+class M {
+    public function run($x) {
+        $o->m([1 => 'x']);
+        $o->m([$x => 'v']);
+        $o->m(['a' => [1, 2]]);
+        $o->m([]);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert_eq!(all.len(), 4, "expected 4 call sites, got: {all:?}");
+
+        match &all[0][0] {
+            FactValue::Array(items) => {
+                assert_eq!(items[0].0, "1", "an int key keeps its numeric spelling: {items:?}");
+                assert!(matches!(items[0].1, FactValue::String(ref s) if s == "x"));
+            }
+            other => panic!("expected an Array: {other:?}"),
+        }
+        match &all[1][0] {
+            FactValue::Array(items) => {
+                assert_eq!(items[0].0, "$x", "a variable key keeps the variable name, never an empty key: {items:?}");
+            }
+            other => panic!("expected an Array: {other:?}"),
+        }
+        match &all[2][0] {
+            FactValue::Array(items) => match &items[0].1 {
+                FactValue::Array(inner) => assert_eq!(inner.len(), 2, "a nested array must be evaluated too"),
+                other => panic!("expected a nested Array: {other:?}"),
+            },
+            other => panic!("expected an Array: {other:?}"),
+        }
+        match &all[3][0] {
+            FactValue::Array(items) => assert!(items.is_empty(), "an empty literal is an empty Array: {items:?}"),
+            other => panic!("expected an Array: {other:?}"),
+        }
+    }
+
+    /// `-1` folds to an Int (covered above); the sibling arm is that a fractional unary must fold to a Float
+    /// rather than falling through to `Unknown(None)`.
+    #[test]
+    fn unary_minus_folds_a_fractional_literal_to_float() {
+        let src = r#"<?php
+class M {
+    public function run() {
+        $o->m(-1.5);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert!(
+            matches!(all[0][0], FactValue::Float(f) if (f - (-1.5)).abs() < 1e-9),
+            "a unary minus on a fraction must fold into a Float: {:?}",
+            all[0][0]
+        );
+    }
+
+    /// A bare name is a constant reference: the leading `\` is namespace notation, not part of the name, so
+    /// `\MAX_LEN` and `MAX_LEN` must resolve to the same string — otherwise the two spellings would become two
+    /// identities for one constant.
+    #[test]
+    fn qualified_name_strips_the_leading_namespace_separator() {
+        let src = r#"<?php
+class M {
+    public function run() {
+        $o->m(\MAX_LEN);
+        $o->m(MAX_LEN);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert!(matches!(all[0][0], FactValue::String(ref s) if s == "MAX_LEN"), "{:?}", all[0][0]);
+        assert!(matches!(all[1][0], FactValue::String(ref s) if s == "MAX_LEN"), "{:?}", all[1][0]);
+    }
+
+    /// `$$z` is a variable nonetheless, so it keeps its text (like `$x`) instead of degrading to
+    /// `Unknown(None)` — which would lose even the fact that it is a variable reference.
+    #[test]
+    fn dynamic_variable_name_keeps_its_text() {
+        let src = r#"<?php
+class M {
+    public function run($z) {
+        $o->m($$z);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert!(
+            matches!(all[0][0], FactValue::Unknown(Some(ref s)) if s == "$$z"),
+            "a dynamic variable must keep its name: {:?}",
+            all[0][0]
+        );
+    }
+
+    /// The two heredoc-family spellings the existing heredoc test does not cover, pinned as-is:
+    /// * an interpolated heredoc currently resolves to a **String still holding the raw `$x`**, unlike an
+    ///   interpolated double-quoted string which correctly degrades to `Unknown` (see
+    ///   `eval_expr_keeps_arrays_and_rejects_interpolation`) — so it can currently become an identity. Pinned
+    ///   rather than adjusted; if it is routed through `eval_encapsed` later, this is the assertion to update.
+    /// * nowdoc does not reach the string arm at all and keeps its whole source text, markers included.
+    #[test]
+    fn interpolated_heredoc_and_nowdoc_pin_their_current_shape() {
+        let src = r#"<?php
+class M {
+    public function run($x) {
+        $o->m(<<<EOT
+hi $x
+EOT);
+        $o->m(<<<'EOT'
+plain
+EOT);
+    }
+}
+"#;
+        let all = call_args(src, "m");
+        assert_eq!(all.len(), 2, "expected 2 call sites, got: {all:?}");
+        assert!(
+            matches!(all[0][0], FactValue::String(ref s) if s == "hi $x"),
+            "interpolated heredoc: {:?}",
+            all[0][0]
+        );
+        assert!(
+            matches!(all[1][0], FactValue::Unknown(Some(_))),
+            "nowdoc keeps its whole source text, markers included: {:?}",
+            all[1][0]
+        );
+    }
 }

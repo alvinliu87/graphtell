@@ -373,4 +373,101 @@ mod tests {
         assert_eq!(back.sub_project_id, Some(SubProjectId(2)));
         assert!(back.content_hash.is_empty());
     }
+
+    /// `ProjectConfig` is a JSON column the store reads with `parse_json::<ProjectConfig>().unwrap_or_default()`,
+    /// so a renamed field would silently become its default rather than error. Pin every field name on the wire
+    /// and a fully-populated round-trip.
+    #[test]
+    fn project_config_persists_every_field_and_round_trips() {
+        let cfg = ProjectConfig {
+            exclude_globs: vec!["public/static/**".to_string()],
+            required_locales: vec!["fr-fr".to_string()],
+            table_prefixes: vec!["eb_".to_string()],
+            full_pipeline: false,
+        };
+        let v = serde_json::to_value(&cfg).unwrap();
+        for f in ["exclude_globs", "required_locales", "table_prefixes", "full_pipeline"] {
+            assert!(v.get(f).is_some(), "ProjectConfig field {f} must be present on the wire");
+        }
+        let back = round_trip(&cfg);
+        assert_eq!(back.exclude_globs, vec!["public/static/**".to_string()]);
+        assert_eq!(back.required_locales, vec!["fr-fr".to_string()]);
+        assert_eq!(back.table_prefixes, vec!["eb_".to_string()]);
+        assert!(!back.full_pipeline);
+    }
+
+    /// `ProjectPatch` is the PATCH request body; a renamed field would silently drop the update. Pin the field
+    /// names on the wire (null when unset) and a round-trip of both a partial and a fully-populated patch.
+    #[test]
+    fn project_patch_round_trips_and_keeps_field_names() {
+        let v = serde_json::to_value(ProjectPatch::default()).unwrap();
+        for f in ["name", "root_path", "description", "config"] {
+            assert!(v.get(f).is_some(), "ProjectPatch field {f} must be present on the wire (null while unset)");
+        }
+
+        let partial: ProjectPatch = serde_json::from_value(json!({ "name": "renamed" })).unwrap();
+        let back = round_trip(&partial);
+        assert_eq!(back.name.as_deref(), Some("renamed"));
+        assert!(back.root_path.is_none(), "an unsubmitted field stays None through the round-trip");
+
+        let full: ProjectPatch = serde_json::from_value(json!({
+            "name": "x",
+            "root_path": "/tmp/x",
+            "description": "d",
+            "config": { "full_pipeline": false }
+        }))
+        .unwrap();
+        let back = round_trip(&full);
+        assert_eq!(back.name.as_deref(), Some("x"));
+        assert_eq!(
+            back.root_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            Some("/tmp/x".to_string())
+        );
+        assert_eq!(back.description.as_deref(), Some("d"));
+        assert!(!back.config.as_ref().unwrap().full_pipeline);
+    }
+
+    /// `NewProject` is the create body; the realistic path carries an explicit config. The existing record test
+    /// only exercised `config: None`, so pin that an explicit config survives the round-trip.
+    #[test]
+    fn new_project_with_explicit_config_round_trips() {
+        let np = NewProject {
+            name: "proj".to_string(),
+            root_path: PathBuf::from("/tmp/proj"),
+            description: Some("d".to_string()),
+            config: Some(ProjectConfig {
+                exclude_globs: vec!["storage/logs/**".to_string()],
+                required_locales: vec!["en-us".to_string()],
+                table_prefixes: vec!["eb_".to_string()],
+                full_pipeline: true,
+            }),
+        };
+        let back: NewProject = round_trip(&np);
+        assert_eq!(back.name, "proj");
+        let cfg = back.config.expect("explicit config must round-trip");
+        assert_eq!(cfg.exclude_globs, vec!["storage/logs/**".to_string()]);
+        assert_eq!(cfg.table_prefixes, vec!["eb_".to_string()]);
+        assert!(cfg.full_pipeline);
+    }
+
+    /// A `SourceFile` *inside* a sub-project (`sub_project_id: Some`) is the common case; the existing record test
+    /// only covered `sub_project_id: None`, so pin the `Some` round-trip too.
+    #[test]
+    fn source_file_inside_a_sub_project_round_trips() {
+        let f = SourceFile {
+            id: FileId(11),
+            project_id: ProjectId(1),
+            sub_project_id: Some(SubProjectId(3)),
+            path: "app/api/controller/Login.php".to_string(),
+            language: Language::new("php"),
+            size_bytes: 2048,
+            content_hash: "cafe".to_string(),
+        };
+        let back: SourceFile = round_trip(&f);
+        assert_eq!(back.id, FileId(11));
+        assert_eq!(back.sub_project_id, Some(SubProjectId(3)));
+        assert_eq!(back.path, "app/api/controller/Login.php");
+        assert_eq!(back.size_bytes, 2048);
+        assert_eq!(back.content_hash, "cafe");
+    }
 }

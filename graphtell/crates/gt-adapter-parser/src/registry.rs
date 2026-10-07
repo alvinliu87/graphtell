@@ -261,6 +261,100 @@ mod tests {
         );
     }
 
+    /// `language_for_extension` is the **default trait method** that routes every concrete file to its parser
+    /// (`parser_for_file` in the pipeline falls back to the sub-project language when it misses) — so a silent
+    /// miss here means "the file was parsed into nothing". It had no coverage against the real registry.
+    #[test]
+    fn language_for_extension_routes_files_to_their_parser() {
+        let reg = DefaultParserRegistry::new();
+        let lang_of = |ext: &str| reg.language_for_extension(ext).map(|l| l.as_str().to_string());
+
+        assert_eq!(lang_of("php").as_deref(), Some("php"));
+        assert_eq!(lang_of("PHP").as_deref(), Some("php"), "extension matching is case-insensitive");
+        assert_eq!(lang_of("java").as_deref(), Some("java"));
+        assert_eq!(lang_of("py").as_deref(), Some("python"));
+        assert_eq!(lang_of("pyi").as_deref(), Some("python"));
+        assert_eq!(lang_of("json").as_deref(), Some("json"));
+        assert_eq!(lang_of("rs").as_deref(), Some("rust"));
+
+        // A miss must be a miss, not a guess.
+        assert!(lang_of("cobol").is_none(), "an unknown extension must not fall back to some language");
+        assert!(lang_of("").is_none());
+        assert!(
+            lang_of(".php").is_none(),
+            "extensions are compared without a dot — callers pass `Path::extension()`, so a dotted string must not match"
+        );
+
+        // `.ts` / `.tsx` / `.vue` currently resolve to the **javascript** key: `supported_languages()` is
+        // iterated in sorted order and both the `javascript` and `typescript` keys hold the frontend parser
+        // with the same extension list, so the alphabetically first wins. The picked parser is the same either
+        // way — but the *language label* differs, so it is pinned rather than left to drift.
+        for ext in ["ts", "tsx", "js", "jsx", "mjs", "cjs", "vue"] {
+            assert_eq!(
+                lang_of(ext).as_deref(),
+                Some("javascript"),
+                "`{ext}` is owned by the frontend parser; first sorted match is `javascript`"
+            );
+        }
+    }
+
+    struct CobolParser;
+    impl LanguageParser for CobolParser {
+        fn language(&self) -> Language {
+            Language::new("cobol")
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["cbl"]
+        }
+        fn parse(&self, _path: &str, _source: &str) -> Result<SyntaxFacts> {
+            Ok(SyntaxFacts::default())
+        }
+        fn namespace_separator(&self) -> &'static [char] {
+            &[]
+        }
+        fn member_separator(&self) -> &'static str {
+            "."
+        }
+    }
+
+    /// A whole registry speaking the `ParserRegistry` trait — the openness this module exists for (adding a
+    /// language must not touch upper layers).
+    struct CobolRegistry {
+        inner: CobolParser,
+    }
+    impl ParserRegistry for CobolRegistry {
+        fn parser_for(&self, language: &Language) -> Option<&dyn LanguageParser> {
+            (language.as_str() == "cobol").then_some(&self.inner as &dyn LanguageParser)
+        }
+        fn supported_languages(&self) -> Vec<Language> {
+            vec![Language::new("cobol")]
+        }
+    }
+
+    /// `require_parser` takes `&dyn ParserRegistry`, not the concrete default — every existing test only ever
+    /// exercised it through `DefaultParserRegistry`, so the extension point itself was unverified.
+    ///
+    /// Also pinned: language lookup is **exact-case**. `Language::new` does not fold case, so an uppercase name
+    /// finds no parser even though *extension* matching is case-insensitive — an asymmetry worth knowing before
+    /// normalising one of them.
+    #[test]
+    fn require_parser_works_through_the_trait_and_lookups_are_exact_case() {
+        let reg = CobolRegistry { inner: CobolParser };
+        let any: &dyn ParserRegistry = &reg;
+
+        let p = require_parser(any, &Language::new("cobol")).expect("the trait-based registry must be usable");
+        assert_eq!(p.language().as_str(), "cobol");
+        assert_eq!(p.extensions(), &["cbl"]);
+        assert!(require_parser(any, &Language::new("php")).is_err());
+
+        let default = DefaultParserRegistry::new();
+        assert!(
+            default.parser_for(&Language::new("PHP")).is_none(),
+            "a language key is looked up by exact string — `Language::new` does not fold case"
+        );
+        assert!(default.parser_for(&Language::new(Language::PHP)).is_some());
+    }
+
     /// `require_parser` hands back the concrete parser for a supported language, not merely an `Ok`.
     #[test]
     fn require_parser_returns_the_concrete_parser() {
