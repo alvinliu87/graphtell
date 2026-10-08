@@ -100,3 +100,82 @@ fn files_without_mapper_root_are_ignored() {
 
     assert!(scan(&dir).is_empty(), "only `<mapper`-rooted XMLs count");
 }
+
+/// A `JOIN` must yield **one pseudo call per table** — the generic Table / ReadsDb-WritesDb rules need to fire on
+/// *both* joined tables, so collapsing them into one call site would silently drop the second table's edges.
+/// Guarded in `src/mybatis.rs` directly; this pins it through the public `ResourceAdapter` surface.
+#[test]
+fn join_statement_yields_one_pseudo_call_per_joined_table() {
+    let dir = std::env::temp_dir().join(format!("gt-mapper-join-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write(
+        &dir,
+        "src/main/resources/mapper/JoinMapper.xml",
+        r#"<mapper namespace="demo.JoinMapper">
+  <select id="list">
+    select * from eb_order a join eb_user b on a.uid = b.id
+  </select>
+</mapper>
+"#,
+    );
+
+    let calls = scan(&dir);
+    assert_eq!(calls.len(), 2, "a join yields one pseudo call per table: {calls:?}");
+    let tables: Vec<&str> = calls
+        .iter()
+        .map(|c| match &c.args[0] {
+            FactValue::String(t) => t.as_str(),
+            _ => panic!("arg0 must be the table name, got {:?}", c.args),
+        })
+        .collect();
+    assert!(tables.contains(&"eb_order"), "the first joined table must appear: {tables:?}");
+    assert!(tables.contains(&"eb_user"), "the second joined table must appear: {tables:?}");
+    assert!(
+        calls.iter().all(|c| c.callee == "mybatis::select"),
+        "both are selects, got: {:?}",
+        calls.iter().map(|c| &c.callee).collect::<Vec<_>>()
+    );
+    assert!(
+        calls.iter().all(|c| c.owner_fqn == "demo.JoinMapper.list"),
+        "both attach to the same statement FQN"
+    );
+}
+
+/// Backtick-quoted identifiers are ubiquitous in MySQL SQL; the backticks must not leak into the table identity
+/// (otherwise `eb_order` and `` `eb_order` `` would be two different tables). Guarded in `src/mybatis.rs` directly;
+/// this pins it through the public surface.
+#[test]
+fn backquoted_table_names_are_unquoted() {
+    let dir = std::env::temp_dir().join(format!("gt-mapper-backtick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write(
+        &dir,
+        "m.xml",
+        "<mapper namespace=\"demo.M\">\n<select id=\"q\">select * from `eb_order`</select>\n</mapper>\n",
+    );
+    let calls = scan(&dir);
+    assert_eq!(calls.len(), 1, "expected one pseudo call, got: {calls:?}");
+    assert_eq!(
+        calls[0].args,
+        vec![FactValue::String("eb_order".to_string())],
+        "backticks must not leak into the table name"
+    );
+}
+
+/// Build / dependency directories are pruned: a mapper vendored into `target/` must not be scanned, otherwise a
+/// stale compiled artifact would shadow or duplicate the real one. Guarded in `src/mybatis.rs` directly; this pins
+/// it through the public surface (real trees always carry a `target/` dir).
+#[test]
+fn build_and_dependency_dirs_are_pruned() {
+    let dir = std::env::temp_dir().join(format!("gt-mapper-target-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write(
+        &dir,
+        "target/classes/mapper/Stale.xml",
+        "<mapper namespace=\"demo.Stale\">\n<select id=\"q\">select * from eb_stale</select>\n</mapper>\n",
+    );
+    assert!(
+        scan(&dir).is_empty(),
+        "a mapper under target/ must not be scanned: {dir:?}"
+    );
+}

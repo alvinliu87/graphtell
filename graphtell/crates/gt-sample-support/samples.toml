@@ -30,3 +30,19 @@ dirs = ["hackathon-starter"]
 
 [link]
 dirs = ["frontend-backend-link"]
+
+# Real Java corpus (Spring Boot / MyBatis). The checkout root is the Maven project;
+# sources live under `<module>/src/main/java/...`.
+[java]
+dirs = ["mall"]
+
+# Real Node.js corpus (NestJS). The checkout root is the app; sources live under `src/...`.
+[node]
+dirs = ["nestjs-realworld-example-app"]
+
+# Real Python corpus: the Django framework source (a real, famous open-source project), vendored from
+# PyPI as a pure-python wheel. Its ORM models exercise the parser's Python-specific facts — class-body
+# field declarations (`models.CharField` -> `class.field` call sites), class inheritance, `@property`
+# decorators, and FQN-restoring imports. The wheel's `django/` package is unpacked under this dir.
+[python]
+dirs = ["django"]

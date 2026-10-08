@@ -88,3 +88,72 @@ fn multiple_rule_overrides_are_independent() {
     assert_eq!(cfg.get("a").unwrap().enabled, Some(false));
     assert_eq!(cfg.get("b").unwrap().enabled, Some(true));
 }
+
+/// A "real override" is anything other than `enabled = None` **and** empty options. Two branches must be stored
+/// (not deleted as a no-op): `enabled = Some(false)` (the user disabled the rule, distinct from "inherit default")
+/// and `enabled = None` with pinned `options` (only the parameters are overridden). `set` upserts, so re-setting
+/// the same rule replaces rather than appends. Only pinned in `src/store.rs`; this guards it on the public surface
+/// the settings UI calls — a disabled rule must actually store `false`, not be silently dropped.
+#[test]
+fn real_overrides_persist_and_upsert() {
+    let s = store();
+    let pid = proj(&s);
+
+    // Disabled is a real override: must be stored and round-trip as `false` (not treated as "clear").
+    s.set_rule_config(&ProjectRuleConfig {
+        project_id: pid,
+        rule_id: "r".into(),
+        enabled: Some(false),
+        options: serde_json::json!({}),
+    })
+    .expect("set disabled");
+    let got = s.get_rule_configs(pid).expect("get");
+    assert_eq!(got.len(), 1, "a disabled override must be stored, not deleted");
+    assert_eq!(
+        got.get("r").unwrap().enabled,
+        Some(false),
+        "enabled=false must round-trip as false, not be dropped or flipped"
+    );
+
+    // Options-only override (enabled=None but parameters pinned) is also a real override: must be stored.
+    s.set_rule_config(&ProjectRuleConfig {
+        project_id: pid,
+        rule_id: "r".into(),
+        enabled: None,
+        options: serde_json::json!({ "k": "v" }),
+    })
+    .expect("set options-only");
+    let got = s.get_rule_configs(pid).expect("get");
+    assert_eq!(got.len(), 1, "re-setting the same rule must upsert, not append a second row");
+    assert_eq!(got.get("r").unwrap().enabled, None, "enabled=None must round-trip as None");
+    assert_eq!(got.get("r").unwrap().options, serde_json::json!({ "k": "v" }));
+}
+
+/// An "empty override" (`enabled = None` **and** empty options) means "back to inherited default", so `set` must
+/// delete the row rather than leave a tombstone. Only pinned in `src/store.rs`; this guards it on the public surface
+/// — clearing a toggle in the UI must actually remove the override, otherwise the rule keeps firing on stale data.
+#[test]
+fn empty_override_deletes_the_row() {
+    let s = store();
+    let pid = proj(&s);
+    s.set_rule_config(&ProjectRuleConfig {
+        project_id: pid,
+        rule_id: "r".into(),
+        enabled: Some(false),
+        options: serde_json::json!({ "x": 1 }),
+    })
+    .expect("set");
+    assert_eq!(s.get_rule_configs(pid).expect("get").len(), 1);
+
+    s.set_rule_config(&ProjectRuleConfig {
+        project_id: pid,
+        rule_id: "r".into(),
+        enabled: None,
+        options: serde_json::json!({}),
+    })
+    .expect("set empty override");
+    assert!(
+        s.get_rule_configs(pid).expect("get").is_empty(),
+        "an empty override (enabled=None with empty options) must delete the row"
+    );
+}

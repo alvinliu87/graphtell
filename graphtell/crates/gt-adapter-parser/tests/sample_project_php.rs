@@ -164,3 +164,53 @@ fn parses_route_call_sites_inside_closures() {
         "expected to locate the call site of the apple_login route"
     );
 }
+
+/// The existing model test only asserts the **class** FQN; the method FQN (`Class.method`) is the node identity
+/// every route and edge hangs on. Verified on a real controller so the namespace + class + method derivation is
+/// pinned end-to-end (synthesized sources can't prove the real `app\outapi\controller` namespace resolves).
+#[test]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
+fn parses_controller_method_fqn() {
+    let Some(facts) = parse_php("app/outapi/controller/StoreCategory.php") else {
+        panic!("{}", missing_hint());
+    };
+    let class = facts
+        .declarations
+        .iter()
+        .find(|d| d.kind.is("Class") && d.name == "StoreCategory")
+        .expect("expected the StoreCategory class to be parsed");
+    let method = facts
+        .declarations
+        .iter()
+        .find(|d| {
+            d.kind.is("Method")
+                && d.name == "index"
+                && d.parent_fqn.as_deref() == Some(class.fqn.as_str())
+        })
+        .expect("expected the index() method to be parsed");
+    assert_eq!(
+        method.fqn, "app\\outapi\\controller\\StoreCategory::index",
+        "a method FQN must be derived from namespace + class + method (PHP uses `::` as the member separator)"
+    );
+}
+
+/// Short-name -> FQN resolution (P2 restores decls by, P7 resolves `MapsTo`) depends on `use` imports being
+/// extracted with their full dotted name. Unguarded anywhere on the corpus; pinned here so a regression that
+/// drops import collection silently breaks every later phase's name lookup.
+#[test]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
+fn parses_model_use_imports() {
+    let Some(facts) = parse_php("app/model/order/StoreOrder.php") else {
+        panic!("{}", missing_hint());
+    };
+    let names: Vec<&str> = facts.imports.iter().map(|i| i.name.as_str()).collect();
+    // These two are what let `Model` / `BaseModel` resolve to an FQN rather than a bare short name.
+    assert!(
+        names.contains(&"think\\Model"),
+        "the base Model import must be collected: {names:?}"
+    );
+    assert!(
+        names.contains(&"crmeb\\basic\\BaseModel"),
+        "the crmeb BaseModel import must be collected: {names:?}"
+    );
+}

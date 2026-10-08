@@ -262,6 +262,73 @@ pub fn missing_hint_named(name: &str) -> String {
     )
 }
 
+/// Locate the real Java corpus (Spring Boot / MyBatis) root directory.
+///
+/// Uses [`find_named_sample`] so a `GRAPHTELL_SAMPLE_DIR` pointing at an unrelated checkout (e.g. the
+/// PHP one) is never adopted as the Java sample. Returns `None` when the sample is absent; callers
+/// should skip, not fail.
+pub fn java_sample_root() -> Option<PathBuf> {
+    let dirs = dirs_of("java");
+    find_named_sample(&dirs.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The application sub-directory inside the Java checkout (empty — the Maven project root is the checkout root).
+pub fn java_sample_inner_dir() -> String {
+    catalog("java").inner_dir
+}
+
+/// Build a repository-relative path under the Java checkout's inner directory.
+pub fn java_sample_rel(rel: &str) -> String {
+    PathBuf::from(java_sample_inner_dir())
+        .join(rel)
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Locate the real Python corpus (the Django framework source) root directory.
+///
+/// Uses [`find_named_sample`] so a `GRAPHTELL_SAMPLE_DIR` pointing at an unrelated checkout is never
+/// adopted as the Python sample. Returns `None` when the sample is absent; callers should skip, not fail.
+pub fn python_sample_root() -> Option<PathBuf> {
+    let dirs = dirs_of("python");
+    find_named_sample(&dirs.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The application sub-directory inside the Python checkout (empty — the wheel's `django/` package is the checkout root).
+pub fn python_sample_inner_dir() -> String {
+    catalog("python").inner_dir
+}
+
+/// Build a repository-relative path under the Python checkout's inner directory.
+pub fn python_sample_rel(rel: &str) -> String {
+    PathBuf::from(python_sample_inner_dir())
+        .join(rel)
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Locate the real Node.js corpus (NestJS) root directory.
+///
+/// Uses [`find_named_sample`] so a `GRAPHTELL_SAMPLE_DIR` pointing at an unrelated checkout is never
+/// adopted as the Node sample. Returns `None` when the sample is absent; callers should skip, not fail.
+pub fn node_sample_root() -> Option<PathBuf> {
+    let dirs = dirs_of("node");
+    find_named_sample(&dirs.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The application sub-directory inside the Node checkout (empty — the app root is the checkout root).
+pub fn node_sample_inner_dir() -> String {
+    catalog("node").inner_dir
+}
+
+/// Build a repository-relative path under the Node checkout's inner directory.
+pub fn node_sample_rel(rel: &str) -> String {
+    PathBuf::from(node_sample_inner_dir())
+        .join(rel)
+        .to_string_lossy()
+        .to_string()
+}
+
 /// Locate the secondary PHP framework sample root directory.
 ///
 /// Delegates to [`find_named_sample`] (the generic `GRAPHTELL_SAMPLE_DIR` env var counts only when
@@ -305,6 +372,9 @@ mod tests {
             "node_a",
             "node_b",
             "link",
+            "java",
+            "node",
+            "python",
         ] {
             let dirs = dirs_of(key);
             assert!(!dirs.is_empty(), "catalog has no `dirs` for `{key}`");

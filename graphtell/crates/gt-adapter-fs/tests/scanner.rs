@@ -452,3 +452,65 @@ fn std_file_system_basic_ops() {
     assert!(fs.len(&root.join("nope")).is_err());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The size cutoff is `> 4 MiB`, not `>=`: a file of exactly 4 MiB is still source and must be kept,
+/// only strictly larger files are dropped. `scan_skips_large_files` only exercises the `> 4 MiB` side,
+/// so this pins the boundary independently in the always-on suite.
+#[test]
+fn scan_keeps_file_at_exactly_the_size_limit() {
+    let root = scratch("sizelimit");
+    let limit = 4 * 1024 * 1024;
+    write(&root, "exact.php", &"x".repeat(limit)); // == 4 MiB
+    write(&root, "over.php", &"x".repeat(limit + 1)); // > 4 MiB
+    let rels = rels(&scan_all(&root));
+    assert!(rels.contains(&"exact.php".to_string()), "a file of exactly 4 MiB must be kept");
+    assert!(!rels.contains(&"over.php".to_string()), "a file over 4 MiB must be skipped");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The `languages` filter is applied **after** language resolution, so a file whose language comes from the
+/// parser-registry map (`ScanRequest.language_extensions`) is still subject to it. A file mapped to a language
+/// outside the filter must be dropped even though the extension is "known" to the map — otherwise an
+/// `ingest::run` that both supplies the map and narrows `languages` would leak foreign-language files into a
+/// sub-project graph.
+#[test]
+fn scan_filters_by_language_after_map_resolution() {
+    let root = scratch("langfilter");
+    write(&root, "svc/main.go", "package main"); // resolved via the fallback table -> "go"
+    write(&root, "gen/code.unknownext", "x"); // resolved only via the map -> "customlang"
+
+    let map = vec![("customlang".to_string(), vec!["unknownext".to_string()])];
+    let files = WalkDirScanner::new(Vec::new())
+        .scan(&ScanRequest {
+            root: root.clone(),
+            extra_excludes: Vec::new(),
+            languages: vec![Language::new("php")],
+            language_extensions: map,
+        })
+        .expect("scan");
+    let got = rels(&files);
+    // Neither "go" nor "customlang" is in the `php`-only filter.
+    assert!(
+        !got.contains(&"svc/main.go".to_string()),
+        "a map/fallback-resolved language outside the filter must be dropped: {got:?}"
+    );
+    assert!(
+        !got.contains(&"gen/code.unknownext".to_string()),
+        "a map-resolved language outside the filter must be dropped: {got:?}"
+    );
+
+    // Control: widen the filter to include the mapped language and the file must now appear.
+    let kept_files = WalkDirScanner::new(Vec::new())
+        .scan(&ScanRequest {
+            root: root.clone(),
+            extra_excludes: Vec::new(),
+            languages: vec![Language::new("php"), Language::new("customlang")],
+            language_extensions: vec![("customlang".to_string(), vec!["unknownext".to_string()])],
+        })
+        .expect("scan");
+    assert!(
+        rels(&kept_files).contains(&"gen/code.unknownext".to_string()),
+        "when the mapped language is in the filter the file must be kept: {kept_files:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

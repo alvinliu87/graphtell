@@ -149,17 +149,42 @@ fn annotation_kinds_and_annotations_of_project() {
 fn stats_counts_nodes_and_edges() {
     let s = store();
     let pid = proj(&s);
+    // `by_kind` counts the `kind` column; `by_category` groups by `properties.category` (separate SQL branch,
+    // nodes without an explicit category are absent from `by_category`). The Class node declares
+    // `category: Table`, so `by_category` folds it into the Table bucket while `by_kind` keeps it as Class — the
+    // canvas legend and the per-kind badge must not silently collapse onto one grouping.
+    let mut t = node(pid, 1, "Table");
+    t.properties = serde_json::json!({ "category": "Table" });
+    let mut m = node(pid, 2, "Method");
+    m.properties = serde_json::json!({ "category": "Method" });
+    let mut categorized = node(pid, 3, "Class");
+    categorized.properties = serde_json::json!({ "category": "Table" });
     s.apply(&GraphDelta {
         project_id: Some(pid),
-        nodes: vec![node(pid, 1, "Table"), node(pid, 2, "Method")],
+        nodes: vec![t, m, categorized],
         edges: vec![NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(2), NodeId(1))],
         ..Default::default()
     })
     .expect("apply");
 
     let stats = s.stats(pid).expect("stats");
-    assert_eq!(stats.nodes, 2);
+    assert_eq!(stats.nodes, 3);
     assert_eq!(stats.edges, 1);
+
+    // `by_kind` counts the `kind` column — the Class node is one Class, not a Table.
+    assert_eq!(stats.by_kind.get("Table"), Some(&1));
+    assert_eq!(stats.by_kind.get("Method"), Some(&1));
+    assert_eq!(stats.by_kind.get("Class"), Some(&1));
+
+    // `by_category` groups by `properties.category`: the Class node with `category: Table` folds into the
+    // Table bucket (2), distinct from the per-kind count.
+    assert_eq!(
+        stats.by_category.get("Table"),
+        Some(&2),
+        "by_category must fold the Class-with-category-Table node in: {:?}",
+        stats.by_category
+    );
+    assert_eq!(stats.by_category.get("Method"), Some(&1));
 }
 
 #[test]
@@ -168,14 +193,27 @@ fn chain_adjacency_returns_consistent_maps() {
     let pid = proj(&s);
     s.apply(&GraphDelta {
         project_id: Some(pid),
-        nodes: vec![node(pid, 1, "Table"), node(pid, 2, "Method")],
-        edges: vec![NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(2), NodeId(1))],
+        nodes: vec![node(pid, 1, "Table"), node(pid, 2, "Method"), node(pid, 3, "Service")],
+        edges: vec![
+            NewEdge::new(pid, EdgeKind::new(EdgeKind::CALLS), NodeId(2), NodeId(1)),
+            // Triggers is a *semantic* chain edge; CALLS is syntax-only.
+            NewEdge::new(pid, EdgeKind::new("Triggers"), NodeId(3), NodeId(1)),
+        ],
         ..Default::default()
     })
     .expect("apply");
 
-    let (out, inc, _sem) = s.chain_adjacency(pid).expect("chain_adjacency");
-    // CALLS is a chain edge; it must show in both directions.
+    let (out, inc, sem) = s.chain_adjacency(pid).expect("chain_adjacency");
+    // Both CALLS and Triggers are chain edges, so they appear in the out/in adjacency in both directions.
     assert_eq!(out.get(&2).cloned(), Some(vec![1]));
-    assert_eq!(inc.get(&1).cloned(), Some(vec![2]));
+    assert_eq!(out.get(&3).cloned(), Some(vec![1]));
+    let mut in1 = inc.get(&1).cloned().unwrap_or_default();
+    in1.sort();
+    assert_eq!(in1, vec![2, 3], "both CALLS and Triggers feed node 1's chain in-edges");
+
+    // The semantic-in tally keeps only *semantic* chain edges — CALLS is syntax-only, so node 1's semantic
+    // in-edges are just the Triggers edge. (The rule engine's chain analysis reads this subset.)
+    let mut sem1 = sem.get(&1).cloned().unwrap_or_default();
+    sem1.sort();
+    assert_eq!(sem1, vec![3], "semantic in-edges must exclude the syntax-only CALLS edge");
 }
