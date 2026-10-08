@@ -28,9 +28,13 @@ fn synthetic_flask_root() -> std::path::PathBuf {
 
     std::fs::write(
         dir.join("app.py"),
-        r#"from flask import Flask
+        r#"from flask import Flask, Blueprint
 
 app = Flask(__name__)
+
+# Blueprint: Flask sub-applications register routes on a `Blueprint` object (receiver `bp`), a separate receiver
+# alternative declared in flask.yaml's `route_calls` — the original sample only ever used `app`.
+bp = Blueprint("items", __name__)
 
 
 @app.route("/")
@@ -45,6 +49,20 @@ def create_order():
 
 @app.get("/health")
 def health():
+    return "ok"
+
+
+@bp.route("/items")
+def list_items():
+    return "ok"
+
+
+# Route guard: `@login_required` is a bare decorator on the same view function as the route. Its name matches
+# flask.yaml's `guard_name_patterns`, so it must be materialised as a security `Middleware` node (the FKB sets
+# `synthesize_unresolved: true`), wired to the contract via `PassesThrough`. The original sample had no guards.
+@app.route("/admin")
+@login_required
+def admin_dashboard():
     return "ok"
 "#,
     )
@@ -112,5 +130,61 @@ fn flask_routes_produce_http_contracts_linked_to_handlers() {
     assert!(
         pairs.iter().any(|(c, t)| c == "GET /health" && t == "health"),
         "expected GET /health -> health, got: {pairs:?}"
+    );
+}
+
+/// Flask blueprints register routes on a `Blueprint` object (`@bp.route(...)`), a distinct receiver alternative
+/// (`bp` / `blueprint` / `api`) in flask.yaml's `route_calls`. The original sample only used `@app.route`, so a
+/// regression that dropped the non-`app` receivers would have passed silently.
+#[test]
+fn flask_blueprint_route_is_recognized() {
+    let root = synthetic_flask_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the graph build of the synthetic Flask project should succeed");
+    };
+    let pairs = contract_targets(&b);
+    assert!(
+        pairs.iter().any(|(c, t)| c == "GET /items" && t == "list_items"),
+        "the blueprint route `bp.route(\"/items\")` must become GET /items -> list_items, got: {pairs:?}"
+    );
+}
+
+/// A route guard (`@login_required`) is materialised into a security `Middleware` node and wired to its contract
+/// via `PassesThrough` (flask.yaml sets `synthesize_unresolved: true`). This pins both the guard correlation and
+/// the fact that the guard lands on **exactly one** route (not every route in the module).
+#[test]
+fn flask_route_guard_builds_middleware() {
+    let root = synthetic_flask_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the graph build of the synthetic Flask project should succeed");
+    };
+    let middleware: Vec<String> = nodes_of_kind(&b, "Middleware")
+        .iter()
+        .map(|n| n.name.clone())
+        .collect();
+    assert!(
+        middleware.iter().any(|n| n == "login_required"),
+        "the route guard @login_required must be materialised as a Middleware node, got: {middleware:?}"
+    );
+
+    // Exactly the guarded contract passes through the middleware — a guard on one view must not bleed onto the others.
+    let guarded: Vec<String> = nodes_of_kind(&b, "HttpContract")
+        .iter()
+        .filter(|n| {
+            b.store
+                .edges_of(n.id, EdgeDirection::Outgoing)
+                .expect("edges")
+                .iter()
+                .any(|e| {
+                    e.kind.as_str() == "PassesThrough"
+                        && b.store.get_node(e.to_id).ok().flatten().is_some_and(|m| m.name == "login_required")
+                })
+        })
+        .map(|n| n.name.clone())
+        .collect();
+    assert_eq!(
+        guarded,
+        vec!["GET /admin".to_string()],
+        "only the guarded contract may PassesThrough login_required, got: {guarded:?}"
     );
 }

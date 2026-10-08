@@ -117,3 +117,41 @@ fn language_lookup_is_exact_case_while_extension_match_is_not() {
         "extension matching is case-insensitive, unlike the language-key lookup above"
     );
 }
+
+/// NEGATIVE: config / doc / data extensions must NOT route to any parser. `language_for_extension` matches only the
+/// extensions each parser declares (exact, case-insensitive — `gt-domain/src/port/parsing.rs:94`), with **no fuzzy
+/// fallback**. The doc-comment risk is "a silent miss means zero facts"; the inverse — a silent *hit* on a non-code
+/// file — would feed garbage facts into the pipeline, so the closed set is pinned here.
+#[test]
+fn plausible_non_source_extensions_route_to_no_parser() {
+    let reg = DefaultParserRegistry::new();
+    let lang_of = |ext: &str| reg.language_for_extension(ext).map(|l| l.as_str().to_string());
+    for ext in ["md", "markdown", "toml", "yaml", "yml", "xml", "txt", "lock", "cfg", "ini"] {
+        assert!(
+            lang_of(ext).is_none(),
+            "extension `{ext}` must not route to any parser (closed-set extension map)"
+        );
+    }
+}
+
+/// NEGATIVE: `supported_languages` must be *exactly* the expected set — no extra language and no duplicate. The
+/// presence check (`supported_languages_contains_all_expected_and_is_sorted`) already pins "nothing missing"; the
+/// length pins "nothing extra / nothing duplicated", the other half of registry completeness (a stray or doubled
+/// language would otherwise pass the per-language checks unnoticed).
+#[test]
+fn supported_languages_is_exactly_the_required_set() {
+    let reg = DefaultParserRegistry::new();
+    let langs = reg.supported_languages();
+    assert_eq!(
+        langs.len(),
+        EXPECTED.len(),
+        "supported_languages must be exactly the expected set (no missing, no extra, no duplicate): {langs:?}"
+    );
+    for lang in EXPECTED {
+        assert_eq!(
+            langs.iter().filter(|l| l.as_str() == *lang).count(),
+            1,
+            "{lang} must appear exactly once in supported_languages"
+        );
+    }
+}

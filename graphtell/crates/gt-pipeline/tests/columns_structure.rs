@@ -147,6 +147,51 @@ class Session extends Model
     dir
 }
 
+/// Like [`synthetic_php_schema_root`] but the DDL table name is already **singular** (`CREATE TABLE user`,
+/// not `users`). Its only job is to pin that the real DDL loader keeps the raw name as the schema key, so the
+/// columns phase resolves by *exact* key instead of only through the plural fallback.
+fn synthetic_php_schema_singular_root() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-columns-singular-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("app/Models")).expect("mkdir");
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{ "require": { "laravel/framework": "^11.0" } }"#,
+    )
+    .expect("write composer.json");
+    std::fs::write(
+        dir.join("install.sql"),
+        r#"CREATE TABLE `user` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `email` varchar(120) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+"#,
+    )
+    .expect("write install.sql");
+    std::fs::write(
+        dir.join("app/Models/User.php"),
+        r#"<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+}
+"#,
+    )
+    .expect("write User.php");
+    dir
+}
+
 /// Two tables sharing a column name must yield two distinct `Column` nodes, each wired only to its
 /// own table — `user.id` and `order.id` must not merge.
 #[test]
@@ -222,5 +267,66 @@ fn table_without_ddl_gets_no_columns() {
     assert!(
         !has_column_targets(&b, &table_named(&b, "user")).is_empty(),
         "sanity: the user table (with DDL) should have columns"
+    );
+}
+
+/// A DDL table whose name is already singular (`CREATE TABLE user`) must resolve by **exact** key, not only
+/// through the plural fallback. Every other sample in this file writes plural DDL (`users`/`orders`), which
+/// only exercises `or_else(plural)` — so a regression that dropped the exact-match lookup would pass all of
+/// them while silently breaking every project whose DDL is written singular. This pins the real DDL loader
+/// keeps the raw name as the schema key.
+#[test]
+fn table_with_singular_ddl_resolves_exact_key() {
+    let root = synthetic_php_schema_singular_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic PHP graph build should succeed");
+    };
+    let user = table_named(&b, "user");
+    let cols = has_column_targets(&b, &user);
+    assert!(
+        cols.iter().any(|c| c == "user.id"),
+        "user.id must resolve by exact key, got: {cols:?}"
+    );
+    assert!(
+        cols.iter().any(|c| c == "user.email"),
+        "user.email must resolve by exact key, got: {cols:?}"
+    );
+    assert_eq!(cols.len(), 2, "exactly the two DDL columns, got: {cols:?}");
+}
+
+/// A `Column` node must record its provenance (`column` name, `category`, `sources: ["schema"]`) in `properties`.
+/// The kernel cannot hard-code which semantic kinds exist, so this metadata is what the `ColumnsMatch` predicate
+/// (and the UI) rely on to know "this column came from the authoritative DDL". The phase unit test pins it for an
+/// in-memory workspace; this pins it **survives the full DDL → P3 schema-symbol → P6 materialise → store** round trip.
+#[test]
+fn column_node_records_schema_provenance_through_full_pipeline() {
+    let root = synthetic_php_schema_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic PHP graph build should succeed");
+    };
+
+    let email = nodes_of_kind(&b, "Column")
+        .into_iter()
+        .find(|n| n.name == "user.email")
+        .unwrap_or_else(|| panic!("user.email column node should exist"));
+
+    let p = &email.properties;
+    assert_eq!(
+        p.get("column").and_then(|v| v.as_str()),
+        Some("email"),
+        "the column name must be recorded"
+    );
+    assert_eq!(
+        p.get("category").and_then(|v| v.as_str()),
+        Some("Column"),
+        "category must be Column"
+    );
+    let sources = p
+        .get("sources")
+        .and_then(|v| v.as_array())
+        .expect("sources must be an array");
+    assert!(
+        sources.iter().any(|s| s.as_str() == Some("schema")),
+        "the source must be the authoritative schema (DDL), got: {sources:?}"
     );
 }

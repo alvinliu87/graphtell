@@ -10,6 +10,12 @@
 //! split, or a detector that needs one more signal.
 //!
 //! Run: `cargo test -p gt-pipeline --test detector_coverage -- --ignored --nocapture`
+//!
+//! By default this is a **report**: it prints each `(used, detected)` row and the miss count but still passes,
+//! so it can be eyeballed in a dev loop. To turn it into a real regression gate (fail the test the moment any
+//! probe is `used>0, detected=no`), set `GT_DETECTOR_FAIL_ON_MISS=1` — e.g. in the CI job that runs against the
+//! real samples. The gate is opt-in because the substring ground truth can false-positive (a library named in a
+//! docblock without being used), and we do not want a benign sample to break a default run.
 
 mod common;
 
@@ -55,6 +61,28 @@ const PHP_PROBES: &[Probe] = &[
         needles: &["DB::transaction"],
         exts: &["php"],
     },
+    // The remaining PHP frameworks the detector can recognise (from FKB) — each pinned against a precise
+    // in-source signal so a miss is a real "detector did not switch on", not a docblock coincidence.
+    Probe {
+        lib: "laravel",
+        needles: &["Illuminate\\Support\\Facades", "Illuminate\\Foundation\\"],
+        exts: &["php"],
+    },
+    Probe {
+        lib: "symfony",
+        needles: &["Symfony\\"],
+        exts: &["php"],
+    },
+    Probe {
+        lib: "thinkphp",
+        needles: &["think\\", "Think\\"],
+        exts: &["php"],
+    },
+    Probe {
+        lib: "spatie-permission",
+        needles: &["Spatie\\Permission", "givePermissionTo", "HasRoles"],
+        exts: &["php"],
+    },
 ];
 
 const JAVA_PROBES: &[Probe] = &[
@@ -67,6 +95,22 @@ const JAVA_PROBES: &[Probe] = &[
     },
     Probe { lib: "spring-amqp", needles: &["RabbitListener"], exts: &["java"] },
     Probe { lib: "spring-kafka", needles: &["KafkaListener"], exts: &["java"] },
+    // The remaining Java frameworks the detector can recognise (from FKB).
+    Probe {
+        lib: "spring-boot",
+        needles: &["org.springframework.boot"],
+        exts: &["java"],
+    },
+    Probe {
+        lib: "spring-cache",
+        needles: &["@Cacheable", "@CacheEvict", "spring.cache"],
+        exts: &["java"],
+    },
+    Probe {
+        lib: "spring-jpa",
+        needles: &["JpaRepository", "jakarta.persistence", "javax.persistence"],
+        exts: &["java"],
+    },
 ];
 
 /// How often any of `needles` occurs in the project's own sources (by extension).
@@ -184,4 +228,13 @@ fn detector_coverage_on_real_samples() {
     let (rows, misses) = counts;
     assert!(rows >= 3, "too few real samples ({rows}), so the coverage conclusion is not trustworthy");
     eprintln!("\n{rows} samples, {misses} missed (used>0 but detected=no)");
+
+    // Opt-in hard gate: only when `GT_DETECTOR_FAIL_ON_MISS` is set do misses fail the test. Off by default so a
+    // substring false-positive (a lib named in a docblock) cannot break a normal `--ignored` run.
+    if misses > 0 && std::env::var("GT_DETECTOR_FAIL_ON_MISS").is_ok() {
+        panic!(
+            "{misses} detector miss(es) (library used in source but not detected as a framework); \
+             the gated knowledge for it would stay switched off. See the MISS rows printed above."
+        );
+    }
 }

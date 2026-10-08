@@ -64,6 +64,18 @@ class OrderService:
         with transaction.atomic():
             Order.objects.create()
             OrderItem.objects.create()
+
+    # Transaction boundary supplied as the `@transaction.atomic` *decorator* (a second documented form in
+    # django.yaml: both the decorator and the `with` context manager surface a call site with method `atomic`).
+    # The original sample only used the `with` form, so this branch was unpinned.
+    @transaction.atomic
+    def place_in_tx_deco(self):
+        Order.objects.create()
+        OrderItem.objects.create()
+
+    # Precision negative: a single-table write must NOT be flagged — P13 requires writes to >= 2 distinct tables.
+    def single_write(self):
+        Order.objects.create()
 "#,
     )
     .expect("write services.py");
@@ -121,26 +133,30 @@ fn python_multi_write_without_tx_is_flagged() {
         !hits.is_empty(),
         "P13 must fire multi-write-without-tx on the Django sample (place_bad writes two tables with no transaction boundary), but nothing was hit"
     );
+    // Helper: do any hits cite an owner whose fqn contains `needle`?
+    let cites = |needle: &str| {
+        hits.iter().any(|a| {
+            a.evidence
+                .get("owner_fqn")
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains(needle))
+                .unwrap_or(false)
+        })
+    };
+
+    // Positive: `place_bad` (create + create, no boundary) writes two tables and must be flagged.
+    assert!(cites("place_bad"), "place_bad must be flagged (no transaction boundary)");
+
+    // Negative: every recognised boundary form must suppress the annotation.
+    assert!(!cites("place_in_tx"), "place_in_tx (with transaction.atomic) must not be annotated");
     assert!(
-        hits.iter().any(|a| a
-            .evidence
-            .get("owner_fqn")
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains("place_bad"))
-            .unwrap_or(false)),
-        "the annotated method must be place_bad (no transaction boundary), got owner_fqns: {:?}",
-        hits.iter()
-            .map(|a| a.evidence.get("owner_fqn"))
-            .collect::<Vec<_>>()
+        !cites("place_in_tx_deco"),
+        "place_in_tx_deco (@transaction.atomic decorator) must not be annotated — the decorator is a documented boundary form"
     );
+    // Precision: a single-table write must not fire.
     assert!(
-        !hits.iter().any(|a| a
-            .evidence
-            .get("owner_fqn")
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains("place_in_tx"))
-            .unwrap_or(false)),
-        "place_in_tx is wrapped in transaction.atomic, so it must not be annotated"
+        !cites("single_write"),
+        "single_write touches only one table, so it must not be annotated"
     );
     eprintln!("Django multi-write-without-tx hits = {}", hits.len());
 }

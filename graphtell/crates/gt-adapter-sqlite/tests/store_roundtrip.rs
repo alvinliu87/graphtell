@@ -172,3 +172,55 @@ fn count_nodes_filters_on_the_owning_party() {
     assert_eq!(count(Some("Cache"), Some("backend")), 1);
     assert_eq!(count(Some("Cache"), Some("frontend")), 0);
 }
+
+/// The core "what is written can be read back" contract for the *semantic* node columns — `fqn`, `identity`,
+/// `phase`, `language`, `confidence`, `properties`. `node_and_edge_roundtrip` writes `identity` but never asserts
+/// it returns, and leaves the rest at their defaults; a migration that drops one of these columns (or a broken read
+/// mapping) would pass every other assertion here. This pins each column end-to-end.
+#[test]
+fn node_semantic_fields_roundtrip() {
+    let store = make_store();
+    let pid = seed_project(&store);
+
+    store
+        .apply(&GraphDelta {
+            project_id: Some(pid),
+            nodes: vec![NewNode {
+                id: Some(NodeId(301)),
+                project_id: pid,
+                sub_project_id: None,
+                kind: NodeKind::new("Method"),
+                name: "placeOrder".into(),
+                fqn: Some("App\\Service\\Cart::placeOrder".into()),
+                identity: Some(IdentityKey::fqn("App\\Service\\Cart::placeOrder")),
+                file_id: None,
+                span: gt_domain::model::Span { start_line: 10, end_line: 20, start_byte: 0, end_byte: 0 },
+                language: Language::new("php"),
+                phase: Phase("Annotate".to_string()),
+                confidence: 0.83,
+                properties: serde_json::json!({ "hot": true, "owner": "checkout" }),
+            }],
+            ..Default::default()
+        })
+        .expect("persisting the node should succeed");
+
+    let got = store.get_node(NodeId(301)).expect("get_node should succeed").expect("node exists");
+    assert_eq!(got.fqn.as_deref(), Some("App\\Service\\Cart::placeOrder"), "fqn must round-trip");
+    assert_eq!(
+        got.identity,
+        Some(IdentityKey::fqn("App\\Service\\Cart::placeOrder")),
+        "identity (used for node de-duplication / merge) must round-trip"
+    );
+    assert_eq!(got.phase, Phase("Annotate".to_string()), "phase must round-trip");
+    assert_eq!(got.language, Language::new("php"), "language must round-trip");
+    assert!(
+        (got.confidence - 0.83).abs() < 1e-6,
+        "confidence must round-trip, got {}",
+        got.confidence
+    );
+    assert_eq!(
+        got.properties,
+        serde_json::json!({ "hot": true, "owner": "checkout" }),
+        "arbitrary JSON properties must round-trip verbatim"
+    );
+}

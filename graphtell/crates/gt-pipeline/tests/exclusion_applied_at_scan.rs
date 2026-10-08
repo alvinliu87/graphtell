@@ -48,12 +48,18 @@ class Controller
 }
 "#,
         ),
-        // Generated / cached content that must never reach the parser.
+        // Generated / cached content that must never reach the parser. All three sit in directories excluded only
+        // by `fkb/php/laravel.yaml` (`storage/framework/**`, `storage/logs/**`, `bootstrap/cache/**`) — none is a
+        // scanner built-in — so the only thing that can keep them out is the FKB-resolved exclusion.
         (
             "storage/framework/cache/x.php",
             "<?php\nreturn ['cached' => 1];\n",
         ),
         ("bootstrap/cache/y.php", "<?php\nreturn ['compiled' => 1];\n"),
+        (
+            "storage/logs/z.php",
+            "<?php\nreturn ['log' => 1];\n",
+        ),
     ];
     for (rel, body) in files {
         let path = dir.join(rel);
@@ -79,7 +85,11 @@ fn fkb_resolved_exclusions_keep_generated_dirs_out_of_the_scan() {
         "an ordinary source file must be scanned, got: {paths:?}"
     );
 
-    for forbidden in ["storage/framework/cache/x.php", "bootstrap/cache/y.php"] {
+    for forbidden in [
+        "storage/framework/cache/x.php",
+        "bootstrap/cache/y.php",
+        "storage/logs/z.php",
+    ] {
         assert!(
             !paths.iter().any(|p| *p == forbidden),
             "`{forbidden}` can only be blocked by an exclude rule resolved from the FKB (it is neither a scanner built-in nor an asset directory),\

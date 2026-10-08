@@ -359,6 +359,40 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 }
 
 #[test]
+fn spring_amqp_is_detected_from_its_annotation() {
+    // Like Kafka / Spring Cache / Spring JPA, no sample under `samples/java-projects` uses Spring AMQP, so the
+    // positive case must be synthetic. The precise detector is the
+    // `org.springframework.amqp.rabbit.annotation.RabbitListener` import; the `@RabbitListener` annotation is the
+    // call site the rule keys off. This is the fourth Java annotation library and closes the gap left by
+    // `a_spring_project_without_those_libraries_gets_neither`, which lists `spring-amqp` in its *negative* set —
+    // without this positive pin, a broken AMQP FKB would still pass every test (the negative only proves it is
+    // absent when the code is silent, never that it is present when it should be).
+    let root = java_project(
+        "spring-amqp",
+        POM_SPRING_ONLY,
+        &[(
+            "src/main/java/demo/OrderConsumer.java",
+            r#"package demo;
+
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
+
+public class OrderConsumer {
+    @RabbitListener(queues = "orders")
+    public void onMessage(String body) {
+    }
+}
+"#,
+        )],
+    );
+    let got = detected_frameworks_java(&root);
+    assert!(
+        got.contains(&"spring-amqp".to_string()),
+        "@RabbitListener must activate spring-amqp, recognised: {got:?}"
+    );
+    assert!(got.contains(&"spring-boot".to_string()), "it must be recognised as spring-boot as well");
+}
+
+#[test]
 fn mybatis_is_detected_from_the_manifest_alone() {
     // The XML-only style: mapper XML plus a starter dependency, and **no** `org.apache.ibatis` import
     // anywhere. This is the path that goes through `manifest_has`'s textual fallback — `pom.xml` is not

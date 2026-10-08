@@ -110,3 +110,53 @@ fn embed_batch_empty_is_empty() {
     let Some(emb) = embedder_or_skip() else { return };
     assert!(emb.embed_batch(&[]).is_empty(), "an empty batch must return an empty vec");
 }
+
+/// `embed_batch` for N>1 must preserve input order, and every row must equal the per-item `embed` of the *same*
+/// input. The doc claims batch is ~10x faster than per-item `embed` "only safe if the result is identical"; the
+/// existing `embed_batch_single_item_matches_embed` only pins N=1. A transpose/padding bug in the multi-row path
+/// would reorder or mutate rows and silently corrupt recall (each result is associated back to its input by index).
+#[test]
+fn embed_batch_preserves_order_and_matches_individuals() {
+    let Some(emb) = embedder_or_skip() else { return };
+    let inputs = [
+        "placeOrder".to_string(),
+        "apply discount to cart".to_string(),
+        "shipping method selection".to_string(),
+        "refund the order".to_string(),
+    ];
+    let batch = emb.embed_batch(&inputs);
+    assert_eq!(batch.len(), inputs.len(), "batch length must equal input length");
+    for (i, t) in inputs.iter().enumerate() {
+        assert!(
+            all_close(&batch[i], &emb.embed(t), 1e-3),
+            "batch row {i} must equal the per-item embed of the same input (order/padding bug): \
+             batch[{i}] vs embed({t:?})"
+        );
+    }
+}
+
+/// Encoding is deterministic: the same text encoded twice yields the same vector. A nondeterministic embedder
+/// (dropout left on, unseeded op) would make recall scores jitter between cold-start and refresh, breaking the
+/// "candidate set is stable" assumption the snapshot/recall tests rely on.
+#[test]
+fn embed_is_deterministic() {
+    let Some(emb) = embedder_or_skip() else { return };
+    let a = emb.embed("apply discount to cart");
+    let b = emb.embed("apply discount to cart");
+    assert!(
+        all_close(&a, &b, 1e-4),
+        "encoding the same text twice must be stable (no dropout / nondeterministic op)"
+    );
+    let q1 = emb.embed_query("refund the order");
+    let q2 = emb.embed_query("refund the order");
+    assert!(all_close(&q1, &q2, 1e-4), "embed_query must also be deterministic");
+}
+
+/// `dim()` must report bge-m3's known embedding dimension (1024). This pins the *model identity*: if the wrong
+/// safetensors is loaded, or the pooling/head is mis-wired, the dimension changes and every stored recall vector
+/// becomes incompatible — a silent, whole-layer regression for recall.
+#[test]
+fn dim_is_bge_m3_1024() {
+    let Some(emb) = embedder_or_skip() else { return };
+    assert_eq!(emb.dim(), 1024, "bge-m3 must produce 1024-dim embeddings");
+}

@@ -80,6 +80,33 @@ fn parses_controller_decorators_and_routes() {
         "the \"feed\" path argument must be carried: {:?}",
         get_feed.args
     );
+
+    // A method-level @Get must land on `Class.method`, never be over-attributed to the class FQN — otherwise FKB
+    // would attach the handler to the wrong node.
+    assert_ne!(
+        get_feed.owner_fqn, "ArticleController",
+        "a method-level @Get must land on Class.method, not be over-attributed to the class FQN"
+    );
+
+    // The bare @Get() on findAll must not be pre-concatenated with the class `articles` prefix at parse time —
+    // route composition (class prefix + method path) is a later FKB step, not the parser's job.
+    assert!(
+        !get_empty.args.iter().any(|a| a.as_str() == Some("articles")),
+        "the bare @Get() must not carry the class \"articles\" prefix"
+    );
+
+    // `@Param('id')` and other parameter decorators sit *inside* `parameters`, so they must NOT be collected as
+    // call sites (a real over-extraction guard, src/js.rs:547). The real controller mixes such parameter
+    // decorators in, so this pins the guard on genuine source rather than a tiny snippet.
+    assert!(
+        facts.call_sites.iter().all(|c| c.callee_text != "@Param"),
+        "parameter decorators must not be collected as call sites: {:?}",
+        facts
+            .call_sites
+            .iter()
+            .map(|c| &c.callee_text)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Constructor parameter properties (`constructor(private readonly articleService: ArticleService)`) feed
@@ -104,5 +131,31 @@ fn parses_constructor_injection_as_inject_call_site() {
         inject.entity.as_deref(),
         Some("ArticleService"),
         "the injected field type must be the entity"
+    );
+}
+
+/// NEGATIVE: the class-level `@Controller('articles')` prefix must be attributed to the **class** FQN and must NOT
+/// be duplicated onto every method-level `@Get` site. A regression that re-attaches the prefix to each handler
+/// method would double the prefix and mis-route FKB's `HandledBy` edges onto phantom `Class.method` nodes carrying
+/// `articles`. The method routes carry `feed` / nothing at parse time — never the class prefix — so a method-owned
+/// `@Get` carrying `articles` is a definite over-attribution.
+#[test]
+#[ignore = "needs the node sample (nestjs-realworld-example-app), which is not committed (too large to ship with the repo)"]
+fn class_level_controller_prefix_is_not_owned_by_methods() {
+    let Some(facts) = parse_js("src/article/article.controller.ts") else {
+        panic!("{}", missing_hint_named("node"));
+    };
+    let methods_carrying_class_prefix = facts
+        .call_sites
+        .iter()
+        .filter(|c| {
+            c.callee_text == "@Get"
+                && c.owner_fqn != "ArticleController"
+                && c.args.iter().any(|a| a.as_str() == Some("articles"))
+        })
+        .count();
+    assert_eq!(
+        methods_carrying_class_prefix, 0,
+        "the class-level \"articles\" prefix must not be duplicated onto method-level @Get call sites"
     );
 }

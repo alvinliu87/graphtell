@@ -147,3 +147,135 @@ class CorsMiddleware
         cors.iter().map(|v| &v.node_name).collect::<Vec<_>>()
     );
 }
+
+/// Exercises the rule's **second** `any_of` branch (Form two): a `header("Access-Control-Allow-Origin: " . $origin)`
+/// *call* (not the `$header[...] =` array assignment of Form one). The reflected value travels as a string
+/// concatenation into the single `header()` argument — a different graph shape (`CallSite`, not `HeaderAssignment`)
+/// that the first test never reaches. A regression that drops Form two leaves every concatenated-header CORS
+/// reflection undetected.
+#[test]
+fn cors_reflect_origin_fires_on_header_call_form() {
+    let d = std::env::temp_dir().join(format!(
+        "graphtell-cors-call-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|x| x.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("app")).expect("mkdir app");
+    std::fs::write(
+        d.join("composer.json"),
+        r#"{ "require": { "laravel/framework": "^11.0" } }"#,
+    )
+    .expect("composer");
+    // Only Form two here: a single header() call carrying the CORS header concatenated with a request variable.
+    // There is no `$header['Access-Control-Allow-Origin'] = …` assignment, so any hit must come from the call form.
+    std::fs::write(
+        d.join("app/CorsMiddleware.php"),
+        r#"<?php
+namespace App;
+
+class CorsMiddleware
+{
+    public function handle($request, $next)
+    {
+        // reflected origin via a header() call (Form two must fire)
+        header("Access-Control-Allow-Origin: " . $request->header('origin'));
+        return $next($request);
+    }
+}
+"#,
+    )
+    .expect("php");
+
+    let Built { container, project_id } = build(d);
+
+    let svc = RuleService::new(
+        container.store.clone() as Arc<dyn Persistence>,
+        container.rules.clone() as Arc<dyn RuleProvider>,
+    );
+    let report = svc.check(project_id, None, false).expect("check should not fail");
+
+    let cors: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|v| v.rule_id == "cors-reflect-origin")
+        .collect();
+    assert!(
+        !cors.is_empty(),
+        "cors-reflect-origin (Form two: header() call with a concatenated variable) must fire; violations={:?}",
+        report
+            .violations
+            .iter()
+            .map(|v| &v.rule_id)
+            .collect::<Vec<_>>()
+    );
+    // The matched node must be the header() call site, not an array-assignment form.
+    assert!(
+        cors
+            .iter()
+            .any(|v| v.node_name.to_ascii_lowercase().contains("header")),
+        "the reported node should be the header() call form; violations={:?}",
+        cors.iter().map(|v| &v.node_name).collect::<Vec<_>>()
+    );
+}
+
+/// Negative for Form two's `$`-variable requirement: `header("Access-Control-Allow-Origin: *")` is a static literal
+/// with no request variable, so the `$` predicate must reject it (a wildcard is a *different* misconfiguration the
+/// rule deliberately does not judge). Pins the branch boundary so a loosened predicate cannot start flagging literals.
+#[test]
+fn cors_reflect_origin_static_wildcard_header_does_not_fire() {
+    let d = std::env::temp_dir().join(format!(
+        "graphtell-cors-star-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|x| x.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("app")).expect("mkdir app");
+    std::fs::write(
+        d.join("composer.json"),
+        r#"{ "require": { "laravel/framework": "^11.0" } }"#,
+    )
+    .expect("composer");
+    std::fs::write(
+        d.join("app/CorsMiddleware.php"),
+        r#"<?php
+namespace App;
+
+class CorsMiddleware
+{
+    public function handle($request, $next)
+    {
+        // Static wildcard — no request variable, Form two must NOT fire.
+        header("Access-Control-Allow-Origin: *");
+        return $next($request);
+    }
+}
+"#,
+    )
+    .expect("php");
+
+    let Built { container, project_id } = build(d);
+
+    let svc = RuleService::new(
+        container.store.clone() as Arc<dyn Persistence>,
+        container.rules.clone() as Arc<dyn RuleProvider>,
+    );
+    let report = svc.check(project_id, None, false).expect("check should not fail");
+
+    let cors: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|v| v.rule_id == "cors-reflect-origin")
+        .collect();
+    assert!(
+        cors.is_empty(),
+        "a static `Access-Control-Allow-Origin: *` must not trigger cors-reflect-origin; violations={:?}",
+        cors.iter().map(|v| &v.node_name).collect::<Vec<_>>()
+    );
+}

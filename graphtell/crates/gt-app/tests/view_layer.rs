@@ -370,6 +370,46 @@ fn object_view_resource_center_shows_its_users() {
     }
 }
 
+/// End-to-end: the "open a table to see its fields" feature must surface on the **real corpus**, not just synthetically.
+///
+/// `view_columns.rs` proves the column mechanism at the unit level (install.sql + Laravel migration → `schema`
+/// symbol → `Column` nodes → `HasColumn` edges → `center.columns`), but nothing here asserts it on real data — a
+/// break in `columns.rs` materialization or a schema-source wiring regression could ship silently on the corpus.
+///
+/// Robust against partial data: tables without a schema source are skipped, but at least one real table must carry
+/// its columns in the object view (otherwise the core "open table → see fields" capability is broken end-to-end).
+#[ignore = "requires the real `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present"]
+#[test]
+fn table_object_view_carries_columns_on_corpus() {
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR); run `cargo test -p gt-app -- --ignored` with the corpus present",
+    );
+    let views = view_svc(&b);
+    let cands = views
+        .candidates(b.project_id, "table", 50, None, None)
+        .expect("candidates");
+    assert!(!cands.is_empty(), "the table perspective must have candidates");
+
+    let mut with_columns = 0usize;
+    for c in cands.iter() {
+        let Ok(ov) = views.object_view(b.project_id, "table", c.id, Some(1)) else {
+            continue;
+        };
+        if let Some(cols) = &ov.center.columns {
+            assert!(
+                !cols.is_empty(),
+                "a table that reports columns must not report an empty list: {}",
+                c.name
+            );
+            with_columns += 1;
+        }
+    }
+    assert!(
+        with_columns > 0,
+        "at least one real table must surface its columns in the object view (the column feature is broken end-to-end on the corpus)"
+    );
+}
+
 /// Orphan access (direct accessors with no semantic entry upstream) must be **downgraded to accounting, not lit up**:
 /// * not appear on the canvas (neither in `rings` nor as any edge endpoint);
 /// * but must appear in `orphans`, carrying name and "what it did to the resource" —

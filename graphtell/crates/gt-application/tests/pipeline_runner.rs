@@ -37,12 +37,17 @@ const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
 
 /// A `MarkerProvider` that sleeps `ms` on every `markers()` call, so a build takes visibly longer than the
 /// scheduling quantum and concurrent builds overlap enough for the guard / slot cap to be observable.
+///
+/// `calls` counts how many times the pipeline actually entered a build (`markers()` runs once per build, before any
+/// slow work) — used to make "exactly one build ran" observable and deterministic in the `spawn`-twice test.
 struct SlowMarkerProvider {
     inner: DefaultMarkerProvider,
     ms: u64,
+    calls: Arc<AtomicUsize>,
 }
 impl MarkerProvider for SlowMarkerProvider {
     fn markers(&self) -> Vec<Marker> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(self.ms));
         self.inner.markers()
     }
@@ -73,6 +78,7 @@ fn deps(slow_markers_ms: u64) -> PipelineDeps {
         markers: Arc::new(SlowMarkerProvider {
             inner: DefaultMarkerProvider::new(),
             ms: slow_markers_ms,
+            calls: Arc::new(AtomicUsize::new(0)),
         }),
         resources: Arc::new(
             DefaultResourceAdapterRegistry::new().register(Box::new(MyBatisMapperAdapter::default())),
@@ -222,4 +228,109 @@ fn spawn_runs_build_in_background() {
             }
         }
     }
+}
+
+/// Like [`setup`] but exposes the `SlowMarkerProvider` call counter (number of builds that actually entered the
+/// pipeline) so a test can assert "exactly N builds ran" deterministically.
+fn setup_counted(slow_markers_ms: u64) -> (Arc<dyn Persistence>, Arc<PipelineService>, ProjectId, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let store: Arc<dyn Persistence> =
+        Arc::new(SqliteStore::in_memory().expect("in-memory store must construct"));
+    let project = store
+        .create_project(NewProject {
+            name: "it".into(),
+            root_path: scratch_dir(),
+            description: None,
+            config: Some(ProjectConfig::default()),
+        })
+        .expect("create_project");
+    let svc = Arc::new(PipelineService::new(
+        store.clone(),
+        Arc::new(PipelineDeps {
+            fs: Arc::new(StdFileSystem::new()),
+            scanner: Arc::new(WalkDirScanner::new(Vec::new())),
+            parsers: Arc::new(DefaultParserRegistry::new()),
+            kb: Arc::new(
+                YamlKnowledgeBase::load_dir(Path::new(FKB_DIR))
+                    .expect("the FKB directory must load, otherwise the test environment is broken"),
+            ),
+            techstack: Arc::new(
+                DefaultTechStackRegistry::new()
+                    .register(Box::new(PhpTechStackAdapter::new()))
+                    .register(Box::new(JsTechStackAdapter::new())),
+            ),
+            markers: Arc::new(SlowMarkerProvider {
+                inner: DefaultMarkerProvider::new(),
+                ms: slow_markers_ms,
+                calls: Arc::clone(&calls),
+            }),
+            resources: Arc::new(
+                DefaultResourceAdapterRegistry::new()
+                    .register(Box::new(MyBatisMapperAdapter::default())),
+            ),
+        }),
+        Arc::new(NoopRuleProvider),
+    ));
+    (store, svc, project.id, calls)
+}
+
+/// Two `spawn`s (the HTTP / Tauri entry point) of the **same** project must result in exactly one real build: the
+/// second `spawn` launches a background `run` that finds the `running`-set slot already taken and is rejected
+/// before it ever touches the pipeline. We count `markers()` calls (one per build) to make this observable and
+/// deterministic — a regression that let two background builds race the same project would double-write the graph
+/// and bump the count to 2.
+#[test]
+fn spawn_twice_same_project_runs_exactly_one_build() {
+    let (store, svc, pid, calls) = setup_counted(150);
+
+    svc.spawn(pid, Arc::new(NoopObserver)).expect("spawn must enqueue");
+    svc.spawn(pid, Arc::new(NoopObserver)).expect("spawn must enqueue");
+
+    // Poll until the single winning build reaches Ready.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match store.get_project(pid).unwrap() {
+            Some(p) if p.status == ProjectStatus::Ready => break,
+            Some(p) if p.status == ProjectStatus::Failed => panic!("background build failed"),
+            _ => {
+                if Instant::now() > deadline {
+                    panic!("timed out waiting for the spawned build");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "two spawns of the same project must run exactly one build \
+         (the second must be rejected by the running-set guard before markers)"
+    );
+}
+
+/// Rebuilding a project that is already `Ready` (a plain, non-concurrent second `run`) must re-flip the status
+/// through `Indexing` and land back on `Ready` — not error, not leave it stuck, and not be (wrongly) flagged as a
+/// `Conflict` just because it was built before. This is the normal "re-index" user action the suite otherwise never
+/// exercises (every other test builds each project exactly once).
+#[test]
+fn rebuild_runs_again_and_stays_ready() {
+    let (store, svc, pid) = setup(0);
+    svc.run(pid, &NoopObserver).expect("first build");
+    assert_eq!(
+        store.get_project(pid).unwrap().unwrap().status,
+        ProjectStatus::Ready
+    );
+
+    let out = svc
+        .run(pid, &NoopObserver)
+        .expect("rebuild must succeed (not a Conflict)");
+    assert!(
+        !out.sub_projects.is_empty() || out.files.is_empty(),
+        "the rebuild produced an outcome"
+    );
+    assert_eq!(
+        store.get_project(pid).unwrap().unwrap().status,
+        ProjectStatus::Ready,
+        "after a rebuild the status must be Ready again"
+    );
 }

@@ -370,3 +370,81 @@ class M
     );
     assert!(exec.owner_fqn.ends_with("run"), "owner_fqn={}", exec.owner_fqn);
 }
+
+/// NEGATIVE: the signature-comparison noise gate must drop loose `==`/`!=` that are NOT signature checks. Three
+/// unrelated shapes must each be excluded: a plain comparison with no `$…sign…` side, a comparison against a string
+/// literal, and a side shaped like `assign`/`design`/`resign` (same letters as `sign`). Without this gate the rule
+/// floods the fact set with tens of thousands of ordinary `==`. Guards: `sign_compare_of` (`src/php.rs:1651` + the
+/// `is_string_literal` / `looks_like_signature` exclusions at `:1654` / `:1672`).
+#[test]
+fn signature_comparison_noise_gate_excludes_non_signature_loose_eq() {
+    let src = r#"<?php
+class P
+{
+    public function respond($a, $b, $sign, $assign_flag)
+    {
+        if ($a == $b) { return 0; }
+        if ($sign == 'literal') { return 0; }
+        if ($assign_mode == $resign_flag) { return 0; }
+    }
+}
+"#;
+    let facts = parse(src);
+    assert_eq!(
+        facts.sign_compares.len(),
+        0,
+        "loose == without a signature shape, against a string literal, or an `assign`-shaped word must not be collected"
+    );
+}
+
+/// NEGATIVE: PHP code written *inside a string literal* must not be parsed as call sites — otherwise the SQLi /
+/// taint phases would treat documented or concatenated strings as executed code. `collect_call_sites` only matches
+/// `member_call_expression` nodes, and a string's contents are a `string` node, not a call.
+#[test]
+fn code_inside_string_literal_is_not_a_call_site() {
+    let src = r#"<?php
+class M
+{
+    public function run()
+    {
+        $x = 'Db::name(\'goods\')->where(\'id\', 1)->insert()';
+    }
+}
+"#;
+    let facts = parse(src);
+    assert!(
+        facts.call_sites.is_empty(),
+        "code written inside a string literal must not be collected as call sites: {:?}",
+        facts
+            .call_sites
+            .iter()
+            .map(|c| c.callee_text.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// NEGATIVE: only the **static** `Db::name` / `Db::table` facade yields a table name; an *instance* `$q->name(...)`
+/// must not (it walks upstream to a bare variable and gives up). `db_table_of` only matches the `scoped_call_expression`
+/// shape (`src/php.rs:179`); mistaking an arbitrary `->name()` for a table would mislabel P7's `WritesDb` target.
+#[test]
+fn instance_name_call_does_not_yield_db_table() {
+    let src = r#"<?php
+class Svc
+{
+    public function run($q)
+    {
+        $q->name('goods')->where('id', 1)->insert($data);
+    }
+}
+"#;
+    let facts = parse(src);
+    let insert = facts
+        .call_sites
+        .iter()
+        .find(|c| c.method.as_deref() == Some("insert"))
+        .expect("the insert call site must be captured");
+    assert_eq!(
+        insert.db_table, None,
+        "only the static Db::name facade yields the table; an instance ->name() must not"
+    );
+}

@@ -40,10 +40,31 @@ use think\facade\Db;
 
 class Goods
 {
+    // Confirmed (critical): a superglobal request source is interpolated straight into a raw SQL call site,
+    // so P9 must land the *confirmed* `tainted_raw` (not the unknown warning).
     public function detail()
     {
-        $id = request()->param('id');
+        $id = $_GET['id'];
         return Db::query("SELECT * FROM goods WHERE id = {$id}");
+    }
+
+    // Confirmed where-condition interpolation: `->where("...{$kw}...")` embeds a request variable in the
+    // condition string. This is the where-family sink (tainted_where), which the original sample never exercised.
+    public function search()
+    {
+        $kw = $_GET['kw'];
+        return Db::table('goods')->where("CONCAT(',',roles,',') LIKE '%,{$kw},%'")->select();
+    }
+
+    // A variable whose source cannot be traced (here a plain function parameter, with no assignment-chain
+    // link to a request source) must stay the *unknown* warning (`tainted_raw_unknown`), never be elevated to
+    // the confirmed critical. This pins P9's documented precision: it does not false-positive a whole-variable
+    // pass-in as confirmed — better a false negative (exposed by `rules_silent`) than an unexplainable critical.
+    // (Note: `request()->param` *is* a recognised source in fkb/php/common.yaml, so the unrecognised case must
+    // be a parameter / config read, not a framework request helper.)
+    public function vague($x)
+    {
+        return Db::query("SELECT * FROM t WHERE c = {$x}");
     }
 }
 "#,
@@ -75,6 +96,28 @@ fn annotation_kinds(b: &common::Built) -> Vec<String> {
     out
 }
 
+/// Total number of annotations of a given kind across the whole graph. Used to pin that each sink fires
+/// exactly once (and that the unrecognised-source case is demoted, never quietly promoted).
+fn annotation_count(b: &common::Built, kind: &str) -> usize {
+    let nodes = b
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: None,
+            name_contains: None,
+            limit: Some(5000),
+            offset: Some(0),
+        })
+        .expect("query nodes");
+    let mut c = 0usize;
+    for n in &nodes {
+        if let Ok(anns) = b.store.annotations_of(n.id) {
+            c += anns.iter().filter(|a| a.kind == kind).count();
+        }
+    }
+    c
+}
+
 #[test]
 fn request_value_interpolated_into_raw_sql_is_annotated() {
     let root = synthetic_php_taint_root();
@@ -83,9 +126,32 @@ fn request_value_interpolated_into_raw_sql_is_annotated() {
     };
 
     let kinds = annotation_kinds(&b);
+    // The original test only required "tainted_raw OR tainted_raw_unknown", which the unproven path alone
+    // satisfied — so the *confirmed* request-source trace (the whole point of P9's backward tracing) was never
+    // pinned. Now each case is counted precisely:
     assert!(
         kinds.iter().any(|k| k == "tainted_raw" || k == "tainted_raw_unknown"),
         "a request value concatenated into Db::query must be annotated by P9: {kinds:?}"
+    );
+    // (1) detail(): a superglobal source interpolated into Db::query -> the *confirmed* critical. Exactly one,
+    // so a regression that dropped the source trace (and demoted everything to _unknown) cannot pass.
+    assert_eq!(
+        annotation_count(&b, "tainted_raw"),
+        1,
+        "the superglobal-sourced raw SQL must be the confirmed tainted_raw, got: {kinds:?}"
+    );
+    // (2) search(): an embedded variable in ->where(...) -> tainted_where. This sink was never exercised before.
+    assert_eq!(
+        annotation_count(&b, "tainted_where"),
+        1,
+        "the where-condition interpolation must be annotated tainted_where, got: {kinds:?}"
+    );
+    // (3) vague(): request()->param is NOT a recognised source, so it stays the *unknown* warning — and,
+    // crucially, must NOT be counted among the confirmed tainted_raw (the count above would be 2 otherwise).
+    assert_eq!(
+        annotation_count(&b, "tainted_raw_unknown"),
+        1,
+        "request()->param must be demoted to tainted_raw_unknown, not elevated to tainted_raw, got: {kinds:?}"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -101,9 +167,14 @@ fn taint_vocabulary_reaches_the_phase_without_framework_detection() {
     };
     // The synthetic project declares no framework (only `require: php`), so P9 can only have run from
     // `fkb/php/common.yaml`'s `taint`.
+    let kinds = annotation_kinds(&b);
     assert!(
-        !annotation_kinds(&b).is_empty(),
+        !kinds.is_empty(),
         "with no framework detected, the taint vocabulary declared by the language-generic layer must still apply"
+    );
+    assert!(
+        kinds.iter().any(|k| k.starts_with("tainted_")),
+        "the applied vocabulary must actually be the SQL-injection taint kinds, got: {kinds:?}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

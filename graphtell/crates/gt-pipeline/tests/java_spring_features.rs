@@ -102,8 +102,58 @@ public class DemoService {
     dir
 }
 
-fn count_kind(b: &common::Built, kind: &str) -> usize {
-    nodes_of_kind(b, kind).len()
+/// Exactly one node of `kind` must exist (mediators merge by name). A regression that split one mediator into
+/// several nodes would still satisfy `>= 1`, so we pin the exact count here.
+fn single_node(b: &common::Built, kind: &str) -> gt_domain::model::Node {
+    let nodes = nodes_of_kind(b, kind);
+    assert_eq!(
+        nodes.len(),
+        1,
+        "expected exactly one {kind} node (mediators merge by name), got {}: {:?}",
+        nodes.len(),
+        nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+    nodes.into_iter().next().unwrap()
+}
+
+fn single_node_name(b: &common::Built, kind: &str) -> String {
+    single_node(b, kind).name
+}
+
+/// The `Method` nodes at the far end of every `edge` in-edge on the (single) `kind` node. The engine links a
+/// semantic edge directly from the owning `Method` (not from a call-site node), so the source *is* the method. This
+/// pins that a semantic edge hangs off the *right* call site, not merely that *some* edge of that kind exists on the
+/// mediator.
+fn incoming_method_sources(b: &common::Built, kind: &str, edge: &str) -> Vec<String> {
+    let node = single_node(b, kind);
+    b.store
+        .edges_of(node.id, EdgeDirection::Incoming)
+        .expect("edges")
+        .iter()
+        .filter(|e| e.kind.0 == edge)
+        .filter_map(|e| b.store.get_node(e.from_id).ok().flatten())
+        .filter(|m| m.kind.0 == "Method")
+        .map(|m| m.name.clone())
+        .collect()
+}
+
+/// The `Method` nodes targeted by every `edge` **out**-edge on the (single) `kind` node (used for `Schedule --Triggers--> method`).
+fn outgoing_method_targets(b: &common::Built, kind: &str, edge: &str) -> Vec<String> {
+    let node = single_node(b, kind);
+    b.store
+        .edges_of(node.id, EdgeDirection::Outgoing)
+        .expect("edges")
+        .iter()
+        .filter(|e| e.kind.0 == edge)
+        .filter_map(|e| {
+            b.store
+                .get_node(e.to_id)
+                .ok()
+                .flatten()
+                .filter(|m| m.kind.0 == "Method")
+                .map(|m| m.name.clone())
+        })
+        .collect()
 }
 
 fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<gt_domain::model::Node> {
@@ -145,17 +195,35 @@ fn spring_features_produce_semantic_nodes_and_edges() {
         panic!("the graph build of the synthetic Spring project should succeed");
     };
 
-    // Nodes: at least one of each kind (an Event may split into several by send / receive method, but >= 1 suffices).
-    for kind in ["Cache", "Schedule", "Event", "Queue", "Topic"] {
-        assert!(
-            count_kind(&b, kind) >= 1,
-            "expected a {kind} semantic node, got: {:?}",
-            ["Cache", "Schedule", "Event", "Queue", "Topic"]
-                .iter()
-                .map(|k| (*k, count_kind(&b, *k)))
-                .collect::<Vec<_>>()
-        );
-    }
+    // Each mediator must merge into exactly one node keyed by its name, and the name must be the literal the
+    // annotation / call site carries (cache name, queue / topic name, event type, cron). The original `>= 1` check
+    // would pass even if every annotation spawned its own node — which would silently break the publish / subscribe
+    // loop that the consumer + producer edges are supposed to form on a single node.
+    assert_eq!(
+        single_node_name(&b, "Cache"),
+        "userCache",
+        "the three cache annotations must merge on the cache name"
+    );
+    assert_eq!(
+        single_node_name(&b, "Queue"),
+        "orders.queue",
+        "Rabbit consumer + producer must merge on the queue name"
+    );
+    assert_eq!(
+        single_node_name(&b, "Topic"),
+        "audit.topic",
+        "Kafka consumer + producer must merge on the topic name"
+    );
+    assert_eq!(
+        single_node_name(&b, "Event"),
+        "OrderPlacedEvent",
+        "event publisher + subscriber must merge on the event type"
+    );
+    assert_eq!(
+        single_node_name(&b, "Schedule"),
+        "0 0 * * * *",
+        "the @Scheduled cron literal must become the Schedule node name"
+    );
 
     // Edges: Cache has both ReadsCache (@Cacheable) and WritesCache (@CachePut/@CacheEvict).
     assert!(
@@ -174,11 +242,6 @@ fn spring_features_produce_semantic_nodes_and_edges() {
     assert!(
         has_incoming_edge(&b, "Event", "Emits"),
         "Event should have an Emits in-edge"
-    );
-    assert_eq!(
-        count_kind(&b, "Event"),
-        1,
-        "the publisher and subscriber of the same event type should merge into 1 Event node"
     );
     // Queue / Topic consumer side = ListensTo.
     assert!(
@@ -202,9 +265,53 @@ fn spring_features_produce_semantic_nodes_and_edges() {
         "Queue should have a PublishesTo in-edge (the message producer side)"
     );
 
-    // Every out-of-process mediator this FKB builds must carry `side`. These rules historically declared none,
-    // so their nodes arrived with no party evidence and disappeared from any side-filtered perspective; the side
-    // is now inherited from `fkb/java/spring-boot.yaml`'s top-level `side: backend` (see the loader).
+    // Each semantic edge must hang off the *right* method, not merely exist on the mediator. The `has_incoming_edge`
+    // checks above only look at the edge kind, so a regression that mis-attached a cache / event / queue edge to the
+    // wrong call site would still pass. The engine links a semantic edge directly from the owning `Method`.
+    let cache_readers = incoming_method_sources(&b, "Cache", "ReadsCache");
+    assert!(
+        cache_readers.iter().any(|m| m == "getUser"),
+        "ReadsCache must come from @Cacheable on `getUser`, got: {cache_readers:?}"
+    );
+    let cache_writers = incoming_method_sources(&b, "Cache", "WritesCache");
+    assert!(
+        cache_writers.iter().any(|m| m == "save") && cache_writers.iter().any(|m| m == "clear"),
+        "WritesCache must come from @CachePut `save` and @CacheEvict `clear`, got: {cache_writers:?}"
+    );
+    assert!(
+        incoming_method_sources(&b, "Event", "ListensTo").iter().any(|m| m == "onOrderPlaced"),
+        "Event ListensTo must come from @EventListener `onOrderPlaced`"
+    );
+    assert!(
+        incoming_method_sources(&b, "Event", "Emits").iter().any(|m| m == "doSomething"),
+        "Event Emits must come from `publishEvent` inside `doSomething`"
+    );
+    assert!(
+        incoming_method_sources(&b, "Queue", "ListensTo").iter().any(|m| m == "onOrder"),
+        "Queue ListensTo must come from @RabbitListener `onOrder`"
+    );
+    assert!(
+        incoming_method_sources(&b, "Queue", "PublishesTo").iter().any(|m| m == "produce"),
+        "Queue PublishesTo must come from `convertAndSend` inside `produce`"
+    );
+    assert!(
+        incoming_method_sources(&b, "Topic", "ListensTo").iter().any(|m| m == "onAudit"),
+        "Topic ListensTo must come from @KafkaListener `onAudit`"
+    );
+    assert!(
+        incoming_method_sources(&b, "Topic", "PublishesTo")
+            .iter()
+            .any(|m| m == "produceKafka"),
+        "Topic PublishesTo must come from `kafkaTemplate.send` inside `produceKafka`"
+    );
+    assert!(
+        outgoing_method_targets(&b, "Schedule", "Triggers").iter().any(|m| m == "nightly"),
+        "Schedule Triggers must target the @Scheduled `nightly` method"
+    );
+
+    // The Cache / Event / Queue rules declare `side` in their binding (so the node survives any side-filtered
+    // perspective); the Schedule / Topic rules do not, so only these three are pinned here. A regression that
+    // dropped the `side` prop from any of them would make the node disappear from a backend view.
     for kind in ["Cache", "Event", "Queue"] {
         let nodes = nodes_of_kind(&b, kind);
         assert!(!nodes.is_empty(), "the {kind} node must exist");
@@ -212,7 +319,7 @@ fn spring_features_produce_semantic_nodes_and_edges() {
             assert_eq!(
                 n.properties.get("side").and_then(|v| v.as_str()),
                 Some("backend"),
-                "the {kind} node {name} must inherit side=backend (inherited from the increment's top-level declaration), got properties={props}",
+                "the {kind} node {name} must carry side=backend, got properties={props}",
                 name = n.name,
                 props = n.properties
             );

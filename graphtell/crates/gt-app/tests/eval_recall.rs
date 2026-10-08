@@ -230,3 +230,127 @@ fn eval_recall_scenarios() {
         );
     }
 }
+
+/// Pins the `with_snippets` / `include_body` output-shape toggles of `RecallQuery` — branches the corpus loop
+/// never touches (it always sends `false`/`false`). A regression that drops snippet population or the
+/// `## Full files (include_body)` context-pack section would otherwise ship silently; the IDE / MCP consumer
+/// that reads `hits[].snippet` / the markdown body would get empty strings. Gated on the same sample + model as
+/// the corpus (run via `cargo test -p gt-app -- --ignored`).
+#[test]
+#[ignore = "needs the sample_project corpus + bge-m3 weights: structural output-shape check of the recall service, gated like eval_recall_scenarios"]
+fn recall_snippet_and_body_toggles_are_respected() {
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR)",
+    );
+    let svc = RecallService::new(
+        b.container.store.clone() as Arc<dyn Persistence>,
+        b.container.filesystem(),
+        b.container.scanner(),
+    );
+    let base = RecallQuery {
+        query: "支付回调怎么处理".into(),
+        limit: 20,
+        hops: 2,
+        kinds: Vec::new(),
+        with_snippets: false,
+        include_body: false,
+    };
+
+    // OFF: no hit should carry a populated snippet, and the markdown must NOT contain the body section.
+    let off = svc.recall(b.project_id, &base).expect("recall off");
+    assert!(
+        off.hits.iter().all(|h| h.snippet.as_deref().unwrap_or("").is_empty()),
+        "with_snippets=false must not populate hit snippets: {:?}",
+        off.hits.iter().filter_map(|h| h.snippet.clone()).collect::<Vec<_>>()
+    );
+    assert!(
+        !off.markdown.contains("## Full files (include_body)"),
+        "include_body=false must not emit the body section in markdown"
+    );
+
+    // ON: at least one hit must carry a non-empty snippet, and the markdown must carry the body section.
+    let on = svc
+        .recall(
+            b.project_id,
+            &RecallQuery {
+                with_snippets: true,
+                include_body: true,
+                ..base
+            },
+        )
+        .expect("recall on");
+    assert!(
+        on.hits
+            .iter()
+            .any(|h| h.snippet.as_deref().map_or(false, |s| !s.is_empty())),
+        "with_snippets=true must populate at least one hit snippet; hits={:?}",
+        on.hits.len()
+    );
+    assert!(
+        on.markdown.contains("## Full files (include_body)"),
+        "include_body=true must emit the `## Full files (include_body)` section in markdown"
+    );
+}
+
+/// Pins the `kinds` filter branch of `RecallQuery`: restricting to a single kind must return only hits of that
+/// kind (never a broader mix). The corpus loop always sends `kinds: []` (no filter), so this path is otherwise
+/// unguarded. Self-adapting: it derives the target kind from a real hit of an unfiltered recall, so it does not
+/// hard-code a kind name that may be absent from a given sample. Gated on the sample + model.
+#[test]
+#[ignore = "needs the sample_project corpus + bge-m3 weights: structural check of the kinds-filter branch, gated like eval_recall_scenarios"]
+fn recall_kinds_filter_restricts_results() {
+    let b = built().expect(
+        "real-sample integration test requires the `sample_project` corpus (set GRAPHTELL_SAMPLE_DIR)",
+    );
+    let svc = RecallService::new(
+        b.container.store.clone() as Arc<dyn Persistence>,
+        b.container.filesystem(),
+        b.container.scanner(),
+    );
+
+    // First, an unfiltered recall to learn a kind that actually appears in the results.
+    let unfiltered = svc
+        .recall(
+            b.project_id,
+            &RecallQuery {
+                query: "支付回调怎么处理".into(),
+                limit: 20,
+                hops: 2,
+                kinds: Vec::new(),
+                with_snippets: false,
+                include_body: false,
+            },
+        )
+        .expect("recall unfiltered");
+    let Some(target) = unfiltered.hits.first().map(|h| h.kind.clone()) else {
+        eprintln!("skip: unfiltered recall returned no hits on this sample");
+        return;
+    };
+
+    let filtered = svc
+        .recall(
+            b.project_id,
+            &RecallQuery {
+                query: "支付回调怎么处理".into(),
+                limit: 20,
+                hops: 2,
+                kinds: vec![target.clone()],
+                with_snippets: false,
+                include_body: false,
+            },
+        )
+        .expect("recall filtered");
+    assert!(
+        !filtered.hits.is_empty(),
+        "filtering by an existing kind `{target}` must still return hits"
+    );
+    assert!(
+        filtered.hits.iter().all(|h| h.kind == target),
+        "kinds filter must restrict results to `{target}`; got kinds={:?}",
+        filtered
+            .hits
+            .iter()
+            .map(|h| h.kind.clone())
+            .collect::<Vec<_>>()
+    );
+}

@@ -46,6 +46,23 @@ fn parses_model_namespace_and_fqn() {
         inherits,
         "inheritance should be recorded (even though the leaf class is excluded in vendor)"
     );
+
+    // A class must never appear as its own base: `base_name` comes from the `extends`/`implements` clause text
+    // (src/php.rs:327), so a regression pushing the child FQN would create a self-inheritance edge and make P7
+    // walk the model hierarchy forever.
+    assert!(
+        !facts
+            .inheritances
+            .iter()
+            .any(|i| i.child_fqn == class.fqn && i.base_name.contains("StoreOrder")),
+        "a class must not inherit from itself: {:?}",
+        facts
+            .inheritances
+            .iter()
+            .filter(|i| i.child_fqn == class.fqn)
+            .map(|i| &i.base_name)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// A ThinkPHP model does **not** carry its table name in `$table` but in `$name`
@@ -113,6 +130,20 @@ fn parses_event_php_config_entries() {
                 && c.value.as_str() == Some("app\\listener\\order\\OrderPaySuccessListener")),
         "the listener class app\\listener\\order\\OrderPaySuccessListener should be extracted"
     );
+    // Nested arrays must keep their dotted prefix (src/php.rs:862): a bare `OrderPaySuccessListener` key —
+    // flattened, without the `listen.` nesting — would lose the event context every listener edge hangs on.
+    assert!(
+        !facts
+            .config_entries
+            .iter()
+            .any(|c| c.key_path == "OrderPaySuccessListener"),
+        "config key paths must retain their nesting; got: {:?}",
+        facts
+            .config_entries
+            .iter()
+            .map(|c| &c.key_path)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -165,6 +196,31 @@ fn parses_route_call_sites_inside_closures() {
     );
 }
 
+/// NEGATIVE: every `Route::post` / `Route::get` registration must carry its **route path** as an argument — FKB
+/// builds an `HttpContract` node from that path, so a zero-argument route call site would produce an anonymous /
+/// empty endpoint. Route registration is always written `Route::post('path', 'Handler')`, so an empty `args` is a
+/// definite extraction regression (e.g. losing the arguments of a call collected inside a closure).
+#[test]
+#[ignore = "needs the sample_project sample, which is not committed (too large to ship with the repo)"]
+fn route_call_sites_carry_their_path_argument() {
+    let Some(facts) = parse_php("app/api/route/v1.php") else {
+        panic!("{}", missing_hint());
+    };
+    let empty_route_calls: Vec<&str> = facts
+        .call_sites
+        .iter()
+        .filter(|c| {
+            (c.callee_text.contains("Route::post") || c.callee_text.contains("Route::get"))
+                && c.args.is_empty()
+        })
+        .map(|c| c.callee_text.as_str())
+        .collect();
+    assert!(
+        empty_route_calls.is_empty(),
+        "a Route::post/get registration must carry its path argument, got empty: {empty_route_calls:?}"
+    );
+}
+
 /// The existing model test only asserts the **class** FQN; the method FQN (`Class.method`) is the node identity
 /// every route and edge hangs on. Verified on a real controller so the namespace + class + method derivation is
 /// pinned end-to-end (synthesized sources can't prove the real `app\outapi\controller` namespace resolves).
@@ -191,6 +247,15 @@ fn parses_controller_method_fqn() {
     assert_eq!(
         method.fqn, "app\\outapi\\controller\\StoreCategory::index",
         "a method FQN must be derived from namespace + class + method (PHP uses `::` as the member separator)"
+    );
+
+    // PHP's member separator is `::` (src/php.rs:58), NOT the `.` that Java / JS use. A cross-language
+    // "unify the separator" regression would silently change every PHP method node identity while leaving the
+    // positive assertion above untouched only if it were written with the same wrong separator — this negative
+    // pins the separator independently.
+    assert_ne!(
+        method.fqn, "app\\outapi\\controller\\StoreCategory.index",
+        "PHP method FQNs must use `::`, never the Java/JS `.` separator"
     );
 }
 

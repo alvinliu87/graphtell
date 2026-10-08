@@ -36,7 +36,7 @@ fn synthetic_node_a_root() -> std::path::PathBuf {
 
     std::fs::write(
         dir.join("src/cats.controller.ts"),
-        r#"import { Controller, Get, Post } from '@nestjs/common';
+        r#"import { Controller, Get, Post, Put, Delete, Patch } from '@nestjs/common';
 
 @Controller('cats')
 export class CatsController {
@@ -47,6 +47,21 @@ export class CatsController {
 
   @Post('bulk')
   createMany() {
+    return null;
+  }
+
+  @Put(':id')
+  updateOne() {
+    return null;
+  }
+
+  @Delete(':id')
+  removeOne() {
+    return null;
+  }
+
+  @Patch(':id')
+  patchOne() {
     return null;
   }
 
@@ -102,18 +117,49 @@ fn node_a_decorators_produce_contracts_linked_to_handlers() {
     };
     let pairs = contract_targets(&b);
 
-    // Only the two with a path argument build a contract; `@Get()` is deliberately dropped because no path can be obtained
+    // Only the decorators that carry a path build a contract; `@Get()` (listAll) is deliberately dropped because
+    // no path can be obtained. That is the key invariant — better missing than guessed, or the contract bridge
+    // gets polluted — so assert it explicitly rather than only via the count.
+    assert!(
+        !pairs.iter().any(|(_, t)| t == "listAll"),
+        "a `@Get()` with no path argument must build no contract, got: {pairs:?}"
+    );
+
+    // Every REST verb the FKB declares (`@Get/@Post/@Put/@Delete/@Patch`, see fkb/js/nestjs.yaml) must produce its
+    // own contract linked to its handler. The original test pinned only GET + POST, so a regression dropping
+    // `@Put`/`@Delete`/`@Patch` from the FKB would have passed silently.
     assert_eq!(
         pairs.len(),
-        2,
-        "expected only 2 contracts (a `@Get()` with no path builds none), got: {pairs:?}"
+        5,
+        "expected exactly 5 contracts (the five path-bearing decorators), got: {pairs:?}"
     );
-    assert!(
-        pairs.iter().any(|(c, t)| c == "GET /:id" && t == "findOne"),
-        "expected GET /:id -> findOne, got: {pairs:?}"
-    );
-    assert!(
-        pairs.iter().any(|(c, t)| c == "POST /bulk" && t == "createMany"),
-        "expected POST /bulk -> createMany, got: {pairs:?}"
+    let want: &[( &str, &str )] = &[
+        ("GET /:id", "findOne"),
+        ("POST /bulk", "createMany"),
+        ("PUT /:id", "updateOne"),
+        ("DELETE /:id", "removeOne"),
+        ("PATCH /:id", "patchOne"),
+    ];
+    for (c, t) in want {
+        assert!(
+            pairs.iter().any(|(cc, tt)| cc == c && tt == t),
+            "expected {c} -> {t}, got: {pairs:?}"
+        );
+    }
+
+    // Ownership: each contract is a backend contract (no frontend caller in this sample), so it must be tagged
+    // `side = backend` — the same invariant `link_sample` pins for backend-only endpoints.
+    let backend_count = nodes_of_kind(&b, "HttpContract")
+        .iter()
+        .filter(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("backend"))
+        .count();
+    assert_eq!(
+        backend_count,
+        pairs.len(),
+        "every contract must be owned by the backend sub-project (side = backend), got: {:?}",
+        nodes_of_kind(&b, "HttpContract")
+            .iter()
+            .map(|n| (n.name.clone(), n.properties.get("side").cloned()))
+            .collect::<Vec<_>>()
     );
 }

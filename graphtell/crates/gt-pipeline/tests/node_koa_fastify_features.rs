@@ -47,6 +47,24 @@ fn contract_names(b: &common::Built) -> Vec<String> {
     names
 }
 
+/// How many `HttpContract` nodes are owned by the backend sub-project (`side = backend`). In these samples there is
+/// no frontend caller, so every contract must be backend-owned — the same ownership invariant `node_a_features`
+/// and `link_sample` pin for backend-only endpoints.
+fn backend_contract_count(b: &common::Built) -> usize {
+    b.store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind("HttpContract".to_string())),
+            name_contains: None,
+            limit: Some(1000),
+            offset: Some(0),
+        })
+        .expect("query")
+        .into_iter()
+        .filter(|n| n.properties.get("side").and_then(|v| v.as_str()) == Some("backend"))
+        .count()
+}
+
 #[test]
 fn koa_routes_become_http_contracts() {
     let dir = synthetic_root(
@@ -82,6 +100,12 @@ module.exports = { router, admin };
         ],
         "Koa contracts do not match: {names:?}"
     );
+    // Ownership: every Koa contract must be a backend contract (no frontend caller in this sample).
+    assert_eq!(
+        backend_contract_count(&b),
+        names.len(),
+        "every Koa contract must be owned by the backend sub-project (side = backend)"
+    );
 }
 
 #[test]
@@ -95,6 +119,8 @@ fn fastify_routes_become_http_contracts() {
 fastify.get('/users', listUsers);
 fastify.post('/users', createUser);
 server.put('/users/:id', replaceUser);
+fastify.delete('/users/:id', deleteUser);
+fastify.patch('/users/:id', patchUser);
 
 module.exports = fastify;
 "#,
@@ -105,7 +131,19 @@ module.exports = fastify;
     let names = contract_names(&b);
     assert_eq!(
         names,
-        vec!["GET /users", "POST /users", "PUT /users/:id"],
+        vec![
+            "DELETE /users/:id",
+            "GET /users",
+            "PATCH /users/:id",
+            "POST /users",
+            "PUT /users/:id",
+        ],
         "Fastify contracts do not match: {names:?}"
+    );
+    // Ownership: every Fastify contract must be a backend contract (no frontend caller in this sample).
+    assert_eq!(
+        backend_contract_count(&b),
+        names.len(),
+        "every Fastify contract must be owned by the backend sub-project (side = backend)"
     );
 }

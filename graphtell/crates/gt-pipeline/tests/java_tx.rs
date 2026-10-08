@@ -123,6 +123,13 @@ public class UserService {
         orderRepo.save(new Order());
         em.getTransaction().commit();
     }
+
+    // Writes only ONE table with no transaction boundary -> must NOT be flagged. This pins the "multi" in
+    // multi-write-without-tx (P13 requires >= 2 distinct tables), so a regression that dropped the table-count
+    // guard could not slip through as a false positive on a single-table method.
+    public void runOne() {
+        repo.save(new User());
+    }
 }
 "#,
     )
@@ -168,30 +175,51 @@ fn java_multi_write_without_tx_is_flagged() {
     );
 
     let hits = annotations_of_kind(&b, "multi-write-without-tx");
-    assert!(
-        !hits.is_empty(),
-        "P13 must fire multi-write-without-tx on the Java sample (runBad writes two tables with no transaction boundary), but nothing was hit"
-    );
-    assert!(
-        hits.iter().any(|a| a
-            .evidence
-            .get("owner_fqn")
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains("runBad"))
-            .unwrap_or(false)),
-        "the annotated method must be runBad (no transaction boundary), got owner_fqns: {:?}",
+    // Exactly one method must be flagged: runBad (writes two tables, no boundary). Any other owner would be a
+    // false positive, so we pin the count rather than just "non-empty".
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly one method should be flagged (runBad), got owner_fqns: {:?}",
         hits.iter()
             .map(|a| a.evidence.get("owner_fqn"))
             .collect::<Vec<_>>()
     );
+    let hit = &hits[0];
     assert!(
-        !hits.iter().any(|a| a
-            .evidence
+        hit.evidence
             .get("owner_fqn")
             .and_then(|v| v.as_str())
-            .map(|s| s.contains("runInTx"))
-            .unwrap_or(false)),
+            .map(|s| s.contains("runBad"))
+            .unwrap_or(false),
+        "the flagged method must be runBad (no transaction boundary), got: {:?}",
+        hit.evidence.get("owner_fqn")
+    );
+    // The finding must cite exactly two tables — the "multi" in multi-write-without-tx. A single-table write
+    // (runOne) must not reach here, and a hypothetical over-count would be caught too.
+    assert_eq!(
+        hit.evidence.get("tables").and_then(|v| v.as_u64()),
+        Some(2),
+        "runBad writes two distinct tables, got evidence: {:?}",
+        hit.evidence
+    );
+    // The protected methods must NOT be flagged: runInTx (programmatic begin / commit boundary) and runOne
+    // (only one table, so the >= 2 table guard excludes it even without a boundary).
+    let owner_fqns: Vec<String> = hits
+        .iter()
+        .filter_map(|a| {
+            a.evidence
+                .get("owner_fqn")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    assert!(
+        !owner_fqns.iter().any(|s| s.contains("runInTx")),
         "runInTx is wrapped by a transaction boundary, so it must not be annotated"
     );
-    eprintln!("Java multi-write-without-tx hits = {}", hits.len());
+    assert!(
+        !owner_fqns.iter().any(|s| s.contains("runOne")),
+        "runOne writes only one table, so it must not be annotated"
+    );
 }

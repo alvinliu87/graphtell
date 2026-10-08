@@ -59,6 +59,22 @@ fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<Node> {
         .expect("query")
 }
 
+/// Fresh isolated temp dir for a single-file Django model test (mirrors the inline dir setup of the route tests,
+/// factored out so the relation tests below stay terse).
+fn django_tmp(sub: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-django-{sub}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("myapp")).expect("mkdir");
+    dir
+}
+
 /// Whether the node named `from` has an out-edge of a given kind reaching the node named `target`.
 fn links_to_named(b: &common::Built, kind: &str, from: &str, edge: &str, target: &str) -> bool {
     let Some(src) = nodes_of_kind(b, kind).into_iter().find(|n| n.name == from) else {
@@ -356,4 +372,102 @@ urlpatterns = [
     assert_eq!(handler_of("ANY /articles/"), "article_list");
     // ③ CBV `.as_view()` -> ArticleListView class
     assert_eq!(handler_of("ANY /detail/"), "ArticleListView");
+}
+
+/// `ManyToManyField(Tag)` with a **class constant** target (not the `"Tag"` string form) must resolve and
+/// materialise a `References` edge — the positive counterpart to `django_relation_with_string_target_is_skipped`,
+/// which only pins that the *string* form is skipped. Without this, a regression that stopped resolving positional
+/// class arguments for M2M would silently drop every many-to-many relation from the graph while the skip test stayed green.
+#[test]
+fn django_m2m_with_class_target_materializes_reference() {
+    let dir = django_tmp("m2m-class");
+    std::fs::write(dir.join("requirements.txt"), "django==5.0\n").expect("write requirements.txt");
+    std::fs::write(
+        dir.join("myapp/models.py"),
+        r#"
+from django.db import models
+
+class Tag(models.Model):
+    label = models.CharField(max_length=50)
+
+class Post(models.Model):
+    title = models.CharField(max_length=200)
+    tags = models.ManyToManyField(Tag)
+"#,
+    )
+    .expect("write models.py");
+
+    let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
+        panic!("graphing must succeed");
+    };
+    assert!(
+        links_to_named(&b, "Class", "Post", "References", "Tag"),
+        "a class-constant ManyToManyField must connect Post -> Tag via References"
+    );
+}
+
+/// `OneToOneField(User, ...)` is a distinct Django relation kind; it must resolve to a `References` edge (and must
+/// not be treated as an ordinary scalar column). Only `ForeignKey` and the string-M2M skip were pinned before, so a
+/// OneToOne regression would have gone unnoticed.
+#[test]
+fn django_onetoone_field_materializes_reference() {
+    let dir = django_tmp("onetoone");
+    std::fs::write(dir.join("requirements.txt"), "django==5.0\n").expect("write requirements.txt");
+    std::fs::write(
+        dir.join("myapp/models.py"),
+        r#"
+from django.db import models
+
+class User(models.Model):
+    name = models.CharField(max_length=100)
+
+class Account(models.Model):
+    owner = models.OneToOneField(User, on_delete=models.CASCADE)
+"#,
+    )
+    .expect("write models.py");
+
+    let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
+        panic!("graphing must succeed");
+    };
+    assert!(
+        links_to_named(&b, "Class", "Account", "References", "User"),
+        "a OneToOneField must connect Account -> User via References"
+    );
+    // It must not be smuggled in as a scalar column.
+    let cols: Vec<String> = nodes_of_kind(&b, "Column").iter().map(|n| n.name.clone()).collect();
+    assert!(
+        !cols.iter().any(|c| c.contains("Account.owner")),
+        "a OneToOneField must not be an ordinary column, got: {cols:?}"
+    );
+}
+
+/// A Django model subclass (`class Admin(User)`) must record an `Extends` edge to its base. Python inheritance was
+/// otherwise untested at the build level — only PHP `extends` was pinned in `cf_ast_structure.rs` — so a regression
+/// in the Python `class X(Base)` -> `Extends` path would not have been caught.
+#[test]
+fn django_model_inheritance_records_extends() {
+    let dir = django_tmp("inherit");
+    std::fs::write(dir.join("requirements.txt"), "django==5.0\n").expect("write requirements.txt");
+    std::fs::write(
+        dir.join("myapp/models.py"),
+        r#"
+from django.db import models
+
+class User(models.Model):
+    name = models.CharField(max_length=100)
+
+class Admin(User):
+    role = models.CharField(max_length=50)
+"#,
+    )
+    .expect("write models.py");
+
+    let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
+        panic!("graphing must succeed");
+    };
+    assert!(
+        links_to_named(&b, "Class", "Admin", "Extends", "User"),
+        "Admin(User) must record an Extends edge to User"
+    );
 }

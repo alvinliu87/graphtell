@@ -66,8 +66,10 @@ fn synthetic_php_root() -> std::path::PathBuf {
         r#"<?php
 namespace app\model\order;
 
-class Order extends BaseModel
+class Order extends BaseModel implements Savable
 {
+    use Timestamps;
+
     private $items;
 
     public function save()
@@ -173,14 +175,40 @@ fn php_cf_ast_records_inheritance_edge() {
         .edges_of(order.id, EdgeDirection::Outgoing)
         .expect("edges readable");
     assert!(
-        edges
-            .iter()
-            .any(|e| e.kind.as_str() == "Extends" || e.kind.as_str() == "UsesTrait"),
+        edges.iter().any(|e| e.kind.as_str() == "Extends"),
         "the `extends BaseModel` clause should be recorded as an Extends edge, got: {:?}",
         edges
             .iter()
             .map(|e| e.kind.to_string())
             .collect::<Vec<_>>()
+    );
+}
+
+/// A class that `implements` an interface must record an `Implements` edge, and a class that `use`s a trait must
+/// record a `UsesTrait` edge. These two edge kinds drive downstream resolution (e.g. an interface's `WritesDb`
+/// method propagating to every implementer) yet were never pinned at the build level — only `extends`/`Extends` was,
+/// and that behind a weak `any(Extends, UsesTrait)` that could not tell the two apart. The `Savable` / `Timestamps`
+/// names are unresolved (placeholder), exactly like `BaseModel`, so the edges must still be laid.
+#[test]
+fn php_cf_ast_records_implementation_and_trait_edges() {
+    let root = synthetic_php_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic PHP graph build should succeed");
+    };
+    let order = class_with_fqn(&b, "order").expect("the Order class");
+    let edges = b
+        .store
+        .edges_of(order.id, EdgeDirection::Outgoing)
+        .expect("edges readable");
+    let kinds: Vec<&str> = edges.iter().map(|e| e.kind.as_str()).collect();
+
+    assert!(
+        kinds.iter().any(|k| *k == "Implements"),
+        "the `implements Savable` clause should be recorded as an Implements edge, got: {kinds:?}"
+    );
+    assert!(
+        kinds.iter().any(|k| *k == "UsesTrait"),
+        "the `use Timestamps` clause should be recorded as a UsesTrait edge, got: {kinds:?}"
     );
 }
 

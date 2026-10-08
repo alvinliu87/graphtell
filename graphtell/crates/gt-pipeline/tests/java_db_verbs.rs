@@ -57,10 +57,13 @@ public class User {
         r#"package com.demo;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.List;
 
 public interface UserRepository extends JpaRepository<User, Long> {
     User findById(Long id);
     User save(User u);
+    List<User> findAll();
+    void deleteById(Long id);
 }
 "#,
     )
@@ -77,10 +80,21 @@ public class UserService {
     @Autowired
     private UserRepository repo;
 
+    // `findById` (read) + `save` (write) on one owner method.
     public void run(List<Long> ids) {
         for (Long id : ids) {
             repo.findById(id);
             repo.save(new User());
+        }
+    }
+
+    // `findAll` (read) + `deleteById` (write) on a *different* owner method: the read / write action edge is
+    // deduped by (kind, owner, table), so a second read verb on the same method would be collapsed onto the
+    // first and its call-site annotation dropped. Splitting keeps each verb's own `DbQuery` annotation.
+    public void run2(List<Long> ids) {
+        for (Long id : ids) {
+            repo.findAll();
+            repo.deleteById(id);
         }
     }
 }
@@ -136,8 +150,12 @@ fn jpa_repository_maps_to_table_and_db_verbs_are_classified() {
         !maps_to.is_empty(),
         "UserRepository should get MapsTo (DAO -> table) via References + Project"
     );
-    // (3) Read / write verb classification: `findById` -> ReadsDb, `save` -> WritesDb.
-    // The action edge lands on the **method** node (`emit_db_edge` starts from loc.owner).
+    // (3) Read / write verb classification.
+    //
+    // Edge level: `emit_db_edge` lays `owner -> table` edges deduped by (kind, owner, table), so `run` gets
+    // exactly one `ReadsDb` and one `WritesDb` edge even though it makes two read calls (findById, findAll) and
+    // two write calls (save, deleteById). The exact counts (not `any`) still catch a regression that attached
+    // *both* classifications to every call or duplicated an edge.
     let svc = nodes_of_kind(&b, "Method")
         .into_iter()
         .find(|n| n.name == "run")
@@ -149,12 +167,51 @@ fn jpa_repository_maps_to_table_and_db_verbs_are_classified() {
         .iter()
         .map(|e| e.kind.as_str().to_string())
         .collect();
-    assert!(
-        actions.iter().any(|k| k == "ReadsDb"),
-        "findById should become ReadsDb, actual action edges: {actions:?}"
+    let read_count = actions.iter().filter(|k| *k == "ReadsDb").count();
+    let write_count = actions.iter().filter(|k| *k == "WritesDb").count();
+    assert_eq!(
+        read_count, 1,
+        "`run` must get exactly one ReadsDb edge (deduped across read verbs), got {read_count}: {actions:?}"
     );
-    assert!(
-        actions.iter().any(|k| k == "WritesDb"),
-        "save should become WritesDb, actual action edges: {actions:?}"
+    assert_eq!(
+        write_count, 1,
+        "`run` must get exactly one WritesDb edge (deduped across write verbs), got {write_count}: {actions:?}"
     );
+
+    // Per-verb classification lives on the **call site** annotations (`DbQuery` channel, subkind = the verb),
+    // not the deduped edge — so this is the signal that pins each individual verb. `findById` / `findAll` are
+    // read verbs, `save` / `deleteById` are write verbs; asserting the subkind sets proves every one of the four
+    // calls was classified against the FKB `db_verbs` list. A regression dropping `findAll` / `deleteById` from
+    // the list would shrink these sets (the deduped edge count alone cannot tell them apart).
+    let db_verbs: Vec<(String, String)> = b
+        .store
+        .annotations_of_project(b.project.id)
+        .expect("annotations")
+        .into_values()
+        .flatten()
+        .filter(|a| a.channel.as_str() == "DbQuery")
+        .map(|a| (a.kind.clone(), a.subkind.clone().unwrap_or_default()))
+        .collect();
+    let read_verbs: std::collections::HashSet<&str> = db_verbs
+        .iter()
+        .filter(|(k, _)| k == "db-query")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let write_verbs: std::collections::HashSet<&str> = db_verbs
+        .iter()
+        .filter(|(k, _)| k == "db-write")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    for v in ["findById", "findAll"] {
+        assert!(
+            read_verbs.contains(v),
+            "read verb `{v}` must be classified as ReadsDb (db-query), got read verbs: {read_verbs:?}"
+        );
+    }
+    for v in ["save", "deleteById"] {
+        assert!(
+            write_verbs.contains(v),
+            "write verb `{v}` must be classified as WritesDb (db-write), got write verbs: {write_verbs:?}"
+        );
+    }
 }

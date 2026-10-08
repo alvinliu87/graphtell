@@ -17,7 +17,7 @@ use std::sync::{Arc, OnceLock};
 
 use gt_app::{AppConfig, Container};
 use gt_application::{PipelineService, ProjectService, ViewService};
-use gt_domain::model::{NewProject, NodeKind};
+use gt_domain::model::{EdgeView, NewProject, NodeKind};
 use gt_domain::port::{GraphQuery, NoopObserver, NodeFilter, SystemClock};
 use gt_sample_support::link_sample_root;
 
@@ -222,6 +222,14 @@ fn frontend_chain_visible_in_folded_route_view() {
             "CallsHttp start should be a frontend function node (isomorphic to a backend Method), got kind = {}",
             o.kind
         );
+        // The sample wraps `axios.post('/api/delete')` in `export function deleteItem`, so the CallsHttp
+        // source must be that frontend function node by name — pinning "function, not File" concretely rather
+        // than only by kind (a wrong caller name would mean the wrong node was folded in).
+        assert_eq!(
+            o.name, "deleteItem",
+            "the CallsHttp source must be the `deleteItem` frontend function, got name = {}",
+            o.name
+        );
         // It must not appear on the canvas: neither in a ring nor as an endpoint of any edge.
         let on_canvas = ov
             .rings
@@ -265,4 +273,91 @@ fn frontend_chain_visible_in_folded_route_view() {
             o.name
         );
     }
+}
+
+/// The render layer's drawer contract also needs the **edge-level** `to_call_site` (where the last folded hop
+/// calls `to`) on real folded edges — the doc lists `via[i].call_site / to_call_site` together, but the
+/// contract-centred route view above has 0 canvas edges, so it never exercises a folded `EdgeView`.
+///
+/// This centres on a backend method and asserts, *whenever a folded edge exists*, that every non-start `via` hop
+/// carries a per-hop `call_site` **and** at least one folded edge carries a terminal `to_call_site`. The `link`
+/// sample has no backend handler→service→DB chain, so on it this soft-skips (no folded edges); on a richer
+/// sample it becomes a real guard against a dropped `to_call_site`.
+#[test]
+fn folded_edge_exposes_to_call_site_when_present() {
+    let b = built().expect(
+        "frontend folded-view test requires the synthetic `link` sample (samples/link), which ships with the repo",
+    );
+    let views = view_svc(&b);
+
+    // Pick a backend method to centre on: prefer the `/api/delete` handler, else any non-frontend method.
+    let candidates = b
+        .container
+        .store
+        .query_nodes(&NodeFilter {
+            project_id: b.project_id,
+            kind: Some(NodeKind(NodeKind::METHOD.to_string())),
+            name_contains: Some("delete".into()),
+            limit: Some(20),
+            offset: Some(0),
+        })
+        .unwrap_or_default();
+    let backend = candidates
+        .into_iter()
+        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) != Some("frontend"))
+        .or_else(|| {
+            b.container
+                .store
+                .query_nodes(&NodeFilter {
+                    project_id: b.project_id,
+                    kind: Some(NodeKind(NodeKind::METHOD.to_string())),
+                    name_contains: None,
+                    limit: Some(50),
+                    offset: Some(0),
+                })
+                .ok()
+                .and_then(|ns| {
+                    ns.into_iter()
+                        .find(|n| n.properties.get("side").and_then(|v| v.as_str()) != Some("frontend"))
+                })
+        });
+    let Some(h) = backend else {
+        eprintln!("no backend method in the graph, skipping to_call_site check");
+        return;
+    };
+
+    let ov = views
+        .object_view(b.project_id, "route", h.id, Some(2))
+        .expect("object_view");
+
+    let folded: Vec<&EdgeView> = ov.edges.iter().filter(|e| !e.via.is_empty()).collect();
+    if folded.is_empty() {
+        // This sample has no folded visible edges (frontend lives in orphans, backend chain is direct), so the
+        // drawer's hop-by-hop + terminal call-site contract is not exercisable here — skip rather than false-fail.
+        eprintln!(
+            "method {} yields no folded edges in this view, skipping to_call_site check",
+            h.name
+        );
+        return;
+    }
+
+    for e in &folded {
+        for v in &e.via {
+            if v.id == e.from {
+                continue; // the start hop has no "who called me"
+            }
+            assert!(
+                v.call_site.is_some(),
+                "folded edge {} -> {} hop `{}` must carry a per-hop call_site",
+                e.from.get(),
+                e.to.get(),
+                v.name
+            );
+        }
+    }
+    assert!(
+        folded.iter().any(|e| e.to_call_site.is_some()),
+        "at least one folded edge must carry a terminal to_call_site (the drawer's final call site); edges={}",
+        folded.len()
+    );
 }

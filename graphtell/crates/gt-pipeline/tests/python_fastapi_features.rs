@@ -202,6 +202,31 @@ fn has_incoming_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
     })
 }
 
+/// The HTTP method (GET/POST/...) carried by the HttpContract whose name contains `path_fragment`. The contract
+/// node name is formatted as `"METHOD PATH"` (see `IdentityKey::contract`), so splitting on the first space
+/// yields the method.
+fn contract_method(b: &common::Built, path_fragment: &str) -> String {
+    let c = contract_for(b, path_fragment);
+    c.name
+        .split_once(' ')
+        .map(|(m, _)| m.to_string())
+        .unwrap_or_else(|| panic!("contract {path_fragment} name has no method separator: {:?}", c.name))
+}
+
+/// Whether a `Cache` node of the given (key) name carries an incoming edge of `edge`. This pins that the cache
+/// **identity is the key argument** (from fkb/python/redis.yaml), not just "a Cache node exists".
+fn cache_incoming(b: &common::Built, name: &str, edge: &str) -> bool {
+    nodes_of_kind(b, "Cache").iter().any(|n| {
+        n.name == name
+            && b
+                .store
+                .edges_of(n.id, EdgeDirection::Incoming)
+                .expect("edges")
+                .iter()
+                .any(|e| e.kind.as_str() == edge)
+    })
+}
+
 #[test]
 fn fastapi_features_produce_semantic_nodes_and_edges() {
     let root = synthetic_fastapi_root();
@@ -414,4 +439,44 @@ fn celery_tasks_form_publish_subscribe_loop() {
             node.properties
         );
     }
+}
+
+/// Route HTTP method must be preserved on the contract. The original sample asserted the *handler* each route
+/// resolves to, but never the verb — a regression that swapped GET/POST (or dropped the `method_name` mapping)
+/// would have passed silently.
+#[test]
+fn fastapi_route_method_is_preserved() {
+    let root = synthetic_fastapi_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("graphing the synthetic FastAPI project must succeed");
+    };
+    assert_eq!(contract_method(&b, "/users"), "GET", "router.get must be GET");
+    assert_eq!(contract_method(&b, "/health"), "GET", "app.get must be GET");
+    assert_eq!(contract_method(&b, "/admin"), "GET", "the in-class app.get must be GET");
+    assert_eq!(
+        contract_method(&b, "/orders"),
+        "POST",
+        "router.post must be POST (the only non-GET verb in the sample)"
+    );
+}
+
+/// The cache **identity must be the key argument** (`fkb/python/redis.yaml` uses arg 0 as the `Cache` node name),
+/// not just "some Cache node has a ReadsCache/WritesCache edge". The original sample only checked the edges
+/// generically, so a regression that mis-derived the cache name (or keyed on the wrong argument) would pass.
+#[test]
+fn fastapi_cache_key_is_the_cache_identity() {
+    let root = synthetic_fastapi_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("graphing the synthetic FastAPI project must succeed");
+    };
+    // `cache.get("userCache")` -> a Cache node named `userCache` with a ReadsCache in-edge.
+    assert!(
+        cache_incoming(&b, "userCache", "ReadsCache"),
+        "the cache key `userCache` (from cache.get) must be the Cache identity and be read"
+    );
+    // `redis_client.set("orderCache", "1")` -> a Cache node named `orderCache` with a WritesCache in-edge.
+    assert!(
+        cache_incoming(&b, "orderCache", "WritesCache"),
+        "the cache key `orderCache` (from redis_client.set) must be the Cache identity and be written"
+    );
 }

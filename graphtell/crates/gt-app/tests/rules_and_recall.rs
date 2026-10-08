@@ -2846,3 +2846,128 @@ async fn warmup_http_endpoint_returns_status_fields() {
     assert!(d["warmed"].is_boolean(), "there must be a warmed field: {d:?}");
     assert!(d["warming"].is_boolean(), "there must be a warming field: {d:?}");
 }
+
+// ---------------------------------------------------------------- rules: HTTP inbound adapter
+//
+// The recall HTTP adapter (`/recall`, `/warmup`) is covered above, but the **rules** HTTP adapter was left
+// untested even though this file's own comment warned about exactly that ("the HTTP inbound adapter
+// `gt-adapter-http` was never tested, so a wrong route or param parsing went unnoticed"). These pin the
+// rule-eval HTTP surface: list / run / read-back / summary. Unlike the recall HTTP tests they use the
+// synthetic `temp_fixture()` (no `link` sample needed) so they actually run in CI.
+
+/// `GET /api/rules` must load the rule set from `rules_dir` and return it as an array (the UI's "what can be
+/// checked" list). A wrong route or a broke loader would make this empty / fail.
+#[tokio::test]
+async fn rules_http_list_endpoint_returns_loaded_rules() {
+    let f = temp_fixture();
+    let router = f.container.router();
+
+    let resp = router
+        .clone()
+        .oneshot(Request::get("/api/rules").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("the response must be JSON");
+    assert!(json["ok"].as_bool() == Some(true), "it must succeed: {json:?}");
+    let rules = json["data"].as_array().expect("data must be a rules array");
+    assert!(
+        !rules.is_empty(),
+        "the kernel must load rules from rules_dir over HTTP: {json:?}"
+    );
+}
+
+/// `POST /api/projects/{id}/check` must run every enabled rule and persist the result; then `GET /violations`
+/// must read back the *same* persisted set. This pins the whole persist→read round trip over HTTP — a dropped
+/// `persist` flag or a mismatched `/violations` query would make "just ran" and "after refresh" disagree.
+#[tokio::test]
+async fn check_http_endpoint_runs_and_persists_violations() {
+    let f = temp_fixture();
+    seed_graph(&f);
+    let router = f.container.router();
+    let pid = f.project.get();
+
+    let check = router
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/projects/{pid}/check"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}")) // empty body => run every enabled rule
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(check.status(), StatusCode::OK);
+    let cb = check.into_body().collect().await.unwrap().to_bytes();
+    let cj: serde_json::Value = serde_json::from_slice(&cb).expect("check must be JSON");
+    assert!(cj["ok"].as_bool() == Some(true), "check must succeed: {cj:?}");
+    let reported = cj["data"]["violations"]
+        .as_array()
+        .expect("data.violations must be an array");
+
+    let viol = router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/projects/{pid}/violations"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(viol.status(), StatusCode::OK);
+    let vb = viol.into_body().collect().await.unwrap().to_bytes();
+    let vj: serde_json::Value = serde_json::from_slice(&vb).expect("violations must be JSON");
+    assert!(vj["ok"].as_bool() == Some(true), "violations must succeed: {vj:?}");
+    let persisted = vj["data"].as_array().expect("data must be a violations array");
+
+    assert_eq!(
+        persisted.len(),
+        reported.len(),
+        "the persisted /violations count must match the /check report (persist->read round trip): reported={reported:?} persisted={persisted:?}"
+    );
+}
+
+/// `GET /api/projects/{id}/check/summary` must roll the persisted violations up into severity counts
+/// (menu badge). It must not re-run rules, just aggregate what the last `/check` wrote.
+#[tokio::test]
+async fn check_summary_http_endpoint_returns_rollup() {
+    let f = temp_fixture();
+    seed_graph(&f);
+    let router = f.container.router();
+    let pid = f.project.get();
+
+    // Run a check first so the summary has something to roll up.
+    let _ = router
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/projects/{pid}/check"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/projects/{pid}/check/summary"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("summary must be JSON");
+    assert!(json["ok"].as_bool() == Some(true), "it must succeed: {json:?}");
+    let d = &json["data"];
+    for field in ["critical", "error", "warning", "info"] {
+        assert!(
+            d[field].is_u64(),
+            "the severity rollup must carry `{field}`: {d:?}"
+        );
+    }
+}

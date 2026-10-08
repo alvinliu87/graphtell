@@ -182,3 +182,69 @@ export class UserEntity {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// PHP columns can arrive from **two** symbol sources — the raw `install.sql` (built-in `db_schema`) *and* a
+/// Laravel migration (`Schema::create`, the `migration_schema` adapter). The header claims columns come "from the
+/// authoritative schema / migration", but only the `install.sql` half is exercised above. This builds a project
+/// where `install.sql` declares `id / name / email` and a migration *adds* `phone` (and re-declares `email`), then
+/// asserts the table view carries the **union** `{id, name, email, phone}` with `email` de-duplicated.
+///
+/// Regression guard: if the `migration_schema` loader stopped feeding the same `schema` symbol (or `columns.rs`
+/// stopped unioning sources), the migration's `phone` would silently vanish from the opened-table view.
+#[test]
+fn php_table_view_merges_install_sql_and_migration_columns() {
+    let d = temp_dir("php-merge");
+    std::fs::create_dir_all(d.join("app/Models")).expect("mkdir");
+    std::fs::create_dir_all(d.join("database/migrations")).expect("mkdir migrations");
+    std::fs::write(
+        d.join("composer.json"),
+        r#"{ "require": { "laravel/framework": "^11.0" } }"#,
+    )
+    .expect("composer");
+    std::fs::write(
+        d.join("app/Models/User.php"),
+        r#"<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+}
+"#,
+    )
+    .expect("model");
+    // ① built-in `db_schema` source: id / name / email
+    std::fs::write(
+        d.join("install.sql"),
+        "CREATE TABLE `users` (\n  `id` int(11) NOT NULL,\n  `name` varchar(120) NOT NULL,\n  `email` varchar(120) NOT NULL\n);\n",
+    )
+    .expect("sql");
+    // ② `migration_schema` adapter source: re-declares `email` (must de-dupe) and adds `phone`
+    std::fs::write(
+        d.join("database/migrations/2020_01_01_create_users_table.php"),
+        "<?php\nSchema::create('users', function ($table) {\n    $table->string('email');\n    $table->string('phone');\n});",
+    )
+    .expect("migration");
+
+    let b = build(d.clone());
+    let cols = columns_of_table(&b, "user").unwrap_or_default();
+    assert!(
+        cols.iter().any(|c| c == "id")
+            && cols.iter().any(|c| c == "name")
+            && cols.iter().any(|c| c == "email")
+            && cols.iter().any(|c| c == "phone"),
+        "the view must union install.sql (id/name/email) and the migration (email/phone): got {cols:?}"
+    );
+    assert_eq!(
+        cols.iter().filter(|c| *c == "email").count(),
+        1,
+        "`email` declared by both sources must appear exactly once (union de-dup): {cols:?}"
+    );
+    assert_eq!(
+        cols.len(),
+        4,
+        "the merged column set must be exactly {{id,name,email,phone}}, no extras: {cols:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

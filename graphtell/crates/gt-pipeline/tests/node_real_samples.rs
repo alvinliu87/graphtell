@@ -41,6 +41,22 @@ fn has_outgoing_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
     })
 }
 
+/// Find an `HttpContract` whose name contains `substr`, and return the name of the node its `HandledBy` edge points
+/// to. Used to pin *precise* handler resolution (the decorated method), not merely "some HandledBy edge exists".
+fn contract_handler_name(b: &common::Built, substr: &str) -> Option<String> {
+    let c = nodes_of_kind(b, "HttpContract")
+        .into_iter()
+        .find(|n| n.name.contains(substr))?;
+    b.store
+        .edges_of(c.id, EdgeDirection::Outgoing)
+        .expect("edges")
+        .iter()
+        .filter(|e| e.kind.as_str() == "HandledBy")
+        .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
+        .map(|t| t.name)
+        .next()
+}
+
 /// Synthetic-project self-check (self-consistent, no external sample needed): covers both Node.js decorator routes and web-framework member-style routes,
 /// verifying the JS parser + FKB produce HttpContract + HandledBy on synthetic code, so CI guards without samples.
 #[test]
@@ -152,11 +168,19 @@ app.post('/login', (req, res) => { res.send('ok'); });
         has_outgoing_edge(&b, "HttpContract", "HandledBy"),
         "a node_a HttpContract must have a HandledBy out-edge (to the handler method), got: {nest_names:?}"
     );
+    // The `HandledBy` must resolve to the *precise* handler method — `@Get('user') findMe` → `findMe`, not merely
+    // "some method". A regression that pointed the edge at the wrong method (e.g. the constructor or a sibling) would
+    // otherwise pass the looser `has_outgoing_edge` check above.
+    let handler = contract_handler_name(&b, "user")
+        .expect("the `user` contract must carry a HandledBy edge");
+    assert_eq!(
+        handler, "findMe",
+        "the `@Get('user')` contract must resolve HandledBy to the `findMe` method, got: {handler}"
+    );
 
-    // node_b: member-style `app.get` → HttpContract (path from arg0, method from member name)
-    let web_root = dir.join("app.js");
-    let _ = web_root;
-    // find the /login contract among all nodes
+    // node_b: member-style `app.get` / `app.post` → HttpContract (path from arg0, method from member name).
+    // Both verbs must map correctly: `get` → GET, `post` → POST. The looser original only required *one* of them,
+    // so a regression that dropped POST verb handling would have slipped through.
     let all = b
         .store
         .query_nodes(&gt_domain::port::NodeFilter {
@@ -171,8 +195,9 @@ app.post('/login', (req, res) => { res.send('ok'); });
         .filter(|n| n.contains("login"))
         .collect();
     assert!(
-        login.iter().any(|n| n.starts_with("GET /login") || n.starts_with("POST /login")),
-        "node_b must produce the /login contract, got: {login:?}"
+        login.iter().any(|n| n.starts_with("GET /login"))
+            && login.iter().any(|n| n.starts_with("POST /login")),
+        "node_b must produce both GET /login and POST /login contracts (get→GET, post→POST), got: {login:?}"
     );
 
     // node_a DI: `constructor(private readonly userService: UserService)`

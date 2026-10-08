@@ -31,6 +31,7 @@ fn synthetic_php_root(
     vendor_ns: &str,
     app_dir: &str,
     db_driver_key: &str,
+    conn_name: &str,
 ) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "graphtell-php-root-{}-{}",
@@ -56,6 +57,62 @@ fn synthetic_php_root(
 
     // `config/database.php`: a default connection carrying a table prefix -> `db_prefix`.
     // ThinkPHP spells the driver `type`; Laravel spells it `driver` (see the two FKBs).
+    // `conn_name` is the *user-chosen* connection key (normally `mysql`, but deliberately not in a sibling test):
+    // `db-connections` must enumerate it and derive `db_prefix` from its prefix regardless of the name.
+    std::fs::write(
+        dir.join("config").join("database.php"),
+        format!(
+            r#"<?php
+return [
+    'default' => '{conn}',
+    'connections' => [
+        '{conn}' => [
+            '{driver_key}' => 'mysql',
+            'prefix' => 'eb_',
+        ],
+    ],
+];"#,
+            driver_key = db_driver_key,
+            conn = conn_name,
+        ),
+    )
+    .expect("write config/database.php");
+
+    // A minimal PHP class so the scanner groups a PHP sub-project (root rules run per sub-project).
+    std::fs::write(
+        dir.join(app_dir).join("Model").join("User.php"),
+        format!("<?php\nnamespace {ns};\nclass User {{}}\n", ns = vendor_ns),
+    )
+    .expect("write php source");
+
+    dir
+}
+
+/// Like `synthetic_php_root`, but the `composer.json` has **no** `autoload.psr-4` — so `app-root` must fall
+/// back to the directory probe (`app`, the first fallback for both PHP frameworks). Pins the fallback branch
+/// that the other tests never exercise (they always hit psr-4, so `fallback_used` is always false there).
+fn synthetic_php_root_without_psr4(
+    framework_dep: &str,
+    vendor_ns: &str,
+    app_dir: &str,
+    db_driver_key: &str,
+) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-php-root-fb-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(app_dir).join("Model")).expect("mkdir app source dir");
+    std::fs::create_dir_all(dir.join("config")).expect("mkdir config");
+
+    // No `autoload.psr-4` block — only the dependency the detector needs.
+    let composer = format!(r#"{{"require":{{"{dep}":"^6"}}}}"#, dep = framework_dep);
+    std::fs::write(dir.join("composer.json"), composer).expect("write composer.json");
+
     std::fs::write(
         dir.join("config").join("database.php"),
         format!(
@@ -74,7 +131,6 @@ return [
     )
     .expect("write config/database.php");
 
-    // A minimal PHP class so the scanner groups a PHP sub-project (root rules run per sub-project).
     std::fs::write(
         dir.join(app_dir).join("Model").join("User.php"),
         format!("<?php\nnamespace {ns};\nclass User {{}}\n", ns = vendor_ns),
@@ -145,17 +201,128 @@ fn assert_php_root_rules(root: &std::path::Path, framework: &str) {
     );
 }
 
+/// Assert that `db_prefix` resolves to `eb_` and the enumerated `db_connections` fact records `conn_name` as its
+/// default — i.e. `db-connections` enumerated a *user-chosen* connection name rather than assuming `mysql`.
+fn assert_db_prefix_for_connection(root: &std::path::Path, framework: &str, conn_name: &str) {
+    let Some(b) = common::graph_with_root(root, ProjectConfig::default()) else {
+        panic!("the graph build of the synthetic PHP project should succeed");
+    };
+    let subs = b
+        .store
+        .list_sub_projects(b.project.id)
+        .expect("sub-projects readable");
+    let sub = subs
+        .iter()
+        .find(|s| s.language.as_str() == "php")
+        .expect("a PHP sub-project must exist");
+    assert!(
+        sub.frameworks.contains(&framework.to_string()),
+        "{framework} must be recognised, got: {:?}",
+        sub.frameworks
+    );
+
+    let facts: Value = serde_json::from_value(sub.facts.clone()).unwrap_or(Value::Null);
+
+    let db_prefix = facts
+        .get("db_prefix")
+        .unwrap_or_else(|| panic!("the real FKB must resolve the db_prefix fact (framework={framework})"));
+    assert_eq!(
+        db_prefix.get("value").and_then(|v| v.as_str()),
+        Some("eb_"),
+        "db_prefix must come from the (user-named) default connection's prefix, not be lost because the connection is not `mysql`"
+    );
+    assert_eq!(
+        db_prefix.get("fallback_used").and_then(|v| v.as_bool()),
+        Some(false),
+        "db_prefix must resolve directly from the connection, with no fallback"
+    );
+
+    let db_conns = facts
+        .get("db_connections")
+        .unwrap_or_else(|| panic!("the db_connections fact must be present (framework={framework})"));
+    assert_eq!(
+        db_conns.get("default").and_then(|v| v.as_str()),
+        Some(conn_name),
+        "the enumerated default connection must be `{conn_name}`, proving enumeration over a hard-coded `mysql`"
+    );
+}
+
 #[test]
 fn real_thinkphp_fkb_root_rules_resolve_without_fallback() {
-    let root = synthetic_php_root("topthink/framework", "app", "app", "type");
+    let root = synthetic_php_root("topthink/framework", "app", "app", "type", "mysql");
     assert_php_root_rules(&root, "thinkphp");
     let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn real_laravel_fkb_root_rules_resolve_without_fallback() {
-    let root = synthetic_php_root("laravel/framework", "App", "app", "driver");
+    let root = synthetic_php_root("laravel/framework", "App", "app", "driver", "mysql");
     assert_php_root_rules(&root, "laravel");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The headline rationale of `db-connections`: connections are **enumerated**, not hard-coded to `mysql`, so a
+/// project whose connection is named otherwise must not silently lose `db_prefix`. The shipped samples only ever
+/// used `mysql`, so this branch — and the `default_from` resolution that picks the right connection — was unpinned.
+#[test]
+fn real_thinkphp_fkb_db_prefix_survives_user_named_connection() {
+    // Connection key `order` (not `mysql`); `default => 'order'` points at it.
+    let root = synthetic_php_root("topthink/framework", "app", "app", "type", "order");
+    assert_db_prefix_for_connection(&root, "thinkphp", "order");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn real_laravel_fkb_db_prefix_survives_user_named_connection() {
+    let root = synthetic_php_root("laravel/framework", "App", "app", "driver", "order");
+    assert_db_prefix_for_connection(&root, "laravel", "order");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `app-root` with no `autoload.psr-4`: the rule must take its fallback (`app`, the first directory probe) rather
+/// than fail. The other PHP tests always hit psr-4, so `fallback_used == true` was never asserted — this pins the
+/// branch at `approot.rs` that writes `source: "fallback: app"` and `fallback_used: true`.
+#[test]
+fn real_thinkphp_fkb_app_root_falls_back_without_psr4() {
+    let root = synthetic_php_root_without_psr4("topthink/framework", "app", "app", "type");
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the graph build of the synthetic PHP project should succeed");
+    };
+    let subs = b
+        .store
+        .list_sub_projects(b.project.id)
+        .expect("sub-projects readable");
+    let sub = subs
+        .iter()
+        .find(|s| s.language.as_str() == "php")
+        .expect("a PHP sub-project must exist");
+    assert!(
+        sub.frameworks.contains(&"thinkphp".to_string()),
+        "thinkphp must be recognised, got: {:?}",
+        sub.frameworks
+    );
+    let facts: Value = serde_json::from_value(sub.facts.clone()).unwrap_or(Value::Null);
+    let app_root = facts
+        .get("app_root")
+        .expect("app_root must resolve even without psr-4 (via fallback)");
+    assert_eq!(
+        app_root.get("value").and_then(|v| v.as_str()),
+        Some("app"),
+        "without psr-4 the app-root must fall back to the `app` directory"
+    );
+    assert_eq!(
+        app_root.get("fallback_used").and_then(|v| v.as_bool()),
+        Some(true),
+        "the fallback branch must record fallback_used == true"
+    );
+    let source = app_root
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        source.contains("fallback"),
+        "the source must name the fallback, got: {source}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

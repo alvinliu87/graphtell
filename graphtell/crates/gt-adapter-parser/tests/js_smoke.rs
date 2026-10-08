@@ -169,3 +169,68 @@ fn http_call_variants_normalise_to_contract() {
         "a non-HTTP call must not carry normalised url/method arguments"
     );
 }
+
+/// NEGATIVE: only constructor parameters carrying an **access modifier** (`private` / `readonly` / …) are property
+/// injections (`@Inject`); a plain typed parameter is an ordinary argument and must NOT become a dependency edge.
+/// The positive `private readonly userService` form is pinned above; this pins the guard (`src/js.rs:505`) on the
+/// registry path so a regression that injects every constructor parameter is caught.
+#[test]
+fn constructor_plain_param_without_modifier_is_not_injection() {
+    let src = "export class X {\n  constructor(plain: Foo, private svc: Bar) {}\n}\n";
+    let facts = parse("x.ts", src);
+    let injects: Vec<&str> = facts
+        .call_sites
+        .iter()
+        .filter(|c| c.callee_text == "@Inject")
+        .map(|c| c.entity.as_deref().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        injects,
+        vec!["Bar"],
+        "only the access-modifier param (svc: Bar) becomes @Inject; plain: Foo must not"
+    );
+}
+
+/// NEGATIVE: a `.get()` / `.post()` member call on a **non-HTTP receiver** (`cache`, `storage`, `list`) is still a
+/// call site, but its arguments must NOT be normalised into a `{url, method}` array — only the closed set of HTTP
+/// clients does that (`is_http_client_recv` + the `Other` branch, `src/js.rs:867`). Without this, every
+/// `cache.get(...)` / `array.map(...)` would fabricate a phantom `HttpContract`.
+#[test]
+fn non_http_receiver_member_call_is_not_normalised_to_contract() {
+    let facts = parse("y.ts", "cache.get('/api/x'); storage.post('/y'); list.map(z => z);");
+    assert!(
+        facts.call_sites.iter().any(|c| c.callee_text == "cache.get"),
+        "an ordinary member call is still collected"
+    );
+    assert!(
+        facts.call_sites.iter().any(|c| c.callee_text == "storage.post"),
+        "an ordinary member call is still collected"
+    );
+    assert!(
+        facts
+            .call_sites
+            .iter()
+            .all(|c| !c.args.iter().any(|a| matches!(a, FactValue::Array(_)))),
+        "a .get()/.post() on a non-HTTP receiver must not be normalised into an HttpContract"
+    );
+}
+
+/// NEGATIVE: `axios.get(<variable>)` still carries the HTTP method (`GET`), but a **variable** URL must NOT be
+/// fabricated into a literal — `extract_http_args` abandons a URL whose first segment is not statically anchored
+/// (`src/js.rs:939`). Without this, `axios.get(BASE + '/api')` would invent a wrong endpoint shape.
+#[test]
+fn axios_member_call_with_variable_url_does_not_fabricate_literal() {
+    let facts = parse("x.ts", "axios.get(someVar);");
+    let call = facts
+        .call_sites
+        .iter()
+        .find(|c| c.callee_text == "axios")
+        .expect("the axios call site must be captured");
+    let FactValue::Array(items) = call.args.first().expect("args[0] is the url/method array") else {
+        panic!("expected a url/method array, got {:?}", call.args);
+    };
+    let method = items.iter().find(|(k, _)| k == "method").and_then(|(_, v)| v.as_str());
+    let url = items.iter().find(|(k, _)| k == "url").and_then(|(_, v)| v.as_str());
+    assert_eq!(method, Some("GET"), "the member name still becomes the HTTP method");
+    assert_eq!(url, None, "a variable URL must not be fabricated into a literal");
+}

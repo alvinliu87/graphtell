@@ -91,6 +91,13 @@ export class UserService {
     this.orderRepo.save(new OrderEntity());
     qr.commitTransaction();
   }
+
+  // Writes only ONE table with no transaction boundary -> must NOT be flagged. This pins the "multi" in
+  // multi-write-without-tx (P13 requires >= 2 distinct tables), so a regression that dropped the table-count
+  // guard could not slip through as a false positive on a single-table method.
+  createOne() {
+    this.userRepo.save(new UserEntity());
+  }
 }
 "#,
     )
@@ -136,28 +143,51 @@ fn nestjs_multi_write_without_tx_is_flagged() {
     );
 
     let hits = annotations_of_kind(&b, "multi-write-without-tx");
-    assert!(
-        !hits.is_empty(),
-        "P13 must fire multi-write-without-tx on the Node framework/ORM sample (createBad writes two tables with no transaction boundary)"
+    // Exactly one method must be flagged: createBad (writes two tables, no boundary). Any other owner would be a
+    // false positive, so we pin the count rather than just "non-empty".
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly one method should be flagged (createBad), got owner_fqns: {:?}",
+        hits.iter()
+            .map(|a| a.evidence.get("owner_fqn"))
+            .collect::<Vec<_>>()
     );
+    let hit = &hits[0];
     assert!(
-        hits.iter().any(|a| a
-            .evidence
+        hit.evidence
             .get("owner_fqn")
             .and_then(|v| v.as_str())
             .map(|s| s.contains("createBad"))
-            .unwrap_or(false)),
-        "the annotated method must be createBad (no transaction boundary), got owner_fqns: {:?}",
-        hits.iter().map(|a| a.evidence.get("owner_fqn")).collect::<Vec<_>>()
+            .unwrap_or(false),
+        "the flagged method must be createBad (no transaction boundary), got: {:?}",
+        hit.evidence.get("owner_fqn")
+    );
+    // The finding must cite exactly two tables — the "multi" in multi-write-without-tx. A single-table write
+    // (createOne) must not reach here, and a hypothetical over-count would be caught too.
+    assert_eq!(
+        hit.evidence.get("tables").and_then(|v| v.as_u64()),
+        Some(2),
+        "createBad writes two distinct tables, got evidence: {:?}",
+        hit.evidence
+    );
+    // The protected methods must NOT be flagged: createInTx (startTransaction boundary) and createOne
+    // (only one table, so the >= 2 table guard excludes it even without a boundary).
+    let owner_fqns: Vec<String> = hits
+        .iter()
+        .filter_map(|a| {
+            a.evidence
+                .get("owner_fqn")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    assert!(
+        !owner_fqns.iter().any(|s| s.contains("createInTx")),
+        "createInTx is wrapped by a transaction boundary, so it must not be annotated"
     );
     assert!(
-        !hits.iter().any(|a| a
-            .evidence
-            .get("owner_fqn")
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains("createInTx"))
-            .unwrap_or(false)),
-        "createInTx is wrapped by startTransaction, so it must not be annotated"
+        !owner_fqns.iter().any(|s| s.contains("createOne")),
+        "createOne writes only one table, so it must not be annotated"
     );
-    eprintln!("Node framework multi-write-without-tx hits = {}", hits.len());
 }

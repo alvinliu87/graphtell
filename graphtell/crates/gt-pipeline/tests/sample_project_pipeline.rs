@@ -301,6 +301,51 @@ fn prepare_resolves_app_root_from_composer_psr4() {
     );
 }
 
+/// The ThinkPHP `db-connections` root rule must resolve `db_prefix` (and enumerate `db_connections`) from the real
+/// sample's `config/database.php`. `root_rules_real_fkb.rs` pins this synthetically; here we pin it against the
+/// actual checkout, where the prefix is `Env::get('database.prefix', 'eb_')` rather than a bare literal — so a
+/// regression in the real-config parser path cannot silently break prefix stripping. `synthesize_normalizes_table_prefix_and_plural`
+/// only proves the *effect* (prefix dropped from identities), not that the fact was produced.
+#[test]
+fn prepare_resolves_db_prefix_from_real_config() {
+    let Some(b) = built() else {
+        eprintln!("{}", common::skip_reason());
+        return;
+    };
+    let subs = b.store.list_sub_projects(b.project.id).expect("the sub-projects must be readable");
+    let backend = subs
+        .iter()
+        .find(|s| s.language.as_str() == "php")
+        .expect("a PHP sub-project must exist");
+    let facts: Value = serde_json::from_value(backend.facts.clone()).unwrap_or(Value::Null);
+
+    let db_prefix = facts
+        .get("db_prefix")
+        .expect("the db_prefix fact must be resolved from config/database.php");
+    assert_eq!(
+        db_prefix.get("value").and_then(|v| v.as_str()),
+        Some("eb_"),
+        "db_prefix must come from the `prefix` of the default connection ('eb_' via Env::get default), got: {db_prefix}"
+    );
+    assert_eq!(
+        db_prefix.get("fallback_used").and_then(|v| v.as_bool()),
+        Some(false),
+        "db_prefix must resolve directly (the prefix is present), with no fallback"
+    );
+
+    // The connection enumeration itself must be present — the kernel needs the connections to derive the prefix from.
+    // Pin the exact default name: the real config writes `default => Env::get('database.driver', 'mysql')`, so this
+    // proves `default_from` resolved through an `Env::get` default (not just a bare literal, as the synthetic test uses).
+    let db_conns = facts
+        .get("db_connections")
+        .expect("the db_connections fact must be resolved");
+    assert_eq!(
+        db_conns.get("default").and_then(|v| v.as_str()),
+        Some("mysql"),
+        "db_connections must record the default connection ('mysql'), got: {db_conns}"
+    );
+}
+
 #[test]
 fn prepare_loads_authoritative_symbol_tables() {
     let Some(b) = built() else {

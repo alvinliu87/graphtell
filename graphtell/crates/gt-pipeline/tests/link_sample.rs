@@ -136,29 +136,29 @@ fn frontend_contract_resolves_to_backend_contract() {
     );
 
     // ---- 4) Frontend cross-file call chain: App.onDelete -> api.deleteItem ----
+    // This is a real, resolvable link in the frozen synthetic sample (function names are unique), so it must be a
+    // hard assertion, not an informational eprintln — a regression in P7's frontend cross-file name resolution
+    // would otherwise pass silently. (The original code downgraded this to "a missing edge is expected" out of
+    // caution about global uniqueness; in a controlled sample that caution is unnecessary.)
     let on_delete = all_nodes
         .iter()
-        .find(|n| n.kind.as_str() == "Function" && n.name == "onDelete");
-    if let Some(on_delete) = on_delete {
-        let linked = b
-            .store
-            .edges_of(on_delete.id, EdgeDirection::Outgoing)
-            .unwrap_or_default()
-            .iter()
-            .any(|e| {
-                e.kind.as_str() == "Calls"
-                    && all_nodes
-                        .iter()
-                        .any(|t| t.id == e.to_id && t.name == "deleteItem")
-            });
-        if linked {
-            eprintln!("✓ frontend cross-file call chain: App.onDelete → api.deleteItem (Calls)");
-        } else {
-            eprintln!("ℹ frontend cross-file Calls are resolved by P7 by name; a missing edge is expected (name resolution requires global uniqueness)");
-        }
-    } else {
-        eprintln!("ℹ no onDelete node detected");
-    }
+        .find(|n| n.kind.as_str() == "Function" && n.name == "onDelete")
+        .expect("the frontend semantic node Function:onDelete must be created");
+    let linked = b
+        .store
+        .edges_of(on_delete.id, EdgeDirection::Outgoing)
+        .unwrap_or_default()
+        .iter()
+        .any(|e| {
+            e.kind.as_str() == "Calls"
+                && all_nodes
+                    .iter()
+                    .any(|t| t.id == e.to_id && t.name == "deleteItem")
+        });
+    assert!(
+        linked,
+        "App.onDelete must resolve a frontend cross-file Calls edge into api.deleteItem (P7 name resolution)"
+    );
 
     // ---- 2) Two parties, two nodes: each sub-project owns the contract it declares ----
     // The front end names `POST /api/delete` and so does the back end, but a node belongs to exactly one
@@ -208,6 +208,25 @@ fn frontend_contract_resolves_to_backend_contract() {
         anns.iter().any(|a| a.kind == "frontend.called"),
         "the backend contract must be annotated frontend.called through the bridge edge, annotations: {:?}",
         anns.iter().map(|a| a.kind.clone()).collect::<Vec<_>>()
+    );
+
+    // ---- 2.7) Precision: an uncalled backend-only endpoint must NOT be annotated frontend.called ----
+    // The positive above only proves the rule fires on an incoming ResolvesToContract. Without this negative, a
+    // regression that fires `mark-called` on *every* backend contract would still pass every assertion. The
+    // `api/items` resource route (expanded in `member_style_request_bridges`) is declared by the backend but the
+    // frontend never calls it, so its backend contract must stay clean.
+    let items_be = contracts
+        .iter()
+        .find(|n| {
+            n.identity.as_ref().map(|i| i.value.as_str()) == Some("GET /api/items")
+                && n.properties.get("side").and_then(|v| v.as_str()) == Some("backend")
+        })
+        .expect("the backend resource route GET /api/items must synthesise its own contract node");
+    let items_anns = b.store.annotations_of(items_be.id).expect("the annotations must be readable");
+    assert!(
+        !items_anns.iter().any(|a| a.kind == "frontend.called"),
+        "an uncalled backend-only endpoint must NOT be annotated frontend.called, got: {:?}",
+        items_anns.iter().map(|a| a.kind.clone()).collect::<Vec<_>>()
     );
 
     // ---- Informational: backend handler resolution (P7, existing mechanism) ----

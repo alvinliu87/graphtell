@@ -246,3 +246,159 @@ interface OrderMapper extends BaseMapper<Order> {
         "expected BaseMapper<Order> -> com.demo.Order, got: {generic:?}"
     );
 }
+
+/// NEGATIVE: `field_types` must come **only** from class fields, never from method-local variables. P7 resolves the
+/// `@Autowired` dependency chain from `field_types`; a local variable leaking in would fabricate a phantom service
+/// edge. `collect_field_type` is invoked solely on `field_declaration` nodes (`src/java.rs:160`), so a `local_variable_declaration`
+/// inside a method body must stay out of `field_types`.
+#[test]
+fn does_not_leak_method_local_variables_into_field_types() {
+    let src = r#"package com.demo;
+
+import com.other.UserRepository;
+
+class Svc {
+    private UserRepository repo;
+
+    void run() {
+        UserRepository local = repo;
+    }
+}
+"#;
+    let facts = parse("src/main/java/com/demo/Svc.java", src);
+
+    let f = |field: &str| facts.field_types.iter().find(|t| t.field == field);
+    assert_eq!(
+        f("repo").map(|t| t.type_name.as_str()),
+        Some("com.other.UserRepository"),
+        "a real class field is captured"
+    );
+    assert!(
+        f("local").is_none(),
+        "a method-local variable must NOT become a field dependency"
+    );
+    assert_eq!(
+        facts
+            .field_types
+            .iter()
+            .filter(|t| t.class_fqn == "com.demo.Svc")
+            .count(),
+        1,
+        "exactly the single class field, no local leak"
+    );
+}
+
+/// NEGATIVE (event-entity derivation): the event type must be derived from a **method parameter** (`@EventListener`)
+/// or a **constructed object** (`publishEvent(new X())`), and only then. A field-level `@EventListener` has no
+/// parameter, and `publishEvent(aVariable)` has no `new X(...)` — both must yield `entity: None` so the producer
+/// and subscriber do not merge onto a phantom `Event` node. Guards: `first_param_type` (`src/java.rs:530`) and
+/// `constructed_entity_type` (`src/java.rs:543`).
+#[test]
+fn non_method_event_listener_and_unconstructed_publish_omit_event_entity() {
+    let src = r#"package com.demo;
+
+class Listener {
+    @EventListener
+    private OrderPlacedEventDelegate handler;
+}
+
+class Svc {
+    private Publisher publisher;
+
+    void place() {
+        OrderPlacedEvent e = new OrderPlacedEvent(this);
+        publisher.publishEvent(e);
+    }
+}
+"#;
+    let facts = parse("src/main/java/com/demo/App.java", src);
+
+    let ev = facts
+        .call_sites
+        .iter()
+        .find(|c| c.method.as_deref() == Some("EventListener"));
+    assert!(
+        ev.is_some(),
+        "a field-level @EventListener still becomes a call site"
+    );
+    assert_eq!(
+        ev.unwrap().entity, None,
+        "a non-method declaration has no event parameter -> no phantom Event merge"
+    );
+
+    let pub_ev = facts
+        .call_sites
+        .iter()
+        .find(|c| c.method.as_deref() == Some("publishEvent"));
+    assert!(pub_ev.is_some(), "publishEvent is captured");
+    assert_eq!(
+        pub_ev.unwrap().entity, None,
+        "only `new X(...)` derives the event; a bare variable must not"
+    );
+}
+
+/// NEGATIVE: `in_loop` must be set **only** by loop statements, not by any nested block. N+1 detection relies on
+/// `in_loop`; over-marking (e.g. an `if`/`try` body) would fabricate false N+1 edges. Guard: `is_loop`
+/// (`src/java.rs:186`) matches only `for` / enhanced-`for` / `while` / `do-while`.
+#[test]
+fn only_loop_bodies_flag_in_loop() {
+    let src = r#"package com.demo;
+
+class Svc {
+    void run(java.util.List<Item> items) {
+        if (cond) {
+            db.queryIf(x);
+        }
+        try {
+            db.queryTry(y);
+        } catch (Exception ex) {
+        }
+        for (Item i : items) {
+            db.queryLoop(i);
+        }
+    }
+}
+"#;
+    let facts = parse("src/main/java/com/demo/Svc.java", src);
+    assert_eq!(
+        call_method(&facts, "queryIf").in_loop,
+        false,
+        "a call inside an `if` body is not a loop"
+    );
+    assert_eq!(
+        call_method(&facts, "queryTry").in_loop,
+        false,
+        "a call inside a `try` body is not a loop"
+    );
+    assert_eq!(
+        call_method(&facts, "queryLoop").in_loop,
+        true,
+        "a call inside the for body is the real N+1"
+    );
+}
+
+/// NEGATIVE: a DAO extending a **non-generic** base emits no `generic.*` call site (and therefore no synthetic
+/// entity edge). `push_generic_entity` returns early when the entity is absent (`src/java.rs:366`), so `extends
+/// JpaRepository` with no `<...>` must not be sniffed into an `Entity` node. This guards P7 against a bogus
+/// `maps_to`/write classification for bare-base DAOs.
+#[test]
+fn dao_without_generic_arg_emits_no_entity_call_site() {
+    let src = r#"package com.demo;
+
+interface UserRepository extends JpaRepository {
+}
+
+interface OrderMapper extends BaseMapper {
+}
+"#;
+    let facts = parse("src/main/java/com/demo/Repos.java", src);
+    let generic_count = facts
+        .call_sites
+        .iter()
+        .filter(|c| c.callee_text.starts_with("generic."))
+        .count();
+    assert_eq!(
+        generic_count, 0,
+        "a non-generic DAO base must not synthesize an entity call site"
+    );
+}

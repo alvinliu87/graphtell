@@ -74,18 +74,24 @@ fn synthetic_root(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
     dir
 }
 
-/// Build the graph and assert that exactly the in-loop external call was annotated.
-fn assert_one_in_loop_call_flagged(tag: &str, root: &std::path::Path) {
+/// Build the graph and assert that exactly `expected` `ext-call-in-loop` annotations were produced.
+fn assert_ext_in_loop_count(tag: &str, root: &std::path::Path, expected: usize) {
     let Some(b) = common::graph_with_root(root, ProjectConfig::default()) else {
         panic!("the synthetic {tag} project graph build should succeed");
     };
     let kinds = annotation_kinds(&b);
     let n = count_ext_in_loop(&b);
     assert_eq!(
-        n, 1,
-        "{tag}: the external call inside the loop must be annotated exactly once (the one outside the loop must not be), got {n} times, all annotations: {kinds:?}"
+        n, expected,
+        "{tag}: expected {expected} `ext-call-in-loop` annotations, got {n}, all annotations: {kinds:?}"
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// Build the graph and assert that exactly the in-loop external call was annotated (the canonical case proved by
+/// the three language tests below: one external call inside a loop, one outside).
+fn assert_one_in_loop_call_flagged(tag: &str, root: &std::path::Path) {
+    assert_ext_in_loop_count(tag, root, 1);
 }
 
 #[test]
@@ -160,4 +166,87 @@ def load_all(urls):
         ],
     );
     assert_one_in_loop_call_flagged("python", &root);
+}
+
+/// The verb list really gates the annotation: a call whose name is **not** an FKB-declared external verb must not
+/// be flagged even though it sits inside a loop. Every other test uses the *same* FKB verb for both the in-loop and
+/// the outside call, so it can only prove the loop gate — a verb list that became (wrongly) over-broad would still
+/// pass `count == 1`. `console.log` is a plain builtin, never a remote call, so this pins the other half of the
+/// predicate (`is_external_call`) end-to-end: zero annotations.
+#[test]
+fn js_non_external_call_in_loop_not_flagged() {
+    let root = synthetic_root(
+        "js-nonverb",
+        &[
+            ("package.json", r#"{"name":"demo","dependencies":{}}"#),
+            (
+                "src/api.js",
+                r#"function logAll(urls) {
+  for (const url of urls) {
+    console.log(url);
+  }
+}
+"#,
+            ),
+        ],
+    );
+    assert_ext_in_loop_count("js-nonverb", &root, 0);
+}
+
+/// Two external calls inside the same loop must **both** be flagged — `count == 2`, not just the first. The
+/// `count == 1` canonical tests would pass even if the loop analysis only annotated the first matching call, so
+/// this pins that every in-loop external call site is annotated independently.
+#[test]
+fn php_multiple_external_calls_in_loop_all_flagged() {
+    let root = synthetic_root(
+        "php-multi",
+        &[
+            ("composer.json", r#"{"require":{"php":">=7.4"}}"#),
+            (
+                "app/Sender.php",
+                r#"<?php
+namespace app;
+
+class Sender
+{
+    public function sendAll($urls)
+    {
+        foreach ($urls as $url) {
+            curl_exec($url);
+            curl_exec($url . "&x=1");
+        }
+        curl_exec($urls[0]);
+    }
+}
+"#,
+            ),
+        ],
+    );
+    assert_ext_in_loop_count("php-multi", &root, 2);
+}
+
+/// An external call inside a loop that is itself inside another loop must still be flagged: `in_loop` must hold for
+/// nested loops, not only for a call directly under a single loop header. The canonical tests only exercise one
+/// loop level, so a regression that set `in_loop` only for immediate loop children would slip through.
+#[test]
+fn python_nested_loop_external_call_flagged() {
+    let root = synthetic_root(
+        "python-nested",
+        &[
+            ("requirements.txt", "requests>=2.0\n"),
+            (
+                "app.py",
+                r#"import requests
+
+
+def load_all(groups):
+    for group in groups:
+        for url in group:
+            requests.get(url)
+    requests.get(group[0][0])
+"#,
+            ),
+        ],
+    );
+    assert_ext_in_loop_count("python-nested", &root, 1);
 }

@@ -805,7 +805,7 @@ mod tests {
         let body = r#"
             $table->id();
             $table->string('email');
-            $table->comment('邮箱');
+            $table->comment('Email');
             $table->default('x');
             $table->after('name');
             $table->timestamps();
@@ -817,7 +817,7 @@ mod tests {
             cols.contains(&"created_at".to_string()) && cols.contains(&"updated_at".to_string()),
             "timestamps() must expand to created_at/updated_at: {cols:?}"
         );
-        assert!(!cols.contains(&"邮箱".to_string()), "the string argument of comment must not be misjudged as a column");
+        assert!(!cols.contains(&"Email".to_string()), "the string argument of comment must not be misjudged as a column");
         assert!(!cols.contains(&"name".to_string()), "the string argument of after must not be misjudged as a column");
     }
 

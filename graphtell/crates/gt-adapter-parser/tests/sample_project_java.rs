@@ -78,6 +78,10 @@ fn parses_autowired_field_type_as_qualified_fqn() {
         ft.type_name, "com.macro.mall.service.OmsOrderService",
         "an import that restores the FQN exactly must win over same-package guessing"
     );
+    assert_ne!(
+        ft.type_name, "com.macro.mall.controller.OmsOrderService",
+        "the import must win over the same-package guess (the field's own package) — a short name finds nothing in MapsTo"
+    );
     assert_eq!(
         ft.class_fqn, "com.macro.mall.controller.OmsOrderController",
         "the field must be attributed to the declaring class"
@@ -143,5 +147,34 @@ fn parses_mapper_interface_fqn_and_methods() {
     assert_eq!(
         method.fqn, "com.macro.mall.mapper.OmsOrderMapper.selectByPrimaryKey",
         "a method FQN must be derived from namespace + interface + method"
+    );
+}
+
+/// NEGATIVE: the class-level `@RequestMapping("/order")` prefix must be attributed to the **class** FQN and must
+/// NOT be duplicated onto every handler method (`Class.method`). A regression that re-attaches the prefix to each
+/// method-owned `@RequestMapping` would double the prefix and mis-route FKB's `HandledBy` edges onto phantom
+/// `Class.method` nodes carrying `/order`. The method routes carry `/list` etc. — never the class prefix — so a
+/// method-owned site carrying `/order` is a definite over-attribution.
+#[test]
+#[ignore = "needs the java sample (mall), which is not committed (too large to ship with the repo)"]
+fn class_level_route_prefix_is_not_owned_by_methods() {
+    let Some(facts) = parse_java("mall-admin/src/main/java/com/macro/mall/controller/OmsOrderController.java")
+    else {
+        panic!("{}", missing_hint_named("java"));
+    };
+    let class_fqn = "com.macro.mall.controller.OmsOrderController";
+
+    let methods_carrying_class_prefix = facts
+        .call_sites
+        .iter()
+        .filter(|c| {
+            c.method.as_deref() == Some("RequestMapping")
+                && c.owner_fqn != class_fqn
+                && c.args.iter().any(|a| a.as_str() == Some("/order"))
+        })
+        .count();
+    assert_eq!(
+        methods_carrying_class_prefix, 0,
+        "the class-level \"/order\" prefix must not be duplicated onto method-owned @RequestMapping call sites"
     );
 }

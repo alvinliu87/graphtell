@@ -55,6 +55,21 @@ class Article(models.Model):
     )
     .expect("write models.py");
 
+    // A module that reads and writes through the Django ORM. This exercises fkb/python/django.yaml's
+    // `db_verbs` + `variable_type` resolver (`django-orm-call`) wiring — the Django analogue of the Java JPA
+    // ReadsDb/WritesDb pin in library_detection.rs, and never covered end-to-end here.
+    std::fs::write(
+        dir.join("myapp/views.py"),
+        r#"from myapp.models import Article
+
+
+def fetch_article(id):
+    a = Article.objects.get(id=id)
+    return Article.objects.create(title="new")
+"#,
+    )
+    .expect("write views.py");
+
     dir
 }
 
@@ -77,6 +92,19 @@ fn has_incoming_edge(b: &common::Built, kind: &str, edge: &str) -> bool {
             .expect("edges")
             .iter()
             .any(|e| e.kind.as_str() == edge)
+    })
+}
+
+/// Whether a `Function` node of the given name carries an outgoing edge of `edge` to some target.
+fn fn_has_outgoing_edge(b: &common::Built, name: &str, edge: &str) -> bool {
+    nodes_of_kind(b, "Function").iter().any(|n| {
+        n.name == name
+            && b
+                .store
+                .edges_of(n.id, EdgeDirection::Outgoing)
+                .expect("edges")
+                .iter()
+                .any(|e| e.kind.as_str() == edge)
     })
 }
 
@@ -109,5 +137,51 @@ fn django_env_config_produces_configkey() {
     assert!(
         has_incoming_edge(&b, "ConfigKey", "ReadsConfig"),
         "the ConfigKey must have a ReadsConfig in-edge"
+    );
+
+    // Precision: only the *key* argument (arg 0, `require_literal`) becomes a ConfigKey — the default value
+    // (arg 1) must not. `os.environ.get("SECRET_KEY", "dev")` would otherwise create a spurious `dev` node.
+    assert!(
+        !cfg.iter().any(|n| n == "dev" || n == "localhost"),
+        "default values must not become ConfigKey nodes, got: {cfg:?}"
+    );
+}
+
+/// Django ORM calls (`Article.objects.get` / `Article.objects.create`) must resolve — via django.yaml's
+/// `variable_type` resolver and `db_verbs` — to `ReadsDb` / `WritesDb` edges on the `Article` table. This is
+/// the Django analogue of the Java JPA ReadsDb/WritesDb pin and was previously untested end-to-end.
+#[test]
+fn django_orm_reads_and_writes_produce_db_edges() {
+    let root = synthetic_django_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the graph build of the synthetic Django project should succeed");
+    };
+
+    // The model must be a Table, or the ORM wiring has nothing to resolve the receiver against.
+    let tables: Vec<String> = nodes_of_kind(&b, "Table").iter().map(|n| n.name.clone()).collect();
+    assert!(
+        !tables.is_empty(),
+        "the Article model must be a Table for the ORM resolver to land on, got: {tables:?}"
+    );
+
+    // The function reads through the ORM (`Article.objects.get`) -> a ReadsDb edge, and writes through it
+    // (`Article.objects.create`) -> a WritesDb edge.
+    assert!(
+        fn_has_outgoing_edge(&b, "fetch_article", "ReadsDb"),
+        "Article.objects.get must yield a ReadsDb edge on the fetch_article function"
+    );
+    assert!(
+        fn_has_outgoing_edge(&b, "fetch_article", "WritesDb"),
+        "Article.objects.create must yield a WritesDb edge on the fetch_article function"
+    );
+    // And both must resolve onto a Table (the ORM resolver lands the edge on the Article table), not just
+    // "a DB edge exists somewhere".
+    assert!(
+        has_incoming_edge(&b, "Table", "ReadsDb"),
+        "the ReadsDb edge must land on the Article Table"
+    );
+    assert!(
+        has_incoming_edge(&b, "Table", "WritesDb"),
+        "the WritesDb edge must land on the Article Table"
     );
 }

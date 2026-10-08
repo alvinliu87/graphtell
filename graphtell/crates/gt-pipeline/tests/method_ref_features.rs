@@ -73,6 +73,7 @@ use think\facade\Route;
 Route::get('/login', 'Login/login');                       // app segment inferred from path, controller = Login
 Route::get('/dash', 'v1.Login/dashboard');                 // hierarchy separator '.' -> '\'
 Route::get('/fqn', 'app\admin\controller\Login');          // fully-qualified string (class_const shape)
+Route::get('/fallback', 'Login/missingMethod');            // class exists, method does NOT -> must fall back to the Class node
 Route::get('/ghost', 'nope.Nope/ghost');                   // typo: no matching class anywhere
 "#,
     )
@@ -95,6 +96,12 @@ fn nodes_of_kind(b: &common::Built, kind: &str) -> Vec<Node> {
 
 /// Name of the `HandledBy` target of an `HttpContract` (by exact name), or `None` if there is no such edge.
 fn handler_method_of(b: &common::Built, contract_name: &str) -> Option<String> {
+    handler_target_of(b, contract_name).map(|n| n.name)
+}
+
+/// The `HandledBy` target node of an `HttpContract` (by exact name), or `None` if there is no such edge.
+/// Returning the whole node lets a test pin *which* node was resolved (name + kind), not just that one exists.
+fn handler_target_of(b: &common::Built, contract_name: &str) -> Option<Node> {
     let contracts = nodes_of_kind(b, "HttpContract");
     let c = contracts.iter().find(|n| n.name == contract_name)?;
     b.store
@@ -104,7 +111,6 @@ fn handler_method_of(b: &common::Built, contract_name: &str) -> Option<String> {
         .filter(|e| e.kind.as_str() == "HandledBy")
         .filter_map(|e| b.store.get_node(e.to_id).ok().flatten())
         .next()
-        .map(|n| n.name)
 }
 
 #[test]
@@ -128,10 +134,23 @@ fn method_ref_resolves_string_handler_to_real_method() {
         "hierarchy separator must map v1.Login -> v1\\Login"
     );
 
-    // 3) fully-qualified string (the shape a `X::class` produces) resolves by exact match, not template mangling
-    assert!(
-        handler_method_of(&b, "GET /fqn").is_some(),
-        "a fully-qualified string must resolve to a real node, not be mangled into a non-existent FQN"
+    // 3) fully-qualified string (the shape a `X::class` produces) resolves by exact match, not template mangling.
+    // Pin the *exact* target: it must be the real `Login` Class node (named by short name in this graph) — a
+    // regression that mangled the FQN (e.g. dropped the namespace or invented a `::index` method, resolving to a
+    // ghost) would have slipped through the previous `is_some()` check. (Base-vs-v1 disambiguation is already
+    // pinned by case 1: only the base `Login` has a `login` method, so resolving `/login` to `login` proves the
+    // app-segment inference picked the base class, not `v1\Login`.)
+    let fqn_target = handler_target_of(&b, "GET /fqn")
+        .expect("a fully-qualified string must resolve to a real node, not be mangled into a non-existent FQN");
+    assert_eq!(
+        fqn_target.kind.as_str(),
+        "Class",
+        "the FQN handler points at the Class node, not a synthetic Method"
+    );
+    assert_eq!(
+        fqn_target.name, "Login",
+        "the FQN must resolve to the real Login class, not a mangled/ghost node, got: {}",
+        fqn_target.name
     );
 }
 
@@ -159,5 +178,44 @@ fn method_ref_never_synthesizes_ghost_nodes_on_miss() {
     assert!(
         !methods.iter().any(|m| m == "ghost"),
         "no ghost Method `ghost` should be synthesized, got: {methods:?}"
+    );
+}
+
+/// The resolver must **fall back to the controller Class** when the named method does not exist on the graph
+/// (resolve.rs:880-889). Controllers frequently inherit actions from a base class, so requiring the exact
+/// `Class::method` node to exist would break the whole route chain — the design choice is to land the
+/// `HandledBy` edge on the Class node instead of inventing a ghost Method.
+///
+/// This is a *distinct* branch from `method_ref_never_synthesizes_ghost_nodes_on_miss`: there the class itself is
+/// absent (so no edge at all), whereas here the class is present but the method is not (so an edge to the Class,
+/// and still no ghost Method). The original suite never exercised this fall-back, so a regression that dropped it
+/// — e.g. returning `None` whenever the method is missing — would have passed silently.
+#[test]
+fn method_ref_falls_back_to_class_when_method_absent() {
+    let dir = synthetic_tp_root();
+    let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
+        panic!("graph build should succeed");
+    };
+
+    // `Login` (app\admin\controller\Login) exists with `login`/`logout`, but `/fallback` names `missingMethod`,
+    // which is not on the graph. The edge must still be created — targeting the Class node.
+    let target = handler_target_of(&b, "GET /fallback")
+        .expect("a handler whose class exists must resolve, falling back to the Class node");
+    assert_eq!(
+        target.kind.as_str(),
+        "Class",
+        "when the method is absent the HandledBy edge must land on the Class node, not a ghost Method"
+    );
+    assert_eq!(
+        target.name, "Login",
+        "the fall-back must resolve to the real Login class (short name), not a ghost node, got: {}",
+        target.name
+    );
+
+    // And crucially: no ghost `missingMethod` node is synthesized.
+    let methods: Vec<String> = nodes_of_kind(&b, "Method").into_iter().map(|n| n.name).collect();
+    assert!(
+        !methods.iter().any(|m| m == "missingMethod"),
+        "the missing method must not be invented as a ghost Method, got: {methods:?}"
     );
 }

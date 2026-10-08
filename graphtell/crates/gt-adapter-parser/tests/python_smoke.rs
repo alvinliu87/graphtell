@@ -210,3 +210,75 @@ fn relative_import_resolves_to_absolute_module() {
     assert!(has("app.views.user_list"), "a relative import must restore the absolute module: {:?}", facts.imports);
     assert!(has("core.helper"), "a `..` level walks up past the parent: {:?}", facts.imports);
 }
+
+/// NEGATIVE: only **class-body** assignments whose left side is a bare identifier become `Property` declarations — a
+/// method-local assignment (`total = 5`) and an instance attribute (`self.x = 1`, whose left is an `attribute`, not an
+/// `identifier`) must not. `collect_class_attribute` bails unless `current_class == owner_fqn` and the left is an
+/// `identifier` (`src/python.rs:319` / `:331`), so P7 does not mistake transient locals / instance attrs for table
+/// / column mappings.
+#[test]
+fn only_class_body_literals_become_properties() {
+    let src = r#"class UserModel(Base):
+    __tablename__ = "users"
+    cache_ttl = 600
+
+    def save(self):
+        total = 5
+        self.x = 1
+"#;
+    let facts = parse("app/models/user.py", src);
+    let props: Vec<&str> = facts
+        .declarations
+        .iter()
+        .filter(|d| d.kind.as_str() == NodeKind::PROPERTY)
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(
+        props,
+        vec!["__tablename__", "cache_ttl"],
+        "only the two class-body literals become properties; locals / self.x must not"
+    );
+}
+
+/// NEGATIVE: a parameter default that is **not a call** (`db=None`) must not become a DI call site. `collect_default_calls`
+/// only handles `default.kind() == "call"` (`src/python.rs:388`); a `None` / literal / list default is an ordinary
+/// default, and turning it into a `Depends` edge would fabricate a bogus dependency.
+#[test]
+fn non_call_parameter_default_is_not_a_dependency_call_site() {
+    let src = r#"def get_user(user_id: int, db=None):
+    pass
+"#;
+    let facts = parse("app/api/users.py", src);
+    assert!(
+        facts.call_sites.iter().all(|c| c.callee_text != "Depends"),
+        "a non-call default (db=None) must not be collected as a Depends / DI call site: {:?}",
+        facts
+            .call_sites
+            .iter()
+            .map(|c| c.callee_text.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// NEGATIVE: a foreign-key target that is **not imported** must resolve to the current module + name, never a
+/// fabricated cross-module FQN. `resolve_symbol` falls back to `{module}.{name}` (`src/python.rs:419`), so an
+/// unimported `LocalUser` in `app/models/blog.py` becomes `app.models.blog.LocalUser` rather than a guessed
+/// `app.models.user.LocalUser`.
+#[test]
+fn unimported_foreign_key_target_resolves_to_current_module() {
+    let src = r#"class Post(models.Model):
+    title = models.CharField(max_length=200)
+    author = models.ForeignKey(LocalUser, on_delete=models.CASCADE)
+"#;
+    let facts = parse("app/models/blog.py", src);
+    let fk = facts
+        .call_sites
+        .iter()
+        .find(|c| c.callee_text == "models.ForeignKey")
+        .expect("expected a ForeignKey call site");
+    assert_eq!(
+        fk.entity.as_deref(),
+        Some("app.models.blog.LocalUser"),
+        "an unimported relation target must fall back to the current module, not a guessed FQN"
+    );
+}
