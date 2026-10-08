@@ -68,6 +68,42 @@ fn java_project(tag: &str, pom: &str, sources: &[(&str, &str)]) -> std::path::Pa
     dir
 }
 
+/// A **Gradle** Java project: one or more build scripts (`build.gradle`, `build.gradle.kts`) and sources,
+/// but **no `pom.xml`** — the build system every other Java fixture here lacks.
+fn gradle_project(tag: &str, builds: &[(&str, &str)], sources: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-lib-detect-{}-{}-{}",
+        tag,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    for (name, body) in builds {
+        std::fs::write(dir.join(name), body).expect("write build script");
+    }
+    for (path, body) in sources {
+        let full = dir.join(path);
+        std::fs::create_dir_all(full.parent().expect("has parent")).expect("mkdir");
+        std::fs::write(full, body).expect("write source");
+    }
+    dir
+}
+
+/// The languages a full pipeline run decided for the sub-projects of `root`.
+fn detected_languages(root: &Path) -> Vec<String> {
+    let b = common::graph_with_root(root, ProjectConfig::default()).expect("graphing");
+    b.store
+        .list_sub_projects(b.project.id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.language.as_str().to_string())
+        .collect()
+}
+
 /// Frameworks recognised for the **Java** sub-projects of a full pipeline run.
 fn detected_frameworks_java(root: &Path) -> Vec<String> {
     let b = common::graph_with_root(root, ProjectConfig::default()).expect("graphing");
@@ -76,6 +112,86 @@ fn detected_frameworks_java(root: &Path) -> Vec<String> {
         .unwrap_or_default()
         .into_iter()
         .filter(|s| s.language.as_str() == "java")
+        .flat_map(|s| s.frameworks)
+        .collect()
+}
+
+/// A JavaScript project: a `package.json` plus any number of source files.
+fn js_project(tag: &str, package_json: &str, sources: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-lib-detect-{}-{}-{}",
+        tag,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("package.json"), package_json).expect("write package.json");
+    for (path, body) in sources {
+        let full = dir.join(path);
+        std::fs::create_dir_all(full.parent().expect("has parent")).expect("mkdir");
+        std::fs::write(full, body).expect("write source");
+    }
+    dir
+}
+
+/// A synthetic project laid out as `(relative path, contents)` pairs — used by the Python / Rust cases,
+/// which only need a manifest plus one source file each.
+fn project_files(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-lib-detect-{}-{}-{}",
+        tag,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    for (path, body) in files {
+        let full = dir.join(path);
+        std::fs::create_dir_all(full.parent().expect("has parent")).expect("mkdir");
+        std::fs::write(full, body).expect("write");
+    }
+    dir
+}
+
+/// Frameworks recognised for the **Rust** sub-project of a full pipeline run.
+fn detected_frameworks_rust(root: &Path) -> Vec<String> {
+    let b = common::graph_with_root(root, ProjectConfig::default()).expect("graphing");
+    b.store
+        .list_sub_projects(b.project.id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.language.as_str() == "rust")
+        .flat_map(|s| s.frameworks)
+        .collect()
+}
+
+/// Frameworks recognised for the **Python** sub-project of a full pipeline run.
+fn detected_frameworks_python(root: &Path) -> Vec<String> {
+    let b = common::graph_with_root(root, ProjectConfig::default()).expect("graphing");
+    b.store
+        .list_sub_projects(b.project.id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.language.as_str() == "python")
+        .flat_map(|s| s.frameworks)
+        .collect()
+}
+
+/// Frameworks recognised for the **JavaScript** sub-project of a full pipeline run.
+fn detected_frameworks_js(root: &Path) -> Vec<String> {
+    let b = common::graph_with_root(root, ProjectConfig::default()).expect("graphing");
+    b.store
+        .list_sub_projects(b.project.id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.language.as_str() == "javascript")
         .flat_map(|s| s.frameworks)
         .collect()
 }
@@ -395,8 +511,8 @@ public class OrderConsumer {
 #[test]
 fn mybatis_is_detected_from_the_manifest_alone() {
     // The XML-only style: mapper XML plus a starter dependency, and **no** `org.apache.ibatis` import
-    // anywhere. This is the path that goes through `manifest_has`'s textual fallback — `pom.xml` is not
-    // JSON, so the JSON branch fails and the plain-text probe is what has to catch it.
+    // anywhere. `pom.xml` is not JSON, so the JSON branch fails; the Java tech-stack adapter's
+    // `<artifactId>` extraction is what catches it (and the plain-text probe behind it).
     let root = java_project(
         "mybatis-xml",
         r#"<project>
@@ -425,6 +541,74 @@ public interface OrderMapper {
     );
 }
 
+/// The **Gradle** half of the Java stack, end to end. Every other Java fixture here is Maven (`pom.xml`),
+/// so `build.gradle` was previously parsed by nothing outside `gt-adapter-techstack`'s unit tests —
+/// meaning a Gradle project could silently lose its sub-project language and every manifest detector.
+#[test]
+fn gradle_project_is_recognised_as_java_and_spring_boot() {
+    let root = gradle_project(
+        "gradle-groovy",
+        &[(
+            "build.gradle",
+            "plugins { id 'java' }\n\
+             dependencies {\n    implementation 'org.springframework.boot:spring-boot-starter-web:3.2.0'\n}\n",
+        )],
+        &[(
+            "src/main/java/demo/OrderController.java",
+            r#"package demo;
+
+public class OrderController {
+    public String list() {
+        return "ok";
+    }
+}
+"#,
+        )],
+    );
+
+    let langs = detected_languages(&root);
+    assert!(
+        langs.contains(&"java".to_string()),
+        "build.gradle is a marker, so the sub-project must be java: {langs:?}"
+    );
+    let got = detected_frameworks_java(&root);
+    assert!(
+        got.contains(&"spring-boot".to_string()),
+        "a Gradle project must be recognised as spring-boot too: {got:?}"
+    );
+}
+
+/// The Kotlin-DSL spelling, `build.gradle.kts`: the parser and the tech-stack adapter both list it, so a
+/// project that ships only that file must end up with the same sub-project language.
+#[test]
+fn gradle_kotlin_dsl_project_is_recognised_as_java() {
+    let root = gradle_project(
+        "gradle-kts",
+        &[(
+            "build.gradle.kts",
+            "plugins { java }\n\
+             dependencies {\n    implementation(\"org.springframework.boot:spring-boot-starter-web:3.2.0\")\n}\n",
+        )],
+        &[(
+            "src/main/java/demo/OrderController.java",
+            r#"package demo;
+
+public class OrderController {
+    public String list() {
+        return "ok";
+    }
+}
+"#,
+        )],
+    );
+
+    let langs = detected_languages(&root);
+    assert!(
+        langs.contains(&"java".to_string()),
+        "build.gradle.kts must mark the sub-project as java: {langs:?}"
+    );
+}
+
 #[test]
 fn a_spring_project_without_those_libraries_gets_neither() {
     let root = java_project(
@@ -448,6 +632,197 @@ public class OrderController {
         assert!(
             !got.contains(&lib.to_string()),
             "{lib} must not be recognised (the project does not use it), recognised: {got:?}"
+        );
+    }
+}
+
+/// The JS counterpart of `mybatis_is_detected_from_the_manifest_alone`: a `package.json` dependency
+/// activates the framework knowledge. Which sections hold dependencies — and that a **scoped** name keeps
+/// its scope (`@nestjs/core`) — is the JS adapter's job, not the kernel's.
+///
+/// No test asserted `SubProject.frameworks` for JavaScript before: the node tests only assert graph
+/// structure (HttpContract / HandledBy), which the knowledge could produce through some other detector, so
+/// a broken `manifest_dependency` path for JS would have gone unnoticed.
+#[test]
+fn js_manifest_dependency_activates_the_framework() {
+    let root = js_project(
+        "js-manifest",
+        r#"{
+  "name": "demo",
+  "dependencies": { "@nestjs/core": "^10.0.0", "express": "^4.18.0" },
+  "devDependencies": { "typeorm": "^0.3.0" }
+}"#,
+        &[("src/app.js", "const app = require('express')();\n")],
+    );
+    let got = detected_frameworks_js(&root);
+    assert!(
+        got.contains(&"nestjs".to_string()),
+        "a scoped `@nestjs/core` dependency must activate nestjs, recognised: {got:?}"
+    );
+    assert!(
+        got.contains(&"express".to_string()),
+        "express must be recognised, recognised: {got:?}"
+    );
+    assert!(
+        got.contains(&"typeorm".to_string()),
+        "devDependencies count as declared dependencies, recognised: {got:?}"
+    );
+}
+
+/// Rust: `manifest_dependency` reads `Cargo.toml`'s dependency tables through the **Rust adapter**
+/// (`serde = "1.0"` / `tokio = { version = "1" }` -> bare crate name). Nothing asserted
+/// `SubProject.frameworks` for Rust before — `rust_sample.rs` only pins HttpContract / Database nodes,
+/// which the FKB could produce through some other detector, so a broken manifest path for Rust would
+/// have gone unnoticed.
+///
+/// Note: unlike the Python case below, this cannot isolate the adapter from the text-probe fallback
+/// (`declared_in` always falls back to a whole-file `text.contains`), because Rust crate names are
+/// lowercase by convention — there is no realistic capitalised spelling to exploit. It pins the
+/// end-to-end detection instead.
+#[test]
+fn rust_manifest_dependency_activates_the_framework() {
+    let root = project_files(
+        "rs-manifest",
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nactix-web = \"4\"\n\
+                 sqlx = { version = \"0.7\", features = [\"postgres\"] }\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+        ],
+    );
+    let got = detected_frameworks_rust(&root);
+    assert!(
+        got.contains(&"actix-web".to_string()),
+        "actix-web must be recognised from Cargo.toml, recognised: {got:?}"
+    );
+    assert!(
+        got.contains(&"sqlx".to_string()),
+        "`sqlx = {{ version = ... }}` (inline table) must be recognised too, recognised: {got:?}"
+    );
+}
+
+/// The gate must stay shut for Rust: a project that declares neither of them must not get their knowledge.
+#[test]
+fn rust_project_without_the_library_does_not_get_it() {
+    let root = project_files(
+        "rs-absent",
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+        ],
+    );
+    let got = detected_frameworks_rust(&root);
+    for lib in ["actix-web", "axum", "rocket", "sqlx", "diesel", "rusqlite"] {
+        assert!(
+            !got.contains(&lib.to_string()),
+            "{lib} must not be recognised (the project declares only serde), recognised: {got:?}"
+        );
+    }
+}
+
+/// Python: `manifest_dependency` reads `requirements.txt` / `pyproject.toml` through the **Python adapter**
+/// (bare package names, version constraints stripped — `django==5.0` -> `django`). No Python test asserted
+/// `SubProject.frameworks` before: they only assert graph structure, which the knowledge could produce through
+/// another detector, so a broken manifest path for Python would have gone unnoticed.
+#[test]
+fn python_manifest_dependency_activates_the_framework() {
+    let req = project_files(
+        "py-req",
+        &[
+            ("requirements.txt", "django==5.0\ncelery==5.3\n# comment\n"),
+            ("app/views.py", "from django.db import models\n"),
+        ],
+    );
+    let got = detected_frameworks_python(&req);
+    assert!(
+        got.contains(&"django".to_string()),
+        "`django==5.0` must activate django (version constraint stripped), recognised: {got:?}"
+    );
+    assert!(
+        got.contains(&"celery".to_string()),
+        "celery must be recognised, recognised: {got:?}"
+    );
+
+    // The same through PEP 621 metadata: `[project] dependencies = [...]`.
+    let toml = project_files(
+        "py-toml",
+        &[
+            (
+                "pyproject.toml",
+                "[project]\nname = \"demo\"\ndependencies = [\"fastapi>=0.100\", \"uvicorn\"]\n",
+            ),
+            ("app/main.py", "from fastapi import FastAPI\n"),
+        ],
+    );
+    let got = detected_frameworks_python(&toml);
+    assert!(
+        got.contains(&"fastapi".to_string()),
+        "pyproject.toml dependencies must activate fastapi, recognised: {got:?}"
+    );
+
+    // The one case the text-probe fallback **cannot** cover, so it is the only thing in this file that
+    // actually proves the Python adapter is wired in: `declared_in`'s fallback is a case-sensitive
+    // `text.contains(dependency)`, while the adapter compares the extracted names case-insensitively.
+    // `Django==5.0` therefore only matches through `PythonTechStackAdapter`.
+    let cased = project_files(
+        "py-case",
+        &[("requirements.txt", "Django==5.0\n"), ("app/views.py", "X = 1\n")],
+    );
+    let got = detected_frameworks_python(&cased);
+    assert!(
+        got.contains(&"django".to_string()),
+        "a capitalised `Django==5.0` must still activate django — only the adapter's case-insensitive \
+         name matching can do that, the whole-file text probe is case-sensitive: {got:?}"
+    );
+}
+
+/// The gate must stay shut for Python too: a project that declares only flask must not get django / celery /
+/// fastapi knowledge.
+#[test]
+fn python_project_without_the_library_does_not_get_it() {
+    let root = project_files(
+        "py-absent",
+        &[
+            ("requirements.txt", "flask==3.0\n"),
+            ("app/app.py", "from flask import Flask\n"),
+        ],
+    );
+    let got = detected_frameworks_python(&root);
+    assert!(
+        got.contains(&"flask".to_string()),
+        "flask must still be recognised, recognised: {got:?}"
+    );
+    for lib in ["django", "celery", "fastapi", "sqlalchemy", "redis"] {
+        assert!(
+            !got.contains(&lib.to_string()),
+            "{lib} must not be recognised (the project does not declare it), recognised: {got:?}"
+        );
+    }
+}
+
+/// The other half: a project that never declares the library must not get its knowledge — the gate has to
+/// stay shut for JS exactly as it does for PHP / Java.
+#[test]
+fn js_project_without_the_library_does_not_get_it() {
+    let root = js_project(
+        "js-absent",
+        r#"{ "name": "demo", "dependencies": { "express": "^4.18.0" } }"#,
+        &[("src/app.js", "const app = require('express')();\n")],
+    );
+    let got = detected_frameworks_js(&root);
+    assert!(
+        got.contains(&"express".to_string()),
+        "express must still be recognised, recognised: {got:?}"
+    );
+    for lib in ["nestjs", "typeorm", "koa", "fastify"] {
+        assert!(
+            !got.contains(&lib.to_string()),
+            "{lib} must not be recognised (the project does not declare it), recognised: {got:?}"
         );
     }
 }

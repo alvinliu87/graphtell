@@ -24,7 +24,8 @@ side: backend
 scope: framework
 
 detectors:
-  # spring-boot appears in pom.xml (`manifest_has` does a textual containment match on non-JSON files)
+  # spring-boot appears in pom.xml: `manifest_has` asks the Java adapter for the declared `<artifactId>`s
+  # and only falls back to a whole-file textual match when no adapter recognised the file.
   - kind: manifest_dependency
     manifest: pom.xml
     dependency: spring-boot

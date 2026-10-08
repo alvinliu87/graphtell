@@ -413,7 +413,8 @@ fn assert_app_root_probed_from_a_directory(
 
 #[test]
 fn real_fastapi_fkb_app_root_comes_from_a_directory_probe() {
-    // Detected on `requirements.txt` (a textual containment match), and `app_root` is the probe of `app`.
+    // Detected on `requirements.txt` (read by the Python adapter; the whole-file text probe is only the
+    // fallback behind it), and `app_root` is the probe of `app`.
     let root = synthetic_root(
         "fastapi",
         &[

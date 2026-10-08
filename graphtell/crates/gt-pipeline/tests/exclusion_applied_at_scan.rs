@@ -12,11 +12,66 @@
 //! The directories below are chosen for exactly that reason: `storage/framework/**` and `bootstrap/cache/**`
 //! come from `fkb/php/laravel.yaml` only — they appear in neither `DEFAULT_EXCLUDE_GLOBS` nor `ASSET_GLOBS`,
 //! so the only thing that can keep them out is the FKB-resolved exclusion.
+//!
+//! The second case covers the other *shape* of exclusion: `fkb/php/thinkphp.yaml`'s `runtime-dir` renders
+//! `{value}/**` from the rule's own source, a **PHP config read** (`kind: manifest` → `read_manifest`).
+//! That path is the PHP adapter's only public method without a build-level test, and `runtime/` itself
+//! cannot prove anything (`**/runtime/**` is a scanner built-in).
 
 use gt_domain::model::ProjectConfig;
 use gt_domain::port::ProjectReader;
 
 mod common;
+
+/// A minimal ThinkPHP project whose runtime directory is **relocated through configuration**
+/// (`config/app.php` -> `runtime_path`), carrying generated content inside it.
+///
+/// This is the other shape an exclude rule can have: `fkb/php/thinkphp.yaml`'s `runtime-dir` renders
+/// `{value}/**` from the rule's *own* source (`kind: manifest` -> `PhpTechStackAdapter::read_manifest`),
+/// i.e. from a PHP `return [...]` config read by dotted pointer. Every other exclusion here is a static
+/// glob, and `exclude.rs`'s own `rule_own_source_fills_value_and_renders` uses the JSON source — so the
+/// PHP single-pointer read is covered only by adapter unit tests, never through a build.
+///
+/// `app_runtime/` is deliberately *not* `runtime/`: `**/runtime/**` is a scanner built-in, so a file under
+/// it could not tell "the FKB resolved the configured directory" from "a default caught it".
+fn synthetic_thinkphp_root(runtime_value: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-excl-manifest-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let config = format!("<?php\nreturn [\n    'runtime_path' => '{runtime_value}',\n];\n");
+    let files: &[(&str, &str)] = &[
+        // Detected as ThinkPHP, which is what makes its exclude rules apply.
+        (
+            "composer.json",
+            r#"{"require":{"topthink/framework":"^6.0"},"autoload":{"psr-4":{"app\\":"app/"}}}"#,
+        ),
+        ("config/app.php", &config),
+        // Positive control: an ordinary source file, so "nothing was scanned" cannot pass vacuously.
+        (
+            "app/Controller.php",
+            "<?php\nnamespace app;\n\nclass Controller\n{\n    public function index()\n    {\n        return 1;\n    }\n}\n",
+        ),
+        // The configured runtime directory: only the manifest-resolved `{value}` can keep it out — it is
+        // neither a scanner built-in nor an asset directory.
+        ("app_runtime/cache/generated.php", "<?php\nreturn ['cached' => 1];\n"),
+        // Second control: a sibling directory that is NOT the configured runtime dir must still be scanned,
+        // so the assertion above cannot pass by "the whole tree was dropped".
+        ("tmp/keep.php", "<?php\nreturn ['kept' => 1];\n"),
+    ];
+    for (rel, body) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir");
+        std::fs::write(&path, body).expect("write");
+    }
+    dir
+}
 
 /// A minimal Laravel project carrying generated content inside the directories its FKB excludes.
 fn synthetic_laravel_root() -> std::path::PathBuf {
@@ -98,4 +153,41 @@ fn fkb_resolved_exclusions_keep_generated_dirs_out_of_the_scan() {
     }
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The `{value}` of an exclude rule may come from a **PHP config read** (`kind: manifest` -> `read_manifest`),
+/// not only from a static glob or a JSON pointer. Pinning it through the build is what closes the last gap in
+/// `PhpTechStackAdapter`'s public surface: `read_manifest` had adapter unit tests and nothing else.
+#[test]
+fn exclusion_resolved_from_a_php_config_keeps_that_dir_out_of_the_scan() {
+    // Same tree twice, only the configured value differs: `app_runtime/` is excluded **iff** the config
+    // names it. Without the second build, "the file is gone" could also mean "nothing was scanned".
+    for (value, should_be_scanned) in [("app_runtime", false), ("elsewhere_runtime", true)] {
+        let root = synthetic_thinkphp_root(value);
+        let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+            panic!("the synthetic ThinkPHP project graph build should succeed (runtime_path={value})");
+        };
+
+        let files = b.store.list_files(b.project.id, None).expect("files readable");
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+
+        // Controls: the scan really ran, and it is not dropping the whole tree.
+        assert!(
+            paths.iter().any(|p| *p == "app/Controller.php"),
+            "an ordinary source file must be scanned (runtime_path={value}), got: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| *p == "tmp/keep.php"),
+            "a directory that is not the configured runtime dir must still be scanned (runtime_path={value}), got: {paths:?}"
+        );
+
+        let scanned = paths.iter().any(|p| *p == "app_runtime/cache/generated.php");
+        assert_eq!(
+            scanned, should_be_scanned,
+            "`app_runtime/` is named only by `config/app.php`'s `runtime_path` (now `{value}`), so whether \
+             it is scanned must follow that value alone — via `read_manifest` + the rule's {{value}} glob: {paths:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

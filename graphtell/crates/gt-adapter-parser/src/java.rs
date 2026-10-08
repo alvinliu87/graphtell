@@ -614,10 +614,15 @@ fn collect_call(
     let Some(method) = opt_text(node.child_by_field_name("name"), src) else {
         return;
     };
-    let receiver = node
-        .child_by_field_name("object")
-        .and_then(|n| text(n, src));
-    let callee_text = match &receiver {
+    let raw_receiver = node.child_by_field_name("object").and_then(|n| text(n, src));
+    // `this.repo.save(x)`: the qualified-self spelling of the same call. P7 resolves the receiver's `MapsTo`
+    // through the **field type** recorded under the bare field name (`repo`), so `this.` must be stripped —
+    // otherwise a Spring service written this way (very common) loses every read / write classification.
+    // Same handling as the JS parser (`this.request.get(...)`); the callee keeps the source spelling.
+    let receiver = raw_receiver
+        .as_deref()
+        .map(|r| r.strip_prefix("this.").unwrap_or(r).to_string());
+    let callee_text = match &raw_receiver {
         Some(r) => format!("{}.{}", r, method),
         None => method.clone(),
     };

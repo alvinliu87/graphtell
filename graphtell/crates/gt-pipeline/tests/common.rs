@@ -17,7 +17,10 @@ use gt_adapter_fs::{StdFileSystem, WalkDirScanner};
 use gt_adapter_parser::DefaultParserRegistry;
 use gt_adapter_techstack::PhpTechStackAdapter;
 use gt_adapter_sqlite::SqliteStore;
-use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};
+use gt_adapter_techstack::{
+    DefaultMarkerProvider, JavaTechStackAdapter, JsTechStackAdapter, PythonTechStackAdapter,
+    RustTechStackAdapter,
+};
 use gt_adapter_resource::MyBatisMapperAdapter;
 use gt_domain::model::{Project, ProjectConfig};
 use gt_domain::port::{
@@ -58,9 +61,16 @@ impl TestInfra {
             scanner: WalkDirScanner::new(Vec::new()),
             parsers: DefaultParserRegistry::new(),
             kb,
+            // Same registration as the production composition root (`gt-app/src/container.rs`): every adapter
+            // belongs here. Missing one does not fail — it silently degrades `manifest_has` / `lock_has` to
+            // their *text-probe fallback*, so a broken adapter (dependency extraction) could not fail a single
+            // integration test. Java, Python and Rust were all absent until they were added one by one.
             techstack: DefaultTechStackRegistry::new()
                 .register(Box::new(PhpTechStackAdapter::new()))
-                .register(Box::new(JsTechStackAdapter::new())),
+                .register(Box::new(JsTechStackAdapter::new()))
+                .register(Box::new(JavaTechStackAdapter::new()))
+                .register(Box::new(PythonTechStackAdapter::new()))
+                .register(Box::new(RustTechStackAdapter::new())),
             markers: DefaultMarkerProvider::new(),
             resources: DefaultResourceAdapterRegistry::new()
                 .register(Box::new(MyBatisMapperAdapter::default())),

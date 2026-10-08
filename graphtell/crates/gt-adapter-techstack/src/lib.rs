@@ -74,6 +74,14 @@ impl MarkerProvider for DefaultMarkerProvider {
                 language: Language::new(Language::JAVA),
                 role: "backend".into(),
             },
+            // The Kotlin-DSL spelling. Both the parser (`manifest_files`) and `JavaTechStackAdapter`
+            // already accept `build.gradle.kts`; listing only the Groovy spelling left a Kotlin-DSL-only
+            // project at language `unknown`, which silently disabled every language-gated step.
+            Marker {
+                file: "build.gradle.kts".into(),
+                language: Language::new(Language::JAVA),
+                role: "backend".into(),
+            },
             Marker {
                 file: "Cargo.toml".into(),
                 language: Language::new(Language::RUST),
@@ -148,6 +156,7 @@ mod tests {
             ("package.json", "javascript", "frontend"),
             ("pom.xml", "java", "backend"),
             ("build.gradle", "java", "backend"),
+            ("build.gradle.kts", "java", "backend"),
             ("Cargo.toml", "rust", "backend"),
             ("go.mod", "go", "backend"),
             ("pyproject.toml", "python", "backend"),

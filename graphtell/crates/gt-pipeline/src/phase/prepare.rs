@@ -1354,9 +1354,11 @@ mod tests {
         assert!(lock_has(&v1, "koa", &fs1, &ts, &js));
     }
 
-    /// The dependency sections are read by the **ecosystem's** adapter; an ecosystem with none
-    /// (Java's `pom.xml`, Python's `requirements.txt` …) must still match, via the whole-file text
-    /// probe — degrading to silence would silently drop every framework of that stack.
+    /// The dependency sections are read by the **ecosystem's** adapter: composer.json's `require` /
+    /// `require-dev` by the PHP one, a POM's `<artifactId>`s by the Java one. An ecosystem with none
+    /// registered must still match, via the whole-file text probe — degrading to silence would silently
+    /// drop every framework of that stack. This harness registers only PHP + JS, so `pom.xml` takes the
+    /// fallback here on purpose (in production `JavaTechStackAdapter` is registered too).
     #[test]
     fn manifest_dependency_uses_the_adapter_then_falls_back_to_text() {
         let ts = techstack();
@@ -2377,6 +2379,79 @@ mod tests {
             .expect("must write the i18n symbol");
         assert_eq!(sym["texts"]["en"], json!("Hi"), "the `en` locale text must be written");
         assert_eq!(sym["file"], json!(p));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other branch of `load_i18n`: with **no** FKB `locale_regex`, the locale comes from the
+    /// **stack's** own path convention (`locale_of_path`). The test above always passes a regex, so that
+    /// fallback had never executed — and it is the branch a stack with no FKB i18n knowledge relies on.
+    /// Also pinned: with neither a regex nor an adapter, nothing is loaded at all (never a guessed locale).
+    #[test]
+    fn load_i18n_falls_back_to_the_stacks_path_convention() {
+        let dir = std::env::temp_dir().join(format!("gt_i18n_stack_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(dir.join("lang/en"));
+        let p = "lang/en/messages.php";
+        std::fs::write(dir.join(p), "<?php return ['hello' => 'Hi'];").unwrap();
+
+        let ctx = |dir: &std::path::Path| {
+            let mut ctx = PipelineContext::new(Project {
+                id: ProjectId::new(1),
+                name: "t".into(),
+                root_path: dir.to_path_buf(),
+                description: None,
+                status: ProjectStatus::Ready,
+                config: Default::default(),
+                created_at: 0,
+                updated_at: 0,
+            });
+            ctx.files = vec![SourceFile {
+                id: FileId::new(1),
+                project_id: ProjectId::new(1),
+                sub_project_id: None,
+                path: p.into(),
+                language: Language("php".into()),
+                size_bytes: 1,
+                content_hash: "x".into(),
+            }];
+            ctx
+        };
+        let loader = LoaderSpec {
+            id: "i18n".into(),
+            table: "i18n".into(),
+            from: LoaderSource::File { path: "".into(), key_path: None },
+            confidence: 1.0,
+        };
+        let parsers = I18nRegistry { parser: I18nParser };
+        let fs = StdFileSystem::new();
+
+        // ② stack convention: the PHP adapter declares `lang/{locale}/`, so `en` comes from the stack.
+        let stack = gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()));
+        let mut ctx_stack = ctx(&dir);
+        load_i18n(&mut ctx_stack, &loader, "lang/*/*", &dir, &fs, &parsers, None, &stack);
+        let sym = ctx_stack
+            .ws
+            .get_symbol("i18n", "messages.hello")
+            .expect("the stack's `lang/{locale}/` convention must supply the locale when FKB declares no regex");
+        assert_eq!(sym["texts"]["en"], json!("Hi"), "the `en` locale text must be written");
+
+        // Neither a regex nor an adapter: no locale may be guessed, so no symbol is written.
+        let mut ctx_none = ctx(&dir);
+        load_i18n(
+            &mut ctx_none,
+            &loader,
+            "lang/*/*",
+            &dir,
+            &fs,
+            &parsers,
+            None,
+            &gt_domain::port::DefaultTechStackRegistry::new(),
+        );
+        assert!(
+            ctx_none.ws.get_symbol("i18n", "messages.hello").is_none(),
+            "with no regex and no adapter the file must be skipped, not stamped with a guessed locale"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

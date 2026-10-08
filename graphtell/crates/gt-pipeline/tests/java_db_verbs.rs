@@ -97,6 +97,12 @@ public class UserService {
             repo.deleteById(id);
         }
     }
+
+    // The **qualified-self** spelling of the very same call, `this.repo.save(...)`. Spring services write
+    // it constantly, so it has to classify exactly like the bare `repo.save(...)` above.
+    public void runThis() {
+        this.repo.save(new User());
+    }
 }
 "#,
     )
@@ -214,4 +220,34 @@ fn jpa_repository_maps_to_table_and_db_verbs_are_classified() {
             "write verb `{v}` must be classified as WritesDb (db-write), got write verbs: {write_verbs:?}"
         );
     }
+}
+
+/// `this.repo.save(...)` is the same call as `repo.save(...)`, written with an explicit `this.`. P7 resolves
+/// the receiver's `MapsTo` by the **field type** recorded in `field_types` (`repo` -> `UserRepository`), so the
+/// two spellings must classify identically. Asserted on the owning method's own edge, so "the write verb set
+/// already contained `save`" cannot make this pass.
+#[test]
+fn this_qualified_field_call_is_classified_like_the_bare_one() {
+    let dir = synthetic_spring_root();
+    let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
+        panic!("the graph build should succeed");
+    };
+    let Some(m) = nodes_of_kind(&b, "Method")
+        .into_iter()
+        .find(|n| n.name == "runThis")
+    else {
+        panic!("expected the runThis method node");
+    };
+    let actions: Vec<String> = b
+        .store
+        .edges_of(m.id, EdgeDirection::Outgoing)
+        .expect("edges")
+        .iter()
+        .map(|e| e.kind.as_str().to_string())
+        .collect();
+    assert_eq!(
+        actions.iter().filter(|k| *k == "WritesDb").count(),
+        1,
+        "`this.repo.save(...)` must be classified as a write, exactly like `repo.save(...)`: {actions:?}"
+    );
 }

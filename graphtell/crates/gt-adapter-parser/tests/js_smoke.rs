@@ -122,40 +122,83 @@ fn typeorm_decorators_carry_field_fqn_and_target_entity() {
     );
 }
 
+/// The normalised `(url, method)` of the HTTP call site in `src`, through the registry.
+///
+/// `method` defaults to GET only when the parser produced none — every HTTP shape always writes one.
+fn http_of(src: &str) -> (Option<String>, String) {
+    let facts = parse("x.ts", src);
+    let c = facts
+        .call_sites
+        .iter()
+        .find(|c| {
+            c.args.iter().any(|a| {
+                matches!(a, FactValue::Array(items) if items.iter().any(|(k, _)| *k == "url" || *k == "method"))
+            })
+        })
+        .unwrap_or_else(|| panic!("an HTTP call site must normalise to url/method: {:?}", facts.call_sites));
+    let FactValue::Array(items) = c.args.first().expect("args[0] must be the url/method array") else {
+        panic!("args[0] must be an Array, got {:?}", c.args);
+    };
+    let url = items.iter().find(|(k, _)| k == "url").and_then(|(_, v)| v.as_str()).map(|s| s.to_string());
+    let method = items
+        .iter()
+        .find(|(k, _)| k == "method")
+        .and_then(|(_, v)| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "GET".to_string());
+    (url, method)
+}
+
+/// `extract_http_args` has a **default GET** in three of its five branches (`Axios(None)`, `Obj`, `Fetch`).
+/// Nothing pinned it: every existing case passes an explicit `method`, so a regression returning an empty
+/// method (which FKB would turn into a nameless contract) or dropping the URL would have passed.
+#[test]
+fn http_shapes_without_a_method_default_to_get() {
+    // Pinned as-is: the `Axios(None)` branch (a bare `axios(...)`, js.rs:889) reads its URL from the
+    // `url:` **field** only — it never takes the first argument — so the callable form `axios('/api/bare')`
+    // anchors no URL (the fact records `Unknown("<dynamic-url>")`). `axios(url)` is valid axios usage, so
+    // this is a real limitation rather than an intended rejection; the fix would be
+    // `first_arg_expr(..).or_else(|| field_expr(args, "url"))` in `extract_http_args`, exactly as the
+    // `Axios(Some(verb))` / `Member` branches already do.
+    assert_eq!(
+        http_of("axios('/api/bare')"),
+        (None, "GET".to_string()),
+        "pinned: a bare `axios(url)` anchors no URL, but still yields the GET default"
+    );
+    assert_eq!(
+        http_of("axios({ url: '/api/obj' })"),
+        (Some("/api/obj".to_string()), "GET".to_string()),
+        "the `axios({{ url }})` object form defaults to GET when it declares no method"
+    );
+    assert_eq!(
+        http_of("fetch('/api/f')"),
+        (Some("/api/f".to_string()), "GET".to_string()),
+        "fetch without an options object defaults to GET"
+    );
+}
+
+/// Member style with an **object** first argument: `axios.post({ url, method })`. The first argument is not a
+/// literal, so `extract_http_args` must fall back to the object's `url:` field — and the member name stays the
+/// HTTP method (it wins over any `method:` inside the object).
+#[test]
+fn http_member_style_falls_back_to_the_url_field() {
+    assert_eq!(
+        http_of("axios.post({ url: '/api/w', method: 'DELETE' })"),
+        (Some("/api/w".to_string()), "POST".to_string()),
+        "the URL comes from the object's `url:` field and the method from the member name"
+    );
+}
+
 /// The frontend -> backend link keys off normalised `(url, method)` HTTP facts across several call shapes; a
 /// non-HTTP call must never carry them. The axios *member* form is already pinned above; this pins the object
 /// shapes FKB also matches and the guard that rejects ordinary calls. Guarded in `src/js.rs` directly.
 #[test]
 fn http_call_variants_normalise_to_contract() {
-    let http = |src: &str| -> (Option<String>, String) {
-        let facts = parse("x.ts", src);
-        let c = facts
-            .call_sites
-            .iter()
-            .find(|c| {
-                c.args.iter().any(|a| {
-                    matches!(a, FactValue::Array(items) if items.iter().any(|(k, _)| *k == "url" || *k == "method"))
-                })
-            })
-            .unwrap_or_else(|| panic!("an HTTP call site must normalise to url/method: {:?}", facts.call_sites));
-        let FactValue::Array(items) = c.args.first().expect("args[0] must be the url/method array") else {
-            panic!("args[0] must be an Array, got {:?}", c.args);
-        };
-        let url = items.iter().find(|(k, _)| k == "url").and_then(|(_, v)| v.as_str()).map(|s| s.to_string());
-        let method = items
-            .iter()
-            .find(|(k, _)| k == "method")
-            .and_then(|(_, v)| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "GET".to_string());
-        (url, method)
-    };
-
-    let (url, method) = http("fetch('/api/x', { method: 'PUT' })");
+    let (url, method) = http_of("fetch('/api/x', { method: 'PUT' })");
     assert_eq!(url.as_deref(), Some("/api/x"));
     assert_eq!(method, "PUT", "fetch with an options object must lift `method` out");
 
-    let (url, method) = http("uni.request({ url: '/api/delete', method: 'POST' })");
+    let (url, method) = http_of("uni.request({ url: '/api/delete', method: 'POST' })");
     assert_eq!(url.as_deref(), Some("/api/delete"));
     assert_eq!(method, "POST", "uni.request must be treated as an HTTP client");
 
@@ -188,6 +231,34 @@ fn constructor_plain_param_without_modifier_is_not_injection() {
         injects,
         vec!["Bar"],
         "only the access-modifier param (svc: Bar) becomes @Inject; plain: Foo must not"
+    );
+}
+
+/// `this.repo.save(x)` — the qualified-self spelling every NestJS service uses (mirror of the Java case in
+/// `java_smoke.rs`). `src/js.rs:871` strips the `this.` so the kernel's variable-type resolver sees the bare
+/// field name (`repo`) it recorded from the constructor; without it, `repo.save()` loses its read / write
+/// classification. The callee keeps the source spelling.
+#[test]
+fn this_qualified_receiver_is_stripped_for_resolution() {
+    let facts = parse(
+        "user.service.ts",
+        "class UserService {\n  save(u) { return this.repo.save(u); }\n}\n",
+    );
+    let call = facts
+        .call_sites
+        .iter()
+        .find(|c| c.method.as_deref() == Some("save") && c.receiver.is_some())
+        .expect("the `this.repo.save(...)` call must be captured");
+    assert_eq!(
+        call.receiver.as_deref(),
+        Some("repo"),
+        "`this.` must be stripped so the field lookup finds `repo`: {:?}",
+        call.receiver
+    );
+    assert_eq!(
+        call.callee_text, "this.repo.save",
+        "the callee keeps the source spelling: {}",
+        call.callee_text
     );
 }
 

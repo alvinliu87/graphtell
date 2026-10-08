@@ -400,9 +400,11 @@ mod tests {
     fn locale_comes_from_the_stacks_own_path_convention() {
         let ts = gt_domain::port::DefaultTechStackRegistry::new()
             .register(Box::new(gt_adapter_techstack::PhpTechStackAdapter::new()))
-            .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()));
+            .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()))
+            .register(Box::new(gt_adapter_techstack::PythonTechStackAdapter::new()));
         let php = Language::new(Language::PHP);
         let js = Language::new(Language::JAVASCRIPT);
+        let py = Language::new(Language::PYTHON);
 
         assert_eq!(
             locale_of_path("lang/zh-cn/messages.php", &php, &ts),
@@ -422,10 +424,56 @@ mod tests {
             Some("en".to_string()),
             "the one-file-per-locale layout must be recognised too"
         );
+        // Django: `locale/{locale}/LC_MESSAGES/` and the `conf/locale/{locale}/` variant.
+        // (Caveat, same shape as the JS `.json` case pinned in the test below: a real `.po` file has no
+        // registered parser, so it never reaches `locale_of_path` in a real scan — this asserts the
+        // stack's convention, which is what a future `.po` parser would rely on.)
+        assert_eq!(
+            locale_of_path("locale/zh-hans/LC_MESSAGES/django.po", &py, &ts),
+            Some("zh-hans".to_string())
+        );
+        assert_eq!(
+            locale_of_path("conf/locale/en/LC_MESSAGES/django.po", &py, &ts),
+            Some("en".to_string()),
+            "the `conf/locale/` layout must be recognised too"
+        );
         assert_eq!(
             locale_of_path("src/main/resources/messages.properties", &Language::new(Language::JAVA), &ts),
             None,
             "a stack whose adapter declares no convention is not guessed"
+        );
+    }
+
+    /// `locale_of_path` is called with the **file's** language, not the sub-project's (`cf_ast.rs` passes
+    /// `file.language`, and the scanner maps `*.ts` → `typescript`, `*.json` → `json`). Two consequences
+    /// nothing else asserts:
+    /// * a translation file written in TypeScript gets its locale only because the JS adapter
+    ///   `serves` `typescript` — `adapter_for(typescript)` must not fall through to "no adapter";
+    /// * a `.json` translation file — by far the most common JS layout (`src/locales/en/translation.json`)
+    ///   — is language `json`, which no adapter serves today, so it currently gets **no** locale. The
+    ///   `src/locales/en/translation.json` case in the test above passes `javascript` by hand, which is a
+    ///   language a real scan never assigns to a `.json` file; pinned here so the gap is stated instead of
+    ///   implied by a case that cannot occur.
+    #[test]
+    fn locale_uses_the_file_language_so_typescript_is_served_and_json_is_not() {
+        let ts = gt_domain::port::DefaultTechStackRegistry::new()
+            .register(Box::new(gt_adapter_techstack::JsTechStackAdapter::new()));
+        let typescript = Language::new(Language::TYPESCRIPT);
+
+        assert_eq!(
+            locale_of_path("src/i18n/en/strings.ts", &typescript, &ts),
+            Some("en".to_string()),
+            "a .ts translation file is language `typescript` and must reach the JS adapter through `serves`"
+        );
+        assert_eq!(
+            locale_of_path("src/locales/zh-CN/translation.ts", &typescript, &ts),
+            Some("zh-CN".to_string()),
+            "a hyphenated locale segment must be captured whole"
+        );
+        assert_eq!(
+            locale_of_path("src/locales/en/translation.json", &Language::new("json"), &ts),
+            None,
+            "pinned: a .json translation file is language `json`, which no adapter serves — it gets no locale"
         );
     }
 

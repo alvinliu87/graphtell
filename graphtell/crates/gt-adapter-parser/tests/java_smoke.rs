@@ -377,6 +377,43 @@ class Svc {
     );
 }
 
+/// `this.repo.save(x)` — the qualified-self spelling, which Spring services write constantly. P7 resolves the
+/// receiver's `MapsTo` through the **field type** recorded under the bare field name, so `receiver` must carry
+/// the stripped `repo` while `callee_text` keeps the source spelling. Guarded in `src/java.rs` directly; this
+/// pins the split through the registry (a regression that left `this.repo` on the receiver silently drops every
+/// read / write classification for such services).
+#[test]
+fn this_qualified_receiver_is_stripped_for_resolution() {
+    let src = r#"package com.demo;
+
+class Svc {
+    private UserRepository repo;
+
+    void run() {
+        this.repo.save(new User());
+    }
+}
+"#;
+    let facts = parse("src/main/java/com/demo/Svc.java", src);
+    let call = facts
+        .call_sites
+        .iter()
+        .find(|c| c.method.as_deref() == Some("save"))
+        .expect("the `this.repo.save(...)` call must be captured");
+    assert_eq!(
+        call.receiver.as_deref(),
+        Some("repo"),
+        "`this.` must be stripped so the field type lookup finds `repo`: {:?}",
+        call.receiver
+    );
+    assert_eq!(
+        call.callee_text, "this.repo.save",
+        "the callee keeps the source spelling: {}",
+        call.callee_text
+    );
+    assert_eq!(call.owner_fqn, "com.demo.Svc.run");
+}
+
 /// NEGATIVE: a DAO extending a **non-generic** base emits no `generic.*` call site (and therefore no synthetic
 /// entity edge). `push_generic_entity` returns early when the entity is absent (`src/java.rs:366`), so `extends
 /// JpaRepository` with no `<...>` must not be sniffed into an `Entity` node. This guards P7 against a bogus

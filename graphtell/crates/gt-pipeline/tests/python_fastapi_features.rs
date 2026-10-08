@@ -27,7 +27,9 @@ fn synthetic_fastapi_root() -> std::path::PathBuf {
     std::fs::create_dir_all(dir.join("app/models")).expect("mkdir");
 
     // pyproject.toml is both a sub-project marker (-> language=python)
-    // and the manifest FKB's detector reads (text contains fastapi).
+    // and the manifest FKB's detector reads (via `PythonTechStackAdapter::manifest_dependencies`, which
+    // strips version constraints and matches case-insensitively; the whole-file text probe is only the
+    // fallback behind it).
     std::fs::write(
         dir.join("pyproject.toml"),
         r#"[project]

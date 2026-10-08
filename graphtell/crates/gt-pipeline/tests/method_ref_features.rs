@@ -219,3 +219,95 @@ fn method_ref_falls_back_to_class_when_method_absent() {
         "the missing method must not be invented as a ghost Method, got: {methods:?}"
     );
 }
+
+/// The root namespace and the source directory come from `composer.json`'s PSR-4 map
+/// (`PhpTechStackAdapter::manifest_namespaces` / `enrich_method_ref`), never from a hard-coded `app\` /
+/// `app/` assumption. Every other case here uses the ThinkPHP convention (`app\` → `app/`), so a
+/// regression that re-introduced that assumption would keep the whole file green.
+///
+/// This project is the same shape with a vendor-chosen root (`Acme\` → `src/`): if the namespaces were
+/// hard-coded (or the PSR-4 read broke), `Login/login` under `src/admin/route/` could not resolve.
+fn synthetic_tp_root_with_custom_psr4() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-method-ref-psr4-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src/admin/controller/v1")).expect("mkdir controller/v1");
+    std::fs::create_dir_all(dir.join("src/admin/route")).expect("mkdir route");
+
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{
+  "name": "demo/tp",
+  "require": { "topthink/framework": "^6.0" },
+  "autoload": { "psr-4": { "Acme\\": "src/" } }
+}
+"#,
+    )
+    .expect("write composer.json");
+
+    std::fs::write(
+        dir.join("src/admin/controller/Login.php"),
+        r#"<?php
+namespace Acme\admin\controller;
+
+class Login
+{
+    public function login() { return 'ok'; }
+}
+"#,
+    )
+    .expect("write Login.php");
+    // A second `Login` one namespace level deeper: the base-vs-v1 choice is what forces the resolver to
+    // consult the real namespaces instead of matching any class whose short name is `Login`.
+    std::fs::write(
+        dir.join("src/admin/controller/v1/Login.php"),
+        r#"<?php
+namespace Acme\admin\controller\v1;
+
+class Login
+{
+    public function dashboard() { return 'ok'; }
+}
+"#,
+    )
+    .expect("write v1/Login.php");
+
+    std::fs::write(
+        dir.join("src/admin/route/routes.php"),
+        r#"<?php
+use think\facade\Route;
+
+Route::get('/login', 'Login/login');
+Route::get('/dash', 'v1.Login/dashboard');
+"#,
+    )
+    .expect("write routes.php");
+
+    dir
+}
+
+#[test]
+fn method_ref_resolves_under_a_custom_psr4_root_namespace() {
+    let dir = synthetic_tp_root_with_custom_psr4();
+    let Some(b) = common::graph_with_root(&dir, ProjectConfig::default()) else {
+        panic!("graph build should succeed");
+    };
+
+    assert_eq!(
+        handler_method_of(&b, "GET /login").as_deref(),
+        Some("login"),
+        "a PSR-4 root of `Acme\\` mapped to `src/` must resolve to the base `login` — the root namespace \
+         must come from composer.json, not from a hard-coded `app`"
+    );
+    assert_eq!(
+        handler_method_of(&b, "GET /dash").as_deref(),
+        Some("dashboard"),
+        "the `v1.` hierarchy separator must resolve to the nested class under the custom root namespace too"
+    );
+}
