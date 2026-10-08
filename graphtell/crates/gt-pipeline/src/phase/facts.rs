@@ -70,6 +70,12 @@ fn declared_in(
     language: &Language,
     names_of: impl Fn(&dyn TechStackAdapter, &str, &str) -> Option<Vec<String>>,
 ) -> bool {
+    if dependency.is_empty() {
+        // A blank FKB dependency would be "contained" in every manifest name and in the file text
+        // itself, so without this guard a malformed `dependency: ""` detector flags every project
+        // that merely has the manifest. Reject like a missing file rather than matching all.
+        return false;
+    }
     if !fs.exists(path) {
         return false;
     }
@@ -194,7 +200,10 @@ pub fn provisional_sub(sub_root: &Path, language: &Language) -> SubProject {
 /// the first hit module's relative dir (e.g. `shop-admin`). Only when the whole tree cannot be found do we
 /// return `None` (triggering fallback / a diagnostic).
 pub fn resolve_directory_exists(root: &Path, rel: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = rel
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
     if parts.is_empty() {
         return None;
     }
@@ -980,11 +989,11 @@ mod tests {
         );
     }
 
-    /// KNOWN WART, pinned: an empty needle is contained in every name *and* in every text, so an empty
-    /// `dependency` in an FKB detector would claim every project that merely has the manifest. Nothing
-    /// guards against a blank FKB field here.
+    /// A blank dependency must match **nothing**: an empty needle is "contained" in every name *and* in
+    /// every text, so without a guard a malformed FKB field would claim every project that merely has the
+    /// manifest. `declared_in` now rejects an empty dependency up front (hard false).
     #[test]
-    fn empty_dependency_matches_every_readable_manifest() {
+    fn empty_dependency_matches_nothing() {
         let root = scratch_dir("empty-dep");
         std::fs::write(root.join("composer.json"), r#"{"require": {}}"#).unwrap();
         std::fs::write(root.join("composer.lock"), r#"{"packages": []}"#).unwrap();
@@ -993,10 +1002,10 @@ mod tests {
         let php = Language::new("php");
 
         assert!(
-            manifest_has(&root.join("composer.json"), "", &fs, &ts, &php),
-            "a blank dependency matches everything"
+            !manifest_has(&root.join("composer.json"), "", &fs, &ts, &php),
+            "a blank dependency must match nothing"
         );
-        assert!(lock_has(&root.join("composer.lock"), "", &fs, &ts, &php));
+        assert!(!lock_has(&root.join("composer.lock"), "", &fs, &ts, &php));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1010,12 +1019,12 @@ mod tests {
             None,
             "a stack with conventions still yields None when nothing matches — never a guess"
         );
-        // KNOWN WART: the locale is taken up to the next `/`, so an empty path segment captures an
-        // empty locale instead of being rejected.
+        // An empty path segment (`lang//`) must be rejected as "no locale" — capturing an empty locale
+        // would stamp a meaningless value instead of falling through to the caller's fallback.
         assert_eq!(
             locale_of_path("lang//messages.php", &php, &ts),
-            Some(String::new()),
-            "an empty locale segment currently stamps an empty locale"
+            None,
+            "an empty locale segment must be rejected, not stamped as empty"
         );
     }
 
@@ -1033,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_exists_collapses_repeated_slashes_and_dot_always_hits() {
+    fn directory_exists_collapses_repeated_slashes_and_rejects_dot() {
         let root = scratch_dir("slashes");
         std::fs::create_dir_all(root.join("src/main")).unwrap();
         assert_eq!(
@@ -1041,13 +1050,13 @@ mod tests {
             Some(".".to_string()),
             "repeated slashes must not add empty path segments"
         );
-        // KNOWN WART, pinned: only *empty* segments are filtered, so `.` survives as a real segment and
-        // `<root>/.` is of course a directory — a rule probing `.` can therefore never fail to hit, and
-        // silently yields the sub-project root as `app_root`.
+        // `.` is rejected like the empty path: a rule probing `.` would trivially always hit (`<root>/."`
+        // is always a directory) and silently stamp the sub-project root as `app_root` — so it must
+        // yield `None` (fall through to the caller's fallback) instead.
         assert_eq!(
-            resolve_directory_exists(&root, ".").map(|(v, _)| v),
-            Some(".".to_string()),
-            "`.` is not rejected like the empty path is"
+            resolve_directory_exists(&root, "."),
+            None,
+            "`.` must be rejected like the empty path is"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

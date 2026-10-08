@@ -237,7 +237,13 @@ pub fn capture_locale(pattern: &str, path: &str) -> Option<String> {
     } else {
         rest.find(suffix)?
     };
-    Some(rest[..end].to_string())
+    let locale = &rest[..end];
+    if locale.is_empty() {
+        // An empty segment (e.g. `lang//messages.php`) is not a locale; reject it rather than stamping
+        // a meaningless empty value.
+        return None;
+    }
+    Some(locale.to_string())
 }
 
 fn wildcard_matches(pattern: &str, value: &str) -> bool {

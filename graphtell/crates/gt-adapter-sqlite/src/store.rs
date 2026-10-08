@@ -450,8 +450,8 @@ mod tests {
 
     use super::*;
     use gt_domain::model::{
-        AliasEntry, EdgeKind, FileId, Language, NewAnnotation, NewEdge, NewNode, NewSourceFile,
-        NodeKind, SourceLocation,
+        AliasEntry, EdgeKind, FileId, IdentityKey, Language, NewAnnotation, NewEdge, NewNode,
+        NewSourceFile, NodeKind, SourceLocation,
     };
     use gt_domain::port::{
         DiagnosticSink, EdgeDirection, GraphQuery, GraphSink, ProjectReader, ProjectWriter,
@@ -1282,6 +1282,222 @@ mod tests {
         assert_eq!(s.list_diagnostics(p.id, 100).unwrap().len(), 1, "the diagnostic must remain");
     }
 
+    /// A `severity` column holding non-JSON text must fall back to `Severity::Info` — this exercises the
+    /// `parse_json::<Severity>(...).unwrap_or(Severity::Info)` arm.
+    #[test]
+    fn list_diagnostics_corrupt_severity_falls_back_to_info() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO diagnostics (project_id, sub_project_id, phase, code, severity, message, location, payload)
+                 VALUES (?1, NULL, 'cf_ast', 'rule:x', 'not-a-json-string', 'm', NULL, NULL)",
+                params![p.id.get()],
+            )
+            .unwrap();
+        let got = s.list_diagnostics(p.id, 100).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].severity,
+            Severity::Info,
+            "a corrupt severity string must fall back to Info"
+        );
+    }
+
+    /// `list_diagnostics_by_code` must order by severity tier (critical → error → warning → info) with a large `LIMIT`
+    /// where no truncation occurs — this pins the full `ORDER BY CASE ... END, id DESC` clause, not just the LIMIT-1
+    /// highest-severity case covered elsewhere.
+    #[test]
+    fn list_diagnostics_by_code_severity_ordering_full() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |sev: Severity| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: "rule:x".into(),
+            severity: sev,
+            message: severity_label(sev).into(),
+            location: None,
+            payload: Value::Null,
+        };
+        // Insert in a deliberately scrambled write order.
+        s.push_diagnostics(&[
+            mk(Severity::Info),
+            mk(Severity::Error),
+            mk(Severity::Warning),
+            mk(Severity::Critical),
+        ])
+        .unwrap();
+        let got = s.list_diagnostics_by_code(p.id, "rule:", None, 100).unwrap();
+        assert_eq!(got.len(), 4);
+        let order: Vec<Severity> = got.iter().map(|d| d.severity).collect();
+        assert_eq!(
+            order,
+            vec![Severity::Critical, Severity::Error, Severity::Warning, Severity::Info],
+            "severity tiers must be ordered critical→error→warning→info: {order:?}"
+        );
+    }
+
+    /// `list_diagnostics_by_code` with a code prefix matching nothing must return an empty vector.
+    #[test]
+    fn list_diagnostics_by_code_non_matching_prefix_is_empty() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |code: &str| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.into(),
+            severity: Severity::Error,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk("rule:x")]).unwrap();
+        assert!(
+            s.list_diagnostics_by_code(p.id, "lint:", None, 100).unwrap().is_empty(),
+            "a non-matching code prefix must yield no diagnostics"
+        );
+    }
+
+    /// `list_diagnostics_excluding` with an empty exclude prefix produces the pattern `%`, which matches every code, so
+    /// the `NOT LIKE` filter drops everything and the call returns an empty vector (current behavior: an empty prefix
+    /// means "exclude all").
+    #[test]
+    fn list_diagnostics_excluding_empty_prefix_returns_empty() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |code: &str| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.into(),
+            severity: Severity::Error,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk("rule:x"), mk("lint:z")]).unwrap();
+        assert!(
+            s.list_diagnostics_excluding(p.id, "", 100).unwrap().is_empty(),
+            "empty exclude prefix matches all codes, so the result is empty"
+        );
+    }
+
+    /// `count_diagnostics_excluding` must fold the per-code rows into a single severity bucket: two distinct codes of
+    /// the same severity that are NOT excluded must be summed together, while the excluded code is dropped.
+    #[test]
+    fn count_diagnostics_excluding_merges_distinct_codes_by_severity() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |code: &str, sev: Severity| Diagnostic {
+            project_id: p.id,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.into(),
+            severity: sev,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[
+            mk("keep:a", Severity::Error),
+            mk("keep:b", Severity::Error),
+            mk("drop:c", Severity::Warning),
+        ])
+        .unwrap();
+        let excl = s.count_diagnostics_excluding(p.id, "drop:").unwrap();
+        let map: std::collections::HashMap<&str, u64> =
+            excl.iter().map(|(st, c)| (st.as_str(), *c)).collect();
+        assert_eq!(
+            map.get("error"),
+            Some(&2),
+            "two distinct error codes must be merged into one bucket"
+        );
+        assert_eq!(map.get("warning"), None, "the excluded code must be dropped");
+    }
+
+    /// Diagnostics are scoped per project: pushing diagnostics into one project must not appear when listing another
+    /// (both `list_diagnostics` and `list_diagnostics_by_code`).
+    #[test]
+    fn list_diagnostics_isolated_across_projects() {
+        let s = store();
+        let a = s.create_project(new_project("a")).unwrap();
+        let b = s.create_project(new_project("b")).unwrap();
+        let mk = |pid: ProjectId, code: &str| Diagnostic {
+            project_id: pid,
+            sub_project_id: None,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: code.into(),
+            severity: Severity::Error,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[mk(a.id, "rule:x")]).unwrap();
+        assert_eq!(s.list_diagnostics(a.id, 100).unwrap().len(), 1);
+        assert!(
+            s.list_diagnostics(b.id, 100).unwrap().is_empty(),
+            "project B must not see project A's diagnostics"
+        );
+        assert!(s.list_diagnostics_by_code(b.id, "rule:", None, 100).unwrap().is_empty());
+    }
+
+    /// `count_diagnostics_by_code` with an **empty** sub-project slice must behave like "no filter" (no `IN ()` clause
+    /// is injected), counting every diagnostic under the code prefix regardless of sub-project.
+    #[test]
+    fn count_diagnostics_by_code_empty_sub_project_filter_returns_all() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mk = |sub: Option<SubProjectId>, sev: Severity| Diagnostic {
+            project_id: p.id,
+            sub_project_id: sub,
+            phase: Phase(Phase::CF_AST.to_string()),
+            code: "rule:x".into(),
+            severity: sev,
+            message: "m".into(),
+            location: None,
+            payload: Value::Null,
+        };
+        s.push_diagnostics(&[
+            mk(Some(SubProjectId(1)), Severity::Error),
+            mk(Some(SubProjectId(2)), Severity::Warning),
+        ])
+        .unwrap();
+        let counts = s.count_diagnostics_by_code(p.id, "rule:", Some(&[])).unwrap();
+        let map: std::collections::HashMap<&str, u64> =
+            counts.iter().map(|(st, c)| (st.as_str(), *c)).collect();
+        assert_eq!(map.get("error"), Some(&1));
+        assert_eq!(
+            map.get("warning"),
+            Some(&1),
+            "empty sub-project filter must count all sub-projects"
+        );
+    }
+
+    /// `list_symbols` returns entries ordered by `key` (the SQL `ORDER BY key`), so scrambled inserts come out sorted.
+    #[test]
+    fn list_symbols_ordered_by_key() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        for k in ["zeta", "alpha", "middle"] {
+            d.symbols.push(SymbolEntry {
+                project_id: p.id,
+                table: "t".into(),
+                key: k.into(),
+                value: Value::Null,
+            });
+        }
+        s.apply(&d).unwrap();
+        let got = s.list_symbols(p.id, "t").unwrap();
+        let keys: Vec<&str> = got.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["alpha", "middle", "zeta"], "list_symbols must be ordered by key");
+    }
+
     // ---------------------------------------------------------- rule config
     #[test]
     fn rule_config_set_get_delete_roundtrip() {
@@ -1842,6 +2058,689 @@ mod tests {
             n.properties,
             Value::Null,
             "corrupt properties JSON must fall back to Value::Null"
+        );
+    }
+
+    // ---------------------------------------------------------- graph.rs apply / query branches
+
+    /// `apply` must persist **every** node column that `row_to_node` reads back — `fqn`, `file_id`, `span`,
+    /// `language`, `phase`, `confidence`, `properties`, and crucially `identity` **including `scope`**. The
+    /// identity is written as full JSON (not just `key()`), so the `scope` that distinguishes same-named front/back
+    /// nodes must survive a round-trip; this pins that contract.
+    #[test]
+    fn apply_persists_full_node_fields_and_identity_scope() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        let mut n = node(p.id, 1, "OrderService");
+        n.fqn = Some("app\\services\\OrderService".into());
+        n.identity = Some(IdentityKey::named_scoped("order_service", "backend"));
+        n.file_id = Some(FileId(7));
+        n.span = Span {
+            start_line: 10,
+            end_line: 20,
+            start_byte: 100,
+            end_byte: 300,
+        };
+        n.language = Language::new("php");
+        n.phase = Phase("p14".into());
+        n.confidence = 0.42;
+        n.properties = serde_json::json!({ "category": "Service", "side": "backend" });
+        d.nodes.push(n);
+        s.apply(&d).unwrap();
+
+        let got = s.get_node(NodeId(1)).unwrap().unwrap();
+        assert_eq!(got.fqn.as_deref(), Some("app\\services\\OrderService"));
+        assert_eq!(got.file_id, Some(FileId(7)));
+        assert_eq!(got.span.start_line, 10);
+        assert_eq!(got.span.end_line, 20);
+        assert_eq!(got.span.start_byte, 100);
+        assert_eq!(got.span.end_byte, 300);
+        assert_eq!(got.language.as_str(), "php");
+        assert_eq!(got.phase, Phase("p14".into()));
+        assert!((got.confidence - 0.42).abs() < 1e-3, "confidence must round-trip: {}", got.confidence);
+        assert_eq!(got.properties["category"], serde_json::json!("Service"));
+        let id = got.identity.expect("identity must be persisted");
+        assert_eq!(id.kind.as_str(), "Named");
+        assert_eq!(id.value, "order_service");
+        assert_eq!(id.scope.as_deref(), Some("backend"), "scope must survive the JSON round-trip");
+    }
+
+    /// `query_nodes`' `kind` filter is `kind = ? OR json_extract(properties, '$.category') = ?`. The fallback branch
+    /// (a node whose `kind` column is something else but whose `properties.category` matches) is what lets callers
+    /// group by category; it is exercised here with a node that has `kind=Class` but `category=Table`.
+    #[test]
+    fn query_nodes_kind_filter_matches_properties_category() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        let mut n = node_named(p.id, 1, "users", "Class");
+        n.properties = serde_json::json!({ "category": "Table" });
+        d.nodes.push(n);
+        d.nodes.push(node_named(p.id, 2, "Order", "Class"));
+        s.apply(&d).unwrap();
+
+        let by_cat = s
+            .query_nodes(&NodeFilter {
+                project_id: p.id,
+                kind: Some(NodeKind::new("Table")),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_cat.len(), 1, "the json_extract category fallback must match: {by_cat:?}");
+        assert_eq!(by_cat[0].name, "users");
+
+        // The plain `kind` column path still works in the same query.
+        let by_kind = s
+            .query_nodes(&NodeFilter {
+                project_id: p.id,
+                kind: Some(NodeKind::new("Class")),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_kind.len(), 2);
+    }
+
+    /// `count_nodes` shares the same `kind OR json_extract(properties, '$.category')` predicate; pin the
+    /// category fallback here too (a different code path from `query_nodes`).
+    #[test]
+    fn count_nodes_kind_filter_matches_properties_category() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        let mut n = node_named(p.id, 1, "users", "Class");
+        n.properties = serde_json::json!({ "category": "Table" });
+        d.nodes.push(n);
+        d.nodes.push(node_named(p.id, 2, "Order", "Class"));
+        s.apply(&d).unwrap();
+        assert_eq!(s.count_nodes(p.id, Some(&NodeKind::new("Table")), None).unwrap(), 1);
+        assert_eq!(s.count_nodes(p.id, Some(&NodeKind::new("Class")), None).unwrap(), 2);
+    }
+
+    /// `query_nodes` appends `ORDER BY id LIMIT ? OFFSET ?` from `filter.limit` / `filter.offset`
+    /// (defaulting to 100 / 0). Pagination must slice by id order.
+    #[test]
+    fn query_nodes_limit_and_offset_paginate() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        for i in 1..=5 {
+            d.nodes.push(node_named(p.id, i, &format!("N{i}"), "Class"));
+        }
+        s.apply(&d).unwrap();
+
+        let page = s
+            .query_nodes(&NodeFilter {
+                project_id: p.id,
+                limit: Some(2),
+                offset: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page.len(), 2, "LIMIT 2 must return exactly two rows");
+        assert_eq!(page[0].id, NodeId(2), "OFFSET 1 must skip id 1");
+        assert_eq!(page[1].id, NodeId(3));
+
+        // Default limit (100) returns everything.
+        assert_eq!(
+            s.query_nodes(&NodeFilter { project_id: p.id, ..Default::default() }).unwrap().len(),
+            5
+        );
+    }
+
+    /// `stats` computes both `by_kind` (from the `kind` column) and `by_category` (from `properties.category`).
+    /// The latter is a separate SQL branch that has no assertion elsewhere; this pins that grouping.
+    #[test]
+    fn stats_aggregates_node_counts_by_category() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        let mut a = node_named(p.id, 1, "users", "Class");
+        a.properties = serde_json::json!({ "category": "Table" });
+        let mut b = node_named(p.id, 2, "Order", "Class");
+        b.properties = serde_json::json!({ "category": "Table" });
+        d.nodes.push(a);
+        d.nodes.push(b);
+        let mut c = node_named(p.id, 3, "Svc", "Service");
+        c.properties = serde_json::json!({ "category": "Service" });
+        d.nodes.push(c);
+        s.apply(&d).unwrap();
+
+        let stats = s.stats(p.id).unwrap();
+        assert_eq!(stats.nodes, 3);
+        assert_eq!(stats.by_kind.get("Class"), Some(&2));
+        assert_eq!(stats.by_kind.get("Service"), Some(&1));
+        // by_category groups by properties.category, folding the two Table nodes together.
+        assert_eq!(
+            stats.by_category.get("Table"),
+            Some(&2),
+            "by_category must group by properties.category: {:?}",
+            stats.by_category
+        );
+        assert_eq!(stats.by_category.get("Service"), Some(&1));
+    }
+
+    /// `get_nodes` / `edges_outgoing` / `edges_incoming` all short-circuit on an empty id slice (the
+    /// `if ids.is_empty()` guards) so they never build a degenerate `IN ()` query. And a node with no edges must
+    /// yield empty maps from the batch readers rather than error.
+    #[test]
+    fn empty_id_collections_return_empty_maps() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        assert!(s.get_nodes(&[]).unwrap().is_empty(), "get_nodes([]) must short-circuit to empty");
+        assert!(s.edges_outgoing(&[]).unwrap().is_empty(), "edges_outgoing([]) must short-circuit");
+        assert!(s.edges_incoming(&[]).unwrap().is_empty(), "edges_incoming([]) must short-circuit");
+
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        s.apply(&d).unwrap();
+        assert!(s.edges_outgoing(&[NodeId(1)]).unwrap().is_empty());
+        assert!(s.edges_incoming(&[NodeId(1)]).unwrap().is_empty());
+    }
+
+    /// `reset_project` only wipes data when `delta.project_id` is `Some` — the deletion block is guarded by
+    /// `if let Some(pid) = delta.project_id`. A delta with `reset_project = true` but no `project_id` must therefore
+    /// **not** delete the existing graph; this pins the guard so a future refactor cannot silently turn it into a wipe.
+    #[test]
+    fn reset_project_without_project_id_skips_deletion() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut first = GraphDelta::new(p.id);
+        first.nodes.push(node(p.id, 1, "A"));
+        s.apply(&first).unwrap();
+        assert_eq!(s.stats(p.id).unwrap().nodes, 1);
+
+        let mut reset = GraphDelta::new(p.id);
+        reset.project_id = None;
+        reset.reset_project = true;
+        reset.nodes.push(node(p.id, 2, "B"));
+        s.apply(&reset).unwrap();
+
+        assert_eq!(
+            s.stats(p.id).unwrap().nodes,
+            2,
+            "reset without project_id must not wipe existing nodes"
+        );
+    }
+
+    /// Annotations are persisted with `COALESCE(?1, (SELECT project_id FROM nodes WHERE id = ?2))`: when the delta
+    /// carries no `project_id`, the annotation must still be filed under the **owning node's** project (not dropped or
+    /// mis-filed). This pins the fallback so a node's annotations survive a project-less annotation delta.
+    #[test]
+    fn annotation_without_delta_project_id_coalesces_node_project() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.nodes.push(node(p.id, 1, "A"));
+        s.apply(&d).unwrap();
+
+        let mut ann = GraphDelta::new(p.id);
+        ann.project_id = None;
+        ann.annotations.push(NewAnnotation {
+            node_id: NodeId(1),
+            channel: AnnotationChannel(AnnotationChannel::FKB_MARK.to_string()),
+            kind: "Pii".into(),
+            subkind: None,
+            confidence: 0.8,
+            evidence: Value::Null,
+            phase: Phase(Phase::CF_AST.to_string()),
+            merge: Default::default(),
+        });
+        s.apply(&ann).unwrap();
+
+        assert_eq!(s.annotations_of(NodeId(1)).unwrap().len(), 1);
+        assert_eq!(
+            s.annotations_of_project(p.id).unwrap()[&1].len(),
+            1,
+            "the annotation must be filed under the owning node's project, not lost"
+        );
+    }
+
+    /// `property_patches` and `kind_patches` for a node that does not exist must be **silent no-ops** (the
+    /// `UPDATE` affects 0 rows; `property_patches` reads `NULL` and merges into `Value::Null`). Neither must error nor
+    /// create a phantom node.
+    #[test]
+    fn patches_on_missing_node_are_silent_noops() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let mut d = GraphDelta::new(p.id);
+        d.property_patches.push((NodeId(999), serde_json::json!({ "x": 1 })));
+        d.kind_patches.push((NodeId(999), NodeKind::new("Middleware")));
+        s.apply(&d).unwrap();
+        assert!(s.get_node(NodeId(999)).unwrap().is_none(), "a patch must not materialise a node");
+        assert_eq!(s.stats(p.id).unwrap().nodes, 0);
+    }
+
+    /// `edges_outgoing` / `edges_incoming` restrict to the owning **project set** (computed once via
+    /// `project_ids_of`), so an edge recorded under a *different* project that happens to reference this project's
+    /// node ids (the historical leftover-edge case) must be excluded from the batch results.
+    #[test]
+    fn edges_outgoing_incoming_filter_leftover_project_edges() {
+        let s = store();
+        let pa = s.create_project(new_project("a")).unwrap();
+        let pb = s.create_project(new_project("b")).unwrap();
+        let mut da = GraphDelta::new(pa.id);
+        da.nodes.push(node(pa.id, 1, "A1"));
+        da.nodes.push(node(pa.id, 2, "A2"));
+        s.apply(&da).unwrap();
+        let mut db = GraphDelta::new(pb.id);
+        db.nodes.push(node(pb.id, 3, "B1"));
+        s.apply(&db).unwrap();
+
+        // Clean edge in A: 1 -> 2. Dirty edge: references A2 but recorded under project B.
+        let mut e = GraphDelta::new(pa.id);
+        e.edges.push(NewEdge::new(pa.id, EdgeKind::new("Calls"), NodeId(1), NodeId(2)));
+        let mut dirty = GraphDelta::new(pb.id);
+        dirty.edges.push(NewEdge::new(pb.id, EdgeKind::new("Calls"), NodeId(3), NodeId(2)));
+        s.apply(&e).unwrap();
+        s.apply(&dirty).unwrap();
+
+        let out = s.edges_outgoing(&[NodeId(1)]).unwrap();
+        assert_eq!(out[&1].len(), 1, "batch outgoing must exclude the leftover edge from project B: {out:?}");
+        assert_eq!(out[&1][0].to_id, NodeId(2));
+
+        let inc = s.edges_incoming(&[NodeId(2)]).unwrap();
+        assert_eq!(
+            inc[&2].len(),
+            1,
+            "batch incoming must exclude the leftover edge from project B: {inc:?}"
+        );
+        assert_eq!(inc[&2][0].from_id, NodeId(1));
+    }
+
+    // ---------------------------------------------------------- projects.rs branch coverage
+
+    /// `get_project` for an id that does not exist must return `None`, not error.
+    #[test]
+    fn get_project_missing_id_returns_none() {
+        let s = store();
+        assert!(s.get_project(ProjectId::new(404)).unwrap().is_none());
+    }
+
+    /// `list_projects` returns every project `ORDER BY id` — the order is by insertion id, not by name, so a
+    /// name-ordered insert must still come back id-ordered.
+    #[test]
+    fn list_projects_orders_by_id_and_counts_all() {
+        let s = store();
+        s.create_project(new_project("c")).unwrap();
+        s.create_project(new_project("a")).unwrap();
+        s.create_project(new_project("b")).unwrap();
+        let all = s.list_projects().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].name, "c");
+        assert_eq!(all[1].name, "a");
+        assert_eq!(all[2].name, "b");
+    }
+
+    /// `create_project` must round-trip a non-default `config` (serialised by the writer) and a `None` description
+    /// (the column is nullable and must read back as `None`, not as `"null"` / `Some("null")`).
+    #[test]
+    fn create_project_with_config_and_null_description_roundtrips() {
+        let s = store();
+        let mut cfg = ProjectConfig::default();
+        cfg.table_prefixes = vec!["eb_".into(), "shop_".into()];
+        let p = s
+            .create_project(NewProject {
+                name: "cfg".into(),
+                root_path: PathBuf::from("/data/cfg"),
+                description: None,
+                config: Some(cfg),
+            })
+            .unwrap();
+        let got = s.get_project(p.id).unwrap().expect("must exist");
+        assert_eq!(got.description, None, "a None description must round-trip as None");
+        assert_eq!(
+            got.config.table_prefixes,
+            vec!["eb_".to_string(), "shop_".to_string()],
+            "config must round-trip through create_project"
+        );
+    }
+
+    /// `update_project` only overwrites the fields present in the patch; the rest must keep their current value. The
+    /// `unwrap_or(current)` arms for `description` / `root_path` / `config` are exactly this contract.
+    #[test]
+    fn update_project_preserves_untouched_fields() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let updated = s
+            .update_project(
+                p.id,
+                ProjectPatch {
+                    name: Some("renamed".into()),
+                    description: None,
+                    root_path: None,
+                    config: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.name, "renamed");
+        assert_eq!(updated.description.as_deref(), Some("desc"), "untouched description must survive");
+        assert_eq!(updated.root_path, PathBuf::from("/data/alpha"), "untouched root_path must survive");
+        assert_eq!(
+            updated.config.table_prefixes,
+            ProjectConfig::default().table_prefixes,
+            "untouched config must survive"
+        );
+    }
+
+    /// A patch with every field `None` is a complete no-op: the project must be byte-for-byte unchanged (the
+    /// `unwrap_or(current.*)` arms all hit the `current` branch).
+    #[test]
+    fn update_project_all_none_is_a_noop() {
+        let s = store();
+        let p = s.create_project(new_project("alpha")).unwrap();
+        let before = s.get_project(p.id).unwrap().unwrap();
+        let after = s
+            .update_project(
+                p.id,
+                ProjectPatch {
+                    name: None,
+                    description: None,
+                    root_path: None,
+                    config: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.description, before.description);
+        assert_eq!(after.root_path, before.root_path);
+        assert_eq!(after.config.table_prefixes, before.config.table_prefixes);
+        assert_eq!(after.status, before.status);
+    }
+
+    /// `get_project` parses `config` defensively (`unwrap_or_default`): a corrupt (non-JSON) `config` column — which
+    /// the writer never produces, but which could exist in a hand-edited or legacy database — must yield the default
+    /// config rather than error or panic.
+    #[test]
+    fn get_project_corrupt_config_falls_back_to_default() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET config = 'not json at all' WHERE id = ?1",
+                params![p.id.get()],
+            )
+            .unwrap();
+        let got = s.get_project(p.id).unwrap().expect("project must still be found");
+        assert_eq!(
+            got.config.table_prefixes,
+            ProjectConfig::default().table_prefixes,
+            "corrupt config JSON must fall back to default, not error"
+        );
+    }
+
+    /// `list_sub_projects` is filtered by `project_id` and returns an empty vec (not error) when a project has none.
+    /// A second project must not see the first project's sub-projects.
+    #[test]
+    fn list_sub_projects_empty_and_scoped_to_project() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        assert!(s.list_sub_projects(p.id).unwrap().is_empty());
+        let other = s.create_project(new_project("b")).unwrap();
+        s.replace_sub_projects(p.id, vec![NewSubProject {
+            project_id: p.id,
+            name: "be".into(),
+            root_path: PathBuf::from("/be"),
+            language: Language::new("php"),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec![],
+            facts: Value::Null,
+        }])
+        .unwrap();
+        assert_eq!(
+            s.list_sub_projects(other.id).unwrap().len(),
+            0,
+            "subs must be scoped to their own project"
+        );
+        assert_eq!(s.list_sub_projects(p.id).unwrap().len(), 1);
+    }
+
+    /// `list_files` uses `sub_project_id = ?2 OR ?2 IS NULL`. A file whose `sub_project_id` is `NULL` must appear in
+    /// the **unfiltered** listing but be excluded when a concrete sub-project is requested (the `sub_project_id = ?2`
+    /// branch rejects `NULL`).
+    #[test]
+    fn list_files_null_sub_project_only_in_unfiltered_query() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let sub = s
+            .replace_sub_projects(p.id, vec![NewSubProject {
+                project_id: p.id,
+                name: "be".into(),
+                root_path: PathBuf::from("/be"),
+                language: Language::new("php"),
+                role: "backend".into(),
+                detected_by: "x".into(),
+                frameworks: vec![],
+                facts: Value::Null,
+            }])
+            .unwrap()[0]
+            .id;
+        s.replace_files(
+            p.id,
+            vec![
+                NewSourceFile {
+                    project_id: p.id,
+                    sub_project_id: Some(sub),
+                    path: "a.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 10,
+                    content_hash: "h".into(),
+                },
+                NewSourceFile {
+                    project_id: p.id,
+                    sub_project_id: None,
+                    path: "root.php".into(),
+                    language: Language::new("php"),
+                    size_bytes: 20,
+                    content_hash: "h2".into(),
+                },
+            ],
+        )
+        .unwrap();
+        // Unfiltered: both files, including the NULL-sub one.
+        assert_eq!(s.list_files(p.id, None).unwrap().len(), 2);
+        // Filtered by sub: only the sub-owned file; the NULL-sub file is excluded by `sub_project_id = ?2`.
+        let only = s.list_files(p.id, Some(sub)).unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].path, "a.php");
+    }
+
+    /// `replace_sub_projects` first `DELETE`s the existing rows, so replacing with an empty vec must clear them all
+    /// and return an empty list (not leave stale subs behind).
+    #[test]
+    fn replace_sub_projects_empty_clears_all() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.replace_sub_projects(p.id, vec![NewSubProject {
+            project_id: p.id,
+            name: "be".into(),
+            root_path: PathBuf::from("/be"),
+            language: Language::new("php"),
+            role: "backend".into(),
+            detected_by: "x".into(),
+            frameworks: vec![],
+            facts: Value::Null,
+        }])
+        .unwrap();
+        assert_eq!(s.list_sub_projects(p.id).unwrap().len(), 1);
+        let cleared = s.replace_sub_projects(p.id, vec![]).unwrap();
+        assert!(cleared.is_empty());
+        assert_eq!(s.list_sub_projects(p.id).unwrap().len(), 0);
+    }
+
+    /// `replace_files` mirrors `replace_sub_projects`: a `DELETE` then re-insert, so an empty replacement clears all
+    /// files (the watch-driven whole-DB refresh path depends on this).
+    #[test]
+    fn replace_files_empty_clears_all() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.replace_files(p.id, vec![NewSourceFile {
+            project_id: p.id,
+            sub_project_id: None,
+            path: "a.php".into(),
+            language: Language::new("php"),
+            size_bytes: 10,
+            content_hash: "h".into(),
+        }])
+        .unwrap();
+        assert_eq!(s.list_files(p.id, None).unwrap().len(), 1);
+        let cleared = s.replace_files(p.id, vec![]).unwrap();
+        assert!(cleared.is_empty());
+        assert_eq!(s.list_files(p.id, None).unwrap().len(), 0);
+    }
+
+    /// `delete_project` issues a `DELETE` that affects 0 rows when the id does not exist — it must be a harmless
+    /// no-op (no error), not a "not found" failure.
+    #[test]
+    fn delete_project_missing_is_noop() {
+        let s = store();
+        s.delete_project(ProjectId::new(987654)).unwrap();
+        assert!(s.list_projects().unwrap().is_empty());
+    }
+
+    /// `list_sub_projects` parses `facts` defensively (`unwrap_or(Value::Null)`): a corrupt `facts` column must yield
+    /// `Value::Null` rather than error, so a hand-edited sub-project still reads.
+    #[test]
+    fn list_sub_projects_corrupt_facts_falls_back_to_null() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        let sub = s
+            .replace_sub_projects(p.id, vec![NewSubProject {
+                project_id: p.id,
+                name: "be".into(),
+                root_path: PathBuf::from("/be"),
+                language: Language::new("php"),
+                role: "backend".into(),
+                detected_by: "x".into(),
+                frameworks: vec![],
+                facts: Value::Null,
+            }])
+            .unwrap()[0]
+            .id;
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sub_projects SET facts = 'not json' WHERE id = ?1",
+                params![sub.get()],
+            )
+            .unwrap();
+        let got = s.list_sub_projects(p.id).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].facts,
+            Value::Null,
+            "corrupt facts JSON must fall back to Value::Null"
+        );
+    }
+
+    // ---------------------------------------------------------- rule_config.rs branch coverage
+
+    /// `set_rule_config` treats a non-object options (here `Value::Null`) with no `enabled` as an empty override, so
+    /// the `options.as_object().unwrap_or(true)` arm must treat it as "clear" — deleting any existing row rather than
+    /// persisting a degenerate one. This is the defensive branch for an inherit-state / malformed write.
+    #[test]
+    fn set_rule_config_null_options_clears_existing() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: Some(true),
+            options: serde_json::json!({ "a": 1 }),
+        })
+        .unwrap();
+        assert_eq!(s.get_rule_configs(p.id).unwrap().len(), 1);
+        // A null-options, no-enabled write must clear it (is_empty = true via the unwrap_or(true) arm).
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: None,
+            options: Value::Null,
+        })
+        .unwrap();
+        assert!(
+            s.get_rule_configs(p.id).unwrap().is_empty(),
+            "a null-options inherit write must delete the existing row"
+        );
+    }
+
+    /// No explicit `enabled` but a **non-empty** options object is still a real override — `is_empty` requires BOTH
+    /// `enabled` absent AND options empty. It must be persisted, and `enabled` must read back as `None` (column NULL).
+    #[test]
+    fn set_rule_config_null_enabled_with_options_persists() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: None,
+            options: serde_json::json!({ "key": "val" }),
+        })
+        .unwrap();
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["r"].enabled, None, "absent enabled must read back as None");
+        assert_eq!(got["r"].options, serde_json::json!({ "key": "val" }));
+    }
+
+    /// An explicit `enabled` together with an empty options object is a deliberate enable, NOT an inherit — so it must
+    /// be persisted (is_empty is false because `enabled` is present). This pins the `enabled.is_none()` guard so a
+    /// rule that is explicitly turned on with no options is never accidentally deleted.
+    #[test]
+    fn set_rule_config_explicit_enable_empty_options_persists() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        s.set_rule_config(&ProjectRuleConfig {
+            project_id: p.id,
+            rule_id: "r".into(),
+            enabled: Some(true),
+            options: serde_json::json!({}),
+        })
+        .unwrap();
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(
+            got.len(),
+            1,
+            "an explicit enable must not be deleted just because options is empty"
+        );
+        assert_eq!(got["r"].enabled, Some(true));
+        assert_eq!(got["r"].options, serde_json::json!({}));
+    }
+
+    /// Several distinct `rule_id`s must all appear as separate keys in the returned HashMap — the reader accumulates
+    /// one row per rule_id, not a single merged entry, and the per-entry `rule_id` field must match its key.
+    #[test]
+    fn get_rule_configs_returns_multiple_distinct_rules() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        for rid in ["alpha", "beta", "gamma"] {
+            s.set_rule_config(&ProjectRuleConfig {
+                project_id: p.id,
+                rule_id: rid.into(),
+                enabled: Some(true),
+                options: serde_json::json!({ "id": rid }),
+            })
+            .unwrap();
+        }
+        let got = s.get_rule_configs(p.id).unwrap();
+        assert_eq!(got.len(), 3, "three distinct rule_ids must yield three map entries");
+        assert!(got.contains_key("alpha") && got.contains_key("beta") && got.contains_key("gamma"));
+        assert_eq!(got["beta"].rule_id, "beta", "the entry's rule_id must match its map key");
+    }
+
+    /// A project that never had any rule config must yield an empty map, not error — the baseline negative case for
+    /// the `SELECT ... WHERE project_id = ?` reader.
+    #[test]
+    fn get_rule_configs_empty_for_project_without_config() {
+        let s = store();
+        let p = s.create_project(new_project("a")).unwrap();
+        assert!(
+            s.get_rule_configs(p.id).unwrap().is_empty(),
+            "a project with no rule configs must yield an empty map"
         );
     }
 }
