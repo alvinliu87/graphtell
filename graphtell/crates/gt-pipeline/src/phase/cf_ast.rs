@@ -278,38 +278,42 @@ fn build_file(
             }
             // Constructor injection: `$this->services = $services` -> property services type = parameter services type.
             if let Some(assigns) = d.extra.get("this_assigns").and_then(|v| v.as_array()) {
-                let Some(class_fqn) = d.parent_fqn.as_deref() else {
-                    continue;
-                };
-                for a in assigns {
-                    let (Some(prop), Some(var)) = (
-                        a.get("prop").and_then(|v| v.as_str()),
-                        a.get("var").and_then(|v| v.as_str()),
-                    ) else {
-                        continue;
-                    };
-                    if let Some(ty) = ctx.ws.param_type(&d.fqn, var) {
-                        let ty = ty.to_string();
-                        ctx.ws.set_prop_type(class_fqn, prop, &ty);
+                // Without a `parent_fqn` there is no class to hang the property on: skip **only this
+                // step**. This used to `let-else { continue }`, which targets the *declarations* loop
+                // and therefore dropped every later step for this declaration too — notably
+                // `local_assign_types`, which needs no parent at all. Pinned by
+                // `build_file_this_assign_without_a_parent_class_only_skips_its_own_step`.
+                if let Some(class_fqn) = d.parent_fqn.as_deref() {
+                    for a in assigns {
+                        let (Some(prop), Some(var)) = (
+                            a.get("prop").and_then(|v| v.as_str()),
+                            a.get("var").and_then(|v| v.as_str()),
+                        ) else {
+                            continue;
+                        };
+                        if let Some(ty) = ctx.ws.param_type(&d.fqn, var) {
+                            let ty = ty.to_string();
+                            ctx.ws.set_prop_type(class_fqn, prop, &ty);
+                        }
                     }
                 }
             }
             if let Some(assigns) = d.extra.get("this_assign_types").and_then(|v| v.as_array()) {
-                let Some(class_fqn) = d.parent_fqn.as_deref() else {
-                    continue;
-                };
-                for a in assigns {
-                    let (Some(prop), Some(cls)) = (
-                        a.get("prop").and_then(|v| v.as_str()),
-                        a.get("class").and_then(|v| v.as_str()),
-                    ) else {
-                        continue;
-                    };
-                    if ctx.ws.prop_type(class_fqn, prop).is_some() {
-                        continue;
+                // Same reason as above: skip only this step, never the rest of the declaration.
+                if let Some(class_fqn) = d.parent_fqn.as_deref() {
+                    for a in assigns {
+                        let (Some(prop), Some(cls)) = (
+                            a.get("prop").and_then(|v| v.as_str()),
+                            a.get("class").and_then(|v| v.as_str()),
+                        ) else {
+                            continue;
+                        };
+                        if ctx.ws.prop_type(class_fqn, prop).is_some() {
+                            continue;
+                        }
+                        let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls, &policy);
+                        ctx.ws.set_prop_type(class_fqn, prop, &fqn);
                     }
-                    let fqn = resolve_type(facts.namespace.as_deref(), &imports, cls, &policy);
-                    ctx.ws.set_prop_type(class_fqn, prop, &fqn);
                 }
             }
             // Local variable inside a method: `$model = new OrderModel();` -> `$model->where(...)` is resolvable.
@@ -1874,7 +1878,7 @@ mod tests {
     }
 
     #[test]
-    fn build_file_this_assign_without_a_parent_class_skips_everything_below_it() {
+    fn build_file_this_assign_without_a_parent_class_only_skips_its_own_step() {
         let mut facts = SyntaxFacts::default();
         facts.namespace = Some("app".into());
         facts.declarations = vec![
@@ -1895,6 +1899,8 @@ mod tests {
                 extra: serde_json::json!({
                     "parameters": [{ "name": "svc", "type": "Real" }],
                     "this_assigns": [{ "prop": "svc", "var": "svc" }],
+                    // The only step below that needs **no** `parent_fqn` — it must survive the skip.
+                    "local_assign_types": [{ "var": "m", "class": "Model" }],
                     "returns_class": ["Dao"]
                 }),
             },
@@ -1904,12 +1910,21 @@ mod tests {
             .ws
             .find_by_name("app\\Order::__construct")
             .expect("the node itself is still created");
+        // No `parent_fqn` -> nothing to attach to: no owner edge, and `returns_class` (which resolves an
+        // owning class) queues nothing. Both follow from the missing parent itself, not from the skip.
         assert!(
             !ctx.ws.edges().iter().any(|e| e.to_id == ctor),
-            "known wart, pinned: `let Some(class_fqn) = ... else {{ continue }}` targets the *declarations* loop, \
-             so a method carrying `this_assigns` without a `parent_fqn` loses every step below it, including the owner edge"
+            "no owning class -> no owner edge"
         );
-        assert!(ctx.ws.pending_links.is_empty(), "the `returns_class` step is skipped too");
+        assert!(ctx.ws.pending_links.is_empty(), "`returns_class` needs an owning class too");
+        // Regression guard: `local_assign_types` is keyed by the method's own FQN and needs no parent,
+        // so it must still be recorded. The old `let-else { continue }` targeted the *declarations*
+        // loop and silently took every later step down with it.
+        assert_eq!(
+            ctx.ws.local_type("app\\Order::__construct", "m"),
+            Some("app\\Model"),
+            "a parent-less method must still record the facts that do not need a parent"
+        );
     }
 
     #[test]

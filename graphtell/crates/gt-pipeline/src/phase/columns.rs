@@ -47,6 +47,8 @@ pub fn materialize(ctx: &mut PipelineContext) {
         }
         // The table name may be **plural**: Laravel's DDL writes `CREATE TABLE users`, while the table node's name
         // is `user` after `singularize` — a direct lookup misses, so the plural form is tried as well.
+        // `schema_columns` reports "no columns" as a miss, so an entry that exists but is empty cannot
+        // short-circuit the fallback and swallow the columns that live under the plural key.
         let cols = schema_columns(&ctx.ws, "schema", &name)
             .or_else(|| schema_columns(&ctx.ws, "schema", &format!("{name}s")))
             .unwrap_or_default();
@@ -421,29 +423,53 @@ mod tests {
         assert_eq!(has_column_count(&ctx), 1);
     }
 
-    /// Known wart, pinned: `schema_columns` returns `Some(vec![])` for a key that exists but has no
-    /// columns, and `Option::or_else` short-circuits on `Some`, so the plural fallback never runs. A
-    /// project whose P3 wrote `user` (no columns) next to real columns under `users` silently loses
-    /// those columns at this phase. Fixing it means treating an empty result as a miss.
+    /// Regression: an entry that exists but carries **no** columns must count as a miss. It used to
+    /// return `Some(vec![])`, and `Option::or_else` short-circuits on `Some`, so the plural fallback
+    /// never ran — a project whose P3 wrote `user` (no columns) next to real columns under `users`
+    /// silently lost those columns at this phase.
     #[test]
-    fn materialize_empty_schema_entry_suppresses_the_plural_fallback() {
+    fn materialize_empty_schema_entry_does_not_suppress_the_plural_fallback() {
         let mut ctx = ctx_with_project();
         add_table(&mut ctx, "user");
         put_schema_raw(&mut ctx, "user", json!({ "columns": [] }));
         put_schema(&mut ctx, "users", &["id", "phone"]);
         super::materialize(&mut ctx);
+        let mut cols = column_identities(&ctx);
+        cols.sort();
         assert_eq!(
-            column_identities(&ctx).len(),
-            0,
-            "the empty `user` entry shadows the populated `users` entry"
+            cols,
+            vec!["user.id".to_string(), "user.phone".to_string()],
+            "the empty `user` entry must not shadow the populated `users` entry"
         );
+        assert_eq!(has_column_count(&ctx), 2);
 
-        // Control: remove the empty entry and the very same schema is found through the plural fallback.
+        // Control: without the empty entry the very same schema resolves identically — the fix must
+        // not change what the fallback picks up, only stop the empty entry from blocking it.
         let mut ctx = ctx_with_project();
         add_table(&mut ctx, "user");
         put_schema(&mut ctx, "users", &["id", "phone"]);
         super::materialize(&mut ctx);
-        assert_eq!(column_identities(&ctx).len(), 2, "without the empty entry the fallback works");
+        let mut cols = column_identities(&ctx);
+        cols.sort();
+        assert_eq!(cols, vec!["user.id".to_string(), "user.phone".to_string()]);
+        assert_eq!(has_column_count(&ctx), 2);
+    }
+
+    /// The same rule one layer down: an empty **stripped** entry must not shadow the prefixed key.
+    #[test]
+    fn materialize_empty_stripped_schema_entry_falls_through_to_the_prefixed_key() {
+        let mut ctx = ctx_with_project();
+        ctx.ws.set_table_prefixes(vec!["eb_".to_string()]);
+        add_table(&mut ctx, "eb_user");
+        put_schema_raw(&mut ctx, "user", json!({ "columns": [] }));
+        put_schema(&mut ctx, "eb_user", &["id"]);
+        super::materialize(&mut ctx);
+        assert_eq!(
+            column_identities(&ctx),
+            vec!["eb_user.id".to_string()],
+            "the empty stripped `user` entry must not shadow the populated `eb_user` entry"
+        );
+        assert_eq!(has_column_count(&ctx), 1);
     }
 
     #[test]

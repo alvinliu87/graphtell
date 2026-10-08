@@ -447,17 +447,26 @@ fn column_matches(column: &str, wanted: &str) -> bool {
 }
 
 /// Look up columns of the schema table (compatible with prefixed / unprefixed table names).
+///
+/// Returns `None` when the table is unknown **or when its entry carries no columns**: an entry that
+/// merely exists is a miss, not "this table has zero columns". Callers chain lookups with
+/// `Option::or_else` (e.g. singular `user` → plural `users`), which short-circuits on `Some`, so a
+/// stray empty `user` entry used to shadow the populated `users` entry and silently drop every
+/// column of that table.
 pub fn schema_columns(ws: &GraphWorkspace, table: &str, name: &str) -> Option<Vec<String>> {
     let stripped = ws.strip_table_prefix(name);
     if stripped != name {
-        if let Some(v) = ws.get_symbol(table, &stripped) {
-            return Some(columns_of(v));
+        if let Some(cols) = columns_of_symbol(ws, table, &stripped) {
+            return Some(cols);
         }
     }
-    if let Some(v) = ws.get_symbol(table, name) {
-        return Some(columns_of(v));
-    }
-    None
+    columns_of_symbol(ws, table, name)
+}
+
+/// Columns of one schema entry, where "no columns" is reported as a miss (see [`schema_columns`]).
+fn columns_of_symbol(ws: &GraphWorkspace, table: &str, name: &str) -> Option<Vec<String>> {
+    let cols = columns_of(ws.get_symbol(table, name)?);
+    (!cols.is_empty()).then_some(cols)
 }
 
 fn columns_of(v: &Value) -> Vec<String> {
@@ -1860,14 +1869,34 @@ mod tests {
             ])
         );
         assert_eq!(schema_columns(&ctx.ws, "schema", "nope"), None);
-        // A `columns` key that is not an array yields no columns rather than panicking.
+        // A `columns` key that is not an array yields no columns rather than panicking — and "no
+        // columns" is a **miss**, so a chained lookup still falls through to the next candidate key.
         ctx.ws.put_symbol(
             ProjectId(1),
             "schema",
             "bad",
             serde_json::json!({ "columns": "x" }),
         );
-        assert_eq!(schema_columns(&ctx.ws, "schema", "bad"), Some(vec![]));
+        assert_eq!(schema_columns(&ctx.ws, "schema", "bad"), None);
+
+        // Same rule inside one call: an empty **stripped** entry must not shadow the prefixed key.
+        ctx.ws.set_table_prefixes(vec!["eb_".to_string()]);
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "schema",
+            "user",
+            serde_json::json!({ "columns": [] }),
+        );
+        ctx.ws.put_symbol(
+            ProjectId(1),
+            "schema",
+            "eb_user",
+            serde_json::json!({ "columns": ["id"] }),
+        );
+        assert_eq!(
+            schema_columns(&ctx.ws, "schema", "eb_user"),
+            Some(vec!["id".to_string()])
+        );
     }
 
     /// The original value is tried **first**, so nothing that already matched is changed.
