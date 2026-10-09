@@ -26,11 +26,22 @@ use gt_adapter_resource::MyBatisMapperAdapter;
 use gt_adapter_sqlite::SqliteStore;
 use gt_adapter_techstack::{DefaultMarkerProvider, JsTechStackAdapter};
 use gt_application::pipeline_runner::{PipelineDeps, PipelineService};
-use gt_domain::error::DomainError;
-use gt_domain::model::{CheckRule, NewProject, ProjectConfig, ProjectId, ProjectStatus};
+use std::collections::HashMap;
+
+use serde_json::Value;
+
+use gt_domain::error::{DomainError, Result};
+use gt_domain::model::{
+    Annotation, CheckRule, Diagnostic, Edge, EdgeId, FileId, GraphDelta, NewProject, NewSourceFile,
+    NewSubProject, Node, NodeId, NodeKind, Project, ProjectConfig, ProjectId, ProjectPatch,
+    ProjectRuleConfig, ProjectStatus, SourceFile, SubProject, SubProjectId, SymbolEntry,
+};
+use gt_domain::model::graph::NodeSummary;
+use gt_domain::port::persistence::GraphStats;
 use gt_domain::port::{
-    DefaultResourceAdapterRegistry, DefaultTechStackRegistry, Marker, MarkerProvider, NoopObserver,
-    Persistence, RuleProvider,
+    DefaultResourceAdapterRegistry, DefaultTechStackRegistry, DiagnosticSink, EdgeDirection,
+    GraphQuery, GraphSink, Marker, MarkerProvider, NodeFilter, NoopObserver, Persistence,
+    ProjectReader, ProjectWriter, RuleConfigStore, RuleProvider, SymbolTableReader,
 };
 
 const FKB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fkb");
@@ -97,6 +108,19 @@ fn scratch_dir() -> PathBuf {
     dir
 }
 
+/// Create a project in `store` with the given `root_path` and return its id.
+fn create_it(store: &Arc<dyn Persistence>, root_path: PathBuf) -> ProjectId {
+    store
+        .create_project(NewProject {
+            name: "it".into(),
+            root_path,
+            description: None,
+            config: Some(ProjectConfig::default()),
+        })
+        .expect("create_project")
+        .id
+}
+
 /// In-memory store + one project + a `PipelineService` (all in `Arc` so it can be shared across threads).
 fn setup(slow_markers_ms: u64) -> (Arc<dyn Persistence>, Arc<PipelineService>, ProjectId) {
     let store: Arc<dyn Persistence> =
@@ -147,7 +171,7 @@ fn setup_n(n: usize, slow_markers_ms: u64) -> (Arc<dyn Persistence>, Arc<Pipelin
 fn run_flips_status_to_ready_and_returns_ok() {
     let (store, svc, pid) = setup(0);
     let out = svc.run(pid, &NoopObserver).expect("build should succeed");
-    assert!(!out.sub_projects.is_empty() || out.files.is_empty(), "build produced an outcome");
+    assert!(!out.sub_projects.is_empty(), "composer.json must yield at least one sub-project");
     let status = store.get_project(pid).unwrap().unwrap().status;
     assert_eq!(status, ProjectStatus::Ready, "after success the status must be Ready");
 }
@@ -325,12 +349,299 @@ fn rebuild_runs_again_and_stays_ready() {
         .run(pid, &NoopObserver)
         .expect("rebuild must succeed (not a Conflict)");
     assert!(
-        !out.sub_projects.is_empty() || out.files.is_empty(),
-        "the rebuild produced an outcome"
+        !out.sub_projects.is_empty(),
+        "the rebuild must still detect the composer.json sub-project"
     );
     assert_eq!(
         store.get_project(pid).unwrap().unwrap().status,
         ProjectStatus::Ready,
         "after a rebuild the status must be Ready again"
     );
+}
+
+/// A persistence wrapper that delegates **every** method to a real in-memory store, except
+/// `get_rule_configs` which always fails. This is the only deterministic way to make
+/// `PipelineService::run_check` (which is called after a successful build) return `Err`, so we can
+/// prove that failure is *swallowed* and does not turn a good build into `Failed`.
+struct FailRuleConfigs {
+    inner: Arc<dyn Persistence>,
+}
+
+impl ProjectReader for FailRuleConfigs {
+    fn get_project(&self, id: ProjectId) -> Result<Option<Project>> {
+        self.inner.get_project(id)
+    }
+    fn list_projects(&self) -> Result<Vec<Project>> {
+        self.inner.list_projects()
+    }
+    fn list_sub_projects(&self, project_id: ProjectId) -> Result<Vec<SubProject>> {
+        self.inner.list_sub_projects(project_id)
+    }
+    fn list_files(&self, project_id: ProjectId, sub: Option<SubProjectId>) -> Result<Vec<SourceFile>> {
+        self.inner.list_files(project_id, sub)
+    }
+}
+
+impl ProjectWriter for FailRuleConfigs {
+    fn create_project(&self, new: NewProject) -> Result<Project> {
+        self.inner.create_project(new)
+    }
+    fn update_project(&self, id: ProjectId, patch: ProjectPatch) -> Result<Project> {
+        self.inner.update_project(id, patch)
+    }
+    fn delete_project(&self, id: ProjectId) -> Result<()> {
+        self.inner.delete_project(id)
+    }
+    fn set_project_status(&self, id: ProjectId, status: ProjectStatus) -> Result<()> {
+        self.inner.set_project_status(id, status)
+    }
+    fn replace_sub_projects(
+        &self,
+        project_id: ProjectId,
+        subs: Vec<NewSubProject>,
+    ) -> Result<Vec<SubProject>> {
+        self.inner.replace_sub_projects(project_id, subs)
+    }
+    fn update_sub_project_facts(&self, id: SubProjectId, facts: Value) -> Result<()> {
+        self.inner.update_sub_project_facts(id, facts)
+    }
+    fn set_sub_project_frameworks(&self, id: SubProjectId, frameworks: Vec<String>) -> Result<()> {
+        self.inner.set_sub_project_frameworks(id, frameworks)
+    }
+    fn replace_files(
+        &self,
+        project_id: ProjectId,
+        files: Vec<NewSourceFile>,
+    ) -> Result<Vec<SourceFile>> {
+        self.inner.replace_files(project_id, files)
+    }
+}
+
+impl GraphSink for FailRuleConfigs {
+    fn apply(&self, delta: &GraphDelta) -> Result<()> {
+        self.inner.apply(delta)
+    }
+}
+
+impl GraphQuery for FailRuleConfigs {
+    fn query_nodes(&self, filter: &NodeFilter) -> Result<Vec<Node>> {
+        self.inner.query_nodes(filter)
+    }
+    fn get_node(&self, id: NodeId) -> Result<Option<Node>> {
+        self.inner.get_node(id)
+    }
+    fn get_nodes(&self, ids: &[NodeId]) -> Result<HashMap<i64, Node>> {
+        self.inner.get_nodes(ids)
+    }
+    fn edges_of(&self, node: NodeId, direction: EdgeDirection) -> Result<Vec<Edge>> {
+        self.inner.edges_of(node, direction)
+    }
+    fn nodes_summary(&self, project_id: ProjectId) -> Result<HashMap<i64, NodeSummary>> {
+        self.inner.nodes_summary(project_id)
+    }
+    fn edges_outgoing(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>> {
+        self.inner.edges_outgoing(ids)
+    }
+    fn edges_incoming(&self, ids: &[NodeId]) -> Result<HashMap<i64, Vec<Edge>>> {
+        self.inner.edges_incoming(ids)
+    }
+    fn chain_adjacency(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<(HashMap<i64, Vec<i64>>, HashMap<i64, Vec<i64>>, HashMap<i64, Vec<i64>>)> {
+        self.inner.chain_adjacency(project_id)
+    }
+    fn edge_kinds(&self, project_id: ProjectId) -> Result<Vec<String>> {
+        self.inner.edge_kinds(project_id)
+    }
+    fn node_kinds(&self, project_id: ProjectId) -> Result<Vec<String>> {
+        self.inner.node_kinds(project_id)
+    }
+    fn annotation_kinds(&self, project_id: ProjectId) -> Result<Vec<(String, String)>> {
+        self.inner.annotation_kinds(project_id)
+    }
+    fn annotations_of(&self, node: NodeId) -> Result<Vec<Annotation>> {
+        self.inner.annotations_of(node)
+    }
+    fn annotations_of_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<HashMap<i64, Vec<Annotation>>> {
+        self.inner.annotations_of_project(project_id)
+    }
+    fn file_paths(&self, project_id: ProjectId) -> Result<HashMap<i64, String>> {
+        self.inner.file_paths(project_id)
+    }
+    fn stats(&self, project_id: ProjectId) -> Result<GraphStats> {
+        self.inner.stats(project_id)
+    }
+    fn count_nodes(
+        &self,
+        project_id: ProjectId,
+        kind: Option<&NodeKind>,
+        side: Option<&str>,
+    ) -> Result<u64> {
+        self.inner.count_nodes(project_id, kind, side)
+    }
+    fn find_edge(&self, id: EdgeId) -> Result<Option<Edge>> {
+        self.inner.find_edge(id)
+    }
+    fn file_path(&self, id: FileId) -> Result<Option<String>> {
+        self.inner.file_path(id)
+    }
+}
+
+impl SymbolTableReader for FailRuleConfigs {
+    fn get_symbol(&self, project_id: ProjectId, table: &str, key: &str) -> Result<Option<Value>> {
+        self.inner.get_symbol(project_id, table, key)
+    }
+    fn list_symbols(&self, project_id: ProjectId, table: &str) -> Result<Vec<SymbolEntry>> {
+        self.inner.list_symbols(project_id, table)
+    }
+}
+
+impl DiagnosticSink for FailRuleConfigs {
+    fn push_diagnostics(&self, items: &[Diagnostic]) -> Result<()> {
+        self.inner.push_diagnostics(items)
+    }
+    fn list_diagnostics(&self, project_id: ProjectId, limit: u32) -> Result<Vec<Diagnostic>> {
+        self.inner.list_diagnostics(project_id, limit)
+    }
+    fn list_diagnostics_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<Diagnostic>> {
+        self.inner
+            .list_diagnostics_excluding(project_id, exclude_prefix, limit)
+    }
+    fn list_diagnostics_by_code(
+        &self,
+        project_id: ProjectId,
+        code_prefix: &str,
+        sub_project_id: Option<&[SubProjectId]>,
+        limit: u32,
+    ) -> Result<Vec<Diagnostic>> {
+        self.inner
+            .list_diagnostics_by_code(project_id, code_prefix, sub_project_id, limit)
+    }
+    fn clear_diagnostics(&self, project_id: ProjectId, code_prefix: &str) -> Result<u64> {
+        self.inner.clear_diagnostics(project_id, code_prefix)
+    }
+    fn count_diagnostics_by_code(
+        &self,
+        project_id: ProjectId,
+        code_prefix: &str,
+        sub_project_id: Option<&[SubProjectId]>,
+    ) -> Result<Vec<(String, u64)>> {
+        self.inner
+            .count_diagnostics_by_code(project_id, code_prefix, sub_project_id)
+    }
+    fn count_diagnostics_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+    ) -> Result<Vec<(String, u64)>> {
+        self.inner.count_diagnostics_excluding(project_id, exclude_prefix)
+    }
+    fn count_diagnostics_by_code_excluding(
+        &self,
+        project_id: ProjectId,
+        exclude_prefix: &str,
+    ) -> Result<Vec<(String, String, u64)>> {
+        self.inner
+            .count_diagnostics_by_code_excluding(project_id, exclude_prefix)
+    }
+}
+
+impl RuleConfigStore for FailRuleConfigs {
+    fn get_rule_configs(&self, _: ProjectId) -> Result<HashMap<String, ProjectRuleConfig>> {
+        // The only method that fails: `run_check` reads this first, so a failing store makes the
+        // auto compliance check return `Err` without touching the graph.
+        Err(DomainError::infra("injected rule-config read failure"))
+    }
+    fn set_rule_config(&self, cfg: &ProjectRuleConfig) -> Result<()> {
+        self.inner.set_rule_config(cfg)
+    }
+    fn delete_rule_config(&self, project_id: ProjectId, rule_id: &str) -> Result<()> {
+        self.inner.delete_rule_config(project_id, rule_id)
+    }
+}
+
+/// Running a non-existent project id must surface `NotFound` (the project lookup in `run_inner`
+/// happens before any status flip, so it must not be mistaken for `Conflict` or `Failed`).
+#[test]
+fn run_on_unknown_project_is_not_found() {
+    let (_, svc, _) = setup(0);
+    let res = svc.run(ProjectId::new(9_999_999), &NoopObserver);
+    assert!(
+        matches!(res, Err(DomainError::NotFound(_))),
+        "running a non-existent project must be NotFound, got {res:?}"
+    );
+}
+
+/// A build whose `root_path` does not exist must fail the pipeline and leave the project `Failed`
+/// (not stuck at `Indexing`, not silently `Ready`).
+#[test]
+fn build_of_missing_root_path_fails_and_marks_failed() {
+    let store: Arc<dyn Persistence> =
+        Arc::new(SqliteStore::in_memory().expect("in-memory store must construct"));
+    let pid = create_it(
+        &store,
+        std::env::temp_dir()
+            .join(format!("gt_missing_root_{}_{}", std::process::id(), pid_counter())),
+    );
+    let svc = Arc::new(PipelineService::new(
+        store.clone(),
+        Arc::new(deps(0)),
+        Arc::new(NoopRuleProvider),
+    ));
+
+    let res = svc.run(pid, &NoopObserver);
+    assert!(res.is_err(), "a non-existent root_path must fail the build");
+    let status = store.get_project(pid).unwrap().unwrap().status;
+    assert_eq!(
+        status,
+        ProjectStatus::Failed,
+        "a failed build must be marked Failed (not left at Indexing)"
+    );
+}
+
+/// A good build must still succeed and reach `Ready` even when the automatic compliance check
+/// fails: `PipelineService::run_check` deliberately swallows check errors so a flaky/down rule
+/// engine cannot invalidate an already-built graph.
+#[test]
+fn run_succeeds_when_auto_check_fails() {
+    let inner: Arc<dyn Persistence> =
+        Arc::new(SqliteStore::in_memory().expect("in-memory store must construct"));
+    let store: Arc<dyn Persistence> =
+        Arc::new(FailRuleConfigs { inner: Arc::clone(&inner) });
+    let pid = create_it(&store, scratch_dir());
+    let svc = Arc::new(PipelineService::new(
+        store.clone(),
+        Arc::new(deps(0)),
+        Arc::new(NoopRuleProvider),
+    ));
+
+    let out = svc
+        .run(pid, &NoopObserver)
+        .expect("a good build must succeed even if the auto compliance check fails");
+    assert!(
+        !out.sub_projects.is_empty(),
+        "the graph is still produced despite the check failure"
+    );
+    let status = store.get_project(pid).unwrap().unwrap().status;
+    assert_eq!(
+        status,
+        ProjectStatus::Ready,
+        "an auto-check failure must be swallowed, not turn the build Failed"
+    );
+}
+
+/// Process-unique counter so the (intentionally) non-existent root path is distinct per call.
+fn pid_counter() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static C: AtomicU64 = AtomicU64::new(0);
+    C.fetch_add(1, Ordering::SeqCst)
 }

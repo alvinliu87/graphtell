@@ -13,8 +13,9 @@
 //! `cargo test` and actually catch a CfAst regression. The riskiest recent CfAst
 //! change (i18n locale derivation, the old `lang/{locale}/*.php` literal that never
 //! matched) is covered at the unit level by `facts::locale_of_path` in
-//! `phase/facts.rs`; here we pin the structural products for the two stacks we
-//! actively maintain (PHP and Python/Django).
+//! `phase/facts.rs`; here we pin the structural products for **every** stack the kernel
+//! actively supports — PHP, Python, Java, JS/TS and Rust — via always-on synthetic roots,
+//! so a language-agnostic CfAst regression is caught for each stack's FQN / node / edge shape.
 
 use gt_domain::model::{NodeKind, ProjectConfig};
 use gt_domain::port::{EdgeDirection, GraphQuery, NodeFilter};
@@ -249,5 +250,361 @@ fn python_cf_ast_builds_nodes_and_call_sites() {
     assert!(
         article.is_some(),
         "the Django `Article` model should be surfaced as a Class node"
+    );
+}
+
+/// Like `class_with_fqn` but matches on the simple class *name* (the `name` column). The class `name` is
+/// identical across every stack (`Order`, `OrderService`, …) whereas the `fqn` column is stack-specific
+/// (PHP/Java embed the namespace, JS keeps the bare name, Rust prefixes `crate.`). So `name` is the portable
+/// lookup key when a stack also emits *placeholder* parent nodes whose FQN reuses the same segment.
+fn class_by_name(b: &common::Built, name: &str) -> Option<gt_domain::model::Node> {
+    b.store
+        .query_nodes(&NodeFilter {
+            project_id: b.project.id,
+            kind: Some(NodeKind(NodeKind::CLASS.to_string())),
+            name_contains: None,
+            limit: Some(1000),
+            offset: Some(0),
+        })
+        .expect("query")
+        .into_iter()
+        .find(|n| n.name == name)
+}
+
+fn synthetic_java_root() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-cfast-java-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src/main/java/com/example/order")).expect("mkdir");
+    // A minimal Maven manifest so the marker phase recognises the Java sub-project (the way the real pipeline
+    // expects); language-by-extension would still route the file, but the manifest also drives framework detection.
+    std::fs::write(
+        dir.join("pom.xml"),
+        r#"<?xml version="1.0"?>
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    )
+    .expect("write pom.xml");
+    std::fs::write(
+        dir.join("src/main/java/com/example/order/Order.java"),
+        r#"package com.example.order;
+
+public class Order extends BaseModel implements Savable {
+    private String items;
+
+    public String save() {
+        return items;
+    }
+
+    public void place() {
+        this.save();
+        Logger.info("placed");
+    }
+}
+"#,
+    )
+    .expect("write Order.java");
+    dir
+}
+
+fn synthetic_js_root() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-cfast-js-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{
+  "name": "synth",
+  "dependencies": { "@nestjs/common": "^10.0.0", "typeorm": "^0.3.0" }
+}
+"#,
+    )
+    .expect("write package.json");
+    // The frontend parser stores the **bare class name** as the FQN (no module prefix) — pinned below.
+    std::fs::write(
+        dir.join("src/order.service.ts"),
+        r#"import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class OrderService extends BaseService implements OnModuleInit {
+  private items: string;
+
+  save() {
+    return this.items;
+  }
+
+  place() {
+    this.save();
+    Logger.info('placed');
+  }
+}
+"#,
+    )
+    .expect("write order.service.ts");
+    dir
+}
+
+fn synthetic_rust_root() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphtell-cfast-rust-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nactix-web = \"4\"\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        r#"pub trait Savable {
+    fn save(&self);
+}
+
+pub struct Order {
+    items: String,
+}
+
+impl Savable for Order {
+    fn save(&self) {
+        println!("{}", self.items);
+    }
+}
+
+impl Order {
+    pub fn place(&self) {
+        self.save();
+    }
+}
+"#,
+    )
+    .expect("write src/lib.rs");
+    dir
+}
+
+/// Java (Spring): CfAst must emit the node set and resolve the `com.example.order` package into the FQN,
+/// mirroring the PHP self-check for a second actively-maintained backend stack.
+#[test]
+fn java_cf_ast_builds_nodes_and_resolves_fqn() {
+    let root = synthetic_java_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic Java graph build should succeed");
+    };
+
+    assert!(count(&b, NodeKind::CLASS) > 0, "CfAst should produce Class nodes");
+    assert!(count(&b, NodeKind::METHOD) > 0, "CfAst should produce Method nodes");
+    assert!(
+        count(&b, NodeKind::CALL_SITE) > 0,
+        "method calls should be refined into CallSite nodes, got {}",
+        count(&b, NodeKind::CALL_SITE)
+    );
+
+    // package com.example.order + class Order -> FQN embeds the package segment (just like PHP's namespace).
+    let order = class_by_name(&b, "Order").expect("the Order class should exist");
+    assert_eq!(order.name, "Order");
+    assert!(
+        order.fqn.as_deref().unwrap_or("").contains("order"),
+        "FQN should embed the package segment, got {:?}",
+        order.fqn
+    );
+}
+
+/// `extends` must be recorded as an `Extends` edge even when the parent (`BaseModel`) is unresolved.
+#[test]
+fn java_cf_ast_records_extends_edge() {
+    let root = synthetic_java_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic Java graph build should succeed");
+    };
+    let order = class_by_name(&b, "Order").expect("the Order class");
+    let edges = b
+        .store
+        .edges_of(order.id, EdgeDirection::Outgoing)
+        .expect("edges readable");
+    assert!(
+        edges.iter().any(|e| e.kind.as_str() == "Extends"),
+        "the `extends BaseModel` clause should be recorded as an Extends edge, got: {:?}",
+        edges
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `implements` must be recorded as an `Implements` edge. Java has no trait `use`, so unlike PHP there is no
+/// `UsesTrait` edge to assert here.
+#[test]
+fn java_cf_ast_records_implements_edge() {
+    let root = synthetic_java_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic Java graph build should succeed");
+    };
+    let order = class_by_name(&b, "Order").expect("the Order class");
+    let edges = b
+        .store
+        .edges_of(order.id, EdgeDirection::Outgoing)
+        .expect("edges readable");
+    assert!(
+        edges.iter().any(|e| e.kind.as_str() == "Implements"),
+        "the `implements Savable` clause should be recorded as an Implements edge, got: {:?}",
+        edges
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// JS / TS (NestJS): CfAst must surface classes, methods and call sites. The class FQN convention differs from
+/// PHP/Java: the frontend parser stores the **bare class name** (no module path), which this test pins.
+#[test]
+fn js_cf_ast_builds_nodes_and_resolves_fqn() {
+    let root = synthetic_js_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic JS graph build should succeed");
+    };
+
+    assert!(count(&b, NodeKind::CLASS) > 0, "CfAst should produce Class nodes");
+    assert!(count(&b, NodeKind::METHOD) > 0, "CfAst should produce Method nodes");
+    assert!(
+        count(&b, NodeKind::CALL_SITE) > 0,
+        "method calls should be refined into CallSite nodes, got {}",
+        count(&b, NodeKind::CALL_SITE)
+    );
+
+    // The frontend parser keeps the bare class name as the FQN (no module prefix).
+    let svc = class_by_name(&b, "OrderService").expect("the OrderService class should exist");
+    assert_eq!(svc.name, "OrderService");
+    assert!(
+        svc.fqn.as_deref().unwrap_or("").contains("OrderService"),
+        "the FQN must embed the class name, got {:?}",
+        svc.fqn
+    );
+}
+
+/// `extends` must be recorded as an `Extends` edge.
+#[test]
+fn js_cf_ast_records_extends_edge() {
+    let root = synthetic_js_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic JS graph build should succeed");
+    };
+    let svc = class_by_name(&b, "OrderService").expect("the OrderService class");
+    let edges = b
+        .store
+        .edges_of(svc.id, EdgeDirection::Outgoing)
+        .expect("edges readable");
+    assert!(
+        edges.iter().any(|e| e.kind.as_str() == "Extends"),
+        "the `extends BaseService` clause should be recorded as an Extends edge, got: {:?}",
+        edges
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `implements` must be recorded as an `Implements` edge (the NestJS norm is a class that *only* implements).
+#[test]
+fn js_cf_ast_records_implements_edge() {
+    let root = synthetic_js_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic JS graph build should succeed");
+    };
+    let svc = class_by_name(&b, "OrderService").expect("the OrderService class");
+    let edges = b
+        .store
+        .edges_of(svc.id, EdgeDirection::Outgoing)
+        .expect("edges readable");
+    assert!(
+        edges.iter().any(|e| e.kind.as_str() == "Implements"),
+        "the `implements OnModuleInit` clause should be recorded as an Implements edge, got: {:?}",
+        edges
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Rust: CfAst must surface structs (as `Class`), impl methods and call sites. Rust has **no `extends`** and no
+/// trait `use`; trait bounds show up only as `impl Trait for Type` -> an `Implements` edge.
+#[test]
+fn rust_cf_ast_builds_nodes_and_resolves_fqn() {
+    let root = synthetic_rust_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic Rust graph build should succeed");
+    };
+
+    assert!(count(&b, NodeKind::CLASS) > 0, "CfAst should produce Class nodes (structs)");
+    assert!(
+        count(&b, NodeKind::METHOD) > 0 || count(&b, NodeKind::FUNCTION) > 0,
+        "CfAst should produce Method/Function nodes"
+    );
+    assert!(
+        count(&b, NodeKind::CALL_SITE) > 0,
+        "method calls should be refined into CallSite nodes, got {}",
+        count(&b, NodeKind::CALL_SITE)
+    );
+
+    let order = class_by_name(&b, "Order").expect("the Order struct should exist as a Class node");
+    assert_eq!(order.name, "Order");
+    assert!(
+        order.fqn.as_deref().unwrap_or("").contains("Order"),
+        "the FQN must embed the type name, got {:?}",
+        order.fqn
+    );
+}
+
+/// `impl Savable for Order` must be recorded as an `Implements` edge — Rust's only inheritance-shaped relation.
+#[test]
+fn rust_cf_ast_records_trait_impl_edge() {
+    let root = synthetic_rust_root();
+    let Some(b) = common::graph_with_root(&root, ProjectConfig::default()) else {
+        panic!("the synthetic Rust graph build should succeed");
+    };
+    let order = class_by_name(&b, "Order").expect("the Order struct");
+    let edges = b
+        .store
+        .edges_of(order.id, EdgeDirection::Outgoing)
+        .expect("edges readable");
+    assert!(
+        edges.iter().any(|e| e.kind.as_str() == "Implements"),
+        "the `impl Savable for Order` clause should be recorded as an Implements edge, got: {:?}",
+        edges
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !edges.iter().any(|e| e.kind.as_str() == "Extends"),
+        "Rust has no `extends`; no Extends edge may be synthesised, got: {:?}",
+        edges
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect::<Vec<_>>()
     );
 }
