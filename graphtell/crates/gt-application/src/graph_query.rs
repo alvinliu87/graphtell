@@ -7,6 +7,7 @@ use gt_domain::model::{
     Annotation, Diagnostic, Edge, Node, NodeId, NodeKind, ProjectId, RULE_CODE_PREFIX,
     SymbolEntry,
 };
+use gt_domain::model::graph::CoverageReport;
 use gt_domain::port::{EdgeDirection, GraphStats, NodeFilter, Persistence};
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,12 @@ impl GraphQueryService {
 
     pub fn stats(&self, project_id: ProjectId) -> Result<GraphStats> {
         self.store.stats(project_id)
+    }
+
+    /// FKB completeness report: how much of each sub-project's call sites became semantic edges,
+    /// which callees are invisible, and which sub-projects have gap flags. Delegates to the store.
+    pub fn coverage(&self, project_id: ProjectId) -> Result<CoverageReport> {
+        self.store.coverage(project_id)
     }
 
     pub fn nodes(
@@ -324,6 +331,9 @@ mod tests {
             Ok(self.stats.clone())
         }
         fn count_nodes(&self, _: ProjectId, _: Option<&NodeKind>, _: Option<&str>) -> Result<u64> {
+            unimplemented!()
+        }
+        fn coverage(&self, _: ProjectId) -> Result<CoverageReport> {
             unimplemented!()
         }
         fn find_edge(&self, _: EdgeId) -> Result<Option<Edge>> { unimplemented!() }

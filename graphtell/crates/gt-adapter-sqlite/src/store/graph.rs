@@ -699,6 +699,225 @@ impl GraphQuery for SqliteStore {
         })
     }
 
+    fn coverage(&self, project_id: ProjectId) -> Result<CoverageReport> {
+        let conn = self.conn.lock().unwrap();
+
+        // A call site is "extracted by FKB" when its **enclosing method** contributes at least one
+        // *semantic* or *bridge* edge (the only edges a rule produces). The graph does not point the
+        // edge at the CallSite node itself — it points at the method that contains the call — so we scan
+        // every edge once to (a) collect the set of nodes that took part in a semantic/bridge edge and
+        // (b) record the `HasCallSite` mapping (method -> call site) used to credit a call site by its
+        // owner. Classification uses the engine's own `is_semantic_edge` / `is_bridge_edge` so FKB-
+        // declared edge kinds are covered automatically.
+        let mut edge_stmt = conn
+            .prepare("SELECT from_id, to_id, kind FROM edges WHERE project_id = ?1")
+            .map_err(DomainError::infra)?;
+        let edges = edge_stmt
+            .query_map(params![project_id.get()], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            })
+            .map_err(DomainError::infra)?
+            .collect::<std::result::Result<Vec<(i64, i64, String)>, _>>()
+            .map_err(DomainError::infra)?;
+
+        let mut covered_nodes: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut callsite_owner: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        for (from, to, kind) in &edges {
+            if gt_domain::model::kinds::is_semantic_edge(kind)
+                || gt_domain::model::kinds::is_bridge_edge(kind)
+            {
+                covered_nodes.insert(*from);
+                covered_nodes.insert(*to);
+            } else if kind == "HasCallSite" {
+                callsite_owner.insert(*to, *from);
+            }
+        }
+
+        // Load every CallSite node (dev/diagnostic command; acceptable to hold in memory).
+        let mut cs_stmt = conn
+            .prepare(
+                "SELECT id, sub_project_id, name, file_id, start_line \
+                 FROM nodes WHERE project_id = ?1 AND kind = 'CallSite'",
+            )
+            .map_err(DomainError::infra)?;
+        let call_sites = cs_stmt
+            .query_map(params![project_id.get()], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, i32>(4)?,
+                ))
+            })
+            .map_err(DomainError::infra)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DomainError::infra)?;
+
+        let mut file_paths: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        {
+            let mut fp_stmt = conn
+                .prepare("SELECT id, path FROM source_files WHERE project_id = ?1")
+                .map_err(DomainError::infra)?;
+            let rows = fp_stmt
+                .query_map(params![project_id.get()], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(DomainError::infra)?;
+            for r in rows {
+                let (id, path) = r.map_err(DomainError::infra)?;
+                file_paths.insert(id, path);
+            }
+        }
+
+        // Sub-projects — queried under the same lock (the mutex is not reentrant).
+        let mut subs: Vec<(i64, String, String, String, String)> = Vec::new();
+        {
+            let mut sp_stmt = conn
+                .prepare(
+                    "SELECT id, name, language, role, frameworks \
+                     FROM sub_projects WHERE project_id = ?1",
+                )
+                .map_err(DomainError::infra)?;
+            let rows = sp_stmt
+                .query_map(params![project_id.get()], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(DomainError::infra)?;
+            for r in rows {
+                subs.push(r.map_err(DomainError::infra)?);
+            }
+        }
+
+        // Per-sub accumulators.
+        let mut total: std::collections::HashMap<i64, u64> = std::collections::HashMap::new();
+        let mut covered: std::collections::HashMap<i64, u64> = std::collections::HashMap::new();
+        // Distinct-callee sampling of uncovered call sites, capped per sub-project.
+        const SAMPLE_CAP: usize = 25;
+        let mut samples: std::collections::HashMap<i64, (Vec<UncoveredCall>, std::collections::HashSet<String>)> =
+            std::collections::HashMap::new();
+
+        for (id, sub_opt, name, file_id, line) in call_sites {
+            let sub = sub_opt.unwrap_or(-1);
+            *total.entry(sub).or_insert(0) += 1;
+            // A call site counts as covered when its owner method took part in a semantic/bridge edge
+            // (or, rarely, the call site node itself did).
+            let is_covered = callsite_owner
+                .get(&id)
+                .map_or(false, |owner| covered_nodes.contains(owner))
+                || covered_nodes.contains(&id);
+            if is_covered {
+                *covered.entry(sub).or_insert(0) += 1;
+            } else if let Some(slot) = samples.get_mut(&sub) {
+                if slot.1.len() < SAMPLE_CAP && slot.1.insert(name.clone()) {
+                    slot.0.push(UncoveredCall {
+                        callee: name,
+                        file: file_id.and_then(|fid| file_paths.get(&fid).cloned()),
+                        line: line.max(0) as u32,
+                    });
+                }
+            } else {
+                let mut seen = std::collections::HashSet::new();
+                seen.insert(name.clone());
+                samples.insert(
+                    sub,
+                    (
+                        vec![UncoveredCall {
+                            callee: name,
+                            file: file_id.and_then(|fid| file_paths.get(&fid).cloned()),
+                            line: line.max(0) as u32,
+                        }],
+                        seen,
+                    ),
+                );
+            }
+        }
+
+        let mut sub_report = Vec::new();
+        let mut totals_calls = 0u64;
+        let mut totals_covered = 0u64;
+        let mut with_gaps = 0u64;
+        for (sid, name, language, role, frameworks_json) in subs {
+            let t = *total.get(&sid).unwrap_or(&0);
+            let c = *covered.get(&sid).unwrap_or(&0);
+            let ratio = if t == 0 { 1.0 } else { c as f64 / t as f64 };
+            let frameworks: Vec<String> =
+                serde_json::from_str(&frameworks_json).unwrap_or_default();
+            let mut flags = Vec::new();
+            if language.eq_ignore_ascii_case("unknown") {
+                flags.push("language_unknown".to_string());
+            }
+            if frameworks.is_empty() {
+                flags.push("no_framework".to_string());
+            }
+            if t >= 20 && ratio < 0.3 {
+                flags.push("low_coverage".to_string());
+            }
+            if !flags.is_empty() {
+                with_gaps += 1;
+            }
+            totals_calls += t;
+            totals_covered += c;
+            let (samp, _) = samples.remove(&sid).unwrap_or_default();
+            sub_report.push(SubCoverage {
+                sub_project_id: sid,
+                name,
+                language,
+                role,
+                frameworks,
+                total_calls: t,
+                covered_calls: c,
+                coverage_ratio: ratio,
+                flags,
+                uncovered_samples: samp,
+            });
+        }
+        // Any call sites with no sub-project (sub = -1): fold into a synthetic entry.
+        if let Some(t) = total.get(&-1) {
+            let c = covered.get(&-1).unwrap_or(&0);
+            let ratio = if *t == 0 { 1.0 } else { *c as f64 / *t as f64 };
+            let (samp, _) = samples.remove(&-1).unwrap_or_default();
+            totals_calls += t;
+            totals_covered += c;
+            with_gaps += 1;
+            sub_report.push(SubCoverage {
+                sub_project_id: -1,
+                name: "(unassigned)".to_string(),
+                language: "unknown".to_string(),
+                role: String::new(),
+                frameworks: vec![],
+                total_calls: *t,
+                covered_calls: *c,
+                coverage_ratio: ratio,
+                flags: vec!["no_framework".to_string()],
+                uncovered_samples: samp,
+            });
+        }
+
+        let ratio = if totals_calls == 0 {
+            1.0
+        } else {
+            totals_covered as f64 / totals_calls as f64
+        };
+        Ok(CoverageReport {
+            project_id: project_id.get(),
+            totals: CoverageTotals {
+                total_calls: totals_calls,
+                covered_calls: totals_covered,
+                coverage_ratio: ratio,
+                sub_projects: sub_report.len() as u64,
+                sub_projects_with_gaps: with_gaps,
+            },
+            sub_projects: sub_report,
+        })
+    }
+
     fn find_edge(&self, id: EdgeId) -> Result<Option<Edge>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(

@@ -17,7 +17,9 @@ use gt_domain::port::{
     DiagnosticSink, EdgeDirection, GraphQuery, GraphSink, GraphStats, NodeFilter, ProjectReader,
     ProjectWriter, RuleConfigStore, SymbolTableReader,
 };
-use gt_domain::model::graph::NodeSummary;
+use gt_domain::model::graph::{
+    CoverageReport, CoverageTotals, NodeSummary, SubCoverage, UncoveredCall,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use tracing::{debug, info, warn};
@@ -2742,6 +2744,111 @@ mod tests {
             s.get_rule_configs(p.id).unwrap().is_empty(),
             "a project with no rule configs must yield an empty map"
         );
+    }
+
+    /// `coverage` counts only call sites that carry a non-syntax edge (i.e. a rule fired on them).
+    /// `HasCallSite` / `Calls` are pure syntax and must NOT count as "extracted".
+    #[test]
+    fn coverage_distinguishes_extracted_from_invisible_call_sites() {
+        let s = store();
+        let conn = s.conn.lock().unwrap();
+        conn.execute("INSERT INTO projects (id, name, root_path) VALUES (1, 'p', '/p')", []).unwrap();
+        conn.execute(
+            "INSERT INTO sub_projects (id, project_id, name, root_path, language, role, detected_by, frameworks, facts) \
+             VALUES (1, 1, 'app', '/app', 'php', 'backend', 'composer.json', '[\"thinkphp\"]', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO source_files (id, project_id, sub_project_id, path, language, size_bytes, content_hash) \
+             VALUES (10, 1, 1, '/app/x.php', 'php', 0, 'h')",
+            [],
+        )
+        .unwrap();
+        // Covered call site: a semantic edge (ReadsCache) touches it.
+        conn.execute(
+            "INSERT INTO nodes (id, project_id, sub_project_id, kind, name, fqn, identity, file_id, \
+             start_line, end_line, start_byte, end_byte, language, phase, confidence, properties) \
+             VALUES (100, 1, 1, 'CallSite', 'Cache::get', NULL, NULL, 10, 10, 10, 0, 0, 'php', 'CfAst', 1.0, '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, project_id, sub_project_id, kind, name, fqn, identity, file_id, \
+             start_line, end_line, start_byte, end_byte, language, phase, confidence, properties) \
+             VALUES (200, 1, 1, 'Cache', 'token', NULL, NULL, NULL, 1, 1, 0, 0, 'php', 'Synthesize', 1.0, '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges (id, project_id, kind, from_id, to_id, phase, confidence, properties) \
+             VALUES (1, 1, 'ReadsCache', 100, 200, 'Synthesize', 1.0, '{}')",
+            [],
+        )
+        .unwrap();
+        // Invisible call site: only a pure-syntax HasCallSite edge.
+        conn.execute(
+            "INSERT INTO nodes (id, project_id, sub_project_id, kind, name, fqn, identity, file_id, \
+             start_line, end_line, start_byte, end_byte, language, phase, confidence, properties) \
+             VALUES (101, 1, 1, 'CallSite', 'Route::get', NULL, NULL, 10, 20, 20, 0, 0, 'php', 'CfAst', 1.0, '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, project_id, sub_project_id, kind, name, fqn, identity, file_id, \
+             start_line, end_line, start_byte, end_byte, language, phase, confidence, properties) \
+             VALUES (300, 1, 1, 'Function', 'f', NULL, NULL, 10, 5, 30, 0, 0, 'php', 'CfAst', 1.0, '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges (id, project_id, kind, from_id, to_id, phase, confidence, properties) \
+             VALUES (2, 1, 'HasCallSite', 300, 101, 'CfAst', 1.0, '{}')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let report = s.coverage(ProjectId(1)).unwrap();
+        assert_eq!(report.totals.total_calls, 2, "two call sites total");
+        assert_eq!(report.totals.covered_calls, 1, "only the one with a semantic edge is covered");
+        assert_eq!(report.totals.sub_projects_with_gaps, 0, "thinkphp+php carries no gap flags");
+        let sub = report.sub_projects.iter().find(|x| x.sub_project_id == 1).unwrap();
+        assert_eq!(sub.total_calls, 2);
+        assert_eq!(sub.covered_calls, 1);
+        assert!(sub.flags.is_empty(), "recognized framework + known language => no flags");
+        assert!(
+            sub.uncovered_samples.iter().any(|c| c.callee == "Route::get"),
+            "the invisible callee should surface in the sample"
+        );
+    }
+
+    /// A sub-project with an unknown language and no recognized framework must be flagged.
+    #[test]
+    fn coverage_flags_unknown_language_and_missing_framework() {
+        let s = store();
+        let conn = s.conn.lock().unwrap();
+        conn.execute("INSERT INTO projects (id, name, root_path) VALUES (2, 'p', '/p')", []).unwrap();
+        conn.execute(
+            "INSERT INTO sub_projects (id, project_id, name, root_path, language, role, detected_by, frameworks, facts) \
+             VALUES (2, 2, 'mystery', '/m', 'unknown', 'backend', 'unknown', '[]', '{}')",
+            [],
+        )
+        .unwrap();
+        // A lone call site with no edges at all.
+        conn.execute(
+            "INSERT INTO nodes (id, project_id, sub_project_id, kind, name, fqn, identity, file_id, \
+             start_line, end_line, start_byte, end_byte, language, phase, confidence, properties) \
+             VALUES (500, 2, 2, 'CallSite', 'doThing', NULL, NULL, NULL, 3, 3, 0, 0, 'unknown', 'CfAst', 1.0, '{}')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let report = s.coverage(ProjectId(2)).unwrap();
+        let sub = report.sub_projects.iter().find(|x| x.sub_project_id == 2).unwrap();
+        assert!(sub.flags.contains(&"language_unknown".to_string()));
+        assert!(sub.flags.contains(&"no_framework".to_string()));
     }
 }
 

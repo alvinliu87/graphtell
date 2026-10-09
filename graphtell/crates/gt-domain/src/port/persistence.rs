@@ -201,6 +201,9 @@ pub trait GraphQuery: Send + Sync {
     /// Fetch all source file paths in a project in one batch (`file_id -> path`).
     fn file_paths(&self, project_id: ProjectId) -> Result<HashMap<i64, String>>;
     fn stats(&self, project_id: ProjectId) -> Result<GraphStats>;
+    /// FKB completeness report: how much of each sub-project's call sites became semantic edges, and
+    /// which callees are invisible. See [`crate::model::graph::CoverageReport`].
+    fn coverage(&self, project_id: ProjectId) -> Result<crate::model::graph::CoverageReport>;
     /// Count nodes by "kind + which parties have evidence on them" (lighter than `query_nodes`, a `COUNT` only).
     /// The view layer uses it to compute candidate counts for perspectives with a side filter (such as the
     /// front-end local-storage / back-end cache split).

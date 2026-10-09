@@ -219,6 +219,7 @@ async fn project_scoped_routes_exist() {
         ("GET", format!("/api/projects/{id}")),
         ("GET", format!("/api/projects/{id}/sub-projects")),
         ("GET", format!("/api/projects/{id}/stats")),
+        ("GET", format!("/api/projects/{id}/coverage")),
         ("GET", format!("/api/projects/{id}/nodes")),
         ("GET", format!("/api/projects/{id}/diagnostics")),
         ("GET", format!("/api/projects/{id}/diagnostics/summary")),

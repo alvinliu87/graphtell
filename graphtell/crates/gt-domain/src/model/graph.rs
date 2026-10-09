@@ -340,6 +340,59 @@ pub enum Severity {
     Critical,
 }
 
+/// One call site that the graph's FKB rules never turned into a semantic edge.
+///
+/// The `callee` is the call site node's name (the called symbol as parsed); `file` / `line` point back
+/// to the source so an LLM (or a human) can write the missing FKB rule without re-reading the whole repo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UncoveredCall {
+    pub callee: String,
+    pub file: Option<String>,
+    pub line: u32,
+}
+
+/// Per-sub-project FKB coverage: how much of its call sites actually became semantic edges.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubCoverage {
+    pub sub_project_id: i64,
+    pub name: String,
+    pub language: String,
+    /// Sub-project role, e.g. `backend` / `frontend:admin`.
+    pub role: String,
+    /// Frameworks recognized by the loaded FKB (empty means "no FKB claimed this stack").
+    pub frameworks: Vec<String>,
+    pub total_calls: u64,
+    pub covered_calls: u64,
+    /// `covered_calls / total_calls`, in `0.0..=1.0` (`1.0` when there are no call sites).
+    pub coverage_ratio: f64,
+    /// Gap flags: `language_unknown`, `no_framework`, `low_coverage`.
+    pub flags: Vec<String>,
+    /// A small sample of call sites that no rule extracted (capped, for diagnosis only).
+    pub uncovered_samples: Vec<UncoveredCall>,
+}
+
+/// Project-wide totals for the coverage report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverageTotals {
+    pub total_calls: u64,
+    pub covered_calls: u64,
+    pub coverage_ratio: f64,
+    pub sub_projects: u64,
+    /// How many sub-projects carry at least one gap flag.
+    pub sub_projects_with_gaps: u64,
+}
+
+/// FKB completeness report: "how much of the code the loaded knowledge base actually sees".
+///
+/// This is the machine-readable fuel for the "let the LLM fill the FKB gaps" loop — it tells you
+/// *which* sub-project and *which* callees are invisible, instead of guessing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverageReport {
+    pub project_id: i64,
+    pub totals: CoverageTotals,
+    pub sub_projects: Vec<SubCoverage>,
+}
+
 /// Statistics for one pipeline run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PhaseReport {

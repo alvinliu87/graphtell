@@ -20,7 +20,8 @@ use gt_application::{
 };
 use gt_domain::error::DomainError;
 use gt_domain::model::{
-    CheckRule, NodeId, ProjectId, ProjectRuleConfig, RuleConfigPatch, SubProjectId, Violation,
+    graph::CoverageReport, CheckRule, NodeId, ProjectId, ProjectRuleConfig, RuleConfigPatch,
+    SubProjectId, Violation,
 };
 use gt_domain::port::{
     EdgeDirection, ParserRegistry, Persistence, RuleProvider, ViewRegistryProvider,
@@ -152,6 +153,7 @@ pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router
         // Graph queries
         .route("/api/projects/{id}/sub-projects", get(list_sub_projects))
         .route("/api/projects/{id}/stats", get(stats))
+        .route("/api/projects/{id}/coverage", get(coverage))
         .route("/api/projects/{id}/nodes", get(query_nodes))
         .route("/api/projects/{id}/diagnostics", get(diagnostics))
         .route("/api/projects/{id}/diagnostics/summary", get(diagnostics_summary))
@@ -418,6 +420,18 @@ async fn stats(
 ) -> Json<ApiResponse<gt_domain::port::GraphStats>> {
     match state.graphs.stats(ProjectId(id)) {
         Ok(s) => Json(ApiResponse::success(s)),
+        Err(e) => Json(ApiResponse::failure(e.to_string())),
+    }
+}
+
+/// FKB completeness report: how much of each sub-project's call sites became semantic edges, which
+/// callees are invisible, and which sub-projects carry gap flags. Mirrors `graphtell coverage`.
+async fn coverage(
+    State(state): State<Shared>,
+    Path(id): Path<i64>,
+) -> Json<ApiResponse<CoverageReport>> {
+    match state.graphs.coverage(ProjectId(id)) {
+        Ok(r) => Json(ApiResponse::success(r)),
         Err(e) => Json(ApiResponse::failure(e.to_string())),
     }
 }

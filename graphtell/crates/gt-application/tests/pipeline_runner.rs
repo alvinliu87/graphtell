@@ -36,7 +36,7 @@ use gt_domain::model::{
     NewSubProject, Node, NodeId, NodeKind, Project, ProjectConfig, ProjectId, ProjectPatch,
     ProjectRuleConfig, ProjectStatus, SourceFile, SubProject, SubProjectId, SymbolEntry,
 };
-use gt_domain::model::graph::NodeSummary;
+use gt_domain::model::graph::{CoverageReport, NodeSummary};
 use gt_domain::port::persistence::GraphStats;
 use gt_domain::port::{
     DefaultResourceAdapterRegistry, DefaultTechStackRegistry, DiagnosticSink, EdgeDirection,
@@ -482,6 +482,9 @@ impl GraphQuery for FailRuleConfigs {
         side: Option<&str>,
     ) -> Result<u64> {
         self.inner.count_nodes(project_id, kind, side)
+    }
+    fn coverage(&self, project_id: ProjectId) -> Result<CoverageReport> {
+        self.inner.coverage(project_id)
     }
     fn find_edge(&self, id: EdgeId) -> Result<Option<Edge>> {
         self.inner.find_edge(id)

@@ -18,6 +18,7 @@ use gt_app::{AppConfig, Container};
 use gt_domain::model::fkb::Action;
 use gt_domain::model::kinds::{EdgeKind, NodeKind};
 use gt_domain::model::{NewProject, ProjectId};
+use gt_domain::model::graph::CoverageReport;
 use gt_domain::port::{DiagnosticSink, GraphQuery, NodeFilter, ProjectReader};
 
 #[derive(Debug, Parser)]
@@ -79,6 +80,16 @@ enum Command {
     Stats {
         #[arg(long)]
         project: i64,
+    },
+    /// Show FKB coverage: how much of the code the loaded knowledge base actually extracts, which
+    /// callees are invisible, and which sub-projects carry gap flags. JSON mode is meant for feeding
+    /// an LLM gap-analysis / FKB-authoring loop.
+    Coverage {
+        #[arg(long)]
+        project: i64,
+        /// Output the full report as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// List loaded check rules.
     Rules,
@@ -282,6 +293,15 @@ fn main() -> anyhow::Result<()> {
                         println!("  [{}] {} {}", d.phase, d.code, d.message);
                     }
                 }
+                Command::Coverage { project, json } => {
+                    let id = gt_domain::model::ProjectId(project);
+                    let report = container.store.coverage(id)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                        return Ok(());
+                    }
+                    print_coverage(&report);
+                }
                 Command::Rules => {
                     for r in container.rule_service().rules() {
                         println!(
@@ -467,6 +487,60 @@ fn severity_name(s: gt_domain::model::Severity) -> &'static str {
         gt_domain::model::Severity::Error => "error",
         gt_domain::model::Severity::Warning => "warning",
         gt_domain::model::Severity::Info => "info",
+    }
+}
+
+fn print_coverage(report: &CoverageReport) {
+    let t = &report.totals;
+    println!("FKB coverage for project #{}", report.project_id);
+    println!(
+        "  total call sites: {}   extracted: {}   coverage: {:.1}%",
+        t.total_calls,
+        t.covered_calls,
+        t.coverage_ratio * 100.0
+    );
+    println!(
+        "  sub-projects: {}   with gaps: {}",
+        t.sub_projects, t.sub_projects_with_gaps
+    );
+    if t.sub_projects_with_gaps > 0 {
+        println!();
+        println!("GAPS — sub-projects the loaded FKB does not fully see:");
+    }
+    for s in &report.sub_projects {
+        if s.flags.is_empty() {
+            continue;
+        }
+        let fw = if s.frameworks.is_empty() {
+            "-".to_string()
+        } else {
+            s.frameworks.join(", ")
+        };
+        let flags = if s.flags.is_empty() {
+            "-".to_string()
+        } else {
+            s.flags.join(", ")
+        };
+        println!(
+            "  [{}] {}  frameworks: {}   calls {}/{} ({:.0}%)   flags: {}",
+            s.role,
+            s.language,
+            fw,
+            s.covered_calls,
+            s.total_calls,
+            s.coverage_ratio * 100.0,
+            flags
+        );
+        if !s.uncovered_samples.is_empty() {
+            println!("     invisible callees (sample of what no rule extracted):");
+            for c in &s.uncovered_samples {
+                let loc = match &c.file {
+                    Some(f) => format!("{}:{}", f, c.line),
+                    None => "(unknown)".to_string(),
+                };
+                println!("       - {}   ({})", c.callee, loc);
+            }
+        }
     }
 }
 
