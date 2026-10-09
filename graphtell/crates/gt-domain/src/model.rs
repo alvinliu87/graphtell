@@ -49,5 +49,5 @@ pub use rules::{
 
 pub use syntax::{
     CallSiteFact, ConfigEntryFact, Declaration, FactValue, FieldTypeFact, ImportFact,
-    InheritanceFact, NamespacePolicy, SyntaxFacts,
+    InheritanceFact, NamespacePolicy, SyntaxFacts, TemplateBindingFact,
 };

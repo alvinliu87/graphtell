@@ -31,7 +31,7 @@ use std::cell::RefCell;
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
     CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
-    InheritanceFact, Language, NodeKind, SyntaxFacts,
+    InheritanceFact, Language, NodeKind, Span, SyntaxFacts, TemplateBindingFact,
 };
 use gt_domain::port::LanguageParser;
 use serde_json::json;
@@ -140,6 +140,53 @@ impl LanguageParser for JsFrontendParser {
         let root = tree.root_node();
         let file_owner = ctx.path;
         walk(root, &mut ctx, file_owner, None);
+        // Vue SFC: the `<template>` block lives outside the `<script>` syntax tree, so it is parsed
+        // separately into template bindings (component refs / event / prop).
+        if lower.ends_with(".vue") {
+            if let Some(tpl) = extract_vue_template(source) {
+                let owner = ctx.path;
+                collect_vue_template_bindings(&tpl, &mut ctx, owner);
+            }
+        }
+        // Mirror template bindings into the classical fact kinds so CfAst / P7 link them into the graph
+        // without special-casing the front-end:
+        // * `event`        -> a `CallSite` (the template invokes the handler; P7 resolves it to the component
+        //   method, which may itself call an `HttpContract` — that is the front-end → back-end chain).
+        // * `component_ref` -> an `Import` (the by_name index resolves it to the component declaration, modelling
+        //   a `RendersComponent` relationship without a new kernel edge kind).
+        let mut mirrored_calls: Vec<CallSiteFact> = Vec::new();
+        let mut mirrored_imports: Vec<ImportFact> = Vec::new();
+        for tb in &facts.template_bindings {
+            match tb.kind.as_str() {
+                "event" => {
+                    if let Some(h) = &tb.handler {
+                        mirrored_calls.push(CallSiteFact {
+                            owner_fqn: tb.owner_fqn.clone(),
+                            owner_class: None,
+                            callee_text: h.clone(),
+                            snippet: None,
+                            receiver: None,
+                            method: None,
+                            args: Vec::new(),
+                            span: tb.span.clone(),
+                            db_table: None,
+                            in_loop: false,
+                            entity: None,
+                        });
+                    }
+                }
+                "component_ref" => {
+                    mirrored_imports.push(ImportFact {
+                        name: tb.name.clone(),
+                        alias: None,
+                        span: tb.span.clone(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        facts.call_sites.extend(mirrored_calls);
+        facts.imports.extend(mirrored_imports);
         Ok(facts)
     }
 }
@@ -204,6 +251,11 @@ fn walk(node: Node, ctx: &mut Ctx, owner: &str, class: Option<&str>) {
     for child in node.named_children(&mut c) {
         match child.kind() {
             "decorator" => pending.push(child),
+            // React / Preact JSX: `<MyButton onClick={handleClick} />` carries a component reference and event
+            // bindings. Collected as `TemplateBindingFact`s (isomorphic to Vue / Angular template bindings).
+            "jsx_self_closing_element" | "jsx_opening_element" => {
+                collect_jsx_element(child, ctx, owner, class);
+            }
             "import_statement" => collect_imports(child, ctx),
             "export_statement" => {
                 // `export default { ... }`: only an **object literal** counts as config (a function / identifier does not).
@@ -553,6 +605,15 @@ fn collect_decorator(node: Node, ctx: &mut Ctx, owner: &str) {
         if let Some(last) = ctx.facts.call_sites.last_mut() {
             last.callee_text = format!("@{}", last.callee_text);
         }
+        // Angular inline template: `@Component({ template: \`...\` })` carries the HTML template in the
+        // decorator source. External `templateUrl` cannot be read (single-file parse), so only inline
+        // templates are parsed into bindings.
+        let dec_src = text(node, ctx.src);
+        if dec_src.starts_with("@Component") {
+            if let Some(tpl) = extract_angular_inline_template(dec_src) {
+                collect_angular_template_bindings(&tpl, ctx, owner);
+            }
+        }
         return;
     }
     let t = text(inner, ctx.src).to_string();
@@ -572,6 +633,177 @@ fn collect_decorator(node: Node, ctx: &mut Ctx, owner: &str) {
         in_loop: false,
         entity: None,
     });
+}
+
+/// First identifier in an expression that is **not** `this`, used to recover a JSX / template event-handler
+/// name from `{ handleClick }` / `this.handleClick` / `onSubmit(user)` / `() => doX()`. A bare `this` is skipped
+/// so `this.handleClick` yields `handleClick`, never `this`.
+fn first_handler_identifier(s: &str) -> Option<String> {
+    let mut cur_start: Option<usize> = None;
+    for (i, b) in s.bytes().enumerate() {
+        let is_id = b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+        if is_id {
+            if cur_start.is_none() {
+                cur_start = Some(i);
+            }
+        } else if let Some(st) = cur_start {
+            let id = &s[st..i];
+            if id != "this" {
+                return Some(id.to_string());
+            }
+            cur_start = None;
+        }
+    }
+    if let Some(st) = cur_start {
+        let id = &s[st..];
+        if id != "this" {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+/// React / Preact JSX element: `<MyButton onClick={handleClick} />` carries a **component reference**
+/// (`MyButton`, PascalCase) and **event bindings** (`onClick={handleClick}` -> handler `handleClick`).
+fn collect_jsx_element(node: Node, ctx: &mut Ctx, owner: &str, _class: Option<&str>) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let name = text(name_node, ctx.src);
+        // The last dotted segment (`app.foo` -> `foo`); a leading-uppercase name is a component, lowercase is
+        // a native HTML tag (skip).
+        let last = name.rsplit('.').next().unwrap_or(name);
+        if !last.is_empty() && last.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            ctx.facts.template_bindings.push(TemplateBindingFact {
+                kind: "component_ref".to_string(),
+                name: last.to_string(),
+                handler: None,
+                owner_fqn: owner.to_string(),
+                span: span_of(name_node, ctx.src),
+            });
+        }
+    }
+    let mut c = node.walk();
+    for attr in node.named_children(&mut c) {
+        if attr.kind() != "jsx_attribute" {
+            continue;
+        }
+        // tree-sitter stores the attribute name / value as positional named children (no `name` field).
+        // The name node is a `property_identifier` (e.g. `onClick`); we only need its text.
+        let Some(name_node) = attr.named_child(0) else { continue };
+        let aname = text(name_node, ctx.src);
+        let Some(rest) = aname.strip_prefix("on") else { continue };
+        // `on` alone, or a lowercase 2nd char (`online`), is not an event handler.
+        if rest.chars().next().map(|ch| !ch.is_uppercase()).unwrap_or(true) {
+            continue;
+        }
+        let Some(value) = attr.named_child(1) else { continue };
+        // `value` is either a bare `jsx_expression` (`{ handleClick }`) or a `jsx_attribute_value`
+        // wrapper whose child is the `jsx_expression` / `string`. A plain string attribute
+        // (`onClick="noop"`) is not a handler binding.
+        let expr = if value.kind() == "jsx_attribute_value" {
+            match value.named_child(0) {
+                Some(n) => n,
+                None => continue,
+            }
+        } else if value.kind() == "jsx_expression" {
+            value
+        } else {
+            continue;
+        };
+        if expr.kind() != "jsx_expression" {
+            continue;
+        }
+        let handler = first_handler_identifier(
+            text(expr, ctx.src).trim_matches(|c| c == '{' || c == '}'),
+        );
+        ctx.facts.template_bindings.push(TemplateBindingFact {
+            kind: "event".to_string(),
+            // Normalise to the lower-case DOM event name (`onClick` -> `click`) so React / Vue (`@click`) /
+            // Angular (`(click)`) bindings share one key.
+            name: rest.to_ascii_lowercase(),
+            handler,
+            owner_fqn: owner.to_string(),
+            span: span_of(attr, ctx.src),
+        });
+    }
+}
+
+/// Vue `<template>` (parsed as text, outside the `<script>` syntax tree): component references (`<HelloWorld>`),
+/// event bindings (`@click="onX"` / `v-on:click="onX"`), and prop bindings (`:user="u"` / `v-bind:user="u"`).
+fn collect_vue_template_bindings(tpl: &str, ctx: &mut Ctx, owner: &str) {
+    // Vue built-ins (PascalCase + kebab) are excluded so they are not mistaken for project components.
+    const VUE_BUILTINS: &[&str] = &[
+        "Transition", "TransitionGroup", "KeepAlive", "Teleport", "Suspense", "RouterView",
+        "RouterLink", "Component", "Slot",
+    ];
+    const VUE_KEBAB_BUILTINS: &[&str] = &[
+        "router-view", "router-link", "transition-group", "keep-alive", "teleport", "suspense", "slot",
+    ];
+    for m in regex_vue_component().captures_iter(tpl) {
+        let name = &m[1];
+        if VUE_BUILTINS.contains(&name) || VUE_KEBAB_BUILTINS.contains(&name) {
+            continue;
+        }
+        ctx.facts.template_bindings.push(TemplateBindingFact {
+            kind: "component_ref".to_string(),
+            name: name.to_string(),
+            handler: None,
+            owner_fqn: owner.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_vue_event().captures_iter(tpl) {
+        let event = m[1].split('.').next().unwrap_or(&m[1]);
+        let handler = first_handler_identifier(&m[2]);
+        ctx.facts.template_bindings.push(TemplateBindingFact {
+            kind: "event".to_string(),
+            name: event.to_string(),
+            handler,
+            owner_fqn: owner.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_vue_prop().captures_iter(tpl) {
+        ctx.facts.template_bindings.push(TemplateBindingFact {
+            kind: "prop".to_string(),
+            name: m[1].to_string(),
+            handler: Some(m[2].to_string()),
+            owner_fqn: owner.to_string(),
+            span: Span::default(),
+        });
+    }
+}
+
+/// Angular inline template (parsed as text): component references (`<app-hello>`), event bindings
+/// (`(click)="onX()"`), and prop bindings (`[user]="u"`).
+fn collect_angular_template_bindings(tpl: &str, ctx: &mut Ctx, owner: &str) {
+    for m in regex_angular_component().captures_iter(tpl) {
+        ctx.facts.template_bindings.push(TemplateBindingFact {
+            kind: "component_ref".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: owner.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_angular_event().captures_iter(tpl) {
+        let handler = first_handler_identifier(&m[2]);
+        ctx.facts.template_bindings.push(TemplateBindingFact {
+            kind: "event".to_string(),
+            name: m[1].to_string(),
+            handler,
+            owner_fqn: owner.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_angular_prop().captures_iter(tpl) {
+        ctx.facts.template_bindings.push(TemplateBindingFact {
+            kind: "prop".to_string(),
+            name: m[1].to_string(),
+            handler: Some(m[2].to_string()),
+            owner_fqn: owner.to_string(),
+            span: Span::default(),
+        });
+    }
 }
 
 /// Attach every decorator among a node's **direct children** to `owner`.
@@ -1682,5 +1914,258 @@ mod tests {
         assert_eq!(d.method.as_deref(), Some("Injectable"), "the decorator name is also the method field");
         assert!(d.args.is_empty(), "no argument list ⇒ no arguments, got: {:?}", d.args);
         assert_eq!(d.owner_class, None, "the bare form records no owner_class (the call form does)");
+    }
+
+    /// React / Preact JSX: `<MyButton onClick={handleClick} />` yields a `component_ref` binding (PascalCase
+    /// tag `MyButton`) and an `event` binding (`onClick` -> handler `handleClick`). A native HTML tag (`div` /
+    /// `Plain`) and a string-literal `onClick="noop"` must NOT become bindings.
+    #[test]
+    fn react_jsx_template_yields_component_ref_and_event_binding() {
+        let src = r#"
+          export function App() {
+            return (
+              <div>
+                <MyButton onClick={handleClick} />
+                <Other onSend={this.onSend} />
+                <span onClick="noop" />
+              </div>
+            );
+          }
+        "#;
+        let facts = JsFrontendParser::new().unwrap().parse("App.tsx", src).unwrap();
+        let comps: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "component_ref")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(comps.contains(&"MyButton"), "a PascalCase tag is a component ref: {comps:?}");
+        assert!(comps.contains(&"Other"), "a second PascalCase tag is a component ref: {comps:?}");
+        assert!(
+            !comps.contains(&"span"),
+            "a lowercase tag is a native element, not a component: {comps:?}"
+        );
+
+        let events: Vec<(&str, &str)> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "event")
+            .map(|b| (b.name.as_str(), b.handler.as_deref().unwrap_or("")))
+            .collect();
+        assert!(
+            events.iter().any(|(e, h)| *e == "click" && *h == "handleClick"),
+            "onClick={{handleClick}} -> event click / handler handleClick: {events:?}"
+        );
+        assert!(
+            events.iter().any(|(e, h)| *e == "send" && *h == "onSend"),
+            "onClick={{this.onSend}} -> handler onSend (this stripped): {events:?}"
+        );
+        assert!(
+            !events.iter().any(|(e, _)| *e == "noop"),
+            "a string-literal onClick is not a handler binding: {events:?}"
+        );
+    }
+
+    /// Vue SFC: the `<template>` block (outside the `<script>` tree) yields component refs, event bindings
+    /// (`@click="onX"` / `v-on:click="onX"`) and prop bindings (`:user="u"`), with built-ins (`RouterLink`)
+    /// excluded.
+    #[test]
+    fn vue_template_yields_component_ref_event_and_prop_bindings() {
+        let src = r#"
+          <template>
+            <div>
+              <HelloWorld :msg="hello" @click="onClick" />
+              <RouterLink :to="path" />
+              <Child v-on:submit="onSubmit" />
+            </div>
+          </template>
+          <script>
+            export default { methods: { onClick() {}, onSubmit() {} } };
+          </script>
+        "#;
+        let facts = JsFrontendParser::new().unwrap().parse("Hello.vue", src).unwrap();
+        let comps: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "component_ref")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(comps.contains(&"HelloWorld"), "PascalCase SFC tag is a component ref: {comps:?}");
+        assert!(comps.contains(&"Child"), "a second PascalCase tag is a component ref: {comps:?}");
+        assert!(
+            !comps.contains(&"RouterLink"),
+            "a Vue built-in must be excluded: {comps:?}"
+        );
+
+        let events: Vec<(&str, &str)> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "event")
+            .map(|b| (b.name.as_str(), b.handler.as_deref().unwrap_or("")))
+            .collect();
+        assert!(
+            events.iter().any(|(e, h)| *e == "click" && *h == "onClick"),
+            "@click=\"onClick\" -> event click / handler onClick: {events:?}"
+        );
+        assert!(
+            events.iter().any(|(e, h)| *e == "submit" && *h == "onSubmit"),
+            "v-on:submit=\"onSubmit\" -> event submit / handler onSubmit: {events:?}"
+        );
+
+        let props: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "prop")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(props.contains(&"msg"), ":msg=\"hello\" -> prop msg: {props:?}");
+    }
+
+    /// React JSX event names are case-sensitive: `onClick` (on + uppercase) binds, but `onclick` (all
+    /// lowercase) and `online` (on + lowercase) must NOT. A string-literal event value is also ignored.
+    #[test]
+    fn react_jsx_event_is_case_sensitive() {
+        let src = r#"
+          export function App() {
+            return (
+              <div>
+                <MyButton onClick={go} />
+                <Other onclick="x" />
+                <Widget online="y" />
+              </div>
+            );
+          }
+        "#;
+        let facts = JsFrontendParser::new().unwrap().parse("App.tsx", src).unwrap();
+        let events: Vec<(&str, &str)> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "event")
+            .map(|b| (b.name.as_str(), b.handler.as_deref().unwrap_or("")))
+            .collect();
+        assert!(
+            events.iter().any(|(e, h)| *e == "click" && *h == "go"),
+            "onClick={{go}} binds to click/go: {events:?}"
+        );
+        // `onclick` is lowercase after the `on` prefix -> the binding is skipped entirely (no handler `x`).
+        assert!(
+            !events.iter().any(|(_, h)| *h == "x"),
+            "onclick (lowercase) must NOT bind: {events:?}"
+        );
+        assert!(
+            events.iter().all(|(e, _)| *e != "line"),
+            "online must NOT bind: {events:?}"
+        );
+    }
+
+    /// Vue SFC: kebab-case components (`<user-card>`) and event/prop modifiers (`@click.prevent`) are captured;
+    /// the modifier is stripped so the event name stays the canonical `click`.
+    #[test]
+    fn vue_template_kebab_component_and_modifiers() {
+        let src = r#"
+          <template>
+            <user-card :name="n" @click.prevent="onCardClick" />
+          </template>
+          <script>
+            export default { methods: { onCardClick() {} } };
+          </script>
+        "#;
+        let facts = JsFrontendParser::new().unwrap().parse("Card.vue", src).unwrap();
+        let comps: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "component_ref")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(comps.contains(&"user-card"), "kebab component is a component ref: {comps:?}");
+
+        let events: Vec<(&str, &str)> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "event")
+            .map(|b| (b.name.as_str(), b.handler.as_deref().unwrap_or("")))
+            .collect();
+        assert!(
+            events.iter().any(|(e, h)| *e == "click" && *h == "onCardClick"),
+            "@click.prevent -> event click / handler onCardClick: {events:?}"
+        );
+
+        let props: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "prop")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(props.contains(&"name"), ":name -> prop name: {props:?}");
+    }
+
+    /// Angular inline template: `@Component({ template: \`...\` })` yields component refs (`<app-hello>`),
+    /// event bindings (`(click)="onSave()"`), and prop bindings (`[user]="user"`). External `templateUrl` is
+    /// intentionally NOT parsed (parse is single-file, so the sibling `.html` cannot be read).
+    #[test]
+    fn angular_inline_template_yields_component_ref_event_and_prop_bindings() {
+        let src = r#"
+          @Component({
+            selector: 'app-root',
+            template: `<div>
+              <app-hello [user]="user" (click)="onHello()"></app-hello>
+              <app-footer (submit)="onSubmit()"></app-footer>
+            </div>`,
+          })
+          export class AppComponent {
+            user = 'x';
+            onHello() {}
+            onSubmit() {}
+          }
+        "#;
+        let facts = JsFrontendParser::new().unwrap().parse("app.component.ts", src).unwrap();
+        let comps: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "component_ref")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(comps.contains(&"app-hello"), "an app- prefixed tag is a component ref: {comps:?}");
+        assert!(
+            comps.contains(&"app-footer"),
+            "a second app- prefixed tag is a component ref: {comps:?}"
+        );
+
+        let events: Vec<(&str, &str)> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "event")
+            .map(|b| (b.name.as_str(), b.handler.as_deref().unwrap_or("")))
+            .collect();
+        assert!(
+            events.iter().any(|(e, h)| *e == "click" && *h == "onHello"),
+            "(click)=\"onHello()\" -> event click / handler onHello: {events:?}"
+        );
+        assert!(
+            events.iter().any(|(e, h)| *e == "submit" && *h == "onSubmit"),
+            "(submit)=\"onSubmit()\" -> event submit / handler onSubmit: {events:?}"
+        );
+
+        let props: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "prop")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(props.contains(&"user"), "[user]=\"user\" -> prop user: {props:?}");
+
+        // Negative: a `templateUrl` (external file) must NOT yield bindings.
+        let ext = JsFrontendParser::new()
+            .unwrap()
+            .parse(
+                "x.component.ts",
+                "@Component({ selector: 'app-x', templateUrl: './x.html' })\nexport class X {}",
+            )
+            .unwrap();
+        assert!(
+            ext.template_bindings.is_empty(),
+            "templateUrl (external) must not be parsed: {:?}",
+            ext.template_bindings
+        );
     }
 }

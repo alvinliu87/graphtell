@@ -51,6 +51,11 @@ pub struct SyntaxFacts {
     /// 40 entries were exactly that).
     #[serde(default)]
     pub variable_assignments: Vec<VariableAssignFact>,
+    /// Front-end template bindings (Vue `<template>` / React JSX / Angular inline template): component
+    /// references, event bindings and prop bindings, normalised into one structured fact per binding.
+    /// `serde(default)` keeps historical / partial facts (which predate this field) deserialisable.
+    #[serde(default)]
+    pub template_bindings: Vec<TemplateBindingFact>,
 }
 
 /// One local variable assignment.
@@ -64,6 +69,32 @@ pub struct VariableAssignFact {
     pub owner_fqn: String,
     /// File (filled in from `file.path` during the `cf_ast` phase, same as `SignCompareFact`).
     pub file: String,
+    pub span: Span,
+}
+
+/// A binding discovered in a front-end template (Vue `<template>` / React JSX / Angular inline template).
+///
+/// The three frameworks express the same two ideas with different syntax, so the parser normalises them into
+/// one structured fact the CfAst / Synthesize phases can consume without re-parsing template text:
+/// * `component_ref` — `<Hello />` (Vue / React) / `<app-hello>` (Angular): "this template renders that component".
+/// * `event`        — `@click="onX"` (Vue) / `onClick={onX}` (React) / `(click)="onX()"` (Angular): "this user
+///   action calls that handler".
+/// * `prop`         — `:user="u"` (Vue) / `user={u}` (React) / `[user]="u"` (Angular): data flowing into a child.
+///
+/// `event` bindings are consumed by `cf_ast` as `CallSite` nodes (owner = the enclosing component) so the
+/// existing P7 call-resolution links the handler name to the component method, and from there to an
+/// `HttpContract` — the front-end → back-end chain is built with no new kernel machinery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateBindingFact {
+    /// `component_ref` | `event` | `prop`.
+    pub kind: String,
+    /// Component tag (component_ref) / event name (event, e.g. `click`) / prop name (prop, e.g. `user`).
+    pub name: String,
+    /// `event`: the handler identifier written in the binding (`onX` / `handleClick`). `prop`: the expression
+    /// text (best-effort). `None` for `component_ref`.
+    pub handler: Option<String>,
+    /// FQN / path of the component that owns this template (the enclosing declaration or file path).
+    pub owner_fqn: String,
     pub span: Span,
 }
 
@@ -742,6 +773,7 @@ mod tests {
                 file: "app/services/Upgrade.php".into(),
                 span,
             }],
+            template_bindings: vec![],
         };
 
         let back: SyntaxFacts = round_trip(&facts);

@@ -305,3 +305,97 @@ fn axios_member_call_with_variable_url_does_not_fabricate_literal() {
     assert_eq!(method, Some("GET"), "the member name still becomes the HTTP method");
     assert_eq!(url, None, "a variable URL must not be fabricated into a literal");
 }
+
+/// Integration (registry path): React JSX template bindings surface as `template_bindings` AND are mirrored
+/// into `call_sites` (event) / `imports` (component ref) so CfAst / P7 wire them into the graph.
+#[test]
+fn react_jsx_template_bindings_mirror_into_call_sites_and_imports() {
+    let facts = parse(
+        "App.tsx",
+        "export function App(){ return <MyButton onClick={handleClick} />; }",
+    );
+    assert!(
+        facts.template_bindings.iter().any(|b| b.kind == "component_ref" && b.name == "MyButton"),
+        "component ref fact present"
+    );
+    assert!(
+        facts
+            .template_bindings
+            .iter()
+            .any(|b| b.kind == "event" && b.name == "click" && b.handler.as_deref() == Some("handleClick")),
+        "event fact present (click -> handleClick)"
+    );
+    assert!(
+        facts.call_sites.iter().any(|c| c.callee_text == "handleClick"),
+        "event mirrored into a CallSite (owner = component)"
+    );
+    assert!(
+        facts.imports.iter().any(|i| i.name == "MyButton"),
+        "component ref mirrored into an Import (resolves to the component declaration via by_name)"
+    );
+}
+
+/// Integration (registry path): Vue SFC `<template>` bindings (outside the `<script>` tree) surface and mirror.
+#[test]
+fn vue_template_bindings_mirror_into_call_sites_and_imports() {
+    let facts = parse(
+        "Hello.vue",
+        "<template><HelloWorld @click=\"onClick\" /></template>\n<script>export default { methods: { onClick(){} } };</script>",
+    );
+    assert!(
+        facts.template_bindings.iter().any(|b| b.kind == "component_ref" && b.name == "HelloWorld"),
+        "component ref fact present"
+    );
+    assert!(
+        facts
+            .template_bindings
+            .iter()
+            .any(|b| b.kind == "event" && b.name == "click" && b.handler.as_deref() == Some("onClick")),
+        "event fact present (@click -> onClick)"
+    );
+    assert!(
+        facts.call_sites.iter().any(|c| c.callee_text == "onClick"),
+        "event mirrored into a CallSite"
+    );
+    assert!(
+        facts.imports.iter().any(|i| i.name == "HelloWorld"),
+        "component ref mirrored into an Import"
+    );
+}
+
+/// Integration (registry path): Angular inline template (`@Component({ template: \`...\` })`) bindings surface
+/// and mirror. External `templateUrl` (single-file parse cannot read the sibling `.html`) must not yield any.
+#[test]
+fn angular_inline_template_bindings_mirror_into_call_sites_and_imports() {
+    let src = "@Component({ selector: 'app-x', template: `<app-hello (click)=\"onHello()\"></app-hello>` })\nexport class X {}";
+    let facts = parse("x.component.ts", src);
+    assert!(
+        facts.template_bindings.iter().any(|b| b.kind == "component_ref" && b.name == "app-hello"),
+        "component ref fact present"
+    );
+    assert!(
+        facts
+            .template_bindings
+            .iter()
+            .any(|b| b.kind == "event" && b.name == "click" && b.handler.as_deref() == Some("onHello")),
+        "event fact present ((click) -> onHello)"
+    );
+    assert!(
+        facts.call_sites.iter().any(|c| c.callee_text == "onHello"),
+        "event mirrored into a CallSite"
+    );
+    assert!(
+        facts.imports.iter().any(|i| i.name == "app-hello"),
+        "component ref mirrored into an Import"
+    );
+
+    let ext = parse(
+        "y.component.ts",
+        "@Component({ selector: 'app-y', templateUrl: './y.html' })\nexport class Y {}",
+    );
+    assert!(ext.template_bindings.is_empty(), "templateUrl (external) must not be parsed");
+    assert!(
+        ext.call_sites.iter().all(|c| c.callee_text == "@Component"),
+        "no mirrored template call sites for an external templateUrl (only the @Component decorator call site)"
+    );
+}

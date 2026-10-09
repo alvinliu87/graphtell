@@ -326,6 +326,87 @@ pub(crate) fn extract_vue_script(src: &str) -> Option<String> {
     Some(s)
 }
 
+/// Extract the `<template>` block of a Vue single-file component (mirrors [`extract_vue_script`]): the body is
+/// padded with leading newlines so the binding spans line up with the original file, and a missing /
+/// unterminated block yields `None` (so a non-SFC is not misread).
+///
+/// `<template>` may carry attributes (`<template lang="pug">`); only the first `>` ends the open tag, and the
+/// closing tag is the literal `</template>` (a self-closing `<template/>` is unusual and rejected).
+pub(crate) fn extract_vue_template(src: &str) -> Option<String> {
+    let open = src.find("<template")?;
+    let gt_rel = src[open..].find('>')?;
+    let after = open + gt_rel + 1;
+    let end_rel = src[after..].find("</template>")?;
+    let inner = &src[after..after + end_rel];
+    let lines_before = src[..open].matches('\n').count();
+    let mut s = String::new();
+    for _ in 0..lines_before {
+        s.push('\n');
+    }
+    s.push_str(inner);
+    Some(s)
+}
+
+/// Extract an Angular **inline** template string from a `@Component({ template: \`...\` })` decorator source.
+///
+/// External `templateUrl` is deliberately **not** handled: `parse` is a single-file API and cannot read the
+/// sibling `.html` file, so only inline templates surface as bindings. A `templateUrl: '...'` (single-quoted,
+/// no backtick) returns `None` because the backtick scan fails — exactly the external case we cannot reach.
+pub(crate) fn extract_angular_inline_template(src: &str) -> Option<String> {
+    let idx = src.find("template")?;
+    let rest = &src[idx..];
+    let colon = rest.find(':')?;
+    let after = &rest[colon + 1..];
+    let tick = after.find('`')?;
+    let start = tick + 1;
+    let end = after[start..].find('`')?;
+    Some(after[start..start + end].to_string())
+}
+
+/// PascalCase or kebab-case (with a `-`) opening tag — both spellings a Vue component can take. Native HTML
+/// tags are almost never kebab, and PascalCase native tags (e.g. `<svg>`) do not match, so this over-collects
+/// only Web-Component-style custom elements, which are legitimately "components" anyway.
+pub(crate) fn regex_vue_component() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"<([A-Z][A-Za-z0-9]*|[a-z][a-z0-9]*(?:-[a-z0-9]+)+)").unwrap()
+    })
+}
+
+/// Vue event binding: `@click="..."` / `@click.prevent="..."` / `v-on:click="..."`.
+pub(crate) fn regex_vue_event() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r#"(?:@|v-on:)([\w.-]+)\s*=\s*["']([^"']*)["']"#).unwrap()
+    })
+}
+
+/// Vue prop binding: `:user="..."` / `v-bind:user="..."`.
+pub(crate) fn regex_vue_prop() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r#"(?::|v-bind:)([A-Za-z_][\w-]*)\s*=\s*["']([^"']*)["']"#).unwrap()
+    })
+}
+
+/// Angular component reference: `app-*` kebab (the conventional selector prefix) or a PascalCase tag.
+pub(crate) fn regex_angular_component() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"<(app-[\w-]+|[A-Z][A-Za-z0-9]*)").unwrap())
+}
+
+/// Angular event binding: `(click)="..."`.
+pub(crate) fn regex_angular_event() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"\(([\w-]+)\)\s*=\s*["']([^"']*)["']"#).unwrap())
+}
+
+/// Angular prop binding: `[user]="..."`.
+pub(crate) fn regex_angular_prop() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"\[([\w-]+)\]\s*=\s*["']([^"']*)["']"#).unwrap())
+}
+
 /// Match a string literal (including template strings).
 fn str_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
