@@ -1,0 +1,58 @@
+# Mongoose ODM knowledge (Node.js)
+#
+# **Zero parser changes**: to the JS parser `mongoose.model('User', userSchema)` is an ordinary member call
+# (receiver = `mongoose`, method = `model`, arg0 = the literal `'User'`), the same shape as any other
+# `pkg.fn()` call — so the model can be turned into a `Table` with a plain `call` selector.
+#
+# What this file covers, honestly:
+#   * **Model declaration → Table.** `mongoose.model('User', userSchema)` is the single point where a
+#     Mongoose model is bound to a collection name, so it is where the `Table` node comes from. The link is
+#     `MapsTo` ("a model maps to a table") from the declaring module — the same relationship TypeORM builds
+#     from `@Entity`, so both ORMs converge on one node kind and one edge kind.
+#   * **Not covered (deliberate):** document reads/writes (`user.save()`, `User.findOne()`) are *not* turned
+#     into `ReadsDb` / `WritesDb` edges here. That path needs `db_verbs` + a `variable_type` resolver, and it
+#     only lays an edge when the receiver's type already maps to a table (see `fkb/js/typeorm.yaml`). For
+#     Mongoose the receiver is usually a document instance (`user.save()`) whose type is not resolved to the
+#     model, so declaring the verbs would recognise them without ever laying an edge — and `db_verbs` is
+#     single-valued, so claiming it here would also take it away from a real ORM in the same project. Add it
+#     only once receiver→model resolution exists.
+#
+# Identity hygiene: `require_literal: true` — `mongoose.model(name, schema)` with a non-literal first
+# argument must not conjure a `Table` named after a variable.
+
+id: mongoose
+display_name: Mongoose
+language: javascript
+version_hint: "6+"
+side: backend
+scope: framework
+
+detectors:
+  - kind: manifest_dependency
+    manifest: package.json
+    dependency: mongoose
+    confidence: 0.95
+
+exclude_rules:
+  - id: node-modules
+    glob: "node_modules/**"
+  - id: dist
+    glob: "dist/**"
+  - id: build
+    glob: "build/**"
+
+rules:
+  # `const User = mongoose.model('User', userSchema)` → Table "User".
+  - id: model-table
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "mongoose::{model}|mongoose.model"
+    binding:
+      - Synthesize:
+          node: Table
+          identity:
+            kind: Named
+            value: { arg: 0, require_literal: true }
+          link: { kind: MapsTo, direction: incoming }
+          confidence: 0.9

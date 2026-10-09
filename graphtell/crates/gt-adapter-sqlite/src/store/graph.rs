@@ -850,16 +850,23 @@ impl GraphQuery for SqliteStore {
             let frameworks: Vec<String> =
                 serde_json::from_str(&frameworks_json).unwrap_or_default();
             let mut flags = Vec::new();
+            let mut knowledge_gap = false;
             if language.eq_ignore_ascii_case("unknown") {
                 flags.push("language_unknown".to_string());
+                knowledge_gap = true;
             }
             if frameworks.is_empty() {
                 flags.push("no_framework".to_string());
+                knowledge_gap = true;
             }
             if t >= 20 && ratio < 0.3 {
+                // Advisory only. Most call sites in real code are utility calls (`Math.min`,
+                // `JSON.parse`, `console.log`, `this.$emit` …) that no rule should ever capture, and
+                // non-literal URLs are rejected on purpose (they would invent junk contracts). So a low
+                // ratio alone does NOT prove a knowledge gap, and it must not count toward `with_gaps`.
                 flags.push("low_coverage".to_string());
             }
-            if !flags.is_empty() {
+            if knowledge_gap {
                 with_gaps += 1;
             }
             totals_calls += t;

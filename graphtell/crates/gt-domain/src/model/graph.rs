@@ -365,7 +365,8 @@ pub struct SubCoverage {
     pub covered_calls: u64,
     /// `covered_calls / total_calls`, in `0.0..=1.0` (`1.0` when there are no call sites).
     pub coverage_ratio: f64,
-    /// Gap flags: `language_unknown`, `no_framework`, `low_coverage`.
+    /// Gap flags: `language_unknown` / `no_framework` are unambiguous knowledge gaps;
+    /// `low_coverage` is advisory only (see `sub_projects_with_gaps`).
     pub flags: Vec<String>,
     /// A small sample of call sites that no rule extracted (capped, for diagnosis only).
     pub uncovered_samples: Vec<UncoveredCall>,
@@ -378,7 +379,10 @@ pub struct CoverageTotals {
     pub covered_calls: u64,
     pub coverage_ratio: f64,
     pub sub_projects: u64,
-    /// How many sub-projects carry at least one gap flag.
+    /// How many sub-projects carry an **unambiguous** knowledge gap (`language_unknown` or
+    /// `no_framework`). `low_coverage` is deliberately excluded: most call sites in real code are
+    /// utility calls no rule should capture, and non-literal URLs are rejected on purpose, so a low
+    /// ratio alone does not prove the loaded FKB is missing anything.
     pub sub_projects_with_gaps: u64,
 }
 
