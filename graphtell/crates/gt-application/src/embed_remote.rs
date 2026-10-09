@@ -50,8 +50,17 @@ struct OpenAiItem {
 impl RemoteHttpEmbedder {
     /// Built from environment variables; returns an error when `GT_EMBEDDING_URL` is missing or the first probe fails.
     pub fn load() -> Result<Self, String> {
-        let base = std::env::var("GT_EMBEDDING_URL")
-            .map_err(|_| "GT_EMBEDDING_BACKEND=url requires GT_EMBEDDING_URL to be set".to_string())?;
+        Self::load_with(None)
+    }
+
+    /// Like [`Self::load`] but takes an explicit `url` (overriding `GT_EMBEDDING_URL` when non-empty).
+    /// Used by the HTTP API so the UI can switch to a remote embedding service at runtime.
+    pub fn load_with(url: Option<String>) -> Result<Self, String> {
+        let base = match url {
+            Some(u) if !u.trim().is_empty() => u,
+            _ => std::env::var("GT_EMBEDDING_URL")
+                .map_err(|_| "remote embedding requires a URL (set GT_EMBEDDING_URL or pass url)".to_string())?,
+        };
         let api_key = std::env::var("GT_EMBEDDING_API_KEY").ok();
         let format = match std::env::var("GT_EMBEDDING_FORMAT").as_deref() {
             Ok("tei") => EmbedFormat::Tei,

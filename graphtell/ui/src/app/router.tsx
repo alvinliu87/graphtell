@@ -7,6 +7,7 @@ import { CoveragePage } from '@/pages/coverage/CoveragePage';
 import { CheckPage } from '@/pages/check/CheckPage';
 import { RulesPage } from '@/pages/check/RulesPage';
 import { RecallPage } from '@/pages/recall/RecallPage';
+import { SettingsPage } from '@/pages/settings/SettingsPage';
 
 const routes = [
   {
@@ -24,6 +25,7 @@ const routes = [
       { path: 'projects/:projectId/check', element: <CheckPage /> },
       { path: 'projects/:projectId/rules', element: <RulesPage /> },
       { path: 'projects/:projectId/recall', element: <RecallPage /> },
+      { path: 'settings', element: <SettingsPage /> },
     ],
   },
 ];

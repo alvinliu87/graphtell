@@ -45,6 +45,8 @@ pub struct AppState {
     pub progress: Mutex<HashMap<i64, Arc<ProgressObserver>>>,
     /// Shared node-vector cache (shared with the encoder inside `recall`); cleared when the graph is rebuilt.
     pub node_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
+    /// Live state of a (possibly running) model download, surfaced to the one-click download UI.
+    pub model_download: Arc<Mutex<crate::model_manager::DownloadState>>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -87,6 +89,14 @@ pub fn state(
         // the project switches to the semantic path automatically.
         .with_async_warmup(),
     );
+    // Apply a persisted backend-mode choice (local / url / hash) so a mode switch survives restart.
+    // `auto` (or no saved config) is already handled by the `resolve_recall_embedder()` above.
+    let saved = crate::model_manager::load_model_config();
+    if !saved.mode.is_empty() && saved.mode != "auto" {
+        let (emb, _info, _dim) =
+            gt_application::embedding::resolve_backend(&saved.mode, saved.url.clone());
+        recall.set_semantic_embedder(emb);
+    }
     let state = Arc::new(AppState {
         projects,
         pipeline,
@@ -98,6 +108,7 @@ pub fn state(
         frameworks,
         progress: Mutex::new(HashMap::new()),
         node_cache,
+        model_download: Arc::new(Mutex::new(Default::default())),
     });
     // Start source-change watching (P2 v1): poll + debounce -> safe whole-database rebuild + automatic compliance + clear the recall cache.
     // Started only for existing projects; a newly created project starts it separately in the create_project handler.
@@ -176,6 +187,10 @@ pub fn build_router(state: Shared, ui_dir: Option<std::path::PathBuf>) -> Router
         .route("/api/projects/{id}/warmup", get(project_warmup))
         // Prompt augmentation · compose: recall context + user intent -> a complete prompt to paste into an LLM
         .route("/api/projects/{id}/prompt", post(compose_prompt))
+        // Model management: status + one-click download + backend-mode switch (no restart needed)
+        .route("/api/models/status", get(models_status))
+        .route("/api/models/download", post(models_download))
+        .route("/api/server/backend", put(set_backend))
         // The prompt augmentation page (a self-contained static page, embedded in the binary, no extra static hosting)
         .route("/compose", get(compose_page));
 
@@ -235,6 +250,31 @@ async fn health(State(state): State<Shared>) -> Json<ApiResponse<HealthDto>> {
         is_wsl,
         wsl_distro,
     }))
+}
+
+async fn models_status(
+    State(state): State<Shared>,
+) -> Json<ApiResponse<crate::model_manager::ModelStatusDto>> {
+    Json(crate::model_manager::model_status(
+        &state.recall,
+        &state.model_download,
+    ))
+}
+
+async fn models_download(
+    State(state): State<Shared>,
+) -> Json<ApiResponse<crate::model_manager::ModelStatusDto>> {
+    Json(crate::model_manager::start_model_download(
+        &state.recall,
+        &state.model_download,
+    ))
+}
+
+async fn set_backend(
+    State(state): State<Shared>,
+    Json(req): Json<crate::model_manager::SetBackendRequest>,
+) -> Json<ApiResponse<crate::model_manager::BackendStatus>> {
+    Json(crate::model_manager::apply_backend_mode(&state.recall, &req))
 }
 
 async fn list_projects(State(state): State<Shared>) -> Json<ApiResponse<Vec<ProjectDto>>> {

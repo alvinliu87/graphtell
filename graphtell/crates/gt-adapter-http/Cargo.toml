@@ -16,6 +16,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+ureq = "2"
+zip = "2"
 
 [dev-dependencies]
 gt-adapter-sqlite = { workspace = true }

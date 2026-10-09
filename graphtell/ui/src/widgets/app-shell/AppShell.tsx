@@ -20,9 +20,8 @@ import {
   MenuUnfoldOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
+  SettingOutlined,
   UnorderedListOutlined,
-  // Temporarily commented out: the settings entry is hidden
-  // SettingOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useHealth } from '@/entities/pipeline';
@@ -136,8 +135,8 @@ export function AppShell() {
           // { key: withProject('/rules'), icon: <ProfileOutlined />, label: t('Rule Set') },
         ]
       : []),
-    // Temporarily commented out: the settings page route is disabled and the nav entry hidden along with it (revisit later).
-    // { key: '/settings', icon: <SettingOutlined />, label: t('Settings') },
+    // The settings page (backend + model management) is always reachable, independent of a selected project.
+    { key: '/settings', icon: <SettingOutlined />, label: t('Settings') },
   ];
 
   return (
@@ -250,14 +249,12 @@ export function AppShell() {
                 ]}
               />
             </Tooltip>
-            {/* Temporarily commented out: the settings entry is hidden
             <Button
               type="text"
               aria-label={t('Settings')}
               icon={<SettingOutlined />}
               onClick={() => navigate('/settings')}
             />
-            */}
             {health && health.status !== 'ok' && (
               <>
                 <Divider type="vertical" style={{ marginInline: 2 }} />

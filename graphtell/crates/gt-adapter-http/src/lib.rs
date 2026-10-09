@@ -4,6 +4,7 @@
 //! interface (Tauri reaches the local HTTP service via `fetch`, so there is only one contract for both ends).
 
 pub mod dto;
+pub mod model_manager;
 pub mod router;
 pub mod server;
 

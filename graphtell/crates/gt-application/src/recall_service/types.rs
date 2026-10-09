@@ -3,7 +3,7 @@ use super::*;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use gt_domain::error::Result;
@@ -255,7 +255,8 @@ pub struct RecallService {
     /// with it, so the UI never blocks; semantic quality auto-takes over after background warmup.
     pub(crate) fast_embedder: Arc<dyn Embedder>,
     /// Semantic encoder (real bge-m3, loaded on demand). `None` ⇒ only lexical / fast-vector path, no background warmup.
-    pub(crate) semantic_embedder: Option<Arc<dyn Embedder>>,
+    /// Wrapped in `RwLock` so the HTTP API can hot-swap it (after downloading weights or switching backend mode) without restarting.
+    pub(crate) semantic_embedder: Arc<RwLock<Option<Arc<dyn Embedder>>>>,
     /// Fast-vector cache (hash, instantly recomputable, not persisted). Keyed by `node.id as u64`.
     pub(crate) fast_cache: Arc<Mutex<HashMap<u64, Vec<f32>>>>,
     /// Semantic vector cache (bge, persisted to `embed_persist_dir`). Keyed by content hash of node embed text (see [`embed_text_key`]),

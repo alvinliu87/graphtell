@@ -10,6 +10,8 @@
 
 use std::sync::{Arc, OnceLock};
 
+use serde::{Deserialize, Serialize};
+
 /// Text → dense-vector encoder. Replaceable, offline-capable.
 pub trait Embedder: Send + Sync {
     /// Encode a piece of text into a vector (already L2-normalized).
@@ -249,6 +251,66 @@ pub fn try_real_recall_embedder() -> Option<Arc<dyn Embedder>> {
     {
         tracing::info!("model-candle not compiled; no semantic encoder (lexical / fast vector path only)");
         None
+    }
+}
+
+/// Persisted backend-mode selection (written by the HTTP API so a mode switch survives restart).
+///
+/// `mode` is one of `auto` / `local` / `url` / `hash`; `url` is the remote embedding endpoint for `url` mode.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelBackendConfig {
+    pub mode: String,
+    pub url: Option<String>,
+}
+
+/// Build the semantic encoder for an **explicit** backend mode (used by the HTTP API to hot-swap the
+/// encoder without restarting the server). Returns `(semantic_embedder, backend_info, dim)`.
+///
+/// `semantic_embedder` is `None` whenever the mode resolves to the offline hash encoder (the call sites
+/// then fall back to the always-available `fast_embedder`).
+pub fn resolve_backend(mode: &str, url: Option<String>) -> (Option<Arc<dyn Embedder>>, String, usize) {
+    match mode {
+        "hash" | "off" | "none" => {
+            set_backend_info("hash (offline lexical, 256d)", 256);
+            (None, "hash (offline lexical, 256d)".to_string(), 256)
+        }
+        "url" | "remote" => match crate::embed_remote::RemoteHttpEmbedder::load_with(url.clone()) {
+            Ok(e) => {
+                let dim = e.dim();
+                let fmt = std::env::var("GT_EMBEDDING_FORMAT").unwrap_or_else(|_| "openai".to_string());
+                let u = url.unwrap_or_default();
+                set_backend_info(&format!("remote-{fmt} ({u})"), dim);
+                (Some(Arc::new(e)), format!("remote-{fmt} ({u})"), dim)
+            }
+            Err(err) => {
+                tracing::warn!("remote embedder failed to load: {err}; falling back to hash");
+                set_backend_info("hash (remote failed)", 256);
+                (None, "hash (remote failed)".to_string(), 256)
+            }
+        },
+        "local" => match try_real_recall_embedder() {
+            Some(e) => {
+                let dim = e.dim();
+                set_backend_info("bge-m3-local", dim);
+                (Some(e), "bge-m3-local".to_string(), dim)
+            }
+            None => {
+                set_backend_info("hash (local missing)", 256);
+                (None, "hash (local missing)".to_string(), 256)
+            }
+        },
+        // "auto": mirror `resolve_recall_embedder` but only return the semantic part when real weights exist.
+        _ => match try_real_recall_embedder() {
+            Some(e) => {
+                let dim = e.dim();
+                set_backend_info("bge-m3-local (auto)", dim);
+                (Some(e), "bge-m3-local (auto)".to_string(), dim)
+            }
+            None => {
+                set_backend_info("hash (offline fallback, 256d)", 256);
+                (None, "hash (offline fallback, 256d)".to_string(), 256)
+            }
+        },
     }
 }
 

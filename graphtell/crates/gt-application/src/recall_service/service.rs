@@ -3,7 +3,7 @@ use super::*;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use gt_domain::error::Result;
@@ -64,7 +64,7 @@ impl RecallService {
             fs,
             _scanner: scanner,
             fast_embedder: default_embedder(),
-            semantic_embedder,
+            semantic_embedder: Arc::new(RwLock::new(semantic_embedder)),
             fast_cache: Arc::new(Mutex::new(HashMap::new())),
             node_embed_cache,
             warmed_projects: Arc::new(Mutex::new(HashSet::new())),
@@ -102,6 +102,27 @@ impl RecallService {
         // Delete persisted candidate snapshot too: after rebuild, if size happens to match it won't be judged stale; must force rebuild by deleting the file.
         if let Some(dir) = &self.snapshot_persist_dir {
             let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Hot-swap the semantic encoder at runtime (after downloading weights or switching backend mode),
+    /// without restarting the server.
+    ///
+    /// Vectors live in the encoder's vector space, so swapping invalidates all warmed state, caches and
+    /// persisted vectors; the next recall re-encodes in the new space and (when `enable_async_warmup`) re-runs
+    /// background warmup automatically.
+    pub fn set_semantic_embedder(&self, emb: Option<Arc<dyn Embedder>>) {
+        *self.semantic_embedder.write().unwrap() = emb;
+        self.fast_cache.lock().unwrap().clear();
+        self.node_embed_cache.lock().unwrap().clear();
+        self.warmed_projects.lock().unwrap().clear();
+        self.warming_projects.lock().unwrap().clear();
+        self.warm_progress.lock().unwrap().clear();
+        self.query_vec_cache.lock().unwrap().clear();
+        // Persisted vectors belong to the previous encoder's space; drop them so they get re-encoded.
+        if let Some(dir) = &self.embed_persist_dir {
+            let _ = std::fs::remove_dir_all(dir);
+            let _ = std::fs::create_dir_all(dir);
         }
     }
 
@@ -265,7 +286,7 @@ impl RecallService {
 /// in background, then directly take rmp. Returns whether it really loaded (file exists and version/dim match); `false` means the
 /// persisted file is invalid, caller must treat as "not warmed up" (see [`load_persisted_into`]).
     fn load_persisted(&self, rmp_path: &Path, project_id: ProjectId) -> bool {
-        let expected_dim = self.semantic_embedder.as_ref().map_or(0, |e| e.dim());
+        let expected_dim = self.semantic_embedder.read().unwrap().as_ref().map_or(0, |e| e.dim());
         // Decide the actual file to read: rmp first, fall back to old json (transition) if missing.
         let (path, need_rmp) = if rmp_path.exists() {
             (rmp_path.to_path_buf(), false)
@@ -317,7 +338,7 @@ impl RecallService {
     fn persist(&self, path: &Path, nodes: &[Node], enrich: &EnrichIndex) {
         Self::persist_vectors(
             &self.node_embed_cache,
-            self.semantic_embedder.as_ref().map_or(0, |e| e.dim()),
+            self.semantic_embedder.read().unwrap().as_ref().map_or(0, |e| e.dim()),
             path,
             nodes,
             enrich,
@@ -447,7 +468,8 @@ pub(crate) fn persist_vectors(
     /// Manual warmup: compute and persist a project's all topic-level nodes' bge vectors (graph build does not happen here).
     /// The user can run `graphtell embed --project N` in the background; then all recalls and restarts hit the cache instantly.
     pub fn warm_up(&self, project_id: ProjectId) -> Result<usize> {
-        let emb = match &self.semantic_embedder {
+        let sem_guard = self.semantic_embedder.read().unwrap();
+        let emb = match &*sem_guard {
             Some(e) => e,
             None => {
                 tracing::warn!("no semantic encoder configured (missing bge weights); embed is a no-op");
@@ -512,7 +534,8 @@ pub(crate) fn persist_vectors(
         name_filter: &[String],
         top: usize,
     ) -> Result<Vec<(String, String, f64)>> {
-        let Some(emb) = &self.semantic_embedder else {
+        let sem_guard = self.semantic_embedder.read().unwrap();
+        let Some(emb) = &*sem_guard else {
             return Err(gt_domain::error::DomainError::infra(
                 "未配置语义编码器（缺 bge 权重），无法做余弦诊断",
             ));
@@ -925,18 +948,18 @@ pub(crate) fn persist_vectors(
         let triggered = triggered_concepts(&alias_terms);
 
         let qtext = query_embed_text(&q.query, &alias_terms);
-        let early_semantic = self.semantic_embedder.is_some()
+        let early_semantic = self.semantic_embedder.read().unwrap().is_some()
             && (self
                 .warmed_projects
                 .lock()
                 .unwrap()
                 .contains(&project_id.get())
-                || self.embed_persist_dir.as_ref().map_or(false, |d| {
-                    d.join(format!("{}.rmp", project_id.get())).exists()
-                }));
+            || self.embed_persist_dir.as_ref().map_or(false, |d| {
+                d.join(format!("{}.rmp", project_id.get())).exists()
+            }));
         let qvec_cache = self.query_vec_cache.clone();
         let qvec_embedder = if early_semantic {
-            self.semantic_embedder.clone().unwrap()
+            self.semantic_embedder.read().unwrap().clone().unwrap()
         } else {
             self.fast_embedder.clone()
         };
@@ -1028,9 +1051,9 @@ pub(crate) fn persist_vectors(
         }
 
         let t_load = std::time::Instant::now();
-        let mut use_semantic = self.semantic_embedder.is_some()
+        let mut use_semantic = self.semantic_embedder.read().unwrap().is_some()
             && self.warmed_projects.lock().unwrap().contains(&project_id.get());
-        if !use_semantic && self.semantic_embedder.is_some() {
+        if !use_semantic && self.semantic_embedder.read().unwrap().is_some() {
             if let Some(dir) = &self.embed_persist_dir {
                 let path = dir.join(format!("{}.rmp", project_id.get()));
                 use_semantic = self.load_persisted(&path, project_id);
@@ -1041,8 +1064,9 @@ pub(crate) fn persist_vectors(
             t_load.elapsed().as_millis(),
             nodes.len()
         );
+        let sem_guard = self.semantic_embedder.read().unwrap();
         let (chosen, cache): (&Arc<dyn Embedder>, &Mutex<HashMap<u64, Vec<f32>>>) = if use_semantic {
-            (self.semantic_embedder.as_ref().unwrap(), &self.node_embed_cache)
+            (sem_guard.as_ref().unwrap(), &self.node_embed_cache)
         } else {
             (&self.fast_embedder, &self.fast_cache)
         };
@@ -1082,12 +1106,12 @@ pub(crate) fn persist_vectors(
 
         if !use_semantic
             && self.enable_async_warmup
-            && self.semantic_embedder.is_some()
+            && self.semantic_embedder.read().unwrap().is_some()
             && self.warming_projects.lock().unwrap().insert(project_id.get())
         {
             let (store, emb, sem_cache, dir, warmed, warming, progress) = (
                 self.store.clone(),
-                self.semantic_embedder.clone().unwrap(),
+                self.semantic_embedder.read().unwrap().clone().unwrap(),
                 self.node_embed_cache.clone(),
                 self.embed_persist_dir.clone(),
                 self.warmed_projects.clone(),
