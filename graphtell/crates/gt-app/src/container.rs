@@ -11,8 +11,8 @@ use gt_adapter_parser::DefaultParserRegistry;
 use gt_adapter_rules::YamlRuleSet;
 use gt_adapter_sqlite::SqliteStore;
 use gt_adapter_techstack::{
-    DefaultMarkerProvider, JavaTechStackAdapter, JsTechStackAdapter, PhpTechStackAdapter,
-    PythonTechStackAdapter, RustTechStackAdapter,
+    DefaultMarkerProvider, DotnetTechStackAdapter, JavaTechStackAdapter, JsTechStackAdapter,
+    PhpTechStackAdapter, PythonTechStackAdapter, RubyTechStackAdapter, RustTechStackAdapter,
 };
 use gt_adapter_resource::MyBatisMapperAdapter;
 use gt_adapter_views::YamlViewRegistry;
@@ -61,7 +61,9 @@ impl Container {
                 .register(Box::new(JsTechStackAdapter::new()))
                 .register(Box::new(JavaTechStackAdapter::new()))
                 .register(Box::new(PythonTechStackAdapter::new()))
-                .register(Box::new(RustTechStackAdapter::new())),
+                .register(Box::new(RustTechStackAdapter::new()))
+                .register(Box::new(RubyTechStackAdapter::new()))
+                .register(Box::new(DotnetTechStackAdapter::new())),
         );
         let deps = Arc::new(PipelineDeps {
             fs: Arc::new(StdFileSystem::new()),

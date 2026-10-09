@@ -11,9 +11,10 @@ use std::cell::RefCell;
 use gt_domain::error::Result;
 use gt_domain::model::{
     CallSiteFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact, InheritanceFact,
-    Language, NodeKind, SyntaxFacts,
+    Language, NodeKind, Span, SyntaxFacts, TemplateBindingFact,
 };
 use gt_domain::port::LanguageParser;
+use regex::Regex;
 use tree_sitter::{Node, Parser};
 
 use crate::ts_util::{bare_type_name, opt_text, span_of, text};
@@ -39,10 +40,15 @@ impl LanguageParser for JavaParser {
     }
 
     fn extensions(&self) -> &'static [&'static str] {
-        &["java"]
+        &["java", "jsp", "jspx", "ftl", "vm"]
     }
 
-    fn parse(&self, _path: &str, source: &str) -> Result<SyntaxFacts> {
+    fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {
+        // JSP / Freemarker templates (`.jsp` / `.jspx` / `.ftl` / `.vm`) are not valid Java; the template layer
+        // (tag-library includes, custom-tag / macro components, form-action route refs) is extracted from text.
+        if is_java_template(path) {
+            return Ok(extract_java_template(source, path));
+        }
         let tree = PARSER.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let parser = borrow.get_or_insert_with(|| {
@@ -660,6 +666,145 @@ fn collect_call(
     });
 }
 
+/// JSP / Freemarker templates (`.jsp` / `.jspx` / `.ftl` / `.vm`) are not valid Java, so tree-sitter-java cannot
+/// parse them; the template layer (tag-library includes, custom-tag / macro components, form-action route refs)
+/// is extracted from the raw text and surfaced as bindings.
+fn is_java_template(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    p.ends_with(".jsp") || p.ends_with(".jspx") || p.ends_with(".ftl") || p.ends_with(".vm")
+}
+
+fn regex_java_include_file() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<%@\s*include\s+file\s*=\s*["']([^"']+)["']"#).unwrap())
+}
+fn regex_java_include_page() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<jsp:include\b[^>]*\bpage\s*=\s*["']([^"']+)["']"#).unwrap())
+}
+fn regex_java_ftl_include() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<#include\s+["']([^"']+)["']"#).unwrap())
+}
+fn regex_java_ftl_include2() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\[#include\s+["']([^"']+)["']"#).unwrap())
+}
+fn regex_java_tag() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<([a-zA-Z]+:[a-zA-Z][\w]*)\b"#).unwrap())
+}
+fn regex_java_macro() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<@([a-zA-Z][\w.]*)"#).unwrap())
+}
+fn regex_form_action() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<form\b[^>]*\baction\s*=\s*["']([^"']+)["']"#).unwrap())
+}
+
+/// Extract JSP / Freemarker template bindings from raw text: view includes, component refs (custom tags / macros),
+/// and form-action route references.
+fn extract_java_template(source: &str, path: &str) -> SyntaxFacts {
+    let mut facts = SyntaxFacts::default();
+    for re in [
+        regex_java_include_file(),
+        regex_java_include_page(),
+        regex_java_ftl_include(),
+        regex_java_ftl_include2(),
+    ] {
+        for m in re.captures_iter(source) {
+            facts.template_bindings.push(TemplateBindingFact {
+                kind: "include".to_string(),
+                name: m[1].to_string(),
+                handler: None,
+                owner_fqn: path.to_string(),
+                span: Span::default(),
+            });
+        }
+    }
+    for re in [regex_java_tag(), regex_java_macro()] {
+        for m in re.captures_iter(source) {
+            let name = m[1].to_string();
+            if name == "jsp:include" {
+                continue;
+            }
+            facts.template_bindings.push(TemplateBindingFact {
+                kind: "component_ref".to_string(),
+                name,
+                handler: None,
+                owner_fqn: path.to_string(),
+                span: Span::default(),
+            });
+        }
+    }
+    for m in regex_form_action().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "route".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    // Mirror into classical facts so CfAst links them without special-casing the back end (same pattern as the
+    // JS front-end parser): `component_ref` / `include` -> an `Import` (a view depends on a component / included
+    // partial); `route` -> a `CallSite` (the rendered view reaches a backend endpoint).
+    for tb in &facts.template_bindings {
+        match tb.kind.as_str() {
+            "component_ref" | "include" => {
+                facts.imports.push(ImportFact {
+                    name: tb.name.clone(),
+                    alias: None,
+                    span: tb.span.clone(),
+                });
+            }
+            "route" => {
+                // A route reference from a template. URL-form refs (`<form action="/api/orders">`,
+                // `<a href="/path">`, a template fetch) become an `HttpContract` + `CallsHttp` edge exactly like
+                // the front-end `http-contract` rule (the synthetic `template-route` callee is matched by
+                // `fkb/universal/common.yaml::template-route-http-contract`); the view then links to the backend
+                // endpoint and bridges to the route-declared contract. Named routes carry no URL, so they stay a
+                // queryable CallSite instead of fabricating an orphan contract.
+                if tb.name.starts_with('/') {
+                    facts.call_sites.push(CallSiteFact {
+                        owner_fqn: tb.owner_fqn.clone(),
+                        owner_class: None,
+                        callee_text: "template-route".to_string(),
+                        snippet: None,
+                        receiver: None,
+                        method: None,
+                        args: vec![FactValue::Array(vec![
+                            ("url".to_string(), FactValue::String(tb.name.clone())),
+                            ("method".to_string(), FactValue::String("ANY".to_string())),
+                        ])],
+                        span: tb.span.clone(),
+                        db_table: None,
+                        in_loop: false,
+                        entity: None,
+                    });
+                } else {
+                    facts.call_sites.push(CallSiteFact {
+                        owner_fqn: tb.owner_fqn.clone(),
+                        owner_class: None,
+                        callee_text: tb.name.clone(),
+                        snippet: None,
+                        receiver: None,
+                        method: None,
+                        args: Vec::new(),
+                        span: tb.span.clone(),
+                        db_table: None,
+                        in_loop: false,
+                        entity: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    facts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,7 +1040,7 @@ class Svc {
     fn parser_declares_the_java_notation_and_layout() {
         let p = JavaParser::new().unwrap();
         assert_eq!(p.language(), Language::new(Language::JAVA));
-        assert_eq!(p.extensions(), &["java"]);
+        assert_eq!(p.extensions(), &["java", "jsp", "jspx", "ftl", "vm"]);
         assert_eq!(p.namespace_separator(), &['.'], "Java's namespace separator is `.`");
         assert_eq!(p.member_separator(), ".", "Java's member separator is `.` (PHP's is `::`)");
         assert!(p.bare_field_receivers(), "`@Autowired Repo repo` uses a bare identifier");
@@ -1274,6 +1419,97 @@ class Svc {
             calls[1].entity.as_deref(),
             Some("OrderPlacedEvent"),
             "`new X(...)` still derives X"
+        );
+    }
+
+    /// JSP: `<%@ include file %>` / `<jsp:include page>` are view includes, a custom tag (`<c:if>`) is a component
+    /// ref, and `<form action>` is a backend route reference. Surfaced as `TemplateBindingFact`s.
+    #[test]
+    fn jsp_template_yields_include_component_and_route_bindings() {
+        let src = r#"
+          <%@ include file="header.jsp" %>
+          <jsp:include page="footer.jsp" />
+          <c:if test="${x}">...</c:if>
+          <form action="/api/orders" method="post"></form>
+        "#;
+        let facts = JavaParser::new()
+            .unwrap()
+            .parse("WEB-INF/views/list.jsp", src)
+            .unwrap();
+
+        let includes: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "include")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(
+            includes.contains(&"header.jsp"),
+            "@include file -> include: {includes:?}"
+        );
+        assert!(
+            includes.contains(&"footer.jsp"),
+            "jsp:include page -> include: {includes:?}"
+        );
+
+        let comps: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "component_ref")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(
+            comps.contains(&"c:if"),
+            "a JSP custom tag is a component ref: {comps:?}"
+        );
+
+        let routes: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "route")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(
+            routes.contains(&"/api/orders"),
+            "form action -> route: {routes:?}"
+        );
+
+        // component_ref + include must be mirrored into `imports`, and route into `call_sites`, so CfAst links
+        // them into the graph.
+        let import_names: Vec<&str> = facts.imports.iter().map(|i| i.name.as_str()).collect();
+        assert!(
+            import_names.contains(&"header.jsp"),
+            "@include file -> import header.jsp: {import_names:?}"
+        );
+        assert!(
+            import_names.contains(&"c:if"),
+            "custom tag -> import c:if: {import_names:?}"
+        );
+        assert!(
+            facts.call_sites.iter().any(|c| c.callee_text == "template-route"
+                && matches!(
+                    c.args.first(),
+                    Some(FactValue::Array(items))
+                        if items.iter().any(|(k, v)| k == "url" && v == &FactValue::String("/api/orders".to_string()))
+                           && items.iter().any(|(k, v)| k == "method" && v == &FactValue::String("ANY".to_string()))
+                )),
+            "form action -> CallsHttp contract /api/orders (url + method:ANY packed into args[0])"
+        );
+    }
+
+    /// A plain `.java` file must NOT be diverted to the template extractor — tree-sitter still produces declarations.
+    #[test]
+    fn plain_java_is_not_treated_as_template() {
+        let src = "package com.x; public class Foo { void bar() {} }";
+        let facts = JavaParser::new().unwrap().parse("Foo.java", src).unwrap();
+        assert!(
+            facts.template_bindings.is_empty(),
+            "plain .java must not yield template bindings: {:?}",
+            facts.template_bindings
+        );
+        assert!(
+            facts.declarations.iter().any(|d| d.name == "Foo"),
+            "plain .java must still be parsed for declarations"
         );
     }
 }

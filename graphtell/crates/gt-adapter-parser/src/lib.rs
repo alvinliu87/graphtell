@@ -8,9 +8,11 @@ pub mod java;
 pub mod js;
 /// Shared tree-sitter helpers (`text` / `opt_text` / `span_of`) used by every language adapter.
 pub mod ts_util;
+pub mod dotnet;
 pub mod json;
 pub mod php;
 pub mod python;
+pub mod ruby;
 pub mod rust;
 pub mod registry;
 

@@ -1,0 +1,60 @@
+id: aspnetcore
+display_name: ASP.NET Core
+language: csharp
+side: backend
+# `*.csproj` / `*.sln` mark a C# sub-project (see gt-adapter-techstack). This framework is additionally
+# triggered by a `Program.cs` (minimal-API / endpoint routing) or a controller attribute, but the project
+# must already be a C# sub-project.
+detectors:
+  - kind: file_exists
+    path: Program.cs
+    confidence: 0.6
+  - kind: file_exists
+    path: Startup.cs
+    confidence: 0.6
+rules:
+  # ASP.NET Core route -> HTTP contract (with the handler edge). The C# adapter is text-only and does not
+  # emit controller class nodes, so the `HandledBy` target (`OrdersController.Create` / `OrdersController`)
+  # is synthesised as its own `Controller` node first; the `HttpContract` (synthesised second) then links to
+  # it via `resolve: as_is`, which matches the literal `controller#action` / controller string.
+  - id: route-http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "AspNetCore::{get,post,put,patch,delete,head}"
+    binding:
+      # 1) synthesise the handler node first so the link below can resolve to it.
+      - Synthesize:
+          node: Controller
+          identity:
+            kind: Named
+            value: { arg: 1 }
+          # Backend scope so `resolve: as_is` can find it (engine.rs folds a `side` field into the
+          # identity scope) by the literal `controller#action` / controller name.
+          fields:
+            - name: side
+              value: { literal: "backend" }
+          confidence: 0.9
+      # 2) synthesise the contract and link it to the handler.
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { method_name: true, normalize: [upper] }
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+            # Backend scope so this contract merges with the universal template-route contract
+            # (`ANY /api/orders`, also backend) into the single endpoint node.
+            - name: side
+              value: { literal: "backend" }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { arg: 1, resolve: as_is }
+            confidence: 0.9

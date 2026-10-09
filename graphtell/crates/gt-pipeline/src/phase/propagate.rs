@@ -54,6 +54,15 @@ pub fn run(ctx: &mut PipelineContext) {
     // Group by source: the reachable-caller set for the same source only needs computing once.
     let mut by_source: HashMap<i64, Vec<PropSeed>> = HashMap::new();
     for s in seeds {
+        // `CallsHttp` is a *front-end function → external contract* edge, not an "action the method performs on
+        // a resource" (the propagation's purpose: swallow-proofing framework wrappers that ultimately reach a
+        // Queue / DB / Config the FKB recognises). A transitive caller does not itself *issue* the HTTP request —
+        // it only calls the function that does — so replicating `caller → HttpContract` up the call chain is wrong
+        // and double-counts the endpoint. Skip it; the direct issuer keeps its edge.
+        // See `crates/gt-app/tests/frontend_folded_view.rs`.
+        if s.kind == EdgeKind::CALLS_HTTP {
+            continue;
+        }
         by_source.entry(s.source.get()).or_default().push(s);
     }
 

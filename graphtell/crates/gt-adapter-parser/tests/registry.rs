@@ -11,7 +11,7 @@ use gt_domain::model::Language;
 use gt_domain::port::ParserRegistry;
 
 /// Languages the pipeline / inbound adapters assume are always available.
-const EXPECTED: &[&str] = &["php", "java", "python", "javascript", "typescript", "json", "rust"];
+const EXPECTED: &[&str] = &["php", "java", "python", "javascript", "typescript", "json", "rust", "ruby", "csharp"];
 
 #[test]
 fn registry_exposes_every_required_language() {

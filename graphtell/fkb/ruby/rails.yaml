@@ -1,0 +1,82 @@
+# Ruby on Rails framework knowledge
+#
+# Routes are declared in `config/routes.rb` with the routing DSL (`get '/x' => 'ctrl#action'`,
+# `resources :x`, …). The Ruby adapter extracts each verb+path declaration into a `Rails::<verb>`
+# call site (see `gt-adapter-parser/src/ruby.rs::extract_rails_routes`) and writes the
+# `controller#action` target into `entity` / `args[1]`. This file synthesises `HttpContract` +
+# `HandledBy` on that basis, so a Rails view's `template-route` (universal rule) and the backend
+# route declaration merge into the same endpoint node.
+#
+# Together with Symfony / Spring / FastAPI / Django / Laravel this belongs to the
+# "backend route -> HttpContract" semantic family.
+
+id: rails
+display_name: Ruby on Rails
+language: ruby
+version_hint: "6.x / 7.x"
+side: backend
+scope: framework
+
+detectors:
+  # `config/routes.rb` is a strong, unambiguous Rails signal.
+  - kind: file_exists
+    path: config/routes.rb
+    confidence: 0.9
+  - kind: manifest_dependency
+    manifest: Gemfile
+    dependency: rails
+    confidence: 0.95
+
+exclude_rules:
+  - id: gemfile-lock
+    glob: "Gemfile.lock"
+  - id: vendor
+    glob: "vendor/**"
+
+rules:
+  # Rails route -> HTTP contract (with the handler edge). The Ruby adapter is text-only and does not
+  # emit controller class nodes, so the `HandledBy` target (`orders#create`) is synthesised as its own
+  # `Controller` node first; the `HttpContract` (synthesised second) then links to it via `resolve: AsIs`,
+  # which matches the literal `controller#action` string.
+  - id: route-http-contract
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "Rails::{get,post,put,patch,delete,head}"
+    binding:
+      # 1) synthesise the handler node first so the link below can resolve to it. `side: backend`
+      #    puts it in the same `subN:backend` scope as the contract, so `resolve: as_is` finds it.
+      - Synthesize:
+          node: Controller
+          identity:
+            kind: Named
+            value: { arg: 1 }
+          # Put the handler in the same `subN:backend` scope as the contract (engine.rs folds a `side`
+          # field into the identity scope) so `resolve: as_is` can find it by the literal `controller#action`.
+          fields:
+            - name: side
+              value: { literal: "backend" }
+          confidence: 0.9
+      # 2) synthesise the contract and link it to the handler.
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { method_name: true, normalize: [upper] }
+            path:
+              arg: 0
+              require_literal: true
+              normalize:
+                - leading_slash
+          fields:
+            - name: raw_path
+              value: { arg: 0 }
+            # Backend scope so this contract merges with the universal template-route contract
+            # (`ANY /api/orders`, also backend) into the single endpoint node.
+            - name: side
+              value: { literal: "backend" }
+          link:
+            kind: HandledBy
+            direction: to_target
+            to: { arg: 1, resolve: as_is }
+            confidence: 0.9

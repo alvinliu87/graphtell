@@ -18,8 +18,8 @@ use gt_adapter_parser::DefaultParserRegistry;
 use gt_adapter_techstack::PhpTechStackAdapter;
 use gt_adapter_sqlite::SqliteStore;
 use gt_adapter_techstack::{
-    DefaultMarkerProvider, JavaTechStackAdapter, JsTechStackAdapter, PythonTechStackAdapter,
-    RustTechStackAdapter,
+    DefaultMarkerProvider, DotnetTechStackAdapter, JavaTechStackAdapter, JsTechStackAdapter,
+    PythonTechStackAdapter, RubyTechStackAdapter, RustTechStackAdapter,
 };
 use gt_adapter_resource::MyBatisMapperAdapter;
 use gt_domain::model::{Project, ProjectConfig};
@@ -70,7 +70,9 @@ impl TestInfra {
                 .register(Box::new(JsTechStackAdapter::new()))
                 .register(Box::new(JavaTechStackAdapter::new()))
                 .register(Box::new(PythonTechStackAdapter::new()))
-                .register(Box::new(RustTechStackAdapter::new())),
+                .register(Box::new(RustTechStackAdapter::new()))
+                .register(Box::new(RubyTechStackAdapter::new()))
+                .register(Box::new(DotnetTechStackAdapter::new())),
             markers: DefaultMarkerProvider::new(),
             resources: DefaultResourceAdapterRegistry::new()
                 .register(Box::new(MyBatisMapperAdapter::default())),

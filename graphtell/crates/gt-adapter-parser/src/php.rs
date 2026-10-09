@@ -8,9 +8,10 @@ use std::collections::HashSet;
 use gt_domain::error::{DomainError, Result};
 use gt_domain::model::{
     CallSiteFact, ConfigEntryFact, Declaration, EdgeKind, FactValue, FieldTypeFact, ImportFact,
-    InheritanceFact, Language, NodeKind, SyntaxFacts,
+    InheritanceFact, Language, NodeKind, Span, SyntaxFacts, TemplateBindingFact,
 };
 use gt_domain::model::syntax::{HeaderAssignFact, SignCompareFact, VariableAssignFact};
+use regex::Regex;
 use serde_json::json;
 use tree_sitter::{Language as TsLanguage, Node, Parser};
 use crate::ts_util::{field_children, span_of, text_owned as text};
@@ -77,6 +78,12 @@ impl LanguageParser for PhpParser {
     }
 
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {
+        // Blade / pHtml templates mix Blade directives (and HTML) with `<?php ?>`; tree-sitter-php only parses
+        // the PHP blocks, so the template layer (component refs / view includes / route refs) is extracted from
+        // the raw text and returned as template bindings.
+        if is_php_template(path) {
+            return Ok(extract_php_template(source, path));
+        }
         let tree = PARSER.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let parser = borrow.get_or_insert_with(|| {
@@ -1087,6 +1094,160 @@ fn cors_header_key(node: Node, src: &str) -> Option<String> {
     }
 }
 
+/// A `.blade.php` (Laravel) or `.phtml` file mixes Blade directives / HTML with `<?php ?>`; tree-sitter-php
+/// only parses the PHP blocks, so the template layer is extracted from the raw text and surfaced as bindings.
+fn is_php_template(path: &str) -> bool {
+    path.contains(".blade.") || path.ends_with(".phtml")
+}
+
+fn regex_php_template_component() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"<(?:x-|livewire:)([A-Za-z0-9_-]+)").unwrap())
+}
+fn regex_php_template_include() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"@(?:include|includeIf|extends|component)\(\s*['"]([^'"]+)['"]"#).unwrap()
+    })
+}
+fn regex_php_template_route() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"route\(\s*['"]([^'"]+)['"]"#).unwrap())
+}
+// URL-form route refs. Blade passes URLs three ways — a literal (`<form action="/api/orders">`),
+// via the `url()` helper (`<a href="{{ url('/api/orders') }}">`), or a named `route('name')`
+// (`regex_php_template_route`, above). Only the literal / `url()` forms carry a URL, so they alone
+// become a `template-route` call site that the universal `template-route-http-contract` rule turns
+// into an `HttpContract` + `CallsHttp` edge. A named `route('name')` has no URL and stays a plain
+// queryable call site.
+fn regex_php_template_form_action() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"<form\b[^>]*\baction\s*=\s*["'](/[^"']*)["']"#).unwrap()
+    })
+}
+fn regex_php_template_a_href() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"<a\b[^>]*\bhref\s*=\s*["'](/[^"']*)["']"#).unwrap()
+    })
+}
+fn regex_php_template_url_helper() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"url\(\s*['"](/[^'"]*)['"]"#).unwrap()
+    })
+}
+
+/// Extract Blade / pHtml template bindings from raw text: component refs (`<x-hello>` / `<livewire:foo>`),
+/// view includes (`@include` / `@extends` / `@component`), and backend route references (`route('name')`).
+fn extract_php_template(source: &str, path: &str) -> SyntaxFacts {
+    let mut facts = SyntaxFacts::default();
+    for m in regex_php_template_component().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "component_ref".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_php_template_include().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "include".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_php_template_route().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "route".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    // URL-form route refs become `route` bindings too; the mirror step below only turns those whose
+    // name starts with `/` into the synthetic `template-route` call site, so literals and `url()`
+    // helpers (both carrying a `/`-prefixed URL) bridge to the endpoint, while a named `route('name')`
+    // stays a queryable call site.
+    for re in [
+        regex_php_template_form_action(),
+        regex_php_template_a_href(),
+        regex_php_template_url_helper(),
+    ] {
+        for m in re.captures_iter(source) {
+            facts.template_bindings.push(TemplateBindingFact {
+                kind: "route".to_string(),
+                name: m[1].to_string(),
+                handler: None,
+                owner_fqn: path.to_string(),
+                span: Span::default(),
+            });
+        }
+    }
+    // Mirror into classical facts so CfAst links them without special-casing the back end (same pattern as the
+    // JS front-end parser): `component_ref` / `include` -> an `Import` (a view depends on a component / included
+    // partial); `route` -> a `CallSite` (the rendered view reaches a backend endpoint).
+    for tb in &facts.template_bindings {
+        match tb.kind.as_str() {
+            "component_ref" | "include" => {
+                facts.imports.push(ImportFact {
+                    name: tb.name.clone(),
+                    alias: None,
+                    span: tb.span.clone(),
+                });
+            }
+            "route" => {
+                // A route reference from a template. URL-form refs (`<form action="/api/orders">`,
+                // `<a href="/path">`, a template fetch) become an `HttpContract` + `CallsHttp` edge exactly like
+                // the front-end `http-contract` rule (the synthetic `template-route` callee is matched by
+                // `fkb/universal/common.yaml::template-route-http-contract`); the view then links to the backend
+                // endpoint and bridges to the route-declared contract. Named routes (`route('name')`,
+                // `{% url 'name' %}`) carry no URL, so they stay a queryable CallSite instead of fabricating an
+                // orphan contract.
+                if tb.name.starts_with('/') {
+                    facts.call_sites.push(CallSiteFact {
+                        owner_fqn: tb.owner_fqn.clone(),
+                        owner_class: None,
+                        callee_text: "template-route".to_string(),
+                        snippet: None,
+                        receiver: None,
+                        method: None,
+                        args: vec![FactValue::Array(vec![
+                            ("url".to_string(), FactValue::String(tb.name.clone())),
+                            ("method".to_string(), FactValue::String("ANY".to_string())),
+                        ])],
+                        span: tb.span.clone(),
+                        db_table: None,
+                        in_loop: false,
+                        entity: None,
+                    });
+                } else {
+                    facts.call_sites.push(CallSiteFact {
+                        owner_fqn: tb.owner_fqn.clone(),
+                        owner_class: None,
+                        callee_text: tb.name.clone(),
+                        snippet: None,
+                        receiver: None,
+                        method: None,
+                        args: Vec::new(),
+                        span: tb.span.clone(),
+                        db_table: None,
+                        in_loop: false,
+                        entity: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    facts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1632,6 +1793,119 @@ class M {
             .find(|c| c.method.as_deref() == Some("m"))
             .expect("the member call must be captured");
         assert_eq!(member.args.len(), 2, "a member call keeps its arguments: {:?}", member.args);
+    }
+
+    /// Laravel Blade: `<x-hello />` / `<livewire:foo />` are component refs, `@include` / `@extends` are view
+    /// includes, and `route('name')` is a backend route reference. These surface as `TemplateBindingFact`s
+    /// (the front-end-style `component_ref` plus backend-specific `include` / `route`).
+    #[test]
+    fn blade_template_yields_component_ref_include_and_route_bindings() {
+        let src = r#"
+          <x-hello :user="$u" />
+          <livewire:counter />
+          @include('partials.header')
+          @extends('layouts.app')
+          <a href="{{ route('user.profile') }}">profile</a>
+          <form action="/api/orders" method="post">@csrf<input name="q"></form>
+          <a href="/api/items">items</a>
+        "#;
+        let facts = PhpParser::new()
+            .unwrap()
+            .parse("resources/views/profile.blade.php", src)
+            .unwrap();
+
+        let comps: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "component_ref")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(comps.contains(&"hello"), "x-hello -> component ref hello: {comps:?}");
+        assert!(
+            comps.contains(&"counter"),
+            "livewire:counter -> component ref counter: {comps:?}"
+        );
+
+        let includes: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "include")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(
+            includes.contains(&"partials.header"),
+            "@include -> include: {includes:?}"
+        );
+        assert!(
+            includes.contains(&"layouts.app"),
+            "@extends -> include: {includes:?}"
+        );
+
+        let routes: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "route")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(
+            routes.contains(&"user.profile"),
+            "route('user.profile') -> route: {routes:?}"
+        );
+
+        // component_ref + include must be mirrored into `imports`, and route into `call_sites`, so CfAst links
+        // them into the graph (same pattern as the JS front-end parser).
+        let import_names: Vec<&str> = facts.imports.iter().map(|i| i.name.as_str()).collect();
+        assert!(import_names.contains(&"hello"), "x-hello -> import hello: {import_names:?}");
+        assert!(
+            import_names.contains(&"partials.header"),
+            "@include -> import partials.header: {import_names:?}"
+        );
+        assert!(
+            facts.call_sites.iter().any(|c| c.callee_text == "user.profile"),
+            "route -> call site user.profile"
+        );
+
+        // URL-form refs (`<form action="/api/orders">`, `<a href="/api/items">`) become the synthetic
+        // `template-route` call site (not a named-route call site), packed as
+        // `Array([("url", ..), ("method", "ANY")])` so the universal `template-route-http-contract` rule
+        // can read it via `field: "url"` / `field: "method"`.
+        assert!(
+            facts.call_sites.iter().any(|c| c.callee_text == "template-route"
+                && matches!(
+                    c.args.first(),
+                    Some(FactValue::Array(items))
+                        if items.iter().any(|(k, v)| k == "url" && v == &FactValue::String("/api/orders".to_string()))
+                           && items.iter().any(|(k, v)| k == "method" && v == &FactValue::String("ANY".to_string()))
+                )),
+            "form action -> CallsHttp contract /api/orders (url + method:ANY packed into args[0])"
+        );
+        assert!(
+            facts.call_sites.iter().any(|c| c.callee_text == "template-route"
+                && matches!(
+                    c.args.first(),
+                    Some(FactValue::Array(items))
+                        if items.iter().any(|(k, v)| k == "url" && v == &FactValue::String("/api/items".to_string()))
+                           && items.iter().any(|(k, v)| k == "method" && v == &FactValue::String("ANY".to_string()))
+                )),
+            "anchor href -> CallsHttp contract /api/items (url + method:ANY packed into args[0])"
+        );
+    }
+
+    /// A plain `.php` (non-Blade) file must NOT be diverted to the template extractor — it still goes through
+    /// tree-sitter so class/method declarations are produced normally.
+    #[test]
+    fn plain_php_is_not_treated_as_template() {
+        let src = "<?php class Foo { public function bar() {} }";
+        let facts = PhpParser::new().unwrap().parse("Foo.php", src).unwrap();
+        assert!(
+            facts.template_bindings.is_empty(),
+            "a plain .php must not yield template bindings: {:?}",
+            facts.template_bindings
+        );
+        assert!(
+            facts.declarations.iter().any(|d| d.name == "Foo"),
+            "a plain .php must still be parsed for declarations"
+        );
     }
 }
 

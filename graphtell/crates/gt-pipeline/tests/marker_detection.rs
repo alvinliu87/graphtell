@@ -34,6 +34,13 @@ fn marker_body(file: &str) -> &'static str {
         "requirements.txt" => "flask>=2.0\n",
         "setup.py" => "from setuptools import setup\n\nsetup(name=\"demo\")\n",
         "Pipfile" => "[packages]\nflask = \"*\"\n",
+        // Ruby / Rails markers.
+        "Gemfile" => "source 'https://rubygems.org'\ngem 'rails', '~> 7.0'\n",
+        "Gemfile.lock" => "GEM\n  remote: https://rubygems.org/\n  specs:\n",
+        "*.gemspec" => "Gem::Specification.new do |s|\n  s.name = 'demo'\n  s.version = '0.1.0'\nend\n",
+        // .NET markers.
+        "*.csproj" => "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+        "*.sln" => "Microsoft Visual Studio Solution File, Format Version 12.00\n# Visual Studio Version 17\n",
         other => panic!("no fixture body for marker `{other}` — add one for the new marker"),
     }
 }

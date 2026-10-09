@@ -32,6 +32,14 @@ pub use rust::RustTechStackAdapter;
 pub mod js;
 pub use js::JsTechStackAdapter;
 
+/// The Ruby tech-stack adapter (Bundler / Rails conventions, declared minimally for sub-project detection).
+pub mod ruby;
+pub use ruby::RubyTechStackAdapter;
+
+/// The .NET tech-stack adapter (NuGet / MSBuild conventions, declared minimally for sub-project detection).
+pub mod dotnet;
+pub use dotnet::DotnetTechStackAdapter;
+
 /// The default sub-project detection markers, one entry per ecosystem.
 pub struct DefaultMarkerProvider;
 
@@ -116,6 +124,34 @@ impl MarkerProvider for DefaultMarkerProvider {
                 language: Language::new(Language::PYTHON),
                 role: "backend".into(),
             },
+            // Ruby / Rails: `Gemfile` (and `Gemfile.lock`) are stable basenames; a `.gemspec` is a glob
+            // (`*.gemspec`) matched by the `*`-prefix marker convention.
+            Marker {
+                file: "Gemfile".into(),
+                language: Language::new(Language::RUBY),
+                role: "backend".into(),
+            },
+            Marker {
+                file: "Gemfile.lock".into(),
+                language: Language::new(Language::RUBY),
+                role: "backend".into(),
+            },
+            Marker {
+                file: "*.gemspec".into(),
+                language: Language::new(Language::RUBY),
+                role: "backend".into(),
+            },
+            // .NET: `*.csproj` / `*.sln` are globs (no stable basename), matched by the `*`-prefix convention.
+            Marker {
+                file: "*.csproj".into(),
+                language: Language::new(Language::CSHARP),
+                role: "backend".into(),
+            },
+            Marker {
+                file: "*.sln".into(),
+                language: Language::new(Language::CSHARP),
+                role: "backend".into(),
+            },
         ]
     }
 }
@@ -165,6 +201,11 @@ mod tests {
             ("requirements.txt", "python", "backend"),
             ("setup.py", "python", "backend"),
             ("Pipfile", "python", "backend"),
+            ("Gemfile", "ruby", "backend"),
+            ("Gemfile.lock", "ruby", "backend"),
+            ("*.gemspec", "ruby", "backend"),
+            ("*.csproj", "csharp", "backend"),
+            ("*.sln", "csharp", "backend"),
         ];
         for (file, lang, role) in expected {
             let m = markers
@@ -193,6 +234,8 @@ mod tests {
             Box::new(PythonTechStackAdapter::new()),
             Box::new(RustTechStackAdapter::new()),
             Box::new(JsTechStackAdapter::new()),
+            Box::new(RubyTechStackAdapter::new()),
+            Box::new(DotnetTechStackAdapter::new()),
         ];
         const PARSERLESS: &[&str] = &["go"];
 

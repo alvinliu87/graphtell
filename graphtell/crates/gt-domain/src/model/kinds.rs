@@ -428,6 +428,8 @@ impl Language {
     pub const JAVA: &'static str = "java";
     pub const PYTHON: &'static str = "python";
     pub const RUST: &'static str = "rust";
+    pub const RUBY: &'static str = "ruby";
+    pub const CSHARP: &'static str = "csharp";
     pub const UNKNOWN: &'static str = "unknown";
 
     pub fn new<S: Into<String>>(s: S) -> Self {

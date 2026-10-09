@@ -29,9 +29,10 @@ use std::collections::{HashMap, HashSet};
 use gt_domain::error::Result;
 use gt_domain::model::{
     CallSiteFact, Declaration, EdgeKind, FactValue, ImportFact, InheritanceFact, Language, NodeKind,
-    SyntaxFacts,
+    Span, SyntaxFacts, TemplateBindingFact,
 };
 use gt_domain::port::LanguageParser;
+use regex::Regex;
 use serde_json::json;
 use tree_sitter::{Node, Parser};
 
@@ -58,10 +59,25 @@ impl LanguageParser for PythonParser {
     }
 
     fn extensions(&self) -> &'static [&'static str] {
-        &["py", "pyi"]
+        // `.html` / `.htm` are added so Django / Jinja2 templates are parsed by this parser (the `parse`
+        // path routes them through `extract_python_template`). Static frontend `.html` (no `{%` / `{{`)
+        // is returned as an empty fact set below, so it is left as a bare File node instead of being
+        // force-fed through the Python code parser.
+        &["py", "pyi", "html", "htm"]
     }
 
     fn parse(&self, path: &str, source: &str) -> Result<SyntaxFacts> {
+        // Django / Jinja2 templates (`.html` / `.htm` containing `{% %}` / `{{ }}`) are not valid Python; the
+        // template layer (view extends/includes, component tags, `{% url %}` + form-action route refs) is extracted.
+        if is_python_template(path, source) {
+            return Ok(extract_python_template(source, path));
+        }
+        // A `.html` / `.htm` file without `{%` / `{{` is a static frontend asset, not a Python / Jinja
+        // template — don't push it through the Python code parser (which would fabricate spurious nodes
+        // from raw HTML tags). It is left as a bare File node.
+        if path.to_ascii_lowercase().ends_with(".html") || path.to_ascii_lowercase().ends_with(".htm") {
+            return Ok(SyntaxFacts::default());
+        }
         let tree = PARSER.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let parser = borrow.get_or_insert_with(|| {
@@ -780,6 +796,132 @@ fn snippet_of(node: Node, src: &[u8]) -> Option<String> {
     Some(format!("{}…", &line[..end]))
 }
 
+/// Django / Jinja2 templates (`.html` / `.htm` containing `{% %}` / `{{ }}`) are not valid Python, so tree-sitter
+/// cannot parse them; the template layer is extracted from the raw text and surfaced as bindings.
+fn is_python_template(path: &str, source: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    (p.ends_with(".html") || p.ends_with(".htm")) && (source.contains("{%") || source.contains("{{"))
+}
+
+fn regex_py_include() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\{%\s*(?:extends|include)\s+["']([^"']+)["']"#).unwrap())
+}
+fn regex_py_component() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\{%\s*component\s+["']([^"']+)["']"#).unwrap())
+}
+fn regex_py_url() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\{%\s*url\s+["']([^"']+)["']"#).unwrap())
+}
+fn regex_py_form_action() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"<form\b[^>]*\baction\s*=\s*["']([^"']+)["']"#).unwrap())
+}
+
+/// Extract Django / Jinja2 template bindings from raw text: view includes, component refs, and route references.
+fn extract_python_template(source: &str, path: &str) -> SyntaxFacts {
+    let mut facts = SyntaxFacts::default();
+    for m in regex_py_include().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "include".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_py_component().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "component_ref".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_py_url().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "route".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    for m in regex_py_form_action().captures_iter(source) {
+        facts.template_bindings.push(TemplateBindingFact {
+            kind: "route".to_string(),
+            name: m[1].to_string(),
+            handler: None,
+            owner_fqn: path.to_string(),
+            span: Span::default(),
+        });
+    }
+    // Mirror into classical facts so CfAst links them without special-casing the back end (same pattern as the
+    // JS front-end parser): `component_ref` / `include` -> an `Import` (a view depends on a component / included
+    // partial); `route` -> a `CallSite` (the rendered view reaches a backend endpoint).
+    for tb in &facts.template_bindings {
+        match tb.kind.as_str() {
+            "component_ref" | "include" => {
+                facts.imports.push(ImportFact {
+                    name: tb.name.clone(),
+                    alias: None,
+                    span: tb.span.clone(),
+                });
+            }
+            "route" => {
+                // A route reference from a template. URL-form refs (`<form action="/api/users">`,
+                // `<a href="/path">`, a template fetch) become an `HttpContract` + `CallsHttp` edge exactly like
+                // the front-end `http-contract` rule (the synthetic `template-route` callee is matched by
+                // `fkb/universal/common.yaml::template-route-http-contract`); the view then links to the backend
+                // endpoint and bridges to the route-declared contract. Named routes (`{% url 'name' %}`) carry no
+                // URL, so they stay a queryable CallSite instead of fabricating an orphan contract.
+                if tb.name.starts_with('/') {
+                    // Mirror the front-end `http-contract` convention: `args[0]` is an object carrying both
+                    // the endpoint `url` and the `method`, so the universal rule can read them via
+                    // `field: "url"` / `field: "method"` (same shape as the JS parser's `axios` / `fetch`
+                    // call sites). The method is `ANY` because a backend template URL ref is method-agnostic
+                    // and must merge onto the route-declared `ANY` contract, closing the view -> backend link.
+                    facts.call_sites.push(CallSiteFact {
+                        owner_fqn: tb.owner_fqn.clone(),
+                        owner_class: None,
+                        callee_text: "template-route".to_string(),
+                        snippet: None,
+                        receiver: None,
+                        method: None,
+                        args: vec![FactValue::Array(vec![
+                            ("url".to_string(), FactValue::String(tb.name.clone())),
+                            ("method".to_string(), FactValue::String("ANY".to_string())),
+                        ])],
+                        span: tb.span.clone(),
+                        db_table: None,
+                        in_loop: false,
+                        entity: None,
+                    });
+                } else {
+                    facts.call_sites.push(CallSiteFact {
+                        owner_fqn: tb.owner_fqn.clone(),
+                        owner_class: None,
+                        callee_text: tb.name.clone(),
+                        snippet: None,
+                        receiver: None,
+                        method: None,
+                        args: Vec::new(),
+                        span: tb.span.clone(),
+                        db_table: None,
+                        in_loop: false,
+                        entity: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    facts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,6 +1393,104 @@ def f(x=Depends(Repo), y=Depends(T)):
             resolve_relative_module("...x", "a.b"),
             "x",
             "walking past the root must be clamped instead of panicking"
+        );
+    }
+
+    /// Django/Jinja2: `{% extends %}` / `{% include %}` are view includes, `{% component %}` is a component ref,
+    /// and `{% url %}` / `<form action>` are backend route references. Surfaced as `TemplateBindingFact`s.
+    #[test]
+    fn django_template_yields_include_component_and_route_bindings() {
+        let src = r#"
+          {% extends "base.html" %}
+          {% include "sidebar.html" %}
+          {% component "card" %}
+          <form action="/api/users" method="post"></form>
+          <a href="{% url 'user.detail' %}">detail</a>
+        "#;
+        let facts = PythonParser::new()
+            .unwrap()
+            .parse("templates/profile.html", src)
+            .unwrap();
+
+        let includes: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "include")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(includes.contains(&"base.html"), "extends -> include: {includes:?}");
+        assert!(
+            includes.contains(&"sidebar.html"),
+            "include -> include: {includes:?}"
+        );
+
+        let comps: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "component_ref")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(
+            comps.contains(&"card"),
+            "component -> component_ref: {comps:?}"
+        );
+
+        let routes: Vec<&str> = facts
+            .template_bindings
+            .iter()
+            .filter(|b| b.kind == "route")
+            .map(|b| b.name.as_str())
+            .collect();
+        assert!(
+            routes.contains(&"/api/users"),
+            "form action -> route: {routes:?}"
+        );
+        assert!(
+            routes.contains(&"user.detail"),
+            "url -> route: {routes:?}"
+        );
+
+        // component_ref + include must be mirrored into `imports`, and route into `call_sites`, so CfAst links
+        // them into the graph.
+        let import_names: Vec<&str> = facts.imports.iter().map(|i| i.name.as_str()).collect();
+        assert!(
+            import_names.contains(&"base.html"),
+            "extends -> import base.html: {import_names:?}"
+        );
+        assert!(import_names.contains(&"card"), "component -> import card: {import_names:?}");
+        assert!(
+            facts.call_sites.iter().any(|c| c.callee_text == "user.detail"),
+            "url -> call site user.detail"
+        );
+        assert!(
+            facts.call_sites.iter().any(|c| c.callee_text == "template-route"
+                && matches!(
+                    c.args.first(),
+                    Some(FactValue::Array(items))
+                        if items.iter().any(|(k, v)| k == "url" && v == &FactValue::String("/api/users".to_string()))
+                           && items.iter().any(|(k, v)| k == "method" && v == &FactValue::String("ANY".to_string()))
+                )),
+            "form action -> CallsHttp contract /api/users (url + method:ANY packed into args[0])"
+        );
+    }
+
+    /// A plain `.py` (and a `.html` without template markers) must NOT be diverted to the template extractor.
+    #[test]
+    fn plain_python_is_not_treated_as_template() {
+        let src = "def foo():\n    return 1\n";
+        let facts = PythonParser::new().unwrap().parse("app/views.py", src).unwrap();
+        assert!(
+            facts.template_bindings.is_empty(),
+            "plain .py must not yield template bindings: {:?}",
+            facts.template_bindings
+        );
+
+        let html = "<html><body>plain</body></html>";
+        let facts2 = PythonParser::new().unwrap().parse("static/plain.html", html).unwrap();
+        assert!(
+            facts2.template_bindings.is_empty(),
+            "a .html without template markers must not yield bindings: {:?}",
+            facts2.template_bindings
         );
     }
 }

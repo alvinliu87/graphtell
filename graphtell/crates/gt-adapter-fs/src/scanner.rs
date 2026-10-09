@@ -73,7 +73,7 @@ pub fn language_of_extension(ext: &str) -> Option<Language> {
         "php" | "phtml" | "php5" | "php7" | "php8" | "inc" => Some(Language::new(Language::PHP)),
         "js" | "jsx" | "mjs" | "cjs" | "vue" => Some(Language::new(Language::JAVASCRIPT)),
         "ts" | "tsx" => Some(Language::new(Language::TYPESCRIPT)),
-        "java" => Some(Language::new(Language::JAVA)),
+        "java" | "jsp" | "jspx" | "ftl" | "vm" => Some(Language::new(Language::JAVA)),
         "rs" => Some(Language::new(Language::RUST)),
         // The languages below already appear in the sub-project marker table (`go.mod` / `pyproject.toml` / …) but were
         // missing from the extension table — the omission made those sub-projects detected yet left with zero source files.
@@ -268,12 +268,27 @@ impl FileScanner for WalkDirScanner {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            if names.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+            if names.iter().any(|n| marker_name_matches(n, &name)) {
                 out.push(entry.path().to_path_buf());
             }
         }
         out.sort();
         Ok(out)
+    }
+}
+
+/// Match a marker name against a discovered file basename.
+///
+/// An exact (case-insensitive) match is the common case. A `*`-prefixed pattern is a suffix glob
+/// (`*.csproj` matches `MyProject.csproj`), so ecosystems without a fixed manifest basename (Ruby
+/// gemspecs, .NET project / solution files) can still be detected as sub-project markers.
+fn marker_name_matches(pattern: &str, name: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        let suffix = suffix.to_ascii_lowercase();
+        let name = name.to_ascii_lowercase();
+        name.len() >= suffix.len() && name.ends_with(&suffix)
+    } else {
+        pattern.eq_ignore_ascii_case(name)
     }
 }
 

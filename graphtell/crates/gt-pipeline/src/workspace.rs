@@ -718,6 +718,19 @@ impl GraphWorkspace {
         self.by_fqn.get(fqn).copied().map(NodeId)
     }
 
+    /// Register a synthesised node under a name so `find_by_name` can resolve to it.
+    ///
+    /// Synthesised nodes intentionally carry no `fqn` (they are not source declarations), so they are
+    /// not indexed by `add_node`. That is correct for most of them, but a `Named` synthesised node whose
+    /// whole point is "this literal identity *is* a thing" (e.g. a route's `controller#action` handler)
+    /// must be reachable by that literal when another rule links `HandledBy`/`Consumes` to it. Indexing
+    /// it under its identity value makes `find_by_name` work without giving it a fabricated `fqn`.
+    pub fn register_synthesized_name(&mut self, id: NodeId, name: &str) {
+        if !name.is_empty() {
+            self.by_fqn.entry(name.to_string()).or_insert(id.get());
+        }
+    }
+
     /// Look up the synthesized Table node by table name.
     ///
     /// Writings like `Db::name('goods')` get normalized via `strip_prefix → singularize → ...` at P5, so

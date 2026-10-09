@@ -226,11 +226,23 @@ pub fn assign_files(files: &mut [SourceFile], subs: &[SubProject], root: &Path) 
 fn marker_of(path: &Path, known: &[Marker]) -> (String, String, String) {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     for m in known {
-        if m.file.eq_ignore_ascii_case(name) {
+        if marker_name_matches(&m.file, name) {
             return (m.language.as_str().to_string(), m.role.clone(), m.file.clone());
         }
     }
     ("unknown".to_string(), "unknown".to_string(), name.to_string())
+}
+
+/// Match a marker name against a discovered file basename (see `gt_adapter_fs::scanner::marker_name_matches`
+/// for the same convention used by marker discovery).
+fn marker_name_matches(pattern: &str, name: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        let suffix = suffix.to_ascii_lowercase();
+        let name = name.to_ascii_lowercase();
+        name.len() >= suffix.len() && name.ends_with(&suffix)
+    } else {
+        pattern.eq_ignore_ascii_case(name)
+    }
 }
 
 /// Beyond the `frontend` / `backend` tiers, further recognise the sub-project **type**, so the legend and filters

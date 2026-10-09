@@ -9,11 +9,13 @@ use gt_domain::error::{DomainError, Result};
 use gt_domain::model::Language;
 use gt_domain::port::{LanguageParser, ParserRegistry};
 
+use crate::dotnet::DotnetParser;
 use crate::java::JavaParser;
 use crate::js::JsFrontendParser;
 use crate::json::JsonParser;
 use crate::php::PhpParser;
 use crate::python::PythonParser;
+use crate::ruby::RubyParser;
 use crate::rust::RustParser;
 
 /// The default registry.
@@ -32,6 +34,12 @@ impl DefaultParserRegistry {
         }
         if let Ok(p) = PythonParser::new() {
             parsers.insert(Language::PYTHON.to_string(), Box::new(p));
+        }
+        if let Ok(p) = RubyParser::new() {
+            parsers.insert(Language::RUBY.to_string(), Box::new(p));
+        }
+        if let Ok(p) = DotnetParser::new() {
+            parsers.insert(Language::CSHARP.to_string(), Box::new(p));
         }
         if let Ok(p) = JsFrontendParser::new() {
             parsers.insert(Language::JAVASCRIPT.to_string(), Box::new(p));
@@ -124,10 +132,10 @@ mod tests {
             .iter()
             .map(|l| l.as_str().to_string())
             .collect();
-        for want in ["php", "java", "python", "javascript", "typescript", "json", "rust"] {
+        for want in ["php", "java", "python", "javascript", "typescript", "json", "rust", "ruby", "csharp"] {
             assert!(langs.iter().any(|l| l == want), "missing language `{want}`: {langs:?}");
         }
-        assert_eq!(langs.len(), 7, "no extra or duplicated language may be registered: {langs:?}");
+        assert_eq!(langs.len(), 9, "no extra or duplicated language may be registered: {langs:?}");
         let mut sorted = langs.clone();
         sorted.sort();
         assert_eq!(langs, sorted, "supported_languages must be sorted (the order is passed up to the enumeration)");
@@ -276,6 +284,9 @@ mod tests {
         assert_eq!(lang_of("pyi").as_deref(), Some("python"));
         assert_eq!(lang_of("json").as_deref(), Some("json"));
         assert_eq!(lang_of("rs").as_deref(), Some("rust"));
+        assert_eq!(lang_of("erb").as_deref(), Some("ruby"));
+        assert_eq!(lang_of("cshtml").as_deref(), Some("csharp"));
+        assert_eq!(lang_of("razor").as_deref(), Some("csharp"));
 
         // A miss must be a miss, not a guess.
         assert!(lang_of("cobol").is_none(), "an unknown extension must not fall back to some language");

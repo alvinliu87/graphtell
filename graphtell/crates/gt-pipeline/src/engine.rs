@@ -994,6 +994,14 @@ fn exec_synthesize_one(
 
     let (node_id, created) = ctx.ws.get_or_create_synthesized(new_node);
 
+    // A `Named` synthesised node *is* its literal identity (e.g. a route's `controller#action` handler);
+    // register it under that value so `find_by_name` (used by `HandledBy`/`Consumes` link resolution)
+    // can resolve to it. Synthesised nodes carry no `fqn`, so `add_node` does not index them — without
+    // this, such links silently degrade to pending/unresolved.
+    if identity.kind.0.as_str() == SynthesizedKind::NAMED {
+        ctx.ws.register_synthesized_name(node_id, &identity.value);
+    }
+
     // Record "where this semantic object comes from in source", for the frontend to give a **multi-location** jump list
     if let Some(loc) = location_of(ctx, mctx) {
         let (file, line) = match loc.split_once(':') {

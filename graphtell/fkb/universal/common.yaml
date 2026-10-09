@@ -78,3 +78,38 @@ rules:
             - kind: frontend.called
               confidence: 0.9
           merge: Coexist
+
+  # ===== P5 Synthesize: backend template route -> HttpContract =====
+  # Backend view templates (Blade / Thymeleaf-JSP / Django) reference endpoints either by URL
+  # (`<form action="/api/orders">`, `<a href="/path">`, a template fetch) or by named route
+  # (`route('name')` / `{% url 'name' %}`). The parsers emit a synthetic `template-route` call with the URL in
+  # `args[0]` for URL-form refs (named routes stay a plain CallSite), so this rule mirrors the front-end
+  # `http-contract` rule: it synthesizes an `HttpContract` + `CallsHttp` edge and bridges to the route-declared
+  # contract (method-agnostic `ANY` so it links regardless of the verb the view omitted).
+  - id: template-route-http-contract
+    languages: ["*"]
+    phase: Synthesize
+    selector:
+      kind: call
+      callee: "template-route"
+    binding:
+      - Synthesize:
+          node: HttpContract
+          identity:
+            kind: ContractId
+            method: { arg: 0, field: "method", default: "ANY", normalize: [upper] }
+            path:
+              arg: 0
+              field: "url"
+              require_literal: true
+              reject_contains: ["://"]
+              normalize:
+                - strip_prefix: ["api/"]
+                - leading_slash
+                - param_wildcard
+          fields:
+            - name: side
+              value: { literal: "backend" }
+          link: { kind: CallsHttp, direction: incoming }
+          bridge: { kind: ResolvesToContract, confidence: 0.9 }
+          confidence: 0.9
