@@ -48,6 +48,31 @@ exclude_rules:
 semantic_edge_kinds: [ForeignKey]
 bridge_edge_kinds: [References]
 
+# ---------------------------------------------------------------- db connections
+# Django enumerates its database connections in `settings.py` as `DATABASES = { 'default': {...}, ... }`
+# — the same multi-connection enumeration problem as PHP's `config/database.php`, solved with the same
+# `root.<name>.<field>` scheme so the kernel's downstream handling (and the `db_prefix` derivation in
+# prepare) is unchanged across stacks. Django has **no** per-connection table prefix, so no `prefix`
+# field is declared; the prepare step simply finds no `prefix` and records nothing, which is correct —
+# Django table names come from the models, not a connection prefix.
+root_rules:
+  - id: db-connections
+    key: db_connections
+    source:
+      kind: manifest_entries
+      manifest: settings.py
+      root: DATABASES
+      default_from: default
+      fields:
+        - { name: name, from: key }
+        # Django spells the backend `ENGINE` (e.g. `django.db.backends.mysql`); the difference from
+        # PHP's `type` / Laravel's `driver` is exactly what belongs in this file, not in the kernel.
+        - { name: engine, pointer: "{key}.ENGINE" }
+        - { name: database, pointer: "{key}.NAME" }
+        - { name: host, pointer: "{key}.HOST" }
+        - { name: port, pointer: "{key}.PORT" }
+    confidence: 1.0
+
 # ---------------------------------------------------------------- P3 loading
 loaders:
   # Route table + guards: the recognition logic is declared by `route_guards` below.
