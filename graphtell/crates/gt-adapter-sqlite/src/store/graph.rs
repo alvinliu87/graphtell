@@ -798,10 +798,16 @@ impl GraphQuery for SqliteStore {
         // Per-sub accumulators.
         let mut total: std::collections::HashMap<i64, u64> = std::collections::HashMap::new();
         let mut covered: std::collections::HashMap<i64, u64> = std::collections::HashMap::new();
-        // Distinct-callee sampling of uncovered call sites, capped per sub-project.
+        // Sampling of uncovered call sites, grouped by callee and **ranked by frequency** (capped per
+        // sub-project). Taking them in scan order instead surfaces whatever is parsed first — in practice
+        // `require` / `console.log` / `Math.min` noise — and hides the callees that actually matter, e.g. a
+        // project-private request wrapper called 900 times. Ranking is what makes the sample actionable.
         const SAMPLE_CAP: usize = 25;
-        let mut samples: std::collections::HashMap<i64, (Vec<UncoveredCall>, std::collections::HashSet<String>)> =
-            std::collections::HashMap::new();
+        // sub -> callee -> (occurrences, representative location)
+        let mut samples: std::collections::HashMap<
+            i64,
+            std::collections::HashMap<String, (u64, UncoveredCall)>,
+        > = std::collections::HashMap::new();
 
         for (id, sub_opt, name, file_id, line) in call_sites {
             let sub = sub_opt.unwrap_or(-1);
@@ -814,29 +820,31 @@ impl GraphQuery for SqliteStore {
                 || covered_nodes.contains(&id);
             if is_covered {
                 *covered.entry(sub).or_insert(0) += 1;
-            } else if let Some(slot) = samples.get_mut(&sub) {
-                if slot.1.len() < SAMPLE_CAP && slot.1.insert(name.clone()) {
-                    slot.0.push(UncoveredCall {
-                        callee: name,
-                        file: file_id.and_then(|fid| file_paths.get(&fid).cloned()),
-                        line: line.max(0) as u32,
-                    });
-                }
-            } else {
-                let mut seen = std::collections::HashSet::new();
-                seen.insert(name.clone());
-                samples.insert(
-                    sub,
-                    (
-                        vec![UncoveredCall {
-                            callee: name,
-                            file: file_id.and_then(|fid| file_paths.get(&fid).cloned()),
-                            line: line.max(0) as u32,
-                        }],
-                        seen,
-                    ),
-                );
+                continue;
             }
+            let bucket = samples.entry(sub).or_default();
+            let entry = bucket.entry(name.clone()).or_insert((
+                0u64,
+                UncoveredCall {
+                    callee: name,
+                    file: file_id.and_then(|fid| file_paths.get(&fid).cloned()),
+                    line: line.max(0) as u32,
+                    count: 0,
+                },
+            ));
+            entry.0 += 1;
+            entry.1.count = entry.0;
+        }
+
+        /// Turn one sub-project's sample bucket into the ranked, capped sample list.
+        fn ranked_sample(
+            bucket: Option<std::collections::HashMap<String, (u64, UncoveredCall)>>,
+        ) -> Vec<UncoveredCall> {
+            let mut out: Vec<UncoveredCall> =
+                bucket.unwrap_or_default().into_values().map(|(_, c)| c).collect();
+            out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.callee.cmp(&b.callee)));
+            out.truncate(SAMPLE_CAP);
+            out
         }
 
         let mut sub_report = Vec::new();
@@ -871,7 +879,7 @@ impl GraphQuery for SqliteStore {
             }
             totals_calls += t;
             totals_covered += c;
-            let (samp, _) = samples.remove(&sid).unwrap_or_default();
+            let samp = ranked_sample(samples.remove(&sid));
             sub_report.push(SubCoverage {
                 sub_project_id: sid,
                 name,
@@ -889,7 +897,7 @@ impl GraphQuery for SqliteStore {
         if let Some(t) = total.get(&-1) {
             let c = covered.get(&-1).unwrap_or(&0);
             let ratio = if *t == 0 { 1.0 } else { *c as f64 / *t as f64 };
-            let (samp, _) = samples.remove(&-1).unwrap_or_default();
+            let samp = ranked_sample(samples.remove(&-1));
             totals_calls += t;
             totals_covered += c;
             with_gaps += 1;

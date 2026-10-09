@@ -344,11 +344,15 @@ pub enum Severity {
 ///
 /// The `callee` is the call site node's name (the called symbol as parsed); `file` / `line` point back
 /// to the source so an LLM (or a human) can write the missing FKB rule without re-reading the whole repo.
+/// `count` is how many call sites share this callee — the sample is ranked by it, because the callee that
+/// appears 900 times is the one worth writing a rule for, not the one that happens to be scanned first.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UncoveredCall {
     pub callee: String,
     pub file: Option<String>,
     pub line: u32,
+    /// How many uncovered call sites share this `callee` (at least 1).
+    pub count: u64,
 }
 
 /// Per-sub-project FKB coverage: how much of its call sites actually became semantic edges.

@@ -222,5 +222,14 @@ restored the previous state exactly, so the loop is safe to iterate.
   call sites). The lesson: **always open the file before writing a rule** — an "invisible" callee is
   often invisible *by design*, and forcing it through produces exactly the wrong-match failure mode
   the authoring guide warns about.
+- **A high `count` still needs triage — the edge may legitimately live elsewhere.** Real case: CRMEB's
+  `Route::get` shows up as `512x` uncovered, but those routes *did* produce contracts (`GET /agent/index`,
+  `PUT /agent/spread`, …). The route declaration is module-level, so its owner is the **route file**, while
+  the semantic edge hangs off the **handler method** in the controller — a different node, so the metric
+  cannot see that the rule fired. The same shape explains most decorator entries: `@Column` is credited
+  because its owner is the class carrying `HasColumn`, whereas `@Get()` with no path is not, because the FKB
+  deliberately builds no contract without a path. Before writing a rule, grep the graph for the contract /
+  node the call *should* have produced — if it already exists, the sample is a false positive and there is
+  nothing to fix.
 - If `language_unknown`, fix detection first (a `detectors.file_exists` + correct `scope: project`),
   because language-gated rules can't fire until the language is known.

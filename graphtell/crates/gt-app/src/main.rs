@@ -538,7 +538,7 @@ fn print_coverage(report: &CoverageReport) {
                     Some(f) => format!("{}:{}", f, c.line),
                     None => "(unknown)".to_string(),
                 };
-                println!("       - {}   ({})", c.callee, loc);
+                println!("       - {:>5}x  {}   ({})", c.count, c.callee, loc);
             }
         }
     }
