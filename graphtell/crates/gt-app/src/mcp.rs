@@ -159,6 +159,15 @@ impl McpBridge {
                         "properties": {},
                         "required": []
                     }
+                },
+                {
+                    "name": "coverage",
+                    "description": "FKB completeness report for the current project: how much of each sub-project's call sites became semantic edges, which callees are invisible, and which sub-projects carry gap flags (language_unknown / no_framework). Mirror of `graphtell coverage`. Use it to judge whether the loaded knowledge base needs more FKB rules (e.g. before / after adding one), or whether a sub-project is an unambiguous knowledge gap. `sub_projects_with_gaps` counts only language_unknown / no_framework; `low_coverage` is advisory only (utility calls and rejected non-literal URLs are expected), so do NOT chase it as a real gap.",
+                    "inputSchema": {
+                        "type":"object",
+                        "properties": {},
+                        "required": []
+                    }
                 }
             ]
         })
@@ -173,6 +182,7 @@ impl McpBridge {
             "check_compliance" => self.check(&args),
             "list_violations" => self.violations(&args),
             "warmup_status" => self.warmup_status(),
+            "coverage" => self.coverage(),
             other => (format!("Unknown tool: {other}"), true),
         };
         Some(json!({
@@ -298,6 +308,17 @@ impl McpBridge {
         let path = format!("/api/projects/{}/warmup", self.project);
         match http_call(&self.base, &path, "GET", None) {
             Ok(resp) => format_warmup(&resp),
+            Err(e) => (format!("Cannot reach the service: {e}"), true),
+        }
+    }
+
+    /// FKB completeness report: hit `/api/projects/{id}/coverage` and summarize how much of each
+    /// sub-project's call sites became semantic edges, which callees are invisible, and which
+    /// sub-projects carry gap flags. Shares the same server-side report with `graphtell coverage`.
+    fn coverage(&self) -> (String, bool) {
+        let path = format!("/api/projects/{}/coverage", self.project);
+        match http_call(&self.base, &path, "GET", None) {
+            Ok(resp) => format_coverage(&resp),
             Err(e) => (format!("Cannot reach the service: {e}"), true),
         }
     }
@@ -508,6 +529,99 @@ fn format_warmup(resp: &str) -> (String, bool) {
     (format!("Warm-up status: {status}"), false)
 }
 
+/// Summarize the `/coverage` response into a compact, human-readable report (mirrors the CLI's
+/// `print_coverage`). `sub_projects_with_gaps` counts only `language_unknown` / `no_framework`;
+/// `low_coverage` is intentionally NOT counted as a gap (utility calls and rejected non-literal
+/// URLs are expected), so the summary only lists sub-projects that carry a real knowledge gap.
+fn format_coverage(resp: &str) -> (String, bool) {
+    let v: Value = match serde_json::from_str(resp) {
+        Ok(v) => v,
+        Err(e) => return (format!("Failed to parse the coverage response: {e}"), true),
+    };
+    if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
+        let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+        return (format!("Service returned a failure: {err}"), true);
+    }
+    let d = match v.get("data") {
+        Some(d) => d,
+        None => return ("Response is missing data".into(), true),
+    };
+    let pid = d.get("project_id").and_then(|x| x.as_i64()).unwrap_or(0);
+    let t = match d.get("totals") {
+        Some(t) => t,
+        None => return ("Coverage report is missing totals".into(), true),
+    };
+    let total = t.get("total_calls").and_then(|x| x.as_u64()).unwrap_or(0);
+    let covered = t.get("covered_calls").and_then(|x| x.as_u64()).unwrap_or(0);
+    let ratio = t.get("coverage_ratio").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let subs = t.get("sub_projects").and_then(|x| x.as_u64()).unwrap_or(0);
+    let with_gaps = t.get("sub_projects_with_gaps").and_then(|x| x.as_u64()).unwrap_or(0);
+    let mut out = format!(
+        "FKB coverage for project #{pid}\n  total call sites: {total}   extracted: {covered}   coverage: {:.1}%\n  sub-projects: {subs}   with gaps: {with_gaps}",
+        ratio * 100.0
+    );
+    if let Some(list) = d.get("sub_projects").and_then(|x| x.as_array()) {
+        let flagged: Vec<&Value> = list
+            .iter()
+            .filter(|s| {
+                s.get("flags")
+                    .and_then(|f| f.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false)
+            })
+            .collect();
+        if !flagged.is_empty() {
+            out.push_str("\n\nGAPS — sub-projects the loaded FKB does not fully see:\n");
+            for s in flagged {
+                let role = s.get("role").and_then(|x| x.as_str()).unwrap_or("-");
+                let lang = s.get("language").and_then(|x| x.as_str()).unwrap_or("-");
+                let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                let fw = s
+                    .get("frameworks")
+                    .and_then(|f| f.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                let sc = s.get("covered_calls").and_then(|x| x.as_u64()).unwrap_or(0);
+                let tc = s.get("total_calls").and_then(|x| x.as_u64()).unwrap_or(0);
+                let sratio = s.get("coverage_ratio").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let flags = s
+                    .get("flags")
+                    .and_then(|f| f.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                out.push_str(&format!(
+                    "  [{role}] {name} ({lang})  frameworks: {fw}   calls {sc}/{tc} ({:.0}%)   flags: {flags}\n",
+                    sratio * 100.0
+                ));
+                if let Some(samples) = s.get("uncovered_samples").and_then(|x| x.as_array()) {
+                    out.push_str("     invisible callees (sample):\n");
+                    for c in samples.iter().take(8) {
+                        let callee = c.get("callee").and_then(|x| x.as_str()).unwrap_or("?");
+                        let count = c.get("count").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let file = c.get("file").and_then(|x| x.as_str());
+                        let line = c.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let loc = file
+                            .map(|f| format!("{f}:{line}"))
+                            .unwrap_or_else(|| "(unknown)".to_string());
+                        out.push_str(&format!("       - {:>5}x  {}   ({})\n", count, callee, loc));
+                    }
+                }
+            }
+        }
+    }
+    (out, false)
+}
+
 // ---------------------------------------------------------------- Minimal local HTTP client
 
 /// Send one HTTP/1.1 request to the resident service and return the body (chunked already handled).
@@ -686,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_tools_list_exposes_the_five_tools() {
+    fn handle_tools_list_exposes_the_six_tools() {
         let r = bridge()
             .handle(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#)
             .unwrap();
@@ -703,7 +817,8 @@ mod tests {
                 "compose_prompt",
                 "check_compliance",
                 "list_violations",
-                "warmup_status"
+                "warmup_status",
+                "coverage"
             ]
         );
     }
@@ -861,5 +976,39 @@ mod tests {
         assert!(out.contains("[error] r f.php:3 — m"));
         assert!(format_check(r#"{"ok":true}"#).1, "a missing data must be marked as an error");
         assert!(format_check(r#"{"ok":false}"#).1);
+    }
+
+    #[test]
+    fn format_coverage_summarizes_totals_and_gaps() {
+        let json = r#"{
+            "ok": true,
+            "data": {
+                "project_id": 15,
+                "totals": {"total_calls": 1000, "covered_calls": 420, "coverage_ratio": 0.42, "sub_projects": 2, "sub_projects_with_gaps": 1},
+                "sub_projects": [
+                    {"role":"backend","language":"javascript","name":"api","frameworks":["express"],"covered_calls":400,"total_calls":900,"coverage_ratio":0.44,"flags":[],"uncovered_samples":[]},
+                    {"role":"backend","language":"unknown","name":"legacy","frameworks":[],"covered_calls":20,"total_calls":100,"coverage_ratio":0.2,"flags":["language_unknown","no_framework"],"uncovered_samples":[{"callee":"foo","count":7,"file":"a.js","line":3}]}
+                ]
+            }
+        }"#;
+        let (out, err) = format_coverage(json);
+        assert!(!err, "a well-formed report must not be an error");
+        assert!(out.contains("coverage for project #15"), "must name the project: {out}");
+        assert!(out.contains("coverage: 42.0%"), "must show the ratio: {out}");
+        assert!(out.contains("with gaps: 1"), "must count only flagged sub-projects: {out}");
+        assert!(out.contains("legacy"), "must list the flagged sub-project: {out}");
+        assert!(out.contains("language_unknown"), "must surface the gap flag: {out}");
+        assert!(out.contains("7x  foo"), "must show invisible callee counts: {out}");
+        assert!(!out.contains("api"), "sub-projects without flags must be omitted: {out}");
+    }
+
+    #[test]
+    fn format_coverage_marks_service_failure_as_error() {
+        assert!(format_coverage(r#"{"ok":false,"error":"boom"}"#).1);
+        assert!(format_coverage("not json").1, "unparseable response must be an error");
+        assert!(
+            format_coverage(r#"{"ok":true}"#).1,
+            "a missing data must be marked as an error"
+        );
     }
 }
