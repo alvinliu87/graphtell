@@ -246,3 +246,90 @@ pub(crate) fn relation_summary(
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::{Edge, EdgeId, EdgeKind, NodeId, Phase, ProjectId};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn mk_edge(from: i64, to: i64, kind: &str) -> Edge {
+        Edge {
+            id: EdgeId(0),
+            project_id: ProjectId(1),
+            kind: EdgeKind(kind.to_string()),
+            from_id: NodeId(from),
+            to_id: NodeId(to),
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn key_tokens_extracts_ascii_from_i18n_key() {
+        let toks = key_tokens("order.pay.insufficientBalance");
+        assert!(toks.contains(&"order".to_string()));
+        assert!(toks.contains(&"pay".to_string()));
+        assert!(toks.contains(&"balance".to_string()));
+    }
+
+    #[test]
+    fn cjk_detection_and_snippet() {
+        assert!(contains_cjk("订单"));
+        assert!(!contains_cjk("order"));
+        let zh = snippet_chinese("订单优惠 some table");
+        assert!(zh.iter().any(|s| s == "订单优惠"));
+    }
+
+    #[test]
+    fn split_camel_boundary() {
+        assert_eq!(split_camel("insufficientBalance"), vec!["insufficient", "Balance"]);
+    }
+
+    #[test]
+    fn containment_edge_classification() {
+        assert!(is_containment_edge("Declares"));
+        assert!(is_containment_edge("HasColumn"));
+        assert!(!is_containment_edge("Calls"));
+    }
+
+    #[test]
+    fn build_enrich_index_inverts_tokens() {
+        let idx = build_enrich_index(&[("支付".to_string(), vec!["pay".to_string(), "payment".to_string()])]);
+        assert_eq!(idx.get("pay").map(|v| v.len()), Some(1));
+        assert_eq!(idx.get("payment").map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn location_tokens_filters_path_stopwords() {
+        let props = json!({"locations":[{"file":"src/components/payment/index.vue"}]});
+        let toks = location_tokens(&props);
+        assert!(toks.contains(&"payment".to_string()));
+        assert!(!toks.iter().any(|t| t == "index")); // stopword
+    }
+
+    #[test]
+    fn neighbours_follows_chain_and_containment_edges() {
+        // Caller along a chain edge: edge 2 -> 1.
+        let mut incoming: HashMap<i64, Vec<Edge>> = HashMap::new();
+        incoming.insert(1, vec![mk_edge(2, 1, "Calls")]);
+        let out = neighbours(NodeId(1), &incoming, &HashMap::new());
+        assert!(out.contains(&NodeId(2)));
+
+        // Containment edge: 1 Declares 3.
+        let mut outgoing: HashMap<i64, Vec<Edge>> = HashMap::new();
+        outgoing.insert(1, vec![mk_edge(1, 3, "Declares")]);
+        let out2 = neighbours(NodeId(1), &HashMap::new(), &outgoing);
+        assert!(out2.contains(&NodeId(3)));
+    }
+
+    #[test]
+    fn relation_summary_counts_incoming_chain_edges() {
+        let mut incoming: HashMap<i64, Vec<Edge>> = HashMap::new();
+        incoming.insert(1, vec![mk_edge(2, 1, "Calls"), mk_edge(3, 1, "Calls")]);
+        let summary = relation_summary(NodeId(1), &incoming, &HashMap::new());
+        assert!(summary.iter().any(|s| s.contains("← Calls")));
+    }
+}
+

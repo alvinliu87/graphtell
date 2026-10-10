@@ -429,3 +429,101 @@ pub(crate) fn select_seeds<'a>(
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn mk_node(id: i64, kind: &str, name: &str) -> gt_domain::model::Node {
+        gt_domain::model::Node {
+            id: gt_domain::model::NodeId(id),
+            project_id: gt_domain::model::ProjectId(1),
+            sub_project_id: None,
+            kind: gt_domain::model::NodeKind(kind.to_string()),
+            name: name.to_string(),
+            fqn: None,
+            identity: None,
+            file_id: None,
+            span: gt_domain::model::Span::default(),
+            language: gt_domain::model::Language("unknown".to_string()),
+            phase: gt_domain::model::Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn builtin_alias_table_is_nonempty_and_bridges_chinese() {
+        let list = builtin_aliases();
+        assert!(!list.is_empty());
+        let pay = list
+            .iter()
+            .find(|(zh, _)| zh == "支付")
+            .expect("支付 must be a built-in key");
+        assert!(pay.1.iter().any(|e| e == "pay"));
+    }
+
+    #[test]
+    fn builtin_alias_keys_match() {
+        assert!(builtin_alias_keys().contains("支付"));
+        assert!(builtin_alias_keys().contains("下单"));
+    }
+
+    #[test]
+    fn merged_aliases_without_project_equals_builtin() {
+        let merged = merged_aliases(None);
+        assert!(merged.iter().any(|(zh, en)| zh == "支付" && en.iter().any(|e| e == "pay")));
+    }
+
+    #[test]
+    fn expand_intent_aliases_bridges_chinese_and_ascii_keys() {
+        let aliases = vec![("支付".to_string(), vec!["pay".to_string(), "payment".to_string()])];
+        let zh_expanded = expand_intent_aliases("支付相关", &aliases);
+        assert!(zh_expanded.contains(&"pay".to_string()));
+        assert!(zh_expanded.contains(&"payment".to_string()));
+
+        // ASCII keys (e.g. `jwt`) match case-insensitively.
+        let aliases2 = vec![("jwt".to_string(), vec!["token".to_string()])];
+        let ascii_expanded = expand_intent_aliases("JWT auth", &aliases2);
+        assert!(ascii_expanded.contains(&"token".to_string()));
+    }
+
+    #[test]
+    fn alias_group_map_and_cohesion() {
+        let aliases = vec![
+            ("支付".to_string(), vec!["pay".to_string(), "payment".to_string()]),
+            ("优惠".to_string(), vec!["coupon".to_string()]),
+        ];
+        let gm = alias_group_map(&aliases);
+        assert_eq!(gm.get("pay"), Some(&"支付".to_string()));
+        // Two distinct intent categories → +30%.
+        assert!((cohesion_multiplier(&["pay".to_string(), "coupon".to_string()], &gm) - 1.3).abs() < 1e-9);
+        // Same category → no boost.
+        assert!((cohesion_multiplier(&["pay".to_string(), "payment".to_string()], &gm) - 1.0).abs() < 1e-9);
+        assert!((cohesion_multiplier(&["pay".to_string()], &gm) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn select_seeds_unions_lexical_and_vector_skipping_unseedable_kinds() {
+        let n1 = mk_node(1, "Method", "getUser");
+        let n2 = mk_node(2, "Method", "payOrder");
+        let n3 = mk_node(3, "I18nKey", "someText"); // must be skipped
+        let mut index: HashMap<i64, &gt_domain::model::Node> = HashMap::new();
+        index.insert(1, &n1);
+        index.insert(2, &n2);
+        index.insert(3, &n3);
+
+        let mut lexical: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
+        lexical.insert(1, (100.0, vec!["order".to_string()]));
+        let mut vector: HashMap<i64, f64> = HashMap::new();
+        vector.insert(2, 50.0);
+        vector.insert(3, 999.0); // high but I18nKey → skipped
+
+        let seeds = select_seeds(&lexical, &vector, &index);
+        let names: Vec<&str> = seeds.iter().map(|(_, _, n)| n.name.as_str()).collect();
+        assert!(names.contains(&"getUser"));
+        assert!(names.contains(&"payOrder"));
+        assert!(!names.contains(&"someText"));
+    }
+}
+

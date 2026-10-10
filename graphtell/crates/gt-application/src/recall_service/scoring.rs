@@ -1319,4 +1319,270 @@ pub(crate) fn render_markdown(
     s
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gt_domain::model::{Node, NodeId, NodeKind, Phase, ProjectId, Span};
+
+    /// Build a minimal `Node` for scoring/anchor tests (only the fields scoring reads).
+    fn mk_node(id: i64, kind: &str, name: &str, fqn: Option<&str>) -> Node {
+        Node {
+            id: NodeId(id),
+            project_id: ProjectId(1),
+            sub_project_id: None,
+            kind: NodeKind(kind.to_string()),
+            name: name.to_string(),
+            fqn: fqn.map(|s| s.to_string()),
+            identity: None,
+            file_id: None,
+            span: Span::default(),
+            language: gt_domain::model::Language("unknown".to_string()),
+            phase: Phase("Test".to_string()),
+            confidence: 1.0,
+            properties: serde_json::Value::Null,
+        }
+    }
+
+    // ---- path / boilerplate noise ----
+    #[test]
+    fn test_path_detection() {
+        assert!(is_test_path("src/foo.test.js"));
+        assert!(is_test_path("src/tests/foo.rs"));
+        assert!(is_test_path("a/b/__tests__/x.ts"));
+        assert!(!is_test_path("src/Contest/foo.rs")); // do not mis-hit "Contest"
+        assert!(!is_test_path("src/main.rs"));
+    }
+
+    #[test]
+    fn generated_path_detection() {
+        assert!(is_generated_path("gen/foo-mbg/Bar.java"));
+        assert!(is_generated_path("x/generated/Bar.java"));
+        assert!(!is_generated_path("src/Bar.java"));
+    }
+
+    #[test]
+    fn criteria_builder_shape() {
+        assert!(is_criteria_builder_method("andPaymentTimeIsNull"));
+        assert!(is_criteria_builder_method("orStatusEqualTo"));
+        assert!(is_criteria_builder_method("createCriteria"));
+        assert!(!is_criteria_builder_method("android")); // 3rd char lowercase
+        assert!(!is_criteria_builder_method("getUser"));
+    }
+
+    #[test]
+    fn file_noise_discount_tiers() {
+        assert!((file_noise_discount("a/b.test.js") - 0.55).abs() < 1e-9);
+        assert!((file_noise_discount("a/b-mbg/x.java") - 0.5).abs() < 1e-9);
+        assert!((file_noise_discount("src/main.rs") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn node_noise_discount_applies_test_path_and_boilerplate() {
+        use std::collections::{HashMap, HashSet};
+        let mut node = mk_node(1, "Method", "foo", None);
+        node.file_id = Some(gt_domain::model::FileId(7));
+        let mut files = HashMap::new();
+        files.insert(7i64, "src/foo.test.js".to_string());
+        let empty: HashSet<i64> = HashSet::new();
+        assert!((node_noise_discount(&node, &files, &empty) - 0.55).abs() < 1e-9);
+        let mut boiler = HashSet::new();
+        boiler.insert(1i64);
+        assert!((node_noise_discount(&node, &files, &boiler) - 0.55 * 0.3).abs() < 1e-9);
+    }
+
+    // ---- identifier / token parsing ----
+    #[test]
+    fn identifier_shaped() {
+        assert!(is_identifier_shaped("createOrder"));
+        assert!(is_identifier_shaped("user_address")); // _ + 2 tokens
+        assert!(!is_identifier_shaped("shipping")); // single word
+        assert!(!is_identifier_shaped("abc")); // too short
+    }
+
+    #[test]
+    fn split_ident_tokens_boundary() {
+        assert_eq!(
+            split_ident_tokens("StoreOrderCreateServices"),
+            vec!["store", "order", "create", "services"]
+        );
+        assert_eq!(split_ident_tokens("HTTPResponse"), vec!["http", "response"]);
+        assert_eq!(
+            split_ident_tokens("userAddressServices"),
+            vec!["user", "address", "services"]
+        );
+    }
+
+    // ---- query parsing ----
+    #[test]
+    fn parse_query_extracts_hints_and_terms() {
+        let (terms, hints) = parse_query("订单 表");
+        assert!(hints.iter().any(|h| h == "Table"));
+        assert!(terms.iter().any(|t| t == "订单"));
+    }
+
+    #[test]
+    fn parse_query_ascii_terms() {
+        let (terms, _hints) = parse_query("order coupon discount");
+        assert!(terms.contains(&"order".to_string()));
+        assert!(terms.contains(&"coupon".to_string()));
+        assert!(terms.contains(&"discount".to_string()));
+    }
+
+    #[test]
+    fn cjk_segmentation_known_vs_unknown() {
+        let known: std::collections::HashSet<String> = ["订单", "优惠"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            segment_cjk("订单优惠", &known),
+            vec![("订单".to_string(), true), ("优惠".to_string(), true)]
+        );
+        // Unrecorded chars become single-char, bigram-ready segments.
+        assert_eq!(
+            segment_cjk("审核退回", &std::collections::HashSet::new()),
+            vec![
+                ("审".to_string(), false),
+                ("核".to_string(), false),
+                ("退".to_string(), false),
+                ("回".to_string(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn cjk_runs_split_on_non_cjk() {
+        assert_eq!(cjk_runs("abc订单def优惠"), vec!["订单", "优惠"]);
+    }
+
+    #[test]
+    fn strip_hint_words_is_whole_word() {
+        let hint_map: &[(&str, &str)] = &[("表", "Table"), ("数据库", "Table")];
+        assert_eq!(strip_hint_words("用户表", hint_map), "用户");
+        // Whole-word removal must not corrupt neighboring characters (regression: 库存 数据库).
+        assert_eq!(strip_hint_words("库存数据库", hint_map), "库存");
+    }
+
+    // ---- intent detection ----
+    #[test]
+    fn action_intent_flags_modify_verbs() {
+        assert!(action_intent("修改订单"));
+        assert!(action_intent("how to implement login"));
+        assert!(!action_intent("list the users")); // "list" is not an action verb
+    }
+
+    #[test]
+    fn event_intent_recognizes_temporal_signals() {
+        assert!(event_intent("支付后"));
+        assert!(event_intent("下单后"));
+        assert!(!event_intent("修改订单"));
+    }
+
+    #[test]
+    fn flow_intent_recognizes_chain_words() {
+        assert!(flow_intent("调用链"));
+        assert!(flow_intent("流程"));
+        assert!(!flow_intent("修改订单"));
+    }
+
+    #[test]
+    fn wants_config_value_on_threshold_words() {
+        assert!(wants_config_value("订单取消时间"));
+        assert!(!wants_config_value("订单"));
+    }
+
+    // ---- weights / edges ----
+    #[test]
+    fn kind_and_rank_weights() {
+        assert!((kind_weight("Table") - 1.4).abs() < 1e-9);
+        assert!((kind_weight("Weird") - 0.8).abs() < 1e-9);
+        assert!((rank_weight("Method", false) - 1.0).abs() < 1e-9);
+        assert!((rank_weight("Method", true) - 1.5).abs() < 1e-9);
+        assert!((rank_weight("HttpContract", true) - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn generic_noun_classification() {
+        assert!(is_generic_noun("service"));
+        assert!(!is_generic_noun("order"));
+    }
+
+    #[test]
+    fn hub_penalty_decays_but_never_zero() {
+        assert!((hub_penalty(10) - 1.0).abs() < 1e-9);
+        let p = hub_penalty(400);
+        assert!(p < 1.0 && p > 0.4);
+    }
+
+    #[test]
+    fn flow_and_entry_edge_classification() {
+        assert!(is_flow_edge("Calls"));
+        assert!(is_flow_edge("WritesDb"));
+        assert!(!is_flow_edge("Declares"));
+        assert!(is_entry_kind("HttpContract"));
+        assert!(!is_entry_kind("Method"));
+    }
+
+    #[test]
+    fn triggered_concepts_fires_on_cluster_token() {
+        // A token absent from every cluster must fire nothing.
+        assert!(triggered_concepts(&["zzz".to_string()]).is_empty());
+        // "email" is in the notify cluster's `all` → that cluster fires.
+        let fired = triggered_concepts(&["email".to_string()]);
+        assert!(fired.iter().any(|(core, _)| core.contains(&"email")));
+    }
+
+    // ---- node-dependent scoring ----
+    #[test]
+    fn score_node_matches_term_and_hint() {
+        let mut incoming = std::collections::HashMap::new();
+        // Exact-name match → 100; structural kind hint adds +30.
+        let n = mk_node(1, "Method", "user", Some("a::User"));
+        let (score, matched) = score_node(&n, &["user".to_string()], &[], &incoming, false);
+        assert!((score - 100.0).abs() < 1e-6);
+        assert!(matched.contains(&"user".to_string()));
+
+        let t = mk_node(2, "Table", "order", None);
+        let (score2, _m2) = score_node(&t, &["order".to_string()], &["Table".to_string()], &incoming, false);
+        // 100 (name match) * kind_weight(Table)=1.4, then +30 structural hint.
+        assert!((score2 - 170.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn anchor_multiplier_tiers() {
+        let n = mk_node(1, "Class", "storeOrderServices", None);
+        assert!((anchor_multiplier(&n, &["storeorderservices".to_string()]) - 3.0).abs() < 1e-9);
+        assert!((anchor_multiplier(&n, &["store".to_string()]) - 2.2).abs() < 1e-9);
+        assert!((anchor_multiplier(&n, &["order".to_string()]) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn concept_multiplier_boosts_multi_token_hits() {
+        let n = mk_node(1, "Method", "resendVerificationEmail", None);
+        let b = concept_multiplier(&n, CONCEPT_CLUSTERS);
+        assert!((b - 1.5).abs() < 1e-9, "mail+email co-occurrence should boost to 1.5, got {b}");
+        let plain = mk_node(2, "Method", "plainMethod", None);
+        assert!((concept_multiplier(&plain, CONCEPT_CLUSTERS) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn has_content_word_detects_domain_token() {
+        let n = mk_node(1, "Method", "couponList", None);
+        assert!(has_content_word(&n, &["coupon".to_string()]));
+        let m = mk_node(2, "Method", "getUser", None);
+        assert!(!has_content_word(&m, &["order".to_string()]));
+    }
+
+    #[test]
+    fn is_event_handler_by_convention() {
+        assert!(is_event_handler(&mk_node(1, "Class", "OrderPaidListener", None)));
+        assert!(!is_event_handler(&mk_node(2, "Class", "PlainService", None)));
+    }
+
+    #[test]
+    fn extract_anchors_only_keeps_graph_present_identifiers() {
+        assert!(extract_anchors("fix store_order bug", &[]).is_empty());
+        let n = mk_node(1, "Class", "store_order", None);
+        let a = extract_anchors("fix store_order bug", &[n]);
+        assert!(a.contains(&"store_order".to_string()));
+    }
+}
+
 
